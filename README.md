@@ -17,15 +17,62 @@ port models between different environments.
 There are many excellent tools for analysis of cyber-physical systems, and this compilers
 aims to allow you to use the best tool for the job at hand.
 * [Casadi](https://github.com/casadi/casadi):
+    * Written in C++: Interface Matlab/Python
     * Algorithmic Differentiation
     * Autonomy and Controls community
     * Code generation: C
 * [Sympy](https://github.com/sympy/sympy):
+    * Written in Python
     * General computer algebra system
     * Code generation: user defined
 * [JAX](https://github.com/jax-ml/jax): 
+    * Written in Python
     * Algorithmic Differentiation
     * Machine learning communicty
+* [Collimator](https://py.collimator.ai/): 
+    * Written in Python
+    * JAX based
+    * GUI for models with cloud version
+    * Model database
+
+### Existing Modelica Compilers
+
+There are several other Modelica compilers in development, and I believe there are challenges
+that make it compelling to develop a new compiler for this task. These are all my personal 
+opinions and should be taken with a grain of salt.
+
+* [Pymoca](https://github.com/pymoca/pymoca)
+    * Benefits
+        * Pymoca was written in Python and based on ANTLR, which is easy to use
+        * It has similar goasl to rumoca, hence the same. I also am a developer for Pymoca.
+        * Python is a very friendly language and easy for users to develop in
+    * Drawbacks
+        * Generation to listed output targets is difficult
+        * Since it is using ANTLR source is first converted into a Parse tree, then into an AST, process is slow
+        * Python lacks strict type safety (even though type hints/ beartype exists)
+        * Python is a slow language and handling large models is problematic
+
+* [Marco](https://github.com/marco-compiler/marco)
+    * Benefits
+        * Marco is a new compiler being written in C++, which is a fast language
+        * It is based on LLVM, which is robust
+        * The focus in on high performance simulation for large scale models
+    * Drawbacks
+        * Generation to listed output targets is difficult
+        * C++ is a non-memory safe language, unlike Rust
+        * C++ libraries for templating etc are more cumbersome than rust version
+        * Packaging and deployment in C++ is cumbersome
+        * GPL v3 license can be prohibitive for commercialization
+
+* [OpenModelica](https://openmodelica.org/)
+    * Benefits
+        * Mature open-source compiler that compiles the Modelica Standard Library
+        * OMEdit provides graphical and text environment to write models
+    * Drawbacks
+        * Generation to listed output targets is difficult
+        * Compiler is written in Modelica itself which I find difficult to maintain
+        * ANTLR based parsing can be slow
+        * Custom OSMC license can be prohibitive for commercialization
 
 ## Building, Testing, and Running
 
