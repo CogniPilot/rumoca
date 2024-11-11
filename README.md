@@ -47,7 +47,7 @@ opinions and should be taken with a grain of salt.
         * It has similar goasl to rumoca, hence the same. I also am a developer for Pymoca.
         * Python is a very friendly language and easy for users to develop in
     * Drawbacks
-        * Generation to listed output targets is difficult
+        * Generation to listed output targets is difficult due to untyped AST
         * Since it is using ANTLR source is first converted into a Parse tree, then into an AST, process is slow
         * Python lacks strict type safety (even though type hints/ beartype exists)
         * Python is a slow language and handling large models is problematic
@@ -58,21 +58,22 @@ opinions and should be taken with a grain of salt.
         * It is based on LLVM, which is robust
         * The focus in on high performance simulation for large scale models
     * Drawbacks
-        * Generation to listed output targets is difficult
+        * Generation to listed output targets is difficult due to C++ compiler
         * C++ is a non-memory safe language, unlike Rust
         * C++ libraries for templating etc are more cumbersome than rust version
         * Packaging and deployment in C++ is cumbersome
-        * GPL v3 license can be prohibitive for commercialization
+        * License limits commercialization
 
 * [OpenModelica](https://openmodelica.org/)
     * Benefits
         * Mature open-source compiler that compiles the Modelica Standard Library
         * OMEdit provides graphical and text environment to write models
     * Drawbacks
-        * Generation to listed output targets is difficult
-        * Compiler is written in Modelica itself which I find difficult to maintain
+        * Generation to listed output targets is difficult due to Modelica compiler
+        * Compiler is written in Modelica itself which I find difficult to understand
         * ANTLR based parsing can be slow
         * Custom OSMC license can be prohibitive for commercialization
+        * License limits commercialization
 
 ## Building, Testing, and Running
 
