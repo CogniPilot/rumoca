@@ -145,7 +145,7 @@ class Integrator:
 * [LALRPOP](https://github.com/lalrpop/lalrpop) : Parsing, AST generation
 * [LOGOS](https://github.com/maciejhirsz/logos) : Lexing
 * [TERA](https://github.com/Keats/tera) : Template Engine
-* [SERDE](https://serde.rs/) : AST Serialization
+* [SERDE](https://github.com/serde-rs/serde) : AST Serialization
 * [CLAP](https://github.com/clap-rs/clap) : Command Line Argument Parser
 
 ## Roadmap
