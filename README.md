@@ -32,3 +32,30 @@ Options:
   -h, --help                   Print help
   -V, --version                Print version
 ```
+
+The compiler is currently under development, but some initial results are shown below:
+
+Modelica file:
+
+**src/model.mo**
+```bash
+model Integrator
+    Real x; // test
+    Real y;
+equation
+    der(x) = 1.0;
+    der(y) = x;
+end Integrator;
+```
+
+```bash
+$ rumoca --filename src/model.mo --generator sympy
+
+import sympy
+
+class Integrator:
+
+    def __init__(self):
+        self.x = sympy.symbols('x');
+        self.y = sympy.symbols('y');
+```
