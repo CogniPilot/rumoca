@@ -1,4 +1,4 @@
-# rumoca ![CI](https://github.com/jgoppert/rumoca/workflows/rust.yml/badge.svg)
+# rumoca ![CI](https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg)
 
 A Modelica Compiler written in RUST.
 
