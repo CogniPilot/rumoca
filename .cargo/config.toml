@@ -1,7 +1,0 @@
-# setup for static linking on linux
-# for portabilit (otherwise links dynamically to gcc)
-# must pass target to trigger this flag
-#
-# cargo build --target x86_64-unknown-linux-gnu 
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-feature=+crt-static"]
