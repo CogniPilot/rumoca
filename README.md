@@ -5,7 +5,7 @@ A Modelica compiler with focus on Casadi, Sympy, JAX, and Collimator generation.
 There are many useful libraries for hybrid systems analysis, but it is difficult to
 port models between different environments.
 
-### Input: Modelica
+### **Input**: Modelica
 * [Modelica](https://modelica.org/) is a concise language for representing cyber-physical systems
 * Text based models, domain specific langauge makes it more human readable
 * Graphical model (block diagram) support via annotations
@@ -13,7 +13,7 @@ port models between different environments.
 * General langauges like python/C++ etc. allow users to create models that don't map easily to a DAE
 * Modelica is a language and therefore many tools have been developed for it 
 
-### Output Computer Algebra System Targets
+### **Output**: Computer Algebra System Targets
 There are many excellent tools for analysis of cyber-physical systems, and this compilers
 aims to allow you to use the best tool for the job at hand.
 * [Casadi](https://github.com/casadi/casadi):
