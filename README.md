@@ -1,4 +1,4 @@
-# rumoca ![CI](https://github.com/github/jgoppert/rumoca/workflows/rust.yml/badge.svg)
+# rumoca ![CI](https://github.com/jgoppert/rumoca/workflows/rust.yml/badge.svg)
 
 A Modelica Compiler written in RUST.
 
@@ -33,11 +33,11 @@ Options:
   -V, --version                Print version
 ```
 
+## Running
+
 The compiler is currently under development, but some initial results are shown below:
 
-Modelica file:
-
-**src/model.mo**
+### Modelica input file: **src/model.mo**
 ```bash
 model Integrator
     Real x; // test
@@ -48,6 +48,7 @@ equation
 end Integrator;
 ```
 
+### Generated sympy output file.
 ```bash
 $ rumoca --filename src/model.mo --generator sympy
 
@@ -59,3 +60,8 @@ class Integrator:
         self.x = sympy.symbols('x');
         self.y = sympy.symbols('y');
 ```
+
+## Roadmap
+1. Add more language features
+2. Improve generators
+3. Add support for JAX, Collimator
