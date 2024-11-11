@@ -20,6 +20,7 @@ enum Generator {
     Json,
     CasadiMx,
     CasadiSx,
+    Collimator,
 }
 
 #[derive(Parser, Debug)]
@@ -49,5 +50,6 @@ fn main() {
         Generator::Sympy => generators::sympy::generate(&def),
         Generator::CasadiMx => generators::casadi_mx::generate(&def),
         Generator::CasadiSx => generators::casadi_sx::generate(&def),
+        Generator::Collimator => generators::collimator::generate(&def),
     }
 }

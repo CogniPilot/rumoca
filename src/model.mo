@@ -4,6 +4,4 @@ model Integrator
 equation
     der(x) = 1.0;
     der(y) = x;
-algorithm
-    x := 1;
 end Integrator;

@@ -1,5 +1,6 @@
 pub mod casadi_mx;
 pub mod casadi_sx;
+pub mod collimator;
 pub mod json;
 pub mod sympy;
 
