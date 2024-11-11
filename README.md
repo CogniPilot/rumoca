@@ -1,6 +1,6 @@
 # rumoca ![CI](https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg)
 
-A Modelica Compiler written in RUST.
+A Modelica compiler with focus on Casadi, Sympy, JAX, and Collimator generation.
 
 ## Building, Testing, and Running
 
