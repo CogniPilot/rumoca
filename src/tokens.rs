@@ -1,4 +1,4 @@
-use logos::Logos;
+use logos::{Logos, Skip, Lexer};
 use std::fmt; // to implement the Display trait later
 use std::num::ParseIntError;
 
@@ -15,9 +15,24 @@ impl From<ParseIntError> for LexicalError {
     }
 }
 
+/// Update the line count and the char index.
+fn newline_callback(lex: &mut Lexer<Token>) -> Skip {
+    lex.extras.0 += 1;
+    lex.extras.1 = lex.span().end;
+    Skip
+}
+
 #[derive(Logos, Clone, Debug, PartialEq)]
-#[logos(skip r"[ \t\n\f]+", skip r"//.*\n?", skip r"\/\*([^*]|\*[^\/])+\*\/", error = LexicalError)]
+#[logos(
+    skip r"[ \t\f]+",
+    skip r"//.*\n?",
+    skip r"\/\*([^*]|\*[^\/])+\*\/",
+    extras = (usize, usize),
+    error = LexicalError)]
 pub enum Token {
+    #[regex(r"\n", newline_callback)]
+    Newline,
+
     #[token("algorithm")]
     KeywordAlgorithm,
     #[token("and")]
@@ -181,6 +196,6 @@ pub enum Token {
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{}", self)
     }
 }

@@ -17,18 +17,15 @@ class {{ class.name}} (LeafSystem):
         g=9.81,
         L=1.0,
         b=0.0,
-        full_state_output=True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         # Declare parameters
-        self.declare_dynamic_parameter("m", m)
-        self.declare_dynamic_parameter("g", g)
-        self.declare_dynamic_parameter("L", L)
-        self.declare_dynamic_parameter("b", b)
+        # self.declare_dynamic_parameter("m", m)
+        # self.declare_dynamic_parameter("g", g)
+        # self.declare_dynamic_parameter("L", L)
+        # self.declare_dynamic_parameter("b", b)
 
-        # Declare continuous state; it's default value indicates that its size is 2
-        # the attached ode callback should return the derivative of the state
         self.declare_continuous_state(default_value=jnp.array(x0), ode=self.ode)
 
         {% for comp in class.components -%}
@@ -38,19 +35,8 @@ class {{ class.name}} (LeafSystem):
         # Declare input port for the torque
         self.declare_input_port(name="u")
 
-        if full_state_output:
-            # Declare output port for the full state
-            self.declare_continuous_state_output(name="x")
-        else:
+        self.declare_continuous_state_output(name="x")
 
-            def _observation_callback(time, state, *inputs, **parameters):
-                return state.continuous_state[0]  # output only theta
-
-            self.declare_output_port(
-                _observation_callback,
-                name="y",
-                requires_inputs=False,
-            )
 
     def ode(self, time, state, *inputs, **parameters):
         # Get theta and omega from the continuous part of LeafSystem state
@@ -77,6 +63,7 @@ class {{ class.name}} (LeafSystem):
         return jnp.array([dot_theta, dot_omega]
 
 {% endfor %}
+
 "#;
 
 pub fn generate(def: &ast::StoredDefinition) {
@@ -95,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_generate_casadi_sx() {
-        let def = parse_file("src/model.mo");
+        let def = parse_file("src/model.mo").expect("failed to parse");
         generate(&def);
     }
 }

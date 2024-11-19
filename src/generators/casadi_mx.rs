@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn test_generate_casadi_mx() {
-        let def = parse_file("src/model.mo");
+        let def = parse_file("src/model.mo").expect("failed to parse");
         generate(&def);
     }
 }

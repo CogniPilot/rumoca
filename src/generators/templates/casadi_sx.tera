@@ -1,0 +1,52 @@
+{# {{ __tera_context }} #}
+{# Class Macro #}
+{%- macro render_class(class) %}
+class {{ class.name }}:
+
+    def __init__(self)
+
+        // declare states
+        {%- for comp in class.components %}
+        {{ comp.name }} = ca.SX.sym('{{ comp.name }}');
+        {%- endfor %}
+
+        // declare state vector
+        self.x = ca.vertcat(
+        {%- for comp in class.components %}
+            {{ comp.name }}{% if not loop.last %},{% endif %}
+        {%- endfor %});
+        
+        // declare state derivative equations
+        {%- for eq in class.equations -%}
+            {{ self::render_equation(eq=eq) | indent | indent }}
+        {%- endfor %}
+
+        // declare state derivative vector
+        self.x_dot = ca.vertcat(
+        {%- for comp in class.components %}
+            der_{{ comp.name }}{% if not loop.last %},{% endif %}
+        {%- endfor %});
+        self.ode = ca.Function('ode', [self.x], [self.x_dot])
+{%- endmacro render_class %}
+
+{#- Equation Macro -#}
+{%- macro render_equation(eq) %}
+    {%- if eq is containing("Der") %}
+der_{{ eq.Der.comp.name }} = {{ self::render_expression(expr=eq.Der.rhs) }};
+    {%- endif %}
+{%- endmacro render_equation -%}
+
+{#- Expression Macro -#}
+{%- macro render_expression(expr) %}
+    {%- if expr is containing("UnsignedReal") %}
+{{- expr.UnsignedReal }}
+{%- elif expr is containing("Ref") %}
+{{- expr.Ref.comp.name }}
+    {%- endif %}
+{%- endmacro render_equation -%}
+
+{#- Render File #}
+import casadi as ca
+{%- for class in def.classes %}
+{{ self::render_class(class=class) }}
+{%- endfor %}

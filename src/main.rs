@@ -41,7 +41,7 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let def = parse_file(&args.filename);
+    let def = parse_file(&args.filename).expect("failed to parse");
     if args.verbose {
         println!("{:#?}", def);
     }

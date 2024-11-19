@@ -175,9 +175,9 @@ pub Equation: ast::Equation = {
             rhs
         }
     },
-    "der" "(" <lhs:Expression> ")" "=" <rhs:Expression> ";" => {
-        ast::Equation::Simple {
-            lhs,
+    "der" "(" <comp:ComponentReference> ")" "=" <rhs:Expression> ";" => {
+        ast::Equation::Der {
+            comp,
             rhs
         }
     },

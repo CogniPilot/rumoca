@@ -2,25 +2,15 @@ use crate::ast;
 
 use tera::{Context, Tera};
 
-static CASADI_SX_TEMPLATE: &str = r#"
-import casadi as ca
-{% for class in def.classes %}
-class {{ class.name }}:
-
-    def __init__(self):
-        {% for comp in class.components -%}
-        self.{{ comp.name }} = ca.SX.sym('{{ comp.name }}');
-        {% endfor -%}
-{% endfor %}
-"#;
-
 pub fn generate(def: &ast::StoredDefinition) {
+    let template = std::fs::read_to_string("src/generators/templates/casadi_sx.tera").
+        expect("failed to read template");
     let mut tera = Tera::default();
-    tera.add_raw_template("template", CASADI_SX_TEMPLATE)
-        .unwrap();
+    tera.add_raw_template("casadi_sx", &template).expect("failed to add template");
+
     let mut context = Context::new();
     context.insert("def", def);
-    println!("{}", tera.render("template", &context).unwrap());
+    println!("{}", tera.render("casadi_sx", &context).unwrap());
 }
 
 #[cfg(test)]
@@ -30,7 +20,7 @@ mod tests {
 
     #[test]
     fn test_generate_casadi_sx() {
-        let def = parse_file("src/model.mo");
+        let def = parse_file("src/model.mo").expect("failed to parse");
         generate(&def);
     }
 }

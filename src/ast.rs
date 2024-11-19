@@ -42,6 +42,10 @@ pub struct ComponentReference {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Equation {
+    Der {
+        comp: ComponentReference,
+        rhs: Box<Expression>,
+    },
     Simple {
         lhs: Box<Expression>,
         rhs: Box<Expression>,

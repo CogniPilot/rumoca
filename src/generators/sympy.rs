@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn test_generate_sympy() {
-        let def: ast::StoredDefinition = parse_file("src/model.mo");
+        let def: ast::StoredDefinition = parse_file("src/model.mo").expect("failed to parse");
         generate(&def);
     }
 }
