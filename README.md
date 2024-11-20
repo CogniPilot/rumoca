@@ -1,6 +1,6 @@
 # rumoca ![CI](https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg)
 
-A Modelica compiler with focus on CasADi, Sympy, JAX, and PyCollimator generation.
+A Modelica translator with focus on CasADi, Sympy, JAX, and PyCollimator generation.
 
 There are many useful libraries for hybrid systems analysis, but it is difficult to
 port models between different environments.
@@ -35,7 +35,7 @@ aims to allow you to use the best tool for the job at hand.
     * GUI for models with cloud version
     * Model database
 
-### Existing Modelica Compilers
+### Existing Modelica Compilers/ Translators
 
 There are several other Modelica compilers in development, and I believe there are challenges
 that make it compelling to develop a new compiler for this task. These are all my personal 
