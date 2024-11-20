@@ -1,6 +1,6 @@
 # rumoca ![CI](https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg)
 
-A Modelica compiler with focus on Casadi, Sympy, JAX, and Collimator generation.
+A Modelica compiler with focus on CasADi, Sympy, JAX, and Collimator generation.
 
 There are many useful libraries for hybrid systems analysis, but it is difficult to
 port models between different environments.
@@ -16,7 +16,7 @@ port models between different environments.
 ### **Output**: Computer Algebra System Targets
 There are many excellent tools for analysis of cyber-physical systems, and this compilers
 aims to allow you to use the best tool for the job at hand.
-* [Casadi](https://github.com/casadi/casadi):
+* [CasADi](https://github.com/casadi/casadi):
     * Written in C++: Interface Matlab/Python
     * Algorithmic Differentiation
     * Autonomy and Controls community
@@ -126,7 +126,7 @@ equation
 end Integrator;
 ```
 
-### Generated sympy output file.
+### Generated CasADi output file.
 ```bash
 $ rumoca -t templates/casadi_sx.tera -f models/integrator.mo 
 ```
@@ -171,7 +171,7 @@ class Integrator:
 ### DONE
 1. Flat subset of full Modelica Grammar using LALRPOP
 2. Initial Lexer using LOGOS
-3. Generation using TERA for Sympy/Casadi/Json
+3. Generation using TERA for Sympy/CasADi/Json
 4. Command line interface using CLAP
 
 ### TODO
