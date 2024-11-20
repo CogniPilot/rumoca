@@ -95,7 +95,7 @@ cargo install --path .
 ```
 
 Make sure you add your rust bin path to your .bashrc and source it, then
-type the follow to test that rumoca is on your path.
+type the following to test that rumoca is in your path.
 
 ```bash
 $ rumoca --help
