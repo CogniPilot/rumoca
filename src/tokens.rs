@@ -1,4 +1,4 @@
-use logos::{Logos, Skip, Lexer};
+use logos::{Lexer, Logos, Skip};
 use std::fmt; // to implement the Display trait later
 use std::num::ParseIntError;
 
@@ -22,6 +22,23 @@ fn newline_callback(lex: &mut Lexer<Token>) -> Skip {
     Skip
 }
 
+// Modelica 3.7-dev
+// 2.3.1 Identifiers
+// ============================================================================
+// IDENT = NON-DIGIT { DIGIT | NON-DIGIT } | Q-IDENT
+// Q-IDENT = "'" { Q-CHAR | S-ESCAPE } "'"
+// NON-DIGIT = "_" | letters "a"
+//  "z" | letters "A"
+//  "Z"
+// DIGIT = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+// Q-CHAR = NON-DIGIT | DIGIT | "!" | "#" | "$" | "%" | "&" | "(" | ")"
+//    | "*" | "+" | "," | "-" | "." | "/" | ":" | ";" | "<" | ">" | "="
+//    | "?" | "@" | "[" | "]" | "^" | "{" | "}" | "|" | "~" | " " | """
+// S-ESCAPE = "\'" | "\"" | "\?" | "\\"
+//    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
+//
+// 2.3.3 Modelica Keywords
+// ============================================================================
 #[derive(Logos, Clone, Debug, PartialEq)]
 #[logos(
     skip r"[ \t\f]+",

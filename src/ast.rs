@@ -10,6 +10,7 @@ pub struct ClassDefinition {
     pub name: String,
     pub class_type: ClassType,
     pub partial: bool,
+    pub encapsulated: bool,
     pub components: Vec<ComponentDeclaration>,
     pub equations: Option<Vec<Equation>>,
     pub algorithms: Option<Vec<Statement>>,

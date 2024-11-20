@@ -1,8 +1,11 @@
 use crate::tokens::{Token, LexicalError};
 use crate::ast;
 
+// Based on Modelica 3.7-dev Specification
 grammar;
 
+// 2.3.3 Modelica Keywords
+// ============================================================================
 extern {
     type Location = usize;
     type Error = LexicalError;
@@ -88,6 +91,11 @@ extern {
     }
 }
 
+// A.2.1 Stored Definition – Within
+// ============================================================================
+// stored-definition :
+//    [ within [ name ] ";" ]
+//    { [ final ] class-definition ";" }
 pub StoredDefinition: ast::StoredDefinition = {
     <classes:ClassDefinition*> => {
         ast::StoredDefinition{
@@ -96,8 +104,24 @@ pub StoredDefinition: ast::StoredDefinition = {
     }
 }
 
+// A.2.2 Class Definition
+// ============================================================================
+// class-definition :
+//    [ encapsulated ] class-prefixes class-specifier
+// class-prefixes :
+//    [ partial ]
+//    ( class
+//      | model
+//      | [ operator ] record
+//      | block
+//      | [ expandable ] connector
+//      | type
+//      | package
+//      | [ pure | impure ] [ operator ] function
+//      | operator
+//    )
 pub ClassDefinition: ast::ClassDefinition = {
-    <partial: "partial"?> <class_type: ClassType> <name:"identifier">
+    <encapsulated: "encapsulated"?> <partial: "partial"?> <class_type: ClassType> <name:"identifier">
     <components: ComponentSection>
     <equations: EquationSection?>
     <algorithms: AlgorithmSection?>
@@ -105,6 +129,7 @@ pub ClassDefinition: ast::ClassDefinition = {
         ast::ClassDefinition {
             name: name,
             class_type: class_type,
+            encapsulated: encapsulated.is_some(),
             partial: partial.is_some(),
             components: components,
             equations: equations,
@@ -124,10 +149,97 @@ pub ClassType: ast::ClassType = {
     "package" => ast::ClassType::Package,
 }
 
+// TODO
+// class-specifier :
+//    long-class-specifier | short-class-specifier | der-class-specifier
+// long-class-specifier :
+//    IDENT description-string composition end IDENT
+//    | extends IDENT [ class-modification ] description-string composition
+//      end IDENT
+// short-class-specifier :
+//    IDENT "=" base-prefix type-specifier [ array-subscripts ]
+//    [ class-modification ] description
+//    | IDENT "=" enumeration "(" ( [ enum-list ] | ":" ) ")" description
+// der-class-specifier :
+//    IDENT "=" der "(" type-specifier "," IDENT { "," IDENT } ")" description
+// base-prefix :
+//    [ input | output ]
+// enum-list :
+//    enumeration-literal { "," enumeration-literal }
+// enumeration-literal :
+//    IDENT description
+// composition :
+//    element-list
+//    { public element-list
+//      | protected element-list
+//      | equation-section
+//      | algorithm-section
+//    }
+//    [ external [ language-specification ]
+//      [ external-function-call ] [ annotation-clause ] ";"
+//    ]
+//    [ annotation-clause ";" ]
+// language-specification :
+//    STRING
+// external-function-call :
+//    [ component-reference "=" ]
+//    IDENT "(" [ expression-list ] ")"
+// element-list :
+//    { element ";" }
+// element :
+//    import-clause
+//    | extends-clause
+//    | [ redeclare ]
+//      [ final ]
+//      [ inner ] [ outer ]
+//      ( class-definition
+//        | component-clause
+//        | replaceable ( class-definition | component-clause )
+//          [ constraining-clause description ]
+//      )
+// import-clause :
+//    import
+//    ( IDENT "=" name
+//      | name [ ".*" | "." ( "*" | "{" import-list "}" ) ]
+//    )
+//    description
+// import-list :
+//    IDENT { "," IDENT }
+//
 pub ComponentSection: Vec<ast::ComponentDeclaration> = {
     <components:ComponentDeclaration*> => components
 }
 
+// A.2.3 Extends (TODO)
+// ============================================================================
+// extends-clause :
+//    extends type-specifier [ class-or-inheritance-modification ] [ annotation-clause ]
+// constraining-clause :
+//    constrainedby type-specifier [ class-modification ]
+// class-or-inheritance-modification :
+//    "(" [ argument-or-inheritance-modification-list ] ")"
+// argument-or-inheritance-modification-list :
+//     ( argument | inheritance-modification ) { "," ( argument | inheritance-modification ) }
+// inheritance-modification :
+//     break ( connect-equation | IDENT )
+
+
+// A.2.4 Component Clause
+// ============================================================================
+// component-clause :
+//    type-prefix type-specifier [ array-subscripts ] component-list
+// type-prefix :
+//    [ flow | stream ]
+//    [ discrete | parameter | constant ]
+//    [ input | output ]
+// component-list :
+//    component-declaration { "," component-declaration }
+// component-declaration :
+//    declaration [ condition-attribute ] description
+// condition-attribute :
+//    if expression
+// declaration :
+//    IDENT [ array-subscripts ] [ modification ]
 pub ComponentDeclaration: ast::ComponentDeclaration = {
     <class:"identifier"> <name:"identifier"> ";" => {
         ast::ComponentDeclaration{
@@ -137,37 +249,61 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
     },
 }
 
-/*
- equation-section :
-   [ initial ] equation { equation ";" } 
-TODO
- * handle initial
-*/
+// A.2.5 Modification (TODO)
+// ============================================================================
+// modification :
+//    class-modification [ "=" modification-expression ]
+//    | "=" modification-expression
+// modification-expression :
+//    expression
+//    | break
+// class-modification :
+//    "(" [ argument-list ] ")"
+// argument-list :
+//    argument { "," argument }
+// argument :
+//    element-modification-or-replaceable
+//    | element-redeclaration
+// element-modification-or-replaceable :
+//    [ each ] [ final ] ( element-modification | element-replaceable )
+// element-modification :
+//    name [ modification ] description-string
+// element-redeclaration :
+//    redeclare [ each ] [ final ]
+//    ( short-class-definition | component-clause1 | element-replaceable )
+// element-replaceable :
+//    replaceable ( short-class-definition | component-clause1 )
+//    [ constraining-clause ]
+// component-clause1 :
+//    type-prefix type-specifier component-declaration1
+// component-declaration1 :
+//    declaration description
+// short-class-definition :
+//    class-prefixes short-class-specifier
+
+
+// A.2.6 Equations
+// ============================================================================
+// equation-section :
+//    [ initial ] equation { some-equation ";" }
 pub EquationSection: Vec<ast::Equation> = {
     <_initial:"initial"?> "equation" <equations:Equation*> => equations
 }
-
-/*
- algorithm-section :
-   [ initial ] algorithm { statement ";" }
-TODO
- * handle initial
-*/
+// algorithm-section :
+//    [ initial ] algorithm { statement ";" }
 pub AlgorithmSection: Vec<ast::Statement> = {
     <_initial:"initial"?> "algorithm" <statements:Statement*> => statements
 }
 
-/*
- equation :
-   ( simple-expression "=" expression
-     | if-equation
-     | for-equation
-     | connect-equation
-     | when-equation
-     | component-reference function-call-args
-   )
-   description
-*/
+// some-equation :
+//    ( simple-expression "=" expression
+//      | if-equation
+//      | for-equation
+//      | connect-equation
+//      | when-equation
+//      | component-reference function-call-args
+//    )
+//    description
 pub Equation: ast::Equation = {
     <lhs:Expression> "=" <rhs:Expression> ";" => {
         ast::Equation::Simple {
@@ -183,17 +319,39 @@ pub Equation: ast::Equation = {
     },
 }
 
-/*
- if-equation :
-   if expression then
-     { equation ";" }
-   { elseif expression then
-     { equation ";" }
-   }
-   [ else
-     { equation ";" }
-   ]
-*/
+// statement :
+//    ( component-reference ( ":=" expression | function-call-args )
+//      | "(" output-expression-list ")" ":="
+//        component-reference function-call-args
+//      | break
+//      | return
+//      | if-statement
+//      | for-statement
+//      | while-statement
+//      | when-statement
+//    )
+//    description
+
+pub Statement: ast::Statement = {
+    <comp: ComponentReference> ":=" <expr:Expression> ";" => {
+        ast::Statement::Assignment{
+            comp,
+            expr
+        }
+    },
+
+}
+
+// if-equation :
+//    if expression then
+//      { some-equation ";" }
+//    { elseif expression then
+//      { some-equation ";" }
+//    }
+//    [ else
+//      { some-equation ";" }
+//    ]
+//    end if
 pub IfEquation: ast::Equation = {
     "if" <if_cond:Expression> "then" <if_eqs:Equation*> ";"
     <else_if_blocks: ElseIfEquationBlock*>
@@ -221,17 +379,16 @@ pub ElseEquationBlock: Vec<ast::Equation> = {
     }
 }
 
-/*
- if-statement :
-   if expression then
-     { statement ";" }
-   { elseif expression then
-     { statement ";" }
-   }
-   [ else
-     { statement ";" }
-   ]
-*/
+// if-statement :
+//    if expression then
+//      { statement ";" }
+//    { elseif expression then
+//      { statement ";" }
+//    }
+//    [ else
+//      { statement ";" }
+//    ]
+//    end if
 pub IfStatement: ast::Statement = {
     "if" <if_cond:Expression> "then" <if_eqs:Statement*> ";"
     <else_if_blocks: ElseIfStatementBlock*>
@@ -259,61 +416,69 @@ pub ElseStatementBlock: Vec<ast::Statement> = {
     }
 }
 
+// for-equation :
+//    for for-indices loop
+//      { some-equation ";" }
+//    end for
+// for-statement :
+//    for for-indices loop
+//      { statement ";" }
+//    end for
+// for-indices :
+//    for-index { "," for-index }
+// for-index :
+//    IDENT [ in expression ]
+// while-statement :
+//    while expression loop
+//      { statement ";" }
+//    end while
+// when-equation :
+//    when expression then
+//      { some-equation ";" }
+//    { elsewhen expression then
+//      { some-equation ";" }
+//    }
+//    end when
+// when-statement :
+//    when expression then
+//      { statement ";" }
+//    { elsewhen expression then
+//      { statement ";" }
+//    }
+//    end when
+// connect-equation :
+//    connect "(" component-reference "," component-reference ")"
 
-/*
- component-reference :
-   [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
-*/
-pub ComponentReference: ast::ComponentReference = {
-    <name:"identifier"> => {
-        ast::ComponentReference{
-            name
-        }
-    },
-}
 
-pub Statement: ast::Statement = {
-    <comp: ComponentReference> ":=" <expr:Expression> ";" => {
-        ast::Statement::Assignment{
-            comp,
-            expr
-        }
-    },
-
-}
-
-/*
-=============================================================================
-A.2.7 Expressions
-=============================================================================
-expression :
-   simple-expression
-   | if expression then expression
-     { elseif expression then expression }
-     else expression 
-simple-expression :
-   logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
-logical-expression :
-   logical-term { or logical-term }
-logical-term :
-   logical-factor { and logical-factor }
-logical-factor :
-   [ not ] relation
-relation :
-   arithmetic-expression [ relational-operator arithmetic-expression ]
-relational-operator :
-   "<" | "<=" | ">" | ">=" | "==" | "<>"
-arithmetic-expression :
-   [ add-operator ] term { add-operator term }
-add-operator :
-   "+" | "-" | ".+" | ".-"
-term :
-   factor { mul-operator factor }
-mul-operator :
-   "*" | "/" | ".*" | "./"
-factor :
-   primary [ ( "^" | ".^" ) primary ]
-*/
+// A.2.7 Expressions
+// ============================================================================
+// expression :
+//    simple-expression
+//    | if expression then expression
+//      { elseif expression then expression }
+//      else expression
+// simple-expression :
+//    logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
+// logical-expression :
+//    logical-term { or logical-term }
+// logical-term :
+//    logical-factor { and logical-factor }
+// logical-factor :
+//    [ not ] relation
+// relation :
+//    arithmetic-expression [ relational-operator arithmetic-expression ]
+// relational-operator :
+//    "<" | "<=" | ">" | ">=" | "==" | "<>"
+// arithmetic-expression :
+//    [ add-operator ] term { add-operator term }
+// add-operator :
+//    "+" | "-" | ".+" | ".-"
+// term :
+//    factor { mul-operator factor }
+// mul-operator :
+//    "*" | "/" | ".*" | "./"
+// factor :
+//    primary [ ( "^" | ".^" ) primary ]
 pub Expression: Box<ast::Expression> = {
     #[precedence(level="1")]
     Term,
@@ -371,19 +536,17 @@ pub Expression: Box<ast::Expression> = {
     },
 }
 
-/*
- primary :
-   UNSIGNED-NUMBER
-   | STRING
-   | false
-   | true
-   | ( component-reference | der | initial | pure ) function-call-args
-   | component-reference
-   | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
-   | "[" expression-list { ";" expression-list } "]"
-   | "{" array-arguments "}"
-   | end 
-*/
+// primary :
+//    UNSIGNED-NUMBER
+//    | STRING
+//    | false
+//    | true
+//    | ( component-reference | der | initial | pure ) function-call-args
+//    | component-reference
+//    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
+//    | "[" expression-list { ";" expression-list } "]"
+//    | "{" array-arguments "}"
+//    | end
 pub Term: Box<ast::Expression> = {
     <val:"unsigned_integer"> => {
         Box::new(ast::Expression::UnsignedInteger(val))
@@ -399,3 +562,55 @@ pub Term: Box<ast::Expression> = {
     },
     "(" <Expression> ")",
 }
+
+// UNSIGNED-NUMBER :
+//    UNSIGNED-INTEGER | UNSIGNED-REAL
+// type-specifier :
+//    ["."] name
+// name :
+//    IDENT { "." IDENT }
+// component-reference :
+//    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
+pub ComponentReference: ast::ComponentReference = {
+    <name:"identifier"> => {
+        ast::ComponentReference{
+            name
+        }
+    },
+}
+// result-reference :
+//    component-reference
+//    | der "(" component-reference [ "," UNSIGNED-INTEGER ] ")"
+// function-call-args :
+//    "(" [ function-arguments ] ")"
+// function-arguments :
+//    expression [ "," function-arguments-non-first | for for-indices ]
+//    | function-partial-application [ "," function-arguments-non-first ]
+//    | named-arguments
+// function-arguments-non-first :
+//    function-argument [ "," function-arguments-non-first ]
+//    | named-arguments
+// array-arguments :
+//    expression [ "," array-arguments-non-first | for for-indices ]
+// array-arguments-non-first :
+//    expression [ "," array-arguments-non-first ]
+// named-arguments: named-argument [ "," named-arguments ]
+// named-argument: IDENT "=" function-argument
+// function-argument :
+//    function-partial-application | expression
+// function-partial-application :
+//    function type-specifier "(" [ named-arguments ] ")"
+// output-expression-list :
+//    [ expression ] { "," [ expression ] }
+// expression-list :
+//    expression { "," expression }
+// array-subscripts :
+//    "[" subscript { "," subscript } "]"
+// subscript :
+//    ":" | expression
+// description :
+//    description-string [ annotation-clause ]
+// description-string :
+//    [ STRING { "+" STRING } ]
+// annotation-clause :
+//    annotation class-modification

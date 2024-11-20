@@ -20,7 +20,7 @@ struct Args {
     /// The template
     #[arg(short, long)]
     template_file: String,
-    
+
     /// The filename to compile
     #[arg(short, long)]
     filename: String,

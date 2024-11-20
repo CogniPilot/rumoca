@@ -1,9 +1,10 @@
-{# {{ __tera_context }} #}
+{{ __tera_context }}
 {#- Render File #}
 import casadi as ca
 {%- for class in def.classes %}
 {{ self::render_class(class=class) }}
 {%- endfor %}
+
 
 {# Class Macro #}
 {%- macro render_class(class) %}
