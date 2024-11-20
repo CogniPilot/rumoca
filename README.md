@@ -14,7 +14,7 @@ port models between different environments.
 * Modelica is a language and therefore many tools have been developed for it 
 
 ### **Output**: Computer Algebra System Targets
-There are many excellent tools for analysis of cyber-physical systems, and this compilers
+There are many excellent tools for analysis of cyber-physical systems, and rumoca
 aims to allow you to use the best tool for the job at hand.
 * [CasADi](https://github.com/casadi/casadi):
     * Written in C++: Interface Matlab/Python
@@ -37,13 +37,18 @@ aims to allow you to use the best tool for the job at hand.
 
 ### Existing Modelica Compilers/ Translators
 
-There are several other Modelica compilers in development, and I believe there are challenges
-that make it compelling to develop a new compiler for this task. These are all my personal 
+Compiler and translator are often used interchangeably, but the goal of a compiler is typically 
+to generate low level machine code. The term translator is more general and refers to 
+transformation of source code to some other form. Since we are interested in generaeting
+models in various languages from a Modelica model, we call Rumoca a translator.
+
+There are several other Modelica compilers/translators in development, and I believe there are challenges
+that make it compelling to develop a new translator for generation required for this project. These are all my personal 
 opinions and should be taken with a grain of salt.
 
 * [Pymoca](https://github.com/pymoca/pymoca)
     * Benefits
-        * Pymoca was written in Python and based on ANTLR, which is easy to use
+        * Pymoca was written in Python and based on ANTLR, which is easy to use, it is a translator
         * It has similar goasl to rumoca, hence the same. I also am a developer for Pymoca.
         * Python is a very friendly language and easy for users to develop in
     * Drawbacks

@@ -15,7 +15,7 @@ lalrpop_mod!(
 );
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Rumoca Modelica Compiler", long_about = None)]
+#[command(version, about = "Rumoca Modelica Translator", long_about = None)]
 struct Args {
     /// The template
     #[arg(short, long)]
