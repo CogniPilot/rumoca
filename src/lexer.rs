@@ -34,16 +34,11 @@ mod tests {
 
     #[test]
     fn test_lexer() {
-        let filename = String::from("src/model.mo");
+        let filename = String::from("models/integrator.mo");
         let source_code = std::fs::read_to_string(filename).unwrap();
         let mut lexer = Lexer::new(&source_code);
-        loop {
-            match lexer.next() {
-                Some(result) => {
-                    println!("{:?}", result)
-                }
-                None => break,
-            }
+        for result in &mut lexer {
+            println!("{:?}", result)
         }
     }
 }

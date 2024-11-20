@@ -1,10 +1,10 @@
 mod ast;
-mod generators;
+mod generator;
 mod lexer;
 mod tokens;
 
-use clap::{Parser, ValueEnum};
-use generators::parse_file;
+use clap::Parser;
+use generator::parse_file;
 
 use lalrpop_util::lalrpop_mod;
 
@@ -14,18 +14,13 @@ lalrpop_mod!(
     parser
 );
 
-#[derive(ValueEnum, Debug, Clone)]
-enum Generator {
-    Sympy,
-    Json,
-    CasadiMx,
-    CasadiSx,
-    Collimator,
-}
-
 #[derive(Parser, Debug)]
-#[command(version, about = "Modelica Compiler", long_about = None)]
+#[command(version, about = "Rumoca Modelica Compiler", long_about = None)]
 struct Args {
+    /// The template
+    #[arg(short, long)]
+    template_file: String,
+    
     /// The filename to compile
     #[arg(short, long)]
     filename: String,
@@ -33,23 +28,15 @@ struct Args {
     /// Verbose output
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
-
-    /// Generator to Use
-    #[arg(short, long, value_enum)]
-    generator: Generator,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let def = parse_file(&args.filename).expect("failed to parse");
     if args.verbose {
         println!("{:#?}", def);
     }
-    match args.generator {
-        Generator::Json => generators::json::generate(&def),
-        Generator::Sympy => generators::sympy::generate(&def),
-        Generator::CasadiMx => generators::casadi_mx::generate(&def),
-        Generator::CasadiSx => generators::casadi_sx::generate(&def),
-        Generator::Collimator => generators::collimator::generate(&def),
-    }
+    let s = generator::generate(&def, &args.template_file)?;
+    println!("{s:}");
+    Ok(())
 }

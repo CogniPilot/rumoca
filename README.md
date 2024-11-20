@@ -99,16 +99,16 @@ type the follow to test that rumoca is on your path.
 
 ```bash
 $ rumoca --help
-Modelica Compiler
+Rumoca Modelica Compiler
 
-Usage: rumoca [OPTIONS] --filename <FILENAME> --generator <GENERATOR>
+Usage: rumoca [OPTIONS] --template-file <TEMPLATE_FILE> --filename <FILENAME>
 
 Options:
-  -f, --filename <FILENAME>    The filename to compile
-  -v, --verbose                Verbose output
-  -g, --generator <GENERATOR>  Generator to Use [possible values: sympy, json, casadi-mx, casadi-sx]
-  -h, --help                   Print help
-  -V, --version                Print version
+  -t, --template-file <TEMPLATE_FILE>  The template
+  -f, --filename <FILENAME>            The filename to compile
+  -v, --verbose                        Verbose output
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## Running
@@ -128,7 +128,7 @@ end Integrator;
 
 ### Generated sympy output file.
 ```bash
-$ rumoca --filename src/model.mo --generator sympy
+$ rumoca -t templates/casadi_sx.tera -f models/integrator.mo 
 
 import sympy
 
@@ -137,6 +137,7 @@ class Integrator:
     def __init__(self):
         self.x = sympy.symbols('x');
         self.y = sympy.symbols('y');
+...
 ```
 
 

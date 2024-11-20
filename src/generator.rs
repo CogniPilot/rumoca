@@ -1,19 +1,13 @@
-pub mod casadi_mx;
-pub mod casadi_sx;
-pub mod collimator;
-pub mod json;
-pub mod sympy;
-
 use crate::ast;
 use crate::lexer;
 use crate::parser;
 use crate::tokens::{LexicalError, Token};
 
 use codespan_reporting::files::SimpleFiles;
-
 use lexer::Lexer;
 use parser::StoredDefinitionParser;
 use lalrpop_util::ParseError;
+use tera::{Context, Tera};
 
 pub fn parse_file(filename: &str) -> Result<ast::StoredDefinition, ParseError<usize, Token, LexicalError>> {
     let mut files = SimpleFiles::new();
@@ -70,3 +64,18 @@ pub fn parse_file(filename: &str) -> Result<ast::StoredDefinition, ParseError<us
     // }
     //return def.expect("failed to parse");
 }
+
+pub fn generate(def: &ast::StoredDefinition, template_file: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let template = std::fs::read_to_string(template_file)?;
+    let mut tera = Tera::default();
+    tera.add_raw_template("casadi_sx", &template)?;
+    let mut context = Context::new();
+    context.insert("def", def);
+    let txt =  tera.render("casadi_sx", &context)?;
+    Ok(txt)
+}
+
+// pub fn generate_json(def: &ast::StoredDefinition) -> Result<String, std::io::Error> {
+//     let s = serde_json::to_string_pretty(def)?;
+//     Ok(s)
+// }
