@@ -83,7 +83,7 @@ This package uses the standard cargo conventions for rust.
 cargo build
 cargo run
 cargo test
-cargo run -- --filename src/model.mo --generator sympy
+cargo run -- -t templates/casadi_sx.tera -f models/integrator.mo 
 ```
 
 ## Installing
