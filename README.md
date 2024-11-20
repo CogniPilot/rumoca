@@ -1,6 +1,6 @@
 # rumoca ![CI](https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg)
 
-A Modelica compiler with focus on CasADi, Sympy, JAX, and Collimator generation.
+A Modelica compiler with focus on CasADi, Sympy, JAX, and PyCollimator generation.
 
 There are many useful libraries for hybrid systems analysis, but it is difficult to
 port models between different environments.
@@ -29,7 +29,7 @@ aims to allow you to use the best tool for the job at hand.
     * Written in Python
     * Algorithmic Differentiation
     * Machine learning communicty
-* [Collimator](https://py.collimator.ai/): 
+* [PyCollimator](https://github.com/collimator-ai/pycollimator): 
     * Written in Python
     * JAX based
     * GUI for models with cloud version
@@ -179,4 +179,4 @@ class Integrator:
 2. Improve generators
 3. Import multiple files
 4. Flatten object oriented models 
-5. Add support for JAX, Collimator
+5. Add support for JAX, PyCollimator
