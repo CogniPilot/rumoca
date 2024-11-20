@@ -79,6 +79,7 @@ pub enum Expression {
     Ref {
         comp: ComponentReference,
     },
+    // arithmetic
     Add {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
@@ -108,6 +109,42 @@ pub enum Expression {
         rhs: Box<Expression>,
     },
     ElemDiv {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    // logical
+    Or {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    And {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    Not {
+        expr: Box<Expression>,
+    },
+    LessThan {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    LessThanOrEqualTo {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    GreaterThan {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    GreaterThanOrEqualTo {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    Equal {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    NotEqual {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
