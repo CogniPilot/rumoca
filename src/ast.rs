@@ -112,6 +112,14 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+    Exp {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    ElemExp {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
     // logical
     Or {
         lhs: Box<Expression>,
@@ -128,7 +136,7 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
-    LessThanOrEqualTo {
+    LessThanOrEqual {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
@@ -136,7 +144,7 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
-    GreaterThanOrEqualTo {
+    GreaterThanOrEqual {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },

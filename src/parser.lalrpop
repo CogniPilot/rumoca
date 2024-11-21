@@ -84,10 +84,20 @@ extern {
         "-" => Token::OperatorSub,
         "*" => Token::OperatorMul,
         "/" => Token::OperatorDiv,
+        "^" => Token::OperatorExp,
+
         ".+" => Token::OperatorElemAdd,
         ".-" => Token::OperatorElemSub,
         ".*" => Token::OperatorElemMul,
         "./" => Token::OperatorElemDiv,
+        ".^" => Token::OperatorElemExp,
+
+        "<" => Token::OperatorLessThan,
+        "<=" => Token::OperatorLessThanOrEqual,
+        ">" => Token::OperatorGreaterThan,
+        ">=" => Token::OperatorGreaterThanOrEqual,
+        "==" => Token::OperatorEqual,
+        "<>" => Token::OperatorNotEqual,
     }
 }
 
@@ -465,25 +475,58 @@ pub ElseStatementBlock: Vec<ast::Statement> = {
 //    logical-factor { and logical-factor }
 // logical-factor :
 //    [ not ] relation
-// relation :
-//    arithmetic-expression [ relational-operator arithmetic-expression ]
-// relational-operator :
-//    "<" | "<=" | ">" | ">=" | "==" | "<>"
-// arithmetic-expression :
-//    [ add-operator ] term { add-operator term }
-// add-operator :
-//    "+" | "-" | ".+" | ".-"
+
+
+
+
+
+pub Expression: Box<ast::Expression> = {
+// primary :
+//    UNSIGNED-NUMBER
+//    | STRING
+//    | false
+//    | true
+//    | ( component-reference | der | initial | pure ) function-call-args
+//    | component-reference
+//    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
+//    | "[" expression-list { ";" expression-list } "]"
+//    | "{" array-arguments "}"
+//    | end
+    #[precedence(level="1")]
+    <val:"unsigned_integer"> => {
+        Box::new(ast::Expression::UnsignedInteger(val))
+    },
+    <val:"unsigned_real"> => {
+        Box::new(ast::Expression::UnsignedReal(val))
+    },
+    <val:"boolean"> => {
+        Box::new(ast::Expression::Boolean(val))
+    },
+    <comp:ComponentReference> => {
+        Box::new(ast::Expression::Ref{comp})
+    },
+    "(" <Expression> ")",
+
+// factor :
+//    primary [ ( "^" | ".^" ) primary ]
+    #[precedence(level="2")] #[assoc(side="left")]
+    <lhs:Expression> "^" <rhs:Expression> => {
+        Box::new(ast::Expression::Exp {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:Expression> ".^" <rhs:Expression> => {
+        Box::new(ast::Expression::ElemExp {
+            lhs,
+            rhs
+        })
+    },
 // term :
 //    factor { mul-operator factor }
 // mul-operator :
 //    "*" | "/" | ".*" | "./"
-// factor :
-//    primary [ ( "^" | ".^" ) primary ]
-pub Expression: Box<ast::Expression> = {
-    #[precedence(level="1")]
-    Term,
-
-    #[precedence(level="2")] #[assoc(side="left")]
+    #[precedence(level="3")] #[assoc(side="left")]
     <lhs:Expression> "*" <rhs:Expression> => {
         Box::new(ast::Expression::Mul {
             lhs,
@@ -509,7 +552,11 @@ pub Expression: Box<ast::Expression> = {
         })
     },
 
-    #[precedence(level="3")] #[assoc(side="left")]
+// arithmetic-expression :
+//    [ add-operator ] term { add-operator term }
+// add-operator :
+//    "+" | "-" | ".+" | ".-"
+    #[precedence(level="4")] #[assoc(side="left")]
     <lhs:Expression> "+" <rhs:Expression> => {
         Box::new(ast::Expression::Add {
             lhs,
@@ -534,33 +581,42 @@ pub Expression: Box<ast::Expression> = {
             rhs
         })
     },
-}
 
-// primary :
-//    UNSIGNED-NUMBER
-//    | STRING
-//    | false
-//    | true
-//    | ( component-reference | der | initial | pure ) function-call-args
-//    | component-reference
-//    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
-//    | "[" expression-list { ";" expression-list } "]"
-//    | "{" array-arguments "}"
-//    | end
-pub Term: Box<ast::Expression> = {
-    <val:"unsigned_integer"> => {
-        Box::new(ast::Expression::UnsignedInteger(val))
+// relation :
+//    arithmetic-expression [ relational-operator arithmetic-expression ]
+// relational-operator :
+//    "<" | "<=" | ">" | ">=" | "==" | "<>"
+    #[precedence(level="5")] #[assoc(side="left")]
+    <lhs:Expression> "<" <rhs:Expression> => {
+        Box::new(ast::Expression::LessThan {
+            lhs,
+            rhs
+        })
     },
-    <val:"unsigned_real"> => {
-        Box::new(ast::Expression::UnsignedReal(val))
+    <lhs:Expression> "<=" <rhs:Expression> => {
+        Box::new(ast::Expression::LessThanOrEqual {
+            lhs,
+            rhs
+        })
     },
-    <val:"boolean"> => {
-        Box::new(ast::Expression::Boolean(val))
+    <lhs:Expression> ">=" <rhs:Expression> => {
+        Box::new(ast::Expression::GreaterThanOrEqual {
+            lhs,
+            rhs
+        })
     },
-    <comp:ComponentReference> => {
-        Box::new(ast::Expression::Ref{comp})
+    <lhs:Expression> "==" <rhs:Expression> => {
+        Box::new(ast::Expression::Equal {
+            lhs,
+            rhs
+        })
     },
-    "(" <Expression> ")",
+    <lhs:Expression> "<>" <rhs:Expression> => {
+        Box::new(ast::Expression::NotEqual {
+            lhs,
+            rhs
+        })
+    },
 }
 
 // UNSIGNED-NUMBER :

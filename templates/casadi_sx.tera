@@ -43,11 +43,28 @@ der_{{ eq.Der.comp.name }} = {{ self::render_expression(expr=eq.Der.rhs) }};
     {%- endif %}
 {%- endmacro render_equation -%}
 
+{#- Binary Operation -#}
+{%- macro binary(expr, op) %}
+    {{- self::render_expression(expr=expr.lhs) }}{{ op }}{{ self::render_expression(expr=expr.rhs) -}}
+{%- endmacro binary -%}
+
 {#- Expression Macro -#}
 {%- macro render_expression(expr) %}
     {%- if expr is containing("UnsignedReal") %}
-{{- expr.UnsignedReal }}
-{%- elif expr is containing("Ref") %}
-{{- expr.Ref.comp.name }}
+        {{- expr.UnsignedReal }}
+    {%- elif expr is containing("UnsignedInteger") %}
+        {{- expr.UnsignedInteger }}
+    {%- elif expr is containing("Ref") %}
+        {{- expr.Ref.comp.name }}
+    {%- elif expr is containing("Add") %}
+        {{- self::binary(expr=expr.Add, op=" + ") -}}
+    {%- elif expr is containing("Sub") %}
+        {{- self::binary(expr=expr.Sub, op=" - ") -}}
+    {%- elif expr is containing("Mul") %}
+        {{- self::binary(expr=expr.Mul, op="*") -}}
+    {%- elif expr is containing("Div") %}
+        {{- self::binary(expr=expr.Div, op="/") -}}
+    {%- elif expr is containing("Exp") %}
+        {{- self::binary(expr=expr.Exp, op="^") -}}
     {%- endif %}
 {%- endmacro render_equation -%}

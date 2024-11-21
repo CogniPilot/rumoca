@@ -200,6 +200,8 @@ pub enum Token {
     OperatorMul,
     #[token("/")]
     OperatorDiv,
+    #[token("^")]
+    OperatorExp,
 
     #[token(".+")]
     OperatorElemAdd,
@@ -209,6 +211,21 @@ pub enum Token {
     OperatorElemMul,
     #[token("./")]
     OperatorElemDiv,
+    #[token(".^")]
+    OperatorElemExp,
+
+    #[token("<")]
+    OperatorLessThan,
+    #[token("<=")]
+    OperatorLessThanOrEqual,
+    #[token(">")]
+    OperatorGreaterThan,
+    #[token(">=")]
+    OperatorGreaterThanOrEqual,
+    #[token("==")]
+    OperatorEqual,
+    #[token("<>")]
+    OperatorNotEqual,
 }
 
 impl fmt::Display for Token {
