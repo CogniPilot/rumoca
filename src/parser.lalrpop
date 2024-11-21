@@ -469,15 +469,6 @@ pub ElseStatementBlock: Vec<ast::Statement> = {
 //      else expression
 // simple-expression :
 //    logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
-// logical-expression :
-//    logical-term { or logical-term }
-// logical-term :
-//    logical-factor { and logical-factor }
-// logical-factor :
-//    [ not ] relation
-
-
-
 
 
 pub Expression: Box<ast::Expression> = {
@@ -585,7 +576,7 @@ pub Expression: Box<ast::Expression> = {
 // relation :
 //    arithmetic-expression [ relational-operator arithmetic-expression ]
 // relational-operator :
-//    "<" | "<=" | ">" | ">=" | "==" | "<>"
+//    "<" | "<=" | ">" | ">=" | "==" | "<>#[assoc(side="left")]"
     #[precedence(level="5")] #[assoc(side="left")]
     <lhs:Expression> "<" <rhs:Expression> => {
         Box::new(ast::Expression::LessThan {
@@ -613,6 +604,33 @@ pub Expression: Box<ast::Expression> = {
     },
     <lhs:Expression> "<>" <rhs:Expression> => {
         Box::new(ast::Expression::NotEqual {
+            lhs,
+            rhs
+        })
+    },
+
+// logical-factor :
+//    [ not ] relation
+    #[precedence(level="6")]
+    "not" <expr:Expression> => {
+        Box::new(ast::Expression::Not {
+            expr
+        })
+    },
+// logical-expression :
+//    logical-term { or logical-term }
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:Expression> "or" <rhs:Expression> => {
+        Box::new(ast::Expression::Or {
+            lhs,
+            rhs
+        })
+    },
+// logical-term :
+//    logical-factor { and logical-factor }
+    #[precedence(level="8")] #[assoc(side="left")]
+    <lhs:Expression> "and" <rhs:Expression> => {
+        Box::new(ast::Expression::And {
             lhs,
             rhs
         })

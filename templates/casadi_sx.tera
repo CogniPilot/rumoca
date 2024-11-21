@@ -44,7 +44,7 @@ class {{ class.name }}:
 {%- endmacro render_equation -%}
 
 {#- Binary Operation -#}
-{%- macro binary(expr, op) %}
+{%- macro binary(op, expr) %}
     {{- self::render_expression(expr=expr.lhs) }}{{ op }}{{ self::render_expression(expr=expr.rhs) -}}
 {%- endmacro binary -%}
 
@@ -57,14 +57,25 @@ class {{ class.name }}:
     {%- elif expr is containing("Ref") %}
         {{- expr.Ref.comp.name }}
     {%- elif expr is containing("Add") %}
-        {{- self::binary(expr=expr.Add, op=" + ") -}}
+        {{- self::binary(op=" + ", expr=expr.Add) -}}
     {%- elif expr is containing("Sub") %}
-        {{- self::binary(expr=expr.Sub, op=" - ") -}}
+        {{- self::binary(op=" - ", expr=expr.Sub) -}}
     {%- elif expr is containing("Mul") %}
-        {{- self::binary(expr=expr.Mul, op="*") -}}
+        {{- self::binary(op="*", expr=expr.Mul) -}}
     {%- elif expr is containing("Div") %}
-        {{- self::binary(expr=expr.Div, op="/") -}}
+        {{- self::binary(op="/", expr=expr.Div) -}}
     {%- elif expr is containing("Exp") %}
-        {{- self::binary(expr=expr.Exp, op="^") -}}
+        {{- self::binary(op="^", expr=expr.Exp) -}}
+    {%- elif expr is containing("Or") -%}
+        ca.logic_or(
+            {{- self::render_expression(expr=expr.Or.lhs) -}},
+            {{- self::render_expression(expr=expr.Or.rhs) -}})
+    {%- elif expr is containing("And") -%}
+        ca.logic_and(
+            {{- self::render_expression(expr=expr.And.lhs) -}},
+            {{- self::render_expression(expr=expr.And.rhs) -}})
+    {%- elif expr is containing("Equal") -%}
+            {{- self::render_expression(expr=expr.Equal.lhs) -}} ==
+            {{- self::render_expression(expr=expr.Equal.rhs) -}}
     {%- endif %}
 {%- endmacro render_equation -%}
