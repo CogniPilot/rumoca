@@ -24,8 +24,8 @@ class {{ class.name }}:
         {%- endfor %});
         
         # declare state derivative equations
-        {%- for eq in class.equations -%}
-            {{ self::render_equation(eq=eq) | indent | indent }}
+        {%- for eq in class.equations %}
+        {{ self::render_equation(eq=eq) }}
         {%- endfor %}
 
         # declare state derivative vector
@@ -37,9 +37,9 @@ class {{ class.name }}:
 {%- endmacro render_class %}
 
 {#- Equation Macro -#}
-{%- macro render_equation(eq) %}
-    {%- if eq is containing("Der") %}
-der_{{ eq.Der.comp.name }} = {{ self::render_expression(expr=eq.Der.rhs) }};
+{%- macro render_equation(eq) -%}
+    {%- if eq is containing("Der") -%}
+        der_{{ eq.Der.comp.name }} = {{ self::render_expression(expr=eq.Der.rhs) }};
     {%- endif %}
 {%- endmacro render_equation -%}
 
