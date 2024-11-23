@@ -41,7 +41,7 @@ fn newline_callback(lex: &mut Lexer<Token>) -> Skip {
 // ============================================================================
 #[derive(Logos, Clone, Debug, PartialEq)]
 #[logos(
-    skip r"[ \t\f]+",
+    skip r"[ \t\f\r]+",
     skip r"//.*\n?",
     skip r"\/\*([^*]|\*[^\/])+\*\/",
     extras = (usize, usize),
