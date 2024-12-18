@@ -1,7 +1,5 @@
 # rumoca ![CI](https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg)
 
-![Rumoca Flow Chart](doc/Rumoca.png)
-
 A Modelica translator with focus on CasADi, Sympy, JAX, and PyCollimator generation.
 
 There are many useful libraries for hybrid systems analysis, but it is difficult to
