@@ -14,7 +14,7 @@ class {{ class.name }}:
         {%- endfor %});
         self.p0 = {
         {%- for comp in class.components if comp.parameter %}
-            {{ comp.name }}: 0{% if not loop.last %},{% endif %}
+            '{{ comp.name }}': 0{% if not loop.last %},{% endif %}
         {%- endfor %}
         };
 
@@ -28,7 +28,7 @@ class {{ class.name }}:
         {%- endfor %});
         self.x0 = {
         {%- for comp in class.components if not comp.parameter %}
-            {{ comp.name }}: 0{% if not loop.last %},{% endif %}
+            '{{ comp.name }}': 0{% if not loop.last %},{% endif %}
         {%- endfor %}
         };
 
@@ -43,6 +43,10 @@ class {{ class.name }}:
             der_{{ comp.name }}{% if not loop.last %},{% endif %}
         {%- endfor %});
         self.ode = ca.Function('ode', [self.x], [self.x_dot])
+
+    def __repr__(self):
+        return repr(self.__dict__)
+
 {%- endmacro %}
 
 {#- Equation Macro -#}

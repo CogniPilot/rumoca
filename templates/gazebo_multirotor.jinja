@@ -1,12 +1,3 @@
-{# {{ __tera_context }} #}
-{#- Render File #}
-<?xml version="1.0" encoding="UTF-8"?>
-<sdf version='1.10'>
-{%- for class in def.classes %}
-{{ self::render_class(class=class) }}
-{%- endfor %}
-</sdf>
-
 {# Class Macro #}
 {%- macro render_class(class) %}
 <model name='{{ class.name }}'>
@@ -760,4 +751,12 @@
     <odom_frame>odom</odom_frame>
   </plugin>
 </model>
-{%- endmacro render_class %}
+{%- endmacro %}
+
+{#- Render File #}
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version='1.10'>
+{%- for class in def.classes %}
+{{ render_class(class=class) }}
+{%- endfor %}
+</sdf>
