@@ -176,7 +176,7 @@ class Integrator:
 ### DONE
 1. Flat subset of full Modelica Grammar using LALRPOP
 2. Initial Lexer using LOGOS
-3. Generation using TERA for Sympy/CasADi/Json
+3. Generation using JINJA for Sympy/CasADi/Json
 4. Command line interface using CLAP
 
 ### TODO
