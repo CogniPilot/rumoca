@@ -90,7 +90,7 @@ This package uses the standard cargo conventions for rust.
 cargo build
 cargo run
 cargo test
-cargo run -- -t templates/casadi_sx.tera -f models/integrator.mo 
+cargo run -- -t templates/casadi_sx.jinja -f models/integrator.mo 
 ```
 
 ## Installing
@@ -135,7 +135,7 @@ end Integrator;
 
 ### Generated CasADi output file.
 ```bash
-$ rumoca -t templates/casadi_sx.tera -f models/integrator.mo 
+$ rumoca -t templates/casadi_sx.jinja -f models/integrator.mo 
 ```
 ```python
 import casadi as ca
@@ -169,7 +169,7 @@ class Integrator:
 
 * [LALRPOP](https://github.com/lalrpop/lalrpop) : Parsing, AST generation
 * [LOGOS](https://github.com/maciejhirsz/logos) : Lexing
-* [TERA](https://github.com/Keats/tera) : Template Engine
+* [MINIMINJA](https://github.com/mitsuhiko/minijinja) : JINJA Template Engine
 * [SERDE](https://github.com/serde-rs/serde) : AST Serialization
 * [CLAP](https://github.com/clap-rs/clap) : Command Line Argument Parser
 

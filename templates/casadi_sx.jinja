@@ -1,0 +1,96 @@
+{# Class Macro #}
+{%- macro render_class(class) %}
+class {{ class.name }}:
+
+    def __init__(self):
+        
+        # declare parameters
+        {%- for comp in class.components if comp.parameter %}
+        {{ comp.name }} = ca.SX.sym('{{ comp.name }}');
+        {%- endfor %}
+        self.p = ca.vertcat(
+        {%- for comp in class.components if comp.parameter %}
+            {{ comp.name }}{% if not loop.last %},{% endif %}
+        {%- endfor %});
+        self.p0 = {
+        {%- for comp in class.components if comp.parameter %}
+            {{ comp.name }}: 0{% if not loop.last %},{% endif %}
+        {%- endfor %}
+        };
+
+        # declare states
+        {%- for comp in class.components if not comp.parameter %}
+        {{ comp.name }} = ca.SX.sym('{{ comp.name }}');
+        {%- endfor %}
+        self.x = ca.vertcat(
+        {%- for comp in class.components if not comp.parameter %}
+            {{ comp.name }}{% if not loop.last %},{% endif %}
+        {%- endfor %});
+        self.x0 = {
+        {%- for comp in class.components if not comp.parameter %}
+            {{ comp.name }}: 0{% if not loop.last %},{% endif %}
+        {%- endfor %}
+        };
+
+        # declare state derivative equations
+        {%- for eq in class.equations %}
+        {{ render_equation(eq=eq) }}
+        {%- endfor %}
+
+        # declare state derivative vector
+        self.x_dot = ca.vertcat(
+        {%- for comp in class.components if not comp.parameter %}
+            der_{{ comp.name }}{% if not loop.last %},{% endif %}
+        {%- endfor %});
+        self.ode = ca.Function('ode', [self.x], [self.x_dot])
+{%- endmacro %}
+
+{#- Equation Macro -#}
+{%- macro render_equation(eq) -%}
+    {%- if "Der" in eq -%}
+        der_{{ eq.Der.comp.name }} = {{ render_expression(expr=eq.Der.rhs) }};
+    {%- endif %}
+{%- endmacro -%}
+
+{#- Binary Operation -#}
+{%- macro binary(op, expr) %}
+    {{- render_expression(expr=expr.lhs) }}{{ op }}{{ render_expression(expr=expr.rhs) -}}
+{%- endmacro -%}
+
+{#- Expression Macro -#}
+{%- macro render_expression(expr) %}
+    {%- if "UnsignedReal" in expr %}
+        {{- expr.UnsignedReal }}
+    {%- elif "UnsignedInteger" in expr %}
+        {{- expr.UnsignedInteger }}
+    {%- elif "Ref" in expr %}
+        {{- expr.Ref.comp.name }}
+    {%- elif "Add" in expr %}
+        {{- binary(op=" + ", expr=expr.Add) -}}
+    {%- elif "Sub" in expr %}
+        {{- binary(op=" - ", expr=expr.Sub) -}}
+    {%- elif "Mul" in expr %}
+        {{- binary(op="*", expr=expr.Mul) -}}
+    {%- elif "Div" in expr %}
+        {{- binary(op="/", expr=expr.Div) -}}
+    {%- elif "Exp" in expr %}
+        {{- binary(op="^", expr=expr.Exp) -}}
+    {%- elif "Or" in expr -%}
+        ca.logic_or(
+            {{- render_expression(expr=expr.Or.lhs) -}},
+            {{- render_expression(expr=expr.Or.rhs) -}})
+    {%- elif "And" in expr -%}
+        ca.logic_and(
+            {{- render_expression(expr=expr.And.lhs) -}},
+            {{- render_expression(expr=expr.And.rhs) -}})
+    {%- elif "Equal" in expr -%}
+            {{- render_expression(expr=expr.Equal.lhs) -}} ==
+            {{- render_expression(expr=expr.Equal.rhs) -}}
+    {%- endif %}
+{%- endmacro -%}
+
+{#- Render File #}
+import casadi as ca
+{%- for class in def.classes %}
+{{ render_class(class=class) }}
+{%- endfor %}

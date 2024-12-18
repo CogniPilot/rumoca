@@ -20,6 +20,7 @@ pub struct ClassDefinition {
 pub struct ComponentDeclaration {
     pub name: String,
     pub class: String,
+    pub parameter: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -31,7 +32,7 @@ pub enum Statement {
     If {
         if_cond: Box<Expression>,
         if_eqs: Vec<Statement>,
-        else_if_blocks: Vec<StatementBlock>,
+        else_if_blocks: Vec<ElseIfStatementBlock>,
         else_eqs: Option<Vec<Statement>>,
     },
 }
@@ -54,21 +55,27 @@ pub enum Equation {
     If {
         if_cond: Box<Expression>,
         if_eqs: Vec<Equation>,
-        else_if_blocks: Vec<EquationBlock>,
+        else_if_blocks: Vec<ElseIfEquationBlock>,
         else_eqs: Option<Vec<Equation>>,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct EquationBlock {
+pub struct ElseIfEquationBlock {
     pub cond: Box<Expression>,
     pub eqs: Vec<Equation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StatementBlock {
+pub struct ElseIfStatementBlock {
     pub cond: Box<Expression>,
     pub eqs: Vec<Statement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ElseIfExpressionBlock {
+    pub cond: Box<Expression>,
+    pub then: Box<Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -156,6 +163,20 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+    Range {
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+    If {
+        if_cond: Box<Expression>,
+        if_eq: Box<Expression>,
+        else_if_blocks: Vec<ElseIfExpressionBlock>,
+        else_eq: Option<Box<Expression>>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Modification {
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

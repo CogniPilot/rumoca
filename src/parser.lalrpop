@@ -80,6 +80,7 @@ extern {
         ":=" => Token::Assign,
         "=" => Token::Equal,
         ";" => Token::Semicolon,
+        ":" => Token::Colon,
         "+" => Token::OperatorAdd,
         "-" => Token::OperatorSub,
         "*" => Token::OperatorMul,
@@ -251,10 +252,11 @@ pub ComponentSection: Vec<ast::ComponentDeclaration> = {
 // declaration :
 //    IDENT [ array-subscripts ] [ modification ]
 pub ComponentDeclaration: ast::ComponentDeclaration = {
-    <class:"identifier"> <name:"identifier"> ";" => {
+    <parameter:"parameter"?> <class:"identifier"> <name:"identifier"> ";" => {
         ast::ComponentDeclaration{
-            name,
-            class
+            name: name,
+            class: class,
+            parameter: parameter.is_some(),
         }
     },
 }
@@ -291,7 +293,6 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
 // short-class-definition :
 //    class-prefixes short-class-specifier
 
-
 // A.2.6 Equations
 // ============================================================================
 // equation-section :
@@ -315,7 +316,7 @@ pub AlgorithmSection: Vec<ast::Statement> = {
 //    )
 //    description
 pub Equation: ast::Equation = {
-    <lhs:Expression> "=" <rhs:Expression> ";" => {
+    <lhs:SimpleExpression> "=" <rhs:Expression> ";" => {
         ast::Equation::Simple {
             lhs,
             rhs
@@ -375,9 +376,9 @@ pub IfEquation: ast::Equation = {
     }
 }
 
-pub ElseIfEquationBlock: ast::EquationBlock = {
+pub ElseIfEquationBlock: ast::ElseIfEquationBlock = {
     "elseif" <cond:Expression> "then" <eqs:Equation*> ";" => {
-        ast::EquationBlock {
+        ast::ElseIfEquationBlock {
             cond, eqs
         }
     }
@@ -412,9 +413,9 @@ pub IfStatement: ast::Statement = {
     }
 }
 
-pub ElseIfStatementBlock: ast::StatementBlock = {
+pub ElseIfStatementBlock: ast::ElseIfStatementBlock = {
     "elseif" <cond:Expression> "then" <eqs:Statement*> ";" => {
-        ast::StatementBlock {
+        ast::ElseIfStatementBlock {
             cond, eqs
         }
     }
@@ -472,6 +473,184 @@ pub ElseStatementBlock: Vec<ast::Statement> = {
 
 
 pub Expression: Box<ast::Expression> = {
+// expression :
+//    simple-expression
+//    | if expression then expression
+//      { elseif expression then expression }
+//      else expression
+    <simp:SimpleExpression> => {
+        simp
+    },
+    "if" <if_cond:SimpleExpression> "then" <if_eq:SimpleExpression>
+    <else_if_blocks: ElseIfExpressionBlock*>
+    <else_eq: ElseExpressionBlock?>
+     => {
+        Box::new(ast::Expression::If {
+            if_cond, if_eq,
+            else_if_blocks,
+            else_eq,
+        })
+    },
+}
+
+pub ElseIfExpressionBlock: ast::ElseIfExpressionBlock = {
+    "elseif" <cond:SimpleExpression> "then" <then:SimpleExpression>  => {
+        ast::ElseIfExpressionBlock {
+            cond, then
+        }
+    }
+}
+
+pub ElseExpressionBlock: Box<ast::Expression> = {
+    "else" <eq:SimpleExpression> => {
+        eq
+    }
+}
+
+pub SimpleExpression: Box<ast::Expression> = {
+// simple-expression :
+//    logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
+    #[precedence(level="9")] #[assoc(side="left")]
+    <lhs:SimpleExpression> ":" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Range {
+            lhs,
+            rhs,
+        })
+    },
+// logical-expression :
+//    logical-term { or logical-term }
+    #[precedence(level="8")] #[assoc(side="left")]
+    <lhs:SimpleExpression> "or" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Or {
+            lhs,
+            rhs
+        })
+    },
+// logical-term :
+//    logical-factor { and logical-factor }
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:SimpleExpression> "and" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::And {
+            lhs,
+            rhs
+        })
+    },
+// logical-factor :
+//    [ not ] relation
+    #[precedence(level="6")]
+    "not" <expr:SimpleExpression> => {
+        Box::new(ast::Expression::Not {
+            expr
+        })
+    },
+// relation :
+//    arithmetic-expression [ relational-operator arithmetic-expression ]
+// relational-operator :
+//    "<" | "<=" | ">" | ">=" | "==" | "<>"
+    #[precedence(level="5")] #[assoc(side="left")]
+    <lhs:SimpleExpression> "<" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::LessThan {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> "<=" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::LessThanOrEqual {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> ">=" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::GreaterThanOrEqual {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> "==" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Equal {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> "<>" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::NotEqual {
+            lhs,
+            rhs
+        })
+    },
+// arithmetic-expression :
+//    [ add-operator ] term { add-operator term }
+// add-operator :
+//    "+" | "-" | ".+" | ".-"
+    #[precedence(level="4")] #[assoc(side="left")]
+    <lhs:SimpleExpression> "+" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Add {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> ".+" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::ElemAdd {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> "-" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Sub {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> ".-" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::ElemSub {
+            lhs,
+            rhs
+        })
+    },
+// term :
+//    factor { mul-operator factor }
+// mul-operator :
+//    "*" | "/" | ".*" | "./"
+    #[precedence(level="3")] #[assoc(side="left")]
+    <lhs:SimpleExpression> "*" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Mul {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> ".*" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::ElemMul {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> "/" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Div {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> "./" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::ElemDiv {
+            lhs,
+            rhs
+        })
+    },
+// factor :
+//    primary [ ( "^" | ".^" ) primary ]
+    #[precedence(level="2")] #[assoc(side="left")]
+    <lhs:SimpleExpression> "^" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Exp {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> ".^" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::ElemExp {
+            lhs,
+            rhs
+        })
+    },
 // primary :
 //    UNSIGNED-NUMBER
 //    | STRING
@@ -496,146 +675,9 @@ pub Expression: Box<ast::Expression> = {
     <comp:ComponentReference> => {
         Box::new(ast::Expression::Ref{comp})
     },
-    "(" <Expression> ")",
-
-// factor :
-//    primary [ ( "^" | ".^" ) primary ]
-    #[precedence(level="2")] #[assoc(side="left")]
-    <lhs:Expression> "^" <rhs:Expression> => {
-        Box::new(ast::Expression::Exp {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> ".^" <rhs:Expression> => {
-        Box::new(ast::Expression::ElemExp {
-            lhs,
-            rhs
-        })
-    },
-// term :
-//    factor { mul-operator factor }
-// mul-operator :
-//    "*" | "/" | ".*" | "./"
-    #[precedence(level="3")] #[assoc(side="left")]
-    <lhs:Expression> "*" <rhs:Expression> => {
-        Box::new(ast::Expression::Mul {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> ".*" <rhs:Expression> => {
-        Box::new(ast::Expression::ElemMul {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> "/" <rhs:Expression> => {
-        Box::new(ast::Expression::Div {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> "./" <rhs:Expression> => {
-        Box::new(ast::Expression::ElemDiv {
-            lhs,
-            rhs
-        })
-    },
-
-// arithmetic-expression :
-//    [ add-operator ] term { add-operator term }
-// add-operator :
-//    "+" | "-" | ".+" | ".-"
-    #[precedence(level="4")] #[assoc(side="left")]
-    <lhs:Expression> "+" <rhs:Expression> => {
-        Box::new(ast::Expression::Add {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> ".+" <rhs:Expression> => {
-        Box::new(ast::Expression::ElemAdd {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> "-" <rhs:Expression> => {
-        Box::new(ast::Expression::Sub {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> ".-" <rhs:Expression> => {
-        Box::new(ast::Expression::ElemSub {
-            lhs,
-            rhs
-        })
-    },
-
-// relation :
-//    arithmetic-expression [ relational-operator arithmetic-expression ]
-// relational-operator :
-//    "<" | "<=" | ">" | ">=" | "==" | "<>#[assoc(side="left")]"
-    #[precedence(level="5")] #[assoc(side="left")]
-    <lhs:Expression> "<" <rhs:Expression> => {
-        Box::new(ast::Expression::LessThan {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> "<=" <rhs:Expression> => {
-        Box::new(ast::Expression::LessThanOrEqual {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> ">=" <rhs:Expression> => {
-        Box::new(ast::Expression::GreaterThanOrEqual {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> "==" <rhs:Expression> => {
-        Box::new(ast::Expression::Equal {
-            lhs,
-            rhs
-        })
-    },
-    <lhs:Expression> "<>" <rhs:Expression> => {
-        Box::new(ast::Expression::NotEqual {
-            lhs,
-            rhs
-        })
-    },
-
-// logical-factor :
-//    [ not ] relation
-    #[precedence(level="6")]
-    "not" <expr:Expression> => {
-        Box::new(ast::Expression::Not {
-            expr
-        })
-    },
-// logical-expression :
-//    logical-term { or logical-term }
-    #[precedence(level="7")] #[assoc(side="left")]
-    <lhs:Expression> "or" <rhs:Expression> => {
-        Box::new(ast::Expression::Or {
-            lhs,
-            rhs
-        })
-    },
-// logical-term :
-//    logical-factor { and logical-factor }
-    #[precedence(level="8")] #[assoc(side="left")]
-    <lhs:Expression> "and" <rhs:Expression> => {
-        Box::new(ast::Expression::And {
-            lhs,
-            rhs
-        })
-    },
+    "(" <SimpleExpression> ")",
 }
+
 
 // UNSIGNED-NUMBER :
 //    UNSIGNED-INTEGER | UNSIGNED-REAL
@@ -643,6 +685,7 @@ pub Expression: Box<ast::Expression> = {
 //    ["."] name
 // name :
 //    IDENT { "." IDENT }
+
 // component-reference :
 //    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 pub ComponentReference: ast::ComponentReference = {

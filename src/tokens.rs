@@ -191,6 +191,8 @@ pub enum Token {
     Assign,
     #[token(";")]
     Semicolon,
+    #[token(":")]
+    Colon,
 
     #[token("+")]
     OperatorAdd,

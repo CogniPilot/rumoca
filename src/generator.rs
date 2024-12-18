@@ -7,7 +7,7 @@ use codespan_reporting::files::SimpleFiles;
 use lalrpop_util::ParseError;
 use lexer::Lexer;
 use parser::StoredDefinitionParser;
-use tera::{Context, Tera};
+use minijinja::{Environment, context};
 
 pub fn parse_file(
     filename: &str,
@@ -68,12 +68,11 @@ pub fn generate(
     def: &ast::StoredDefinition,
     template_file: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let template = std::fs::read_to_string(template_file)?;
-    let mut tera = Tera::default();
-    tera.add_raw_template("casadi_sx", &template)?;
-    let mut context = Context::new();
-    context.insert("def", def);
-    let txt = tera.render("casadi_sx", &context)?;
+    let template_text = std::fs::read_to_string(template_file)?;
+    let mut env = Environment::new();
+    env.add_template("template", &template_text)?;
+    let tmpl = env.get_template("template").unwrap();
+    let txt = tmpl.render(context!(def => def)).unwrap();
     Ok(txt)
 }
 

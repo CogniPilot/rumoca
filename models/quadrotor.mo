@@ -1,4 +1,5 @@
 model Quadrotor
+    parameter Real c;
     Real x; // test
     Real y;
 equation
