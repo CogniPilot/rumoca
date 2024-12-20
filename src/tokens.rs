@@ -22,6 +22,11 @@ fn newline_callback(lex: &mut Lexer<Token>) -> Skip {
     Skip
 }
 
+fn quoted_string_callback(lex: &mut Lexer<Token>) -> String {
+    let slice = lex.slice();
+    slice[1..slice.len() - 1].to_string()
+}
+
 // Modelica 3.7-dev
 // 2.3.1 Identifiers
 // ============================================================================
@@ -169,8 +174,11 @@ pub enum Token {
     #[token("within")]
     KeywordWithin,
 
-    #[regex("[_a-zA-Z][_0-9a-zA-Z]*|\'[!#$%&()&*+,-./:;<>=?@\\[\\]^{}\\|~ \"]\'", |lex| lex.slice().to_string())]
+    #[regex("[_a-zA-Z][_0-9a-zA-Z]*", |lex| lex.slice().to_string())]
     Identifier(String),
+
+    #[regex("\"[ _0-9a-zA-Z]*\"", quoted_string_callback)]
+    Description(String),
 
     #[regex("[1-9][0-9]*", |lex| lex.slice().parse::<i64>().unwrap(), priority=3)]
     UnsignedInteger(i64),

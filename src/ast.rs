@@ -18,6 +18,7 @@ pub struct ComponentDeclaration {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClassDefinition {
     pub name: String,
+    pub description: String,
     pub class_type: ClassType,
     pub partial: bool,
     pub encapsulated: bool,
@@ -114,6 +115,10 @@ pub enum Expression {
     Ref {
         comp: ComponentReference,
     },
+    // unary
+    Negative {
+        rhs: Box<Expression>,
+    },
     // arithmetic
     Add {
         lhs: Box<Expression>,
@@ -165,7 +170,7 @@ pub enum Expression {
         rhs: Box<Expression>,
     },
     Not {
-        expr: Box<Expression>,
+        rhs: Box<Expression>,
     },
     LessThan {
         lhs: Box<Expression>,

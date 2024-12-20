@@ -4,6 +4,7 @@ use crate::ast::Expression;
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Model {
     pub name: String,
+    pub description: String,
     pub c: Vec<Constant>,
     pub x: Vec<ContinuousVariable>,
     pub z: Vec<DiscreteVariable>,

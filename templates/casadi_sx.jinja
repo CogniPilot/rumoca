@@ -1,5 +1,8 @@
 {%- macro render_model(model) %}
 class {{ model.name }}(BaseModel):
+    """
+    {{ model.description }}
+    """
 
     def __init__(self):
 
@@ -84,6 +87,10 @@ class {{ model.name }}(BaseModel):
     {{- render_expression(expr=expr.lhs) }}{{ op }}{{ render_expression(expr=expr.rhs) -}}
 {%- endmacro -%}
 
+{%- macro unary(op, expr) %}
+    {{- op }}{{ render_expression(expr=expr.rhs) -}}
+{%- endmacro -%}
+
 {%- macro render_expression(expr) %}
     {%- if "UnsignedReal" in expr %}
         {{- expr.UnsignedReal }}
@@ -101,6 +108,10 @@ class {{ model.name }}(BaseModel):
         {{- binary(op="/", expr=expr.Div) -}}
     {%- elif "Exp" in expr %}
         {{- binary(op="^", expr=expr.Exp) -}}
+    {%- elif "Negative" in expr %}
+        {{- unary(op="-", expr=expr.Negative) -}}
+    {%- elif "Not" in expr %}
+        {{- unary(op="!", expr=expr.Not) -}}
     {%- elif "Or" in expr -%}
         ca.logic_or(
             {{- render_expression(expr=expr.Or.lhs) -}},
@@ -114,8 +125,9 @@ class {{ model.name }}(BaseModel):
             {{- render_expression(expr=expr.Equal.rhs) -}}
     {%- endif %}
 {%- endmacro -%}
-
-{#{{ model | pprint }}#}
+{#
+{{ model | pprint }}
+#}
 import casadi as ca
 import numpy as np
 

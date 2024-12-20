@@ -1,4 +1,4 @@
-model Integrator
+model Integrator "hello"
     Real x; // test
     Real y;
 equation

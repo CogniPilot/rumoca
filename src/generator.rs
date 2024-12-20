@@ -5,7 +5,10 @@ use crate::tokens::{LexicalError, Token};
 use crate::flat_ast;
 use std::collections::HashSet;
 
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
+use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
+
 use lalrpop_util::ParseError;
 use lexer::Lexer;
 use parser::StoredDefinitionParser;
@@ -19,51 +22,63 @@ pub fn parse_file(
     let file = files.get(file_id).expect("failed to get file");
     let lexer = Lexer::new(file.source());
     let parser = StoredDefinitionParser::new();
-    parser.parse(lexer)
-    // if def.is_err() {
-    //     // let type_id = def.as_ref().unwrap().type_id();
-    //     // match type_id {
-    //     //     UnrecognizedToken => println!("unrecognized token!"),
-    //     //     _ => println!("type unhandled {:?}", type_id.)
-    //     // }
-    //     let err = def.as_ref().expect_err("error");
+    let def = parser.parse(lexer);
+    if def.is_err() {
+        // let type_id = def.as_ref().unwrap().type_id();
+        // match type_id {
+        //     UnrecognizedToken => println!("unrecognized token!"),
+        //     _ => println!("type unhandled {:?}", type_id.)
+        // }
+        let err = def.as_ref().expect_err("error");
 
-    //     let writer = StandardStream::stderr(ColorChoice::Always);
-    //     let config = codespan_reporting::term::Config::default();
+        let writer = StandardStream::stderr(ColorChoice::Always);
+        let config = codespan_reporting::term::Config::default();
 
-    //     match err {
-    //         ParseError::InvalidToken { location } => {
-    //             println!("invalid token loc:{}", location)
-    //         },
-    //         // ParseError::UnrecognizedEof { location , expected } => {
-    //         //     println!("unrecognized EOF {}, expected:", location);
-    //         //     // for tok in expected {
-    //         //     //     println!("expected: {}", tok)
-    //         //     // }
-    //         // },
-    //         ParseError::UnrecognizedToken { token, expected } => {
-    //             // for tok in expected {
-    //             //     println!("{}", tok)
-    //             // }
-    //             let diagonistic = Diagnostic::error()
-    //                 .with_message("failed to parse")
-    //                 .with_code("E001")
-    //                 .with_labels(vec![
-    //                     Label::primary(file_id, (token.0)
-    //                     Label::secondary(file_id, (0)..(token.2+100)),
-    //                 ])
-    //                 .with_notes(vec![expected[0].clone(), unindent(
-    //                     "
-    //                         expected type \"=\"
-    //                     "
-    //                 )]);
-    //             codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diagonistic).expect("fail");
-    //         }
-    //         _ => { println!("unhandled") }
-    //     }
-
-    // }
-    //return def.expect("failed to parse");
+        match err {
+            ParseError::User { error } => {
+                match error {
+                    LexicalError::InvalidInteger(e) => {
+                        println!("lexer invalid integer:{}", e);
+                    }
+                    LexicalError::InvalidToken => {
+                        println!("lexer invalid token {:?}", error);
+                    }
+                }
+            }
+            ParseError::InvalidToken { location } => {
+                println!("invalid token loc:{}", location);
+            },
+            ParseError::ExtraToken { token } => {
+                println!("extra token: {:?}", token);
+            }
+            ParseError::UnrecognizedEof { location, expected } => {
+                println!("unrecognized Eof loc: {}, expected:", location);
+                for tok in expected {
+                    println!("{}", tok)
+                }
+            }
+            ParseError::UnrecognizedToken { token, expected } => {
+                println!("unrecognized token {:?}, expected:", token);
+                for tok in expected {
+                    println!("{}", tok)
+                }
+                let diagonistic = Diagnostic::error()
+                    .with_message("failed to parse")
+                    .with_code("E001")
+                    .with_labels(vec![
+                        Label::primary(file_id, (token.0)..(token.0+100)),
+                        Label::secondary(file_id, (0)..(token.2+100)),
+                    ])
+                    .with_notes(vec![expected[0].clone(), unindent::unindent(
+                        "
+                            expected type \"=\"
+                        "
+                    )]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diagonistic).expect("fail");
+            }
+        }
+    }
+    def
 }
 
 pub fn generate(
@@ -88,6 +103,7 @@ pub fn flatten(
     let class = &def.classes[0];
 
     model.name = class.name.clone();
+    model.description = class.description.clone();
 
     // find all states in the model by searching
     // for component references that are taken the derivative of

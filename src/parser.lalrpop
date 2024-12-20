@@ -72,6 +72,7 @@ extern {
 
         // other lexical tokens
         "identifier" => Token::Identifier(<String>),
+        "description" => Token::Description(<String>),
         "unsigned_integer" => Token::UnsignedInteger(<i64>),
         "unsigned_real" => Token::UnsignedReal(<f64>),
         "boolean" => Token::Boolean(<bool>),
@@ -133,12 +134,14 @@ pub StoredDefinition: ast::StoredDefinition = {
 //    )
 pub ClassDefinition: ast::ClassDefinition = {
     <encapsulated: "encapsulated"?> <partial: "partial"?> <class_type: ClassType> <name:"identifier">
+    <description: Description?>
     <components: ComponentSection>
     <equations: EquationSection?>
     <algorithms: AlgorithmSection?>
     "end" "identifier" ";" => {
         ast::ClassDefinition {
             name: name,
+            description: description.unwrap_or("".to_string()),
             class_type: class_type,
             encapsulated: encapsulated.is_some(),
             partial: partial.is_some(),
@@ -570,9 +573,9 @@ pub SimpleExpression: Box<ast::Expression> = {
 // logical-factor :
 //    [ not ] relation
     #[precedence(level="6")]
-    "not" <expr:SimpleExpression> => {
+    "not" <rhs:SimpleExpression> => {
         Box::new(ast::Expression::Not {
-            expr
+            rhs
         })
     },
 // relation :
@@ -695,6 +698,11 @@ pub SimpleExpression: Box<ast::Expression> = {
 //    | "{" array-arguments "}"
 //    | end
     #[precedence(level="1")]
+    "-" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::Negative {
+            rhs
+        })
+    },
     <val:"unsigned_integer"> => {
         Box::new(ast::Expression::UnsignedInteger(val))
     },
@@ -761,5 +769,10 @@ pub ComponentReference: ast::ComponentReference = {
 //    description-string [ annotation-clause ]
 // description-string :
 //    [ STRING { "+" STRING } ]
+pub Description: String = {
+    <description:"description"> => {
+        description
+    },
+}
 // annotation-clause :
 //    annotation class-modification
