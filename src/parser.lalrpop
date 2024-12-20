@@ -82,6 +82,7 @@ extern {
         "=" => Token::Equal,
         ";" => Token::Semicolon,
         ":" => Token::Colon,
+        "," => Token::Comma,
         "+" => Token::OperatorAdd,
         "-" => Token::OperatorSub,
         "*" => Token::OperatorMul,
