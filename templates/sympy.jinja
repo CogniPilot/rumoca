@@ -129,14 +129,16 @@ class BaseModel:
         if t is None:
             t = np.arange(0, 1, 0.01)
         if u is None:
-            u = 0
+            u = np.zeros(len(t))
+        if np.shape(u) == ():
+            u = u*np.ones(len(t))
 
         p0 = np.array([self.p0[k] for k in self.p0.keys()]);
         z0 = np.array([self.z0[k] for k in self.z0.keys()]);
         x0 = np.array([self.x0[k] for k in self.x0.keys()]);
         f = sympy.lambdify([self.x, self.u, self.z, self.p], list(self.ode))
         res = scipy.integrate.solve_ivp(
-            fun=lambda t, x: f(x, u, z0, p0),
+            fun=lambda ti, x: f(x, [np.interp(ti, t, u)], z0, p0),
             t_span=[t[0], t[-1]],
             y0=x0,
             t_eval=t)
