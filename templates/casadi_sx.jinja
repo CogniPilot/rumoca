@@ -94,24 +94,26 @@ class {{ model.name }}(BaseModel):
 {%- endmacro -%}
 
 {%- macro render_expression(expr) %}
-    {%- if "UnsignedReal" in expr %}
-        {{- expr.UnsignedReal }}
-    {%- elif "UnsignedInteger" in expr %}
-        {{- expr.UnsignedInteger }}
-    {%- elif "Ref" in expr %}
-        {{- expr.Ref.comp.name }}
-    {%- elif "Add" in expr %}
-        {{- binary(op=" + ", expr=expr.Add) -}}
-    {%- elif "Sub" in expr %}
-        {{- binary(op=" - ", expr=expr.Sub) -}}
-    {%- elif "Mul" in expr %}
-        {{- binary(op="*", expr=expr.Mul) -}}
-    {%- elif "Div" in expr %}
-        {{- binary(op="/", expr=expr.Div) -}}
-    {%- elif "Exp" in expr %}
+    {%- if "UnsignedReal" in expr -%}
+        {{ expr.UnsignedReal }}
+    {%- elif "UnsignedInteger" in expr -%}
+        {{ expr.UnsignedInteger }}
+    {%- elif "Ref" in expr -%}
+        {{ expr.Ref.comp.name }}
+    {%- elif "Add" in expr -%}
+        {{ binary(op=" + ", expr=expr.Add) -}}
+    {%- elif "Sub" in expr -%}
+        {{ binary(op=" - ", expr=expr.Sub) -}}
+    {%- elif "Mul" in expr -%}
+        {{ binary(op="*", expr=expr.Mul) -}}
+    {%- elif "Div" in expr -%}
+        {{ binary(op="/", expr=expr.Div) -}}
+    {%- elif "Exp" in expr -%}
         {{- binary(op="^", expr=expr.Exp) -}}
-    {%- elif "Negative" in expr %}
-        {{- unary(op="-", expr=expr.Negative) -}}
+    {%- elif "Negative" in expr -%}
+        {{ unary(op="-", expr=expr.Negative) -}}
+    {%- elif "Parenthesis" in expr -%}
+        ( {{- render_expression(expr=expr.Parenthesis.rhs) -}} )
     {%- elif "Not" in expr %}
         {{- unary(op="!", expr=expr.Not) -}}
     {%- elif "Or" in expr -%}

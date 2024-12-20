@@ -119,6 +119,9 @@ pub enum Expression {
     Negative {
         rhs: Box<Expression>,
     },
+    Parenthesis {
+        rhs: Box<Expression>,
+    },
     // arithmetic
     Add {
         lhs: Box<Expression>,
