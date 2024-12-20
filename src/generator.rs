@@ -60,14 +60,14 @@ pub fn parse_file(
             ParseError::UnrecognizedToken { token, expected } => {
                 println!("unrecognized token {:?}, expected:", token);
                 for tok in expected {
-                    println!("{}", tok)
+                    println!("expected: {}", tok)
                 }
                 let diagonistic = Diagnostic::error()
                     .with_message("failed to parse")
                     .with_code("E001")
                     .with_labels(vec![
-                        Label::primary(file_id, (token.0)..(token.0+100)),
-                        Label::secondary(file_id, (0)..(token.2+100)),
+                        Label::primary(file_id, (token.0)..(token.2)),
+                        Label::secondary(file_id, (0)..(token.2)),
                     ])
                     .with_notes(vec![expected[0].clone(), unindent::unindent(
                         "
