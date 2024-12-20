@@ -242,33 +242,19 @@ pub ComponentSection: Vec<ast::ComponentDeclaration> = {
 // type-prefix :
 //    [ flow | stream ]
 pub Connection: ast::Connection = {
-    "flow" => {
-        ast::Connection::Flow {}
-    },
-    "stream" => {
-        ast::Connection::Stream {}
-    },
+    "flow" => ast::Connection::Flow,
+    "stream" => ast::Connection::Stream,
 }
 //    [ discrete | parameter | constant ]
 pub Variability: ast::Variability = {
-    "discrete" => {
-        ast::Variability::Discrete {}
-    },
-    "parameter" => {
-        ast::Variability::Parameter {}
-    },
-    "constant" => {
-        ast::Variability::Constant {}
-    },
+    "discrete" => ast::Variability::Discrete,
+    "parameter" => ast::Variability::Parameter,
+    "constant" => ast::Variability::Constant,
 }
 //    [ input | output ]
 pub Causality: ast::Causality = {
-    "input" => {
-        ast::Causality::Input {}
-    },
-    "output" => {
-        ast::Causality::Output {}
-    },
+    "input" => ast::Causality::Input,
+    "output" => ast::Causality::Output,
 }
 // component-list :
 //    component-declaration { "," component-declaration }
