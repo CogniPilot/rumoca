@@ -26,7 +26,7 @@ class {{ model.name }}(BaseModel):
         {%- endfor %}
         };
 
-        # declare  discrete states
+        # declare discrete states
         {%- for var in model.z %}
         {{ var.name }} = ca.SX.sym('{{ var.name }}');
         {%- endfor %}
@@ -36,7 +36,8 @@ class {{ model.name }}(BaseModel):
         {%- endfor %});
         self.z0 = {
         {%- for var in model.z %}
-            '{{ var.name }}': 0{% if not loop.last %},{% endif %}
+            '{{ var.name }}': {{ render_expression(expr=param.value) -}}
+            {% if not loop.last %},{% endif %}
         {%- endfor %}
         };
 
@@ -68,7 +69,8 @@ class {{ model.name }}(BaseModel):
         {%- endfor %});
         self.x0 = {
         {%- for var in model.x %}
-            '{{ var.name }}': 0{% if not loop.last %},{% endif %}
+            '{{ var.name }}': {{ render_expression(expr=var.start) -}}
+            {% if not loop.last %},{% endif %}
         {%- endfor %}
         };
 
@@ -125,9 +127,12 @@ class {{ model.name }}(BaseModel):
             {{- render_expression(expr=expr.Equal.rhs) -}}
     {%- endif %}
 {%- endmacro -%}
-{#
+
+"""
+RAW JSON STRUCT:
 {{ model | pprint }}
-#}
+"""
+
 import casadi as ca
 import numpy as np
 
