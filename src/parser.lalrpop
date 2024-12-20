@@ -241,8 +241,35 @@ pub ComponentSection: Vec<ast::ComponentDeclaration> = {
 //    type-prefix type-specifier [ array-subscripts ] component-list
 // type-prefix :
 //    [ flow | stream ]
+pub Connection: ast::Connection = {
+    "flow" => {
+        ast::Connection::Flow {}
+    },
+    "stream" => {
+        ast::Connection::Stream {}
+    },
+}
 //    [ discrete | parameter | constant ]
+pub Variability: ast::Variability = {
+    "discrete" => {
+        ast::Variability::Discrete {}
+    },
+    "parameter" => {
+        ast::Variability::Parameter {}
+    },
+    "constant" => {
+        ast::Variability::Constant {}
+    },
+}
 //    [ input | output ]
+pub Causality: ast::Causality = {
+    "input" => {
+        ast::Causality::Input {}
+    },
+    "output" => {
+        ast::Causality::Output {}
+    },
+}
 // component-list :
 //    component-declaration { "," component-declaration }
 // component-declaration :
@@ -252,14 +279,24 @@ pub ComponentSection: Vec<ast::ComponentDeclaration> = {
 // declaration :
 //    IDENT [ array-subscripts ] [ modification ]
 pub ComponentDeclaration: ast::ComponentDeclaration = {
-    <parameter:"parameter"?> <class:"identifier"> <name:"identifier"> ";" => {
+    <connection:Connection?>
+    <variability:Variability?>
+    <causality:Causality?>
+    <class:"identifier">
+    <name:"identifier">
+    ";"
+    => {
         ast::ComponentDeclaration{
             name: name,
             class: class,
-            parameter: parameter.is_some(),
+            connection: connection.unwrap_or(ast::Connection::None),
+            variability: variability.unwrap_or(ast::Variability::Continuous),
+            causality: causality.unwrap_or(ast::Causality::None)
         }
     },
 }
+
+
 
 // A.2.5 Modification (TODO)
 // ============================================================================

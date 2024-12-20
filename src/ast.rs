@@ -5,6 +5,15 @@ pub struct StoredDefinition {
     pub classes: Vec<ClassDefinition>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ComponentDeclaration {
+    pub name: String,
+    pub class: String,
+    pub connection: Connection,
+    pub variability: Variability,
+    pub causality: Causality,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClassDefinition {
     pub name: String,
@@ -17,10 +26,25 @@ pub struct ClassDefinition {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ComponentDeclaration {
-    pub name: String,
-    pub class: String,
-    pub parameter: bool,
+pub enum Causality {
+    None,
+    Input,
+    Output,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Variability {
+    Continuous,
+    Discrete,
+    Parameter,
+    Constant,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Connection {
+    None,
+    Flow,
+    Stream,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

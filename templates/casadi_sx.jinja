@@ -3,31 +3,50 @@
 class {{ class.name }}:
 
     def __init__(self):
-        
+
+        # declare constants
+        {%- for comp in class.components if comp.variability == "Constant" %}
+        {{ comp.name }} = 0;
+        {%- endfor %}
+
         # declare parameters
-        {%- for comp in class.components if comp.parameter %}
+        {%- for comp in class.components if comp.variability == "Parameter" %}
         {{ comp.name }} = ca.SX.sym('{{ comp.name }}');
         {%- endfor %}
         self.p = ca.vertcat(
-        {%- for comp in class.components if comp.parameter %}
+        {%- for comp in class.components if comp.variability == "Parameter" %}
             {{ comp.name }}{% if not loop.last %},{% endif %}
         {%- endfor %});
         self.p0 = {
-        {%- for comp in class.components if comp.parameter %}
+        {%- for comp in class.components if comp.variability == "Parameter" %}
             '{{ comp.name }}': 0{% if not loop.last %},{% endif %}
         {%- endfor %}
         };
 
-        # declare states
-        {%- for comp in class.components if not comp.parameter %}
+        # declare continuous states
+        {%- for comp in class.components if comp.variability == "Continuous" %}
         {{ comp.name }} = ca.SX.sym('{{ comp.name }}');
         {%- endfor %}
         self.x = ca.vertcat(
-        {%- for comp in class.components if not comp.parameter %}
+        {%- for comp in class.components if comp.variability == "Continuous" %}
             {{ comp.name }}{% if not loop.last %},{% endif %}
         {%- endfor %});
         self.x0 = {
-        {%- for comp in class.components if not comp.parameter %}
+        {%- for comp in class.components if comp.variability == "Continuous" %}
+            '{{ comp.name }}': 0{% if not loop.last %},{% endif %}
+        {%- endfor %}
+        };
+
+        # declare  discrete states
+        {%- for comp in class.components if comp.variability == "Discrete" %}
+        {{ comp.name }} = ca.SX.sym('{{ comp.name }}');
+        {%- endfor %}
+        self.z = ca.vertcat(
+        {%- for comp in class.components if comp.variability == "Discrete" %}
+            {{ comp.name }}{% if not loop.last %},{% endif %}
+        {%- endfor %});
+        self.z0 = {
+        {%- for comp in class.components if comp.variability == "Discrete" %}
             '{{ comp.name }}': 0{% if not loop.last %},{% endif %}
         {%- endfor %}
         };
@@ -39,14 +58,44 @@ class {{ class.name }}:
 
         # declare state derivative vector
         self.x_dot = ca.vertcat(
-        {%- for comp in class.components if not comp.parameter %}
+        {%- for comp in class.components if comp.variability == "Continuous" %}
             der_{{ comp.name }}{% if not loop.last %},{% endif %}
         {%- endfor %});
-        self.ode = ca.Function('ode', [self.x], [self.x_dot])
+
+        self.z = ca.vertcat()
+        self.alg = ca.vertcat()
 
     def __repr__(self):
         return repr(self.__dict__)
+    
+    def simulate(self, t=None, u=None):
+        if t is None:
+            t = np.arange(0, 1, 0.01)
+        if u is None:
+            u = 0
 
+        x0 = np.array([
+            {%- for comp in class.components if comp.variability == "Continuous" %}
+            self.x0['{{ comp.name }}']{% if not loop.last %},{% endif %}
+            {%- endfor %}
+        ]);
+        z0 = np.array([
+            {%- for comp in class.components if comp.variability == "Discrete" %}
+            self.z0['{{ comp.name }}']{% if not loop.last %},{% endif %}
+            {%- endfor %}
+        ]);
+        p0 = np.array([
+            {%- for comp in class.components if comp.variability == "Parameter" %}
+            self.p0['{{ comp.name }}']{% if not loop.last %},{% endif %}
+            {%- endfor %}
+        ]);
+        dae = {'x': self.x, 'z': self.z, 'p': self.p, 'ode': self.x_dot, 'alg': self.alg}
+        F = ca.integrator('F', 'idas', dae, t[0], t)
+        res = F(x0=x0, z0=z0, p=p0, u=u)
+        return {
+            't': t,
+            'xf': res['xf'].T
+        }
 {%- endmacro %}
 
 {#- Equation Macro -#}
@@ -95,6 +144,7 @@ class {{ class.name }}:
 
 {#- Render File #}
 import casadi as ca
+import numpy as np
 {%- for class in def.classes %}
 {{ render_class(class=class) }}
 {%- endfor %}
