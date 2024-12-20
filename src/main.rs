@@ -1,10 +1,12 @@
 mod ast;
+mod flat_ast;
 mod generator;
 mod lexer;
 mod tokens;
 
 use clap::Parser;
 use generator::parse_file;
+use generator::flatten;
 
 use lalrpop_util::lalrpop_mod;
 
@@ -33,10 +35,12 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let def = parse_file(&args.filename).expect("failed to parse");
+    let flat_def = flatten(&def).expect("failed to flatten");
+
     if args.verbose {
-        println!("{:#?}", def);
+        println!("{:#?}", flat_def);
     }
-    let s = generator::generate(&def, &args.template_file)?;
+    let s = generator::generate(&flat_def, &args.template_file)?;
     println!("{s:}");
     Ok(())
 }

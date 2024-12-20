@@ -284,6 +284,7 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
     <causality:Causality?>
     <class:"identifier">
     <name:"identifier">
+    <modification:Modification?>
     ";"
     => {
         ast::ComponentDeclaration{
@@ -291,7 +292,10 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
             class: class,
             connection: connection.unwrap_or(ast::Connection::None),
             variability: variability.unwrap_or(ast::Variability::Continuous),
-            causality: causality.unwrap_or(ast::Causality::None)
+            causality: causality.unwrap_or(ast::Causality::None),
+            modification: modification.unwrap_or(ast::Modification{ 
+                expression: Box::new(ast::Expression::UnsignedReal(0.0))
+            })
         }
     },
 }
@@ -306,6 +310,11 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
 // modification-expression :
 //    expression
 //    | break
+pub Modification: ast::Modification = {
+    "=" <expression: Expression> => ast::Modification {
+        expression: expression
+    }
+}
 // class-modification :
 //    "(" [ argument-list ] ")"
 // argument-list :
