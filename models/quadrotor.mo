@@ -56,33 +56,27 @@ equation
     R = omega_wb_b_2;
     Cl = Cl_p * P;
     Cm = Cm_q * Q;
-    Cn =- Cn_r * R;
+    Cn = -Cn_r * R;
     qbar = 0.5 * rho * V^2;
 
     // aerodynamics
     F_b_0 = -CD* qbar * S;
     
     // thrust
-    thrust_0 = CT * omega_motor_0^2;
-    thrust_1 = CT * omega_motor_1^2;
-    thrust_2 = CT * omega_motor_2^2;
-    thrust_3 = CT * omega_motor_3^2;
+    thrust = {
+        CT * omega_motor[1]^2,
+        CT * omega_motor[2]^2,
+        CT * omega_motor[3]^2,
+        CT * omega_motor[4]^2};
     
-    // motor
-    // TODO tau_inv if
+    // state derivative
     der(position_op_w) = {0, 0, 0};
-    
     der(velocity_w_p_b) = {0, 0, 0};
-
     der(quaternion_wb) = {0, 0, 0, 0};
-
     der(omega_wb_b) = {0, 0, 0};
-
     der(omega_motor) = {
-        tau_inv_0 * (omega_motor_cmd_0 - omega_motor_0),
-        tau_inv_1 * (omega_motor_cmd_1 - omega_motor_1),
-        tau_inv_2 * (omega_motor_cmd_2 - omega_motor_2),
-        tau_inv_3 * (omega_motor_cmd_3 - omega_motor_3)};
-
-
+        tau_inv[1] * (omega_motor_cmd[1] - omega_motor[1]),
+        tau_inv[2] * (omega_motor_cmd[2] - omega_motor[2]),
+        tau_inv[3] * (omega_motor_cmd[3] - omega_motor[3]),
+        tau_inv[4] * (omega_motor_cmd[4] - omega_motor[4])};
 end Quadrotor;

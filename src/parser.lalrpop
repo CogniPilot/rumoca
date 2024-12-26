@@ -748,9 +748,10 @@ pub SimpleExpression: Box<ast::Expression> = {
 // component-reference :
 //    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 pub ComponentReference: ast::ComponentReference = {
-    <name:"identifier"> => {
+    <name:"identifier">  <array_subscripts:ArraySubscripts?> => {
         ast::ComponentReference{
-            name
+            name: name,
+            array_subscripts: array_subscripts.unwrap_or(Vec::new()),
         }
     },
 }

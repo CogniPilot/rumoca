@@ -70,6 +70,7 @@ pub enum Statement {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ComponentReference {
     pub name: String,
+    pub array_subscripts: Vec<Box<Expression>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
