@@ -1,8 +1,8 @@
 use crate::ast;
+use crate::flat_ast;
 use crate::lexer;
 use crate::parser;
 use crate::tokens::{LexicalError, Token};
-use crate::flat_ast;
 use std::collections::HashSet;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
@@ -11,8 +11,8 @@ use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 
 use lalrpop_util::ParseError;
 use lexer::Lexer;
+use minijinja::{context, Environment};
 use parser::StoredDefinitionParser;
-use minijinja::{Environment, context};
 
 pub fn parse_file(
     filename: &str,
@@ -35,19 +35,17 @@ pub fn parse_file(
         let config = codespan_reporting::term::Config::default();
 
         match err {
-            ParseError::User { error } => {
-                match error {
-                    LexicalError::InvalidInteger(e) => {
-                        println!("lexer invalid integer:{}", e);
-                    }
-                    LexicalError::InvalidToken => {
-                        println!("lexer invalid token {:?}", error);
-                    }
+            ParseError::User { error } => match error {
+                LexicalError::InvalidInteger(e) => {
+                    println!("lexer invalid integer:{}", e);
                 }
-            }
+                LexicalError::InvalidToken => {
+                    println!("lexer invalid token {:?}", error);
+                }
+            },
             ParseError::InvalidToken { location } => {
                 println!("invalid token loc:{}", location);
-            },
+            }
             ParseError::ExtraToken { token } => {
                 println!("extra token: {:?}", token);
             }
@@ -69,12 +67,16 @@ pub fn parse_file(
                         Label::primary(file_id, (token.0)..(token.2)),
                         Label::secondary(file_id, (0)..(token.2)),
                     ])
-                    .with_notes(vec![expected[0].clone(), unindent::unindent(
-                        "
+                    .with_notes(vec![
+                        expected[0].clone(),
+                        unindent::unindent(
+                            "
                             expected type \"=\"
-                        "
-                    )]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diagonistic).expect("fail");
+                        ",
+                        ),
+                    ]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diagonistic)
+                    .expect("fail");
             }
         }
     }
@@ -93,9 +95,7 @@ pub fn generate(
     Ok(txt)
 }
 
-pub fn flatten(
-    def: &ast::StoredDefinition
-) -> Result<flat_ast::Model, Box<dyn std::error::Error>> {
+pub fn flatten(def: &ast::StoredDefinition) -> Result<flat_ast::Model, Box<dyn std::error::Error>> {
     let mut model: flat_ast::Model = Default::default();
     let mut states = HashSet::new();
 
@@ -116,50 +116,36 @@ pub fn flatten(
 
     // create component vectors
     for comp in &class.components {
+        let flat_comp = flat_ast::Component {
+            name: comp.name.clone(),
+            start: comp.modification.expression.clone(),
+            array_subscripts: comp.array_subscripts.clone(),
+        };
         match comp.variability {
             ast::Variability::Constant => {
-                model.c.push(flat_ast::Constant {
-                    name: comp.name.clone(),
-                    value: comp.modification.expression.clone()
-                });
-            },
+                model.c.push(flat_comp);
+            }
 
             ast::Variability::Continuous => {
                 if states.contains(&comp.name) {
-                    model.x.push(flat_ast::ContinuousVariable {
-                        name: comp.name.clone(),
-                        start: comp.modification.expression.clone()
-                    });
+                    model.x.push(flat_comp);
                 } else if comp.causality == ast::Causality::Input {
-                    model.u.push(flat_ast::ContinuousVariable {
-                        name: comp.name.clone(),
-                        start: comp.modification.expression.clone()
-                    });
+                    model.u.push(flat_comp);
                 } else {
-                    model.y.push(flat_ast::ContinuousVariable {
-                        name: comp.name.clone(),
-                        start: comp.modification.expression.clone()
-                    });
+                    model.y.push(flat_comp);
                 }
             }
             ast::Variability::Discrete => {
-                model.z.push(flat_ast::DiscreteVariable {
-                    name: comp.name.clone(),
-                    start: comp.modification.expression.clone()
-                });
+                model.z.push(flat_comp);
             }
             ast::Variability::Parameter => {
-                model.p.push(flat_ast::Parameter {
-                    name: comp.name.clone(),
-                    value: comp.modification.expression.clone()
-                });
+                model.p.push(flat_comp);
             }
         }
     }
 
     Ok(model)
 }
-
 
 // pub fn generate_json(def: &ast::StoredDefinition) -> Result<String, std::io::Error> {
 //     let s = serde_json::to_string_pretty(def)?;

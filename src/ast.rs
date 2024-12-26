@@ -12,7 +12,8 @@ pub struct ComponentDeclaration {
     pub connection: Connection,
     pub variability: Variability,
     pub causality: Causality,
-    pub modification: Modification
+    pub array_subscripts: Vec<Box<Expression>>,
+    pub modification: Modification,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -208,6 +209,9 @@ pub enum Expression {
         if_eq: Box<Expression>,
         else_if_blocks: Vec<ElseIfExpressionBlock>,
         else_eq: Option<Box<Expression>>,
+    },
+    ArrayArguments {
+        args: Vec<Box<Expression>>,
     },
 }
 

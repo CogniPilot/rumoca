@@ -78,6 +78,10 @@ extern {
         "boolean" => Token::Boolean(<bool>),
         "(" => Token::LParen,
         ")" => Token::RParen,
+        "[" => Token::LBracket,
+        "]" => Token::RBracket,
+        "{" => Token::LBrace,
+        "}" => Token::RBrace,
         ":=" => Token::Assign,
         "=" => Token::Equal,
         ";" => Token::Semicolon,
@@ -274,6 +278,7 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
     <causality:Causality?>
     <class:"identifier">
     <name:"identifier">
+    <array_subscripts:ArraySubscripts?>
     <modification:Modification?>
     ";"
     => {
@@ -283,6 +288,7 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
             connection: connection.unwrap_or(ast::Connection::None),
             variability: variability.unwrap_or(ast::Variability::Continuous),
             causality: causality.unwrap_or(ast::Causality::None),
+            array_subscripts: array_subscripts.unwrap_or(Vec::new()),
             modification: modification.unwrap_or(ast::Modification{ 
                 expression: Box::new(ast::Expression::UnsignedReal(0.0))
             })
@@ -712,6 +718,11 @@ pub SimpleExpression: Box<ast::Expression> = {
             rhs
         })
     },
+    "{" <args:CommaSeparatedList<Expression>> "}" => {
+        Box::new(ast::Expression::ArrayArguments {
+            args
+        })
+    },
     <val:"unsigned_integer"> => {
         Box::new(ast::Expression::UnsignedInteger(val))
     },
@@ -773,6 +784,11 @@ pub ComponentReference: ast::ComponentReference = {
 //    "[" subscript { "," subscript } "]"
 // subscript :
 //    ":" | expression
+pub ArraySubscripts: Vec<Box<ast::Expression>> = {
+    "[" <subscripts: CommaSeparatedList<Expression>> "]" => {
+        subscripts
+    },
+}
 // description :
 //    description-string [ annotation-clause ]
 // description-string :
@@ -784,3 +800,14 @@ pub Description: String = {
 }
 // annotation-clause :
 //    annotation class-modification
+
+// comma separated list macro
+CommaSeparatedList<T>: Vec<T> = { // (1)
+    <mut v:(<T> ",")*> <e:T?> => match e { // (2)
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};

@@ -5,8 +5,8 @@ mod lexer;
 mod tokens;
 
 use clap::Parser;
-use generator::parse_file;
 use generator::flatten;
+use generator::parse_file;
 
 use lalrpop_util::lalrpop_mod;
 

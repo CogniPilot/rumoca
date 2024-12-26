@@ -8,114 +8,95 @@ class {{ model.name }}(BaseModel):
 
         # declare constants
         {%- for const in model.c %}
-        {{ const.name }} = {{ render_expression(expr=const.value) }};
+        {{ const.name }} = {{ render_expression(expr=const.start) }};
         {%- endfor %}
 
         # declare parameters
-        {%- for param in model.p %}
-        {{ param.name }} = ca.SX.sym('{{ param.name }}');
-        {%- endfor %}
-        self.p = ca.vertcat(
-        {%- for param in model.p %}
-            {{ param.name }}{% if not loop.last %},{% endif %}
-        {%- endfor %});
-        self.p0 = {
-        {%- for param in model.p %}
-            '{{ param.name }}': {{ render_expression(expr=param.value) -}}
-                {% if not loop.last %},{% endif %}
-        {%- endfor %}
-        };
+        {{ render_vector("self.p", model.p) | indent(4) }}
+        {{ render_vector_start_dict("self.p0", model.p) | indent(4) }}
 
         # declare discrete states
-        {%- for var in model.z %}
-        {{ var.name }} = ca.SX.sym('{{ var.name }}');
-        {%- endfor %}
-        self.z = ca.vertcat(
-        {%- for var in model.z %}
-            {{ var.name }}{% if not loop.last %},{% endif %}
-        {%- endfor %});
-        self.z0 = {
-        {%- for var in model.z %}
-            '{{ var.name }}': {{ render_expression(expr=param.value) -}}
-            {% if not loop.last %},{% endif %}
-        {%- endfor %}
-        };
+        {{ render_vector("self.z", model.z) | indent(4) }}
+        {{ render_vector_start_dict("self.z0", model.z) | indent(4) }}
 
         # declare inputs
-        {%- for var in model.u %}
-        {{ var.name }} = ca.SX.sym('{{ var.name }}');
-        {%- endfor %}
-        self.u = ca.vertcat(
-        {%- for var in model.u %}
-            {{ var.name }}{% if not loop.last %},{% endif %}
-        {%- endfor %});
+        {{ render_vector("self.u", model.u) | indent(4) }}
 
         # declare outputs
-        {%- for var in model.y %}
-        {{ var.name }} = ca.SX.sym('{{ var.name }}');
-        {%- endfor %}
-        self.y = ca.vertcat(
-        {%- for var in model.y %}
-            {{ var.name }}{% if not loop.last %},{% endif %}
-        {%- endfor %});
+        {{ render_vector("self.y", model.y) | indent(4) }}
 
         # declare continuous states
-        {%- for var in model.x %}
-        {{ var.name }} = ca.SX.sym('{{ var.name }}');
-        {%- endfor %}
-        self.x = ca.vertcat(
-        {%- for var in model.x %}
-            {{ var.name }}{% if not loop.last %},{% endif %}
-        {%- endfor %});
-        self.x0 = {
-        {%- for var in model.x %}
-            '{{ var.name }}': {{ render_expression(expr=var.start) -}}
-            {% if not loop.last %},{% endif %}
-        {%- endfor %}
-        };
+        {{ render_vector("self.x", model.x) | indent(4) }}
+        {{ render_vector_start_dict("self.x0", model.x) | indent(4) }}
 
         # ode
-        self.ode = ca.vertcat(
-        {%- for expr in model.ode %}
-            {{ render_expression(expr=expr) }}{% if not loop.last %},{% endif %}
-        {%- endfor %});
+        {{ render_vector_expression("self.ode", model.ode) | indent(4) }}
 
         # alg
-        self.alg = ca.vertcat()
+        {{ render_vector_expression("self.alg", model.alg) | indent(4) }}
 
 {%- endmacro %}
 
-{%- macro binary(op, expr) %}
-    {{- render_expression(expr=expr.lhs) }}{{ op }}{{ render_expression(expr=expr.rhs) -}}
+{%- macro render_vector(target, var_list) -%}
+    {% for var in var_list %}
+    {{- var.name }} = ca.SX.sym('{{ var.name }}'
+        {%- if var.array_subscripts | length > 0 %}, {% for sub in var.array_subscripts -%}
+            {{ render_expression(expr=sub) -}}{% if not loop.last %},{% endif %}
+        {%- endfor -%}{%- endif -%});
+    {% endfor %}
+    {{ target }} = ca.vertcat(
+    {%- for var in var_list %}
+        {{ var.name }}{% if not loop.last %},{% endif %}
+    {%- endfor %});
 {%- endmacro -%}
 
-{%- macro unary(op, expr) %}
-    {{- op }}{{ render_expression(expr=expr.rhs) -}}
+{%- macro render_vector_start_dict(target, var_list) -%}
+    {{ target }} = {
+    {%- for var in var_list %}
+        '{{ var.name }}': {{ render_expression(expr=var.start) -}}
+        {% if not loop.last %},{% endif %}
+    {%- endfor %}
+    };
 {%- endmacro -%}
 
-{%- macro render_expression(expr) %}
-    {%- if "UnsignedReal" in expr -%}
+{%- macro render_vector_expression(target, expr_list) -%}
+    {{ target }} = ca.vertcat(
+    {%- for expr in expr_list %}
+        {{ render_expression(expr=expr) }}{% if not loop.last %},{% endif %}
+    {%- endfor %});
+{%- endmacro -%}
+
+{%- macro render_binary(op, expr) -%}
+    {{ render_expression(expr=expr.lhs) }}{{ op }}{{ render_expression(expr=expr.rhs) -}}
+{%- endmacro -%}
+
+{%- macro render_unary(op, expr) -%}
+    {{ op }}{{ render_expression(expr=expr.rhs) -}}
+{%- endmacro -%}
+
+{%- macro render_expression(expr) -%}
+    {% if "UnsignedReal" in expr -%}
         {{ expr.UnsignedReal }}
     {%- elif "UnsignedInteger" in expr -%}
         {{ expr.UnsignedInteger }}
     {%- elif "Ref" in expr -%}
         {{ expr.Ref.comp.name }}
     {%- elif "Add" in expr -%}
-        {{ binary(op=" + ", expr=expr.Add) -}}
+        {{ render_binary(op=" + ", expr=expr.Add) -}}
     {%- elif "Sub" in expr -%}
-        {{ binary(op=" - ", expr=expr.Sub) -}}
+        {{ render_binary(op=" - ", expr=expr.Sub) -}}
     {%- elif "Mul" in expr -%}
-        {{ binary(op="*", expr=expr.Mul) -}}
+        {{ render_binary(op="*", expr=expr.Mul) -}}
     {%- elif "Div" in expr -%}
-        {{ binary(op="/", expr=expr.Div) -}}
+        {{ render_binary(op="/", expr=expr.Div) -}}
     {%- elif "Exp" in expr -%}
-        {{- binary(op="^", expr=expr.Exp) -}}
+        {{- render_binary(op="^", expr=expr.Exp) -}}
     {%- elif "Negative" in expr -%}
-        {{ unary(op="-", expr=expr.Negative) -}}
+        {{ render_unary(op="-", expr=expr.Negative) -}}
     {%- elif "Parenthesis" in expr -%}
         ( {{- render_expression(expr=expr.Parenthesis.rhs) -}} )
     {%- elif "Not" in expr %}
-        {{- unary(op="!", expr=expr.Not) -}}
+        {{- render_unary(op="!", expr=expr.Not) -}}
     {%- elif "Or" in expr -%}
         ca.logic_or(
             {{- render_expression(expr=expr.Or.lhs) -}},
@@ -127,13 +108,20 @@ class {{ model.name }}(BaseModel):
     {%- elif "Equal" in expr -%}
             {{- render_expression(expr=expr.Equal.lhs) -}} ==
             {{- render_expression(expr=expr.Equal.rhs) -}}
+    {%- elif "ArrayArguments" in expr -%}
+        ca.vertcat(
+        {%- for arg in expr.ArrayArguments.args %}
+            {{ render_expression(expr=arg) }}{% if not loop.last %},{% endif %}
+        {%- endfor %})
     {%- endif %}
 {%- endmacro -%}
 
+{#
 """
 RAW JSON STRUCT:
 {{ model | pprint }}
 """
+#}
 
 import casadi as ca
 import numpy as np
