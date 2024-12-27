@@ -125,18 +125,6 @@ pub StoredDefinition: ast::StoredDefinition = {
 // ============================================================================
 // class-definition :
 //    [ encapsulated ] class-prefixes class-specifier
-// class-prefixes :
-//    [ partial ]
-//    ( class
-//      | model
-//      | [ operator ] record
-//      | block
-//      | [ expandable ] connector
-//      | type
-//      | package
-//      | [ pure | impure ] [ operator ] function
-//      | operator
-//    )
 pub ClassDefinition: ast::ClassDefinition = {
     <encapsulated: "encapsulated"?> <partial: "partial"?> <class_type: ClassType> <name:"identifier">
     <description: Description?>
@@ -156,7 +144,18 @@ pub ClassDefinition: ast::ClassDefinition = {
         }
     }
 }
-
+// class-prefixes :
+//    [ partial ]
+//    ( class
+//      | model
+//      | [ operator ] record
+//      | block
+//      | [ expandable ] connector
+//      | type
+//      | package
+//      | [ pure | impure ] [ operator ] function
+//      | operator
+//    )
 pub ClassType: ast::ClassType = {
     "model" => ast::ClassType::Model,
     "record" => ast::ClassType::Record,
@@ -166,6 +165,11 @@ pub ClassType: ast::ClassType = {
     "connector" => ast::ClassType::Connector,
     "type" => ast::ClassType::Type,
     "package" => ast::ClassType::Package,
+    "pure" "function" => ast::ClassType::PureFunction,
+    "impure" "function" => ast::ClassType::ImpureFunction,
+    "operator" "function" => ast::ClassType::OperatorFunction,
+    "function" => ast::ClassType::Function,
+    "operator" => ast::ClassType::Operator,
 }
 
 // TODO
@@ -735,6 +739,12 @@ pub SimpleExpression: Box<ast::Expression> = {
     <comp:ComponentReference> => {
         Box::new(ast::Expression::Ref{comp})
     },
+    <comp:ComponentReference> <args:FunctionCallArguments> => {
+        Box::new(ast::Expression::FunctionCall {
+            comp,
+            args
+        })
+    },
 }
 
 
@@ -767,6 +777,9 @@ pub ComponentReference: ast::ComponentReference = {
 // function-arguments-non-first :
 //    function-argument [ "," function-arguments-non-first ]
 //    | named-arguments
+pub FunctionCallArguments: Vec<Box<ast::Expression>> = {
+    "(" <args:CommaSeparatedList<Expression>> ")"  => args,
+}
 // array-arguments :
 //    expression [ "," array-arguments-non-first | for for-indices ]
 // array-arguments-non-first :

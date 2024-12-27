@@ -214,6 +214,10 @@ pub enum Expression {
     ArrayArguments {
         args: Vec<Box<Expression>>,
     },
+    FunctionCall {
+        comp: ComponentReference,
+        args: Vec<Box<Expression>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -232,6 +236,11 @@ pub enum ClassType {
     Connector,
     Type,
     Package,
+    PureFunction,
+    ImpureFunction,
+    OperatorFunction,
+    Function,
+    Operator,
 }
 
 #[cfg(test)]
