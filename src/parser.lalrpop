@@ -139,8 +139,8 @@ pub ClassDefinition: ast::ClassDefinition = {
             encapsulated: encapsulated.is_some(),
             partial: partial.is_some(),
             components: components,
-            equations: equations,
-            algorithms: algorithms
+            equations: equations.unwrap_or(Vec::new()),
+            algorithms: algorithms.unwrap_or(Vec::new())
         }
     }
 }
@@ -415,9 +415,10 @@ pub IfEquation: ast::Equation = {
     <else_eqs: ElseEquationBlock?>
     "end" "if" => {
         ast::Equation::If {
-            if_cond, if_eqs,
+            if_cond,
+            if_eqs,
             else_if_blocks,
-            else_eqs,
+            else_eqs: else_eqs.unwrap_or(Vec::new()),
         }
     }
 }
@@ -454,7 +455,7 @@ pub IfStatement: ast::Statement = {
         ast::Statement::If {
             if_cond, if_eqs,
             else_if_blocks,
-            else_eqs,
+            else_eqs: else_eqs.unwrap_or(Vec::new()),
         }
     }
 }
@@ -746,7 +747,6 @@ pub SimpleExpression: Box<ast::Expression> = {
         })
     },
 }
-
 
 // UNSIGNED-NUMBER :
 //    UNSIGNED-INTEGER | UNSIGNED-REAL

@@ -69,7 +69,7 @@ equation
         CT * omega_motor[4]^2};
     
     // state derivative
-    der(position_op_w) = QuatToMatrix(q_wb) * velocity_w_p_b;
+    der(position_op_w) = QuatToMatrix(quaternion_wb) * velocity_w_p_b;
     der(velocity_w_p_b) = {0, 0, 0};
     der(quaternion_wb) = QuatRightKinematics(quaternion_wb, omega_wb_b);
     der(omega_wb_b) = {0, 0, 0};
@@ -105,10 +105,10 @@ function QuatToMatrix
     Real cc;
     Real dd;
 algorithm
-    a := q[0];
-    b := q[1];
-    c := q[2];
-    d := q[3];
+    a := q[1];
+    b := q[2];
+    c := q[3];
+    d := q[4];
     aa := a * a;
     bb := b * b;
     cc := c * c;

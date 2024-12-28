@@ -24,8 +24,8 @@ pub struct ClassDefinition {
     pub partial: bool,
     pub encapsulated: bool,
     pub components: Vec<ComponentDeclaration>,
-    pub equations: Option<Vec<Equation>>,
-    pub algorithms: Option<Vec<Statement>>,
+    pub equations: Vec<Equation>,
+    pub algorithms: Vec<Statement>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -63,7 +63,7 @@ pub enum Statement {
         if_cond: Box<Expression>,
         if_eqs: Vec<Statement>,
         else_if_blocks: Vec<ElseIfStatementBlock>,
-        else_eqs: Option<Vec<Statement>>,
+        else_eqs: Vec<Statement>,
     },
 }
 
@@ -87,7 +87,7 @@ pub enum Equation {
         if_cond: Box<Expression>,
         if_eqs: Vec<Equation>,
         else_if_blocks: Vec<ElseIfEquationBlock>,
-        else_eqs: Option<Vec<Equation>>,
+        else_eqs: Vec<Equation>,
     },
 }
 

@@ -123,6 +123,11 @@ class {{ model.name }}(BaseModel):
         {%- for arg in expr.ArrayArguments.args %}
             {{ render_expression(expr=arg) }}{% if not loop.last %},{% endif %}
         {%- endfor %})
+    {%- elif "FunctionCall" in expr -%}
+        {{ expr.FunctionCall.comp.name }}(
+            {%- for arg in expr.FunctionCall.args -%}
+                {{ render_expression(expr=arg) }}{% if not loop.last %}, {% endif %}
+            {%- endfor %})
     {%- endif %}
 {%- endmacro -%}
 {#-
@@ -167,4 +172,6 @@ class BaseModel:
         D = ca.jacobian(self.y, self.u)
         return (A, B, C, D)
 
+{%- for model in models %}
 {{ render_model(model=model) }}
+{%- endfor %}
