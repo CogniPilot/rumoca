@@ -1,46 +1,87 @@
-{%- macro render_model(model) %}
-class {{ model.name }}(BaseModel):
+{%- macro render_class_model(class) %}
+class {{ class.name }}(BaseModel):
     """
-    {{ model.description }}
+    {{ class.description }}
     """
 
     def __init__(self):
+        super().__init__()
 
         # declare constants
-        {%- for const in model.c %}
+        {%- for const in class.c %}
         {{ const.name }} = {{ render_expression(expr=const.start) }}
         {%- endfor %}
 
         # declare parameters
-        {{ render_vector("self.p", model.p) | indent(4) }}
+        {{ render_vector("self.p", class.p) | indent(4) }}
 
         # declare parameter start values
-        {{ render_vector_start_dict("self.p0", model.p) | indent(4) }}
+        {{ render_vector_start_dict("self.p0", class.p) | indent(4) }}
 
         # declare discrete states
-        {{ render_vector("self.z", model.z) | indent(4) }}
+        {{ render_vector("self.z", class.z) | indent(4) }}
 
         # declare discrete states start values
-        {{ render_vector_start_dict("self.z0", model.z) | indent(4) }}
+        {{ render_vector_start_dict("self.z0", class.z) | indent(4) }}
 
         # declare inputs
-        {{ render_vector("self.u", model.u) | indent(4) }}
+        {{ render_vector("self.u", class.u) | indent(4) }}
 
         # declare outputs
-        {{ render_vector("self.y", model.y) | indent(4) }}
+        {{ render_vector("self.y", class.y) | indent(4) }}
 
         # declare continuous states
-        {{ render_vector("self.x", model.x) | indent(4) }}
+        {{ render_vector("self.x", class.x) | indent(4) }}
 
         # declare continuous states start values
-        {{ render_vector_start_dict("self.x0", model.x) | indent(4) }}
+        {{ render_vector_start_dict("self.x0", class.x) | indent(4) }}
 
         # ode
-        {{ render_vector_expression("self.ode", model.ode) | indent(4) }}
+        {{ render_vector_expression("self.ode", class.ode) | indent(4) }}
 
         # alg
-        {{ render_vector_expression("self.alg", model.alg) | indent(4) }}
+        {{ render_vector_expression("self.alg", class.alg) | indent(4) }}
 
+{%- endmacro %}
+
+{%- macro render_class_function(class) %}
+class {{ class.name }}(BaseFunction):
+    """
+    {{ class.description }}
+    """
+    def __init__(self):
+        super().__init__()
+
+        # declare constants
+        {%- for const in class.c %}
+        {{ const.name }} = {{ render_expression(expr=const.start) }}
+        {%- endfor %}
+
+        # declare parameters
+        {{ render_vector("self.p", class.p) | indent(4) }}
+
+        # declare parameter start values
+        {{ render_vector_start_dict("self.p0", class.p) | indent(4) }}
+
+        # declare inputs
+        {{ render_vector("self.u", class.u) | indent(4) }}
+
+        # declare outputs
+        {{ render_vector("self.y", class.y) | indent(4) }}
+
+        # alg
+        {{ render_vector_expression("self.alg", class.alg) | indent(4) }}
+
+{%- endmacro %}
+
+{%- macro render_class(class) %}
+{% if class.class_type == "Model" %}
+{{ render_class_model(class) }}
+{% elif class.class_type == "Function" %}
+{{ render_class_function(class) }}
+{% else %}
+{{ panic("unhandled class type: " + class.class_type) }}
+{% endif %}
 {%- endmacro %}
 
 {%- macro render_vector(target, var_list) -%}
@@ -130,16 +171,13 @@ class {{ model.name }}(BaseModel):
             {%- endfor %})
     {%- endif %}
 {%- endmacro -%}
-{#-
-"""
-RAW JSON STRUCT:
-{{ model | pprint }}
-"""
--#}
 import casadi as ca
 import numpy as np
 
 class BaseModel:
+
+    def __init__(self):
+        pass
 
     def __repr__(self):
         return repr(self.__dict__)
@@ -172,6 +210,19 @@ class BaseModel:
         D = ca.jacobian(self.y, self.u)
         return (A, B, C, D)
 
-{%- for model in models %}
-{{ render_model(model=model) }}
+
+class BaseFunction:
+
+    def __init__(self):
+        pass
+
+    def __repr__(self):
+        return repr(self.__dict__)
+
+    def eval(self, u):
+        F = ca.Function('f', [self.p, self.u], [self.alg], ['p', 'u'], ['y'])
+        p0 = np.array([self.p0[k] for k in self.p0.keys()])
+        return F(p, u)
+{%- for class in classes %}
+{{ render_class(class=class) }}
 {%- endfor %}

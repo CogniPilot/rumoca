@@ -84,37 +84,43 @@ pub fn parse_file(
     def
 }
 
+pub fn panic(msg: &str) {
+    panic!("{:?}", msg);
+}
+
 pub fn generate(
-    models: &Vec<flat_ast::Model>,
+    classes: &Vec<flat_ast::Class>,
     template_file: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let template_text = std::fs::read_to_string(template_file)?;
     let mut env = Environment::new();
+    env.add_function("panic", panic);
     env.add_template("template", &template_text)?;
     let tmpl = env.get_template("template").unwrap();
-    let txt = tmpl.render(context!(models => models)).unwrap();
+    let txt = tmpl.render(context!(classes => classes)).unwrap();
     Ok(txt)
 }
 
 pub fn flatten(
     def: &ast::StoredDefinition,
-) -> Result<Vec<flat_ast::Model>, Box<dyn std::error::Error>> {
-    let mut model_order = Vec::new();
-    let mut models = HashMap::new();
+) -> Result<Vec<flat_ast::Class>, Box<dyn std::error::Error>> {
+    let mut class_order = Vec::new();
+    let mut classes = HashMap::new();
 
     for class in &def.classes {
-        let mut model: flat_ast::Model = Default::default();
+        let mut fclass: flat_ast::Class = Default::default();
         let mut states = HashSet::new();
 
-        model.name = class.name.clone();
-        model.description = class.description.clone();
+        fclass.name = class.name.clone();
+        fclass.class_type = class.class_type.clone();
+        fclass.description = class.description.clone();
 
-        // find all states in the model by searching
+        // find all states in the class by searching
         // for component references that are taken the derivative of
         for eq in &class.equations {
             if let ast::Equation::Der { comp, rhs } = eq {
                 states.insert(comp.name.clone());
-                model.ode.push(*rhs.clone());
+                fclass.ode.push(*rhs.clone());
             }
         }
 
@@ -127,34 +133,34 @@ pub fn flatten(
             };
             match comp.variability {
                 ast::Variability::Constant => {
-                    model.c.push(flat_comp);
+                    fclass.c.push(flat_comp);
                 }
 
                 ast::Variability::Continuous => {
                     if states.contains(&comp.name) {
-                        model.x.push(flat_comp);
+                        fclass.x.push(flat_comp);
                     } else if comp.causality == ast::Causality::Input {
-                        model.u.push(flat_comp);
+                        fclass.u.push(flat_comp);
                     } else {
-                        model.y.push(flat_comp);
+                        fclass.y.push(flat_comp);
                     }
                 }
                 ast::Variability::Discrete => {
-                    model.z.push(flat_comp);
+                    fclass.z.push(flat_comp);
                 }
                 ast::Variability::Parameter => {
-                    model.p.push(flat_comp);
+                    fclass.p.push(flat_comp);
                 }
             }
         }
-        models.insert(model.name.to_string(), model.clone());
-        model_order.push(model.name.to_string());
+        classes.insert(fclass.name.to_string(), fclass.clone());
+        class_order.push(fclass.name.to_string());
     }
 
-    Ok(model_order
+    Ok(class_order
         .iter()
-        .map(|name| models[name].clone())
-        .collect::<Vec<flat_ast::Model>>())
+        .map(|name| classes[name].clone())
+        .collect::<Vec<flat_ast::Class>>())
 }
 
 // pub fn generate_json(def: &ast::StoredDefinition) -> Result<String, std::io::Error> {

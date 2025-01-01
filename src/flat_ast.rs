@@ -1,9 +1,10 @@
-use crate::ast::Expression;
+use crate::ast::{ClassType, Expression};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-pub struct Model {
+pub struct Class {
     pub name: String,
+    pub class_type: ClassType,
     pub description: String,
     pub c: Vec<Component>,
     pub x: Vec<Component>,
