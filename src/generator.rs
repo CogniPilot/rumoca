@@ -144,7 +144,7 @@ pub fn flatten(
                         fclass.x.push(flat_comp);
                     } else if comp.causality == ast::Causality::Input {
                         fclass.u.push(flat_comp);
-                    } else {
+                    } else if comp.causality == ast::Causality::Output {
                         fclass.y.push(flat_comp);
                     }
                 }

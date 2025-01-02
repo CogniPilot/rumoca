@@ -50,9 +50,9 @@ model Quadrotor "quadrotor model"
 equation
     // internal variables
     CD = CD0;
-    P = omega_wb_b[0];
-    Q = omega_wb_b[1];
-    R = omega_wb_b[2];
+    P = omega_wb_b[1];
+    Q = omega_wb_b[2];
+    R = omega_wb_b[3];
     Cl = Cl_p * P;
     Cm = Cm_q * Q;
     Cn = -Cn_r * R;
@@ -71,7 +71,7 @@ equation
     // state derivative
     der(position_op_w) = QuatToMatrix(quaternion_wb) * velocity_w_p_b;
     der(velocity_w_p_b) = {0, 0, 0};
-    der(quaternion_wb) = QuatRightKinematics(quaternion_wb, omega_wb_b);
+    der(quaternion_wb) = QuatKinematics(quaternion_wb, omega_wb_b);
     der(omega_wb_b) = {0, 0, 0};
     der(omega_motor) = {
         tau_inv[1] * (omega_motor_cmd[1] - omega_motor[1]),
@@ -85,12 +85,10 @@ function QuatProduct
     input Real p[4];
     output Real res[4];
 algorithm
-    res := {
-        q[1] * p[1] - q[2] * p[2] - q[3] * p[3] - q[4] * p[4],
-        q[2] * p[1] + q[1] * p[2] - q[4] * p[3] + q[3] * p[4],
-        q[3] * p[1] + q[4] * p[2] + q[1] * p[3] - q[2] * p[4],
-        q[4] * p[1] - q[3] * p[2] + q[2] * p[3] + q[1] * p[4],
-    };
+    res[1] := q[1] * p[1] - q[2] * p[2] - q[3] * p[3] - q[4] * p[4];
+    res[2] := q[2] * p[1] + q[1] * p[2] - q[4] * p[3] + q[3] * p[4];
+    res[3] := q[3] * p[1] + q[4] * p[2] + q[1] * p[3] - q[2] * p[4];
+    res[4] := q[4] * p[1] - q[3] * p[2] + q[2] * p[3] + q[1] * p[4];
 end QuatProduct;
 
 function QuatToMatrix
@@ -113,9 +111,15 @@ algorithm
     bb := b * b;
     cc := c * c;
     dd := d * d;
-    R := {{ aa + bb - cc - dd,    2 * (b*c - a*d),     2 * (b*d + a*c)},
-          {   2 * (b*c + a*d),  aa + cc - bb - dd,     2 * (c*d - a*b)},
-          {   2 * (b*d - a*c),    2 * (c*d + a*b),   aa + dd - bb - cc}};
+    R[1, 1] := aa + bb - cc - dd;
+    R[1, 2] := 2 * (b*c - a*d);
+    R[1, 3] := 2 * (b*d + a*c);
+    R[2, 1] := 2 * (b*c + a*d);
+    R[2, 2] := aa + cc - bb - dd;
+    R[2, 3] := 2 * (c*d - a*b);
+    R[3, 1] := 2 * (b*d - a*c);
+    R[3, 2] := 2 * (c*d + a*b);
+    R[3, 3] := aa + dd - bb - cc;
 end QuatToMatrix;
 
 function QuatKinematics

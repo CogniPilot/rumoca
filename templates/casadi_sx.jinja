@@ -31,7 +31,7 @@ class {{ class.name }}(BaseModel):
         {{ render_statement_list(class.alg) | indent(4) }}
 
         # declare outputs
-        {{ render_vector("self.y", class.y) | indent(4) }}
+        {{ render_vector_with_symbols("self.y", class.y) | indent(4) }}
 
         # declare continuous states
         {{ render_vector_with_symbols("self.x", class.x) | indent(4) }}
@@ -44,10 +44,11 @@ class {{ class.name }}(BaseModel):
 {%- endmacro %}
 
 {%- macro render_class_function(class) %}
-class {{ class.name }}(BaseFunction):
+class __{{ class.name }}(BaseModel):
     """
     {{ class.description }}
     """
+
     def __init__(self):
         super().__init__()
 
@@ -55,12 +56,6 @@ class {{ class.name }}(BaseFunction):
         {%- for const in class.c %}
         {{ const.name }} = {{ render_expression(expr=const.start) }}
         {%- endfor %}
-
-        # declare parameters
-        {{ render_vector_with_symbols("self.p", class.p) | indent(4) }}
-
-        # declare parameter start values
-        {{ render_vector_start_dict("self.p0", class.p) | indent(4) }}
 
         # declare inputs
         {{ render_vector_with_symbols("self.u", class.u) | indent(4) }}
@@ -70,6 +65,13 @@ class {{ class.name }}(BaseFunction):
 
         # declare outputs
         {{ render_vector("self.y", class.y) | indent(4) }}
+        self.F = ca.Function("{{ class.name }}", [self.u], [self.y], ['u'], ['y'])
+    
+    def __call__(self, *args):
+        return self.F(ca.vertcat(*args))
+
+
+{{ class.name }} = __{{ class .name }}()
 {%- endmacro %}
 
 {%- macro render_class(class) %}
@@ -123,6 +125,14 @@ class {{ class.name }}(BaseFunction):
     {{ op }}{{ render_expression(expr=expr.rhs) -}}
 {%- endmacro -%}
 
+{%- macro render_component_reference(comp) -%}
+    {{ comp.name }}
+    {%- if comp.array_subscripts | length > 0 %}[{% for sub in comp.array_subscripts -%}
+        {#- handles index from 1 to 0 from Modelica to python-#}
+        {{ render_expression(expr=sub) | int - 1 }}{% if not loop.last %},{% endif %}
+    {%- endfor -%}]{%- endif -%}
+{%- endmacro -%}
+
 {%- macro render_expression(expr) -%}
     {%- for key, value in expr | items -%}
         {%- if key == "UnsignedReal" -%}
@@ -130,11 +140,7 @@ class {{ class.name }}(BaseFunction):
         {%- elif key == "UnsignedInteger" -%}
             {{ value }}
         {%- elif key == "Ref" -%}
-            {{ value.comp.name }}
-            {%- if value.comp.array_subscripts | length > 0 %}[{% for sub in value.comp.array_subscripts -%}
-                {#- handles index from 1 to 0 from Modelica to python-#}
-                {{ render_expression(expr=sub) | int - 1 }}{% if not loop.last %},{% endif %}
-            {%- endfor -%}]{%- endif -%}
+            {{ render_component_reference(comp=value.comp) }}
         {%- elif key == "Add" -%}
             {{ render_binary(op=" + ", expr=value) -}}
         {%- elif key == "Sub" -%}
@@ -187,13 +193,9 @@ class {{ class.name }}(BaseFunction):
 {%- macro render_statement(stmt) -%}
     {%- for key, value in stmt | items -%}
         {%- if key == "Assignment" -%}
-            {%- if array_subscripts in value -%}
-            {{ value.comp }} = {{ render_expression(expr=value.rhs) | indent(4) }}
-            {%- else -%}
-            {{ value.comp.name }} = {{ render_expression(expr=value.rhs) | indent(4) }}
-            {%- endif -%}
+            {{ render_component_reference(comp=value.comp) }} = {{ render_expression(expr=value.rhs) }}
         {%- else -%}
-            {{ panic("unknown expression: " + key) }}
+            {{ panic("unknown statement: " + key) }}
         {%- endif %}
     {%- endfor -%}
 {%- endmacro -%}
@@ -237,19 +239,8 @@ class BaseModel:
         D = ca.jacobian(self.y, self.u)
         return (A, B, C, D)
 
-
-class BaseFunction:
-
-    def __init__(self):
-        pass
-
-    def __repr__(self):
-        return repr(self.__dict__)
-
-    def eval(self, u):
-        F = ca.Function('f', [self.p, self.u], [self.alg], ['p', 'u'], ['y'])
-        p0 = np.array([self.p0[k] for k in self.p0.keys()])
-        return F(p, u)
+def cat(axis, *args):
+    return ca.vertcat(*args)
 {%- for class in classes %}
 {{ render_class(class=class) }}
 {%- endfor %}
