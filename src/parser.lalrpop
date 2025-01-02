@@ -390,10 +390,10 @@ pub Equation: ast::Equation = {
 //    description
 
 pub Statement: ast::Statement = {
-    <comp: ComponentReference> ":=" <expr:Expression> ";" => {
+    <comp: ComponentReference> ":=" <rhs:Expression> ";" => {
         ast::Statement::Assignment{
             comp,
-            expr
+            rhs
         }
     },
 

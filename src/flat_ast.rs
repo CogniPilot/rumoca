@@ -1,4 +1,4 @@
-use crate::ast::{ClassType, Expression};
+use crate::ast::{ClassType, Expression, Statement};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -13,7 +13,7 @@ pub struct Class {
     pub y: Vec<Component>,
     pub p: Vec<Component>,
     pub ode: Vec<Expression>,
-    pub alg: Vec<Expression>,
+    pub alg: Vec<Statement>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

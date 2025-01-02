@@ -57,7 +57,7 @@ pub enum Connection {
 pub enum Statement {
     Assignment {
         comp: ComponentReference,
-        expr: Box<Expression>,
+        rhs: Box<Expression>,
     },
     If {
         if_cond: Box<Expression>,

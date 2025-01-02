@@ -124,6 +124,9 @@ pub fn flatten(
             }
         }
 
+        // algorithms
+        fclass.alg = class.algorithms.clone();
+
         // create component vectors
         for comp in &class.components {
             let flat_comp = flat_ast::Component {
