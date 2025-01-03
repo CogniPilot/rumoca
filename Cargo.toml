@@ -1,7 +1,7 @@
 [package]
 name = "rumoca"
 authors = ["James Goppert"]
-description = "A Modelica compiler with focus on Casadi, Sympy, JAX, and Collimator generation"
+description = "A Modelica translator with focus on Casadi, Sympy, JAX, and Collimator generation"
 version = "0.3.1"
 edition = "2021"
 license = "Apache-2.0"

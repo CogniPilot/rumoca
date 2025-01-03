@@ -104,7 +104,7 @@ type the following to test that rumoca is in your path.
 
 ```bash
 $ rumoca --help
-Rumoca Modelica Compiler
+Rumoca Modelica Translator
 
 Usage: rumoca [OPTIONS] --template-file <TEMPLATE_FILE> --filename <FILENAME>
 
