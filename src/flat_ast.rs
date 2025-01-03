@@ -17,6 +17,7 @@ pub struct Class {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::vec_box)]
 pub struct Component {
     pub name: String,
     pub start: Box<Expression>,

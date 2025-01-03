@@ -6,6 +6,7 @@ pub struct StoredDefinition {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::vec_box)]
 pub struct ComponentDeclaration {
     pub name: String,
     pub class: String,
@@ -85,6 +86,7 @@ pub enum Statement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::vec_box)]
 pub struct ComponentReference {
     pub name: String,
     pub array_subscripts: Vec<Box<Expression>>,
@@ -127,6 +129,7 @@ pub struct ElseIfExpressionBlock {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::vec_box)]
 pub enum Expression {
     UnsignedInteger(i64),
     UnsignedReal(f64),
@@ -270,8 +273,10 @@ mod tests {
         let mut def = StoredDefinition::default();
 
         // class ball
-        let mut class_ball = ClassDefinition::default();
-        class_ball.name = String::from("Ball");
+        let class_ball = ClassDefinition {
+            name: String::from("Ball"),
+            ..Default::default()
+        };
         def.classes.push(class_ball);
     }
 }

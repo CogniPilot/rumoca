@@ -116,7 +116,7 @@ extern {
 pub StoredDefinition: ast::StoredDefinition = {
     <classes:ClassDefinition*> => {
         ast::StoredDefinition {
-            classes: classes
+            classes
         }
     }
 }
@@ -134,9 +134,9 @@ pub ClassDefinition: ast::ClassDefinition = {
         let mut comp_vec = vec![element_list_first];
         comp_vec.extend(compositions);
         ast::ClassDefinition {
-            name: name,
+            name,
             description: description.unwrap_or("".to_string()),
-            class_type: class_type,
+            class_type,
             partial: partial.is_some(),
             encapsulated: encapsulated.is_some(),
             compositions: comp_vec,
@@ -201,7 +201,7 @@ pub ElementListDefaultPublic: ast::Composition = {
     <elements:ComponentDeclaration*> => {
         ast::Composition::ElementList {
             visibility: ast::Visibility::Public,
-            elements: elements,
+            elements,
         }
     }
 }
@@ -209,8 +209,8 @@ pub ElementListDefaultPublic: ast::Composition = {
 pub ElementList: ast::Composition = {
     <visibility:Visibility> <elements:ComponentDeclaration*> => {
         ast::Composition::ElementList {
-            visibility: visibility,
-            elements: elements,
+            visibility,
+            elements,
         }
     }
 }
@@ -313,8 +313,8 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
     ";"
     => {
         ast::ComponentDeclaration{
-            name: name,
-            class: class,
+            name,
+            class,
             connection: connection.unwrap_or(ast::Connection::None),
             variability: variability.unwrap_or(ast::Variability::Continuous),
             causality: causality.unwrap_or(ast::Causality::None),
@@ -338,7 +338,7 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
 //    | break
 pub Modification: ast::Modification = {
     "=" <expression: Expression> => ast::Modification {
-        expression: expression
+        expression
     }
 }
 // class-modification :
@@ -803,7 +803,7 @@ pub SimpleExpression: Box<ast::Expression> = {
 pub ComponentReference: ast::ComponentReference = {
     <name:"identifier">  <array_subscripts:ArraySubscripts?> => {
         ast::ComponentReference{
-            name: name,
+            name,
             array_subscripts: array_subscripts.unwrap_or(Vec::new()),
         }
     },

@@ -60,7 +60,7 @@ pub fn parse_file(
                     .with_code("E001")
                     .with_labels(vec![
                         Label::primary(file_id, (token.0)..(token.2)),
-                        Label::secondary(file_id, (0)..(token.2)),
+                        Label::secondary(file_id, 0..(token.2)),
                     ])
                     .with_notes(vec!["expected one of: ".to_string(), expected.join(", ")]);
                 codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diagonistic)
