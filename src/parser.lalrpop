@@ -380,8 +380,9 @@ pub EquationSection: ast::Composition = {
 // algorithm-section :
 //    [ initial ] algorithm { statement ";" }
 pub AlgorithmSection: ast::Composition = {
-    "algorithm" <statements:Statement*> => {
+    <initial:"initial"?> "algorithm" <statements:Statement*> => {
         ast::Composition::AlgorithmSection {
+            initial: initial.is_some(),
             statements,
         }
     }

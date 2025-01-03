@@ -167,7 +167,7 @@ class Integrator:
 
 * [LALRPOP](https://github.com/lalrpop/lalrpop) : Parsing, AST generation
 * [LOGOS](https://github.com/maciejhirsz/logos) : Lexing
-* [MINIMINJA](https://github.com/mitsuhiko/minijinja) : JINJA Template Engine
+* [MINIJINJA](https://github.com/mitsuhiko/minijinja) : JINJA Template Engine
 * [SERDE](https://github.com/serde-rs/serde) : AST Serialization
 * [CLAP](https://github.com/clap-rs/clap) : Command Line Argument Parser
 
