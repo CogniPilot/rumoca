@@ -410,6 +410,7 @@ pub Equation: ast::Equation = {
             rhs
         }
     },
+    <eq: IfEquation> => eq,
 }
 
 // statement :
@@ -432,7 +433,7 @@ pub Statement: ast::Statement = {
             rhs
         }
     },
-
+    <stmt: IfStatement> => stmt,
 }
 
 // if-equation :
@@ -446,10 +447,10 @@ pub Statement: ast::Statement = {
 //    ]
 //    end if
 pub IfEquation: ast::Equation = {
-    "if" <if_cond:Expression> "then" <if_eqs:Equation*> ";"
+    "if" <if_cond:Expression> "then" <if_eqs:Equation*>
     <else_if_blocks: ElseIfEquationBlock*>
     <else_eqs: ElseEquationBlock?>
-    "end" "if" => {
+    "end" "if" ";" => {
         ast::Equation::If {
             if_cond,
             if_eqs,
@@ -460,7 +461,7 @@ pub IfEquation: ast::Equation = {
 }
 
 pub ElseIfEquationBlock: ast::ElseIfEquationBlock = {
-    "elseif" <cond:Expression> "then" <eqs:Equation*> ";" => {
+    "elseif" <cond:Expression> "then" <eqs:Equation*> => {
         ast::ElseIfEquationBlock {
             cond, eqs
         }
@@ -468,7 +469,7 @@ pub ElseIfEquationBlock: ast::ElseIfEquationBlock = {
 }
 
 pub ElseEquationBlock: Vec<ast::Equation> = {
-    "else" <eqs:Equation*> ";" => {
+    "else" <eqs:Equation*> => {
         eqs
     }
 }
@@ -484,10 +485,10 @@ pub ElseEquationBlock: Vec<ast::Equation> = {
 //    ]
 //    end if
 pub IfStatement: ast::Statement = {
-    "if" <if_cond:Expression> "then" <if_eqs:Statement*> ";"
+    "if" <if_cond:Expression> "then" <if_eqs:Statement*>
     <else_if_blocks: ElseIfStatementBlock*>
     <else_eqs: ElseStatementBlock?>
-    "end" "if" => {
+    "end" "if" ";" => {
         ast::Statement::If {
             if_cond, if_eqs,
             else_if_blocks,
@@ -497,7 +498,7 @@ pub IfStatement: ast::Statement = {
 }
 
 pub ElseIfStatementBlock: ast::ElseIfStatementBlock = {
-    "elseif" <cond:Expression> "then" <eqs:Statement*> ";" => {
+    "elseif" <cond:Expression> "then" <eqs:Statement*> => {
         ast::ElseIfStatementBlock {
             cond, eqs
         }
@@ -505,7 +506,7 @@ pub ElseIfStatementBlock: ast::ElseIfStatementBlock = {
 }
 
 pub ElseStatementBlock: Vec<ast::Statement> = {
-    "else" <eqs:Statement*> ";" => {
+    "else" <eqs:Statement*> => {
         eqs
     }
 }
@@ -635,6 +636,12 @@ pub SimpleExpression: Box<ast::Expression> = {
     #[precedence(level="7")] #[assoc(side="left")]
     <lhs:SimpleExpression> "<" <rhs:SimpleExpression> => {
         Box::new(ast::Expression::LessThan {
+            lhs,
+            rhs
+        })
+    },
+    <lhs:SimpleExpression> ">" <rhs:SimpleExpression> => {
+        Box::new(ast::Expression::GreaterThan {
             lhs,
             rhs
         })

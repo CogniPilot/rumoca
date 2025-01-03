@@ -1,14 +1,14 @@
 model Quadrotor "quadrotor model"
 
     // input
-    input Real omega_motor_cmd[4] = 0;
+    input Real omega_motor_cmd[4] = {1, 1, 1, 1};
 
     // states
-    output Real position_op_w[3] = {0, 0, 0};
-    output Real velocity_w_p_b[3] = {0, 0, 0};
-    output Real quaternion_wb[4] = {1.0, 0, 0, 0};
-    output Real omega_wb_b[3] = {0, 0, 0};
-    output Real omega_motor[4] = {0, 0, 0, 0};
+    output Real position_op_w[3];
+    output Real velocity_w_p_b[3];
+    output Real quaternion_wb[4];
+    output Real omega_wb_b[3];
+    output Real omega_motor[4];
 
 protected
 
@@ -25,47 +25,57 @@ protected
     parameter Real theta_motor[4] = {-pi/ 4, 3 * pi/ 4, pi/4, -3  * pi/ 4};
     parameter Real CT = 8.5485e-6;
     parameter Real CM = 0.016;
-    parameter Real Cl_p = 0.0;
-    parameter Real Cm_q = 0.0;
-    parameter Real Cn_r = 0.0;
-    parameter Real CD0 = 0.0;
-    parameter Real S = 1e-1;
-    parameter Real rho = 1.225;
     parameter Real m = 2.0;
     parameter Real Jx = 0.02167;
     parameter Real Jy = 0.02167;
     parameter Real Jz = 0.02167;
-    parameter Real noise_power_sqrt_a = 70e-6 * g0;
-    parameter Real noise_power_sqrt_omega = 2.8e-3 * deg2rad;
-    parameter Real noise_power_sqrt_mag_ = 0;
-    parameter Real noise_power_sqrt_gps_pos = 0;
 
     // local variables
-    Real CD;
     Real P;
     Real Q;
     Real R;
     Real F_b[3];
-    Real qbar;
-    Real tau_inv[3];
-    Real thrust[3];
+    Real tau_inv[4];
+    Real thrust[4];
 
 equation
     // local variables
-    CD = CD0;
     P = omega_wb_b[1];
     Q = omega_wb_b[2];
     R = omega_wb_b[3];
-    Cl = Cl_p * P;
-    Cm = Cm_q * Q;
-    Cn = -Cn_r * R;
-    qbar = 0.5 * rho * V^2;
-    F_b_0 = -CD* qbar * S;
+
+    F_b[1] = 0;
+    F_b[2] = 0;
+    F_b[3] = thrust[1] + thrust[2] + thrust[3] + thrust[4];
     thrust = {
         CT * omega_motor[1]^2,
         CT * omega_motor[2]^2,
         CT * omega_motor[3]^2,
         CT * omega_motor[4]^2};
+    
+    if (omega_motor_cmd[1] > omega_motor[1]) then
+      tau_inv[1] = 1.0/tau_up;
+    else
+      tau_inv[1] = 1.0/tau_down;
+    end if;
+
+    if (omega_motor_cmd[2] > omega_motor[2]) then
+      tau_inv[2] = 1.0/tau_up;
+    else
+      tau_inv[2] = 1.0/tau_down;
+    end if;
+    
+    if (omega_motor_cmd[3] > omega_motor[3]) then
+      tau_inv[3] = 1.0/tau_up;
+    else
+      tau_inv[3] = 1.0/tau_down;
+    end if;
+
+    if (omega_motor_cmd[4] > omega_motor[4]) then
+      tau_inv[4] = 1.0/tau_up;
+    else
+      tau_inv[4] = 1.0/tau_down;
+    end if;
     
     // state derivative
     der(position_op_w) = QuatToMatrix(quaternion_wb) * velocity_w_p_b;
@@ -78,6 +88,7 @@ equation
         tau_inv[3] * (omega_motor_cmd[3] - omega_motor[3]),
         tau_inv[4] * (omega_motor_cmd[4] - omega_motor[4])};
 end Quadrotor;
+
 
 function QuatProduct
     input Real q[4];
