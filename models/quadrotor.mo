@@ -10,6 +10,8 @@ model Quadrotor "quadrotor model"
     output Real omega_wb_b[3] = {0, 0, 0};
     output Real omega_motor[4] = {0, 0, 0, 0};
 
+protected
+
     // constants
     constant Real pi = 3.14;
     constant Real g0 = 9.8;
@@ -91,6 +93,7 @@ end QuatProduct;
 function QuatToMatrix
     input Real q[4];
     output Real R[3, 3];
+protected
     Real a;
     Real b;
     Real c;
