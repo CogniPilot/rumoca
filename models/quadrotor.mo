@@ -1,4 +1,15 @@
 model Quadrotor "quadrotor model"
+
+    // input
+    input Real omega_motor_cmd[4] = 0;
+
+    // states
+    output Real position_op_w[3] = {0, 0, 0};
+    output Real velocity_w_p_b[3] = {0, 0, 0};
+    output Real quaternion_wb[4] = {1.0, 0, 0, 0};
+    output Real omega_wb_b[3] = {0, 0, 0};
+    output Real omega_motor[4] = {0, 0, 0, 0};
+
     // constants
     constant Real pi = 3.14;
     constant Real g0 = 9.8;
@@ -27,17 +38,7 @@ model Quadrotor "quadrotor model"
     parameter Real noise_power_sqrt_mag_ = 0;
     parameter Real noise_power_sqrt_gps_pos = 0;
 
-    // states
-    Real position_op_w[3] = {0, 0, 0};
-    Real velocity_w_p_b[3] = {0, 0, 0};
-    Real quaternion_wb[4] = {1.0, 0, 0, 0};
-    Real omega_wb_b[3] = {0, 0, 0};
-    Real omega_motor[4] = {0, 0, 0, 0};
-
-    // input
-    input Real omega_motor_cmd[4] = 0;
-
-    // internal variables
+    // local variables
     Real CD;
     Real P;
     Real Q;
@@ -48,7 +49,7 @@ model Quadrotor "quadrotor model"
     Real thrust[3];
 
 equation
-    // internal variables
+    // local variables
     CD = CD0;
     P = omega_wb_b[1];
     Q = omega_wb_b[2];
@@ -57,11 +58,7 @@ equation
     Cm = Cm_q * Q;
     Cn = -Cn_r * R;
     qbar = 0.5 * rho * V^2;
-
-    // aerodynamics
     F_b_0 = -CD* qbar * S;
-    
-    // thrust
     thrust = {
         CT * omega_motor[1]^2,
         CT * omega_motor[2]^2,

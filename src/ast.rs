@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StoredDefinition {
     pub classes: Vec<ClassDefinition>,
 }
@@ -16,38 +16,54 @@ pub struct ComponentDeclaration {
     pub modification: Modification,
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClassDefinition {
     pub name: String,
     pub description: String,
     pub class_type: ClassType,
     pub partial: bool,
     pub encapsulated: bool,
-    pub components: Vec<ComponentDeclaration>,
-    pub equations: Vec<Equation>,
-    pub algorithms: Vec<Statement>,
+    pub compositions: Vec<Composition>,
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Composition {
+    ElementList {
+        visibility: Visibility,
+        elements: Vec<ComponentDeclaration>,
+    },
+    EquationSection {
+        initial: bool,
+        equations: Vec<Equation>,
+    },
+    AlgorithmSection {
+        statements: Vec<Statement>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Causality {
-    #[default]
     None,
     Input,
     Output,
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Variability {
-    #[default]
     Continuous,
     Discrete,
     Parameter,
     Constant,
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Visibility {
+    Public,
+    Protected,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Connection {
-    #[default]
     None,
     Flow,
     Stream,
@@ -67,7 +83,7 @@ pub enum Statement {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ComponentReference {
     pub name: String,
     pub array_subscripts: Vec<Box<Expression>>,
@@ -225,9 +241,10 @@ pub struct Modification {
     pub expression: Box<Expression>,
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum ClassType {
     #[default]
+    Unknown,
     Model,
     Record,
     OperatorRecord,

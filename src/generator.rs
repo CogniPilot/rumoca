@@ -20,7 +20,10 @@ pub fn parse_file(
     filename: &str,
 ) -> Result<ast::StoredDefinition, ParseError<usize, Token, LexicalError>> {
     let mut files = SimpleFiles::new();
-    let file_id = files.add(filename, std::fs::read_to_string(filename).expect("failed to read file"));
+    let file_id = files.add(
+        filename,
+        std::fs::read_to_string(filename).expect("failed to read file"),
+    );
     let file = files.get(file_id).expect("failed to get file id");
     let lexer = Lexer::new(file.source());
     let parser = StoredDefinitionParser::new();
@@ -52,7 +55,8 @@ pub fn parse_file(
                 }
             }
             ParseError::UnrecognizedToken { token, expected } => {
-                let diagonistic = Diagnostic::error().with_message("Unrecognized Token")
+                let diagonistic = Diagnostic::error()
+                    .with_message("Unrecognized Token")
                     .with_code("E001")
                     .with_labels(vec![
                         Label::primary(file_id, (token.0)..(token.2)),
@@ -100,47 +104,72 @@ pub fn flatten(
         fclass.class_type = class.class_type.clone();
         fclass.description = class.description.clone();
 
-        // find all states in the class by searching
-        // for component references that are taken the derivative of
-        for eq in &class.equations {
-            if let ast::Equation::Der { comp, rhs } = eq {
-                states.insert(comp.name.clone());
-                fclass.ode.push(*rhs.clone());
-            }
-        }
+        for composition in &class.compositions {
+            // ================================================================
+            // Element List
+            // ================================================================
+            if let ast::Composition::ElementList {
+                visibility: _,
+                elements,
+            } = composition
+            {
+                for comp in elements {
+                    let flat_comp = flat_ast::Component {
+                        name: comp.name.clone(),
+                        start: comp.modification.expression.clone(),
+                        array_subscripts: comp.array_subscripts.clone(),
+                    };
+                    match comp.variability {
+                        ast::Variability::Constant => {
+                            fclass.c.push(flat_comp);
+                        }
 
-        // algorithms
-        fclass.alg = class.algorithms.clone();
-
-        // create component vectors
-        for comp in &class.components {
-            let flat_comp = flat_ast::Component {
-                name: comp.name.clone(),
-                start: comp.modification.expression.clone(),
-                array_subscripts: comp.array_subscripts.clone(),
-            };
-            match comp.variability {
-                ast::Variability::Constant => {
-                    fclass.c.push(flat_comp);
-                }
-
-                ast::Variability::Continuous => {
-                    if states.contains(&comp.name) {
-                        fclass.x.push(flat_comp);
-                    } else if comp.causality == ast::Causality::Input {
-                        fclass.u.push(flat_comp);
-                    } else if comp.causality == ast::Causality::Output {
-                        fclass.y.push(flat_comp);
+                        ast::Variability::Continuous => {
+                            if states.contains(&comp.name) {
+                                fclass.x.push(flat_comp);
+                            } else if comp.causality == ast::Causality::Input {
+                                fclass.u.push(flat_comp);
+                            } else if comp.causality == ast::Causality::Output {
+                                fclass.y.push(flat_comp);
+                            }
+                        }
+                        ast::Variability::Discrete => {
+                            fclass.z.push(flat_comp);
+                        }
+                        ast::Variability::Parameter => {
+                            fclass.p.push(flat_comp);
+                        }
                     }
                 }
-                ast::Variability::Discrete => {
-                    fclass.z.push(flat_comp);
+            }
+            // ================================================================
+            // Equation Section
+            // ================================================================
+            else if let ast::Composition::EquationSection {
+                initial: _,
+                equations,
+            } = composition
+            {
+                for eq in equations {
+                    // find all states in the class by searching
+                    // for component references that are taken the derivative of
+                    if let ast::Equation::Der { comp, rhs } = eq {
+                        states.insert(comp.name.clone());
+                        fclass.ode.push(*rhs.clone());
+                    }
                 }
-                ast::Variability::Parameter => {
-                    fclass.p.push(flat_comp);
+            // ================================================================
+            // Algorithm Section
+            // ================================================================
+            } else if let ast::Composition::AlgorithmSection { statements } = composition {
+                for stmt in statements {
+                    fclass.alg.push(stmt.clone());
                 }
+            } else {
+                panic!("unhandled composition section");
             }
         }
+
         classes.insert(fclass.name.to_string(), fclass.clone());
         class_order.push(fclass.name.to_string());
     }

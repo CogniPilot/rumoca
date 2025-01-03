@@ -115,7 +115,7 @@ extern {
 //    { [ final ] class-definition ";" }
 pub StoredDefinition: ast::StoredDefinition = {
     <classes:ClassDefinition*> => {
-        ast::StoredDefinition{
+        ast::StoredDefinition {
             classes: classes
         }
     }
@@ -128,19 +128,18 @@ pub StoredDefinition: ast::StoredDefinition = {
 pub ClassDefinition: ast::ClassDefinition = {
     <encapsulated: "encapsulated"?> <partial: "partial"?> <class_type: ClassType> <name:"identifier">
     <description: Description?>
-    <components: ComponentSection>
-    <equations: EquationSection?>
-    <algorithms: AlgorithmSection?>
+    <element_list_first: ElementListDefaultPublic>
+    <compositions: Composition*>
     "end" "identifier" ";" => {
+        let mut comp_vec = vec![element_list_first];
+        comp_vec.extend(compositions);
         ast::ClassDefinition {
             name: name,
             description: description.unwrap_or("".to_string()),
             class_type: class_type,
-            encapsulated: encapsulated.is_some(),
             partial: partial.is_some(),
-            components: components,
-            equations: equations.unwrap_or(Vec::new()),
-            algorithms: algorithms.unwrap_or(Vec::new())
+            encapsulated: encapsulated.is_some(),
+            compositions: comp_vec,
         }
     }
 }
@@ -198,6 +197,36 @@ pub ClassType: ast::ClassType = {
 //      | equation-section
 //      | algorithm-section
 //    }
+pub ElementListDefaultPublic: ast::Composition = {
+    <elements:ComponentDeclaration*> => {
+        ast::Composition::ElementList {
+            visibility: ast::Visibility::Public,
+            elements: elements,
+        }
+    }
+}
+
+pub ElementList: ast::Composition = {
+    <visibility:Visibility> <elements:ComponentDeclaration*> => {
+        ast::Composition::ElementList {
+            visibility: visibility,
+            elements: elements,
+        }
+    }
+}
+
+pub Composition: ast::Composition = {
+    <comp: ElementList> => comp,
+    <comp: EquationSection> => comp,
+    <comp: AlgorithmSection> => comp,
+}
+
+pub Visibility: ast::Visibility = {
+    "public" => ast::Visibility::Public,
+    "protected" => ast::Visibility::Protected,
+}
+
+
 //    [ external [ language-specification ]
 //      [ external-function-call ] [ annotation-clause ] ";"
 //    ]
@@ -229,9 +258,6 @@ pub ClassType: ast::ClassType = {
 // import-list :
 //    IDENT { "," IDENT }
 //
-pub ComponentSection: Vec<ast::ComponentDeclaration> = {
-    <components:ComponentDeclaration*> => components
-}
 
 // A.2.3 Extends (TODO)
 // ============================================================================
@@ -343,13 +369,22 @@ pub Modification: ast::Modification = {
 // ============================================================================
 // equation-section :
 //    [ initial ] equation { some-equation ";" }
-pub EquationSection: Vec<ast::Equation> = {
-    <_initial:"initial"?> "equation" <equations:Equation*> => equations
+pub EquationSection: ast::Composition = {
+    <initial:"initial"?> "equation" <equations:Equation*> => {
+        ast::Composition::EquationSection {
+            initial: initial.is_some(),
+            equations,
+        }
+    }
 }
 // algorithm-section :
 //    [ initial ] algorithm { statement ";" }
-pub AlgorithmSection: Vec<ast::Statement> = {
-    <_initial:"initial"?> "algorithm" <statements:Statement*> => statements
+pub AlgorithmSection: ast::Composition = {
+    "algorithm" <statements:Statement*> => {
+        ast::Composition::AlgorithmSection {
+            statements,
+        }
+    }
 }
 
 // some-equation :
