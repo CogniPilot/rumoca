@@ -37,6 +37,7 @@ pub enum Composition {
         equations: Vec<Equation>,
     },
     AlgorithmSection {
+        initial: bool,
         statements: Vec<Statement>,
     },
 }

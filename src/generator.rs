@@ -161,7 +161,11 @@ pub fn flatten(
             // ================================================================
             // Algorithm Section
             // ================================================================
-            } else if let ast::Composition::AlgorithmSection { statements } = composition {
+            } else if let ast::Composition::AlgorithmSection {
+                initial: _,
+                statements,
+            } = composition
+            {
                 for stmt in statements {
                     fclass.alg.push(stmt.clone());
                 }
