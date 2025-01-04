@@ -80,18 +80,14 @@ opinions and should be taken with a grain of salt.
         * Custom OSMC license can be prohibitive for commercialization
         * License limits commercialization
 
-## Building, Testing, and Running
+## Installing
 
-This package uses the standard cargo conventions for rust.
+1. First install [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
+2. Next, use Cargo to install Rumoca.
 
 ```bash
-cargo build
-cargo run
-cargo test
-cargo run -- -t templates/casadi_sx.jinja -f models/integrator.mo 
+cargo install rumoca
 ```
-
-## Installing
 
 This package uses the standard cargo installation conventions.
 
@@ -116,7 +112,18 @@ Options:
   -V, --version                        Print version
 ```
 
-## Running
+## Building, Testing, and Running
+
+This package uses the standard cargo conventions for rust.
+
+```bash
+cargo build
+cargo run
+cargo test
+cargo run -- -t templates/casadi_sx.jinja -f models/integrator.mo 
+```
+
+## Example
 
 The compiler is currently under development, but some initial results are shown below:
 
