@@ -82,7 +82,7 @@ opinions and should be taken with a grain of salt.
 
 ## Installing
 
-1. First install [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
+1. First install [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
 2. Next, use Cargo to install Rumoca.
 
 ```bash
