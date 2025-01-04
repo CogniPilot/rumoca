@@ -89,8 +89,8 @@ opinions and should be taken with a grain of salt.
 cargo install rumoca
 ```
 
-> [!NOTE]
-> Make sure you add your rust bin path to your .bashrc and source it.
+> [!IMPORTANT]
+> Make sure you [add your rust bin directory to your path](https://doc.rust-lang.org/book/ch14-04-installing-binaries.html?highlight=.cargo%2Fbin#installing-binaries-with-cargo-install) to your .bashrc and source it.
 
 Type the following to test that rumoca is in your path.
 
@@ -124,9 +124,6 @@ This package uses the standard cargo installation conventions.
 ```bash
 cargo install --path .
 ```
-
-> [!NOTE]
-> Make sure you add your rust bin path to your .bashrc and source it.
 
 ## Example
 
