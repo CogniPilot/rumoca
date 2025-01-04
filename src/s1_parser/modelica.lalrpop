@@ -1,5 +1,5 @@
-use crate::tokens::{Token, LexicalError};
-use crate::ast;
+use crate::s0_lexer::tokens::{Token, LexicalError};
+use crate::s1_parser::ast;
 
 // Based on Modelica 3.7-dev Specification
 grammar;
