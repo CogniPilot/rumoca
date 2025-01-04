@@ -90,7 +90,7 @@ cargo install rumoca
 ```
 
 > [!IMPORTANT]
-> Make sure you [add your rust bin directory to your path](https://doc.rust-lang.org/book/ch14-04-installing-binaries.html?highlight=.cargo%2Fbin#installing-binaries-with-cargo-install) to your .bashrc and source it.
+> Make sure you [add your cargo binary directory to your path](https://doc.rust-lang.org/book/ch14-04-installing-binaries.html?highlight=.cargo%2Fbin#installing-binaries-with-cargo-install) to your .bashrc and source it.
 
 Type the following to test that rumoca is in your path.
 
