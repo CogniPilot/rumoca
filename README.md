@@ -127,7 +127,7 @@ cargo install --path .
 
 ## Example
 
-The compiler is currently under development, but some initial results are shown below:
+Rumoca is currently under development, but some initial results are shown below:
 
 ### Modelica input file: **src/model.mo**
 ```bash
