@@ -89,14 +89,10 @@ opinions and should be taken with a grain of salt.
 cargo install rumoca
 ```
 
-This package uses the standard cargo installation conventions.
+> [!NOTE]
+> Make sure you add your rust bin path to your .bashrc and source it.
 
-```bash
-cargo install --path .
-```
-
-Make sure you add your rust bin path to your .bashrc and source it, then
-type the following to test that rumoca is in your path.
+Type the following to test that rumoca is in your path.
 
 ```bash
 $ rumoca --help
@@ -122,6 +118,15 @@ cargo run
 cargo test
 cargo run -- -t templates/casadi_sx.jinja -f models/integrator.mo 
 ```
+
+This package uses the standard cargo installation conventions.
+
+```bash
+cargo install --path .
+```
+
+> [!NOTE]
+> Make sure you add your rust bin path to your .bashrc and source it.
 
 ## Example
 
