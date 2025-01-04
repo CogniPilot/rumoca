@@ -1,4 +1,4 @@
-# rumoca [<img src="https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg">](https://github.com/CogniPilot/rumoca/actions) [<img src="https://img.shields.io/crates/v/rumoca"](https://crates.io/crates/rumoca)
+# rumoca [<img src="https://github.com/jgoppert/rumoca/actions/workflows/rust.yml/badge.svg">](https://github.com/CogniPilot/rumoca/actions) [<img src="https://img.shields.io/crates/v/rumoca">](https://crates.io/crates/rumoca)
 
 A Modelica translator with focus on CasADi, Sympy, JAX, and PyCollimator generation.
 
