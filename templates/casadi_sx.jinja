@@ -13,31 +13,39 @@ class {{ class.name }}(BaseModel):
         {%- endfor %}
 
         # declare parameters
-        {{ render_vector_with_symbols("self.p", class.p) | indent(4) }}
+        {{ render_symbols(class.p) | indent(4) }}
+        {{ render_vector("self.p", class.p) | indent(4) }}
 
         # declare parameter start values
         {{ render_vector_start_dict("self.p0", class.p) | indent(4) }}
 
         # declare discrete states
-        {{ render_vector_with_symbols("self.z", class.z) | indent(4) }}
+        {{ render_symbols(class.z) | indent(4) }}
+        {{ render_vector("self.z", class.z) | indent(4) }}
 
         # declare discrete states start values
         {{ render_vector_start_dict("self.z0", class.z) | indent(4) }}
 
         # declare inputs
-        {{ render_vector_with_symbols("self.u", class.u) | indent(4) }}
-
-        # alg
-        {{ render_statement_list(class.alg) | indent(4) }}
+        {{ render_symbols(class.u) | indent(4) }}
+        {{ render_vector("self.u", class.u) | indent(4) }}
 
         # declare outputs
-        {{ render_vector_with_symbols("self.y", class.y) | indent(4) }}
+        {{ render_zero_symbols(class.y) | indent(4) }}
+        {{ render_vector("self.y", class.y) | indent(4) }}
+
+        # declare internal variables
+        {{ render_symbols(class.w) | indent(4) }}
 
         # declare continuous states
-        {{ render_vector_with_symbols("self.x", class.x) | indent(4) }}
+        {{ render_symbols(class.x) | indent(4) }}
+        {{ render_vector("self.x", class.x) | indent(4) }}
 
         # declare continuous states start values
         {{ render_vector_start_dict("self.x0", class.x) | indent(4) }}
+
+        # alg
+        {{ render_statement_list(class.alg) | indent(4) }}
 
         # ode
         {{ render_vector_expression("self.ode", class.ode) | indent(4) }}
@@ -58,15 +66,22 @@ class __{{ class.name }}(BaseModel):
         {%- endfor %}
 
         # declare inputs
-        {{ render_vector_with_symbols("self.u", class.u) | indent(4) }}
+        {{ render_symbols(class.u) | indent(4) }}
+        {{ render_vector("self.u", class.u) | indent(4) }}
+
+        # declare internal variables
+        {{ render_symbols(class.w) | indent(4) }}
+
+        # declare outputs
+        {{ render_zero_symbols(class.y) | indent(4) }}
 
         # alg
         {{ render_statement_list(class.alg) | indent(4) }}
 
-        # declare outputs
+        # build function
         {{ render_vector("self.y", class.y) | indent(4) }}
         self.F = ca.Function("{{ class.name }}", [self.u], [self.y], ['u'], ['y'])
-    
+
     def __call__(self, *args):
         return self.F(ca.vertcat(*args))
 
@@ -84,14 +99,22 @@ class __{{ class.name }}(BaseModel):
 {% endif %}
 {%- endmacro %}
 
-{%- macro render_vector_with_symbols(target, var_list) -%}
+{%- macro render_symbols(var_list) -%}
     {% for var in var_list -%}
     {{ var.name }} = ca.SX.sym('{{ var.name }}'
         {%- if var.array_subscripts | length > 0 %}, {% for sub in var.array_subscripts -%}
             {{ render_expression(expr=sub) -}}{% if not loop.last %},{% endif %}
         {%- endfor -%}{%- endif -%})
     {% endfor -%}
-    {{ render_vector(target, var_list) }}
+{%- endmacro -%}
+
+{%- macro render_zero_symbols(var_list) -%}
+    {% for var in var_list -%}
+    {{ var.name }} = ca.SX.zeros(
+        {%- if var.array_subscripts | length > 0 %}{% for sub in var.array_subscripts -%}
+            {{ render_expression(expr=sub) -}}{% if not loop.last %},{% endif %}
+        {%- endfor -%}{%- endif -%})
+    {% endfor -%}
 {%- endmacro -%}
 
 {%- macro render_vector(target, var_list) -%}

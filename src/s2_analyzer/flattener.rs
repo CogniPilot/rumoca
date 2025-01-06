@@ -44,6 +44,8 @@ pub fn flatten(
                                 fclass.u.push(flat_comp);
                             } else if comp.causality == parse_ast::Causality::Output {
                                 fclass.y.push(flat_comp);
+                            } else {
+                                fclass.w.push(flat_comp);
                             }
                         }
                         parse_ast::Variability::Discrete => {

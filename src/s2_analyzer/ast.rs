@@ -8,14 +8,15 @@ pub struct Class {
     pub class_type: ClassType,
     pub description: String,
     pub states: HashSet<String>,
-    pub c: Vec<Component>,
-    pub x: Vec<Component>,
-    pub z: Vec<Component>,
-    pub u: Vec<Component>,
-    pub y: Vec<Component>,
-    pub p: Vec<Component>,
-    pub ode: Vec<Expression>,
-    pub alg: Vec<Statement>,
+    pub c: Vec<Component>, // constants
+    pub x: Vec<Component>, // continuous states
+    pub z: Vec<Component>, // discrete states
+    pub w: Vec<Component>, // continuous internal variables
+    pub u: Vec<Component>, // input
+    pub y: Vec<Component>, // continuous output variables
+    pub p: Vec<Component>, // parameters
+    pub ode: Vec<Expression>, // ordinary diff equation
+    pub alg: Vec<Statement>,  // algebraic eq
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

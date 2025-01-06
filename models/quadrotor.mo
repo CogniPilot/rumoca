@@ -78,7 +78,7 @@ equation
     end if;
     
     // state derivative
-    der(position_op_w) = QuatToMatrix(quaternion_wb) * velocity_w_p_b;
+    der(position_op_w) = {0, 0, 0}; //QuatToMatrix(quaternion_wb) * velocity_w_p_b;
     der(velocity_w_p_b) = {0, 0, 0};
     der(quaternion_wb) = QuatKinematics(quaternion_wb, omega_wb_b);
     der(omega_wb_b) = {0, 0, 0};
