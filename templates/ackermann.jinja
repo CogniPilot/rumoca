@@ -1,0 +1,73 @@
+
+{%- macro render_binary(op, expr) -%}
+    {{ render_expression(expr=expr.lhs) }}{{ op }}{{ render_expression(expr=expr.rhs) -}}
+{%- endmacro -%}
+
+{%- macro render_unary(op, expr) -%}
+    {{ op }}{{ render_expression(expr=expr.rhs) -}}
+{%- endmacro -%}
+
+{%- macro render_component_reference(comp) -%}
+    {{ comp.name }}
+    {%- if comp.array_subscripts | length > 0 %}[{% for sub in comp.array_subscripts -%}
+        {#- handles index from 1 to 0 from Modelica to python-#}
+        {{ render_expression(expr=sub) | int - 1 }}{% if not loop.last %},{% endif %}
+    {%- endfor -%}]{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_expression(expr) -%}
+    {%- for key, value in expr | items -%}
+        {%- if key == "UnsignedReal" -%}
+            {{ value }}
+        {%- elif key == "UnsignedInteger" -%}
+            {{ value }}
+        {%- elif key == "Ref" -%}
+            {{ render_component_reference(comp=value.comp) }}
+        {%- elif key == "Add" -%}
+            {{ render_binary(op=" + ", expr=value) -}}
+        {%- elif key == "Sub" -%}
+            {{ render_binary(op=" - ", expr=value) -}}
+        {%- elif key == "Mul" -%}
+            {{ render_binary(op="*", expr=value) -}}
+        {%- elif key == "Div" -%}
+            {{ render_binary(op="/", expr=value) -}}
+        {%- elif key == "Exp" -%}
+            {{- render_binary(op="^", expr=value) -}}
+        {%- elif key == "Negative" -%}
+            {{ render_unary(op="-", expr=value) -}}
+        {%- elif key == "Parenthesis" -%}
+            ( {{- render_expression(expr=value.rhs) -}} )
+        {%- elif key == "Not" %}
+            {{- render_unary(op="!", expr=value) -}}
+        {%- elif key == "Or" -%}
+            ca.logic_or(
+                {{- render_expression(expr=value.lhs) -}},
+                {{- render_expression(expr=value.rhs) -}})
+        {%- elif key == "And" -%}
+            ca.logic_and(
+                {{- render_expression(expr=value.lhs) -}},
+                {{- render_expression(expr=value.rhs) -}})
+        {%- elif key == "Equal" -%}
+                {{- render_expression(expr=value.lhs) -}} ==
+                {{- render_expression(expr=value.rhs) -}}
+        {%- elif key == "ArrayArguments" -%}
+            ca.vertcat(
+            {%- for arg in value.args %}
+    {{ render_expression(expr=arg) | indent(4) }} {%- if not loop.last -%}, {% endif %}
+            {%- endfor -%})
+        {%- elif key == "FunctionCall" -%}
+            {{ value.comp.name }}(
+                {%- for arg in value.args -%}
+                    {{ render_expression(expr=arg) }} {%- if not loop.last -%}, {% endif %}
+                {%- endfor %})
+        {%- else -%}
+            {{ panic("unknown expression: " + key) }}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{# classes | pprint #}
+
+{{ render_expression(classes[0].p[11].start) }}
+
+</sdf>
