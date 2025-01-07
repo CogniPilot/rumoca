@@ -1,17 +1,14 @@
 use crate::s1_parser::ast as parse_ast;
 use crate::s2_analyzer::ast;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use ordermap::OrderMap;
 
 pub fn flatten(
     def: &parse_ast::StoredDefinition,
-) -> Result<Vec<ast::Class>, Box<dyn std::error::Error>> {
-    let mut class_order = Vec::new();
-    let mut classes = HashMap::new();
+) -> Result<OrderMap<String, ast::Class>, Box<dyn std::error::Error>> {
+    let mut classes = OrderMap::new();
 
     for class in &def.classes {
         let mut fclass: ast::Class = Default::default();
-        let mut states = HashSet::new();
 
         fclass.name = class.name.clone();
         fclass.class_type = class.class_type.clone();
@@ -32,27 +29,30 @@ pub fn flatten(
                         start: comp.modification.expression.clone(),
                         array_subscripts: comp.array_subscripts.clone(),
                     };
+
+                    fclass
+                        .components
+                        .insert(flat_comp.name.clone(), flat_comp.clone());
+
                     match comp.variability {
                         parse_ast::Variability::Constant => {
-                            fclass.c.push(flat_comp);
+                            fclass.c.insert(flat_comp.name.to_string());
                         }
 
                         parse_ast::Variability::Continuous => {
-                            if states.contains(&comp.name) {
-                                fclass.x.push(flat_comp);
-                            } else if comp.causality == parse_ast::Causality::Input {
-                                fclass.u.push(flat_comp);
+                            if comp.causality == parse_ast::Causality::Input {
+                                fclass.u.insert(flat_comp.name.to_string());
                             } else if comp.causality == parse_ast::Causality::Output {
-                                fclass.y.push(flat_comp);
+                                fclass.y.insert(flat_comp.name.to_string());
                             } else {
-                                fclass.w.push(flat_comp);
+                                fclass.w.insert(flat_comp.name.to_string());
                             }
                         }
                         parse_ast::Variability::Discrete => {
-                            fclass.z.push(flat_comp);
+                            fclass.z.insert(flat_comp.name.to_string());
                         }
                         parse_ast::Variability::Parameter => {
-                            fclass.p.push(flat_comp);
+                            fclass.p.insert(flat_comp.name.to_string());
                         }
                     }
                 }
@@ -69,10 +69,15 @@ pub fn flatten(
                     // find all states in the class by searching
                     // for component references that are taken the derivative of
                     if let parse_ast::Equation::Der { comp, rhs } = eq {
-                        states.insert(comp.name.clone());
-                        fclass.ode.push(*rhs.clone());
-                    } else {
-                        panic!("unhandled equation");
+                        // check internal variables for state
+                        if fclass.w.contains(&comp.name) {
+                            fclass.x.insert(fclass.w.remove_full(&comp.name).unwrap().1);
+                        } else if fclass.y.contains(&comp.name) {
+                            fclass.x.insert(fclass.y.remove_full(&comp.name).unwrap().1);
+                        } else {
+                            panic!("unhandled equation");
+                        }
+                        fclass.ode.insert(comp.name.clone(), *rhs.clone());
                     }
                 }
             // ================================================================
@@ -92,11 +97,7 @@ pub fn flatten(
         }
 
         classes.insert(fclass.name.to_string(), fclass.clone());
-        class_order.push(fclass.name.to_string());
     }
 
-    Ok(class_order
-        .iter()
-        .map(|name| classes[name].clone())
-        .collect::<Vec<ast::Class>>())
+    Ok(classes)
 }

@@ -1,22 +1,22 @@
 use crate::s1_parser::ast::{ClassType, Expression, Statement};
+use ordermap::{OrderMap, OrderSet};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Class {
     pub name: String,
     pub class_type: ClassType,
     pub description: String,
-    pub states: HashSet<String>,
-    pub c: Vec<Component>, // constants
-    pub x: Vec<Component>, // continuous states
-    pub z: Vec<Component>, // discrete states
-    pub w: Vec<Component>, // continuous internal variables
-    pub u: Vec<Component>, // input
-    pub y: Vec<Component>, // continuous output variables
-    pub p: Vec<Component>, // parameters
-    pub ode: Vec<Expression>, // ordinary diff equation
-    pub alg: Vec<Statement>,  // algebraic eq
+    pub components: OrderMap<String, Component>, // dictinoary of components
+    pub c: OrderSet<String>,                     // constants
+    pub x: OrderSet<String>,                     // continuous states
+    pub z: OrderSet<String>,                     // discrete states
+    pub w: OrderSet<String>,                     // continuous internal variables
+    pub u: OrderSet<String>,                     // input
+    pub y: OrderSet<String>,                     // continuous output variables
+    pub p: OrderSet<String>,                     // parameters
+    pub ode: OrderMap<String, Expression>,       // ordinary diff equation
+    pub alg: Vec<Statement>,                     // algebraic eq
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
