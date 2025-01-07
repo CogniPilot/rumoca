@@ -15,6 +15,7 @@ model Ackermann "hello"
     parameter Real wheel_inertia_ixx = (wheel_mass / 2) * (wheel_radius ^ 2);
     output Real x;
     output Real y;
+    output Real theta;
     input Real u;
     input Real omega;
 equation
