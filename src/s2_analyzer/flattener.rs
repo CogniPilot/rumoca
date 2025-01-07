@@ -71,6 +71,8 @@ pub fn flatten(
                     if let parse_ast::Equation::Der { comp, rhs } = eq {
                         states.insert(comp.name.clone());
                         fclass.ode.push(*rhs.clone());
+                    } else {
+                        panic!("unhandled equation");
                     }
                 }
             // ================================================================
