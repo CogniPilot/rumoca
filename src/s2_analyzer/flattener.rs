@@ -74,10 +74,10 @@ pub fn flatten(
                             fclass.x.insert(fclass.w.remove_full(&comp.name).unwrap().1);
                         } else if fclass.y.contains(&comp.name) {
                             fclass.x.insert(fclass.y.remove_full(&comp.name).unwrap().1);
-                        } else {
-                            panic!("unhandled equation");
                         }
                         fclass.ode.insert(comp.name.clone(), *rhs.clone());
+                    } else {
+                        panic!("unhandled equation {:?}", eq);
                     }
                 }
             // ================================================================
