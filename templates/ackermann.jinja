@@ -1,26 +1,24 @@
 {%- macro render_class(class) %}
+    {%- set wheel_base = eval(class, class.components.wheel_base.start) -%}
+    {%- set wheel_radius = eval(class, class.components.wheel_radius.start) -%}
+    {%- set wheel_inertia_ixx = eval(class, class.components.wheel_inertia_ixx.start) -%}
 <?xml version='1.0'?>
 <sdf version="1.7">
   <model name="{{ class.name }}">
     <pose>0 0 0.5 0 0 0</pose>
     <static>true</static>
-    {% set wheel_base = render_expression(class.components.wheel_base.start) | float  %}
-    {% set wheel_radius = render_expression(class.components.wheel_radius.start) | float  %}
-    {% set ixx = wheel_base * wheel_radius  %}
     <link name="link">
       <inertial>
         <mass>1.0</mass>
         <wheel_base>{{ wheel_base }}</wheel_base>
         <wheel_radius>{{ wheel_radius }}</wheel_radius>
-        <ixx>{{ ixx }}</ixx>
-        <inertia> <!-- inertias are tricky to compute -->
-          <!-- http://gazebosim.org/tutorials?tut=inertia&cat=build_robot -->
-          <ixx>0.083</ixx>       <!-- for a box: ixx = 0.083 * mass * (y*y + z*z) -->
-          <ixy>0.0</ixy>         <!-- for a box: ixy = 0 -->
-          <ixz>0.0</ixz>         <!-- for a box: ixz = 0 -->
-          <iyy>0.083</iyy>       <!-- for a box: iyy = 0.083 * mass * (x*x + z*z) -->
-          <iyz>0.0</iyz>         <!-- for a box: iyz = 0 -->
-          <izz>0.083</izz>       <!-- for a box: izz = 0.083 * mass * (x*x + y*y) -->
+        <inertia>
+          <ixx>{{ wheel_inertia_ixx }}</ixx>
+          <ixy>0.0</ixy>
+          <ixz>0.0</ixz>
+          <iyy>0.083</iyy>
+          <iyz>0.0</iyz>
+          <izz>0.083</izz>
         </inertia>
       </inertial>
       <collision name="collision">

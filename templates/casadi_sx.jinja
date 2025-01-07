@@ -132,7 +132,7 @@ class __{{ class.name }}(BaseModel):
     {{ target }} = {
     {%- for var in var_list %}
     	{%- set comp = class.components[var]%}
-        '{{ var }}': {{ render_expression(expr=comp.start) | indent(8) -}}
+        '{{ var }}': {{ eval(class, comp.start) | indent(8) -}}
         {% if not loop.last %},{% endif %}
     {%- endfor %}
     }

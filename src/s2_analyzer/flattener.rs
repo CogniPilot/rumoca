@@ -101,3 +101,4 @@ pub fn flatten(
 
     Ok(classes)
 }
+
