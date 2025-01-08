@@ -8,6 +8,7 @@ pub fn flatten(
     let mut flat_def = ast::Def{
         model_md5: def.model_md5.clone(),
         rumoca_git_hash: def.rumoca_git_hash.clone(),
+        rumoca_version: env!("CARGO_PKG_VERSION").to_string(),
         template_md5: "".to_string(),
         ..Default::default()
     };

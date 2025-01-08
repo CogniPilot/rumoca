@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct Def {
     pub classes: OrderMap<String, Class>,
     pub model_md5: String,
+    pub rumoca_version: String,
     pub rumoca_git_hash: String,
     pub template_md5: String,
 }
