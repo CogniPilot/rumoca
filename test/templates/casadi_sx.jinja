@@ -9,7 +9,7 @@ class {{ class.name }}(BaseModel):
 
         # declare constants
         {%- for const in class.c %}
-    		{%- set comp = class.components[const] -%}
+            {%- set comp = class.components[const] %}
         {{ comp.name }} = {{ render_expression(expr=comp.start) }}
         {%- endfor %}
 
@@ -104,7 +104,7 @@ class __{{ class.name }}(BaseModel):
 {%- macro render_symbols(class, var_list) -%}
     {% for var in var_list -%}
     {{ var }} = ca.SX.sym('{{ var }}'
-    	{%- set comp = class.components[var] -%}
+        {%- set comp = class.components[var] -%}
         {%- if comp.array_subscripts | length > 0 %}, {% for sub in comp.array_subscripts -%}
             {{ render_expression(expr=sub) -}}{% if not loop.last %},{% endif %}
         {%- endfor -%}{%- endif -%})
@@ -113,7 +113,7 @@ class __{{ class.name }}(BaseModel):
 
 {%- macro render_zero_symbols(class, var_list) -%}
     {% for var in var_list -%}
-    	{%- set comp = class.components[var] -%}
+        {%- set comp = class.components[var] -%}
     {{ var }} = ca.SX.zeros(
         {%- if comp.array_subscripts | length > 0 %}{% for sub in comp.array_subscripts -%}
             {{ render_expression(expr=sub) -}}{% if not loop.last %},{% endif %}
@@ -131,7 +131,7 @@ class __{{ class.name }}(BaseModel):
 {%- macro render_vector_start_dict(target, class, var_list) -%}
     {{ target }} = {
     {%- for var in var_list %}
-    	{%- set comp = class.components[var]%}
+        {%- set comp = class.components[var]%}
         '{{ var }}': {{ eval(class, comp.start) | indent(8) -}}
         {% if not loop.last %},{% endif %}
     {%- endfor %}
@@ -141,7 +141,7 @@ class __{{ class.name }}(BaseModel):
 {%- macro render_ordermap_expression(target, map, var_list) -%}
     {{ target }} = ca.vertcat(
     {%- for var in var_list %}
-    	{% set expr = map[var] %}
+        {%- set expr = map[var] %}
         {{- render_expression(expr=expr) | indent(8) }}{% if not loop.last %},{% endif %}
     {%- endfor %})
 {%- endmacro -%}

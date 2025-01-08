@@ -1,4 +1,4 @@
-use crate::s1_parser::ast::{ClassType, Expression, Statement};
+use crate::s1_parser::ast::{ClassType, Equation, Expression, Statement};
 use ordermap::{OrderMap, OrderSet};
 use serde::{Deserialize, Serialize};
 
@@ -24,8 +24,9 @@ pub struct Class {
     pub u: OrderSet<String>,                     // input
     pub y: OrderSet<String>,                     // continuous output variables
     pub p: OrderSet<String>,                     // parameters
-    pub ode: OrderMap<String, Expression>,       // ordinary diff equation
-    pub alg: Vec<Statement>,                     // algebraic eq
+    pub ode: OrderMap<String, Box<Expression>>,  // ordinary diff equation
+    pub algebraic: Vec<Equation>,                // algebraic eq
+    pub algorithm: Vec<Statement>,               // algorithm stms
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

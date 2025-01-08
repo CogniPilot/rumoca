@@ -11,9 +11,7 @@ use crate::s1_parser::modelica::StoredDefinitionParser;
 use lalrpop_util::ParseError;
 use md5;
 
-pub fn parse_file(
-    filename: &str,
-) -> ast::StoredDefinition {
+pub fn parse_file(filename: &str) -> ast::StoredDefinition {
     let mut files = SimpleFiles::new();
     let file_id = files.add(
         filename,
@@ -63,11 +61,12 @@ pub fn parse_file(
                     .expect("fail");
             }
         }
+
         // kill process to avoid panicing when parse fails, codespan already reports error
         process::exit(1);
     }
     let mut def = result.unwrap();
-    let digest = md5::compute(&file_txt);
+    let digest = md5::compute(file_txt);
     def.model_md5 = format!("{:x}", digest);
     def.rumoca_git_hash = env!("GIT_HASH").to_string();
     def
