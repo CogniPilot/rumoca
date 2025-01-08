@@ -171,6 +171,11 @@ class Integrator:
         self.ode = ca.Function('ode', [self.x], [self.x_dot])
 ```
 
+### Creating your own template using JINJA
+
+Output is highly customizable as the JINJA template engine is used to render the rumoca
+abstract syntax tree. You can use/modify our example templates in the test directory
+or create your own using the widely used [JINJA](https://docs.rs/minijinja/latest/minijinja/) template language.
 
 ## Dependencies
 
