@@ -13,9 +13,9 @@ struct Args {
     #[arg(short, long)]
     template_file: String,
 
-    /// The filename to compile
+    /// The model file to compile
     #[arg(short, long)]
-    filename: String,
+    model_file: String,
 
     /// Verbose output
     #[arg(short, long, default_value_t = false)]
@@ -24,7 +24,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let def = s1_parser::parse_file(&args.filename);
+    let def = s1_parser::parse_file(&args.model_file);
     let mut flat_def = s2_analyzer::flatten(&def).expect("failed to flatten");
 
     if args.verbose {
