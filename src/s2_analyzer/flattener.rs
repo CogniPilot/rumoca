@@ -1,11 +1,16 @@
 use crate::s1_parser::ast as parse_ast;
 use crate::s2_analyzer::ast;
-use ordermap::OrderMap;
 
 pub fn flatten(
     def: &parse_ast::StoredDefinition,
-) -> Result<OrderMap<String, ast::Class>, Box<dyn std::error::Error>> {
-    let mut classes = OrderMap::new();
+) -> Result<ast::Def, Box<dyn std::error::Error>> {
+
+    let mut flat_def = ast::Def{
+        model_md5: def.model_md5.clone(),
+        rumoca_git_hash: def.rumoca_git_hash.clone(),
+        template_md5: "".to_string(),
+        ..Default::default()
+    };
 
     for class in &def.classes {
         let mut fclass: ast::Class = Default::default();
@@ -73,7 +78,9 @@ pub fn flatten(
                         if fclass.w.contains(&comp.name) {
                             fclass.x.insert(fclass.w.remove_full(&comp.name).unwrap().1);
                         } else if fclass.y.contains(&comp.name) {
-                            fclass.x.insert(fclass.y.remove_full(&comp.name).unwrap().1);
+                            fclass.x.insert(comp.name.clone());
+                        } else {
+                            panic!("derivative state not declared {:?}", comp.name);
                         }
                         fclass.ode.insert(comp.name.clone(), *rhs.clone());
                     } else {
@@ -96,9 +103,9 @@ pub fn flatten(
             }
         }
 
-        classes.insert(fclass.name.to_string(), fclass.clone());
+        flat_def.classes.insert(fclass.name.to_string(), fclass.clone());
     }
 
-    Ok(classes)
+    Ok(flat_def)
 }
 

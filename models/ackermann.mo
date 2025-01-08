@@ -1,4 +1,4 @@
-model Ackermann "hello"
+model Ackermann "Ackermann rover"
     parameter Real wheel_seperation = 0.1;
     parameter Real wheel_base = 0.2;
     parameter Real wheel_radius = 0.3;

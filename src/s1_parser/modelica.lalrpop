@@ -116,7 +116,9 @@ extern {
 pub StoredDefinition: ast::StoredDefinition = {
     <classes:ClassDefinition*> => {
         ast::StoredDefinition {
-            classes
+            classes,
+            rumoca_git_hash: "".to_string(),
+            model_md5: "".to_string(),
         }
     }
 }

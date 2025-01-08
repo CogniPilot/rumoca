@@ -3,6 +3,14 @@ use ordermap::{OrderMap, OrderSet};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct Def {
+    pub classes: OrderMap<String, Class>,
+    pub model_md5: String,
+    pub rumoca_git_hash: String,
+    pub template_md5: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Class {
     pub name: String,
     pub class_type: ClassType,

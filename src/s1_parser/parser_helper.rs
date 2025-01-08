@@ -1,5 +1,5 @@
 use crate::s0_lexer::lexer::Lexer;
-use crate::s0_lexer::tokens::{LexicalError, Token};
+use crate::s0_lexer::tokens::LexicalError;
 use crate::s1_parser::ast;
 use std::process;
 
@@ -9,21 +9,23 @@ use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 
 use crate::s1_parser::modelica::StoredDefinitionParser;
 use lalrpop_util::ParseError;
+use md5;
 
 pub fn parse_file(
     filename: &str,
-) -> Result<ast::StoredDefinition, ParseError<usize, Token, LexicalError>> {
+) -> ast::StoredDefinition {
     let mut files = SimpleFiles::new();
     let file_id = files.add(
         filename,
         std::fs::read_to_string(filename).expect("failed to read file"),
     );
     let file = files.get(file_id).expect("failed to get file id");
-    let lexer = Lexer::new(file.source());
+    let file_txt = file.source();
+    let lexer = Lexer::new(file_txt);
     let parser = StoredDefinitionParser::new();
-    let def = parser.parse(lexer);
-    if def.is_err() {
-        let err = def.as_ref().expect_err("error");
+    let result = parser.parse(lexer);
+    if result.is_err() {
+        let err = result.as_ref().expect_err("error");
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = codespan_reporting::term::Config::default();
 
@@ -64,5 +66,9 @@ pub fn parse_file(
         // kill process to avoid panicing when parse fails, codespan already reports error
         process::exit(1);
     }
+    let mut def = result.unwrap();
+    let digest = md5::compute(&file_txt);
+    def.model_md5 = format!("{:x}", digest);
+    def.rumoca_git_hash = env!("GIT_HASH").to_string();
     def
 }

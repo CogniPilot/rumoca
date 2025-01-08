@@ -236,6 +236,10 @@ class __{{ class.name }}(BaseModel):
     {%- endfor -%}
 {%- endmacro -%}
 
+# rumoca git hash : {{ def.rumoca_git_hash }}
+# template md5    : {{ def.template_md5 }}
+# model md5       : {{ def.model_md5 }}
+
 import casadi as ca
 import numpy as np
 
@@ -278,6 +282,6 @@ class BaseModel:
 def cat(axis, *args):
     return ca.vertcat(*args)
 
-{%- for key, val in classes | items %}
+{%- for key, val in def.classes | items %}
 {{ render_class(class=val) }}
 {%- endfor %}

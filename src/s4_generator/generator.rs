@@ -2,7 +2,6 @@ use crate::s2_analyzer::ast;
 use crate::s1_parser::ast as parse_ast;
 use minijinja::{context, Environment, Error};
 use minijinja::value::ViaDeserialize;
-use ordermap::OrderMap;
 
 pub fn panic(msg: &str) {
     panic!("{:?}", msg);
@@ -61,15 +60,19 @@ pub fn evaluate(class: &ast::Class, expr: &parse_ast::Expression) -> Result<f64,
 }
 
 pub fn generate(
-    classes: &OrderMap<String, ast::Class>,
+    def: &mut ast::Def,
     template_file: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let template_text = std::fs::read_to_string(template_file)?;
+    let template_txt = std::fs::read_to_string(template_file)?;
+
+    let digest = md5::compute(&template_txt);
+    def.template_md5 = format!("{:x}", digest);
+ 
     let mut env = Environment::new();
     env.add_function("panic", panic);
     env.add_function("eval", eval);
-    env.add_template("template", &template_text)?;
+    env.add_template("template", &template_txt)?;
     let tmpl = env.get_template("template")?;
-    let txt = tmpl.render(context!(classes => classes)).unwrap();
+    let txt = tmpl.render(context!(def => def)).unwrap();
     Ok(txt)
 }

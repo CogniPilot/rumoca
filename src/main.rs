@@ -24,13 +24,13 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let def = s1_parser::parse_file(&args.filename).expect("failed to parse");
-    let flat_def = s2_analyzer::flatten(&def).expect("failed to flatten");
+    let def = s1_parser::parse_file(&args.filename);
+    let mut flat_def = s2_analyzer::flatten(&def).expect("failed to flatten");
 
     if args.verbose {
         println!("{:#?}", flat_def);
     }
-    let s = s4_generator::generate(&flat_def, &args.template_file)?;
+    let s = s4_generator::generate(&mut flat_def, &args.template_file)?;
     println!("{s:}");
     Ok(())
 }

@@ -15,6 +15,7 @@ clap = { version = "4.5.20", features = ["derive"] }
 codespan-reporting = "0.11.1"
 lalrpop-util = "0.22.0"
 logos = "0.15.0"
+md5 = "0.7.0"
 minijinja = "2.5.0"
 ordermap = { version = "0.5.4", features = ["serde"] }
 serde = { version = "1.0.214", features = ["derive", "serde_derive"] }
