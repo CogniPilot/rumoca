@@ -116,7 +116,7 @@ This package uses the standard cargo conventions for rust.
 cargo build
 cargo run
 cargo test
-cargo run -- -t templates/casadi_sx.jinja -f models/integrator.mo 
+cargo run -- -t test/templates/casadi_sx.jinja -f test/models/integrator.mo 
 ```
 
 This package uses the standard cargo installation conventions.
@@ -142,7 +142,7 @@ end Integrator;
 
 ### Generated CasADi output file.
 ```bash
-$ rumoca -t templates/casadi_sx.jinja -f models/integrator.mo 
+$ rumoca -t test/templates/casadi_sx.jinja -f test/models/integrator.mo 
 ```
 ```python
 import casadi as ca

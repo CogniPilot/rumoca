@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn test_lexer() {
-        let filename = String::from("models/integrator.mo");
+        let filename = String::from("test/models/integrator.mo");
         let source_code = std::fs::read_to_string(filename).unwrap();
         let mut lexer = Lexer::new(&source_code);
         for result in &mut lexer {
