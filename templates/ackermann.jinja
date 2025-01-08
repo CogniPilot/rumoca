@@ -3,6 +3,11 @@
     {%- set wheel_radius = eval(class, class.components.wheel_radius.start) -%}
     {%- set wheel_inertia_ixx = eval(class, class.components.wheel_inertia_ixx.start) -%}
 <?xml version='1.0'?>
+<!--
+  rumoca git version : {{ def.rumoca_git_hash }}
+  template md5       : {{ def.template_md5 }}
+  model md5          : {{ def.model_md5 }}
+-->
 <sdf version="1.7">
   <model name="{{ class.name }}">
     <pose>0 0 0.5 0 0 0</pose>
@@ -40,6 +45,6 @@
 </sdf>
 {%- endmacro %}
 
-{%- for key, val in classes | items %}
+{%- for key, val in def.classes | items %}
 {{ render_class(class=val) }}
 {%- endfor %}
