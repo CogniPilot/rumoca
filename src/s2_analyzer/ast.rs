@@ -24,7 +24,6 @@ pub struct Class {
     pub u: OrderSet<String>,                     // input
     pub y: OrderSet<String>,                     // continuous output variables
     pub p: OrderSet<String>,                     // parameters
-    pub p0: Vec<f64>,                            // intial parameters
     pub ode: OrderMap<String, Box<Expression>>,  // ordinary diff equation
     pub algebraic: Vec<Equation>,                // algebraic eq
     pub algorithm: Vec<Statement>,               // algorithm stms

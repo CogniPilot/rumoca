@@ -1,6 +1,5 @@
 {%- macro render_class(class) %}
-    {%- set wheel_radius = eval(class, class.components.wheel_radius.start) -%}
-    {%- set wheel_inertia_ixx = eval(class, class.components.wheel_inertia_ixx.start) -%}
+    {%- set c = class.components -%}
 <?xml version='1.0'?>
 <!--
   rumoca pkg version : {{ def.rumoca_version }}
@@ -15,10 +14,10 @@
     <link name="link">
       <inertial>
         <mass>1.0</mass>
-        <wheel_base>{{ wheel_base }}</wheel_base>
-        <wheel_radius>{{ eval(class, class.components.wheel_radius.start) }}</wheel_radius>
+        <wheel_base>{{ c.wheel_base.start_value }}</wheel_base>
+        <wheel_radius>{{ c.wheel_radius.start_value }}</wheel_radius>
         <inertia>
-          <ixx>{{ wheel_inertia_ixx }}</ixx>
+          <ixx>{{ c.wheel_inertia_ixx.start_value }}</ixx>
           <ixy>0.0</ixy>
           <ixz>0.0</ixz>
           <iyy>0.083</iyy>

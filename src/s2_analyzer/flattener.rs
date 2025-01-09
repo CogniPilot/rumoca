@@ -1,5 +1,6 @@
 use crate::s1_parser::ast as parse_ast;
 use crate::s2_analyzer::ast;
+use std::collections::HashMap;
 use std::error::Error;
 
 pub fn evaluate(class: &ast::Class, expr: &parse_ast::Expression) -> Result<f64, Box<dyn Error>> {
@@ -57,25 +58,34 @@ pub fn flatten(def: &parse_ast::StoredDefinition) -> Result<ast::Def, Box<dyn st
     };
 
     for class in &def.classes {
-        flatten_class(class, flat_def);
+        flatten_class(class, &mut flat_def);
     }
 
-    for class in &flat_def.classes {
-        evaluate_expressions(class);
+    let mut start_vals = HashMap::new();
+    for (_, class) in &flat_def.classes {
+        evaluate_expressions(class, &mut start_vals);
+    }
+
+    for (_, class) in &mut flat_def.classes {
+        set_start_expressions(class, &start_vals);
     }
 
     Ok(flat_def)
 }
 
-pub fn evaluate_expressions(class: &ast::Class, def: &mut ast::Def) {
-    for component in &class.components {
-        flatten_composition(composition, &mut fclass)
-        start_value
+pub fn evaluate_expressions(class: &ast::Class, start_vals: &mut HashMap<String, f64>) {
+    for (name, comp) in &class.components {
+        start_vals.insert(name.clone(), evaluate(class, &comp.start).unwrap());
     }
-    class.
 }
 
-pub fn flatten_class(class: &parse_ast::Class, def: &mut ast::Def) {
+pub fn set_start_expressions(class: &mut ast::Class, start_vals: &HashMap<String, f64>) {
+    for (name, comp) in &mut class.components {
+        comp.start_value = start_vals[name];
+    }
+}
+
+pub fn flatten_class(class: &parse_ast::ClassDefinition, def: &mut ast::Def) {
     let mut fclass = ast::Class {
         name: class.name.clone(),
         class_type: class.class_type.clone(),
@@ -87,10 +97,7 @@ pub fn flatten_class(class: &parse_ast::Class, def: &mut ast::Def) {
         flatten_composition(composition, &mut fclass)
     }
 
-    def
-        .classes
-        .insert(fclass.name.to_string(), fclass.clone());
-
+    def.classes.insert(fclass.name.to_string(), fclass.clone());
 }
 pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast::Class) {
     match composition {
