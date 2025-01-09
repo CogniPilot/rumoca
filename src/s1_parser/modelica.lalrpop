@@ -304,6 +304,10 @@ pub Causality: ast::Causality = {
 //    if expression
 // declaration :
 //    IDENT [ array-subscripts ] [ modification ]
+pub ComponentList: ast::ComponentDeclaration = {
+    Comma<>
+}
+
 pub ComponentDeclaration: ast::ComponentDeclaration = {
     <connection:Connection?>
     <variability:Variability?>
