@@ -1,5 +1,4 @@
 {%- macro render_class(class) %}
-    {%- set wheel_base = eval(class, class.components.wheel_base.start) -%}
     {%- set wheel_radius = eval(class, class.components.wheel_radius.start) -%}
     {%- set wheel_inertia_ixx = eval(class, class.components.wheel_inertia_ixx.start) -%}
 <?xml version='1.0'?>
@@ -17,7 +16,7 @@
       <inertial>
         <mass>1.0</mass>
         <wheel_base>{{ wheel_base }}</wheel_base>
-        <wheel_radius>{{ wheel_radius }}</wheel_radius>
+        <wheel_radius>{{ eval(class, class.components.wheel_radius.start) }}</wheel_radius>
         <inertia>
           <ixx>{{ wheel_inertia_ixx }}</ixx>
           <ixy>0.0</ixy>
@@ -45,6 +44,8 @@
   </model>
 </sdf>
 {%- endmacro %}
+
+{{ class | pprint }}
 
 {%- for key, val in def.classes | items %}
 {{ render_class(class=val) }}

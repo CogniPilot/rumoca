@@ -1,5 +1,51 @@
 use crate::s1_parser::ast as parse_ast;
 use crate::s2_analyzer::ast;
+use std::error::Error;
+
+pub fn evaluate(class: &ast::Class, expr: &parse_ast::Expression) -> Result<f64, Box<dyn Error>> {
+    match expr {
+        parse_ast::Expression::Add { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? + evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::Sub { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? - evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::Mul { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? * evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::Div { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? / evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::ElemAdd { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? + evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::ElemSub { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? - evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::ElemMul { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? * evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::ElemDiv { lhs, rhs } => {
+            Ok(evaluate(class, lhs)? / evaluate(class, rhs)?)
+        }
+        parse_ast::Expression::Exp { lhs, rhs } => {
+            Ok(evaluate(class, lhs)?.powf(evaluate(class, rhs)?))
+        }
+        parse_ast::Expression::Parenthesis { rhs } => Ok(evaluate(class, rhs)?),
+        parse_ast::Expression::UnsignedReal(v) => Ok(*v),
+        parse_ast::Expression::UnsignedInteger(v) => Ok(*v as f64),
+        parse_ast::Expression::Ref { comp } => {
+            Ok(evaluate(class, &class.components[&comp.name].start)?)
+        }
+        parse_ast::Expression::ArrayArguments { args } => {
+            println!("calling eval on array arguments: {:?}", args);
+            Ok(0.0)
+        }
+        _ => {
+            todo!("{:?}", expr)
+        }
+    }
+}
 
 pub fn flatten(def: &parse_ast::StoredDefinition) -> Result<ast::Def, Box<dyn std::error::Error>> {
     let mut flat_def = ast::Def {
@@ -11,25 +57,41 @@ pub fn flatten(def: &parse_ast::StoredDefinition) -> Result<ast::Def, Box<dyn st
     };
 
     for class in &def.classes {
-        let mut fclass = ast::Class {
-            name: class.name.clone(),
-            class_type: class.class_type.clone(),
-            description: class.description.clone(),
-            ..Default::default()
-        };
+        flatten_class(class, flat_def);
+    }
 
-        for composition in &class.compositions {
-            flatten_composition(composition, &mut fclass)
-        }
-
-        flat_def
-            .classes
-            .insert(fclass.name.to_string(), fclass.clone());
+    for class in &flat_def.classes {
+        evaluate_expressions(class);
     }
 
     Ok(flat_def)
 }
 
+pub fn evaluate_expressions(class: &ast::Class, def: &mut ast::Def) {
+    for component in &class.components {
+        flatten_composition(composition, &mut fclass)
+        start_value
+    }
+    class.
+}
+
+pub fn flatten_class(class: &parse_ast::Class, def: &mut ast::Def) {
+    let mut fclass = ast::Class {
+        name: class.name.clone(),
+        class_type: class.class_type.clone(),
+        description: class.description.clone(),
+        ..Default::default()
+    };
+
+    for composition in &class.compositions {
+        flatten_composition(composition, &mut fclass)
+    }
+
+    def
+        .classes
+        .insert(fclass.name.to_string(), fclass.clone());
+
+}
 pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast::Class) {
     match composition {
         parse_ast::Composition::ElementList {
@@ -63,6 +125,7 @@ pub fn flatten_component(comp: &parse_ast::ComponentDeclaration, class: &mut ast
     let flat_comp = ast::Component {
         name: comp.name.clone(),
         start: comp.modification.expression.clone(),
+        start_value: 0.0,
         array_subscripts: comp.array_subscripts.clone(),
     };
 
