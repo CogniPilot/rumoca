@@ -14,10 +14,10 @@
     <link name="link">
       <inertial>
         <mass>1.0</mass>
-        <wheel_base>{{ c.wheel_base.start_value }}</wheel_base>
-        <wheel_radius>{{ c.wheel_radius.start_value }}</wheel_radius>
+        <wheel_base>{{ c.wheel_base.start_value.data[0] }}</wheel_base>
+        <wheel_radius>{{ c.wheel_radius.start_value.data[0] }}</wheel_radius>
         <inertia>
-          <ixx>{{ c.wheel_inertia_ixx.start_value }}</ixx>
+          <ixx>{{ c.wheel_inertia_ixx.start_value.data[0] }}</ixx>
           <ixy>0.0</ixy>
           <ixz>0.0</ixz>
           <iyy>0.083</iyy>
@@ -43,8 +43,6 @@
   </model>
 </sdf>
 {%- endmacro %}
-
-{{ class | pprint }}
 
 {%- for key, val in def.classes | items %}
 {{ render_class(class=val) }}

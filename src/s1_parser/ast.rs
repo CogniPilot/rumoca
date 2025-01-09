@@ -15,8 +15,8 @@ pub struct ComponentDeclaration {
     pub connection: Connection,
     pub variability: Variability,
     pub causality: Causality,
-    pub array_subscripts: Vec<Box<Expression>>,
-    pub modification: Modification,
+    pub array_subscripts: Vec<Subscript>,
+    pub modification: Option<Modification>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -91,7 +91,7 @@ pub enum Statement {
 #[allow(clippy::vec_box)]
 pub struct ComponentReference {
     pub name: String,
-    pub array_subscripts: Vec<Box<Expression>>,
+    pub array_subscripts: Vec<Subscript>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -245,6 +245,58 @@ pub enum Expression {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Modification {
     pub expression: Box<Expression>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Declaration {
+    pub name: String,
+    pub array_subscripts: Vec<Subscript>,
+    pub modification: Option<Modification>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Argument {
+    Modificaion {
+        name: Name,
+        each: bool,
+        is_final: bool,
+        modification: Option<Modification>,
+        description: String,
+    },
+    Replaceable,
+    Redeclaration,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TypePrefix {
+    pub connection: Connection,
+    pub variability: Variability,
+    pub causality: Causality,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ComponentClause {
+    pub type_prefix: TypePrefix,
+    pub type_specifier: TypeSpecifier,
+    pub array_subscripts: Vec<Subscript>,
+    pub components: Vec<ComponentDeclaration>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Name {
+    pub ident: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TypeSpecifier {
+    pub leading_period: bool,
+    pub name: Name,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Subscript {
+    Colon,
+    Expression(Box<Expression>),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

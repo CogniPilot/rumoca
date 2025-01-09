@@ -1,9 +1,13 @@
 use crate::s1_parser::ast as parse_ast;
 use crate::s2_analyzer::ast;
+use ndarray::{ArrayBase, ArrayD, IxDyn, OwnedRepr};
 use std::collections::HashMap;
 use std::error::Error;
 
-pub fn evaluate(class: &ast::Class, expr: &parse_ast::Expression) -> Result<f64, Box<dyn Error>> {
+pub fn evaluate(
+    class: &ast::Class,
+    expr: &parse_ast::Expression,
+) -> Result<ArrayBase<OwnedRepr<f64>, IxDyn>, Box<dyn Error>> {
     match expr {
         parse_ast::Expression::Add { lhs, rhs } => {
             Ok(evaluate(class, lhs)? + evaluate(class, rhs)?)
@@ -12,7 +16,11 @@ pub fn evaluate(class: &ast::Class, expr: &parse_ast::Expression) -> Result<f64,
             Ok(evaluate(class, lhs)? - evaluate(class, rhs)?)
         }
         parse_ast::Expression::Mul { lhs, rhs } => {
-            Ok(evaluate(class, lhs)? * evaluate(class, rhs)?)
+            // matrix multiplication
+            let a = evaluate(class, lhs)?;
+            let b = evaluate(class, rhs)?;
+            let res = a * b;
+            Ok(res)
         }
         parse_ast::Expression::Div { lhs, rhs } => {
             Ok(evaluate(class, lhs)? / evaluate(class, rhs)?)
@@ -30,18 +38,48 @@ pub fn evaluate(class: &ast::Class, expr: &parse_ast::Expression) -> Result<f64,
             Ok(evaluate(class, lhs)? / evaluate(class, rhs)?)
         }
         parse_ast::Expression::Exp { lhs, rhs } => {
-            Ok(evaluate(class, lhs)?.powf(evaluate(class, rhs)?))
+            let base = evaluate(class, lhs)?;
+            let exp = evaluate(class, rhs)?;
+            if base.shape() != [1] {
+                panic!("exp called with non-scalar base")
+            }
+            if exp.shape() != [1] {
+                panic!("exp called with non-scalar exponent")
+            }
+            let shape = IxDyn(&[1]);
+            let values = vec![base[0].powf(exp[0])];
+            Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
         parse_ast::Expression::Parenthesis { rhs } => Ok(evaluate(class, rhs)?),
-        parse_ast::Expression::UnsignedReal(v) => Ok(*v),
-        parse_ast::Expression::UnsignedInteger(v) => Ok(*v as f64),
-        parse_ast::Expression::Ref { comp } => {
-            Ok(evaluate(class, &class.components[&comp.name].start)?)
+        parse_ast::Expression::UnsignedReal(v) => {
+            let shape = IxDyn(&[1]);
+            let values = vec![*v];
+            Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
+        parse_ast::Expression::UnsignedInteger(v) => {
+            let shape = IxDyn(&[1]);
+            let values = vec![*v as f64];
+            Ok(ArrayD::from_shape_vec(shape, values).unwrap())
+        }
+        parse_ast::Expression::Ref { comp } => match &class.components[&comp.name].start {
+            Some(m) => Ok(evaluate(class, &m.expression)?),
+            None => {
+                panic!("no start value defined for {:?}", comp);
+            }
+        },
         parse_ast::Expression::ArrayArguments { args } => {
-            println!("calling eval on array arguments: {:?}", args);
-            Ok(0.0)
+            let shape = IxDyn(&[args.len()]);
+            let mut values = Vec::new();
+            for arg in args {
+                let arg_val = evaluate(class, arg)?;
+                if arg_val.shape() != [1] {
+                    panic!("array arguments called with non-scalar argument")
+                }
+                values.push(arg_val[0])
+            }
+            Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
+        parse_ast::Expression::Negative { rhs } => Ok(-evaluate(class, rhs)?),
         _ => {
             todo!("{:?}", expr)
         }
@@ -73,15 +111,25 @@ pub fn flatten(def: &parse_ast::StoredDefinition) -> Result<ast::Def, Box<dyn st
     Ok(flat_def)
 }
 
-pub fn evaluate_expressions(class: &ast::Class, start_vals: &mut HashMap<String, f64>) {
+pub fn evaluate_expressions(
+    class: &ast::Class,
+    start_vals: &mut HashMap<String, ArrayBase<OwnedRepr<f64>, IxDyn>>,
+) {
     for (name, comp) in &class.components {
-        start_vals.insert(name.clone(), evaluate(class, &comp.start).unwrap());
+        if let Some(m) = &comp.start {
+            start_vals.insert(name.clone(), evaluate(class, &m.expression).unwrap());
+        }
     }
 }
 
-pub fn set_start_expressions(class: &mut ast::Class, start_vals: &HashMap<String, f64>) {
+pub fn set_start_expressions(
+    class: &mut ast::Class,
+    start_vals: &HashMap<String, ArrayBase<OwnedRepr<f64>, IxDyn>>,
+) {
     for (name, comp) in &mut class.components {
-        comp.start_value = start_vals[name];
+        if start_vals.contains_key(name) {
+            comp.start_value = start_vals[name].clone();
+        }
     }
 }
 
@@ -131,8 +179,8 @@ pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast
 pub fn flatten_component(comp: &parse_ast::ComponentDeclaration, class: &mut ast::Class) {
     let flat_comp = ast::Component {
         name: comp.name.clone(),
-        start: comp.modification.expression.clone(),
-        start_value: 0.0,
+        start: comp.modification.clone(),
+        start_value: ArrayD::zeros(vec![1, 1]),
         array_subscripts: comp.array_subscripts.clone(),
     };
 

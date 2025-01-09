@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 mod s0_lexer;
 mod s1_parser;
 mod s2_analyzer;

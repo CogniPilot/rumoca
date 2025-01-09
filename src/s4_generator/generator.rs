@@ -5,6 +5,10 @@ pub fn panic(msg: &str) {
     panic!("{:?}", msg);
 }
 
+pub fn warn(msg: &str) {
+    eprintln!("{:?}", msg);
+}
+
 pub fn generate(
     def: &mut ast::Def,
     template_file: &str,
@@ -15,6 +19,7 @@ pub fn generate(
 
     let mut env = Environment::new();
     env.add_function("panic", panic);
+    env.add_function("warn", warn);
     env.add_template("template", &template_txt)?;
     let tmpl = env.get_template("template")?;
     let txt = tmpl.render(context!(def => def)).unwrap();

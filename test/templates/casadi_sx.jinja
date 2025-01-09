@@ -10,37 +10,37 @@ class {{ class.name }}(BaseModel):
         # declare constants
         {%- for const in class.c %}
             {%- set comp = class.components[const] %}
-        {{ comp.name }} = {{ render_expression(expr=comp.start) }}
+        {{ comp.name }} = {{ comp.start_value.data[0] }}
         {%- endfor %}
 
         # declare parameters
         {{ render_symbols(class, class.p) | indent(4) }}
-        {{ render_vector("self.p", class, class.p) | indent(4) }}
+        {{ render_vector("self.p", class, class.p) | indent(12) }}
 
         # declare parameter start values
         {{ render_vector_start_dict("self.p0", class, class.p) | indent(4) }}
 
         # declare discrete states
         {{ render_symbols(class, class.z) | indent(4) }}
-        {{ render_vector("self.z", class, class.z) | indent(4) }}
+        {{ render_vector("self.z", class, class.z) | indent(12) }}
 
         # declare discrete states start values
         {{ render_vector_start_dict("self.z0", class, class.z) | indent(4) }}
 
         # declare inputs
         {{ render_symbols(class, class.u) | indent(4) }}
-        {{ render_vector("self.u", class, class.u) | indent(4) }}
+        {{ render_vector("self.u", class, class.u) | indent(12) }}
 
         # declare outputs
         {{ render_zero_symbols(class, class.y) | indent(4) }}
-        {{ render_vector("self.y", class, class.y) | indent(4) }}
+        {{ render_vector("self.y", class, class.y) | indent(12) }}
 
         # declare internal variables
         {{ render_symbols(class.w) | indent(4) }}
 
         # declare continuous states
         {{ render_symbols(class, class.x) | indent(4) }}
-        {{ render_vector("self.x", class, class.x) | indent(4) }}
+        {{ render_vector("self.x", class, class.x) | indent(12) }}
 
         # declare continuous states start values
         {{ render_vector_start_dict("self.x0", class, class.x) | indent(4) }}
@@ -49,7 +49,7 @@ class {{ class.name }}(BaseModel):
         {{ render_statement_list(class.alg) | indent(4) }}
 
         # ode
-        {{ render_ordermap_expression("self.ode", class.ode, class.x) | indent(4) }}
+        {{ render_ordermap_expression("self.ode", class.ode, class.x) | indent(8) }}
 
 {%- endmacro %}
 
@@ -92,47 +92,51 @@ class __{{ class.name }}(BaseModel):
 {%- endmacro %}
 
 {%- macro render_class(class) %}
-{% if class.class_type == "Model" %}
-{{ render_class_model(class) }}
-{% elif class.class_type == "Function" %}
-{{ render_class_function(class) }}
-{% else %}
-{{ panic("unhandled class type: " + class.class_type) }}
-{% endif %}
+    {% if class.class_type == "Model" %}
+        {{ render_class_model(class) }}
+    {% elif class.class_type == "Function" %}
+        {{ render_class_function(class) }}
+    {% else %}
+        {{ warn("unhandled class type: " + class.class_type) }}
+    {% endif %}
 {%- endmacro %}
 
 {%- macro render_symbols(class, var_list) -%}
-    {% for var in var_list -%}
+    {%- for var in var_list -%}
     {{ var }} = ca.SX.sym('{{ var }}'
         {%- set comp = class.components[var] -%}
-        {%- if comp.array_subscripts | length > 0 %}, {% for sub in comp.array_subscripts -%}
-            {{ render_expression(expr=sub) -}}{% if not loop.last %},{% endif %}
-        {%- endfor -%}{%- endif -%})
+        {%- if comp.array_subscripts | length > 0 -%}{{ ", " }}
+            {%- for sub in comp.array_subscripts -%}
+                {{ render_subscript(sub) -}}{% if not loop.last %},{% endif -%}
+            {%- endfor -%}
+        {%- endif -%})
     {% endfor -%}
 {%- endmacro -%}
 
 {%- macro render_zero_symbols(class, var_list) -%}
-    {% for var in var_list -%}
+    {%- for var in var_list -%}
         {%- set comp = class.components[var] -%}
-    {{ var }} = ca.SX.zeros(
-        {%- if comp.array_subscripts | length > 0 %}{% for sub in comp.array_subscripts -%}
-            {{ render_expression(expr=sub) -}}{% if not loop.last %},{% endif %}
-        {%- endfor -%}{%- endif -%})
+        {{- var }} = ca.SX.zeros(
+        {%- if comp.array_subscripts | length > 0 -%}
+            {%- for sub in comp.array_subscripts -%}
+            {{ render_subscript(sub) }}{% if not loop.last %},{% endif -%}
+            {%- endfor -%}
+        {%- endif -%})
     {% endfor -%}
 {%- endmacro -%}
 
 {%- macro render_vector(target, class, var_list) -%}
     {{ target }} = ca.vertcat(
-    {%- for var in var_list %}
-        {{ var }}{% if not loop.last %},{% endif %}
-    {%- endfor %})
+    {%- for var in var_list %}{{"\n"}}
+        {{- var }}{% if not loop.last %},{% endif %}
+    {%- endfor -%})
 {%- endmacro -%}
 
 {%- macro render_vector_start_dict(target, class, var_list) -%}
     {{ target }} = {
     {%- for var in var_list %}
         {%- set comp = class.components[var]%}
-        '{{ var }}': {{ eval(class, comp.start) | indent(8) -}}
+        '{{ var }}': {{ comp.start_value.data[0] | indent(8) -}}
         {% if not loop.last %},{% endif %}
     {%- endfor %}
     }
@@ -140,17 +144,17 @@ class __{{ class.name }}(BaseModel):
 
 {%- macro render_ordermap_expression(target, map, var_list) -%}
     {{ target }} = ca.vertcat(
-    {%- for var in var_list %}
-        {%- set expr = map[var] %}
-        {{- render_expression(expr=expr) | indent(8) }}{% if not loop.last %},{% endif %}
-    {%- endfor %})
+    {% for var in var_list -%}
+        {%- set expr = map[var] -%}
+        {{ render_expression(expr=expr) }}{% if not loop.last %},{% endif %}
+    {% endfor -%})
 {%- endmacro -%}
 
 {%- macro render_vector_expression(target, expr_list) -%}
     {{ target }} = ca.vertcat(
-    {%- for expr in expr_list %}
-        {{ render_expression(expr=expr) | indent(8) }}{% if not loop.last %},{% endif %}
-    {%- endfor %})
+    {% for expr in expr_list -%}
+        {{ render_expression(expr=expr) }}{% if not loop.last %},{% endif %}
+    {% endfor -%})
 {%- endmacro -%}
 
 {%- macro render_binary(op, expr) -%}
@@ -161,12 +165,24 @@ class __{{ class.name }}(BaseModel):
     {{ op }}{{ render_expression(expr=expr.rhs) -}}
 {%- endmacro -%}
 
+{%- macro render_subscript(sub) -%}
+    {%- for key, value in sub | items -%}
+        {%- if key == "Expression" -%}
+            {{ render_expression(expr=sub.Expression) | int }}
+        {%- elif key == "Colon" -%}
+            :
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+
 {%- macro render_component_reference(comp) -%}
     {{ comp.name }}
-    {%- if comp.array_subscripts | length > 0 %}[{% for sub in comp.array_subscripts -%}
-        {#- handles index from 1 to 0 from Modelica to python-#}
-        {{ render_expression(expr=sub) | int - 1 }}{% if not loop.last %},{% endif %}
-    {%- endfor -%}]{%- endif -%}
+    {%- if comp.array_subscripts | length > 0 %}[
+        {%- for sub in comp.array_subscripts -%}
+            {#- handles index from 1 to 0 from Modelica to python-#}
+            {{ render_subscript(sub) | int -1 }}
+        {%- endfor -%}]
+    {%- endif -%}
 {%- endmacro -%}
 
 {%- macro render_expression(expr) -%}
@@ -206,16 +222,16 @@ class __{{ class.name }}(BaseModel):
                 {{- render_expression(expr=value.rhs) -}}
         {%- elif key == "ArrayArguments" -%}
             ca.vertcat(
-            {%- for arg in value.args %}
-    {{ render_expression(expr=arg) | indent(4) }} {%- if not loop.last -%}, {% endif %}
+            {%- for arg in value.args -%}
+                {{- "\n       " }} {{ render_expression(expr=arg) }} {%- if not loop.last -%},{% endif %}
             {%- endfor -%})
         {%- elif key == "FunctionCall" -%}
             {{ value.comp.name }}(
                 {%- for arg in value.args -%}
-                    {{ render_expression(expr=arg) }} {%- if not loop.last -%}, {% endif %}
-                {%- endfor %})
+                    {{ render_expression(expr=arg) }} {% if not loop.last -%}, {% endif %}
+                {%- endfor -%})
         {%- else -%}
-            {{ panic("unknown expression: " + key) }}
+            {{ warn("unknown expression: " + key + value | pprint) }}
         {%- endif -%}
     {%- endfor -%}
 {%- endmacro -%}
@@ -231,7 +247,7 @@ class __{{ class.name }}(BaseModel):
         {%- if key == "Assignment" -%}
             {{ render_component_reference(comp=value.comp) }} = {{ render_expression(expr=value.rhs) }}
         {%- else -%}
-            {{ panic("unknown statement: " + key) }}
+            {{ warn("unknown statement: " + key) }}
         {%- endif %}
     {%- endfor -%}
 {%- endmacro -%}

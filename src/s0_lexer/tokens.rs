@@ -207,6 +207,8 @@ pub enum Token {
     Assign,
     #[token(";")]
     Semicolon,
+    #[token(".")]
+    Period,
     #[token(":")]
     Colon,
     #[token(",")]

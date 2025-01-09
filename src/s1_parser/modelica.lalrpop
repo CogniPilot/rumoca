@@ -1,8 +1,34 @@
+// Based on Modelica 3.7-dev Specification
 use crate::s0_lexer::tokens::{Token, LexicalError};
 use crate::s1_parser::ast;
 
-// Based on Modelica 3.7-dev Specification
 grammar;
+
+// LALRPOP macros
+// ============================================================================
+CommaSeparatedList<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+PeriodSeparatedList<T>: Vec<T> = {
+    <mut v:(<T> ".")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+SemicolonTerminatedList<T>: Vec<T> = {
+    <v:(<T> ";")*> => v
+};
 
 // 2.3.3 Modelica Keywords
 // ============================================================================
@@ -85,6 +111,7 @@ extern {
         ":=" => Token::Assign,
         "=" => Token::Equal,
         ";" => Token::Semicolon,
+        "." => Token::Period,
         ":" => Token::Colon,
         "," => Token::Comma,
         "+" => Token::OperatorAdd,
@@ -279,35 +306,57 @@ pub Visibility: ast::Visibility = {
 // ============================================================================
 // component-clause :
 //    type-prefix type-specifier [ array-subscripts ] component-list
+pub ComponentClause: ast::ComponentClause = {
+    <type_prefix: TypePrefix>
+    <type_specifier: TypeSpecifier>
+    <array_subscripts: ArraySubscripts>
+    <components: CommaSeparatedList<ComponentDeclaration>> => {
+        ast::ComponentClause {
+            type_prefix,
+            type_specifier,
+            array_subscripts,
+            components
+        }
+    }
+}
+
 // type-prefix :
 //    [ flow | stream ]
+//    [ discrete | parameter | constant ]
+//    [ input | output ]
+pub TypePrefix: ast::TypePrefix = {
+    <connection: Connection?>
+    <variability: Variability?>
+    <causality: Causality?> => {
+        ast::TypePrefix {
+            connection: connection.unwrap_or(ast::Connection::None),
+            variability: variability.unwrap_or(ast::Variability::Continuous),
+            causality: causality.unwrap_or(ast::Causality::None),
+        }
+    }
+}
 pub Connection: ast::Connection = {
     "flow" => ast::Connection::Flow,
     "stream" => ast::Connection::Stream,
 }
-//    [ discrete | parameter | constant ]
 pub Variability: ast::Variability = {
     "discrete" => ast::Variability::Discrete,
     "parameter" => ast::Variability::Parameter,
     "constant" => ast::Variability::Constant,
 }
-//    [ input | output ]
 pub Causality: ast::Causality = {
     "input" => ast::Causality::Input,
     "output" => ast::Causality::Output,
 }
 // component-list :
 //    component-declaration { "," component-declaration }
+pub ComponentList: Vec<ast::ComponentDeclaration> = {
+    <components: CommaSeparatedList<ComponentDeclaration>> => {
+        components
+    }
+}
 // component-declaration :
 //    declaration [ condition-attribute ] description
-// condition-attribute :
-//    if expression
-// declaration :
-//    IDENT [ array-subscripts ] [ modification ]
-pub ComponentList: ast::ComponentDeclaration = {
-    Comma<>
-}
-
 pub ComponentDeclaration: ast::ComponentDeclaration = {
     <connection:Connection?>
     <variability:Variability?>
@@ -325,14 +374,28 @@ pub ComponentDeclaration: ast::ComponentDeclaration = {
             variability: variability.unwrap_or(ast::Variability::Continuous),
             causality: causality.unwrap_or(ast::Causality::None),
             array_subscripts: array_subscripts.unwrap_or(Vec::new()),
-            modification: modification.unwrap_or(ast::Modification{ 
-                expression: Box::new(ast::Expression::UnsignedReal(0.0))
-            })
+            modification,
         }
-    },
+    }
 }
-
-
+// condition-attribute :
+//    if expression
+pub ConditionAttribute: Box<ast::Expression> = {
+    "if" <cond: Expression> => cond
+}
+// declaration :
+//    IDENT [ array-subscripts ] [ modification ]
+pub Declaration: ast::Declaration = {
+    <name: "identifier">
+    <array_subscripts:ArraySubscripts?>
+    <modification:Modification?> => {
+        ast::Declaration {
+            name,
+            array_subscripts: array_subscripts.unwrap_or(Vec::new()),
+            modification,
+        }
+    }
+}
 
 // A.2.5 Modification (TODO)
 // ============================================================================
@@ -351,6 +414,7 @@ pub Modification: ast::Modification = {
 //    "(" [ argument-list ] ")"
 // argument-list :
 //    argument { "," argument }
+
 // argument :
 //    element-modification-or-replaceable
 //    | element-redeclaration
@@ -364,6 +428,18 @@ pub Modification: ast::Modification = {
 // element-replaceable :
 //    replaceable ( short-class-definition | component-clause1 )
 //    [ constraining-clause ]
+pub Argument: ast::Argument = {
+    <each: "each"?> <is_final: "final"?> <name: Name> <modification: Modification?> <description: Description> => {
+        ast::Argument::Modificaion {
+            name,
+            modification,
+            description,
+            each: each.is_some(),
+            is_final: is_final.is_some(),
+        }
+    },
+}
+
 // component-clause1 :
 //    type-prefix type-specifier component-declaration1
 // component-declaration1 :
@@ -376,7 +452,7 @@ pub Modification: ast::Modification = {
 // equation-section :
 //    [ initial ] equation { some-equation ";" }
 pub EquationSection: ast::Composition = {
-    <initial:"initial"?> "equation" <equations:Equation*> => {
+    <initial:"initial"?> "equation" <equations:SemicolonTerminatedList<Equation>> => {
         ast::Composition::EquationSection {
             initial: initial.is_some(),
             equations,
@@ -386,7 +462,7 @@ pub EquationSection: ast::Composition = {
 // algorithm-section :
 //    [ initial ] algorithm { statement ";" }
 pub AlgorithmSection: ast::Composition = {
-    <initial:"initial"?> "algorithm" <statements:Statement*> => {
+    <initial:"initial"?> "algorithm" <statements:SemicolonTerminatedList<Statement>> => {
         ast::Composition::AlgorithmSection {
             initial: initial.is_some(),
             statements,
@@ -404,13 +480,13 @@ pub AlgorithmSection: ast::Composition = {
 //    )
 //    description
 pub Equation: ast::Equation = {
-    <lhs:SimpleExpression> "=" <rhs:Expression> ";" => {
+    <lhs:SimpleExpression> "=" <rhs:Expression> => {
         ast::Equation::Simple {
             lhs,
             rhs
         }
     },
-    "der" "(" <comp:ComponentReference> ")" "=" <rhs:Expression> ";" => {
+    "der" "(" <comp:ComponentReference> ")" "=" <rhs:Expression> => {
         ast::Equation::Der {
             comp,
             rhs
@@ -433,7 +509,7 @@ pub Equation: ast::Equation = {
 //    description
 
 pub Statement: ast::Statement = {
-    <comp: ComponentReference> ":=" <rhs:Expression> ";" => {
+    <comp: ComponentReference> ":=" <rhs:Expression> => {
         ast::Statement::Assignment{
             comp,
             rhs
@@ -452,11 +528,13 @@ pub Statement: ast::Statement = {
 //      { some-equation ";" }
 //    ]
 //    end if
+
 pub IfEquation: ast::Equation = {
-    "if" <if_cond:Expression> "then" <if_eqs:Equation*>
+    "if" <if_cond:Expression> "then"
+    <if_eqs:SemicolonTerminatedList<Equation>>
     <else_if_blocks: ElseIfEquationBlock*>
     <else_eqs: ElseEquationBlock?>
-    "end" "if" ";" => {
+    "end" "if" => {
         ast::Equation::If {
             if_cond,
             if_eqs,
@@ -467,7 +545,8 @@ pub IfEquation: ast::Equation = {
 }
 
 pub ElseIfEquationBlock: ast::ElseIfEquationBlock = {
-    "elseif" <cond:Expression> "then" <eqs:Equation*> => {
+    "elseif" <cond:Expression> "then"
+    <eqs:SemicolonTerminatedList<Equation>> => {
         ast::ElseIfEquationBlock {
             cond, eqs
         }
@@ -475,7 +554,7 @@ pub ElseIfEquationBlock: ast::ElseIfEquationBlock = {
 }
 
 pub ElseEquationBlock: Vec<ast::Equation> = {
-    "else" <eqs:Equation*> => {
+    "else" <eqs:SemicolonTerminatedList<Equation>> => {
         eqs
     }
 }
@@ -491,10 +570,11 @@ pub ElseEquationBlock: Vec<ast::Equation> = {
 //    ]
 //    end if
 pub IfStatement: ast::Statement = {
-    "if" <if_cond:Expression> "then" <if_eqs:Statement*>
+    "if" <if_cond:Expression> "then"
+    <if_eqs:SemicolonTerminatedList<Statement>>
     <else_if_blocks: ElseIfStatementBlock*>
     <else_eqs: ElseStatementBlock?>
-    "end" "if" ";" => {
+    "end" "if" => {
         ast::Statement::If {
             if_cond, if_eqs,
             else_if_blocks,
@@ -504,7 +584,8 @@ pub IfStatement: ast::Statement = {
 }
 
 pub ElseIfStatementBlock: ast::ElseIfStatementBlock = {
-    "elseif" <cond:Expression> "then" <eqs:Statement*> => {
+    "elseif" <cond:Expression> "then"
+    <eqs:SemicolonTerminatedList<Statement>> => {
         ast::ElseIfStatementBlock {
             cond, eqs
         }
@@ -512,7 +593,7 @@ pub ElseIfStatementBlock: ast::ElseIfStatementBlock = {
 }
 
 pub ElseStatementBlock: Vec<ast::Statement> = {
-    "else" <eqs:Statement*> => {
+    "else" <eqs:SemicolonTerminatedList<Statement>> => {
         eqs
     }
 }
@@ -571,16 +652,16 @@ pub Expression: Box<ast::Expression> = {
     <simp:SimpleExpression> => {
         simp
     },
-    "if" <if_cond:SimpleExpression> "then" <if_eq:SimpleExpression>
-    <else_if_blocks: ElseIfExpressionBlock*>
-    <else_eq: ElseExpressionBlock?>
-     => {
-        Box::new(ast::Expression::If {
-            if_cond, if_eq,
-            else_if_blocks,
-            else_eq,
-        })
-    },
+    // "if" <if_cond:SimpleExpression> "then" <if_eq:SimpleExpression>
+    // <else_if_blocks: ElseIfExpressionBlock*>
+    // <else_eq: ElseExpressionBlock?>
+    //  => {
+    //     Box::new(ast::Expression::If {
+    //         if_cond, if_eq,
+    //         else_if_blocks,
+    //         else_eq,
+    //     })
+    // },
 }
 
 pub ElseIfExpressionBlock: ast::ElseIfExpressionBlock = {
@@ -801,9 +882,23 @@ pub SimpleExpression: Box<ast::Expression> = {
 //    UNSIGNED-INTEGER | UNSIGNED-REAL
 // type-specifier :
 //    ["."] name
+pub TypeSpecifier: ast::TypeSpecifier = {
+    <leading_period: "."?> <name: Name> => {
+        ast::TypeSpecifier{
+            leading_period: leading_period.is_some(),
+            name,
+        }
+    },
+}
 // name :
 //    IDENT { "." IDENT }
-
+pub Name: ast::Name = {
+    <ident:PeriodSeparatedList<"identifier">> => {
+        ast::Name{
+            ident
+        }
+    },
+}
 // component-reference :
 //    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 pub ComponentReference: ast::ComponentReference = {
@@ -845,12 +940,16 @@ pub FunctionCallArguments: Vec<Box<ast::Expression>> = {
 //    expression { "," expression }
 // array-subscripts :
 //    "[" subscript { "," subscript } "]"
-// subscript :
-//    ":" | expression
-pub ArraySubscripts: Vec<Box<ast::Expression>> = {
-    "[" <subscripts: CommaSeparatedList<Expression>> "]" => {
+pub ArraySubscripts: Vec<ast::Subscript> = {
+    "[" <subscripts: CommaSeparatedList<Subscript>> "]" => {
         subscripts
     },
+}
+// subscript :
+//    ":" | expression
+pub Subscript: ast::Subscript = {
+    ":" => ast::Subscript::Colon,
+    <expr: Expression> => ast::Subscript::Expression(expr),
 }
 // description :
 //    description-string [ annotation-clause ]
@@ -863,14 +962,3 @@ pub Description: String = {
 }
 // annotation-clause :
 //    annotation class-modification
-
-// comma separated list macro
-CommaSeparatedList<T>: Vec<T> = { // (1)
-    <mut v:(<T> ",")*> <e:T?> => match e { // (2)
-        None => v,
-        Some(e) => {
-            v.push(e);
-            v
-        }
-    }
-};

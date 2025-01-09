@@ -1,4 +1,5 @@
-use crate::s1_parser::ast::{ClassType, Equation, Expression, Statement};
+use crate::s1_parser::ast::{ClassType, Equation, Expression, Modification, Statement, Subscript};
+use ndarray::{ArrayBase, IxDyn, OwnedRepr};
 use ordermap::{OrderMap, OrderSet};
 use serde::{Deserialize, Serialize};
 
@@ -33,9 +34,9 @@ pub struct Class {
 #[allow(clippy::vec_box)]
 pub struct Component {
     pub name: String,
-    pub start: Box<Expression>,
-    pub start_value: f64,
-    pub array_subscripts: Vec<Box<Expression>>,
+    pub start: Option<Modification>,
+    pub start_value: ArrayBase<OwnedRepr<f64>, IxDyn>,
+    pub array_subscripts: Vec<Subscript>,
 }
 
 #[cfg(test)]
