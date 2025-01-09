@@ -1,8 +1,8 @@
 [package]
 name = "rumoca"
-authors = ["James Goppert"]
+authors = ["James Goppert", "Benjamin Perseghetti"]
 description = "A Modelica translator with focus on Casadi, Sympy, JAX, and Collimator generation"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 license = "Apache-2.0"
 
