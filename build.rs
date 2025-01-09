@@ -7,7 +7,7 @@ fn main() {
 
     // create git hash
     let output = Command::new("git")
-        .args(&["describe", "--dirty", "--tags"])
+        .args(["describe", "--dirty", "--tags"])
         .output()
         .unwrap();
     let git_hash = String::from_utf8(output.stdout).unwrap();
