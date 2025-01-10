@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StoredDefinition {
     pub classes: Vec<ClassDefinition>,
+    pub within: Option<Name>,
     pub model_md5: String,
     pub rumoca_git_hash: String,
 }
@@ -10,27 +11,42 @@ pub struct StoredDefinition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::vec_box)]
 pub struct ComponentDeclaration {
+    pub declaration: Declaration,
+    pub condition_attribute: Option<Box<Expression>>,
+    pub description: Description,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::vec_box)]
+pub struct ComponentDeclaration1 {
+    pub declaration: Declaration,
+    pub description: Description,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClassPrefixes {
+    pub is_partial: bool,
+    pub class_type: ClassType,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClassSpecifier {
     pub name: String,
-    pub class: String,
-    pub connection: Connection,
-    pub variability: Variability,
-    pub causality: Causality,
-    pub array_subscripts: Vec<Subscript>,
-    pub modification: Option<Modification>,
+    pub description: Vec<String>,
+    pub composition: Vec<CompositionPart>,
+    pub name_end: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClassDefinition {
-    pub name: String,
-    pub description: String,
-    pub class_type: ClassType,
-    pub partial: bool,
-    pub encapsulated: bool,
-    pub compositions: Vec<Composition>,
+    pub is_encapsulated: bool,
+    pub is_final: bool,
+    pub class_prefixes: ClassPrefixes,
+    pub class_specifier: ClassSpecifier,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Composition {
+pub enum CompositionPart {
     ElementList {
         visibility: Visibility,
         elements: Vec<ComponentDeclaration>,
@@ -88,10 +104,15 @@ pub enum Statement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::vec_box)]
-pub struct ComponentReference {
+pub struct RefPart {
     pub name: String,
     pub array_subscripts: Vec<Subscript>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ComponentReference {
+    pub local: bool,
+    pub parts: Vec<RefPart>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -243,6 +264,12 @@ pub enum Expression {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Description {
+    pub strings: Vec<String>,
+    pub annotation: Vec<Argument>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Modification {
     pub expression: Box<Expression>,
 }
@@ -256,12 +283,12 @@ pub struct Declaration {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Argument {
-    Modificaion {
+    Modification {
         name: Name,
         each: bool,
         is_final: bool,
         modification: Option<Modification>,
-        description: String,
+        description: Description,
     },
     Replaceable,
     Redeclaration,
@@ -280,6 +307,13 @@ pub struct ComponentClause {
     pub type_specifier: TypeSpecifier,
     pub array_subscripts: Vec<Subscript>,
     pub components: Vec<ComponentDeclaration>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ComponentClause1 {
+    pub type_prefix: TypePrefix,
+    pub type_specifier: TypeSpecifier,
+    pub component_declaration1: ComponentDeclaration1,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -328,7 +362,6 @@ mod tests {
 
         // class ball
         let class_ball = ClassDefinition {
-            name: String::from("Ball"),
             ..Default::default()
         };
         def.classes.push(class_ball);

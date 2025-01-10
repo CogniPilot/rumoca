@@ -178,7 +178,7 @@ pub enum Token {
     Identifier(String),
 
     #[regex("\"[ _0-9a-zA-Z]*\"", quoted_string_callback)]
-    Description(String),
+    STRING(String),
 
     #[regex("[1-9][0-9]*", |lex| lex.slice().parse::<i64>().unwrap(), priority=3)]
     UnsignedInteger(i64),

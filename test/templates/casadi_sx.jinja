@@ -176,13 +176,16 @@ class __{{ class.name }}(BaseModel):
 {%- endmacro -%}
 
 {%- macro render_component_reference(comp) -%}
-    {{ comp.name }}
-    {%- if comp.array_subscripts | length > 0 %}[
-        {%- for sub in comp.array_subscripts -%}
-            {#- handles index from 1 to 0 from Modelica to python-#}
-            {{ render_subscript(sub) | int -1 }}
-        {%- endfor -%}]
-    {%- endif -%}
+    {%- if comp.local %}.{% endif -%}
+    {%- for part in comp.parts -%}
+        {{ part.name }}
+        {%- if part.array_subscripts | length > 0 %}[
+            {%- for sub in part.array_subscripts -%}
+                {#- handles index from 1 to 0 from Modelica to python-#}
+                {{ render_subscript(sub) | int -1 }}
+            {%- endfor -%}]
+        {%- endif -%}
+    {%- endfor -%}]
 {%- endmacro -%}
 
 {%- macro render_expression(expr) -%}

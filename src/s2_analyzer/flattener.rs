@@ -61,12 +61,14 @@ pub fn evaluate(
             let values = vec![*v as f64];
             Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
-        parse_ast::Expression::Ref { comp } => match &class.components[&comp.name].start {
-            Some(m) => Ok(evaluate(class, &m.expression)?),
-            None => {
-                panic!("no start value defined for {:?}", comp);
+        parse_ast::Expression::Ref { comp } => {
+            match &class.components[&compref_to_string(comp)].start {
+                Some(m) => Ok(evaluate(class, &m.expression)?),
+                None => {
+                    panic!("no start value defined for {:?}", comp);
+                }
             }
-        },
+        }
         parse_ast::Expression::ArrayArguments { args } => {
             let shape = IxDyn(&[args.len()]);
             let mut values = Vec::new();
@@ -135,21 +137,21 @@ pub fn set_start_expressions(
 
 pub fn flatten_class(class: &parse_ast::ClassDefinition, def: &mut ast::Def) {
     let mut fclass = ast::Class {
-        name: class.name.clone(),
-        class_type: class.class_type.clone(),
-        description: class.description.clone(),
+        name: class.class_specifier.name.clone(),
+        class_type: class.class_prefixes.class_type.clone(),
+        description: class.class_specifier.description.clone(),
         ..Default::default()
     };
 
-    for composition in &class.compositions {
-        flatten_composition(composition, &mut fclass)
+    for composition_part in &class.class_specifier.composition {
+        flatten_composition_part(composition_part, &mut fclass)
     }
 
     def.classes.insert(fclass.name.to_string(), fclass.clone());
 }
-pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast::Class) {
+pub fn flatten_composition_part(composition: &parse_ast::CompositionPart, class: &mut ast::Class) {
     match composition {
-        parse_ast::Composition::ElementList {
+        parse_ast::CompositionPart::ElementList {
             visibility: _,
             elements,
         } => {
@@ -157,7 +159,7 @@ pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast
                 flatten_component(comp, class);
             }
         }
-        parse_ast::Composition::EquationSection {
+        parse_ast::CompositionPart::EquationSection {
             initial: _,
             equations,
         } => {
@@ -165,7 +167,7 @@ pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast
                 flatten_equation(eq, class);
             }
         }
-        parse_ast::Composition::AlgorithmSection {
+        parse_ast::CompositionPart::AlgorithmSection {
             initial: _,
             statements,
         } => {
@@ -178,10 +180,10 @@ pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast
 
 pub fn flatten_component(comp: &parse_ast::ComponentDeclaration, class: &mut ast::Class) {
     let flat_comp = ast::Component {
-        name: comp.name.clone(),
-        start: comp.modification.clone(),
+        name: comp.declaration.name.clone(),
+        start: comp.declaration.modification.clone(),
         start_value: ArrayD::zeros(vec![1, 1]),
-        array_subscripts: comp.array_subscripts.clone(),
+        array_subscripts: comp.declaration.array_subscripts.clone(),
     };
 
     class
@@ -212,19 +214,31 @@ pub fn flatten_component(comp: &parse_ast::ComponentDeclaration, class: &mut ast
     }
 }
 
+pub fn compref_to_string(comp: &parse_ast::ComponentReference) -> String {
+    let mut s: String = "".to_string();
+    for (index, part) in comp.parts.iter().enumerate() {
+        if index != 0 || (index == 0 && comp.local) {
+            s += ".";
+        }
+        s += &part.name;
+    }
+    s
+}
+
 pub fn flatten_equation(eq: &parse_ast::Equation, class: &mut ast::Class) {
     // find all states in the class by searching
     // for component references that are taken the derivative of
     match eq {
         parse_ast::Equation::Der { comp, rhs } => {
-            if class.w.contains(&comp.name) {
-                class.x.insert(class.w.remove_full(&comp.name).unwrap().1);
-            } else if class.y.contains(&comp.name) {
-                class.x.insert(comp.name.clone());
+            let comp_key = compref_to_string(&comp);
+            if class.w.contains(&comp_key) {
+                class.x.insert(class.w.remove_full(&comp_key).unwrap().1);
+            } else if class.y.contains(&comp_key) {
+                class.x.insert(comp_key.clone());
             } else {
-                panic!("derivative state not declared {:?}", comp.name);
+                panic!("derivative state not declared {:?}", comp_key);
             }
-            class.ode.insert(comp.name.clone(), rhs.clone());
+            class.ode.insert(comp_key.clone(), rhs.clone());
         }
         parse_ast::Equation::Simple { lhs: _, rhs: _ } => {
             class.algebraic.push(eq.clone());
