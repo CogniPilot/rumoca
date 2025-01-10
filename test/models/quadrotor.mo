@@ -53,29 +53,29 @@ equation
         CT * omega_motor[3]^2,
         CT * omega_motor[4]^2};
     
-    if (omega_motor_cmd[1] > omega_motor[1]) then
-      tau_inv[1] = 1.0/tau_up;
-    else
-      tau_inv[1] = 1.0/tau_down;
-    end if;
+    // if (omega_motor_cmd[1] > omega_motor[1]) then
+    //   tau_inv[1] = 1.0/tau_up;
+    // else
+    //   tau_inv[1] = 1.0/tau_down;
+    // end if;
 
-    if (omega_motor_cmd[2] > omega_motor[2]) then
-      tau_inv[2] = 1.0/tau_up;
-    else
-      tau_inv[2] = 1.0/tau_down;
-    end if;
+    // if (omega_motor_cmd[2] > omega_motor[2]) then
+    //   tau_inv[2] = 1.0/tau_up;
+    // else
+    //   tau_inv[2] = 1.0/tau_down;
+    // end if;
     
-    if (omega_motor_cmd[3] > omega_motor[3]) then
-      tau_inv[3] = 1.0/tau_up;
-    else
-      tau_inv[3] = 1.0/tau_down;
-    end if;
+    // if (omega_motor_cmd[3] > omega_motor[3]) then
+    //   tau_inv[3] = 1.0/tau_up;
+    // else
+    //   tau_inv[3] = 1.0/tau_down;
+    // end if;
 
-    if (omega_motor_cmd[4] > omega_motor[4]) then
-      tau_inv[4] = 1.0/tau_up;
-    else
-      tau_inv[4] = 1.0/tau_down;
-    end if;
+    // if (omega_motor_cmd[4] > omega_motor[4]) then
+    //   tau_inv[4] = 1.0/tau_up;
+    // else
+    //   tau_inv[4] = 1.0/tau_down;
+    // end if;
     
     // state derivative
     der(position_op_w) = {0, 0, 0}; //QuatToMatrix(quaternion_wb) * velocity_w_p_b;

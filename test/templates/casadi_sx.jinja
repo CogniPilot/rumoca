@@ -1,5 +1,10 @@
-{%- macro render_class_model(class) %}
-class {{ class.name }}(BaseModel):
+{%- macro render_class(class) %}
+    {%- if class.class_type == "Model" -%}
+    {%- elif class.class_type == "Function" -%}
+    {%- else -%}
+        {{ panic("unhandled class type: " + class.class_type) }}
+    {%- endif -%}
+class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(BaseModel):
     """
     {{ class.description }}
     """
@@ -36,7 +41,7 @@ class {{ class.name }}(BaseModel):
         {{ render_vector("self.y", class, class.y) | indent(12) }}
 
         # declare internal variables
-        {{ render_symbols(class.w) | indent(4) }}
+        {{ render_symbols(class, class.w) | indent(4) }}
 
         # declare continuous states
         {{ render_symbols(class, class.x) | indent(4) }}
@@ -45,41 +50,16 @@ class {{ class.name }}(BaseModel):
         # declare continuous states start values
         {{ render_vector_start_dict("self.x0", class, class.x) | indent(4) }}
 
-        # alg
-        {{ render_statement_list(class.alg) | indent(4) }}
+        # algorithmic
+        {{ render_statement_list(class.algorithm) | indent(4) }}
+
+        # algebraic
+        {{ render_statement_list(class.algebric) | indent(4) }}
 
         # ode
         {{ render_ordermap_expression("self.ode", class.ode, class.x) | indent(8) }}
 
-{%- endmacro %}
-
-{%- macro render_class_function(class) %}
-class __{{ class.name }}(BaseModel):
-    """
-    {{ class.description }}
-    """
-
-    def __init__(self):
-        super().__init__()
-
-        # declare constants
-        {%- for var in class.c %}
-        {{ key }} = {{ render_expression(expr=val.start) }}
-        {%- endfor %}
-
-        # declare inputs
-        {{ render_symbols(class.u) | indent(4) }}
-        {{ render_vector("self.u", class.u) | indent(4) }}
-
-        # declare internal variables
-        {{ render_symbols(class.w) | indent(4) }}
-
-        # declare outputs
-        {{ render_zero_symbols(class.y) | indent(4) }}
-
-        # alg
-        {{ render_statement_list(class.alg) | indent(4) }}
-
+{% if class.class_type == "Function" %}
         # build function
         {{ render_vector("self.y", class.y) | indent(4) }}
         self.F = ca.Function("{{ class.name }}", [self.u], [self.y], ['u'], ['y'])
@@ -87,18 +67,9 @@ class __{{ class.name }}(BaseModel):
     def __call__(self, *args):
         return self.F(ca.vertcat(*args))
 
-
 {{ class.name }} = __{{ class .name }}()
-{%- endmacro %}
 
-{%- macro render_class(class) %}
-    {% if class.class_type == "Model" %}
-        {{ render_class_model(class) }}
-    {% elif class.class_type == "Function" %}
-        {{ render_class_function(class) }}
-    {% else %}
-        {{ warn("unhandled class type: " + class.class_type) }}
-    {% endif %}
+{% endif %}
 {%- endmacro %}
 
 {%- macro render_symbols(class, var_list) -%}
@@ -176,13 +147,16 @@ class __{{ class.name }}(BaseModel):
 {%- endmacro -%}
 
 {%- macro render_component_reference(comp) -%}
-    {{ comp.name }}
-    {%- if comp.array_subscripts | length > 0 %}[
-        {%- for sub in comp.array_subscripts -%}
-            {#- handles index from 1 to 0 from Modelica to python-#}
-            {{ render_subscript(sub) | int -1 }}
-        {%- endfor -%}]
-    {%- endif -%}
+    {%- if comp.local %}.{% endif -%}
+    {%- for part in comp.parts -%}
+        {{ part.name }}
+        {%- if part.array_subscripts | length > 0 %}[
+            {%- for sub in part.array_subscripts -%}
+                {#- handles index from 1 to 0 from Modelica to python-#}
+                {{ render_subscript(sub) | int -1 }}{% if not loop.last -%}, {% endif %}
+            {%- endfor -%}]
+        {%- endif -%}
+    {%- endfor -%}
 {%- endmacro -%}
 
 {%- macro render_expression(expr) -%}
@@ -259,6 +233,7 @@ class __{{ class.name }}(BaseModel):
 import casadi as ca
 import numpy as np
 
+
 class BaseModel:
 
     def __init__(self):
@@ -295,9 +270,12 @@ class BaseModel:
         D = ca.jacobian(self.y, self.u)
         return (A, B, C, D)
 
+
 def cat(axis, *args):
     return ca.vertcat(*args)
 
+
 {%- for key, val in def.classes | items %}
+
 {{ render_class(class=val) }}
 {%- endfor %}

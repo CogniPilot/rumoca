@@ -16,7 +16,7 @@ pub struct Def {
 pub struct Class {
     pub name: String,
     pub class_type: ClassType,
-    pub description: String,
+    pub description: Vec<String>,
     pub components: OrderMap<String, Component>, // dictinoary of components
     pub c: OrderSet<String>,                     // constants
     pub x: OrderSet<String>,                     // continuous states

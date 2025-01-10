@@ -1,4 +1,4 @@
-use crate::s1_parser::ast as parse_ast;
+use crate::s1_parser::ast::{self as parse_ast, Statement, Expression, Subscript};
 use crate::s2_analyzer::ast;
 use ndarray::{ArrayBase, ArrayD, IxDyn, OwnedRepr};
 use std::collections::HashMap;
@@ -6,38 +6,38 @@ use std::error::Error;
 
 pub fn evaluate(
     class: &ast::Class,
-    expr: &parse_ast::Expression,
+    expr: &Expression,
 ) -> Result<ArrayBase<OwnedRepr<f64>, IxDyn>, Box<dyn Error>> {
     match expr {
-        parse_ast::Expression::Add { lhs, rhs } => {
+        Expression::Add { lhs, rhs } => {
             Ok(evaluate(class, lhs)? + evaluate(class, rhs)?)
         }
-        parse_ast::Expression::Sub { lhs, rhs } => {
+        Expression::Sub { lhs, rhs } => {
             Ok(evaluate(class, lhs)? - evaluate(class, rhs)?)
         }
-        parse_ast::Expression::Mul { lhs, rhs } => {
+        Expression::Mul { lhs, rhs } => {
             // matrix multiplication
             let a = evaluate(class, lhs)?;
             let b = evaluate(class, rhs)?;
             let res = a * b;
             Ok(res)
         }
-        parse_ast::Expression::Div { lhs, rhs } => {
+        Expression::Div { lhs, rhs } => {
             Ok(evaluate(class, lhs)? / evaluate(class, rhs)?)
         }
-        parse_ast::Expression::ElemAdd { lhs, rhs } => {
+        Expression::ElemAdd { lhs, rhs } => {
             Ok(evaluate(class, lhs)? + evaluate(class, rhs)?)
         }
-        parse_ast::Expression::ElemSub { lhs, rhs } => {
+        Expression::ElemSub { lhs, rhs } => {
             Ok(evaluate(class, lhs)? - evaluate(class, rhs)?)
         }
-        parse_ast::Expression::ElemMul { lhs, rhs } => {
+        Expression::ElemMul { lhs, rhs } => {
             Ok(evaluate(class, lhs)? * evaluate(class, rhs)?)
         }
-        parse_ast::Expression::ElemDiv { lhs, rhs } => {
+        Expression::ElemDiv { lhs, rhs } => {
             Ok(evaluate(class, lhs)? / evaluate(class, rhs)?)
         }
-        parse_ast::Expression::Exp { lhs, rhs } => {
+        Expression::Exp { lhs, rhs } => {
             let base = evaluate(class, lhs)?;
             let exp = evaluate(class, rhs)?;
             if base.shape() != [1] {
@@ -50,24 +50,26 @@ pub fn evaluate(
             let values = vec![base[0].powf(exp[0])];
             Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
-        parse_ast::Expression::Parenthesis { rhs } => Ok(evaluate(class, rhs)?),
-        parse_ast::Expression::UnsignedReal(v) => {
+        Expression::Parenthesis { rhs } => Ok(evaluate(class, rhs)?),
+        Expression::UnsignedReal(v) => {
             let shape = IxDyn(&[1]);
             let values = vec![*v];
             Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
-        parse_ast::Expression::UnsignedInteger(v) => {
+        Expression::UnsignedInteger(v) => {
             let shape = IxDyn(&[1]);
             let values = vec![*v as f64];
             Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
-        parse_ast::Expression::Ref { comp } => match &class.components[&comp.name].start {
-            Some(m) => Ok(evaluate(class, &m.expression)?),
-            None => {
-                panic!("no start value defined for {:?}", comp);
+        Expression::Ref { comp } => {
+            match &class.components[&compref_to_string(comp)].start {
+                Some(m) => Ok(evaluate(class, &m.expression)?),
+                None => {
+                    panic!("no start value defined for {:?}", comp);
+                }
             }
-        },
-        parse_ast::Expression::ArrayArguments { args } => {
+        }
+        Expression::ArrayArguments { args } => {
             let shape = IxDyn(&[args.len()]);
             let mut values = Vec::new();
             for arg in args {
@@ -79,7 +81,7 @@ pub fn evaluate(
             }
             Ok(ArrayD::from_shape_vec(shape, values).unwrap())
         }
-        parse_ast::Expression::Negative { rhs } => Ok(-evaluate(class, rhs)?),
+        Expression::Negative { rhs } => Ok(-evaluate(class, rhs)?),
         _ => {
             todo!("{:?}", expr)
         }
@@ -135,29 +137,29 @@ pub fn set_start_expressions(
 
 pub fn flatten_class(class: &parse_ast::ClassDefinition, def: &mut ast::Def) {
     let mut fclass = ast::Class {
-        name: class.name.clone(),
-        class_type: class.class_type.clone(),
-        description: class.description.clone(),
+        name: class.class_specifier.name.clone(),
+        class_type: class.class_prefixes.class_type.clone(),
+        description: class.class_specifier.description.clone(),
         ..Default::default()
     };
 
-    for composition in &class.compositions {
-        flatten_composition(composition, &mut fclass)
+    for composition_part in &class.class_specifier.composition {
+        flatten_composition_part(composition_part, &mut fclass)
     }
 
     def.classes.insert(fclass.name.to_string(), fclass.clone());
 }
-pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast::Class) {
+pub fn flatten_composition_part(composition: &parse_ast::CompositionPart, class: &mut ast::Class) {
     match composition {
-        parse_ast::Composition::ElementList {
+        parse_ast::CompositionPart::ElementList {
             visibility: _,
             elements,
         } => {
-            for comp in elements {
-                flatten_component(comp, class);
+            for elem in elements {
+                flatten_element(elem, class);
             }
         }
-        parse_ast::Composition::EquationSection {
+        parse_ast::CompositionPart::EquationSection {
             initial: _,
             equations,
         } => {
@@ -165,7 +167,7 @@ pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast
                 flatten_equation(eq, class);
             }
         }
-        parse_ast::Composition::AlgorithmSection {
+        parse_ast::CompositionPart::AlgorithmSection {
             initial: _,
             statements,
         } => {
@@ -176,40 +178,80 @@ pub fn flatten_composition(composition: &parse_ast::Composition, class: &mut ast
     }
 }
 
-pub fn flatten_component(comp: &parse_ast::ComponentDeclaration, class: &mut ast::Class) {
-    let flat_comp = ast::Component {
-        name: comp.name.clone(),
-        start: comp.modification.clone(),
-        start_value: ArrayD::zeros(vec![1, 1]),
-        array_subscripts: comp.array_subscripts.clone(),
-    };
+pub fn flatten_element(elem: &parse_ast::Element, class: &mut ast::Class) {
+    match &elem {
+        &parse_ast::Element::ComponentClause {
+            type_prefix,
+            type_specifier: _,
+            array_subscripts,
+            components,
+        } => {
+            for comp in components.iter() {
+                // determine array subscripts
+                let comp_sub = match &comp.declaration.array_subscripts {
+                    Some(sub) => {
+                        // already has array subscripts
+                        sub.clone()
+                    }
+                    None => match array_subscripts {
+                        Some(clause_sub) => {
+                            // take array subscripts from clause
+                            clause_sub.clone()
+                        }
+                        None => {
+                            // scalar, no subscripts
+                            Vec::<Subscript>::new()
+                        }
+                    },
+                };
 
-    class
-        .components
-        .insert(flat_comp.name.clone(), flat_comp.clone());
+                let flat_comp = ast::Component {
+                    name: comp.declaration.name.clone(),
+                    start: comp.declaration.modification.clone(),
+                    start_value: ArrayD::zeros(vec![1, 1]),
+                    array_subscripts: comp_sub,
+                };
 
-    match comp.variability {
-        parse_ast::Variability::Constant => {
-            class.c.insert(flat_comp.name.to_string());
-        }
-        parse_ast::Variability::Continuous => match comp.causality {
-            parse_ast::Causality::Input => {
-                class.u.insert(flat_comp.name.to_string());
+                class
+                    .components
+                    .insert(flat_comp.name.clone(), flat_comp.clone());
+
+                match type_prefix.variability {
+                    parse_ast::Variability::Constant => {
+                        class.c.insert(flat_comp.name.to_string());
+                    }
+                    parse_ast::Variability::Continuous => match type_prefix.causality {
+                        parse_ast::Causality::Input => {
+                            class.u.insert(flat_comp.name.to_string());
+                        }
+                        parse_ast::Causality::Output => {
+                            class.y.insert(flat_comp.name.to_string());
+                        }
+                        parse_ast::Causality::None => {
+                            class.w.insert(flat_comp.name.to_string());
+                        }
+                    },
+                    parse_ast::Variability::Discrete => {
+                        class.z.insert(flat_comp.name.to_string());
+                    }
+                    parse_ast::Variability::Parameter => {
+                        class.p.insert(flat_comp.name.to_string());
+                    }
+                }
             }
-            parse_ast::Causality::Output => {
-                class.y.insert(flat_comp.name.to_string());
-            }
-            parse_ast::Causality::None => {
-                class.w.insert(flat_comp.name.to_string());
-            }
-        },
-        parse_ast::Variability::Discrete => {
-            class.z.insert(flat_comp.name.to_string());
-        }
-        parse_ast::Variability::Parameter => {
-            class.p.insert(flat_comp.name.to_string());
         }
     }
+}
+
+pub fn compref_to_string(comp: &parse_ast::ComponentReference) -> String {
+    let mut s: String = "".to_string();
+    for (index, part) in comp.parts.iter().enumerate() {
+        if index != 0 || comp.local {
+            s += ".";
+        }
+        s += &part.name;
+    }
+    s
 }
 
 pub fn flatten_equation(eq: &parse_ast::Equation, class: &mut ast::Class) {
@@ -217,14 +259,15 @@ pub fn flatten_equation(eq: &parse_ast::Equation, class: &mut ast::Class) {
     // for component references that are taken the derivative of
     match eq {
         parse_ast::Equation::Der { comp, rhs } => {
-            if class.w.contains(&comp.name) {
-                class.x.insert(class.w.remove_full(&comp.name).unwrap().1);
-            } else if class.y.contains(&comp.name) {
-                class.x.insert(comp.name.clone());
+            let comp_key = compref_to_string(comp);
+            if class.w.contains(&comp_key) {
+                class.x.insert(class.w.remove_full(&comp_key).unwrap().1);
+            } else if class.y.contains(&comp_key) {
+                class.x.insert(comp_key.clone());
             } else {
-                panic!("derivative state not declared {:?}", comp.name);
+                panic!("derivative state not declared {:?}", comp_key);
             }
-            class.ode.insert(comp.name.clone(), rhs.clone());
+            class.ode.insert(comp_key.clone(), rhs.clone());
         }
         parse_ast::Equation::Simple { lhs: _, rhs: _ } => {
             class.algebraic.push(eq.clone());
@@ -235,9 +278,18 @@ pub fn flatten_equation(eq: &parse_ast::Equation, class: &mut ast::Class) {
             else_if_blocks: _,
             else_eqs: _,
         } => {
-            class.algebraic.push(eq.clone());
+            todo!("{:?}", eq);
         }
     }
 }
 
-pub fn flatten_statement(_stmt: &parse_ast::Statement, _class: &mut ast::Class) {}
+pub fn flatten_statement(stmt: &parse_ast::Statement, class: &mut ast::Class) {
+    match &stmt {
+        Statement::Assignment { comp: _, rhs: _ } => {
+            class.algorithm.push(stmt.clone());
+        }
+        Statement::If { if_cond: _, if_eqs: _, else_if_blocks: _, else_eqs: _ } => {
+            todo!("{:?}", stmt);
+        }
+    }
+}
