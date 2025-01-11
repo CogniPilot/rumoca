@@ -61,16 +61,32 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
 
 {% if class.class_type == "Function" %}
         # build function
-        {{ render_vector("self.y", class.y) | indent(4) }}
         self.F = ca.Function("{{ class.name }}", [self.u], [self.y], ['u'], ['y'])
 
     def __call__(self, *args):
         return self.F(ca.vertcat(*args))
 
+# callable function singleton
 {{ class.name }} = __{{ class .name }}()
 
 {% endif %}
 {%- endmacro %}
+
+{%- macro render_ndarray(array) -%}
+    {%- if array.dim | length  == 1 -%}
+        {%- if array.dim == [1] -%}
+            {{ array.data[0] }}
+        {%- else -%}
+            {{ "{" }}{%- for i in range(array.dim[0]) -%}
+                {{ array.data[i]}}{% if not loop.last %},{% endif -%}
+            {%- endfor -%}{{ "}" }}
+        {%- endif -%}
+    {%- else -%}
+        {{ "{" }}{%- for i in range(array.dim[0]) -%}
+            {{ render_ndarray(array[i]) }}{% if not loop.last %},{% endif -%}
+        {%- endfor -%}{{ "}" }}
+    {%- endif -%}
+{%- endmacro -%}
 
 {%- macro render_symbols(class, var_list) -%}
     {%- for var in var_list -%}
@@ -107,7 +123,7 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
     {{ target }} = {
     {%- for var in var_list %}
         {%- set comp = class.components[var]%}
-        '{{ var }}': {{ comp.start_value.data[0] | indent(8) -}}
+        '{{ var }}': {{ render_ndarray(comp.start_value) | indent(8) -}}
         {% if not loop.last %},{% endif %}
     {%- endfor %}
     }

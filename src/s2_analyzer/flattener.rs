@@ -116,7 +116,7 @@ pub fn set_start_expressions(
 ) {
     for (name, comp) in &mut class.components {
         if start_vals.contains_key(name) {
-            //comp.start_value = start_vals[name].clone();
+            comp.start_value = start_vals[name].clone();
         }
     }
 }
@@ -194,7 +194,7 @@ pub fn flatten_element(elem: &Element, class: &mut ast::Class) {
                 let flat_comp = ast::Component {
                     name: comp.declaration.name.clone(),
                     start: comp.declaration.modification.clone(),
-                    start_value: ArrayD::zeros(vec![1, 1]),
+                    start_value: ArrayD::zeros(vec![1]),
                     array_subscripts: comp_sub,
                 };
 
@@ -274,7 +274,11 @@ pub fn flatten_expression(expr: &Expression, class: &mut ast::Class) {
                     } else {
                         panic!("derivative state not declared {:?}", comp_key);
                     }
-                    // class.ode.insert(comp_key.clone(), rhs.clone());
+                    // TODO, need to solve for derivatives from equations
+                    // setting derivatives to zero for now
+                    class
+                        .ode
+                        .insert(comp_key.clone(), Expression::UnsignedInteger(0));
                 }
             }
         }
