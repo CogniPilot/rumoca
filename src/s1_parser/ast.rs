@@ -105,9 +105,17 @@ pub enum Statement {
     },
     If {
         if_cond: Expression,
-        if_eqs: Vec<Statement>,
+        if_stmts: Vec<Statement>,
         else_if_blocks: Vec<ElseIfStatementBlock>,
-        else_eqs: Vec<Statement>,
+        else_stmts: Vec<Statement>,
+    },
+    For {
+        indices: Vec<ForIndex>,
+        stmts: Vec<Statement>,
+    },
+    While {
+        cond: Expression,
+        stmts: Vec<Statement>,
     },
 }
 
@@ -125,10 +133,6 @@ pub struct ComponentReference {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Equation {
-    Der {
-        comp: ComponentReference,
-        rhs: Expression,
-    },
     Simple {
         lhs: Expression,
         rhs: Expression,
@@ -139,6 +143,16 @@ pub enum Equation {
         else_if_blocks: Vec<ElseIfEquationBlock>,
         else_eqs: Vec<Equation>,
     },
+    For {
+        indices: Vec<ForIndex>,
+        eqs: Vec<Equation>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ForIndex {
+    pub ident: String,
+    pub in_expr: Option<Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -164,6 +178,7 @@ pub enum Expression {
     UnsignedInteger(i64),
     UnsignedReal(f64),
     Boolean(bool),
+    //String(String),
     Ref {
         comp: ComponentReference,
     },
@@ -257,15 +272,18 @@ pub enum Expression {
     },
     If {
         if_cond: Box<Expression>,
-        if_eq: Box<Expression>,
+        if_expr: Box<Expression>,
         else_if_blocks: Vec<ElseIfExpressionBlock>,
-        else_eq: Option<Box<Expression>>,
+        else_expr: Box<Option<Expression>>,
     },
     ArrayArguments {
         args: Vec<Expression>,
     },
     FunctionCall {
         comp: ComponentReference,
+        args: Vec<Expression>,
+    },
+    Der {
         args: Vec<Expression>,
     },
 }

@@ -1,4 +1,6 @@
-use crate::s1_parser::ast::{self as parse_ast, Expression, Statement, Subscript};
+use crate::s1_parser::ast::{
+    self as parse_ast, Causality, Element, Expression, Statement, Subscript, Variability,
+};
 use crate::s2_analyzer::ast;
 use ndarray::{ArrayBase, ArrayD, IxDyn, OwnedRepr};
 use std::collections::HashMap;
@@ -114,7 +116,7 @@ pub fn set_start_expressions(
 ) {
     for (name, comp) in &mut class.components {
         if start_vals.contains_key(name) {
-            comp.start_value = start_vals[name].clone();
+            //comp.start_value = start_vals[name].clone();
         }
     }
 }
@@ -162,9 +164,9 @@ pub fn flatten_composition_part(composition: &parse_ast::CompositionPart, class:
     }
 }
 
-pub fn flatten_element(elem: &parse_ast::Element, class: &mut ast::Class) {
+pub fn flatten_element(elem: &Element, class: &mut ast::Class) {
     match &elem {
-        &parse_ast::Element::ComponentClause {
+        &Element::ComponentClause {
             type_prefix,
             type_specifier: _,
             array_subscripts,
@@ -201,24 +203,24 @@ pub fn flatten_element(elem: &parse_ast::Element, class: &mut ast::Class) {
                     .insert(flat_comp.name.clone(), flat_comp.clone());
 
                 match type_prefix.variability {
-                    parse_ast::Variability::Constant => {
+                    Variability::Constant => {
                         class.c.insert(flat_comp.name.to_string());
                     }
-                    parse_ast::Variability::Continuous => match type_prefix.causality {
-                        parse_ast::Causality::Input => {
+                    Variability::Continuous => match type_prefix.causality {
+                        Causality::Input => {
                             class.u.insert(flat_comp.name.to_string());
                         }
-                        parse_ast::Causality::Output => {
+                        Causality::Output => {
                             class.y.insert(flat_comp.name.to_string());
                         }
-                        parse_ast::Causality::None => {
+                        Causality::None => {
                             class.w.insert(flat_comp.name.to_string());
                         }
                     },
-                    parse_ast::Variability::Discrete => {
+                    Variability::Discrete => {
                         class.z.insert(flat_comp.name.to_string());
                     }
-                    parse_ast::Variability::Parameter => {
+                    Variability::Parameter => {
                         class.p.insert(flat_comp.name.to_string());
                     }
                 }
@@ -239,22 +241,11 @@ pub fn compref_to_string(comp: &parse_ast::ComponentReference) -> String {
 }
 
 pub fn flatten_equation(eq: &parse_ast::Equation, class: &mut ast::Class) {
-    // find all states in the class by searching
-    // for component references that are taken the derivative of
     match eq {
-        parse_ast::Equation::Der { comp, rhs } => {
-            let comp_key = compref_to_string(comp);
-            if class.w.contains(&comp_key) {
-                class.x.insert(class.w.remove_full(&comp_key).unwrap().1);
-            } else if class.y.contains(&comp_key) {
-                class.x.insert(comp_key.clone());
-            } else {
-                panic!("derivative state not declared {:?}", comp_key);
-            }
-            class.ode.insert(comp_key.clone(), rhs.clone());
-        }
-        parse_ast::Equation::Simple { lhs: _, rhs: _ } => {
+        parse_ast::Equation::Simple { lhs, rhs } => {
             class.algebraic.push(eq.clone());
+            flatten_expression(lhs, class);
+            flatten_expression(rhs, class);
         }
         parse_ast::Equation::If {
             if_cond: _,
@@ -264,6 +255,46 @@ pub fn flatten_equation(eq: &parse_ast::Equation, class: &mut ast::Class) {
         } => {
             todo!("{:?}", eq);
         }
+        parse_ast::Equation::For { indices: _, eqs: _ } => {
+            todo!("{:?}", eq);
+        }
+    }
+}
+
+pub fn flatten_expression(expr: &Expression, class: &mut ast::Class) {
+    match expr {
+        Expression::Der { args } => {
+            for arg in args {
+                if let Expression::Ref { comp } = arg {
+                    let comp_key = compref_to_string(comp);
+                    if class.w.contains(&comp_key) {
+                        class.x.insert(class.w.remove_full(&comp_key).unwrap().1);
+                    } else if class.y.contains(&comp_key) {
+                        class.x.insert(comp_key.clone());
+                    } else {
+                        panic!("derivative state not declared {:?}", comp_key);
+                    }
+                    // class.ode.insert(comp_key.clone(), rhs.clone());
+                }
+            }
+        }
+        Expression::Add { lhs, rhs } => {
+            flatten_expression(lhs, class);
+            flatten_expression(rhs, class);
+        }
+        Expression::Sub { lhs, rhs } => {
+            flatten_expression(lhs, class);
+            flatten_expression(rhs, class);
+        }
+        Expression::Mul { lhs, rhs } => {
+            flatten_expression(lhs, class);
+            flatten_expression(rhs, class);
+        }
+        Expression::Div { lhs, rhs } => {
+            flatten_expression(lhs, class);
+            flatten_expression(rhs, class);
+        }
+        _ => {}
     }
 }
 
@@ -274,10 +305,19 @@ pub fn flatten_statement(stmt: &parse_ast::Statement, class: &mut ast::Class) {
         }
         Statement::If {
             if_cond: _,
-            if_eqs: _,
+            if_stmts: _,
             else_if_blocks: _,
-            else_eqs: _,
+            else_stmts: _,
         } => {
+            todo!("{:?}", stmt);
+        }
+        parse_ast::Statement::For {
+            indices: _,
+            stmts: _,
+        } => {
+            todo!("{:?}", stmt);
+        }
+        parse_ast::Statement::While { cond: _, stmts: _ } => {
             todo!("{:?}", stmt);
         }
     }

@@ -7,8 +7,8 @@ grammar;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // LALRPOP macros
 
-CommaSeparatedList<T>: Vec<T> = {
-    <mut v:(<T> ",")*> <e:T?> => match e {
+SeparatedList<T, Str>: Vec<T> = {
+    <mut v:(<T> Str)*> <e:T?> => match e {
         None => v,
         Some(e) => {
             v.push(e);
@@ -17,18 +17,17 @@ CommaSeparatedList<T>: Vec<T> = {
     }
 };
 
-PeriodSeparatedList<T>: Vec<T> = {
-    <mut v:(<T> ".")*> <e:T?> => match e {
-        None => v,
-        Some(e) => {
-            v.push(e);
-            v
-        }
+SeparatedListMinOne<T, Str>: Vec<T> = {
+    <e:T> <v:(Str <T>)*>  => {
+        let mut res = vec![e];
+        res.extend(v);
+        res
     }
 };
 
-SemicolonTerminatedList<T>: Vec<T> = {
-    <v:(<T> ";")*> => v
+TerminatedList<T, Str>: Vec<T> = {
+    <v:(<T> Str)*> => v
+
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -148,7 +147,7 @@ pub Within: ast::Name = {
 }
 pub StoredDefinition: ast::StoredDefinition = {
     <within: Within?>
-    <classes:SemicolonTerminatedList<ClassDefinitionWithFinal>> => {
+    <classes:TerminatedList<ClassDefinitionWithFinal, ";">> => {
         ast::StoredDefinition {
             classes,
             within,
@@ -318,7 +317,7 @@ pub LanguageSpecification: String = {
 //✅ element-list :
 //✅    { element ";" }
 pub ElementList: Vec<ast::Element> = {
-    <elements:SemicolonTerminatedList<Element>> => elements
+    <elements:TerminatedList<Element, ";">> => elements
 }
 
 //🟨 element :
@@ -416,7 +415,7 @@ pub Causality: ast::Causality = {
 //✅ component-list :
 //✅    component-declaration { "," component-declaration }
 pub ComponentList: Vec<ast::ComponentDeclaration> = {
-    <components: CommaSeparatedList<ComponentDeclaration>> => {
+    <components: SeparatedList<ComponentDeclaration, ",">> => {
         components
     }
 }
@@ -474,7 +473,7 @@ pub Modification: ast::Modification = {
 //✅ class-modification :
 //✅    "(" [ argument-list ] ")"
 pub ClassModification: Vec<ast::Argument> = {
-    "(" <args: CommaSeparatedList<Argument>> ")" => args
+    "(" <args: SeparatedList<Argument, ",">> ")" => args
 }
 
 //✅ argument-list :
@@ -547,7 +546,7 @@ pub ComponentDeclaration1: ast::ComponentDeclaration1 = {
 //✅ equation-section :
 //✅    [ initial ] equation { some-equation ";" }
 pub EquationSection: ast::CompositionPart = {
-    <initial:"initial"?> "equation" <equations:SemicolonTerminatedList<Equation>> => {
+    <initial:"initial"?> "equation" <equations:TerminatedList<Equation, ";">> => {
         ast::CompositionPart::EquationSection {
             initial: initial.is_some(),
             equations,
@@ -557,7 +556,7 @@ pub EquationSection: ast::CompositionPart = {
 //✅ algorithm-section :
 //✅    [ initial ] algorithm { statement ";" }
 pub AlgorithmSection: ast::CompositionPart = {
-    <initial:"initial"?> "algorithm" <statements:SemicolonTerminatedList<Statement>> => {
+    <initial:"initial"?> "algorithm" <statements:TerminatedList<Statement, ";">> => {
         ast::CompositionPart::AlgorithmSection {
             initial: initial.is_some(),
             statements,
@@ -565,10 +564,10 @@ pub AlgorithmSection: ast::CompositionPart = {
     }
 }
 
-//🟥 some-equation :
+//🟨 some-equation :
 //✅    ( simple-expression "=" expression
 //✅      | if-equation
-//🟥      | for-equation
+//✅      | for-equation
 //🟥      | connect-equation
 //🟥      | when-equation
 //🟥      | component-reference function-call-args )
@@ -580,13 +579,8 @@ pub Equation: ast::Equation = {
             rhs
         }
     },
-    "der" "(" <comp:ComponentReference> ")" "=" <rhs:Expression> => {
-        ast::Equation::Der {
-            comp,
-            rhs
-        }
-    },
     <eq: IfEquation> => eq,
+    <eq: ForEquation> => eq,
 }
 
 //✅ statement :
@@ -594,8 +588,8 @@ pub Equation: ast::Equation = {
 //🟥      | "(" output-expression-list ")" ":=" component-reference function-call-args
 //🟥      | break
 //🟥      | return
-//🟥      | if-statement
-//🟥      | for-statement
+//✅      | if-statement
+//✅      | for-statement
 //🟥      | while-statement
 //🟥      | when-statement )
 //🟥    description
@@ -608,6 +602,7 @@ pub Statement: ast::Statement = {
         }
     },
     <stmt: IfStatement> => stmt,
+    <stmt: ForStatement> => stmt,
 }
 
 //✅ if-equation :
@@ -623,7 +618,7 @@ pub Statement: ast::Statement = {
 
 pub IfEquation: ast::Equation = {
     "if" <if_cond:Expression> "then"
-    <if_eqs:SemicolonTerminatedList<Equation>>
+    <if_eqs:TerminatedList<Equation, ";">>
     <else_if_blocks: ElseIfEquationBlock*>
     <else_eqs: ElseEquationBlock?>
     "end" "if" => {
@@ -638,7 +633,7 @@ pub IfEquation: ast::Equation = {
 
 pub ElseIfEquationBlock: ast::ElseIfEquationBlock = {
     "elseif" <cond:Expression> "then"
-    <eqs:SemicolonTerminatedList<Equation>> => {
+    <eqs:TerminatedList<Equation, ";">> => {
         ast::ElseIfEquationBlock {
             cond, eqs
         }
@@ -646,7 +641,7 @@ pub ElseIfEquationBlock: ast::ElseIfEquationBlock = {
 }
 
 pub ElseEquationBlock: Vec<ast::Equation> = {
-    "else" <eqs:SemicolonTerminatedList<Equation>> => {
+    "else" <eqs:TerminatedList<Equation, ";">> => {
         eqs
     }
 }
@@ -663,21 +658,21 @@ pub ElseEquationBlock: Vec<ast::Equation> = {
 //✅    end if
 pub IfStatement: ast::Statement = {
     "if" <if_cond:Expression> "then"
-    <if_eqs:SemicolonTerminatedList<Statement>>
+    <if_stmts:TerminatedList<Statement, ";">>
     <else_if_blocks: ElseIfStatementBlock*>
-    <else_eqs: ElseStatementBlock?>
+    <else_stmts: ElseStatementBlock?>
     "end" "if" => {
         ast::Statement::If {
-            if_cond, if_eqs,
+            if_cond, if_stmts,
             else_if_blocks,
-            else_eqs: else_eqs.unwrap_or(Vec::new()),
+            else_stmts: else_stmts.unwrap_or(Vec::new()),
         }
     }
 }
 
 pub ElseIfStatementBlock: ast::ElseIfStatementBlock = {
     "elseif" <cond:Expression> "then"
-    <eqs:SemicolonTerminatedList<Statement>> => {
+    <eqs:TerminatedList<Statement, ";">> => {
         ast::ElseIfStatementBlock {
             cond, eqs
         }
@@ -685,27 +680,76 @@ pub ElseIfStatementBlock: ast::ElseIfStatementBlock = {
 }
 
 pub ElseStatementBlock: Vec<ast::Statement> = {
-    "else" <eqs:SemicolonTerminatedList<Statement>> => {
+    "else" <eqs:TerminatedList<Statement, ";">> => {
         eqs
     }
 }
 
-//🟥 for-equation :
-//🟥    for for-indices loop
-//🟥      { some-equation ";" }
-//🟥    end for
-//🟥 for-statement :
-//🟥    for for-indices loop
-//🟥      { statement ";" }
-//🟥    end for
-//🟥 for-indices :
-//🟥    for-index { "," for-index }
-//🟥 for-index :
-//🟥    IDENT [ in expression ]
-//🟥 while-statement :
-//🟥    while expression loop
-//🟥      { statement ";" }
-//🟥    end while
+//✅ for-equation :
+//✅    for for-indices loop
+//✅      { some-equation ";" }
+//✅    end for
+pub ForEquation: ast::Equation = {
+    "for" <indices: ForIndices> "loop"
+    <eqs: TerminatedList<Equation, ";">>
+    "end" "for"
+    => {
+        ast::Equation::For {
+            indices,
+            eqs,
+        }
+    }
+}
+
+//✅ for-statement :
+//✅    for for-indices loop
+//✅      { statement ";" }
+//✅    end for
+pub ForStatement: ast::Statement = {
+    "for" <indices: ForIndices> "loop"
+    <stmts: TerminatedList<Statement, ";">>
+    "end" "for"
+    => {
+        ast::Statement::For {
+            indices,
+            stmts,
+        }
+    }
+}
+
+//✅ for-indices :
+//✅    for-index { "," for-index }
+pub ForIndices: Vec<ast::ForIndex> = {
+    <indices: SeparatedList<ForIndex, ",">> => indices
+}
+
+//✅ for-index :
+//✅    IDENT [ in expression ]
+pub ForIndex: ast::ForIndex = {
+    <ident: "IDENT"> <in_expr:("in" <Expression>)?> => {
+        ast::ForIndex {
+            ident,
+            in_expr,
+        }
+    }
+}
+
+//✅ while-statement :
+//✅    while expression loop
+//✅      { statement ";" }
+//✅    end while
+pub WhileStatement: ast::Statement = {
+    "while" <cond: Expression> "loop"
+    <stmts: TerminatedList<Statement, ";">>
+    "end" "while"
+    => {
+        ast::Statement::While {
+            cond,
+            stmts,
+        }
+    }
+}
+
 //🟥 when-equation :
 //🟥    when expression then
 //🟥      { some-equation ";" }
@@ -713,6 +757,7 @@ pub ElseStatementBlock: Vec<ast::Statement> = {
 //🟥      { some-equation ";" }
 //🟥    }
 //🟥    end when
+
 //🟥 when-statement :
 //🟥    when expression then
 //🟥      { statement ";" }
@@ -720,6 +765,7 @@ pub ElseStatementBlock: Vec<ast::Statement> = {
 //🟥      { statement ";" }
 //🟥    }
 //🟥    end when
+
 //🟥 connect-equation :
 //🟥    connect "(" component-reference "," component-reference ")"
 
@@ -729,28 +775,28 @@ pub ElseStatementBlock: Vec<ast::Statement> = {
 // ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 
 
-//🟨 expression :
+//✅ expression :
 //✅     simple-expression
-//🟥    | if expression then expression
-//🟥      { elseif expression then expression }
-//🟥      else expression
+//✅    | if expression then expression { elseif expression then expression } else expression
+
 //✅  simple-expression :
 //✅     logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
-
 pub Expression: ast::Expression = {
     <simp:SimpleExpression> => {
         simp
     },
-    // "if" <if_cond:SimpleExpression> "then" <if_eq:SimpleExpression>
-    // <else_if_blocks: ElseIfExpressionBlock*>
-    // <else_eq: ElseExpressionBlock?>
-    //  => {
-    //     ast::Expression::If {
-    //         if_cond, if_eq,
-    //         else_if_blocks,
-    //         else_eq,
-    //     }
-    // },
+    "if" <if_cond:SimpleExpression> "then"
+    <if_expr:SimpleExpression>
+    <else_if_blocks: ElseIfExpressionBlock*>
+    <else_expr: ElseExpressionBlock?>
+     => {
+        ast::Expression::If {
+            if_cond: Box::new(if_cond),
+            if_expr: Box::new(if_expr),
+            else_if_blocks,
+            else_expr: Box::new(else_expr),
+        }
+    },
 }
 
 pub ElseIfExpressionBlock: ast::ElseIfExpressionBlock = {
@@ -762,8 +808,8 @@ pub ElseIfExpressionBlock: ast::ElseIfExpressionBlock = {
 }
 
 pub ElseExpressionBlock: ast::Expression = {
-    "else" <eq:SimpleExpression> => {
-        eq
+    "else" <expr:SimpleExpression> => {
+        expr
     }
 }
 
@@ -930,7 +976,10 @@ pub SimpleExpression: ast::Expression = {
 //🟥    | STRING
 //✅    | false
 //✅    | true
-//🟨    | ( component-reference | der | initial | pure ) function-call-args
+//✅    | ( component-reference
+//✅        | der
+//✅        | initial
+//✅        | pure ) function-call-args
 //✅    | component-reference
 //🟥    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
 //🟥    | "[" expression-list { ";" expression-list } "]"
@@ -942,7 +991,7 @@ pub SimpleExpression: ast::Expression = {
             rhs: Box::new(rhs)
         }
     },
-    "{" <args:CommaSeparatedList<Expression>> "}" => {
+    "{" <args:SeparatedList<Expression, ",">> "}" => {
         ast::Expression::ArrayArguments {
             args
         }
@@ -962,6 +1011,11 @@ pub SimpleExpression: ast::Expression = {
     <comp:ComponentReference> <args:FunctionCallArguments> => {
         ast::Expression::FunctionCall {
             comp,
+            args
+        }
+    },
+    "der" <args:FunctionCallArguments> => {
+        ast::Expression::Der {
             args
         }
     },
@@ -997,7 +1051,7 @@ pub Name: ast::Name = {
 //✅ component-reference :
 //✅    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 pub ComponentReference: ast::ComponentReference = {
-    <local: "."?> <parts: RefPart+> => {
+    <local: "."?> <parts: SeparatedListMinOne<RefPart, ".">> => {
         ast::ComponentReference{
             local: local.is_some(),
             parts,
@@ -1020,7 +1074,7 @@ pub RefPart: ast::RefPart = {
 //✅ function-call-args :
 //✅    "(" [ function-arguments ] ")"
 pub FunctionCallArguments: Vec<ast::Expression> = {
-    "(" <args:CommaSeparatedList<Expression>> ")"  => args,
+    "(" <args:SeparatedList<Expression, ",">> ")"  => args,
 }
 
 //🟥 function-arguments :
@@ -1057,7 +1111,7 @@ pub FunctionCallArguments: Vec<ast::Expression> = {
 //✅ array-subscripts :
 //✅    "[" subscript { "," subscript } "]"
 pub ArraySubscripts: Vec<ast::Subscript> = {
-    "[" <subscripts: CommaSeparatedList<Subscript>> "]" => {
+    "[" <subscripts: SeparatedList<Subscript, ",">> "]" => {
         subscripts
     },
 }

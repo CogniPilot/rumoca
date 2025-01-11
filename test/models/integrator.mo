@@ -1,7 +1,5 @@
 model Integrator "hello"
-    Real y;
-    Real x; // test
+    Real x;
 equation
-    der(y) = 1.0;
-    der(x) = x + 3*y;
+    der(x) = 1;
 end Integrator;
