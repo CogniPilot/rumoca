@@ -1,20 +1,25 @@
-use ndarray::{ArrayBase, IxDyn, OwnedRepr};
 use ordermap::{OrderMap, OrderSet};
 use rumoca_parser::s1_parser::ast::{
     ClassType, Equation, Expression, Modification, Statement, Subscript,
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+derive_alias! {
+    #[derive(CommonTraits!)] = #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)];
+}
+
+#[derive(CommonTraits!, Default)]
 pub struct Def {
     pub classes: OrderMap<String, Class>,
     pub model_md5: String,
+    pub rumoca_parser_version: String,
+    pub rumoca_parser_git: String,
     pub rumoca_version: String,
-    pub rumoca_git_hash: String,
+    pub rumoca_git: String,
     pub template_md5: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(CommonTraits!, Default)]
 pub struct Class {
     pub name: String,
     pub class_type: ClassType,
@@ -32,11 +37,11 @@ pub struct Class {
     pub algorithm: Vec<Statement>,               // algorithm stms
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(CommonTraits!, Default)]
 pub struct Component {
     pub name: String,
     pub start: Option<Modification>,
-    pub start_value: ArrayBase<OwnedRepr<f64>, IxDyn>,
+    // pub start_value: ArrayBase<OwnedRepr<f64>, IxDyn>,
     pub array_subscripts: Vec<Subscript>,
 }
 
