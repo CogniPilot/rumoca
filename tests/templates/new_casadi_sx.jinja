@@ -1,0 +1,32 @@
+{# 
+{{ def | pprint }}
+#}
+
+{% macro render_class(class) %}
+class {{ class.name }}:
+
+    def __init__(self):
+
+        self.x = []
+        self.u = []
+        self.y = []
+        self.p = []
+        self.z = []
+        self.w = []
+
+        {% for (cname, cdef) in class.components | items %}
+            {% if cdef.variability == "parameter" %}
+        self.p.append({{ cname }})
+            {% elif cdef.variability == "discrete_state" %}
+        self.z.append({{ cname }})
+            {% elif cdef.variability == "Empty" %}
+        self.y.append({{ cname }})
+            {% endif %}
+        {{ cdef }}
+        {% endfor %}
+
+{% endmacro %}
+
+{% for (class_name, class_def) in def.classes | items %}
+{{ render_class(class_def) }}
+{% endfor %}

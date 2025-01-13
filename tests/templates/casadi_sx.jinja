@@ -1,68 +1,68 @@
-{%- macro render_class(class) %}
-class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(BaseModel):
+{%- macro render_class(node) %}
+class {% if node.class_type == "Function" -%}__{% endif -%}{{ node.name }}(BaseModel):
     """
-    {{ class.description }}
+    {{ node.description }}
     """
 
     def __init__(self):
         super().__init__()
 
         # declare constants
-        {%- for const in class.c %}
-            {%- set comp = class.components[const] %}
-        {{ comp.name }} = {{ comp.start_value.data[0] }}
+        {%- for const in node.c %}
+            {%- set comp = node.components[const] %}
+        {#{{ comp.name }} = {{ comp.start_value.data[0] }}#}
         {%- endfor %}
 
         # declare parameters
-        {{ render_symbols(class, class.p) | indent(4) }}
-        {{ render_vector("self.p", class, class.p) | indent(12) }}
+        {{ render_symbols(node, node.p) | indent(4) }}
+        {{ render_vector("self.p", node, node.p) | indent(12) }}
 
         # declare parameter start values
-        {{ render_vector_start_dict("self.p0", class, class.p) | indent(4) }}
+        {{ render_vector_start_dict("self.p0", node, node.p) | indent(4) }}
 
         # declare discrete states
-        {{ render_symbols(class, class.z) | indent(4) }}
-        {{ render_vector("self.z", class, class.z) | indent(12) }}
+        {{ render_symbols(node, node.z) | indent(4) }}
+        {{ render_vector("self.z", node, node.z) | indent(12) }}
 
         # declare discrete states start values
-        {{ render_vector_start_dict("self.z0", class, class.z) | indent(4) }}
+        {{ render_vector_start_dict("self.z0", node, node.z) | indent(4) }}
 
         # declare inputs
-        {{ render_symbols(class, class.u) | indent(4) }}
-        {{ render_vector("self.u", class, class.u) | indent(12) }}
+        {{ render_symbols(node, node.u) | indent(4) }}
+        {{ render_vector("self.u", node, node.u) | indent(12) }}
 
         # declare outputs
-        {{ render_zero_symbols(class, class.y) | indent(4) }}
-        {{ render_vector("self.y", class, class.y) | indent(12) }}
+        {{ render_zero_symbols(node, node.y) | indent(4) }}
+        {{ render_vector("self.y", node, node.y) | indent(12) }}
 
         # declare internal variables
-        {{ render_symbols(class, class.w) | indent(4) }}
+        {{ render_symbols(node, node.w) | indent(4) }}
 
         # declare continuous states
-        {{ render_symbols(class, class.x) | indent(4) }}
-        {{ render_vector("self.x", class, class.x) | indent(12) }}
+        {{ render_symbols(node, node.x) | indent(4) }}
+        {{ render_vector("self.x", node, node.x) | indent(12) }}
 
         # declare continuous states start values
-        {{ render_vector_start_dict("self.x0", class, class.x) | indent(4) }}
+        {{ render_vector_start_dict("self.x0", node, node.x) | indent(4) }}
 
         # algorithmic
-        {{ render_statement_list(class.algorithm) | indent(4) }}
+        {{ render_statement_list(node.algorithm) | indent(4) }}
 
         # algebraic
-        {{ render_statement_list(class.algebric) | indent(4) }}
+        {{ render_statement_list(node.algebric) | indent(4) }}
 
         # ode
-        {{ render_ordermap_expression("self.ode", class.ode, class.x) | indent(8) }}
+        {{ render_ordermap_expression("self.ode", node.ode, node.x) | indent(8) }}
 
-{% if class.class_type == "Function" %}
+{% if node.class_type == "Function" %}
         # build function
-        self.F = ca.Function("{{ class.name }}", [self.u], [self.y], ['u'], ['y'])
+        self.F = ca.Function("{{ node.name }}", [self.u], [self.y], ['u'], ['y'])
 
     def __call__(self, *args):
         return self.F(ca.vertcat(*args))
 
 # callable function singleton
-{{ class.name }} = __{{ class .name }}()
+{{ node.name }} = __{{ node .name }}()
 
 {% endif %}
 {%- endmacro %}
@@ -83,27 +83,25 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
     {%- endif -%}
 {%- endmacro -%}
 
+
 {%- macro render_symbols(class, var_list) -%}
     {%- for var in var_list -%}
     {{ var }} = ca.SX.sym('{{ var }}'
         {%- set comp = class.components[var] -%}
-        {%- if comp.array_subscripts | length > 0 -%}{{ ", " }}
-            {%- for sub in comp.array_subscripts -%}
-                {{ render_subscript(sub) -}}{% if not loop.last %},{% endif -%}
-            {%- endfor -%}
-        {%- endif -%})
+        {%- if comp is not defined %}
+            {{ panic("undefined symbol key: " + var) }}
+        {%- endif %}
+        {{ render_component_reference(comp) }}
     {% endfor -%}
 {%- endmacro -%}
 
 {%- macro render_zero_symbols(class, var_list) -%}
     {%- for var in var_list -%}
         {%- set comp = class.components[var] -%}
-        {{- var }} = ca.SX.zeros(
-        {%- if comp.array_subscripts | length > 0 -%}
-            {%- for sub in comp.array_subscripts -%}
-            {{ render_subscript(sub) }}{% if not loop.last %},{% endif -%}
-            {%- endfor -%}
-        {%- endif -%})
+        {%- if comp is not defined %}
+            {{ panic("undefined symbol key: " + var) }}
+        {%- endif %}
+        {{- var }} = ca.SX.zeros({{ render_component_reference(comp) }})
     {% endfor -%}
 {%- endmacro -%}
 
@@ -158,12 +156,12 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
 {%- endmacro -%}
 
 {%- macro render_component_reference(comp) -%}
+    {#- handles index from 1 to 0 from Modelica to python-#}
     {%- if comp.local %}.{% endif -%}
     {%- for part in comp.parts -%}
         {{ part.name }}
         {%- if part.array_subscripts | length > 0 %}[
             {%- for sub in part.array_subscripts -%}
-                {#- handles index from 1 to 0 from Modelica to python-#}
                 {{ render_subscript(sub) | int -1 }}{% if not loop.last -%}, {% endif %}
             {%- endfor -%}]
         {%- endif -%}
@@ -177,7 +175,7 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
         {%- elif key == "UnsignedInteger" -%}
             {{ value }}
         {%- elif key == "Ref" -%}
-            {{ render_component_reference(comp=value.comp) }}
+            {{ render_component_reference(value) }}
         {%- elif key == "Add" -%}
             {{ render_binary(op=" + ", expr=value) -}}
         {%- elif key == "Sub" -%}
@@ -211,7 +209,7 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
                 {{- "\n       " }} {{ render_expression(expr=arg) }} {%- if not loop.last -%},{% endif %}
             {%- endfor -%})
         {%- elif key == "FunctionCall" -%}
-            {{ value.comp.name }}(
+            {{ value.name }}(
                 {%- for arg in value.args -%}
                     {{ render_expression(expr=arg) }} {% if not loop.last -%}, {% endif %}
                 {%- endfor -%})
@@ -230,7 +228,9 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
 {%- macro render_statement(stmt) -%}
     {%- for key, value in stmt | items -%}
         {%- if key == "Assignment" -%}
-            {{ render_component_reference(comp=value.comp) }} = {{ render_expression(expr=value.rhs) }}
+            {#
+            {{ render_component_reference(value) }} = {{ render_expression(expr=value.rhs) }}
+            #}
         {%- else -%}
             {{ warn("unknown statement: " + key) }}
         {%- endif %}
@@ -286,7 +286,7 @@ def cat(axis, *args):
     return ca.vertcat(*args)
 
 
-{%- for key, val in def.classes | items %}
-
-{{ render_class(class=val) }}
+{{ def }}
+{%- for name, class in def.classes | items %}
+{{ render_class(class) }}
 {%- endfor %}

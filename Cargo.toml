@@ -2,16 +2,16 @@
 name = "rumoca"
 authors = ["James Goppert", "Benjamin Perseghetti"]
 description = "A Modelica translator with focus on Casadi, Sympy, JAX, and Collimator generation"
-version = "0.4.5"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-rumoca_parser = { version = "0.4.5" }
+#rumoca_parser = { path = "../rumoca_parser" }
+rumoca_parser = { version = "0.11.1" }
 clap = { version = "4.5.20", features = ["derive"] }
 codespan-reporting = "0.11.1"
-lalrpop-util = "0.22.0"
-logos = "0.15.0"
+macro_rules_attribute = "0.2.0"
 md5 = "0.7.0"
 minijinja = "2.5.0"
 ndarray = { version = "0.16.1", features = ["serde"] }
@@ -19,3 +19,8 @@ ordermap = { version = "0.5.4", features = ["serde"] }
 serde = { version = "1.0.214", features = ["derive", "serde_derive"] }
 serde_json = "1.0.132"
 unindent = "0.2.3"
+petgraph = "0.7.1"
+indexmap = "2.7.1"
+log = "0.4.25"
+env_logger = "0.11.6"
+paste = "1.0.15"

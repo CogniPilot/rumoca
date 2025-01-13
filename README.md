@@ -96,16 +96,20 @@ Type the following to test that rumoca is in your path.
 
 ```bash
 $ rumoca --help
+
 Rumoca Modelica Translator
 
-Usage: rumoca [OPTIONS] --template-file <TEMPLATE_FILE> --model-file <MODEL_FILE>
+Usage: rumoca [OPTIONS] <MODELICA_FILE>
+
+Arguments:
+  <MODELICA_FILE>  The modelica *.mo file to compile
 
 Options:
-  -t, --template-file <TEMPLATE_FILE>  The template
-  -m, --model-file <MODEL_FILE>        The model file to compile
-  -v, --verbose                        Verbose output
-  -h, --help                           Print help
-  -V, --version                        Print version
+  -t, --template <TEMPLATE>          Renders a template using dae_ast [default: ]
+  -a, --ast-template <AST_TEMPLATE>  Renders a template using ast [default: ]
+  -v, --verbose                      Verbose output
+  -h, --help                         Print help
+  -V, --version                      Print version
 ```
 
 ## Building, Testing, and Running
@@ -116,7 +120,7 @@ This package uses the standard cargo conventions for rust.
 cargo build
 cargo run
 cargo test
-cargo run -- -t test/templates/casadi_sx.jinja -m test/models/integrator.mo
+cargo run -- test/models/integrator.mo -t test/templates/casadi_sx.jinja 
 ```
 
 This package uses the standard cargo installation conventions.
@@ -142,7 +146,7 @@ end Integrator;
 
 ### Generated CasADi output file.
 ```bash
-$ rumoca -t test/templates/casadi_sx.jinja -m test/models/integrator.mo
+$ rumoca test/models/integrator.mo -t test/templates/casadi_sx.jinja 
 ```
 ```python
 import casadi as ca

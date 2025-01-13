@@ -1,4 +1,4 @@
-model SimpleCicuit
+model SimpleCircuit
     Resistor R1(R=10);
     Capacitor C(C=0.01);
     Resistor R2(R=100);
@@ -13,7 +13,7 @@ equation
     connect(R2.n, L.p);   // Wire 5
     connect(L.n, C.n);    // Wire 6
     connect(AC.n, G.p);   // Wire 7, Ground
-end SimpleCicuit;
+end SimpleCircuit;
 
 partial class TwoPin
     Pin p, n;
@@ -31,6 +31,13 @@ class Resistor
 equation
     R*i = v;
 end Resistor;
+
+class Inductor "Ideal electrical inductor"
+    extends TwoPin;
+    parameter Real L "Inductance";
+equation
+    v = L*der(i);
+end Inductor;
 
 class Capacitor
     extends TwoPin;
