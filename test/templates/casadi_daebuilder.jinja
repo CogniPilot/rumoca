@@ -44,10 +44,12 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
         {{ render_statement_list(class.algorithm) | indent(4) }}
 
         # Algebraic equations
-        {{ render_statement_list(class.algebric) | indent(4) }}
+        {{ render_equation_list(class.algebraic) | indent(4) }}
 
+        {# 
         # Differential equations
         {{ render_ode(class.ode, class.x) | indent(4) }}
+        #}
 
 {% if class.class_type == "Function" %}
     def __call__(self, *args):
@@ -147,6 +149,10 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
             {{ value }}
         {%- elif key == "Ref" -%}
             self.dae({{ render_component_reference(comp=value.comp) }})
+        {%- elif key == "Der" -%}
+            ca.vertcat({%- for arg in value.args -%}
+                self.dae.der({{ render_expression(expr=arg) }}) {%- if not loop.last -%},{% endif %}
+            {%- endfor -%})
         {%- elif key == "Add" -%}
             {{ render_binary(op=" + ", expr=value) -}}
         {%- elif key == "Sub" -%}
@@ -205,6 +211,26 @@ class {% if class.class_type == "Function" -%}__{% endif -%}{{ class.name }}(Bas
         {%- endif %}
     {%- endfor -%}
 {%- endmacro -%}
+
+{%- macro render_equation_list(eq_list) -%}
+    {%- for eq in eq_list -%}
+        {{ render_equation(eq=eq) }}
+    {% endfor -%}
+{%- endmacro -%}
+
+{%- macro render_equation(eq) -%}
+    {%- for key, value in eq | items -%}
+        {%- if key == "Simple" -%}
+        self.dae.eq({{ render_expression(expr=value.lhs) }},
+            {{ render_expression(expr=value.rhs) }},
+            dict(line=-1, description=''))
+        {%- else -%}
+        {{ warn("unknown equation: " + key) }}
+        {%- endif %}
+    {%- endfor -%}
+{%- endmacro -%}
+
+
 # rumoca pkg version : {{ def.rumoca_version }}
 # rumoca git version : {{ def.rumoca_git_hash }}
 # template md5       : {{ def.template_md5 }}
