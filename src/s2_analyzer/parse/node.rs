@@ -202,7 +202,12 @@ impl Node for node::StoredDefinition {
 
 impl Node for node::ClassDefinition {
     fn children(&self) -> Vec<NodeRef> {
-        self.components.iter().map(|(_k, v)| v.into()).collect()
+        self.components
+            .values()
+            .map(|comp| comp.into())
+            .chain(self.equations.iter().map(|eq| eq.into()))
+            .chain(self.initial_equations.iter().map(|eq| eq.into()))
+            .collect()
     }
     node_data_impl_basic!();
 }

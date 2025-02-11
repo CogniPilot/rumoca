@@ -29,17 +29,46 @@ impl Visitor for ReprVisitor {
         self.repr.insert(n.id(), s);
     }
 
-    fn enter_class_definition(&mut self, n: &node::ClassDefinition, _parent_id: Option<usize>) {
-        self.repr.insert(n.id(), format!("enter class {}", n.name));
+    fn exit_class_definition(&mut self, n: &node::ClassDefinition, _parent_id: Option<usize>) {
+        let mut s = format!("class {}\n", n.name);
+        for comp in n.components.values() {
+            let repr = self
+                .repr
+                .get(&comp.id())
+                .expect(&format!("no repr for {}", comp.id()));
+            s += &format!("    {}\n", repr);
+        }
+        s += &format!("equations\n");
+        for eq in n.equations.iter() {
+            let repr = self
+                .repr
+                .get(&eq.id())
+                .expect(&format!("no repr for {}", eq.id()));
+            s += &format!("    {}\n", repr);
+        }
+        s += &format!("alorithms\n");
+        s += &format!("end {};\n", n.name);
+        self.repr.insert(n.id(), s);
     }
 
-    fn enter_component_declaration(
+    fn exit_equation_simple(&mut self, n: &node::EquationSimple, parent_id: Option<usize>) {
+        self.repr.insert(
+            parent_id.expect("no parent"),
+            format!("{} = {}", self.repr[&n.lhs.id()], self.repr[&n.rhs.id()]),
+        );
+    }
+
+    fn exit_expression(&mut self, n: &node::Expression, _parent_id: Option<usize>) {
+        self.repr.insert(n.id(), "expr".to_string());
+    }
+
+    fn exit_component_declaration(
         &mut self,
         n: &node::ComponentDeclaration,
         _parent_id: Option<usize>,
     ) {
         self.repr
-            .insert(n.id(), format!("enter component declaration: {}", n.name));
+            .insert(n.id(), format!("{:?} {};", n.type_specifier, n.name));
     }
 
     fn exit_component_reference(
