@@ -1,0 +1,292 @@
+{#- 
+
+This template renders the rumoca_parser AST back to modelica code.
+
+If an error occurs it will dump the data structure within the output file
+for ease of use and debugging.
+
+-#}
+
+{#- =======================================================================
+    CLASS -#}
+{%- macro render_class(node) -%}
+    {%- if "Long" in node.specifier -%}
+        {{ render_class_specifier_long(node) }}
+    {%- else -%}
+        ERROR: UNHANDLED CLASS: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_class_specifier_long(node) -%}
+    {%- set spec = node.specifier.Long -%}
+    {{ render_class_type(node.prefixes.class_type) }} {{ spec.name -}}
+    {{ " " }}{{ render_description_string(spec.description) }}
+    {%- for part in spec.composition -%}
+        {{ render_composition_part(part) }}
+    {%- endfor -%}
+    {{ "\n" }}end {{ spec.name }};
+{%- endmacro -%}
+
+{%- macro render_type_specifier(node) -%}
+    {%- if node.local -%}.{%- endif -%}
+    {{ render_name(node.name) }}
+{%- endmacro -%}
+
+{%- macro render_name(node) -%}
+    {{ node | join(".") }}
+{%- endmacro -%}
+
+{%- macro render_description(node) -%}
+    {%- if node.strings | length > 0 -%}
+    {{ " " }}{{ render_description_string(node.strings) }}
+    {%- endif %};
+{%- endmacro -%}
+
+{%- macro render_description_string(node) -%}
+    {%- if node | length > 0 -%}
+        "{{ node | join(" ") }}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_class_type(node) -%}
+    {%- if node == "Model" -%}
+        model
+    {%- elif node == "Class" -%}
+        class
+    {%- else -%}
+        ERROR: UNHANDLED CLASS TYPE: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{#- =======================================================================
+    COMPOSITION -#}
+
+{%- macro render_composition_part(node) -%}
+    {%- if node.ElementList is defined -%}
+        {{ render_element_list(node.ElementList) }}
+    {%- elif node.EquationSection is defined -%}
+        {{ render_equation_section(node.EquationSection) }}
+    {%- elif node.AlgorithmSection is defined -%}
+        algorithm
+    {%- else -%}
+        ERROR: UNHANDLED COMPOSITION PART: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_element_list(node) -%}
+    {%- for elem in node.elements -%}
+        {%- if elem.ComponentClause is defined -%}
+            {{ render_component_clause(elem.ComponentClause) }}
+        {%- elif elem.ExtendsClause is defined -%}
+            {{ render_extends_clause(elem.ExtendsClause) }}
+        {%- else %}
+            {{ elem }}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_component_clause(node) -%}
+    {{ "\n    " }}
+    {{- render_type_prefix(node.clause.type_prefix) -}} 
+    {{- render_type_specifier(node.clause.type_specifier) }}{{ " " }}
+    {%- for comp in node.clause.components -%}
+        {{ render_component_declaration(comp) }}{% if not loop.last %}, {%endif%}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_type_prefix(node) -%}
+    {{- render_connection(node.connection) -}} 
+    {{- render_variability(node.variability) -}}
+    {{- render_causality(node.causality) -}}
+{%- endmacro -%}
+
+{%- macro render_connection(node) -%}
+    {%- if node == "Flow" -%}
+        flow{{ " " }}
+    {%- elif node == "Stream" -%}
+        stream{{ " " }}
+    {%- elif node == "Empty" -%}
+    {%- else -%}
+        ERROR: UNHANDLED CONNECTION: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_variability(node) -%}
+    {%- if node == "Continuous" -%}
+    {%- elif node == "Discrete" -%}
+        discrete{{ " " }}
+    {%- elif node == "Parameter" -%}
+        parameter{{ " " }}
+    {%- elif node == "Constant" -%}
+        constant{{ " " }}
+    {%- elif node == "Empty" -%}
+    {%- else -%}
+        ERROR: UNHANDLED VARIABILITY: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_causality(node) -%}
+    {%- if node == "Input" -%}
+        input{{ " " }}
+    {%- elif node == "Output" -%}
+        output{{ " " }}
+    {%- elif node == "Empty" -%}
+    {%- else -%}
+        ERROR: UNHANDLED CAUSALITY: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_visibility(node) -%}
+    {%- if node == "Public" -%}
+        continuous
+    {%- elif node == "Protected" -%}
+        discrete
+    {%- else -%}
+        ERROR: UNHANDLED VARIABILITY: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+
+{%- macro render_extends_clause(node) -%}
+    {{ "\n    " }}extends {{ render_type_specifier(node) }};
+{%- endmacro -%}
+
+{%- macro render_component_declaration(node) -%}
+    {{- render_declaration(node.declaration) -}}
+    {{- render_description(node.description) -}}
+{%- endmacro -%}
+
+{%- macro render_declaration(node) -%}
+    {{ node.name }}
+    {%- if node.modification != none -%}
+        {{ render_modification(node.modification) }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_equation_section(node) %}
+equation
+{%- for eq in node.equations %}
+    {{ render_equation(eq) }}
+{%- endfor -%}
+{%- endmacro -%}
+
+{#- =======================================================================
+    MODIFICATION -#}
+
+{%- macro render_argument(node) -%}
+    {%- if node.Modification is defined -%}
+        {{ render_name(node.Modification.name) }}
+        {{- render_modification(node.Modification.modification) }}
+    {%- else -%}
+        ERROR: UNHANDLED ARGUMENT TYPE: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_modification(node) -%}
+    {%- if node.Class is defined -%}
+        {{ render_modification_class(node.Class) }}
+    {%- elif node.Expression is defined -%}
+        {{ render_modification_expr(node.Expression) }}
+    {%- else -%}
+        ERROR: UNHANDLED MODIFICATION TYPE: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+
+{%- macro render_modification_class(node) -%}
+    ({%- for arg in node.args -%}
+        {{ render_argument(arg) }}{% if not loop.last %}.{%endif%}
+    {%- endfor -%})
+{%- endmacro -%}
+
+{%- macro render_modification_expr(node) -%}
+    {{ " = " }}{%- if node.Expression is defined -%}
+        {{ render_expression(node.Expression) }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{#- =======================================================================
+    EQUATIONS -#}
+
+{%- macro render_equation(node) -%}
+    {%- if node.Simple is defined -%}
+        {{ render_simple_equation(node.Simple) }}
+    {%- elif node.Connect is defined -%}
+        {{ render_connect_equation(node.Connect) }}
+    {%- else %}
+        "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_simple_equation(node) -%}
+    {{ render_expression(node.lhs) }} = {{ render_expression(node.rhs) }}
+    {{- render_description(node.description) -}}
+{%- endmacro -%}
+
+{%- macro render_connect_equation(node) -%}
+    connect({{ render_component_reference(node.lhs) -}}
+    {{ ", " }} {{- render_component_reference(node.rhs) }})
+    {{- render_description(node.description) -}}
+{%- endmacro -%}
+
+{#- =======================================================================
+    EXPRESSIONS -#}
+
+{%- macro render_expression(node) -%}
+    {%- if node.FunctionCall is defined -%}
+        {{ render_function_call(node.FunctionCall) }}
+    {%- elif node.Ref is defined -%}
+        {{ render_component_reference(node.Ref) }}
+    {%- elif node.Binary is defined -%}
+        {{ render_binary(node.Binary) }}
+    {%- elif node.Unary is defined -%}
+        {{ render_unary(node.Unary) }}
+    {%- elif node.UnsignedReal is defined -%}
+        {{ node.UnsignedReal }}
+    {%- elif node.UnsignedInteger is defined -%}
+        {{ node.UnsignedInteger }}
+    {%- else %}
+        ERROR: UNHANDLED EXPRESSION: "{{ node}}"
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_function_call(node) -%}
+    {{ render_component_reference(node.comp) -}}
+    ({%- for arg in node.args -%}
+        {{ render_expression(arg) }}{% if not loop.last %}.{%endif%}
+    {%- endfor -%})
+{%- endmacro -%}
+
+{%- macro render_component_reference(node) -%}
+    {%- for part in node.parts -%}
+        {{ part.name }}{% if not loop.last %}.{%endif%}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_binary(node) -%}
+    {{- render_expression(node.lhs) -}}
+    {{- render_binary_op(node.op) -}}
+    {{- render_expression(node.rhs) -}}
+{%- endmacro -%}
+
+{%- macro render_binary_op(node) -%}
+    {%- if node == "Mul" -%}
+        *
+    {%- elif node == "Div" -%}
+        /
+    {%- elif node == "Add" -%}
+        {{ " " }}+{{ " " }}
+    {%- elif node == "Sub" -%}
+        {{ " " }}-{{ " " }}
+    {%- else -%}
+        ERROR: UNHANDLED BINARY OP: "{{node}}" 
+    {%- endif -%}
+{%- endmacro -%}
+
+{#- =======================================================================
+    MAIN -#}
+
+{%- for class in def.classes -%}
+    {{ render_class(class) }}
+
+{% endfor -%}
