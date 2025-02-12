@@ -415,13 +415,15 @@ impl Node for node::Expression {
 }
 
 impl Node for node::Unary {
+    fn children(&self) -> Vec<NodeRef> {
+        vec![self.rhs.as_ref().into()]
+    }
     node_data_impl_basic!();
 }
 
 impl Node for node::Binary {
     fn children(&self) -> Vec<NodeRef> {
-        vec![]
-        // vec![&*(self.lhs).into(), &*(self.rhs).into()]
+        vec![self.lhs.as_ref().into(), self.rhs.as_ref().into()]
     }
     node_data_impl_basic!();
 }

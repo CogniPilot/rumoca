@@ -38,10 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut repr_visitor = ReprVisitor::default();
     def.accept(&mut repr_visitor, None);
-    println!(
-        "{}",
-        repr_visitor.repr.get(&def.node_data().id).expect("no repr")
-    );
+    println!("{}", repr_visitor.repr_get(def.node_data().id));
 
     if !args.template.is_empty() {
         let s = s4_generator::generate(&def, &args.template, args.verbose)?;

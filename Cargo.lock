@@ -776,6 +776,7 @@ dependencies = [
  "codespan-reporting",
  "env_logger",
  "indexmap",
+ "lazy_static",
  "log",
  "macro_rules_attribute",
  "md5",
