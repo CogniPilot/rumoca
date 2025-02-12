@@ -52,21 +52,11 @@ macro_rules! node_macros {
                 }
 
                 fn id(&self) -> usize {
-                    match self {
-                        NodeRef::Empty => panic!("empty node"),
-                        $(
-                            NodeRef::$name(node) => node.node_data().id,
-                        )*
-                    }
+                    self.node_data().id
                 }
 
                 fn span(&self) -> (usize, usize) {
-                    match self {
-                        NodeRef::Empty => panic!("empty node"),
-                        $(
-                            NodeRef::$name(node) => node.node_data().span,
-                        )*
-                    }
+                    self.node_data().span
                 }
 
                 fn children(&self) -> Vec<NodeRef> {
