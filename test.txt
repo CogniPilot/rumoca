@@ -1,0 +1,12 @@
+// To run the test please issue:
+// cargo run ./test.txt
+
+within stuff.test1.test2;
+
+class Test2
+    Real x;
+equation
+    x = 3;
+end Test2;
+
+// End
