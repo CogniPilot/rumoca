@@ -1,4 +1,6 @@
 use crate::modelica_grammar_trait;
+use indexmap::IndexMap;
+use parol_runtime::syntree::Empty;
 #[allow(unused_imports)]
 use parol_runtime::{Location, Result, Span, ToSpan, Token};
 use std::fmt::{Debug, Display, Error, Formatter};
@@ -7,7 +9,8 @@ use std::fmt::{Debug, Display, Error, Formatter};
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct StoredDefinition {
-    pub class_list: String,
+    pub class_list: IndexMap<String, ClassDefinition>,
+    pub within: Option<String>,
     pub span: Span,
 }
 
@@ -23,10 +26,25 @@ impl TryFrom<&modelica_grammar_trait::AutoStoredDefinition> for StoredDefinition
     fn try_from(
         ast: &modelica_grammar_trait::AutoStoredDefinition,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(StoredDefinition {
-            class_list: "".to_string(),
+        let mut def = StoredDefinition {
+            class_list: IndexMap::new(),
             span: ast.span().clone(),
-        })
+            ..Default::default()
+        };
+        for class in &ast.auto_stored_definition_list {
+            def.class_list.insert(
+                class.class_definition.auto_class_definition.name.clone(),
+                class.class_definition.auto_class_definition.clone(),
+            );
+        }
+        def.within = match &ast.auto_stored_definition_opt {
+            Some(within) => match &within.auto_stored_definition_opt0 {
+                Some(within) => Some(within.name.auto_name.name.clone()),
+                None => None,
+            },
+            None => None,
+        };
+        Ok(def)
     }
 }
 
@@ -35,6 +53,7 @@ impl TryFrom<&modelica_grammar_trait::AutoStoredDefinition> for StoredDefinition
 #[allow(unused)]
 pub struct ClassDefinition {
     pub name: String,
+    pub encapsulated: bool,
     pub span: Span,
 }
 
@@ -50,13 +69,19 @@ impl TryFrom<&modelica_grammar_trait::AutoClassDefinition<'_>> for ClassDefiniti
     fn try_from(
         ast: &modelica_grammar_trait::AutoClassDefinition,
     ) -> std::result::Result<Self, Self::Error> {
-        // if let Some(encapsulted) = &ast.auto_class_definition_opt {
-        //     encapsulted.encapsulated
-        // }
-        Ok(ClassDefinition {
+        let mut def = ClassDefinition {
             name: "".to_string(),
             span: ast.span().clone(),
-        })
+            encapsulated: ast.auto_class_definition_opt.is_some(),
+        };
+        match &ast.class_specifier.auto_class_specifier {
+            ClassSpecifier::Long { name, .. } => {
+                def.name = name.clone();
+            }
+            ClassSpecifier::Empty => {}
+        }
+
+        Ok(def)
     }
 }
 
@@ -117,14 +142,21 @@ impl TryFrom<&modelica_grammar_trait::AutoClassType<'_>> for ClassType {
 //-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
-pub struct ClassSpecifier {
-    pub name: String,
-    pub span: Span,
+pub enum ClassSpecifier {
+    #[default]
+    Empty,
+    Long {
+        name: String,
+        span: Span,
+    },
 }
 
 impl ToSpan for ClassSpecifier {
     fn span(&self) -> Span {
-        self.span.clone()
+        match self {
+            ClassSpecifier::Empty => Span::default(),
+            ClassSpecifier::Long { span, .. } => span.clone(),
+        }
     }
 }
 
@@ -134,35 +166,18 @@ impl TryFrom<&modelica_grammar_trait::AutoClassSpecifier> for ClassSpecifier {
     fn try_from(
         ast: &modelica_grammar_trait::AutoClassSpecifier,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(ClassSpecifier {
-            name: "".to_string(),
-            span: ast.span().clone(),
-        })
+        Ok(ast.long_class_specifier.auto_long_class_specifier.clone())
     }
 }
 
-//-----------------------------------------------------------------------------
-#[derive(Debug, Default, Clone)]
-#[allow(unused)]
-pub struct LongClassSpecifier {
-    pub name: String,
-    pub span: Span,
-}
-
-impl ToSpan for LongClassSpecifier {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-
-impl TryFrom<&modelica_grammar_trait::AutoLongClassSpecifier> for LongClassSpecifier {
+impl TryFrom<&modelica_grammar_trait::AutoLongClassSpecifier> for ClassSpecifier {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::AutoLongClassSpecifier,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(LongClassSpecifier {
-            name: "".to_string(),
+        Ok(ClassSpecifier::Long {
+            name: ast.ident.auto_ident.name.clone(),
             span: ast.span().clone(),
         })
     }
@@ -885,7 +900,7 @@ impl TryFrom<&modelica_grammar_trait::AutoName> for Name {
 
     fn try_from(ast: &modelica_grammar_trait::AutoName) -> std::result::Result<Self, Self::Error> {
         Ok(Name {
-            name: "".to_string(),
+            name: ast.ident.auto_ident.name.clone(),
             span: ast.span().clone(),
         })
     }

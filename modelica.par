@@ -8,7 +8,6 @@
 %user_type UtClassPrefixes = crate::modelica_grammar::ClassPrefixes
 %user_type UtClassType = crate::modelica_grammar::ClassType
 %user_type UtClassSpecifier = crate::modelica_grammar::ClassSpecifier
-%user_type UtLongClassSpecifier = crate::modelica_grammar::LongClassSpecifier
 %user_type UtComposition = crate::modelica_grammar::Composition
 %user_type UtElementList = crate::modelica_grammar::ElementList
 %user_type UtElement = crate::modelica_grammar::Element
@@ -94,7 +93,7 @@ auto_class_specifier
 
 //-----------------------------------------------------------------------------
 long_class_specifier
-    : auto_long_class_specifier: UtLongClassSpecifier
+    : auto_long_class_specifier: UtClassSpecifier
     ;
 
 auto_long_class_specifier
