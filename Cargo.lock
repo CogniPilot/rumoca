@@ -486,9 +486,9 @@ checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
 name = "log"
-version = "0.4.25"
+version = "0.4.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04cbf5b083de1c7e0222a7a51dbfdba1cbe1c6ab0b15e29fff3f6c077fd9cd9f"
+checksum = "30bde2b3dc3671ae49d8e2e9f044c7c005836e7a023ee57cffa25ab82764bb9e"
 
 [[package]]
 name = "memchr"
@@ -595,9 +595,7 @@ checksum = "fb37767f6569cd834a413442455e0f066d0d522de8630436e2a1761d9726ba56"
 
 [[package]]
 name = "parol"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15bbe37e030f949d82fc51fcb9984d3ecc63286475fd8519e73a69e20bd60207"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -612,47 +610,10 @@ dependencies = [
  "num_cpus",
  "owo-colors",
  "parol-macros",
- "parol_runtime 1.0.2",
+ "parol_runtime",
  "petgraph",
- "rand 0.8.5",
- "rand_regex 0.17.0",
- "rayon",
- "regex",
- "regex-syntax",
- "serde",
- "serde_json",
- "syn",
- "syntree 0.14.5",
- "syntree_layout 0.2.0",
- "tempfile",
- "thiserror 1.0.69",
- "ts-rs",
- "ume",
-]
-
-[[package]]
-name = "parol"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5259433beb2a2830b91e0bb7e9daa727836edcc8067b96fd9b106f6b782aada"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "bitflags",
- "cfg-if",
- "clap",
- "derive_builder",
- "env_logger",
- "function_name",
- "graph-cycles",
- "lalry",
- "num_cpus",
- "owo-colors",
- "parol-macros",
- "parol_runtime 2.2.0",
- "petgraph",
- "rand 0.9.0",
- "rand_regex 0.18.0",
+ "rand",
+ "rand_regex",
  "rayon",
  "regex",
  "regex-syntax",
@@ -660,8 +621,8 @@ dependencies = [
  "serde",
  "serde_json",
  "syn",
- "syntree 0.18.0",
- "syntree_layout 0.4.0",
+ "syntree",
+ "syntree_layout",
  "tempfile",
  "thiserror 2.0.11",
  "ts-rs",
@@ -671,34 +632,10 @@ dependencies = [
 [[package]]
 name = "parol-macros"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54ec451836679aaa55158b454b441e21446a111ea34aa1917eba29245bafe4b8"
-
-[[package]]
-name = "parol_runtime"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "625c600b236f51ec839eb63e512388bb66dc344cdf5a3e823189b770053fe4bc"
-dependencies = [
- "anyhow",
- "codespan-reporting",
- "derive_builder",
- "function_name",
- "log",
- "once_cell",
- "parol-macros",
- "petgraph",
- "regex-automata",
- "syntree 0.14.5",
- "syntree_layout 0.2.0",
- "thiserror 1.0.69",
-]
 
 [[package]]
 name = "parol_runtime"
 version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e7c7f0a216e4c7f2e92a906acb5add132eefded7da5e16715b08a83aa779c7e"
 dependencies = [
  "anyhow",
  "codespan-reporting",
@@ -710,8 +647,8 @@ dependencies = [
  "petgraph",
  "scnr",
  "serde_json",
- "syntree 0.18.0",
- "syntree_layout 0.4.0",
+ "syntree",
+ "syntree_layout",
  "thiserror 2.0.11",
 ]
 
@@ -781,34 +718,13 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
-dependencies = [
- "libc",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
-]
-
-[[package]]
-name = "rand"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3779b94aeb87e8bd4e834cee3650289ee9e0d5677f976ecdb6d219e5f4f6cd94"
 dependencies = [
- "rand_chacha 0.9.0",
- "rand_core 0.9.1",
+ "rand_chacha",
+ "rand_core",
  "zerocopy 0.8.18",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -818,16 +734,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
- "rand_core 0.9.1",
-]
-
-[[package]]
-name = "rand_core"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
-dependencies = [
- "getrandom 0.2.15",
+ "rand_core",
 ]
 
 [[package]]
@@ -842,21 +749,11 @@ dependencies = [
 
 [[package]]
 name = "rand_regex"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bfbd599a8c757f89100e3ae559fb1ef9efa1cfd9276136862e3089dec627b31"
-dependencies = [
- "rand 0.8.5",
- "regex-syntax",
-]
-
-[[package]]
-name = "rand_regex"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1eb7969b106060de455cbdb979d3d84c84ffec7b9fa6fa5c56343df409e1614a"
 dependencies = [
- "rand 0.9.0",
+ "rand",
  "regex-syntax",
 ]
 
@@ -916,9 +813,8 @@ dependencies = [
  "anyhow",
  "env_logger",
  "indexmap",
- "parol 1.0.3",
- "parol 2.2.0",
- "parol_runtime 1.0.2",
+ "parol",
+ "parol_runtime",
  "thiserror 1.0.69",
 ]
 
@@ -1023,27 +919,9 @@ dependencies = [
 
 [[package]]
 name = "syntree"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8a019a25d9135e907319cd33f02eeed4633388deea3a723b9242d062fa09486"
-
-[[package]]
-name = "syntree"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00c99c9cda412afe293a6b962af651b4594161ba88c1affe7ef66459ea040a06"
-
-[[package]]
-name = "syntree_layout"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c4dcc044568a0f9708c87b9dd79f1d8e5fb2086a831ead7ef044c9a48bd756b"
-dependencies = [
- "anyhow",
- "syntree 0.14.5",
- "thiserror 1.0.69",
- "xml_writer",
-]
 
 [[package]]
 name = "syntree_layout"
@@ -1052,7 +930,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d027955f5f14d526450b6a11ef5aa962761e924dcd092298dd0d1466570565"
 dependencies = [
  "anyhow",
- "syntree 0.18.0",
+ "syntree",
  "thiserror 2.0.11",
  "xml_writer",
 ]

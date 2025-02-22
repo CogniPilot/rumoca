@@ -7,13 +7,11 @@ edition = "2024"
 anyhow = "1.0"
 env_logger = "0.11"
 indexmap = "2.7.1"
-parol = "2.2.0"
-parol_runtime = { version = "1.0.1", features = ["auto_generation"] }
+parol_runtime = { path = "../parol/crates/parol_runtime"}
 thiserror = "1.0"
 
 [build-dependencies]
-parol = "1.0.3"
-parol_runtime = { version = "1.0.1", features = ["auto_generation"] }
+parol = { path  = "../parol/crates/parol" }
 
 # For faster builds.
 [profile.dev.build-override]

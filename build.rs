@@ -1,7 +1,7 @@
 use std::process;
 
+use parol::parol_runtime::Report;
 use parol::{ParolErrorReporter, build::Builder};
-use parol_runtime::Report;
 
 fn main() {
     // CLI equivalent is:
@@ -11,7 +11,6 @@ fn main() {
         .expanded_grammar_output_file("../modelica-exp.par")
         .parser_output_file("modelica_parser.rs")
         .actions_output_file("modelica_grammar_trait.rs")
-        .enable_auto_generation()
         .user_type_name("ModelicaGrammar")
         .user_trait_module_name("modelica_grammar")
         .trim_parse_tree()
