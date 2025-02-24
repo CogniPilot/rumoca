@@ -9,7 +9,7 @@ use std::fmt::{Debug, Display, Error, Formatter};
 #[allow(unused)]
 pub struct StoredDefinition {
     pub class_list: IndexMap<String, ClassDefinition>,
-    pub within: Option<String>,
+    pub within: Option<Name>,
     pub span: Span,
 }
 
@@ -38,7 +38,7 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for StoredDefinition {
         }
         def.within = match &ast.stored_definition_opt {
             Some(within) => match &within.stored_definition_opt0 {
-                Some(within) => Some(within.name.name.clone()),
+                Some(within) => Some(within.name.clone()),
                 None => None,
             },
             None => None,
@@ -865,7 +865,7 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference<'_>> for ComponentRefer
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct UnsignedInteger {
-    pub name: String,
+    pub value: String,
     pub span: Span,
 }
 
@@ -882,7 +882,7 @@ impl TryFrom<&modelica_grammar_trait::UnsignedInteger<'_>> for UnsignedInteger {
         ast: &modelica_grammar_trait::UnsignedInteger,
     ) -> std::result::Result<Self, Self::Error> {
         Ok(UnsignedInteger {
-            name: "".to_string(),
+            value: ast.unsigned_integer.text().to_string(),
             span: ast.span().clone(),
         })
     }
@@ -892,7 +892,7 @@ impl TryFrom<&modelica_grammar_trait::UnsignedInteger<'_>> for UnsignedInteger {
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct Name {
-    pub name: String,
+    pub idents: Vec<String>,
     pub span: Span,
 }
 
@@ -906,8 +906,12 @@ impl TryFrom<&modelica_grammar_trait::Name> for Name {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Name) -> std::result::Result<Self, Self::Error> {
+        let mut idents = vec![ast.ident.name.clone()];
+        for ident in &ast.name_list {
+            idents.push(ident.ident.name.clone());
+        }
         Ok(Name {
-            name: ast.ident.name.clone(),
+            idents,
             span: ast.span().clone(),
         })
     }
