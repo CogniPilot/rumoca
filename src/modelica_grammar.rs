@@ -53,6 +53,7 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for StoredDefinition {
 pub struct ClassDefinition {
     pub name: String,
     pub encapsulated: bool,
+    pub equations: Vec<Equation>,
     pub span: Span,
 }
 
@@ -69,9 +70,9 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition<'_>> for ClassDefinition {
         ast: &modelica_grammar_trait::ClassDefinition,
     ) -> std::result::Result<Self, Self::Error> {
         let mut def = ClassDefinition {
-            name: "".to_string(),
             span: ast.span().clone(),
             encapsulated: ast.class_definition_opt.is_some(),
+            ..Default::default()
         };
         match &ast.class_specifier {
             ClassSpecifier::Long { name, .. } => {
@@ -144,6 +145,7 @@ pub enum ClassSpecifier {
     Empty,
     Long {
         name: String,
+        composition: Vec<Composition>,
         span: Span,
     },
 }
@@ -163,10 +165,7 @@ impl TryFrom<&modelica_grammar_trait::ClassSpecifier> for ClassSpecifier {
     fn try_from(
         ast: &modelica_grammar_trait::ClassSpecifier,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(ClassSpecifier::Long {
-            name: ast.long_class_specifier.ident.name.clone(),
-            span: ast.span().clone(),
-        })
+        Ok(ast.long_class_specifier.clone())
     }
 }
 
@@ -177,7 +176,8 @@ impl TryFrom<&modelica_grammar_trait::LongClassSpecifier> for ClassSpecifier {
         ast: &modelica_grammar_trait::LongClassSpecifier,
     ) -> std::result::Result<Self, Self::Error> {
         Ok(ClassSpecifier::Long {
-            name: ast.ident.name.clone(),
+            name: ast.name.name.clone(),
+            composition: vec![],
             span: ast.span().clone(),
         })
     }
@@ -375,6 +375,8 @@ impl TryFrom<&modelica_grammar_trait::Declaration> for Declaration {
 #[allow(unused)]
 pub struct EquationSection {
     pub name: String,
+    pub private: bool,
+    pub equations: Vec<Equation>,
     pub span: Span,
 }
 
@@ -390,10 +392,16 @@ impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
     fn try_from(
         ast: &modelica_grammar_trait::EquationSection,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(EquationSection {
+        let mut def = EquationSection {
             name: "".to_string(),
+            private: false,
+            equations: vec![],
             span: ast.span().clone(),
-        })
+        };
+        for eq in &ast.equation_section_list {
+            def.equations.push(eq.some_equation.clone());
+        }
+        Ok(def)
     }
 }
 
@@ -470,7 +478,7 @@ impl TryFrom<&modelica_grammar_trait::Ident<'_>> for Ident {
 
     fn try_from(ast: &modelica_grammar_trait::Ident) -> std::result::Result<Self, Self::Error> {
         Ok(Ident {
-            name: "".to_string(),
+            name: ast.ident.text().to_string(),
             span: ast.span().clone(),
         })
     }
@@ -479,24 +487,31 @@ impl TryFrom<&modelica_grammar_trait::Ident<'_>> for Ident {
 //-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
-pub struct SomeEquation {
-    pub name: String,
-    pub span: Span,
+pub enum Equation {
+    #[default]
+    Empty,
+    Assignment {
+        name: String,
+        span: Span,
+    },
 }
 
-impl ToSpan for SomeEquation {
+impl ToSpan for Equation {
     fn span(&self) -> Span {
-        self.span.clone()
+        match self {
+            Equation::Empty => Span::default(),
+            Equation::Assignment { span, .. } => span.clone(),
+        }
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::SomeEquation> for SomeEquation {
+impl TryFrom<&modelica_grammar_trait::SomeEquation> for Equation {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::SomeEquation,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(SomeEquation {
+        Ok(Equation::Assignment {
             name: "".to_string(),
             span: ast.span().clone(),
         })

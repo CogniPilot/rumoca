@@ -3,3 +3,4 @@
 modelica-exp.par
 src/modelica_parser.rs
 src/modelica_grammar_trait.rs
+.vscode/

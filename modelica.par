@@ -7,6 +7,7 @@
 %nt_type class_prefixes = crate::modelica_grammar::ClassPrefixes
 %nt_type class_type = crate::modelica_grammar::ClassType
 %nt_type class_specifier = crate::modelica_grammar::ClassSpecifier
+%nt_type long_class_specifier = crate::modelica_grammar::ClassSpecifier
 %nt_type composition = crate::modelica_grammar::Composition
 %nt_type element_list = crate::modelica_grammar::ElementList
 %nt_type element = crate::modelica_grammar::Element
@@ -18,7 +19,7 @@
 %nt_type type_specifier = crate::modelica_grammar::TypeSpecifier
 %nt_type equation_section = crate::modelica_grammar::EquationSection
 %nt_type ident = crate::modelica_grammar::Ident
-%nt_type some_equation = crate::modelica_grammar::SomeEquation
+%nt_type some_equation = crate::modelica_grammar::Equation
 %nt_type simple_expression = crate::modelica_grammar::SimpleExpression
 %nt_type logical_expression = crate::modelica_grammar::LogicalExpression
 %nt_type logical_term = crate::modelica_grammar::LogicalTerm
@@ -65,7 +66,7 @@ class_specifier
     ;
 
 long_class_specifier
-    : ident composition 'end'^ ident
+    : ident@name composition 'end'^ ident
     ;
 
 composition
