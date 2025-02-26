@@ -7,6 +7,41 @@ use std::fmt::{Debug, Display, Error, Formatter};
 //-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
+pub struct OwnedToken {
+    pub text: String,
+    pub token_type: u16,
+    pub location: Location,
+    pub token_number: u32,
+}
+
+impl ToSpan for OwnedToken {
+    fn span(&self) -> Span {
+        Span::new(self.location.start as usize, self.location.end as usize)
+    }
+}
+
+impl OwnedToken {
+    pub fn text(&self) -> String {
+        self.text.to_string()
+    }
+}
+
+impl TryFrom<&Token<'_>> for OwnedToken {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &Token<'_>) -> std::result::Result<Self, Self::Error> {
+        Ok(OwnedToken {
+            text: value.text().to_string(),
+            token_type: value.token_type,
+            location: value.location.clone(),
+            token_number: value.token_number,
+        })
+    }
+}
+
+//-----------------------------------------------------------------------------
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
 pub struct StoredDefinition {
     pub class_list: IndexMap<String, ClassDefinition>,
     pub within: Option<Name>,
@@ -37,7 +72,7 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for StoredDefinition {
             );
         }
         def.within = match &ast.stored_definition_opt {
-            Some(within) => match &within.stored_definition_opt0 {
+            Some(within) => match &within.stored_definition_opt1 {
                 Some(within) => Some(within.name.clone()),
                 None => None,
             },
@@ -63,7 +98,7 @@ impl ToSpan for ClassDefinition {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::ClassDefinition<'_>> for ClassDefinition {
+impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ClassDefinition {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -99,38 +134,13 @@ impl ToSpan for ClassPrefixes {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::ClassPrefixes<'_>> for ClassPrefixes {
+impl TryFrom<&modelica_grammar_trait::ClassPrefixes> for ClassPrefixes {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::ClassPrefixes,
     ) -> std::result::Result<Self, Self::Error> {
         Ok(ClassPrefixes {
-            name: "".to_string(),
-            span: ast.span().clone(),
-        })
-    }
-}
-
-//-----------------------------------------------------------------------------
-#[derive(Debug, Default, Clone)]
-#[allow(unused)]
-pub struct ClassType {
-    pub name: String,
-    pub span: Span,
-}
-
-impl ToSpan for ClassType {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-
-impl TryFrom<&modelica_grammar_trait::ClassType<'_>> for ClassType {
-    type Error = anyhow::Error;
-
-    fn try_from(ast: &modelica_grammar_trait::ClassType) -> std::result::Result<Self, Self::Error> {
-        Ok(ClassType {
             name: "".to_string(),
             span: ast.span().clone(),
         })
@@ -187,7 +197,7 @@ impl TryFrom<&modelica_grammar_trait::LongClassSpecifier> for ClassSpecifier {
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct Composition {
-    pub name: String,
+    pub equations: Vec<Equation>,
     pub span: Span,
 }
 
@@ -203,8 +213,16 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
     fn try_from(
         ast: &modelica_grammar_trait::Composition,
     ) -> std::result::Result<Self, Self::Error> {
+        for comp in &ast.composition_list {
+            for eq in &comp.equation_section.equations {
+                match eq {
+                    Equation::Assignment { .. } => {}
+                    Equation::Empty => {}
+                }
+            }
+        }
         Ok(Composition {
-            name: "".to_string(),
+            equations: vec![],
             span: ast.span().clone(),
         })
     }
@@ -419,7 +437,7 @@ impl ToSpan for TypePrefix {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::TypePrefix<'_>> for TypePrefix {
+impl TryFrom<&modelica_grammar_trait::TypePrefix> for TypePrefix {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -446,7 +464,7 @@ impl ToSpan for TypeSpecifier {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::TypeSpecifier<'_>> for TypeSpecifier {
+impl TryFrom<&modelica_grammar_trait::TypeSpecifier> for TypeSpecifier {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -473,7 +491,7 @@ impl ToSpan for Ident {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::Ident<'_>> for Ident {
+impl TryFrom<&modelica_grammar_trait::Ident> for Ident {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Ident) -> std::result::Result<Self, Self::Error> {
@@ -613,7 +631,7 @@ impl ToSpan for LogicalFactor {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::LogicalFactor<'_>> for LogicalFactor {
+impl TryFrom<&modelica_grammar_trait::LogicalFactor> for LogicalFactor {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -665,7 +683,7 @@ impl ToSpan for RelationalOperator {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::RelationalOperator<'_>> for RelationalOperator {
+impl TryFrom<&modelica_grammar_trait::RelationalOperator> for RelationalOperator {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -719,7 +737,7 @@ impl ToSpan for AddOperator {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::AddOperator<'_>> for AddOperator {
+impl TryFrom<&modelica_grammar_trait::AddOperator> for AddOperator {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -771,7 +789,7 @@ impl ToSpan for MulOperator {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::MulOperator<'_>> for MulOperator {
+impl TryFrom<&modelica_grammar_trait::MulOperator> for MulOperator {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -798,7 +816,7 @@ impl ToSpan for Factor {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::Factor<'_>> for Factor {
+impl TryFrom<&modelica_grammar_trait::Factor> for Factor {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Factor) -> std::result::Result<Self, Self::Error> {
@@ -848,7 +866,7 @@ impl ToSpan for ComponentReference {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::ComponentReference<'_>> for ComponentReference {
+impl TryFrom<&modelica_grammar_trait::ComponentReference> for ComponentReference {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -875,7 +893,7 @@ impl ToSpan for UnsignedInteger {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::UnsignedInteger<'_>> for UnsignedInteger {
+impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for UnsignedInteger {
     type Error = anyhow::Error;
 
     fn try_from(
@@ -949,7 +967,7 @@ impl Display for ModelicaGrammar<'_> {
     }
 }
 
-impl<'t> modelica_grammar_trait::ModelicaGrammarTrait<'t> for ModelicaGrammar<'t> {
+impl<'t> modelica_grammar_trait::ModelicaGrammarTrait for ModelicaGrammar<'t> {
     // !Adjust your implementation as needed!
 
     /// Semantic action for non-terminal 'Modelica'
