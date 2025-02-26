@@ -104,20 +104,28 @@ within: 'within';
 // A.1 Lexical conventions
 // IDENT = NON-DIGIT { DIGIT | NON-DIGIT } | Q-IDENT
 ident
-    : /[A-Za-z][A-Za-z0-9_]*/
+    : /[_a-zA-Z][_a-zA-Z0-9]*/
     ;
+
 // Q-IDENT = "'" { Q-CHAR | S-ESCAPE } "'"
-// NON-DIGIT = "_" | letters "a" 
-//  "z" | letters "A" 
-//  "Z"
+
+// NON-DIGIT = "_" | letters "a"..."z" | letters "A"..."Z"
+
 // DIGIT = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+
 // Q-CHAR = NON-DIGIT | DIGIT | "!" | "#" | "$" | "%" | "&" | "(" | ")"
 //    | "*" | "+" | "," | "-" | "." | "/" | ":" | ";" | "<" | ">" | "="
 //    | "?" | "@" | "[" | "]" | "^" | "{" | "}" | "|" | "~" | " " | """
+
 // S-ESCAPE = "\'" | "\"" | "\?" | "\\"
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
+
 // STRING = """ { S-CHAR | S-ESCAPE } """
-// S-CHAR = see below
+
+// S-CHAR is any member of the Unicode character set
+// (https://unicode.org; see section 13.4 for storing as UTF-8 on files)
+// except double-quote ‘”’, and backslash ‘\’.
+
 
 // UNSIGNED-INTEGER = DIGIT { DIGIT }
 unsigned_integer
@@ -469,6 +477,7 @@ some_equation
 
 //=============================================================================
 // A.2.7 Expressions
+// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 
 //🟥 expression :
 //🟥    simple-expression
@@ -476,38 +485,38 @@ some_equation
 //🟥      { elseif expression then expression }
 //🟥      else expression
 
-//🟥 simple-expression :
-//🟥    logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
+//✅ simple-expression :
+//✅    logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
 simple_expression
     : logical_expression [ ':'^ logical_expression [ ':'^ logical_expression ] ]
     ;
 
-//🟥 logical-expression :
-//🟥    logical-term { or logical-term }
+//✅ logical-expression :
+//✅    logical-term { or logical-term }
 logical_expression
     : logical_term { or^ logical_term }
     ;
 
-//🟥 logical-term :
-//🟥    logical-factor { and logical-factor }
+//✅ logical-term :
+//✅    logical-factor { and logical-factor }
 logical_term
     : logical_factor { and^ logical_factor }
     ;
 
-//🟥 logical-factor :
-//🟥    [ not ] relation
+//✅ logical-factor :
+//✅    [ not ] relation
 logical_factor
     : [ not ] relation
     ;
 
-//🟥 relation :
-//🟥    arithmetic-expression [ relational-operator arithmetic-expression ]
+//✅ relation :
+//✅    arithmetic-expression [ relational-operator arithmetic-expression ]
 relation
     : arithmetic_expression [ relational_operator arithmetic_expression ]
     ;
 
-//🟥 relational-operator :
-//🟥    "<" | "<=" | ">" | ">=" | "==" | "<>"
+//✅ relational-operator :
+//✅    "<" | "<=" | ">" | ">=" | "==" | "<>"
 relational_operator
     : '<'
     | '<='
@@ -517,43 +526,43 @@ relational_operator
     | '<>'
     ;
 
-//🟥 arithmetic-expression :
-//🟥    [ add-operator ] term { add-operator term }
+//✅ arithmetic-expression :
+//✅    [ add-operator ] term { add-operator term }
 arithmetic_expression
     : [ add_operator ] term { add_operator term }
     ;
 
-//🟥 add-operator :
-//🟥    "+" | "-" | ".+" | ".-"
+//✅ add-operator :
+//✅    "+" | "-" | ".+" | ".-"
 add_operator: 
     '+' | '-' | '.+' | '.-'
     ;
 
-//🟥 term :
-//🟥    factor { mul-operator factor }
+//✅ term :
+//✅    factor { mul-operator factor }
 term
     : factor { mul_operator factor }
     ;
 
-//🟥 mul-operator :
-//🟥    "*" | "/" | ".*" | "./"
+//✅ mul-operator :
+//✅    "*" | "/" | ".*" | "./"
 mul_operator:
     '*' | '/' | '.*' | './'
     ;
 
-//🟥 factor :
-//🟥    primary [ ( "^" | ".^" ) primary ]
+//✅ factor :
+//✅    primary [ ( "^" | ".^" ) primary ]
 factor
     : primary { ( '^' | '.^' ) primary }
     ;
 
-//🟥 primary :
-//🟥    UNSIGNED-NUMBER
+//🟨 primary :
+//🟨    UNSIGNED-NUMBER
 //🟥    | STRING
 //🟥    | false
 //🟥    | true
 //🟥    | ( component-reference | der | initial | pure ) function-call-args
-//🟥    | component-reference
+//✅    | component-reference
 //🟥    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
 //🟥    | "[" expression-list { ";" expression-list } "]"
 //🟥    | "{" array-arguments "}"
@@ -572,14 +581,14 @@ type_specifier
     : [ '.' ] name
     ;
 
-//🟥 name :
-//🟥    IDENT { "." IDENT }
+//✅ name :
+//✅    IDENT { "." IDENT }
 name
     : ident { '.'^ ident }
     ;
 
-//🟥 component-reference :
-//🟥    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
+//🟨 component-reference :
+//🟨    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 component_reference
     : [ '.' ] ident { '.' ident }
     ;
