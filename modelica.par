@@ -3,37 +3,37 @@
 %comment "Modelica grammar 3.7-dev for `parol`"
 %line_comment "//"
 %t_type crate::modelica_grammar::OwnedToken
-%nt_type stored_definition = crate::modelica_grammar::StoredDefinition
-%nt_type class_definition = crate::modelica_grammar::ClassDefinition
-%nt_type class_prefixes = crate::modelica_grammar::ClassPrefixes
-%nt_type class_specifier = crate::modelica_grammar::ClassSpecifier
-%nt_type long_class_specifier = crate::modelica_grammar::ClassSpecifier
-%nt_type composition = crate::modelica_grammar::Composition
-%nt_type element_list = crate::modelica_grammar::ElementList
-%nt_type element = crate::modelica_grammar::Element
-%nt_type component_clause = crate::modelica_grammar::ComponentClause
-%nt_type component_list = crate::modelica_grammar::ComponentList
-%nt_type component_declaration = crate::modelica_grammar::ComponentDeclaration
-%nt_type declaration = crate::modelica_grammar::Declaration
-%nt_type type_prefix = crate::modelica_grammar::TypePrefix
-%nt_type type_specifier = crate::modelica_grammar::TypeSpecifier
-%nt_type equation_section = crate::modelica_grammar::EquationSection
-%nt_type ident = crate::modelica_grammar::Ident
-%nt_type some_equation = crate::modelica_grammar::Equation
-%nt_type simple_expression = crate::modelica_grammar::SimpleExpression
-%nt_type logical_expression = crate::modelica_grammar::LogicalExpression
-%nt_type logical_term = crate::modelica_grammar::LogicalTerm
-%nt_type logical_factor = crate::modelica_grammar::LogicalFactor
-%nt_type relation = crate::modelica_grammar::Relation
-%nt_type relational_operator = crate::modelica_grammar::RelationalOperator
-%nt_type arithmetic_expression = crate::modelica_grammar::ArithmeticExpression
-%nt_type add_operator = crate::modelica_grammar::AddOperator
-%nt_type term = crate::modelica_grammar::Term
-%nt_type mul_operator = crate::modelica_grammar::MulOperator
-%nt_type factor = crate::modelica_grammar::Factor
-%nt_type primary = crate::modelica_grammar::Primary
-%nt_type component_reference = crate::modelica_grammar::ComponentReference
-%nt_type unsigned_integer = crate::modelica_grammar::UnsignedInteger
+// %nt_type stored_definition = crate::modelica_grammar::StoredDefinition
+// %nt_type class_definition = crate::modelica_grammar::ClassDefinition
+// %nt_type class_prefixes = crate::modelica_grammar::ClassPrefixes
+// %nt_type class_specifier = crate::modelica_grammar::ClassSpecifier
+// %nt_type long_class_specifier = crate::modelica_grammar::ClassSpecifier
+// %nt_type composition = crate::modelica_grammar::Composition
+// %nt_type element_list = crate::modelica_grammar::ElementList
+// %nt_type element = crate::modelica_grammar::Element
+// %nt_type component_clause = crate::modelica_grammar::ComponentClause
+// %nt_type component_list = crate::modelica_grammar::ComponentList
+// %nt_type component_declaration = crate::modelica_grammar::ComponentDeclaration
+// %nt_type declaration = crate::modelica_grammar::Declaration
+// %nt_type type_prefix = crate::modelica_grammar::TypePrefix
+// %nt_type type_specifier = crate::modelica_grammar::TypeSpecifier
+// %nt_type equation_section = crate::modelica_grammar::EquationSection
+// %nt_type ident = crate::modelica_grammar::Ident
+// %nt_type some_equation = crate::modelica_grammar::Equation
+// %nt_type simple_expression = crate::modelica_grammar::Expression
+// %nt_type logical_expression = crate::modelica_grammar::LogicalExpression
+// %nt_type logical_term = crate::modelica_grammar::LogicalTerm
+// %nt_type logical_factor = crate::modelica_grammar::LogicalFactor
+// %nt_type relation = crate::modelica_grammar::Relation
+// %nt_type relational_operator = crate::modelica_grammar::RelationalOperator
+// %nt_type arithmetic_expression = crate::modelica_grammar::ArithmeticExpression
+// %nt_type add_operator = crate::modelica_grammar::AddOperator
+%nt_type term = crate::modelica_grammar::Expression
+// %nt_type mul_operator = crate::modelica_grammar::MulOperator
+%nt_type factor = crate::modelica_grammar::Expression
+%nt_type primary = crate::modelica_grammar::Expression
+%nt_type component_reference = crate::modelica_grammar::Expression
+// %nt_type unsigned_integer = crate::modelica_grammar::UnsignedInteger
 %nt_type name = crate::modelica_grammar::Name
 
 %%
@@ -146,8 +146,8 @@ unsigned_integer
 //✅    [ within [ name ] ";" ]
 //✅    { [ final ] class-definition ";" }
 stored_definition :
-    [ within [ name ] ';' ]
-    { [ final ] class_definition ';' }
+    [ within^ [ name ] ';'^ ]
+    { [ final ] class_definition ';'^ }
     ;
 
 //=============================================================================
