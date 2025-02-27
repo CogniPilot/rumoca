@@ -684,6 +684,35 @@ impl TryFrom<&modelica_grammar_trait::Term> for Expression {
     }
 }
 
+impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for Expression {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::ArithmeticExpression,
+    ) -> std::result::Result<Self, Self::Error> {
+        // TODO unary term
+        if ast.arithmetic_expression_list.is_empty() {
+            return Ok(ast.term.clone());
+        } else {
+            let mut lhs = ast.term.clone();
+            for term in &ast.arithmetic_expression_list {
+                lhs = Expression::Binary {
+                    lhs: Box::new(lhs),
+                    op: match term.add_operator {
+                        modelica_grammar_trait::AddOperator::Plus(..) => OpBinary::Add,
+                        modelica_grammar_trait::AddOperator::Minus(..) => OpBinary::Sub,
+                        modelica_grammar_trait::AddOperator::DotPlus(..) => OpBinary::AddElem,
+                        modelica_grammar_trait::AddOperator::DotMinus(..) => OpBinary::SubElem,
+                    },
+                    rhs: Box::new(term.term.clone()),
+                    span: ast.span().clone(),
+                };
+            }
+            Ok(lhs)
+        }
+    }
+}
+
 // impl TryFrom<&modelica_grammar_trait::SimpleExpression> for Expression {
 //     type Error = anyhow::Error;
 

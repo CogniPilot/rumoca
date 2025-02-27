@@ -26,7 +26,7 @@
 // %nt_type logical_factor = crate::modelica_grammar::LogicalFactor
 // %nt_type relation = crate::modelica_grammar::Relation
 // %nt_type relational_operator = crate::modelica_grammar::RelationalOperator
-// %nt_type arithmetic_expression = crate::modelica_grammar::ArithmeticExpression
+%nt_type arithmetic_expression = crate::modelica_grammar::Expression
 // %nt_type add_operator = crate::modelica_grammar::AddOperator
 %nt_type term = crate::modelica_grammar::Expression
 // %nt_type mul_operator = crate::modelica_grammar::MulOperator
@@ -578,7 +578,7 @@ primary
 //🟥 type-specifier :
 //🟥    ["."] name
 type_specifier
-    : [ '.' ] name
+    : [ '.'^ ] name
     ;
 
 //✅ name :
@@ -590,7 +590,7 @@ name
 //🟨 component-reference :
 //🟨    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 component_reference
-    : [ '.' ] ident { '.' ident }
+    : [ '.'^ ] ident { '.'^ ident }
     ;
 
 //🟥 result-reference :
