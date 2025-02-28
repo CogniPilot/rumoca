@@ -4,11 +4,12 @@
 %line_comment "//"
 %t_type crate::modelica_grammar::OwnedToken
 // %nt_type stored_definition = crate::modelica_grammar::StoredDefinition
-// %nt_type class_definition = crate::modelica_grammar::ClassDefinition
+//%nt_type class_definition = crate::ir::ClassDefinition
 // %nt_type class_prefixes = crate::modelica_grammar::ClassPrefixes
-// %nt_type class_specifier = crate::modelica_grammar::ClassSpecifier
-// %nt_type long_class_specifier = crate::modelica_grammar::ClassSpecifier
-// %nt_type composition = crate::modelica_grammar::Composition
+//%nt_type class_specifier = crate::modelica_grammar::ClassSpecifier
+//%nt_type long_class_specifier = crate::modelica_grammar::ClassSpecifier
+//%nt_type composition = crate::modelica_grammar::Composition
+//%nt_type composition_list = crate::modelica_grammar::CompositionList
 // %nt_type element_list = crate::modelica_grammar::ElementList
 // %nt_type element = crate::modelica_grammar::Element
 // %nt_type component_clause = crate::modelica_grammar::ComponentClause
@@ -17,30 +18,30 @@
 // %nt_type declaration = crate::modelica_grammar::Declaration
 // %nt_type type_prefix = crate::modelica_grammar::TypePrefix
 // %nt_type type_specifier = crate::modelica_grammar::TypeSpecifier
-// %nt_type equation_section = crate::modelica_grammar::EquationSection
+%nt_type equation_section = crate::ir::EquationSection
 // %nt_type ident = crate::modelica_grammar::Ident
-// %nt_type some_equation = crate::modelica_grammar::Equation
-// %nt_type simple_expression = crate::modelica_grammar::Expression
-// %nt_type logical_expression = crate::modelica_grammar::LogicalExpression
-// %nt_type logical_term = crate::modelica_grammar::LogicalTerm
-// %nt_type logical_factor = crate::modelica_grammar::LogicalFactor
-// %nt_type relation = crate::modelica_grammar::Relation
+%nt_type some_equation = crate::ir::Equation
+%nt_type simple_expression = crate::ir::Expression
+%nt_type expression = crate::ir::Expression
+%nt_type logical_expression = crate::ir::Expression
+%nt_type logical_term = crate::ir::Expression
+%nt_type logical_factor = crate::ir::Expression
+%nt_type relation = crate::ir::Expression
 // %nt_type relational_operator = crate::modelica_grammar::RelationalOperator
-%nt_type arithmetic_expression = crate::modelica_grammar::Expression
+%nt_type arithmetic_expression = crate::ir::Expression
 // %nt_type add_operator = crate::modelica_grammar::AddOperator
-%nt_type term = crate::modelica_grammar::Expression
+%nt_type term = crate::ir::Expression
 // %nt_type mul_operator = crate::modelica_grammar::MulOperator
-%nt_type factor = crate::modelica_grammar::Expression
-%nt_type primary = crate::modelica_grammar::Expression
-%nt_type component_reference = crate::modelica_grammar::Expression
-// %nt_type unsigned_integer = crate::modelica_grammar::UnsignedInteger
-%nt_type name = crate::modelica_grammar::Name
+%nt_type factor = crate::ir::Expression
+%nt_type primary = crate::ir::Expression
+%nt_type component_reference = crate::ir::Expression
+%nt_type name = crate::ir::Name
 
 %%
 //=============================================================================
 // 2.3.3 Modelica Keywords
 
-// algorithm: 'algorithm';
+algorithm: 'algorithm';
 and: 'and';
 // annotation: 'annotation';
 block: 'block';
@@ -73,23 +74,23 @@ function: 'function';
 impure: 'impure';
 // in: 'in';
 initial: 'initial';
-// inner: 'inner';
+inner: 'inner';
 input: 'input';
 // loop: 'loop';
 model: 'model';
 not: 'not';
 operator: 'operator';
 or: 'or';
-// outer: 'outer';
+outer: 'outer';
 output: 'output';
 package: 'package';
 parameter: 'parameter';
-// partial: 'partial';
-// protected: 'protected';
-// public: 'public';
+partial: 'partial';
+protected: 'protected';
+public: 'public';
 pure: 'pure';
 record: 'record';
-// redeclare: 'redeclare';
+redeclare: 'redeclare';
 // replaceable: 'replaceable';
 // return: 'return';
 stream: 'stream';
@@ -121,6 +122,7 @@ ident
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
 
 // STRING = """ { S-CHAR | S-ESCAPE } """
+// string : /"[\w]*"/;
 
 // S-CHAR is any member of the Unicode character set
 // (https://unicode.org; see section 13.4 for storing as UTF-8 on files)
@@ -136,7 +138,11 @@ unsigned_integer
 //    | UNSIGNED_INTEGER [ "." [ UNSIGNED_INTEGER ] ]
 //      ( "e" | "E" ) [ "+" | "-" ] UNSIGNED-INTEGER
 //    | "."  UNSIGNED-INTEGER [ ( "e" | "E" ) [ "+" | "-" ] UNSIGNED-INTEGER ]
-
+unsigned_real
+    : /[0-9]+\.[0-9]+/@decimal
+    | /[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?/@scientific
+    | /\.[0-9]+([eE][+-]?[0-9]+)?/@scientific2
+    ;
 
 //=============================================================================
 // A.2.1 Stored Definition – Within
@@ -173,7 +179,7 @@ class_definition :
 //✅      | operator
 //✅    )
 class_prefixes :
-    [ 'partial' ]
+    [ partial ]
     ( class
         | model
         | [ operator ] record
@@ -186,116 +192,192 @@ class_prefixes :
     )
     ;
 
-//🟨 class-specifier :
-//🟨    long-class-specifier
-//🟥    | short-class-specifier
-//🟥    | der-class-specifier
+//✅ class-specifier :
+//✅    long-class-specifier
+//✅    | short-class-specifier
+//✅    | der-class-specifier
 class_specifier :
     long_class_specifier
+    // | short_class_specifier
+    // | der_class_specifier
     ;
 
-//🟨 long-class-specifier :
-//🟨    IDENT description-string composition end IDENT
-//🟥    | extends IDENT [ class-modification ] description-string composition end IDENT
+//✅ long-class-specifier :
+//✅    IDENT description-string composition end IDENT
+//✅    | extends IDENT [ class-modification ] description-string composition end IDENT
 long_class_specifier :
     ident@name composition end^ ident
+    // | extends^ name
+    // [ class_modification ]
+    // description_string
+    // composition end^ ident
     ;
 
-//🟥 short-class-specifier :
-//🟥    IDENT "=" base-prefix type-specifier [ array-subscripts ]
-//🟥    [ class-modification ] description
-//🟥    | IDENT "=" enumeration "(" ( [ enum-list ] | ":" ) ")" description
+//✅ short-class-specifier :
+//✅    IDENT "=" base-prefix type-specifier [ array-subscripts ]
+//✅    [ class-modification ] description
+//✅    | IDENT "=" enumeration "(" ( [ enum-list ] | ":" ) ")" description
+// short_class_specifier :
+//     ident "="^ base_prefix type_specifier [ array_subscripts ]
+//     [ class_modification ] description
+//     | ident "="^ enumeration "("^ ( [ enum_list ] | ':'^ ) ")"^ description
+//     ;
 
-//🟥 der-class-specifier :
-//🟥    IDENT "=" der "(" type-specifier "," IDENT { "," IDENT } ")" description
+//✅ der-class-specifier :
+//✅    IDENT "=" der "(" type-specifier "," IDENT { "," IDENT } ")" description
+// der_class_specifier :
+//     ident "=" der "("^ type_specifier ','^ ident { ','^ ident } ")"^ description
+//     ;
 
-//🟥 base-prefix :
-//🟥    [ input | output ]
+//✅ base-prefix :
+//✅    [ input | output ]
+// base_prefix :
+//     [ input | output ]
+//     ;
 
-//🟥 enum-list :
-//🟥    enumeration-literal { "," enumeration-literal }
+//✅ enum-list :
+//✅    enumeration-literal { "," enumeration-literal }
+// enum_list :
+//     enumeration_literal { ','^ enumeration_literal }
+//     ;
 
-//🟥 enumeration-literal :
-//🟥    IDENT description
+//✅ enumeration-literal :
+//✅    IDENT description
+// enumeration_literal :
+//     ident description
+//     ;
 
-//🟥 composition :
-//🟥    element-list
-//🟥    { public element-list
-//🟥      | protected element-list
-//🟥      | equation-section
-//🟥      | algorithm-section
-//🟥    }
-//🟥    [ external [ language-specification ]
-//🟥      [ external-function-call ] [ annotation-clause ] ";"
-//🟥    ]
-//🟥    [ annotation-clause ";" ]
+//✅ composition :
+//✅    element-list
+//✅    { public element-list
+//✅      | protected element-list
+//✅      | equation-section
+//✅      | algorithm-section
+//✅    }
+//✅    [ external [ language-specification ]
+//✅      [ external-function-call ] [ annotation-clause ] ";"
+//✅    ]
+//✅    [ annotation-clause ";" ]
 composition :
-    element_list { equation_section }
+    element_list
+    { public element_list
+      | protected element_list
+      | equation_section
+      | algorithm_section
+    }
+    // [ external^ [ language_specification ]
+    //   [ external_function_call ] [ annotation_clause ] ';'^
+    // ]
+    // [ annotation_clause ] ';'^
     ;
 
-//🟥 language-specification :
-//🟥    STRING
+//✅ language-specification :
+//✅    STRING
+// language_specification :
+//     string
+//     ;
 
-//🟥 external-function-call :
-//🟥    [ component-reference "=" ]
-//🟥    IDENT "(" [ expression-list ] ")"
+//✅ external-function-call :
+//✅    [ component-reference "=" ]
+//✅    IDENT "(" [ expression-list ] ")"
+// external_function_call :
+//     [ component_reference '='^ ]
+//     ident '('^ [ expression_list ] ')'^
+//     ;
 
+
+//✅ element-list :
+//✅    { element ";" }
 element_list :
-    { element ';'^ }
+   { element ';' }
     ;
 
-//🟥 element :
-//🟥    import-clause
-//🟥    | extends-clause
-//🟥    | [ redeclare ]
-//🟥      [ final ]
-//🟥      [ inner ] [ outer ]
-//🟥      ( class-definition
-//🟥        | component-clause
-//🟥        | replaceable ( class-definition | component-clause )
-//🟥          [ constraining-clause description ]
-//🟥      )
+//✅ element :
+//✅    import-clause
+//✅    | extends-clause
+//✅    | [ redeclare ]
+//✅      [ final ]
+//✅      [ inner ] [ outer ]
+//✅      ( class-definition
+//✅        | component-clause
+//✅        | replaceable ( class-definition | component-clause )
+//✅          [ constraining-clause description ]
+//✅      )
 element :
-    component_clause
+    // import_clause
+    // | extends_clause
+    | [ redeclare ] [ final ] [ inner ] [ outer ]
+      ( class_definition
+        | component_clause
+        //| replaceable ( class_definition | component_clause )
+        //  [ constraining_clause description ]
+      )
     ;
 
-//🟥 import-clause :
-//🟥    import
-//🟥    ( IDENT "=" name
-//🟥      | name [ ".*" | "." ( "*" | "{" import-list "}" ) ]
-//🟥    )
-//🟥    description
+//✅ import-clause :
+//✅    import
+//✅    ( IDENT "=" name
+//✅      | name [ ".*" | "." ( "*" | "{" import-list "}" ) ]
+//✅    )
+//✅    description
+// import_clause :
+//     import
+//     ( ident '='^ name
+//       | name [ '.*' | '.'^ ( '*' | '{' import_list '}' ) ]
+//     )
+//     description
+//     ;
 
-//🟥 import-list :
-//🟥    IDENT { "," IDENT }
+//✅ import-list :
+//✅    IDENT { "," IDENT }
+// import_list :
+//     ident { ','^ ident }
+//     ;
 
 //=============================================================================
 // A.2.3 Extends
 // ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 
-//🟥 extends-clause :
-//🟥    extends type-specifier [ class-or-inheritance-modification ] [ annotation-clause ]
+//✅ extends-clause :
+//✅    extends type-specifier [ class-or-inheritance-modification ] [ annotation-clause ]
+// extends_clause :
+//     extends^ type_specifier [ class_or_inheritance_modification ] [ annotation_clause ]
+//     ;
 
-//🟥 constraining-clause :
-//🟥    constrainedby type-specifier [ class-modification ]
+//✅ constraining-clause :
+//✅    constrainedby type-specifier [ class-modification ]
+// constraining_clause :
+//     constrainedby^ type_specifier [ class_modification ]
+//     ;
 
-//🟥 class-or-inheritance-modification :
-//🟥    "(" [ argument-or-inheritance-modification-list ] ")"
+//✅ class-or-inheritance-modification :
+//✅    "(" [ argument-or-inheritance-modification-list ] ")"
+// class_or_inheritance_modification :
+//     '('^ [ argument_or_inheritance_modification_list ] ')'^
+//     ;
 
-//🟥 argument-or-inheritance-modification-list :
-//🟥     ( argument | inheritance-modification ) { "," ( argument | inheritance-modification ) }
+//✅ argument-or-inheritance-modification-list :
+//✅     ( argument | inheritance-modification ) { "," ( argument | inheritance-modification ) }
+// argument_or_inheritance_modification_list :
+//     ( argument | inheritance_modification ) { ','^ ( argument | inheritance_modification ) }
+//     ;
 
-//🟥 inheritance-modification :
-//🟥     break ( connect-equation | IDENT )
+//✅ inheritance-modification :
+//✅     break ( connect-equation | IDENT )
+// inheritance_modification :
+//     break^ ( connect_equation | ident )
+//     ;
 
 //-----------------------------------------------------------------------------
 // A.2.4 Component Clause
 // ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 
-//🟨 component-clause :
-//🟨    type-prefix type-specifier [ array-subscripts ] component-list
+//✅ component-clause :
+//✅    type-prefix type-specifier [ array-subscripts ] component-list
 component_clause :
-    type_prefix type_specifier component_list
+    type_prefix type_specifier
+    // [ array_subscripts ]
+    component_list
     ;
 
 //✅ type-prefix :
@@ -314,65 +396,113 @@ component_list :
     component_declaration { ','^ component_declaration }
     ;
 
-//🟨 component-declaration :
-//🟨    declaration [ condition-attribute ] description
+//✅ component-declaration :
+//✅    declaration [ condition-attribute ] description
 component_declaration :
     declaration
+    // [ condition_attribute ]
+    // description
     ;
 
-//🟥 condition-attribute :
-//🟥    if expression
+//✅ condition-attribute :
+//✅    if expression
+// condition_attribute :
+//     if^ expression
+//     ;
 
-//🟨 declaration :
-//🟨    IDENT [ array-subscripts ] [ modification ]
+//✅ declaration :
+//✅    IDENT [ array-subscripts ] [ modification ]
 declaration :
     ident
+    // [ array_subscripts ]
+    // [ modification ]
     ;
 
 //=============================================================================
 // A.2.5 Modification
 // ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 
-//🟥 modification :
-//🟥    class-modification [ "=" modification-expression ]
-//🟥    | "=" modification-expression
+//✅ modification :
+//✅    class-modification [ "=" modification-expression ]
+//✅    | "=" modification-expression
+// modification :
+//     class_modification [ '='^ modification_expression ]
+//     | '='^ modification_expression
+//     ;
 
-//🟥 modification-expression :
-//🟥    expression
-//🟥    | break
+//✅ modification-expression :
+//✅    expression
+//✅    | break
+// modification_expression :
+//     expression
+//     | break
+//     ;
 
-//🟥 class-modification :
-//🟥    "(" [ argument-list ] ")"
+//✅ class-modification :
+//✅    "(" [ argument-list ] ")"
+// class_modification :
+//     '('^ [ argument_list ] ')'^
+//     ;
 
-//🟥 argument-list :
-//🟥    argument { "," argument }
+//✅ argument-list :
+//✅    argument { "," argument }
+// argument_list :
+//     argument { ','^ argument }
+//     ;
 
-//🟥 argument :
-//🟥    element-modification-or-replaceable
-//🟥    | element-redeclaration
+//✅ argument :
+//✅    element-modification-or-replaceable
+//✅    | element-redeclaration
+// argument :
+//     element_modification_or_replaceable
+//     | element_redeclaration
+//     ;
 
-//🟥 element-modification-or-replaceable :
-//🟥    [ each ] [ final ] ( element-modification | element-replaceable )
+//✅ element-modification-or-replaceable :
+//✅    [ each ] [ final ] ( element-modification | element-replaceable )
+// element_modification_or_replaceable :
+//     [ each ] [ final ] ( element_modification | element_replaceable )
+//     ;
 
-//🟥 element-modification :
-//🟥    name [ modification ] description-string
+//✅ element-modification :
+//✅    name [ modification ] description-string
+// element_modification :
+//     name [ modification ] description_string
+//     ;
 
-//🟥 element-redeclaration :
-//🟥    redeclare [ each ] [ final ]
-//🟥    ( short-class-definition | component-clause1 | element-replaceable )
+//✅ element-redeclaration :
+//✅    redeclare [ each ] [ final ]
+//✅    ( short-class-definition | component-clause1 | element-replaceable )
+// element_redeclaration :
+//     redeclare [ each ] [ final ]
+//     ( short_class_definition | component_clause1 | element_replaceable )
+//     ;
 
-//🟥 element-replaceable :
-//🟥    replaceable ( short-class-definition | component-clause1 )
-//🟥    [ constraining-clause ]
+//✅ element-replaceable :
+//✅    replaceable ( short-class-definition | component-clause1 )
+//✅    [ constraining-clause ]
+// element_replaceable :
+//     replaceable ( short_class_definition | component_clause1 )
+//     [ constraining_clause ]
+//     ;
 
-//🟥 component-clause1 :
-//🟥    type-prefix type-specifier component-declaration1
+//✅ component-clause1 :
+//✅    type-prefix type-specifier component-declaration1
+// component_clause1 :
+//     type_prefix type_specifier component_declaration1
+//     ;
 
-//🟥 component-declaration1 :
-//🟥    declaration description
+//✅ component-declaration1 :
+//✅    declaration description
+// component_declaration1 :
+//     declaration description
+//     ;
 
-//🟥 short-class-definition :
-//🟥    class-prefixes short-class-specifier
+//✅ short-class-definition :
+//✅    class-prefixes short-class-specifier
+// short_class_definition :
+//     class_prefixes short_class_specifier
+//     ;
 
 //=============================================================================
 // A.2.6 Equations
@@ -384,106 +514,199 @@ equation_section :
     [ initial ] equation^ { some_equation ';'^ }
     ;
 
-//🟥 algorithm-section :
-//🟥    [ initial ] algorithm { statement ";" }
-
-//🟨 some-equation :
-//🟨    ( simple-expression "=" expression
-//🟥      | if-equation
-//🟥      | for-equation
-//🟥      | connect-equation
-//🟥      | when-equation
-//🟥      | component-reference function-call-args
-//🟥    )
-//🟥    description
-some_equation
-    : simple_expression '='^ simple_expression
+//✅ algorithm-section :
+//✅    [ initial ] algorithm { statement ";" }
+algorithm_section :
+    [ initial ] algorithm { statement ';'^ }
     ;
 
-//🟥 statement :
-//🟥    ( component-reference ( ":=" expression | function-call-args )
-//🟥      | "(" output-expression-list ")" ":="
-//🟥        component-reference function-call-args
-//🟥      | break
-//🟥      | return
-//🟥      | if-statement
-//🟥      | for-statement
-//🟥      | while-statement
-//🟥      | when-statement
-//🟥    )
-//🟥    description
+//✅ some-equation :
+//✅    ( simple-expression "=" expression
+//✅      | if-equation
+//✅      | for-equation
+//✅      | connect-equation
+//✅      | when-equation
+//✅      | component-reference function-call-args
+//✅    )
+//✅    description
+some_equation :
+    ( simple_expression '='^ expression
+        // | if_equation
+        // | for_equation
+        // | connect_equation
+        // | when_equation
+        // | component_reference function_call_args
+    )
+    // description
+    ;
 
-//🟥 if-equation :
-//🟥    if expression then
-//🟥      { some-equation ";" }
-//🟥    { elseif expression then
-//🟥      { some-equation ";" }
-//🟥    }
-//🟥    [ else
-//🟥      { some-equation ";" }
-//🟥    ]
-//🟥    end if
+//✅ statement :
+//✅    ( component-reference ( ":=" expression | function-call-args )
+//✅      | "(" output-expression-list ")" ":="
+//✅        component-reference function-call-args
+//✅      | break
+//✅      | return
+//✅      | if-statement
+//✅      | for-statement
+//✅      | while-statement
+//✅      | when-statement
+//✅    )
+//✅    description
+statement :
+    ( component_reference ( 
+        ":="^ expression
+        //| function_call_args
+        )
+        // | "("^ output_expression_list ")"^ ":="^ component_reference function_call_args
+        // | break
+        // | return
+        // | if_statement
+        // | for_statement
+        // | while_statement
+        // | when_statement
+    )
+    // description
+    ;
 
-//🟥 if-statement :
-//🟥    if expression then
-//🟥      { statement ";" }
-//🟥    { elseif expression then
-//🟥      { statement ";" }
-//🟥    }
-//🟥    [ else
-//🟥      { statement ";" }
-//🟥    ]
-//🟥    end if
+//✅ if-equation :
+//✅    if expression then
+//✅      { some-equation ";" }
+//✅    { elseif expression then
+//✅      { some-equation ";" }
+//✅    }
+//✅    [ else
+//✅      { some-equation ";" }
+//✅    ]
+//✅    end if
+// if_equation :
+//     if^ expression then^
+//         { some_equation ';'^ }
+//     { elseif^ expression then^
+//         { some_equation ';'^ }
+//     }
+//     [ else^
+//         { some_equation ';'^ }
+//     ]
+//     end^ if
+//     ;
 
-//🟥 for-equation :
-//🟥    for for-indices loop
-//🟥      { some-equation ";" }
-//🟥    end for
+//✅ if-statement :
+//✅    if expression then
+//✅      { statement ";" }
+//✅    { elseif expression then
+//✅      { statement ";" }
+//✅    }
+//✅    [ else
+//✅      { statement ";" }
+//✅    ]
+//✅    end if
+// if_statement :
+//     if^ expression then^
+//         { statement ';'^ }
+//     { elseif^ expression then^
+//         { statement ';'^ }
+//     }
+//     [ else^
+//         { statement ';'^ }
+//     ]
+//     end^ if
+//     ;
 
-//🟥 for-statement :
-//🟥    for for-indices loop
-//🟥      { statement ";" }
-//🟥    end for
+//✅ for-equation :
+//✅    for for-indices loop
+//✅      { some-equation ";" }
+//✅    end for
+// for_equation :
+//     for^ for_indices loop^
+//         { some_equation ';'^ }
+//     end^ for
+//     ;
 
-//🟥 for-indices :
-//🟥    for-index { "," for-index }
+//✅ for-statement :
+//✅    for for-indices loop
+//✅      { statement ";" }
+//✅    end for
+// for_statement :
+//     for^ for_indices loop^
+//         { statement ';'^ }
+//     end^ for
+//     ;
 
-//🟥 for-index :
-//🟥    IDENT [ in expression ]
+//✅ for-indices :
+//✅    for-index { "," for-index }
+// for_indices :
+//     for_index { ','^ for_index }
+//     ;
 
-//🟥 while-statement :
-//🟥    while expression loop
-//🟥      { statement ";" }
-//🟥    end while
+//✅ for-index :
+//✅    IDENT [ in expression ]
+// for_index :
+//     ident [ in^ expression ]
+//     ;
 
-//🟥 when-equation :
-//🟥    when expression then
-//🟥      { some-equation ";" }
-//🟥    { elsewhen expression then
-//🟥      { some-equation ";" }
-//🟥    }
-//🟥    end when
+//✅ while-statement :
+//✅    while expression loop
+//✅      { statement ";" }
+//✅    end while
+// while_statement :
+//     while^ expression loop^
+//         { statement ';'^ }
+//     end^ while
+//     ;
 
-//🟥 when-statement :
-//🟥    when expression then
-//🟥      { statement ";" }
-//🟥    { elsewhen expression then
-//🟥      { statement ";" }
-//🟥    }
-//🟥    end when
+//✅ when-equation :
+//✅    when expression then
+//✅      { some-equation ";" }
+//✅    { elsewhen expression then
+//✅      { some-equation ";" }
+//✅    }
+//✅    end when
+// when_equation :
+//     when^ expression then^
+//         { some_equation ';'^ }
+//     { elsewhen^ expression then^
+//         { some_equation ';'^ }
+//     }
+//     end^ when
+//     ;
 
-//🟥 connect-equation :
-//🟥    connect "(" component-reference "," component-reference ")"
+//✅ when-statement :
+//✅    when expression then
+//✅      { statement ";" }
+//✅    { elsewhen expression then
+//✅      { statement ";" }
+//✅    }
+//✅    end when
+// when_statement :
+//     when^ expression then^
+//         { statement ';'^ }
+//     { elsewhen^ expression then^
+//         { statement ';'^ }
+//     }
+//     end^ when
+//     ;
+
+//✅ connect-equation :
+//✅    connect "(" component-reference "," component-reference ")"
+// connect_equation :
+//     connect '('^ component_reference ','^ component_reference ')'^
+//     ;
 
 //=============================================================================
 // A.2.7 Expressions
 // ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 
-//🟥 expression :
-//🟥    simple-expression
-//🟥    | if expression then expression
-//🟥      { elseif expression then expression }
-//🟥      else expression
+//✅ expression :
+//✅    simple-expression
+//✅    | if expression then expression
+//✅      { elseif expression then expression }
+//✅      else expression
+expression :
+    simple_expression
+    // | if^ expression then^ expression
+    //     { elseif^ expression then^ expression }
+    //     else^ expression
+    ;
 
 //✅ simple-expression :
 //✅    logical-expression [ ":" logical-expression [ ":" logical-expression ] ]
@@ -556,27 +779,38 @@ factor
     : primary { ( '^' | '.^' ) primary }
     ;
 
-//🟨 primary :
-//🟨    UNSIGNED-NUMBER
-//🟥    | STRING
-//🟥    | false
-//🟥    | true
-//🟥    | ( component-reference | der | initial | pure ) function-call-args
+//✅ primary :
+//✅    UNSIGNED-NUMBER
+//✅    | STRING
+//✅    | false
+//✅    | true
+//✅    | ( component-reference | der | initial | pure ) function-call-args
 //✅    | component-reference
-//🟥    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
-//🟥    | "[" expression-list { ";" expression-list } "]"
-//🟥    | "{" array-arguments "}"
-//🟥    | end
+//✅    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
+//✅    | "[" expression-list { ";" expression-list } "]"
+//✅    | "{" array-arguments "}"
+//✅    | end
 primary
-    : unsigned_integer
+    : unsigned_number
+    // | string
+    // | false
+    // | true
+    // | ( component_reference | der | initial | pure ) function_call_args
     | component_reference
+    // | '('^ output_expression_list ')' [ ( array_subscripts | '.'^ ident ) ]
+    // | '['^ expression_list { ';' expression_list } ']'^
+    // | '{'^ array_arguments '}'^
+    // | end
     ;
 
-//🟥 UNSIGNED-NUMBER :
-//🟥    UNSIGNED-INTEGER | UNSIGNED-REAL
+//✅ UNSIGNED-NUMBER :
+//✅    UNSIGNED-INTEGER | UNSIGNED-REAL
+unsigned_number
+    : unsigned_integer | unsigned_real
+    ;
 
-//🟥 type-specifier :
-//🟥    ["."] name
+//✅ type-specifier :
+//✅    ["."] name
 type_specifier
     : [ '.'^ ] name
     ;
@@ -587,61 +821,120 @@ name
     : ident { '.'^ ident }
     ;
 
-//🟨 component-reference :
-//🟨    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
+//✅ component-reference :
+//✅    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 component_reference
-    : [ '.'^ ] ident { '.'^ ident }
+    : [ '.'^ ] ident
+    //[ array_subscripts ]
+    { '.'^ ident
+    // [ array_subscripts ]
+    }
     ;
 
-//🟥 result-reference :
-//🟥    component-reference
-//🟥    | der "(" component-reference [ "," UNSIGNED-INTEGER ] ")"
+//✅ result-reference :
+//✅    component-reference
+//✅    | der "(" component-reference [ "," UNSIGNED-INTEGER ] ")"
+// result_reference :
+//     component_reference
+//     | der '('^ component_reference [ ','^ unsigned_integer ] ')'^
+//     ;
 
-//🟥 function-call-args :
-//🟥    "(" [ function-arguments ] ")"
+//✅ function-call-args :
+//✅    "(" [ function-arguments ] ")"
+// function_call_args :
+//     '('^ [ function_arguments ] ')'^
+//     ;
 
-//🟥 function-arguments :
-//🟥    expression [ "," function-arguments-non-first | for for-indices ]
-//🟥    | function-partial-application [ "," function-arguments-non-first ]
-//🟥    | named-arguments
+//✅ function-arguments :
+//✅    expression [ "," function-arguments-non-first | for for-indices ]
+//✅    | function-partial-application [ "," function-arguments-non-first ]
+//✅    | named-arguments
+// function_arguments :
+//     expression [ ','^ function_arguments_non_first | for for_indices ]
+//     | function_partial_application [ ','^ function_arguments_non_first ]
+//     | named_arguments
+//     ;
 
-//🟥 function-arguments-non-first :
-//🟥    function-argument [ "," function-arguments-non-first ]
-//🟥    | named-arguments
+//✅ function-arguments-non-first :
+//✅    function-argument [ "," function-arguments-non-first ]
+//✅    | named-arguments
+// function_arguments_non_first :
+//     function_argument [ ','^ function_arguments_non_first ]
+//     | named_arguments
+//     ;
 
-//🟥 array-arguments :
-//🟥    expression [ "," array-arguments-non-first | for for-indices ]
+//✅ array-arguments :
+//✅    expression [ "," array-arguments-non-first | for for-indices ]
+// array_arguments :
+//     expression [ ','^ array_arguments_non_first | for for_indices ]
+//     ;
 
-//🟥 array-arguments-non-first :
-//🟥    expression [ "," array-arguments-non-first ]
+//✅ array-arguments-non-first :
+//✅    expression [ "," array-arguments-non-first ]
+// array_arguments_non_first :
+//     expression [ ','^ array_arguments_non_first ]
+//     ;
 
-//🟥 named-arguments: named-argument [ "," named-arguments ]
+//✅ named-arguments: named-argument [ "," named-arguments ]
+// named_arguments :
+//     named_argument [ ','^ named_arguments ]
+//     ;
 
-//🟥 named-argument: IDENT "=" function-argument
+//✅ named-argument: IDENT "=" function-argument
+// named_argument : ident '='^ function_argument
+//     ;
 
-//🟥 function-argument :
-//🟥    function-partial-application | expression
+//✅ function-argument :
+//✅    function-partial-application | expression
+// function_argument :
+//     function_partial_application | expression
+//     ;
 
-//🟥 function-partial-application :
-//🟥    function type-specifier "(" [ named-arguments ] ")"
+//✅ function-partial-application :
+//✅    function type-specifier "(" [ named-arguments ] ")"
+// function_partial_application :
+//     function type_specifier '('^ [ named_arguments ] ')'^
+//     ;
 
-//🟥 output-expression-list :
-//🟥    [ expression ] { "," [ expression ] }
+//✅ output-expression-list :
+//✅    [ expression ] { "," [ expression ] }
+// output_expression_list :
+//     [ expression ] { ','^ [ expression ] }
+//     ;
 
-//🟥 expression-list :
-//🟥    expression { "," expression }
+//✅ expression-list :
+//✅    expression { "," expression }
+// expression_list :
+//     expression { ','^ expression }
+//     ;
 
-//🟥 array-subscripts :
-//🟥    "[" subscript { "," subscript } "]"
+//✅ array-subscripts :
+//✅    "[" subscript { "," subscript } "]"
+// array_subscripts :
+//     '['^ subscript { ','^ subscript } ']'^
+//     ;
 
-//🟥 subscript :
-//🟥    ":" | expression
+//✅ subscript :
+//✅    ":" | expression
+// subscript :
+//     ':' | expression
+//     ;
 
-//🟥 description :
-//🟥    description-string [ annotation-clause ]
+//✅ description :
+//✅    description-string [ annotation-clause ]
+// description : 
+//     description_string
+    // [ annotation_clause ]
+    // ;
 
-//🟥 description-string :
-//🟥    [ STRING { "+" STRING } ]
+//✅ description-string :
+//✅    [ STRING { "+" STRING } ]
+// description_string :
+//     [ string { '+'^ string } ]
+//     ;
 
-//🟥 annotation-clause :
-//🟥    annotation class-modification
+//✅ annotation-clause :
+//✅    annotation class-modification
+// annotation_clause :
+//     annotation class_modification
+//     ;

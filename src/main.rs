@@ -2,6 +2,7 @@ extern crate parol_runtime;
 
 mod modelica_grammar;
 // The output is version controlled
+mod ir;
 mod modelica_grammar_trait;
 mod modelica_parser;
 
