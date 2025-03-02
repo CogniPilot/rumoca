@@ -36,19 +36,11 @@ pub struct ComponentReference {
 pub enum Equation {
     #[default]
     Empty,
-    Assignment {
+    Simple {
         lhs: Expression,
         rhs: Expression,
         span: Span,
     },
-}
-
-#[derive(Debug, Default, Clone)]
-#[allow(unused)]
-pub struct EquationSection {
-    pub private: bool,
-    pub equations: Vec<Equation>,
-    pub span: Span,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -112,8 +104,17 @@ pub enum Expression {
         value: String,
         span: Span,
     },
-    ComponentReference {
-        comp: String,
+    ComponentReference(ComponentReference),
+}
+
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
+pub enum Statement {
+    #[default]
+    Empty,
+    Assignment {
+        comp: ComponentReference,
+        value: Expression,
         span: Span,
     },
 }

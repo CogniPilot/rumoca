@@ -5,8 +5,11 @@ within stuff.test1.test2;
 
 class Test2
     Real x;
+    Real y;
 equation
     x = 3.0;
+algorithm
+    y := x;
 end Test2;
 
 // End

@@ -8,18 +8,18 @@
 // %nt_type class_prefixes = crate::modelica_grammar::ClassPrefixes
 //%nt_type class_specifier = crate::modelica_grammar::ClassSpecifier
 //%nt_type long_class_specifier = crate::modelica_grammar::ClassSpecifier
-//%nt_type composition = crate::modelica_grammar::Composition
-//%nt_type composition_list = crate::modelica_grammar::CompositionList
-// %nt_type element_list = crate::modelica_grammar::ElementList
+%nt_type composition = crate::modelica_grammar::Composition
+%nt_type element_list = crate::modelica_grammar::ElementList
 // %nt_type element = crate::modelica_grammar::Element
 // %nt_type component_clause = crate::modelica_grammar::ComponentClause
-// %nt_type component_list = crate::modelica_grammar::ComponentList
+%nt_type component_list = crate::modelica_grammar::ComponentList
 // %nt_type component_declaration = crate::modelica_grammar::ComponentDeclaration
 // %nt_type declaration = crate::modelica_grammar::Declaration
 // %nt_type type_prefix = crate::modelica_grammar::TypePrefix
 // %nt_type type_specifier = crate::modelica_grammar::TypeSpecifier
-%nt_type equation_section = crate::ir::EquationSection
-// %nt_type ident = crate::modelica_grammar::Ident
+%nt_type equation_section = crate::modelica_grammar::EquationSection
+%nt_type algorithm_section = crate::modelica_grammar::AlgorithmSection
+%nt_type ident = crate::modelica_grammar::Ident
 %nt_type some_equation = crate::ir::Equation
 %nt_type simple_expression = crate::ir::Expression
 %nt_type expression = crate::ir::Expression
@@ -34,8 +34,9 @@
 // %nt_type mul_operator = crate::modelica_grammar::MulOperator
 %nt_type factor = crate::ir::Expression
 %nt_type primary = crate::ir::Expression
-%nt_type component_reference = crate::ir::Expression
+%nt_type component_reference = crate::ir::ComponentReference
 %nt_type name = crate::ir::Name
+%nt_type statement = crate::ir::Statement
 
 %%
 //=============================================================================
@@ -511,13 +512,13 @@ declaration :
 //✅ equation-section :
 //✅    [ initial ] equation { some-equation ";" }
 equation_section :
-    [ initial ] equation^ { some_equation ';'^ }
+    [ initial^ ] equation^ { some_equation ';'^ }
     ;
 
 //✅ algorithm-section :
 //✅    [ initial ] algorithm { statement ";" }
 algorithm_section :
-    [ initial ] algorithm { statement ';'^ }
+    [ initial^ ] algorithm^ { statement ';'^ }
     ;
 
 //✅ some-equation :
