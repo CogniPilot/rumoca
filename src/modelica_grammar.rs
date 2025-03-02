@@ -454,11 +454,11 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Primary) -> std::result::Result<Self, Self::Error> {
-        match ast {
-            &modelica_grammar_trait::Primary::ComponentReference(ref comp_ref) => Ok(
+        match &ast {
+            modelica_grammar_trait::Primary::ComponentReference(comp_ref) => Ok(
                 ir::Expression::ComponentReference(comp_ref.component_reference.clone()),
             ),
-            &modelica_grammar_trait::Primary::UnsignedNumber(ref unsigned_num) => {
+            modelica_grammar_trait::Primary::UnsignedNumber(unsigned_num) => {
                 match &unsigned_num.unsigned_number {
                     modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
                         Ok(ir::Expression::UnsignedInteger {
@@ -473,11 +473,23 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
                         })
                     }
                 }
-                // Ok(ir::Expression::UnsignedInteger {
-                //     value: unsigned_int.unsigned_integer.unsigned_integer.text.clone(),
-                //     span: unsigned_int.span().clone(),
-                // })
             }
+            modelica_grammar_trait::Primary::String(string) => Ok(ir::Expression::String {
+                value: string.string.string.clone(),
+                node: ir::NodeData::new(),
+            }),
+            modelica_grammar_trait::Primary::True(bool) => Ok(ir::Expression::Bool {
+                value: bool.r#true.r#true.clone(),
+                node: ir::NodeData::new(),
+            }),
+            modelica_grammar_trait::Primary::False(bool) => Ok(ir::Expression::Bool {
+                value: bool.r#false.r#false.clone(),
+                node: ir::NodeData::new(),
+            }),
+            modelica_grammar_trait::Primary::End(end) => Ok(ir::Expression::End {
+                value: end.end.end.clone(),
+                node: ir::NodeData::new(),
+            }),
         }
     }
 }

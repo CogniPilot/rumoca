@@ -2,7 +2,7 @@
 %title "Modelica grammar"
 %comment "Modelica grammar 3.7-dev for `parol`"
 %line_comment "//"
-%user_type Token = crate::ir::Token
+
 %t_type crate::ir::Token
 // %nt_type stored_definition = crate::modelica_grammar::StoredDefinition
 //%nt_type class_definition = crate::ir::ClassDefinition
@@ -49,7 +49,7 @@
 
 algorithm: 'algorithm';
 and: 'and';
-// annotation: 'annotation';
+annotation: 'annotation';
 block: 'block';
 // break: 'break';
 class: 'class';
@@ -70,13 +70,13 @@ equation: 'equation';
 expandable: 'expandable';
 // extends: 'extends';
 // external: 'external';
-// false: 'false';
+false: 'false';
 final: 'final';
 flow: 'flow';
 // for: 'for';
 function: 'function';
 // if: 'if';
-// import: 'import';
+import: 'import';
 impure: 'impure';
 // in: 'in';
 initial: 'initial';
@@ -101,7 +101,7 @@ redeclare: 'redeclare';
 // return: 'return';
 stream: 'stream';
 // then: 'then';
-// true: 'true';
+true: 'true';
 type: 'type';
 // when: 'when';
 // while: 'while';
@@ -126,7 +126,7 @@ ident: /[_a-zA-Z][_a-zA-Z0-9]*/;
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
 
 // STRING = """ { S-CHAR | S-ESCAPE } """
-// string : /"[\w]*"/;
+string : /"[\w]*"/;
 
 // S-CHAR is any member of the Unicode character set
 // (https://unicode.org; see section 13.4 for storing as UTF-8 on files)
@@ -308,7 +308,7 @@ element_list :
 //✅          [ constraining-clause description ]
 //✅      )
 element :
-    // import_clause
+    import_clause
     // | extends_clause
     | [ redeclare ] [ final ] [ inner ] [ outer ]
       ( class_definition
@@ -324,19 +324,19 @@ element :
 //✅      | name [ ".*" | "." ( "*" | "{" import-list "}" ) ]
 //✅    )
 //✅    description
-// import_clause :
-//     import
-//     ( ident '='^ name
-//       | name [ '.*' | '.'^ ( '*' | '{' import_list '}' ) ]
-//     )
-//     description
-//     ;
+import_clause :
+    import
+    ( ident '='^ name
+      | name [ '.*' | '.'^ ( '*' | '{' import_list '}' ) ]
+    )
+    description
+    ;
 
 //✅ import-list :
 //✅    IDENT { "," IDENT }
-// import_list :
-//     ident { ','^ ident }
-//     ;
+import_list :
+    ident { ','^ ident }
+    ;
 
 //=============================================================================
 // A.2.3 Extends
@@ -380,7 +380,7 @@ element :
 //✅    type-prefix type-specifier [ array-subscripts ] component-list
 component_clause :
     type_prefix type_specifier
-    // [ array_subscripts ]
+    [ array_subscripts ]
     component_list
     ;
 
@@ -405,7 +405,7 @@ component_list :
 component_declaration :
     declaration
     // [ condition_attribute ]
-    // description
+    description
     ;
 
 //✅ condition-attribute :
@@ -418,7 +418,7 @@ component_declaration :
 //✅    IDENT [ array-subscripts ] [ modification ]
 declaration :
     ident
-    // [ array_subscripts ]
+    [ array_subscripts ]
     // [ modification ]
     ;
 
@@ -541,7 +541,7 @@ some_equation :
         // | when_equation
         // | component_reference function_call_args
     )
-    // description
+    description
     ;
 
 //✅ statement :
@@ -569,7 +569,7 @@ statement :
         // | while_statement
         // | when_statement
     )
-    // description
+    description
     ;
 
 //✅ if-equation :
@@ -796,15 +796,15 @@ factor
 //✅    | end
 primary
     : unsigned_number
-    // | string
-    // | false
-    // | true
+    | string
+    | false
+    | true
     // | ( component_reference | der | initial | pure ) function_call_args
     | component_reference
     // | '('^ output_expression_list ')' [ ( array_subscripts | '.'^ ident ) ]
     // | '['^ expression_list { ';' expression_list } ']'^
     // | '{'^ array_arguments '}'^
-    // | end
+    | end
     ;
 
 //✅ UNSIGNED-NUMBER :
@@ -831,7 +831,7 @@ component_reference
     : [ '.'^ ] ident
     //[ array_subscripts ]
     { '.'^ ident
-    // [ array_subscripts ]
+    [ array_subscripts ]
     }
     ;
 
@@ -914,31 +914,32 @@ component_reference
 
 //✅ array-subscripts :
 //✅    "[" subscript { "," subscript } "]"
-// array_subscripts :
-//     '['^ subscript { ','^ subscript } ']'^
-//     ;
+array_subscripts :
+    '['^ subscript { ','^ subscript } ']'^
+    ;
 
 //✅ subscript :
 //✅    ":" | expression
-// subscript :
-//     ':' | expression
-//     ;
+subscript :
+    ':' | expression
+    ;
 
 //✅ description :
 //✅    description-string [ annotation-clause ]
-// description : 
-//     description_string
-    // [ annotation_clause ]
-    // ;
+description : 
+    description_string
+    [ annotation_clause ]
+    ;
 
 //✅ description-string :
 //✅    [ STRING { "+" STRING } ]
-// description_string :
-//     [ string { '+'^ string } ]
-//     ;
+description_string :
+    [ string { '+'^ string } ]
+    ;
 
 //✅ annotation-clause :
 //✅    annotation class-modification
-// annotation_clause :
-//     annotation class_modification
-//     ;
+annotation_clause :
+    annotation
+    // class_modification
+    ;

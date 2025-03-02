@@ -53,7 +53,7 @@ impl Debug for Name {
         for n in &self.name {
             s.push(n.text.clone());
         }
-        write!(f, "{:?}", s.join(""))
+        write!(f, "{:?}", s.join("."))
     }
 }
 
@@ -67,10 +67,24 @@ pub struct StoredDefinition {
 
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
+pub struct Component {
+    pub name: String,
+    pub node: NodeData,
+}
+
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
 pub struct ClassDefinition {
     pub name: Token,
     pub encapsulated: bool,
+    //pub extends: Vec<Extend>,
+    //pub imports: Vec<Import>,
+    //pub classes: IndexMap<String, ClassDefinition>,
+    pub components: IndexMap<String, Component>,
     pub equations: Vec<Equation>,
+    pub initial_equations: Vec<Equation>,
+    pub algorithms: Vec<Vec<Statement>>,
+    pub initial_algorithms: Vec<Vec<Statement>>,
     pub node: NodeData,
 }
 
@@ -87,7 +101,7 @@ impl Debug for ComponentReference {
         for n in &self.name {
             s.push(n.text.clone());
         }
-        write!(f, "{:?}", s.join(""))
+        write!(f, "{:?}", s.join("."))
     }
 }
 
@@ -161,6 +175,18 @@ pub enum Expression {
         node: NodeData,
     },
     UnsignedInteger {
+        value: Token,
+        node: NodeData,
+    },
+    String {
+        value: Token,
+        node: NodeData,
+    },
+    Bool {
+        value: Token,
+        node: NodeData,
+    },
+    End {
         value: Token,
         node: NodeData,
     },
