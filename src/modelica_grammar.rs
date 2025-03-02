@@ -5,37 +5,20 @@ use parol_runtime::{Location, Result, Span, ToSpan, Token};
 use std::fmt::{Debug, Display, Error, Formatter};
 
 //-----------------------------------------------------------------------------
-#[derive(Debug, Default, Clone)]
-#[allow(unused)]
-pub struct OwnedToken {
-    pub text: String,
-    pub span: Span,
-}
-
-impl ToSpan for OwnedToken {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-
-impl TryFrom<&Token<'_>> for OwnedToken {
+impl TryFrom<&Token<'_>> for ir::Token {
     type Error = anyhow::Error;
 
     fn try_from(value: &Token<'_>) -> std::result::Result<Self, Self::Error> {
-        Ok(OwnedToken {
+        Ok(ir::Token {
             text: value.text().to_string(),
-            span: Span::new(value.location.start as usize, value.location.end as usize),
+            location: value.location.clone(),
+            token_number: value.token_number,
+            token_type: value.token_type,
         })
     }
 }
 
 //-----------------------------------------------------------------------------
-// impl ToSpan for ir::StoredDefinition {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
-// }
-
 // impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::StoredDefinition {
 //     type Error = anyhow::Error;
 
@@ -65,12 +48,6 @@ impl TryFrom<&Token<'_>> for OwnedToken {
 // }
 
 //-----------------------------------------------------------------------------
-// impl ToSpan for ir::ClassDefinition {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
-// }
-
 // impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ClassDefinition {
 //     type Error = anyhow::Error;
 
@@ -110,15 +87,6 @@ impl TryFrom<&Token<'_>> for OwnedToken {
 //     },
 // }
 
-// impl ToSpan for ClassSpecifier {
-//     fn span(&self) -> Span {
-//         match self {
-//             ClassSpecifier::Empty => Span::default(),
-//             ClassSpecifier::Long { span, .. } => span.clone(),
-//         }
-//     }
-// }
-
 // impl TryFrom<&modelica_grammar_trait::ClassSpecifier> for ClassSpecifier {
 //     type Error = anyhow::Error;
 
@@ -153,13 +121,6 @@ pub struct Composition {
     pub initial_equations: Vec<ir::Equation>,
     pub algorithms: Vec<Vec<ir::Statement>>,
     pub initial_algorithms: Vec<Vec<ir::Statement>>,
-    pub span: Span,
-}
-
-impl ToSpan for Composition {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
 }
 
 impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
@@ -169,16 +130,15 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
         ast: &modelica_grammar_trait::Composition,
     ) -> std::result::Result<Self, Self::Error> {
         let mut comp = Composition {
-            span: ast.span().clone(),
             ..Default::default()
         };
         for comp_list in &ast.composition_list {
             match comp_list.composition_list_group {
                 modelica_grammar_trait::CompositionListGroup::PublicElementList(ref elem_list) => {
-                    for elem in &elem_list.element_list.elements {}
+                    for _elem in &elem_list.element_list.elements {}
                 }
                 modelica_grammar_trait::CompositionListGroup::ProtectedElementList(
-                    ref elem_list,
+                    ref _elem_list,
                 ) => {}
                 modelica_grammar_trait::CompositionListGroup::EquationSection(ref eq_sec) => {
                     let sec = &eq_sec.equation_section;
@@ -213,13 +173,6 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
 #[allow(unused)]
 pub struct ElementList {
     pub elements: Vec<modelica_grammar_trait::Element>,
-    pub span: Span,
-}
-
-impl ToSpan for ElementList {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
 }
 
 impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
@@ -232,10 +185,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
         for elem in &ast.element_list_list {
             elements.push(elem.element.clone());
         }
-        Ok(ElementList {
-            elements,
-            span: ast.span().clone(),
-        })
+        Ok(ElementList { elements })
     }
 }
 
@@ -244,13 +194,6 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
 // #[allow(unused)]
 // pub struct Element {
 //     pub name: String,
-//     pub span: Span,
-// }
-
-// impl ToSpan for Element {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
 // }
 
 // impl TryFrom<&modelica_grammar_trait::Element> for Element {
@@ -269,13 +212,6 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
 // #[allow(unused)]
 // pub struct ComponentClause {
 //     pub name: String,
-//     pub span: Span,
-// }
-
-// impl ToSpan for ComponentClause {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
 // }
 
 // impl TryFrom<&modelica_grammar_trait::ComponentClause> for ComponentClause {
@@ -296,13 +232,6 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
 #[allow(unused)]
 pub struct ComponentList {
     pub components: Vec<modelica_grammar_trait::ComponentDeclaration>,
-    pub span: Span,
-}
-
-impl ToSpan for ComponentList {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
 }
 
 impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
@@ -315,10 +244,7 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
         for comp in &ast.component_list_list {
             components.push(comp.component_declaration.clone());
         }
-        Ok(ComponentList {
-            components,
-            span: ast.span().clone(),
-        })
+        Ok(ComponentList { components })
     }
 }
 
@@ -327,13 +253,6 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
 // #[allow(unused)]
 // pub struct ComponentDeclaration {
 //     pub name: String,
-//     pub span: Span,
-// }
-
-// impl ToSpan for ComponentDeclaration {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
 // }
 
 // impl TryFrom<&modelica_grammar_trait::ComponentDeclaration> for ComponentDeclaration {
@@ -354,13 +273,6 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
 // #[allow(unused)]
 // pub struct Declaration {
 //     pub name: String,
-//     pub span: Span,
-// }
-
-// impl ToSpan for Declaration {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
 // }
 
 // impl TryFrom<&modelica_grammar_trait::Declaration> for Declaration {
@@ -382,13 +294,6 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
 pub struct EquationSection {
     pub initial: bool,
     pub equations: Vec<ir::Equation>,
-    pub span: Span,
-}
-
-impl ToSpan for EquationSection {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
 }
 
 impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
@@ -400,7 +305,6 @@ impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
         let mut def = EquationSection {
             initial: ast.equation_section_opt.is_some(),
             equations: vec![],
-            span: ast.span().clone(),
         };
         for eq in &ast.equation_section_list {
             def.equations.push(eq.some_equation.clone());
@@ -415,13 +319,6 @@ impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
 pub struct AlgorithmSection {
     pub initial: bool,
     pub statements: Vec<ir::Statement>,
-    pub span: Span,
-}
-
-impl ToSpan for AlgorithmSection {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
 }
 
 impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
@@ -433,7 +330,6 @@ impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
         let mut def = AlgorithmSection {
             initial: ast.algorithm_section_opt.is_some(),
             statements: vec![],
-            span: ast.span().clone(),
         };
         for alg in &ast.algorithm_section_list {
             def.statements.push(alg.statement.clone());
@@ -447,13 +343,6 @@ impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
 // #[allow(unused)]
 // pub struct TypePrefix {
 //     pub name: String,
-//     pub span: Span,
-// }
-
-// impl ToSpan for TypePrefix {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
 // }
 
 // impl TryFrom<&modelica_grammar_trait::TypePrefix> for TypePrefix {
@@ -474,13 +363,6 @@ impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
 // #[allow(unused)]
 // pub struct TypeSpecifier {
 //     pub name: String,
-//     pub span: Span,
-// }
-
-// impl ToSpan for TypeSpecifier {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
 // }
 
 // impl TryFrom<&modelica_grammar_trait::TypeSpecifier> for TypeSpecifier {
@@ -497,42 +379,49 @@ impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
 // }
 
 //-----------------------------------------------------------------------------
-
-#[derive(Debug, Default, Clone)]
-#[allow(unused)]
-pub struct Ident {
-    pub text: String,
-    pub span: Span,
-}
-
-impl ToSpan for Ident {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-
-impl TryFrom<&modelica_grammar_trait::Ident> for Ident {
+impl TryFrom<&modelica_grammar_trait::Ident> for ir::Token {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Ident) -> std::result::Result<Self, Self::Error> {
-        Ok(Ident {
-            text: ast.ident.text.to_string(),
-            span: ast.span().clone(),
+        Ok(ir::Token {
+            location: ast.ident.location.clone(),
+            text: ast.ident.text.clone(),
+            token_number: ast.ident.token_number,
+            token_type: ast.ident.token_type,
         })
     }
 }
 
-//-----------------------------------------------------------------------------
+impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for ir::Token {
+    type Error = anyhow::Error;
 
-impl ToSpan for ir::Equation {
-    fn span(&self) -> Span {
-        match self {
-            ir::Equation::Empty => Span::default(),
-            ir::Equation::Simple { span, .. } => span.clone(),
+    fn try_from(
+        ast: &modelica_grammar_trait::UnsignedInteger,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(ir::Token {
+            location: ast.unsigned_integer.location.clone(),
+            text: ast.unsigned_integer.text.clone(),
+            token_number: ast.unsigned_integer.token_number,
+            token_type: ast.unsigned_integer.token_type,
+        })
+    }
+}
+
+impl TryFrom<&modelica_grammar_trait::UnsignedReal> for ir::Token {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::UnsignedReal,
+    ) -> std::result::Result<Self, Self::Error> {
+        match &ast {
+            modelica_grammar_trait::UnsignedReal::Decimal(num) => Ok(num.decimal.clone()),
+            modelica_grammar_trait::UnsignedReal::Scientific(num) => Ok(num.scientific.clone()),
+            modelica_grammar_trait::UnsignedReal::Scientific2(num) => Ok(num.scientific2.clone()),
         }
     }
 }
 
+//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
     type Error = anyhow::Error;
 
@@ -542,22 +431,12 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
         Ok(ir::Equation::Simple {
             lhs: ast.simple_expression.clone(),
             rhs: ast.expression.clone(),
-            span: ast.span().clone(),
+            node: ir::NodeData::new(),
         })
     }
 }
 
 //-----------------------------------------------------------------------------
-
-impl ToSpan for ir::Statement {
-    fn span(&self) -> Span {
-        match self {
-            ir::Statement::Empty => Span::default(),
-            ir::Statement::Assignment { span, .. } => span.clone(),
-        }
-    }
-}
-
 impl TryFrom<&modelica_grammar_trait::Statement> for ir::Statement {
     type Error = anyhow::Error;
 
@@ -565,27 +444,12 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::Statement {
         Ok(ir::Statement::Assignment {
             comp: ast.component_reference.clone(),
             value: ast.expression.clone(),
-            span: ast.span().clone(),
+            node: ir::NodeData::new(),
         })
     }
 }
 
 //-----------------------------------------------------------------------------
-
-impl ToSpan for ir::Expression {
-    fn span(&self) -> Span {
-        match self {
-            ir::Expression::Range { span, .. } => span.clone(),
-            ir::Expression::Unary { span, .. } => span.clone(),
-            ir::Expression::Binary { span, .. } => span.clone(),
-            ir::Expression::UnsignedInteger { span, .. } => span.clone(),
-            ir::Expression::UnsignedReal { span, .. } => span.clone(),
-            ir::Expression::ComponentReference(comp) => comp.span.clone(),
-            ir::Expression::Empty => Span::default(),
-        }
-    }
-}
-
 impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
     type Error = anyhow::Error;
 
@@ -595,27 +459,17 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
                 ir::Expression::ComponentReference(comp_ref.component_reference.clone()),
             ),
             &modelica_grammar_trait::Primary::UnsignedNumber(ref unsigned_num) => {
-                match unsigned_num.unsigned_number {
-                    modelica_grammar_trait::UnsignedNumber::UnsignedInteger(ref unsigned_int) => {
+                match &unsigned_num.unsigned_number {
+                    modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
                         Ok(ir::Expression::UnsignedInteger {
-                            value: unsigned_int.unsigned_integer.unsigned_integer.text.clone(),
-                            span: unsigned_int.span().clone(),
+                            value: unsigned_int.unsigned_integer.clone(),
+                            node: ir::NodeData::new(),
                         })
                     }
-                    modelica_grammar_trait::UnsignedNumber::UnsignedReal(ref unsigned_real) => {
+                    modelica_grammar_trait::UnsignedNumber::UnsignedReal(unsigned_real) => {
                         Ok(ir::Expression::UnsignedReal {
-                            value: match unsigned_real.unsigned_real {
-                                modelica_grammar_trait::UnsignedReal::Decimal(ref num) => {
-                                    num.decimal.text.clone()
-                                }
-                                modelica_grammar_trait::UnsignedReal::Scientific(ref num) => {
-                                    num.scientific.text.clone()
-                                }
-                                modelica_grammar_trait::UnsignedReal::Scientific2(ref num) => {
-                                    num.scientific2.text.clone()
-                                }
-                            },
-                            span: unsigned_real.span().clone(),
+                            value: unsigned_real.unsigned_real.clone(),
+                            node: ir::NodeData::new(),
                         })
                     }
                 }
@@ -639,7 +493,7 @@ impl TryFrom<&modelica_grammar_trait::Factor> for ir::Expression {
                 op: ir::OpBinary::Mul,
                 lhs: Box::new(ast.primary.clone()),
                 rhs: Box::new(ast.factor_list[0].primary.clone()),
-                span: ast.span().clone(),
+                node: ir::NodeData::new(),
             })
         }
     }
@@ -663,7 +517,7 @@ impl TryFrom<&modelica_grammar_trait::Term> for ir::Expression {
                         modelica_grammar_trait::MulOperator::DotStar(..) => ir::OpBinary::MulElem,
                     },
                     rhs: Box::new(factor.factor.clone()),
-                    span: ast.span().clone(),
+                    node: ir::NodeData::new(),
                 };
             }
             Ok(lhs)
@@ -692,7 +546,7 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for ir::Expression {
                         modelica_grammar_trait::AddOperator::DotMinus(..) => ir::OpBinary::SubElem,
                     },
                     rhs: Box::new(term.term.clone()),
-                    span: ast.span().clone(),
+                    node: ir::NodeData::new(),
                 };
             }
             Ok(lhs)
@@ -716,7 +570,7 @@ impl TryFrom<&modelica_grammar_trait::Relation> for ir::Expression {
                     modelica_grammar_trait::RelationalOperator::LTGT(..) => ir::OpBinary::Neq,
                 },
                 rhs: Box::new(relation.arithmetic_expression.clone()),
-                span: ast.span().clone(),
+                node: ir::NodeData::new(),
             }),
             None => Ok(ast.arithmetic_expression.clone()),
         }
@@ -733,7 +587,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalFactor> for ir::Expression {
             Ok(ir::Expression::Unary {
                 op: ir::OpUnary::Not,
                 rhs: Box::new(ast.relation.clone()),
-                span: ast.span().clone(),
+                node: ir::NodeData::new(),
             })
         } else {
             Ok(ast.relation.clone())
@@ -756,7 +610,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalTerm> for ir::Expression {
                     lhs: Box::new(lhs),
                     op: ir::OpBinary::And,
                     rhs: Box::new(term.logical_factor.clone()),
-                    span: ast.span().clone(),
+                    node: ir::NodeData::new(),
                 };
             }
             Ok(lhs)
@@ -779,7 +633,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalExpression> for ir::Expression {
                     lhs: Box::new(lhs),
                     op: ir::OpBinary::Or,
                     rhs: Box::new(term.logical_term.clone()),
-                    span: ast.span().clone(),
+                    node: ir::NodeData::new(),
                 };
             }
             Ok(lhs)
@@ -799,13 +653,13 @@ impl TryFrom<&modelica_grammar_trait::SimpleExpression> for ir::Expression {
                     start: Box::new(ast.logical_expression.clone()),
                     step: Some(Box::new(opt.logical_expression.clone())),
                     end: Box::new(opt0.logical_expression.clone()),
-                    span: ast.span(),
+                    node: ir::NodeData::new(),
                 }),
                 None => Ok(ir::Expression::Range {
                     start: Box::new(ast.logical_expression.clone()),
                     step: None,
                     end: Box::new(opt.logical_expression.clone()),
-                    span: ast.span(),
+                    node: ir::NodeData::new(),
                 }),
             },
             None => Ok(ast.logical_expression.clone()),
@@ -824,29 +678,20 @@ impl TryFrom<&modelica_grammar_trait::Expression> for ir::Expression {
 }
 
 //-----------------------------------------------------------------------------
-impl ToSpan for ir::ComponentReference {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-
 impl TryFrom<&modelica_grammar_trait::ComponentReference> for ir::ComponentReference {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::ComponentReference,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut comp = "".to_string();
-        if ast.component_reference_opt.is_some() {
-            comp += ".";
-        }
-        comp += &ast.ident.text;
-        for ident in &ast.component_reference_list {
-            comp += &ident.ident.text;
+        let mut comp = Vec::new();
+        comp.push(ast.ident.clone());
+        for comp_ref in &ast.component_reference_list {
+            comp.push(comp_ref.ident.clone());
         }
         Ok(ir::ComponentReference {
             name: comp,
-            span: ast.span().clone(),
+            node: ir::NodeData::new(),
         })
     }
 }
@@ -856,13 +701,6 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for ir::ComponentRefer
 // #[allow(unused)]
 // pub struct UnsignedInteger {
 //     pub value: String,
-//     pub span: Span,
-// }
-
-// impl ToSpan for UnsignedInteger {
-//     fn span(&self) -> Span {
-//         self.span.clone()
-//     }
 // }
 
 // impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for UnsignedInteger {
@@ -879,24 +717,17 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for ir::ComponentRefer
 // }
 
 //-----------------------------------------------------------------------------
-impl ToSpan for ir::Name {
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-
 impl TryFrom<&modelica_grammar_trait::Name> for ir::Name {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Name) -> std::result::Result<Self, Self::Error> {
-        let mut name = ast.ident.text.clone();
+        let mut name = vec![ast.ident.clone()];
         for ident in &ast.name_list {
-            name += ".";
-            name += &ident.ident.text;
+            name.push(ident.ident.clone());
         }
         Ok(ir::Name {
             name,
-            span: ast.span().clone(),
+            node: ir::NodeData::new(),
         })
     }
 }

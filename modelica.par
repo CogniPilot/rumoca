@@ -2,7 +2,8 @@
 %title "Modelica grammar"
 %comment "Modelica grammar 3.7-dev for `parol`"
 %line_comment "//"
-%t_type crate::modelica_grammar::OwnedToken
+%user_type Token = crate::ir::Token
+%t_type crate::ir::Token
 // %nt_type stored_definition = crate::modelica_grammar::StoredDefinition
 //%nt_type class_definition = crate::ir::ClassDefinition
 // %nt_type class_prefixes = crate::modelica_grammar::ClassPrefixes
@@ -19,7 +20,6 @@
 // %nt_type type_specifier = crate::modelica_grammar::TypeSpecifier
 %nt_type equation_section = crate::modelica_grammar::EquationSection
 %nt_type algorithm_section = crate::modelica_grammar::AlgorithmSection
-%nt_type ident = crate::modelica_grammar::Ident
 %nt_type some_equation = crate::ir::Equation
 %nt_type simple_expression = crate::ir::Expression
 %nt_type expression = crate::ir::Expression
@@ -37,6 +37,11 @@
 %nt_type component_reference = crate::ir::ComponentReference
 %nt_type name = crate::ir::Name
 %nt_type statement = crate::ir::Statement
+
+// terminals
+%nt_type ident = crate::ir::Token
+%nt_type unsigned_integer = crate::ir::Token
+%nt_type unsigned_real = crate::ir::Token
 
 %%
 //=============================================================================
@@ -105,9 +110,7 @@ within: 'within';
 //=============================================================================
 // A.1 Lexical conventions
 // IDENT = NON-DIGIT { DIGIT | NON-DIGIT } | Q-IDENT
-ident
-    : /[_a-zA-Z][_a-zA-Z0-9]*/
-    ;
+ident: /[_a-zA-Z][_a-zA-Z0-9]*/;
 
 // Q-IDENT = "'" { Q-CHAR | S-ESCAPE } "'"
 

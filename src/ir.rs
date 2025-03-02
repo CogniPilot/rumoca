@@ -1,11 +1,60 @@
 use indexmap::IndexMap;
-use parol_runtime::Span;
+use parol_runtime::Location;
+use std::fmt::Debug;
+use std::sync::Mutex;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
+#[allow(unused)]
+pub struct Token {
+    pub text: String,
+    pub location: Location,
+    pub token_number: u32,
+    pub token_type: u16,
+}
+
+impl Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.text)
+    }
+}
+
+#[derive(Default, Clone)]
+#[allow(unused)]
+pub struct NodeData {
+    pub id: usize,
+}
+
+static ID_COUNTER: Mutex<usize> = Mutex::new(0);
+
+impl NodeData {
+    pub fn new() -> Self {
+        let mut counter = ID_COUNTER.lock().unwrap();
+        *counter += 1;
+        NodeData { id: *counter }
+    }
+}
+
+impl Debug for NodeData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.id)
+    }
+}
+
+#[derive(Default, Clone)]
 #[allow(unused)]
 pub struct Name {
-    pub name: String,
-    pub span: Span,
+    pub name: Vec<Token>,
+    pub node: NodeData,
+}
+
+impl Debug for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = Vec::new();
+        for n in &self.name {
+            s.push(n.text.clone());
+        }
+        write!(f, "{:?}", s.join(""))
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -13,22 +62,33 @@ pub struct Name {
 pub struct StoredDefinition {
     pub class_list: IndexMap<String, ClassDefinition>,
     pub within: Option<Name>,
-    pub span: Span,
+    pub node: NodeData,
 }
 
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct ClassDefinition {
-    pub name: String,
+    pub name: Token,
     pub encapsulated: bool,
     pub equations: Vec<Equation>,
-    pub span: Span,
+    pub node: NodeData,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
+#[allow(unused)]
 pub struct ComponentReference {
-    pub name: String,
-    pub span: Span,
+    pub name: Vec<Token>,
+    pub node: NodeData,
+}
+
+impl Debug for ComponentReference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = Vec::new();
+        for n in &self.name {
+            s.push(n.text.clone());
+        }
+        write!(f, "{:?}", s.join(""))
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -39,7 +99,7 @@ pub enum Equation {
     Simple {
         lhs: Expression,
         rhs: Expression,
-        span: Span,
+        node: NodeData,
     },
 }
 
@@ -83,26 +143,26 @@ pub enum Expression {
         start: Box<Expression>,
         step: Option<Box<Expression>>,
         end: Box<Expression>,
-        span: Span,
+        node: NodeData,
     },
     Unary {
         op: OpUnary,
         rhs: Box<Expression>,
-        span: Span,
+        node: NodeData,
     },
     Binary {
         op: OpBinary,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
-        span: Span,
+        node: NodeData,
     },
     UnsignedReal {
-        value: String,
-        span: Span,
+        value: Token,
+        node: NodeData,
     },
     UnsignedInteger {
-        value: String,
-        span: Span,
+        value: Token,
+        node: NodeData,
     },
     ComponentReference(ComponentReference),
 }
@@ -115,6 +175,6 @@ pub enum Statement {
     Assignment {
         comp: ComponentReference,
         value: Expression,
-        span: Span,
+        node: NodeData,
     },
 }
