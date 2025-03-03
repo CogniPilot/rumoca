@@ -14,7 +14,7 @@ fn main() {
         .user_type_name("ModelicaGrammar")
         .user_trait_module_name("modelica_grammar")
         .trim_parse_tree()
-        .minimize_boxed_types()
+        //.minimize_boxed_types()
         .generate_parser()
     {
         ParolErrorReporter::report_error(&err, "modelica.par").unwrap_or_default();

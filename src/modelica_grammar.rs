@@ -133,7 +133,7 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
             ..Default::default()
         };
         for comp_list in &ast.composition_list {
-            match comp_list.composition_list_group {
+            match *comp_list.composition_list_group {
                 modelica_grammar_trait::CompositionListGroup::PublicElementList(ref elem_list) => {
                     for _elem in &elem_list.element_list.elements {}
                 }
@@ -183,7 +183,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
     ) -> std::result::Result<Self, Self::Error> {
         let mut elements = Vec::new();
         for elem in &ast.element_list_list {
-            elements.push(elem.element.clone());
+            elements.push(*elem.element.clone());
         }
         Ok(ElementList { elements })
     }
@@ -240,9 +240,9 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
     fn try_from(
         ast: &modelica_grammar_trait::ComponentList,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut components = vec![ast.component_declaration.clone()];
+        let mut components = vec![*ast.component_declaration.clone()];
         for comp in &ast.component_list_list {
-            components.push(comp.component_declaration.clone());
+            components.push(*comp.component_declaration.clone());
         }
         Ok(ComponentList { components })
     }
@@ -428,7 +428,7 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
     fn try_from(
         ast: &modelica_grammar_trait::SomeEquation,
     ) -> std::result::Result<Self, Self::Error> {
-        match &ast.some_equation_option {
+        match &*ast.some_equation_option {
             modelica_grammar_trait::SomeEquationOption::SimpleExpressionEquExpression(eq) => {
                 Ok(ir::Equation::Simple {
                     lhs: eq.simple_expression.clone(),
@@ -453,7 +453,7 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::Statement {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Statement) -> std::result::Result<Self, Self::Error> {
-        match &ast.statement_option {
+        match &*ast.statement_option {
             modelica_grammar_trait::StatementOption::ComponentReferenceColonEquExpression(stmt) => {
                 Ok(ir::Statement::Assignment {
                     comp: stmt.component_reference.clone(),
@@ -520,7 +520,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
                 ir::Expression::ComponentReference(comp_ref.component_reference.clone()),
             ),
             modelica_grammar_trait::Primary::UnsignedNumber(unsigned_num) => {
-                match &unsigned_num.unsigned_number {
+                match &*unsigned_num.unsigned_number {
                     modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
                         Ok(ir::Expression::UnsignedInteger {
                             value: unsigned_int.unsigned_integer.clone(),
@@ -545,6 +545,18 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
             modelica_grammar_trait::Primary::End(end) => Ok(ir::Expression::End {
                 value: end.end.end.clone(),
             }),
+            modelica_grammar_trait::Primary::LBraceArrayArgumentsRBrace(..) => {
+                todo!("arrays")
+            }
+            modelica_grammar_trait::Primary::LBracketExpressionListPrimaryListRBracket(..) => {
+                todo!("expression list")
+            }
+            modelica_grammar_trait::Primary::LParenOutputExpressionListRParenPrimaryOpt(..) => {
+                todo!("output_expression")
+            }
+            modelica_grammar_trait::Primary::FunctionTypeFunctionCallArgs(..) => {
+                todo!("function call")
+            }
         }
     }
 }
@@ -576,7 +588,7 @@ impl TryFrom<&modelica_grammar_trait::Term> for ir::Expression {
             for factor in &ast.term_list {
                 lhs = ir::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: match factor.mul_operator {
+                    op: match *factor.mul_operator {
                         modelica_grammar_trait::MulOperator::Star(..) => ir::OpBinary::Mul,
                         modelica_grammar_trait::MulOperator::Slash(..) => ir::OpBinary::Div,
                         modelica_grammar_trait::MulOperator::DotSlash(..) => ir::OpBinary::DivElem,
@@ -604,7 +616,7 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for ir::Expression {
             for term in &ast.arithmetic_expression_list {
                 lhs = ir::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: match term.add_operator {
+                    op: match *term.add_operator {
                         modelica_grammar_trait::AddOperator::Plus(..) => ir::OpBinary::Add,
                         modelica_grammar_trait::AddOperator::Minus(..) => ir::OpBinary::Sub,
                         modelica_grammar_trait::AddOperator::DotPlus(..) => ir::OpBinary::AddElem,
@@ -625,7 +637,7 @@ impl TryFrom<&modelica_grammar_trait::Relation> for ir::Expression {
         match &ast.relation_opt {
             Some(relation) => Ok(ir::Expression::Binary {
                 lhs: Box::new(ast.arithmetic_expression.clone()),
-                op: match relation.relational_operator {
+                op: match *relation.relational_operator {
                     modelica_grammar_trait::RelationalOperator::EquEqu(..) => ir::OpBinary::Eq,
                     modelica_grammar_trait::RelationalOperator::GT(..) => ir::OpBinary::Gt,
                     modelica_grammar_trait::RelationalOperator::LT(..) => ir::OpBinary::Lt,
@@ -750,7 +762,7 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for ir::ComponentRefer
         for comp_ref in &ast.component_reference_list {
             parts.push(ir::ComponentRefPart {
                 ident: comp_ref.ident.clone(),
-                subs: match comp_ref.component_reference_opt0 {
+                subs: match comp_ref.component_reference_opt1 {
                     Some(ref comp_ref) => Some(comp_ref.array_subscripts.subscripts.clone()),
                     None => None,
                 },
