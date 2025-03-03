@@ -917,13 +917,6 @@ component_reference
     : [ '.'^ ] ident [ array_subscripts ] { '.'^ ident [ array_subscripts ] }
     ;
 
-//🟥 result-reference :
-//🟥    component-reference
-//🟥    | der "(" component-reference [ "," UNSIGNED-INTEGER ] ")"
-// result_reference :
-//     component_reference
-//     | der '('^ component_reference [ ','^ unsigned_integer ] ')'^
-//     ;
 //✅ function-call-args :
 //✅    "(" [ function-arguments ] ")"
 function_call_args
