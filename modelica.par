@@ -635,7 +635,7 @@ algorithm_section
 //✅      | for-equation
 //✅      | connect-equation
 //✅      | when-equation
-//✅      | component-reference function-call-args
+//🟥      | component-reference function-call-args
 //✅    )
 //✅    description
 some_equation_option
@@ -643,7 +643,7 @@ some_equation_option
     | if_equation
     | for_equation
     | connect_equation
-    | when_equation //| component_reference function_call_args
+    | when_equation /* | component_reference function_call_args (TODO: won't compile if added) */
     ;
 
 some_equation
@@ -902,10 +902,10 @@ name: ident { '.'^ ident }
     ;
 
 //✅ component-reference :
-//✅    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
+//🟨    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 component_reference
-    : [ '.'^ ] ident { '.'^ //[ array_subscripts ]
-      ident [ array_subscripts ] }
+    : [ '.'^ ] /* [ array_subscripts  ] (TODO: won't compile if added)*/ ident
+      { '.'^ ident [ array_subscripts ] }
     ;
 
 //🟥 result-reference :
