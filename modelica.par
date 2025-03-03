@@ -337,7 +337,7 @@ class_specifier
 
 //✅ long-class-specifier :
 //✅    IDENT description-string composition end IDENT
-//✅    | extends IDENT [ class-modification ] description-string composition end IDENT
+//🟨    | extends IDENT [ class-modification ] description-string composition end IDENT
 long_class_specifier
     : ident@name composition end^ ident
     | extends^ name [ class_modification ] description_string
@@ -506,19 +506,19 @@ component_list
 //✅ component-declaration :
 //✅    declaration [ condition-attribute ] description
 component_declaration
-    : declaration // [ condition_attribute ]
-      description
+    : declaration [ condition_attribute ] description
     ;
 
 //✅ condition-attribute :
 //✅    if expression
-// condition_attribute :
-//     if^ expression
-//     ;
+condition_attribute
+    : if^ expression
+    ;
+
 //✅ declaration :
 //✅    IDENT [ array-subscripts ] [ modification ]
 declaration
-    : ident [ array_subscripts ] // [ modification ]
+    : ident [ array_subscripts ] [ modification ]
     ;
 
 //=============================================================================
@@ -855,11 +855,11 @@ factor
 //✅    | STRING
 //✅    | false
 //✅    | true
-//✅    | ( component-reference | der | initial | pure ) function-call-args
+//🟥    | ( component-reference | der | initial | pure ) function-call-args
 //✅    | component-reference
-//✅    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
-//✅    | "[" expression-list { ";" expression-list } "]"
-//✅    | "{" array-arguments "}"
+//🟥    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
+//🟥    | "[" expression-list { ";" expression-list } "]"
+//🟥    | "{" array-arguments "}"
 //✅    | end
 primary
     : unsigned_number
@@ -897,64 +897,64 @@ component_reference
       ident [ array_subscripts ] }
     ;
 
-//✅ result-reference :
-//✅    component-reference
-//✅    | der "(" component-reference [ "," UNSIGNED-INTEGER ] ")"
+//🟥 result-reference :
+//🟥    component-reference
+//🟥    | der "(" component-reference [ "," UNSIGNED-INTEGER ] ")"
 // result_reference :
 //     component_reference
 //     | der '('^ component_reference [ ','^ unsigned_integer ] ')'^
 //     ;
-//✅ function-call-args :
-//✅    "(" [ function-arguments ] ")"
+//🟥 function-call-args :
+//🟥    "(" [ function-arguments ] ")"
 // function_call_args
 //     : '('^ [ function_arguments ] ')'^
 //     ;
-//✅ function-arguments :
-//✅    expression [ "," function-arguments-non-first | for for-indices ]
-//✅    | function-partial-application [ "," function-arguments-non-first ]
-//✅    | named-arguments
+//🟥 function-arguments :
+//🟥    expression [ "," function-arguments-non-first | for for-indices ]
+//🟥    | function-partial-application [ "," function-arguments-non-first ]
+//🟥    | named-arguments
 // function_arguments
 //     :expression [ ','^ function_arguments_non_first | for for_indices ]
 //     | function_partial_application [ ','^ function_arguments_non_first ]
 //     | named_arguments
 //     ;
-//✅ function-arguments-non-first :
-//✅    function-argument [ "," function-arguments-non-first ]
-//✅    | named-arguments
+//🟥 function-arguments-non-first :
+//🟥    function-argument [ "," function-arguments-non-first ]
+//🟥    | named-arguments
 // function_arguments_non_first
 //     : function_argument [ ','^ function_arguments_non_first ]
 //     | named_arguments
 //     ;
-//✅ array-arguments :
-//✅    expression [ "," array-arguments-non-first | for for-indices ]
+//🟥 array-arguments :
+//🟥    expression [ "," array-arguments-non-first | for for-indices ]
 // array_arguments
 //     : expression [ ','^ array_arguments_non_first | for for_indices ]
 //     ;
-//✅ array-arguments-non-first :
-//✅    expression [ "," array-arguments-non-first ]
+//🟥 array-arguments-non-first :
+//🟥    expression [ "," array-arguments-non-first ]
 // array_arguments_non_first
 //     : expression [ ','^ array_arguments_non_first ]
 //     ;
-//✅ named-arguments: named-argument [ "," named-arguments ]
+//🟥 named-arguments: named-argument [ "," named-arguments ]
 // named_arguments
 //     : named_argument [ ','^ named_arguments ]
 //     ;
-//✅ named-argument: IDENT "=" function-argument
+//🟥 named-argument: IDENT "=" function-argument
 // named_argument
 //     : ident '='^ function_argument
 //     ;
-//✅ function-argument :
-//✅    function-partial-application | expression
+//🟥 function-argument :
+//🟥    function-partial-application | expression
 // function_argument
 //     : expression
 //     ;
-//✅ function-partial-application :
-//✅    function type-specifier "(" [ named-arguments ] ")"
+//🟥 function-partial-application :
+//🟥    function type-specifier "(" [ named-arguments ] ")"
 // function_partial_application
 //     : function type_specifier '('^ [ named_arguments ] ')'^
 //     ;
-//✅ output-expression-list :
-//✅    [ expression ] { "," [ expression ] }
+//🟥 output-expression-list :
+//🟥    [ expression ] { "," [ expression ] }
 // output_expression_list :
 //     [ expression ] { ','^ [ expression ] }
 //     ;
