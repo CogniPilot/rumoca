@@ -30,6 +30,7 @@
 
 %%
 
+// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //=============================================================================
 // 2.3.3 Modelica Keywords
 algorithm
@@ -292,7 +293,6 @@ unsigned_real
 
 //=============================================================================
 // A.2.1 Stored Definition – Within
-// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //✅ stored-definition :
 //✅    [ within [ name ] ";" ]
 //✅    { [ final ] class-definition ";" }
@@ -302,7 +302,6 @@ stored_definition
 
 //=============================================================================
 // A.2.2 Class Definition
-// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //✅ class-definition :
 //✅    [ encapsulated ] class-prefixes class-specifier
 class_definition
@@ -452,7 +451,6 @@ import_list
 
 //=============================================================================
 // A.2.3 Extends
-// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //✅ extends-clause :
 //✅    extends type-specifier [ class-or-inheritance-modification ] [ annotation-clause ]
 extends_clause
@@ -485,7 +483,6 @@ inheritance_modification
 
 //-----------------------------------------------------------------------------
 // A.2.4 Component Clause
-// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //✅ component-clause :
 //✅    type-prefix type-specifier [ array-subscripts ] component-list
 component_clause
@@ -526,7 +523,6 @@ declaration
 
 //=============================================================================
 // A.2.5 Modification
-// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //✅ modification :
 //✅    class-modification [ "=" modification-expression ]
 //✅    | "=" modification-expression
@@ -610,7 +606,6 @@ short_class_definition
 
 //=============================================================================
 // A.2.6 Equations
-// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //✅ equation-section :
 //✅    [ initial ] equation { some-equation ";" }
 equation_section
@@ -632,10 +627,16 @@ algorithm_section
 //✅      | component-reference function-call-args
 //✅    )
 //✅    description
+some_equation_option
+    : simple_expression '='^ expression
+    | if_equation
+    | for_equation
+    | connect_equation
+    | when_equation //| component_reference function_call_args
+    ;
+
 some_equation
-    : 
-      ( simple_expression '='^ expression | if_equation | for_equation | connect_equation | when_equation )
-      /*component_reference function_call_args*/ description
+    : some_equation_option description
     ;
 
 //✅ statement :
@@ -650,10 +651,18 @@ some_equation
 //✅      | when-statement
 //✅    )
 //✅    description
+statement_option
+    : component_reference ( ":="^ expression )
+    | break
+    | return
+    | if_statement
+    | for_statement
+    | while_statement
+    | when_statement
+    ;
+
 statement
-    : 
-      ( component_reference ( ":="^ expression ) | break | return | if_statement | for_statement | while_statement | when_statement )
-      description
+    : statement_option description
     ;
 
 //✅ if-equation :
@@ -754,7 +763,6 @@ connect_equation
 
 //=============================================================================
 // A.2.7 Expressions
-// ✅: Implemented,  🟥: Not-Implemented, 🟨: Partial
 //✅ expression :
 //✅    simple-expression
 //✅    | if expression then expression
@@ -857,7 +865,7 @@ primary
     : unsigned_number
     | string
     | false
-    | true // | ( component_reference | der | initial | pure ) function_call_args
+    | true //| ( component_reference | der | initial | pure ) function_call_args
     | component_reference // | '('^ output_expression_list ')' [ ( array_subscripts | '.'^ ident ) ]
 // | '['^ expression_list { ';' expression_list } ']'^
 // | '{'^ array_arguments '}'^
@@ -906,7 +914,7 @@ component_reference
 //✅    | function-partial-application [ "," function-arguments-non-first ]
 //✅    | named-arguments
 // function_arguments
-//     : expression [ ','^ function_arguments_non_first | for for_indices ]
+//     :expression [ ','^ function_arguments_non_first | for for_indices ]
 //     | function_partial_application [ ','^ function_arguments_non_first ]
 //     | named_arguments
 //     ;
@@ -938,8 +946,7 @@ component_reference
 //✅ function-argument :
 //✅    function-partial-application | expression
 // function_argument
-//     : function_partial_application
-//     | expression
+//     : expression
 //     ;
 //✅ function-partial-application :
 //✅    function type-specifier "(" [ named-arguments ] ")"

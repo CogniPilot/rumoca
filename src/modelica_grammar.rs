@@ -428,22 +428,22 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
     fn try_from(
         ast: &modelica_grammar_trait::SomeEquation,
     ) -> std::result::Result<Self, Self::Error> {
-        match &ast.some_equation_group {
-            modelica_grammar_trait::SomeEquationGroup::SimpleExpressionEquExpression(eq) => {
+        match &ast.some_equation_option {
+            modelica_grammar_trait::SomeEquationOption::SimpleExpressionEquExpression(eq) => {
                 Ok(ir::Equation::Simple {
                     lhs: eq.simple_expression.clone(),
                     rhs: eq.expression.clone(),
                 })
             }
-            modelica_grammar_trait::SomeEquationGroup::ConnectEquation(eq) => {
+            modelica_grammar_trait::SomeEquationOption::ConnectEquation(eq) => {
                 Ok(ir::Equation::Connect {
                     lhs: eq.connect_equation.component_reference.clone(),
                     rhs: eq.connect_equation.component_reference0.clone(),
                 })
             }
-            modelica_grammar_trait::SomeEquationGroup::ForEquation(..) => todo!("for"),
-            modelica_grammar_trait::SomeEquationGroup::IfEquation(..) => todo!("if"),
-            modelica_grammar_trait::SomeEquationGroup::WhenEquation(..) => todo!("when"),
+            modelica_grammar_trait::SomeEquationOption::ForEquation(..) => todo!("for"),
+            modelica_grammar_trait::SomeEquationOption::IfEquation(..) => todo!("if"),
+            modelica_grammar_trait::SomeEquationOption::WhenEquation(..) => todo!("when"),
         }
     }
 }
@@ -453,23 +453,23 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::Statement {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Statement) -> std::result::Result<Self, Self::Error> {
-        match &ast.statement_group {
-            modelica_grammar_trait::StatementGroup::ComponentReferenceColonEquExpression(stmt) => {
+        match &ast.statement_option {
+            modelica_grammar_trait::StatementOption::ComponentReferenceColonEquExpression(stmt) => {
                 Ok(ir::Statement::Assignment {
                     comp: stmt.component_reference.clone(),
                     value: stmt.expression.clone(),
                 })
             }
-            modelica_grammar_trait::StatementGroup::Break(tok) => Ok(ir::Statement::Break {
+            modelica_grammar_trait::StatementOption::Break(tok) => Ok(ir::Statement::Break {
                 token: tok.r#break.r#break.clone(),
             }),
-            modelica_grammar_trait::StatementGroup::Return(tok) => Ok(ir::Statement::Return {
+            modelica_grammar_trait::StatementOption::Return(tok) => Ok(ir::Statement::Return {
                 token: tok.r#return.r#return.clone(),
             }),
-            modelica_grammar_trait::StatementGroup::ForStatement(..) => todo!("for"),
-            modelica_grammar_trait::StatementGroup::IfStatement(..) => todo!("if"),
-            modelica_grammar_trait::StatementGroup::WhenStatement(..) => todo!("when"),
-            modelica_grammar_trait::StatementGroup::WhileStatement(..) => todo!("while"),
+            modelica_grammar_trait::StatementOption::ForStatement(..) => todo!("for"),
+            modelica_grammar_trait::StatementOption::IfStatement(..) => todo!("if"),
+            modelica_grammar_trait::StatementOption::WhenStatement(..) => todo!("when"),
+            modelica_grammar_trait::StatementOption::WhileStatement(..) => todo!("while"),
         }
     }
 }
