@@ -7,12 +7,15 @@ edition = "2024"
 anyhow = "1.0"
 env_logger = "0.11"
 indexmap = "2.7.1"
-parol = "3.0.0"
-parol_runtime = "2.2.1"
+parol = { path = "../parol/crates/parol" }
+#parol = "3.0.0"
+parol_runtime = { path = "../parol/crates/parol_runtime" }
+# parol_runtime = "2.2.1"
 thiserror = "1.0"
 
 [build-dependencies]
-parol = "3.0.0"
+parol = { path = "../parol/crates/parol" }
+# parol = "3.0.0"
 
 # For faster builds.
 [profile.dev.build-override]

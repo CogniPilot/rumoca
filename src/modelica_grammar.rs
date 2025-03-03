@@ -133,7 +133,7 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
             ..Default::default()
         };
         for comp_list in &ast.composition_list {
-            match *comp_list.composition_list_group {
+            match comp_list.composition_list_group {
                 modelica_grammar_trait::CompositionListGroup::PublicElementList(ref elem_list) => {
                     for _elem in &elem_list.element_list.elements {}
                 }
@@ -183,7 +183,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
     ) -> std::result::Result<Self, Self::Error> {
         let mut elements = Vec::new();
         for elem in &ast.element_list_list {
-            elements.push(*elem.element.clone());
+            elements.push(elem.element.clone());
         }
         Ok(ElementList { elements })
     }
@@ -240,9 +240,9 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
     fn try_from(
         ast: &modelica_grammar_trait::ComponentList,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut components = vec![*ast.component_declaration.clone()];
+        let mut components = vec![ast.component_declaration.clone()];
         for comp in &ast.component_list_list {
-            components.push(*comp.component_declaration.clone());
+            components.push(comp.component_declaration.clone());
         }
         Ok(ComponentList { components })
     }
@@ -428,7 +428,7 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
     fn try_from(
         ast: &modelica_grammar_trait::SomeEquation,
     ) -> std::result::Result<Self, Self::Error> {
-        match &*ast.some_equation_option {
+        match &ast.some_equation_option {
             modelica_grammar_trait::SomeEquationOption::SimpleExpressionEquExpression(eq) => {
                 Ok(ir::Equation::Simple {
                     lhs: eq.simple_expression.clone(),
@@ -453,7 +453,7 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::Statement {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Statement) -> std::result::Result<Self, Self::Error> {
-        match &*ast.statement_option {
+        match &ast.statement_option {
             modelica_grammar_trait::StatementOption::ComponentReferenceColonEquExpression(stmt) => {
                 Ok(ir::Statement::Assignment {
                     comp: stmt.component_reference.clone(),
@@ -487,7 +487,7 @@ impl TryFrom<&modelica_grammar_trait::ArraySubscripts> for ArraySubscripts {
     fn try_from(
         ast: &modelica_grammar_trait::ArraySubscripts,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut subscripts = vec![ast.subscript.clone()];
+        let mut subscripts = vec![ast.subscript.as_ref().clone()];
         for subscript in &ast.array_subscripts_list {
             subscripts.push(subscript.subscript.clone());
         }
@@ -504,7 +504,7 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for ir::Subscript {
                 token: tok.colon.clone(),
             }),
             modelica_grammar_trait::Subscript::Expression(expr) => {
-                Ok(ir::Subscript::Expression(expr.expression.clone()))
+                Ok(ir::Subscript::Expression(expr.expression.as_ref().clone()))
             }
         }
     }
@@ -517,10 +517,10 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
     fn try_from(ast: &modelica_grammar_trait::Primary) -> std::result::Result<Self, Self::Error> {
         match &ast {
             modelica_grammar_trait::Primary::ComponentReference(comp_ref) => Ok(
-                ir::Expression::ComponentReference(comp_ref.component_reference.clone()),
+                ir::Expression::ComponentReference(comp_ref.component_reference.as_ref().clone()),
             ),
             modelica_grammar_trait::Primary::UnsignedNumber(unsigned_num) => {
-                match &*unsigned_num.unsigned_number {
+                match &unsigned_num.unsigned_number {
                     modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
                         Ok(ir::Expression::UnsignedInteger {
                             value: unsigned_int.unsigned_integer.clone(),
@@ -566,11 +566,11 @@ impl TryFrom<&modelica_grammar_trait::Factor> for ir::Expression {
 
     fn try_from(ast: &modelica_grammar_trait::Factor) -> std::result::Result<Self, Self::Error> {
         if ast.factor_list.is_empty() {
-            return Ok(ast.primary.clone());
+            return Ok(ast.primary.as_ref().clone());
         } else {
             Ok(ir::Expression::Binary {
                 op: ir::OpBinary::Mul,
-                lhs: Box::new(ast.primary.clone()),
+                lhs: Box::new(ast.primary.as_ref().clone()),
                 rhs: Box::new(ast.factor_list[0].primary.clone()),
             })
         }
@@ -588,7 +588,7 @@ impl TryFrom<&modelica_grammar_trait::Term> for ir::Expression {
             for factor in &ast.term_list {
                 lhs = ir::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: match *factor.mul_operator {
+                    op: match factor.mul_operator {
                         modelica_grammar_trait::MulOperator::Star(..) => ir::OpBinary::Mul,
                         modelica_grammar_trait::MulOperator::Slash(..) => ir::OpBinary::Div,
                         modelica_grammar_trait::MulOperator::DotSlash(..) => ir::OpBinary::DivElem,
@@ -610,13 +610,13 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for ir::Expression {
     ) -> std::result::Result<Self, Self::Error> {
         // TODO unary term
         if ast.arithmetic_expression_list.is_empty() {
-            return Ok(ast.term.clone());
+            return Ok(ast.term.as_ref().clone());
         } else {
-            let mut lhs = ast.term.clone();
+            let mut lhs = ast.term.as_ref().clone();
             for term in &ast.arithmetic_expression_list {
                 lhs = ir::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: match *term.add_operator {
+                    op: match term.add_operator {
                         modelica_grammar_trait::AddOperator::Plus(..) => ir::OpBinary::Add,
                         modelica_grammar_trait::AddOperator::Minus(..) => ir::OpBinary::Sub,
                         modelica_grammar_trait::AddOperator::DotPlus(..) => ir::OpBinary::AddElem,
@@ -636,8 +636,8 @@ impl TryFrom<&modelica_grammar_trait::Relation> for ir::Expression {
     fn try_from(ast: &modelica_grammar_trait::Relation) -> std::result::Result<Self, Self::Error> {
         match &ast.relation_opt {
             Some(relation) => Ok(ir::Expression::Binary {
-                lhs: Box::new(ast.arithmetic_expression.clone()),
-                op: match *relation.relational_operator {
+                lhs: Box::new(ast.arithmetic_expression.as_ref().clone()),
+                op: match relation.relational_operator {
                     modelica_grammar_trait::RelationalOperator::EquEqu(..) => ir::OpBinary::Eq,
                     modelica_grammar_trait::RelationalOperator::GT(..) => ir::OpBinary::Gt,
                     modelica_grammar_trait::RelationalOperator::LT(..) => ir::OpBinary::Lt,
@@ -647,7 +647,7 @@ impl TryFrom<&modelica_grammar_trait::Relation> for ir::Expression {
                 },
                 rhs: Box::new(relation.arithmetic_expression.clone()),
             }),
-            None => Ok(ast.arithmetic_expression.clone()),
+            None => Ok(ast.arithmetic_expression.as_ref().clone()),
         }
     }
 }
@@ -661,10 +661,10 @@ impl TryFrom<&modelica_grammar_trait::LogicalFactor> for ir::Expression {
         if ast.logical_factor_opt.is_some() {
             Ok(ir::Expression::Unary {
                 op: ir::OpUnary::Not,
-                rhs: Box::new(ast.relation.clone()),
+                rhs: Box::new(ast.relation.as_ref().clone()),
             })
         } else {
-            Ok(ast.relation.clone())
+            Ok(ast.relation.as_ref().clone())
         }
     }
 }
@@ -676,9 +676,9 @@ impl TryFrom<&modelica_grammar_trait::LogicalTerm> for ir::Expression {
         ast: &modelica_grammar_trait::LogicalTerm,
     ) -> std::result::Result<Self, Self::Error> {
         if ast.logical_term_list.is_empty() {
-            return Ok(ast.logical_factor.clone());
+            return Ok(ast.logical_factor.as_ref().clone());
         } else {
-            let mut lhs = ast.logical_factor.clone();
+            let mut lhs = ast.logical_factor.as_ref().clone();
             for term in &ast.logical_term_list {
                 lhs = ir::Expression::Binary {
                     lhs: Box::new(lhs),
@@ -698,9 +698,9 @@ impl TryFrom<&modelica_grammar_trait::LogicalExpression> for ir::Expression {
         ast: &modelica_grammar_trait::LogicalExpression,
     ) -> std::result::Result<Self, Self::Error> {
         if ast.logical_expression_list.is_empty() {
-            return Ok(ast.logical_term.clone());
+            return Ok(ast.logical_term.as_ref().clone());
         } else {
-            let mut lhs = ast.logical_term.clone();
+            let mut lhs = ast.logical_term.as_ref().clone();
             for term in &ast.logical_expression_list {
                 lhs = ir::Expression::Binary {
                     lhs: Box::new(lhs),
@@ -722,17 +722,17 @@ impl TryFrom<&modelica_grammar_trait::SimpleExpression> for ir::Expression {
         match &ast.simple_expression_opt {
             Some(opt) => match &opt.simple_expression_opt0 {
                 Some(opt0) => Ok(ir::Expression::Range {
-                    start: Box::new(ast.logical_expression.clone()),
+                    start: Box::new(ast.logical_expression.as_ref().clone()),
                     step: Some(Box::new(opt.logical_expression.clone())),
                     end: Box::new(opt0.logical_expression.clone()),
                 }),
                 None => Ok(ir::Expression::Range {
-                    start: Box::new(ast.logical_expression.clone()),
+                    start: Box::new(ast.logical_expression.as_ref().clone()),
                     step: None,
                     end: Box::new(opt.logical_expression.clone()),
                 }),
             },
-            None => Ok(ast.logical_expression.clone()),
+            None => Ok(ast.logical_expression.as_ref().clone()),
         }
     }
 }
@@ -745,7 +745,7 @@ impl TryFrom<&modelica_grammar_trait::Expression> for ir::Expression {
     ) -> std::result::Result<Self, Self::Error> {
         match &ast {
             modelica_grammar_trait::Expression::SimpleExpression(simple_expression) => {
-                Ok(simple_expression.simple_expression.clone())
+                Ok(simple_expression.simple_expression.as_ref().clone())
             }
             modelica_grammar_trait::Expression::IfExpression(..) => {
                 todo!("if")
