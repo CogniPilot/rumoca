@@ -133,7 +133,6 @@ pub enum OpBinary {
     Sub,
     Mul,
     Div,
-    // Pow,
     Eq,
     Neq,
     Lt,

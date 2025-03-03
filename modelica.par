@@ -320,9 +320,20 @@ class_definition
 //✅      | [ pure | impure ] [ operator ] function
 //✅      | operator
 //✅    )
+class_type
+    : class
+    | model
+    | [ operator ] record
+    | block
+    | [ expandable ] connector
+    | type
+    | package
+    | [ pure | impure ] [ operator ] function
+    | operator
+    ;
+
 class_prefixes
-    : [ partial ]
-      ( class | model | [ operator ] record | block | [ expandable ] connector | type | package | [ pure | impure ] [ operator ] function | operator )
+    : [ partial ] class_type
     ;
 
 //✅ class-specifier :
