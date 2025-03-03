@@ -649,9 +649,9 @@ some_equation
     ;
 
 //✅ statement :
-//✅    ( component-reference ( ":=" expression | function-call-args )
-//✅      | "(" output-expression-list ")" ":="
-//✅        component-reference function-call-args
+//🟨    ( component-reference ( ":=" expression | function-call-args )
+//🟥      | "(" output-expression-list ")" ":="
+//🟥        component-reference function-call-args
 //✅      | break
 //✅      | return
 //✅      | if-statement
@@ -774,13 +774,16 @@ connect_equation
 // A.2.7 Expressions
 //✅ expression :
 //✅    simple-expression
-//🟥    | if expression then expression
-//🟥      { elseif expression then expression }
-//🟥      else expression
+//✅    | if expression then expression
+//✅      { elseif expression then expression }
+//✅      else expression
 expression
-    : simple_expression /*
-     | if^ expression then^ expression { elseif^ expression then^ expression } else^ expression
-     */
+    : simple_expression
+    | if_expression
+    ;
+
+if_expression
+    : if^ expression then^ expression { elseif^ expression then^ expression } else^ expression
     ;
 
 //✅ simple-expression :

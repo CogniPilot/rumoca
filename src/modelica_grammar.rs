@@ -546,7 +546,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
                 value: end.end.end.clone(),
             }),
             modelica_grammar_trait::Primary::LBraceArrayArgumentsRBrace(..) => {
-                todo!("arrays")
+                todo!("array")
             }
             modelica_grammar_trait::Primary::LBracketExpressionListPrimaryListRBracket(..) => {
                 todo!("expression list")
@@ -743,7 +743,14 @@ impl TryFrom<&modelica_grammar_trait::Expression> for ir::Expression {
     fn try_from(
         ast: &modelica_grammar_trait::Expression,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(ast.simple_expression.clone())
+        match &ast {
+            modelica_grammar_trait::Expression::SimpleExpression(simple_expression) => {
+                Ok(simple_expression.simple_expression.clone())
+            }
+            modelica_grammar_trait::Expression::IfExpression(..) => {
+                todo!("if")
+            }
+        }
     }
 }
 
