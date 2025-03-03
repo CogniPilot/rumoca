@@ -2,29 +2,31 @@
 %title "Modelica grammar"
 %comment "Modelica grammar 3.7-dev for `parol`"
 %line_comment "//"
-%t_type crate::ir::Token // %nt_type stored_definition = crate::modelica_grammar::StoredDefinition //%nt_type class_definition = crate::ir::ClassDefinition // %nt_type class_prefixes = crate::modelica_grammar::ClassPrefixes //%nt_type class_specifier = crate::modelica_grammar::ClassSpecifier //%nt_type long_class_specifier = crate::modelica_grammar::ClassSpecifier
-%nt_type composition = crate::modelica_grammar::Composition
-%nt_type element_list = crate::modelica_grammar::ElementList // %nt_type element = crate::modelica_grammar::Element // %nt_type component_clause = crate::modelica_grammar::ComponentClause
-%nt_type component_list = crate::modelica_grammar::ComponentList // %nt_type component_declaration = crate::modelica_grammar::ComponentDeclaration // %nt_type declaration = crate::modelica_grammar::Declaration // %nt_type type_prefix = crate::modelica_grammar::TypePrefix // %nt_type type_specifier = crate::modelica_grammar::TypeSpecifier
-%nt_type equation_section = crate::modelica_grammar::EquationSection
+%t_type crate::ir::Token
 %nt_type algorithm_section = crate::modelica_grammar::AlgorithmSection
-%nt_type some_equation = crate::ir::Equation
-%nt_type simple_expression = crate::ir::Expression
-%nt_type expression = crate::ir::Expression
-%nt_type logical_expression = crate::ir::Expression
-%nt_type logical_term = crate::ir::Expression
-%nt_type logical_factor = crate::ir::Expression
-%nt_type relation = crate::ir::Expression // %nt_type relational_operator = crate::modelica_grammar::RelationalOperator
-%nt_type arithmetic_expression = crate::ir::Expression // %nt_type add_operator = crate::modelica_grammar::AddOperator
-%nt_type term = crate::ir::Expression // %nt_type mul_operator = crate::modelica_grammar::MulOperator
-%nt_type factor = crate::ir::Expression
-%nt_type primary = crate::ir::Expression
-%nt_type component_reference = crate::ir::ComponentReference
-%nt_type name = crate::ir::Name
-%nt_type statement = crate::ir::Statement
+%nt_type arithmetic_expression = crate::ir::Expression
 %nt_type array_subscripts = crate::modelica_grammar::ArraySubscripts
-%nt_type subscript = crate::ir::Subscript // terminals
+%nt_type class_definition = crate::ir::ClassDefinition
+%nt_type component_list = crate::modelica_grammar::ComponentList
+%nt_type component_reference = crate::ir::ComponentReference
+%nt_type composition = crate::modelica_grammar::Composition
+%nt_type element_list = crate::modelica_grammar::ElementList
+%nt_type equation_section = crate::modelica_grammar::EquationSection
+%nt_type expression = crate::ir::Expression
+%nt_type factor = crate::ir::Expression
 %nt_type ident = crate::ir::Token
+%nt_type logical_expression = crate::ir::Expression
+%nt_type logical_factor = crate::ir::Expression
+%nt_type logical_term = crate::ir::Expression
+%nt_type name = crate::ir::Name
+%nt_type primary = crate::ir::Expression
+%nt_type relation = crate::ir::Expression
+%nt_type simple_expression = crate::ir::Expression
+%nt_type some_equation = crate::ir::Equation
+%nt_type statement = crate::ir::Statement
+%nt_type stored_definition = crate::ir::StoredDefinition
+%nt_type subscript = crate::ir::Subscript
+%nt_type term = crate::ir::Expression
 %nt_type unsigned_integer = crate::ir::Token
 %nt_type unsigned_real = crate::ir::Token
 
@@ -350,8 +352,16 @@ class_specifier
 //✅    IDENT description-string composition end IDENT
 //✅    | extends IDENT [ class-modification ] description-string composition end IDENT
 long_class_specifier
+    : standard_class_specifier
+    | extends_class_specifier
+    ;
+
+standard_class_specifier
     : ident@name composition end^ ident
-    | extends^ ident [ class_modification ] description_string composition end^ ident
+    ;
+
+extends_class_specifier
+    : extends^ ident [ class_modification ] description_string composition end^ ident
     ;
 
 //✅ short-class-specifier :
@@ -359,8 +369,16 @@ long_class_specifier
 //✅    [ class-modification ] description
 //✅    | IDENT "=" enumeration "(" ( [ enum-list ] | ":" ) ")" description
 short_class_specifier
+    : type_class_specifier
+    | enum_class_specifier
+    ;
+
+type_class_specifier
     : ident '='^ base_prefix type_specifier [ array_subscripts ] [ class_modification ] description
-    | ident '='^ enumeration '('^ ( [ enum_list ] | ':'^ ) ')'^ description
+    ;
+
+enum_class_specifier
+    : ident '='^ enumeration '('^ ( [ enum_list ] | ':'^ ) ')'^ description
     ;
 
 //✅ der-class-specifier :

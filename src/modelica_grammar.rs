@@ -1,7 +1,7 @@
 use crate::ir;
 use crate::modelica_grammar_trait;
-#[allow(unused_imports)]
-use parol_runtime::{Location, Result, Span, ToSpan, Token};
+use indexmap::IndexMap;
+use parol_runtime::{Result, Token};
 use std::fmt::{Debug, Display, Error, Formatter};
 
 //-----------------------------------------------------------------------------
@@ -19,97 +19,65 @@ impl TryFrom<&Token<'_>> for ir::Token {
 }
 
 //-----------------------------------------------------------------------------
-// impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::StoredDefinition {
-//     type Error = anyhow::Error;
+impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::StoredDefinition {
+    type Error = anyhow::Error;
 
-//     fn try_from(
-//         ast: &modelica_grammar_trait::StoredDefinition,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         let mut def = ir::StoredDefinition {
-//             class_list: IndexMap::new(),
-//             span: ast.span().clone(),
-//             ..Default::default()
-//         };
-//         for class in &ast.stored_definition_list {
-//             def.class_list.insert(
-//                 class.class_definition.name.clone(),
-//                 class.class_definition.clone(),
-//             );
-//         }
-//         def.within = match &ast.stored_definition_opt {
-//             Some(within) => match &within.stored_definition_opt1 {
-//                 Some(within) => Some(within.name.clone()),
-//                 None => None,
-//             },
-//             None => None,
-//         };
-//         Ok(def)
-//     }
-// }
-
-//-----------------------------------------------------------------------------
-// impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ClassDefinition {
-//     type Error = anyhow::Error;
-
-//     fn try_from(
-//         ast: &modelica_grammar_trait::ClassDefinition,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         let mut def = ir::ClassDefinition {
-//             span: ast.span().clone(),
-//             encapsulated: ast.class_definition_opt.is_some(),
-//             ..Default::default()
-//         };
-//         match &ast.class_specifier {
-//             ClassSpecifier::Empty => {}
-//             ClassSpecifier::Long {
-//                 name, composition, ..
-//             } => {
-//                 def.name = name.clone();
-//                 for comp in composition {
-//                     def.equations.append(&mut comp.equations.clone());
-//                 }
-//             }
-//         }
-//         Ok(def)
-//     }
-// }
+    fn try_from(
+        ast: &modelica_grammar_trait::StoredDefinition,
+    ) -> std::result::Result<Self, Self::Error> {
+        let mut def = ir::StoredDefinition {
+            class_list: IndexMap::new(),
+            ..Default::default()
+        };
+        for class in &ast.stored_definition_list {
+            def.class_list.insert(
+                class.class_definition.name.text.clone(),
+                class.class_definition.clone(),
+            );
+        }
+        def.within = match &ast.stored_definition_opt {
+            Some(within) => match &within.stored_definition_opt1 {
+                Some(within) => Some(within.name.clone()),
+                None => None,
+            },
+            None => None,
+        };
+        Ok(def)
+    }
+}
 
 //-----------------------------------------------------------------------------
-// #[derive(Debug, Default, Clone)]
-// #[allow(unused)]
-// pub enum ClassSpecifier {
-//     #[default]
-//     Empty,
-//     Long {
-//         name: String,
-//         composition: Vec<Composition>,
-//         span: Span,
-//     },
-// }
+impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ClassDefinition {
+    type Error = anyhow::Error;
 
-// impl TryFrom<&modelica_grammar_trait::ClassSpecifier> for ClassSpecifier {
-//     type Error = anyhow::Error;
-
-//     fn try_from(
-//         ast: &modelica_grammar_trait::ClassSpecifier,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         Ok(ast.long_class_specifier.clone())
-//     }
-// }
-
-// impl TryFrom<&modelica_grammar_trait::LongClassSpecifier> for ClassSpecifier {
-//     type Error = anyhow::Error;
-
-//     fn try_from(
-//         ast: &modelica_grammar_trait::LongClassSpecifier,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         Ok(ClassSpecifier::Long {
-//             name: ast.name.ident.text.clone(),
-//             composition: vec![],
-//             span: ast.span().clone(),
-//         })
-//     }
-// }
+    fn try_from(
+        ast: &modelica_grammar_trait::ClassDefinition,
+    ) -> std::result::Result<Self, Self::Error> {
+        let mut def = ir::ClassDefinition {
+            encapsulated: ast.class_definition_opt.is_some(),
+            ..Default::default()
+        };
+        match &ast.class_specifier {
+            modelica_grammar_trait::ClassSpecifier::LongClassSpecifier(long) => {
+                match &long.long_class_specifier {
+                    modelica_grammar_trait::LongClassSpecifier::StandardClassSpecifier(
+                        class_specifier,
+                    ) => {
+                        let spec = &class_specifier.standard_class_specifier;
+                        def.name = spec.name.clone();
+                        def.equations = spec.composition.equations.clone();
+                    }
+                    modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(..) => {
+                        todo!("extends")
+                    }
+                }
+            }
+            modelica_grammar_trait::ClassSpecifier::DerClassSpecifier(..) => todo!("der"),
+            modelica_grammar_trait::ClassSpecifier::ShortClassSpecifier(..) => todo!("short"),
+        }
+        Ok(def)
+    }
+}
 
 //-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
@@ -822,7 +790,7 @@ impl TryFrom<&modelica_grammar_trait::Name> for ir::Name {
 ///
 #[derive(Debug, Default)]
 pub struct ModelicaGrammar<'t> {
-    pub modelica: Option<modelica_grammar_trait::StoredDefinition>,
+    pub modelica: Option<ir::StoredDefinition>,
     _phantom: std::marker::PhantomData<&'t str>,
 }
 
@@ -841,18 +809,15 @@ impl<'t> Display for modelica_grammar_trait::StoredDefinition {
 impl Display for ModelicaGrammar<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), Error> {
         match &self.modelica {
-            Some(modelica) => writeln!(f, "{}", modelica),
+            Some(modelica) => writeln!(f, "{:#?}", modelica),
             None => write!(f, "No parse result"),
         }
     }
 }
 
 impl<'t> modelica_grammar_trait::ModelicaGrammarTrait for ModelicaGrammar<'t> {
-    // !Adjust your implementation as needed!
-
-    /// Semantic action for non-terminal 'Modelica'
     fn stored_definition(&mut self, arg: &modelica_grammar_trait::StoredDefinition) -> Result<()> {
-        self.modelica = Some(arg.clone());
+        self.modelica = Some(arg.try_into()?);
         Ok(())
     }
 }
