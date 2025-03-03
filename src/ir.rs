@@ -1,7 +1,6 @@
 use indexmap::IndexMap;
 use parol_runtime::Location;
 use std::fmt::Debug;
-use std::sync::Mutex;
 
 #[derive(Default, Clone)]
 #[allow(unused)]
@@ -20,31 +19,8 @@ impl Debug for Token {
 
 #[derive(Default, Clone)]
 #[allow(unused)]
-pub struct NodeData {
-    pub id: usize,
-}
-
-static ID_COUNTER: Mutex<usize> = Mutex::new(0);
-
-impl NodeData {
-    pub fn new() -> Self {
-        let mut counter = ID_COUNTER.lock().unwrap();
-        *counter += 1;
-        NodeData { id: *counter }
-    }
-}
-
-impl Debug for NodeData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.id)
-    }
-}
-
-#[derive(Default, Clone)]
-#[allow(unused)]
 pub struct Name {
     pub name: Vec<Token>,
-    pub node: NodeData,
 }
 
 impl Debug for Name {
@@ -62,14 +38,12 @@ impl Debug for Name {
 pub struct StoredDefinition {
     pub class_list: IndexMap<String, ClassDefinition>,
     pub within: Option<Name>,
-    pub node: NodeData,
 }
 
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct Component {
     pub name: String,
-    pub node: NodeData,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -85,25 +59,48 @@ pub struct ClassDefinition {
     pub initial_equations: Vec<Equation>,
     pub algorithms: Vec<Vec<Statement>>,
     pub initial_algorithms: Vec<Vec<Statement>>,
-    pub node: NodeData,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
+#[allow(unused)]
+pub struct ComponentRefPart {
+    pub ident: Token,
+    pub subs: Option<Vec<Subscript>>,
+}
+
+// impl Debug for ComponentRefPart {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         let mut s = self.ident.text.clone();
+//         match self.subs {
+//             None => {}
+//             Some(ref subs) => {
+//                 let mut v = Vec::new();
+//                 for sub in &subs.subscripts {
+//                     v.push(format!("{:?}", sub));
+//                 }
+//                 s += &format!("[{:?}]", v.join(", "));
+//             }
+//         }
+//         write!(f, "{}", s)
+//     }
+// }
+
+#[derive(Default, Clone, Debug)]
 #[allow(unused)]
 pub struct ComponentReference {
-    pub name: Vec<Token>,
-    pub node: NodeData,
+    pub local: bool,
+    pub parts: Vec<ComponentRefPart>,
 }
 
-impl Debug for ComponentReference {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = Vec::new();
-        for n in &self.name {
-            s.push(n.text.clone());
-        }
-        write!(f, "{:?}", s.join("."))
-    }
-}
+// impl Debug for ComponentReference {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         let mut s = Vec::new();
+//         for part in &self.parts {
+//             s.push(format!("{:?}", part));
+//         }
+//         write!(f, "{}", s.join("."))
+//     }
+// }
 
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
@@ -113,7 +110,19 @@ pub enum Equation {
     Simple {
         lhs: Expression,
         rhs: Expression,
-        node: NodeData,
+    },
+    Connect {
+        lhs: ComponentReference,
+        rhs: ComponentReference,
+    },
+    For {
+        index: Token,
+        range: Expression,
+        equations: Vec<Equation>,
+    },
+    When {
+        condition: Expression,
+        equations: Vec<Equation>,
     },
 }
 
@@ -157,38 +166,30 @@ pub enum Expression {
         start: Box<Expression>,
         step: Option<Box<Expression>>,
         end: Box<Expression>,
-        node: NodeData,
     },
     Unary {
         op: OpUnary,
         rhs: Box<Expression>,
-        node: NodeData,
     },
     Binary {
         op: OpBinary,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
-        node: NodeData,
     },
     UnsignedReal {
         value: Token,
-        node: NodeData,
     },
     UnsignedInteger {
         value: Token,
-        node: NodeData,
     },
     String {
         value: Token,
-        node: NodeData,
     },
     Bool {
         value: Token,
-        node: NodeData,
     },
     End {
         value: Token,
-        node: NodeData,
     },
     ComponentReference(ComponentReference),
 }
@@ -201,6 +202,22 @@ pub enum Statement {
     Assignment {
         comp: ComponentReference,
         value: Expression,
-        node: NodeData,
+    },
+    Return {
+        token: Token,
+    },
+    Break {
+        token: Token,
+    },
+}
+
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
+pub enum Subscript {
+    #[default]
+    Empty,
+    Expression(Expression),
+    Range {
+        token: Token,
     },
 }

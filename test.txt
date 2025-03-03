@@ -9,7 +9,7 @@ class Test2
 equation
     x = 3.0;
 algorithm
-    y := x;
+    y := x.y[1, 2];
 end Test2;
 
 // End
