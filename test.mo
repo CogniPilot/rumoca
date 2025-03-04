@@ -4,8 +4,8 @@
 within stuff.test1.test2;
 
 class Test2
-    Real x;
-    Real y;
+    Real x, y, z;
+    parameter Real w;
 equation
     x = 3.0;
 algorithm

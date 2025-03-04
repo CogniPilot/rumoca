@@ -69,9 +69,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ClassDefinition {
                         def.algorithms = spec.composition.algorithms.clone();
                         def.initial_equations = spec.composition.initial_equations.clone();
                         def.initial_algorithms = spec.composition.initial_algorithms.clone();
-                        // for comp in &spec.component_list.components {
-                        //     def.components.insert(comp.name.clone(), comp.clone());
-                        // }
+                        def.components = spec.composition.components.clone();
                     }
                     modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(..) => {
                         todo!("extends")
@@ -89,8 +87,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ClassDefinition {
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct Composition {
-    pub elements: Vec<modelica_grammar_trait::Element>,
-    pub protected_elements: Vec<modelica_grammar_trait::Element>,
+    pub components: IndexMap<String, ir::Component>,
     pub equations: Vec<ir::Equation>,
     pub initial_equations: Vec<ir::Equation>,
     pub algorithms: Vec<Vec<ir::Statement>>,
@@ -106,17 +103,16 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
         let mut comp = Composition {
             ..Default::default()
         };
+
+        comp.components = ast.element_list.components.clone();
+
         for comp_list in &ast.composition_list {
             match &comp_list.composition_list_group {
-                modelica_grammar_trait::CompositionListGroup::PublicElementList(elem_list) => {
-                    for elem in &elem_list.element_list.elements {
-                        comp.elements.push(elem.clone());
-                    }
+                modelica_grammar_trait::CompositionListGroup::PublicElementList(_elem_list) => {
+                    todo!("public element list")
                 }
-                modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
-                    for elem in &elem_list.element_list.elements {
-                        comp.protected_elements.push(elem.clone());
-                    }
+                modelica_grammar_trait::CompositionListGroup::ProtectedElementList(_elem_list) => {
+                    todo!("protected element list")
                 }
                 modelica_grammar_trait::CompositionListGroup::EquationSection(eq_sec) => {
                     let sec = &eq_sec.equation_section;
@@ -150,7 +146,7 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct ElementList {
-    pub elements: Vec<modelica_grammar_trait::Element>,
+    pub components: IndexMap<String, ir::Component>,
 }
 
 impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
@@ -159,11 +155,72 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
     fn try_from(
         ast: &modelica_grammar_trait::ElementList,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut elements = Vec::new();
-        for elem in &ast.element_list_list {
-            elements.push(elem.element.clone());
+        let mut def = ElementList {
+            components: IndexMap::new(),
+        };
+        for elem_list in &ast.element_list_list {
+            match &elem_list.element {
+                modelica_grammar_trait::Element::ElementDefinition(edef) => {
+                    match &edef.element_definition.element_definition_group {
+                        modelica_grammar_trait::ElementDefinitionGroup::ClassDefinition(_class) => {
+                            todo!("class definition")
+                        }
+                        modelica_grammar_trait::ElementDefinitionGroup::ComponentClause(clause) => {
+                            let connection =
+                                match &clause.component_clause.type_prefix.type_prefix_opt {
+                                    Some(opt) => match &opt.type_prefix_opt_group {
+                                        modelica_grammar_trait::TypePrefixOptGroup::Flow(flow) => {
+                                            ir::Connection::Flow(flow.flow.flow.clone())
+                                        }
+                                        modelica_grammar_trait::TypePrefixOptGroup::Stream(
+                                            stream,
+                                        ) => ir::Connection::Stream(stream.stream.stream.clone()),
+                                    },
+                                    None => ir::Connection::Empty,
+                                };
+                            let variability =
+                                match &clause.component_clause.type_prefix.type_prefix_opt0 {
+                                    Some(opt) => match &opt.type_prefix_opt0_group {
+                                        modelica_grammar_trait::TypePrefixOpt0Group::Constant(
+                                            c,
+                                        ) => ir::Variability::Constant(c.constant.constant.clone()),
+                                        modelica_grammar_trait::TypePrefixOpt0Group::Discrete(
+                                            c,
+                                        ) => ir::Variability::Discrete(c.discrete.discrete.clone()),
+                                        modelica_grammar_trait::TypePrefixOpt0Group::Parameter(
+                                            c,
+                                        ) => ir::Variability::Parameter(
+                                            c.parameter.parameter.clone(),
+                                        ),
+                                    },
+                                    None => ir::Variability::Empty,
+                                };
+                            for c in &clause.component_clause.component_list.components {
+                                let value = ir::Component {
+                                    name: c.declaration.ident.text.clone(),
+                                    type_name: clause.component_clause.type_specifier.name.clone(),
+                                    variability: variability.clone(),
+                                    causality: ir::Causality::Empty,
+                                    connection: connection.clone(),
+                                };
+                                def.components
+                                    .insert(c.declaration.ident.text.clone(), value);
+                            }
+                        }
+                    }
+                }
+                modelica_grammar_trait::Element::ImportClause(..) => {
+                    todo!("import clause")
+                }
+                modelica_grammar_trait::Element::ExtendsClause(..) => {
+                    todo!("extends clause")
+                }
+                modelica_grammar_trait::Element::ElementReplaceableDefinition(..) => {
+                    todo!("element replaceable definition")
+                }
+            }
         }
-        Ok(ElementList { elements })
+        Ok(def)
     }
 }
 

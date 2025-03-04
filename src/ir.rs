@@ -44,6 +44,10 @@ pub struct StoredDefinition {
 #[allow(unused)]
 pub struct Component {
     pub name: String,
+    pub type_name: Name,
+    pub variability: Variability,
+    pub causality: Causality,
+    pub connection: Connection,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -256,4 +260,32 @@ pub enum Subscript {
     Range {
         token: Token,
     },
+}
+
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
+pub enum Variability {
+    #[default]
+    Empty,
+    Constant(Token),
+    Discrete(Token),
+    Parameter(Token),
+}
+
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
+pub enum Connection {
+    #[default]
+    Empty,
+    Flow(Token),
+    Stream(Token),
+}
+
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
+pub enum Causality {
+    #[default]
+    Empty,
+    Input(Token),
+    Output(Token),
 }
