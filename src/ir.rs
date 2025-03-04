@@ -71,11 +71,11 @@ pub struct ComponentRefPart {
 // impl Debug for ComponentRefPart {
 //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 //         let mut s = self.ident.text.clone();
-//         match self.subs {
+//         match &self.subs {
 //             None => {}
-//             Some(ref subs) => {
+//             Some(subs) => {
 //                 let mut v = Vec::new();
-//                 for sub in &subs.subscripts {
+//                 for sub in subs {
 //                     v.push(format!("{:?}", sub));
 //                 }
 //                 s += &format!("[{:?}]", v.join(", "));
@@ -85,7 +85,7 @@ pub struct ComponentRefPart {
 //     }
 // }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug, Clone)]
 #[allow(unused)]
 pub struct ComponentReference {
     pub local: bool,
@@ -98,7 +98,7 @@ pub struct ComponentReference {
 //         for part in &self.parts {
 //             s.push(format!("{:?}", part));
 //         }
-//         write!(f, "{}", s.join("."))
+//         write!(f, "{:?}", s.join("."))
 //     }
 // }
 
@@ -141,7 +141,7 @@ pub enum OpBinary {
     Ge,
     And,
     Or,
-    // Exp,
+    Exp,
     AddElem,
     SubElem,
     MulElem,
@@ -191,6 +191,10 @@ pub enum Expression {
         value: Token,
     },
     ComponentReference(ComponentReference),
+    FunctionCall {
+        comp: ComponentReference,
+        args: Vec<Expression>,
+    },
 }
 
 #[derive(Debug, Default, Clone)]

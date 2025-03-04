@@ -9,6 +9,7 @@
 %nt_type class_definition = crate::ir::ClassDefinition
 %nt_type component_list = crate::modelica_grammar::ComponentList
 %nt_type component_reference = crate::ir::ComponentReference
+%nt_type component_ref_part = crate::ir::ComponentRefPart
 %nt_type composition = crate::modelica_grammar::Composition
 %nt_type element_list = crate::modelica_grammar::ElementList
 %nt_type equation_section = crate::modelica_grammar::EquationSection
@@ -384,7 +385,7 @@ enum_class_specifier
 //✅ der-class-specifier :
 //✅    IDENT "=" der "(" type-specifier "," IDENT { "," IDENT } ")" description
 der_class_specifier
-    : ident '=' der '('^ type_specifier ','^ ident { ','^ ident } ')'^ description
+    : ident '='^ der '('^ type_specifier ','^ ident { ','^ ident } ')'^ description
     ;
 
 //✅ base-prefix :
@@ -439,7 +440,7 @@ external_function_call
 //✅ element-list :
 //✅    { element ";" }
 element_list
-    : { element ';' }
+    : { element ';'^ }
     ;
 
 //✅ element :
@@ -467,7 +468,7 @@ element
 //✅    )
 //✅    description
 import_clause
-    : import ( ident '='^ name | name [ '.*' | '.'^ ( '*' | '{' import_list '}' ) ] ) description
+    : import ( ident '='^ name | name [ '.*' | '.' ( '*' | '{'^ import_list '}'^ ) ] ) description
     ;
 
 //✅ import-list :
@@ -655,21 +656,29 @@ algorithm_section
 //✅    )
 //✅    description
 some_equation_option
-    : simple_expression '='^ expression
+    : simple_equation
     | if_equation
     | for_equation
     | connect_equation
-    | when_equation /* | component_reference function_call_args (TODO: won't compile if added) */
+    | when_equation //| function_equation (this breaks grammar, lookahead very high)
     ;
 
+simple_equation
+    : simple_expression '='^ expression
+    ;
+
+// TODO: this breaks grammar, lookahead required too high? not sure what the point
+// of this equation syntax is
+// function_equation
+//     : component_reference function_call_args
+//     ;
 some_equation
     : some_equation_option description
     ;
 
 //✅ statement :
-//🟨    ( component-reference ( ":=" expression | function-call-args )
-//🟥      | "(" output-expression-list ")" ":="
-//🟥        component-reference function-call-args
+//✅    ( component-reference ( ":=" expression | function-call-args )
+//✅      | "(" output-expression-list ")" ":=" component-reference function-call-args
 //✅      | break
 //✅      | return
 //✅      | if-statement
@@ -679,13 +688,22 @@ some_equation
 //✅    )
 //✅    description
 statement_option
-    : component_reference ( ":="^ expression )
+    : component_statement
+    | function_call_output_statement
     | break
     | return
     | if_statement
     | for_statement
     | while_statement
     | when_statement
+    ;
+
+component_statement
+    : component_reference ( ':='^ expression | function_call_args )
+    ;
+
+function_call_output_statement
+    : '('^ output_expression_list ')'^ ':='^ component_reference function_call_args
     ;
 
 statement
@@ -885,30 +903,43 @@ factor
 //✅    | STRING
 //✅    | false
 //✅    | true
-//🟨    | ( component-reference | der | initial | pure ) function-call-args
+//✅    | ( component-reference | der | initial | pure ) function-call-args
 //✅    | component-reference
 //✅    | "(" output-expression-list ")" [ ( array-subscripts | "." IDENT ) ]
 //✅    | "[" expression-list { ";" expression-list } "]"
 //✅    | "{" array-arguments "}"
 //✅    | end
-function_type
-    : //component_reference
-      der
-    | initial
-    | pure
-    ;
-
 primary
     : unsigned_number
     | string
     | false
     | true
-    | function_type function_call_args
-    | component_reference
-    | '('^ output_expression_list ')' [ ( array_subscripts | '.'^ ident ) ]
-    | '['^ expression_list { ';' expression_list } ']'^
-    | '{'^ array_arguments '}'^
+    | global_function_call
+    | component_primary
+    | output_primary
+    | range_primary
+    | array_primary
     | end
+    ;
+
+component_primary
+    : component_reference [ function_call_args ]
+    ;
+
+output_primary
+    : '('^ output_expression_list ')'^ [ ( array_subscripts | '.'^ ident ) ]
+    ;
+
+range_primary
+    : '['^ expression_list { ';'^ expression_list } ']'^
+    ;
+
+array_primary
+    : '{'^ array_arguments '}'^
+    ;
+
+global_function_call
+    : ( der | initial | pure ) function_call_args
     ;
 
 //✅ UNSIGNED-NUMBER :
@@ -932,13 +963,17 @@ name: ident { '.'^ ident }
 //✅ component-reference :
 //✅    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 component_reference
-    : [ '.'^ ] ident [ array_subscripts ] { '.'^ ident [ array_subscripts ] }
+    : [ '.'^ ] ident [ array_subscripts ] { component_ref_part }
+    ;
+
+component_ref_part
+    : '.'^ ident [ array_subscripts ]
     ;
 
 //✅ function-call-args :
 //✅    "(" [ function-arguments ] ")"
 function_call_args
-    : '(' [ function_arguments ] ')'
+    : '('^ [ function_arguments ] ')'^
     ;
 
 //✅ function-arguments :
@@ -984,7 +1019,8 @@ named_argument
 //✅ function-argument :
 //✅    function-partial-application | expression
 function_argument
-    : expression
+    : function_partial_application
+    | expression
     ;
 
 //✅ function-partial-application :
