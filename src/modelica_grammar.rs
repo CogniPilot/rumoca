@@ -495,6 +495,90 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for ir::Subscript {
 }
 
 //-----------------------------------------------------------------------------
+#[derive(Debug, Default, Clone)]
+#[allow(unused)]
+pub struct ExpressionList {
+    pub args: Vec<ir::Expression>,
+}
+
+impl TryFrom<&modelica_grammar_trait::FunctionArgument> for ir::Expression {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::FunctionArgument,
+    ) -> std::result::Result<Self, Self::Error> {
+        match &ast {
+            modelica_grammar_trait::FunctionArgument::Expression(expr) => {
+                Ok(expr.expression.as_ref().clone())
+            }
+            modelica_grammar_trait::FunctionArgument::FunctionPartialApplication(..) => {
+                todo!("partial application")
+            }
+        }
+    }
+}
+
+impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::FunctionArguments,
+    ) -> std::result::Result<Self, Self::Error> {
+        match &ast {
+            modelica_grammar_trait::FunctionArguments::ExpressionFunctionArgumentsOpt(def) => {
+                let mut args = vec![*def.expression.clone()];
+                match &def.function_arguments_opt {
+                    Some(opt) => {
+                        match &opt.function_arguments_opt_group {
+                            modelica_grammar_trait::FunctionArgumentsOptGroup::CommaFunctionArgumentsNonFirst(
+                                expr,
+                            ) => {
+                                args.append(&mut expr.function_arguments_non_first.args.clone());
+                            }
+                            modelica_grammar_trait::FunctionArgumentsOptGroup::ForForIndices(..) => {
+                                todo!("for indices")
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                Ok(ExpressionList { args })
+            }
+            modelica_grammar_trait::FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(..) => {
+                todo!("partial application")
+            }
+            modelica_grammar_trait::FunctionArguments::NamedArguments(..) => {
+                todo!("named arguments")
+            }
+        }
+    }
+}
+
+impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionList {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::FunctionArgumentsNonFirst,
+    ) -> std::result::Result<Self, Self::Error> {
+        match &ast {
+            modelica_grammar_trait::FunctionArgumentsNonFirst::FunctionArgumentFunctionArgumentsNonFirstOpt(expr) => {
+                let mut args = vec![expr.function_argument.clone()];
+                match &expr.function_arguments_non_first_opt {
+                    Some(opt) => {
+                        args.append(&mut opt.function_arguments_non_first.args.clone());
+                    }
+                    None => {}
+                }
+                Ok(ExpressionList { args })
+            }
+            modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(..) => {
+                todo!("named arguments")
+            }
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
     type Error = anyhow::Error;
 
@@ -502,9 +586,12 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
         match &ast {
             modelica_grammar_trait::Primary::ComponentPrimary(comp) => {
                 match &comp.component_primary.component_primary_opt {
-                    Some(..) => Ok(ir::Expression::FunctionCall {
+                    Some(args) => Ok(ir::Expression::FunctionCall {
                         comp: (*comp.component_primary.component_reference).clone(),
-                        args: Vec::new(), // TODO: handle args
+                        args: match &args.function_call_args.function_call_args_opt {
+                            Some(opt) => opt.function_arguments.args.clone(),
+                            None => vec![],
+                        },
                     }),
                     None => Ok(ir::Expression::ComponentReference(
                         comp.component_primary.component_reference.as_ref().clone(),

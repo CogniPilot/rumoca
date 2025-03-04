@@ -15,6 +15,9 @@
 %nt_type equation_section = crate::modelica_grammar::EquationSection
 %nt_type expression = crate::ir::Expression
 %nt_type factor = crate::ir::Expression
+%nt_type function_argument = crate::ir::Expression
+%nt_type function_arguments = crate::modelica_grammar::ExpressionList
+%nt_type function_arguments_non_first = crate::modelica_grammar::ExpressionList
 %nt_type ident = crate::ir::Token
 %nt_type logical_expression = crate::ir::Expression
 %nt_type logical_factor = crate::ir::Expression
@@ -660,7 +663,7 @@ some_equation_option
     | if_equation
     | for_equation
     | connect_equation
-    | when_equation //| function_equation (this breaks grammar, lookahead very high)
+    | when_equation //| function_equation
     ;
 
 simple_equation
