@@ -61,46 +61,46 @@ pub struct ClassDefinition {
     pub initial_algorithms: Vec<Vec<Statement>>,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Clone)]
 #[allow(unused)]
 pub struct ComponentRefPart {
     pub ident: Token,
     pub subs: Option<Vec<Subscript>>,
 }
 
-// impl Debug for ComponentRefPart {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         let mut s = self.ident.text.clone();
-//         match &self.subs {
-//             None => {}
-//             Some(subs) => {
-//                 let mut v = Vec::new();
-//                 for sub in subs {
-//                     v.push(format!("{:?}", sub));
-//                 }
-//                 s += &format!("[{:?}]", v.join(", "));
-//             }
-//         }
-//         write!(f, "{}", s)
-//     }
-// }
+impl Debug for ComponentRefPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = self.ident.text.clone();
+        match &self.subs {
+            None => {}
+            Some(subs) => {
+                let mut v = Vec::new();
+                for sub in subs {
+                    v.push(format!("{:?}", sub));
+                }
+                s += &format!("[{:?}]", v.join(", "));
+            }
+        }
+        write!(f, "{}", s)
+    }
+}
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Clone)]
 #[allow(unused)]
 pub struct ComponentReference {
     pub local: bool,
     pub parts: Vec<ComponentRefPart>,
 }
 
-// impl Debug for ComponentReference {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         let mut s = Vec::new();
-//         for part in &self.parts {
-//             s.push(format!("{:?}", part));
-//         }
-//         write!(f, "{:?}", s.join("."))
-//     }
-// }
+impl Debug for ComponentReference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = Vec::new();
+        for part in &self.parts {
+            s.push(format!("{:?}", part));
+        }
+        write!(f, "{:?}", s.join("."))
+    }
+}
 
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
@@ -157,6 +157,17 @@ pub enum OpUnary {
 }
 
 #[derive(Debug, Default, Clone)]
+pub enum TerminalType {
+    #[default]
+    Empty,
+    UnsignedReal,
+    UnsignedInteger,
+    String,
+    Bool,
+    End,
+}
+
+#[derive(Default, Clone)]
 #[allow(unused)]
 pub enum Expression {
     #[default]
@@ -175,26 +186,48 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
-    UnsignedReal {
-        value: Token,
-    },
-    UnsignedInteger {
-        value: Token,
-    },
-    String {
-        value: Token,
-    },
-    Bool {
-        value: Token,
-    },
-    End {
-        value: Token,
+    Terminal {
+        terminal_type: TerminalType,
+        token: Token,
     },
     ComponentReference(ComponentReference),
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
     },
+}
+
+impl Debug for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expression::Empty => write!(f, "Empty"),
+            Expression::Range { start, step, end } => f
+                .debug_struct("Range")
+                .field("start", start)
+                .field("step", step)
+                .field("end", end)
+                .finish(),
+            Expression::ComponentReference(comp) => write!(f, "{:?}", comp),
+            Expression::FunctionCall { comp, args } => f
+                .debug_struct("FunctionCall")
+                .field("comp", comp)
+                .field("args", args)
+                .finish(),
+            Expression::Binary { op, lhs, rhs } => f
+                .debug_struct(&format!("{:?}", op))
+                .field("lhs", lhs)
+                .field("rhs", rhs)
+                .finish(),
+            Expression::Unary { op, rhs } => f
+                .debug_struct(&format!("{:?}", op))
+                .field("rhs", rhs)
+                .finish(),
+            Expression::Terminal {
+                terminal_type,
+                token,
+            } => write!(f, "{:?}({:?})", terminal_type, token),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]

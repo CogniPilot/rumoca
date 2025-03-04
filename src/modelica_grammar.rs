@@ -601,28 +601,34 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
             modelica_grammar_trait::Primary::UnsignedNumber(unsigned_num) => {
                 match &unsigned_num.unsigned_number {
                     modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
-                        Ok(ir::Expression::UnsignedInteger {
-                            value: unsigned_int.unsigned_integer.clone(),
+                        Ok(ir::Expression::Terminal {
+                            terminal_type: ir::TerminalType::UnsignedInteger,
+                            token: unsigned_int.unsigned_integer.clone(),
                         })
                     }
                     modelica_grammar_trait::UnsignedNumber::UnsignedReal(unsigned_real) => {
-                        Ok(ir::Expression::UnsignedReal {
-                            value: unsigned_real.unsigned_real.clone(),
+                        Ok(ir::Expression::Terminal {
+                            terminal_type: ir::TerminalType::UnsignedReal,
+                            token: unsigned_real.unsigned_real.clone(),
                         })
                     }
                 }
             }
-            modelica_grammar_trait::Primary::String(string) => Ok(ir::Expression::String {
-                value: string.string.string.clone(),
+            modelica_grammar_trait::Primary::String(string) => Ok(ir::Expression::Terminal {
+                terminal_type: ir::TerminalType::String,
+                token: string.string.string.clone(),
             }),
-            modelica_grammar_trait::Primary::True(bool) => Ok(ir::Expression::Bool {
-                value: bool.r#true.r#true.clone(),
+            modelica_grammar_trait::Primary::True(bool) => Ok(ir::Expression::Terminal {
+                terminal_type: ir::TerminalType::Bool,
+                token: bool.r#true.r#true.clone(),
             }),
-            modelica_grammar_trait::Primary::False(bool) => Ok(ir::Expression::Bool {
-                value: bool.r#false.r#false.clone(),
+            modelica_grammar_trait::Primary::False(bool) => Ok(ir::Expression::Terminal {
+                terminal_type: ir::TerminalType::Bool,
+                token: bool.r#false.r#false.clone(),
             }),
-            modelica_grammar_trait::Primary::End(end) => Ok(ir::Expression::End {
-                value: end.end.end.clone(),
+            modelica_grammar_trait::Primary::End(end) => Ok(ir::Expression::Terminal {
+                terminal_type: ir::TerminalType::End,
+                token: end.end.end.clone(),
             }),
             modelica_grammar_trait::Primary::ArrayPrimary(..) => {
                 todo!("array")
