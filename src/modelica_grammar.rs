@@ -107,14 +107,18 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
             ..Default::default()
         };
         for comp_list in &ast.composition_list {
-            match comp_list.composition_list_group {
-                modelica_grammar_trait::CompositionListGroup::PublicElementList(ref elem_list) => {
-                    for _elem in &elem_list.element_list.elements {}
+            match &comp_list.composition_list_group {
+                modelica_grammar_trait::CompositionListGroup::PublicElementList(elem_list) => {
+                    for elem in &elem_list.element_list.elements {
+                        comp.elements.push(elem.clone());
+                    }
                 }
-                modelica_grammar_trait::CompositionListGroup::ProtectedElementList(
-                    ref _elem_list,
-                ) => {}
-                modelica_grammar_trait::CompositionListGroup::EquationSection(ref eq_sec) => {
+                modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
+                    for elem in &elem_list.element_list.elements {
+                        comp.protected_elements.push(elem.clone());
+                    }
+                }
+                modelica_grammar_trait::CompositionListGroup::EquationSection(eq_sec) => {
                     let sec = &eq_sec.equation_section;
                     for eq in &sec.equations {
                         if sec.initial {
@@ -124,7 +128,7 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                         }
                     }
                 }
-                modelica_grammar_trait::CompositionListGroup::AlgorithmSection(ref alg_sec) => {
+                modelica_grammar_trait::CompositionListGroup::AlgorithmSection(alg_sec) => {
                     let sec = &alg_sec.algorithm_section;
                     let mut algo = vec![];
                     for stmt in &sec.statements {

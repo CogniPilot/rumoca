@@ -460,8 +460,16 @@ element_list
 element
     : import_clause
     | extends_clause
-    | [ redeclare ] [ final ] [ inner ] [ outer ] ( class_definition | component_clause )
-    | replaceable ( class_definition | component_clause ) [ constraining_clause description ]
+    | element_definition
+    | element_replaceable_definition
+    ;
+
+element_definition
+    : [ redeclare ] [ final ] [ inner ] [ outer ] ( class_definition | component_clause )
+    ;
+
+element_replaceable_definition
+    : replaceable ( class_definition | component_clause ) [ constraining_clause description ]
     ;
 
 //✅ import-clause :
