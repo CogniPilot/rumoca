@@ -10,5 +10,5 @@ equation
     x = 3.0;
 algorithm
     y := x[1, 2]*6 + 10^7;
-    z := sqrt(2);
+    z := der(2);
 end Test2;

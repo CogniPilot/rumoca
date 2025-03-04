@@ -633,8 +633,29 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
             modelica_grammar_trait::Primary::OutputPrimary(..) => {
                 todo!("output_expression")
             }
-            modelica_grammar_trait::Primary::GlobalFunctionCall(..) => {
-                todo!("global function call")
+            modelica_grammar_trait::Primary::GlobalFunctionCall(expr) => {
+                let tok = match &expr.global_function_call.global_function_call_group {
+                    modelica_grammar_trait::GlobalFunctionCallGroup::Der(expr) => {
+                        expr.der.der.clone()
+                    }
+                    modelica_grammar_trait::GlobalFunctionCallGroup::Initial(expr) => {
+                        expr.initial.initial.clone()
+                    }
+                    modelica_grammar_trait::GlobalFunctionCallGroup::Pure(expr) => {
+                        expr.pure.pure.clone()
+                    }
+                };
+                let part = ir::ComponentRefPart {
+                    ident: tok,
+                    subs: None,
+                };
+                Ok(ir::Expression::FunctionCall {
+                    comp: ir::ComponentReference {
+                        local: false,
+                        parts: vec![part],
+                    },
+                    args: vec![],
+                })
             }
         }
     }
