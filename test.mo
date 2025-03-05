@@ -1,14 +1,12 @@
-// To run the test please issue:
-// cargo run ./test.mo
-
-within stuff.test1.test2;
-
-class Test2
-    Real x, y, z;
-    parameter Real w;
+model BouncingBall "The classic bouncing ball model"
+  parameter Real e=0.8 "Coefficient of restitution";
+  parameter Real h0=1.0 "Initial height";
+  Real h "Height";
+  Real v(start=0.0, fixed=true) "Velocity";
+initial equation
+  h = h0;
 equation
-    x = 3.0;
-algorithm
-    y := x[1, 2]*6 + 10^7;
-    z := der(2);
-end Test2;
+  v = der(h);
+  der(v) = -9.81;
+  reinit(v, -e*pre(v));
+end BouncingBall;

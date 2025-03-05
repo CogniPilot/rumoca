@@ -275,7 +275,7 @@ ident
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
 // STRING = """ { S-CHAR | S-ESCAPE } """
 string
-    : /"[\w]*"/
+    : /"[ \w]*"/
     ;
 
 // S-CHAR is any member of the Unicode character set
@@ -361,7 +361,7 @@ long_class_specifier
     ;
 
 standard_class_specifier
-    : ident@name composition end^ ident
+    : ident@name description_string composition end^ ident
     ;
 
 extends_class_specifier
@@ -671,18 +671,18 @@ some_equation_option
     | if_equation
     | for_equation
     | connect_equation
-    | when_equation //| function_equation
+    | when_equation
     ;
 
+// This also handles componet-reference function-call-args
+// this is necessary otherwise, look-ahead is very large
+// if rhs is not present, only a function call is allowed,
+// this is checked in the parser, if rhs is present, then
+// it is a standrd simple_equation
 simple_equation
-    : simple_expression '='^ expression
+    : simple_expression [ '='^ expression ]
     ;
 
-// TODO: this breaks grammar, lookahead required too high? not sure what the point
-// of this equation syntax is
-// function_equation
-//     : component_reference function_call_args
-//     ;
 some_equation
     : some_equation_option description
     ;

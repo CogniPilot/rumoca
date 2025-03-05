@@ -128,6 +128,10 @@ pub enum Equation {
         condition: Expression,
         equations: Vec<Equation>,
     },
+    FunctionCall {
+        comp: ComponentReference,
+        args: Vec<Expression>,
+    },
 }
 
 #[derive(Debug, Default, Clone)]

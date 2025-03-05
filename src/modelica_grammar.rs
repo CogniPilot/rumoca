@@ -465,10 +465,27 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
     ) -> std::result::Result<Self, Self::Error> {
         match &ast.some_equation_option {
             modelica_grammar_trait::SomeEquationOption::SimpleEquation(eq) => {
-                Ok(ir::Equation::Simple {
-                    lhs: eq.simple_equation.simple_expression.clone(),
-                    rhs: eq.simple_equation.expression.clone(),
-                })
+                match &eq.simple_equation.simple_equation_opt {
+                    Some(rhs) => Ok(ir::Equation::Simple {
+                        lhs: eq.simple_equation.simple_expression.clone(),
+                        rhs: rhs.expression.clone(),
+                    }),
+                    None => {
+                        // this is a function call eq (reinit, assert, terminate, etc.)
+                        // see 8.3.6-8.3.8
+                        match &eq.simple_equation.simple_expression {
+                            ir::Expression::FunctionCall { comp, args } => {
+                                Ok(ir::Equation::FunctionCall {
+                                    comp: comp.clone(),
+                                    args: args.clone(),
+                                })
+                            }
+                            _ => {
+                                panic!("Modelica only allows functional call statement as equation")
+                            }
+                        }
+                    }
+                }
             }
             modelica_grammar_trait::SomeEquationOption::ConnectEquation(eq) => {
                 Ok(ir::Equation::Connect {
