@@ -12,6 +12,7 @@
 %nt_type component_ref_part = crate::ir::ComponentRefPart
 %nt_type composition = crate::modelica_grammar::Composition
 %nt_type element_list = crate::modelica_grammar::ElementList
+%nt_type equation_block = crate::ir::EquationBlock
 %nt_type equation_section = crate::modelica_grammar::EquationSection
 %nt_type expression = crate::ir::Expression
 %nt_type factor = crate::ir::Expression
@@ -28,6 +29,7 @@
 %nt_type simple_expression = crate::ir::Expression
 %nt_type some_equation = crate::ir::Equation
 %nt_type statement = crate::ir::Statement
+%nt_type statement_block = crate::ir::StatementBlock
 %nt_type stored_definition = crate::ir::StoredDefinition
 %nt_type subscript = crate::ir::Subscript
 %nt_type term = crate::ir::Expression
@@ -262,20 +264,22 @@ within
 // A.1 Lexical conventions
 // IDENT = NON-DIGIT { DIGIT | NON-DIGIT } | Q-IDENT
 ident
-    : /[_a-zA-Z][_a-zA-Z0-9]*/
+    : /[_a-zA-Z][_a-zA-Z0-9]*/@basic_ident
+    | /\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'/@q_ident
     ;
 
-// Q-IDENT = "'" { Q-CHAR | S-ESCAPE } "'"
-// NON-DIGIT = "_" | letters "a"..."z" | letters "A"..."Z"
-// DIGIT = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
-// Q-CHAR = NON-DIGIT | DIGIT | "!" | "#" | "$" | "%" | "&" | "(" | ")"
-//    | "*" | "+" | "," | "-" | "." | "/" | ":" | ";" | "<" | ">" | "="
+// 🟨 IDENT = NON-DIGIT { DIGIT | NON-DIGIT } | Q-IDENT
+// 🟨 Q-IDENT = "'" { Q-CHAR | S-ESCAPE } "'"
+// ✅ NON-DIGIT = "_" | letters "a"..."z" | letters "A"..."Z"
+// ✅ DIGIT = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+// ✅ Q-CHAR = NON-DIGIT | DIGIT | "!" | "#" | "$" | "%" | "&" | "(" | ")"
+//    | "*" | "+" s| "," | "-" | "." | "/" | ":" | ";" | "<" | ">" | "="
 //    | "?" | "@" | "[" | "]" | "^" | "{" | "}" | "|" | "~" | " " | """
-// S-ESCAPE = "\'" | "\"" | "\?" | "\\"
+// 🟥 S-ESCAPE = "\'" | "\"" | "\?" | "\\"
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
-// STRING = """ { S-CHAR | S-ESCAPE } """
+// 🟨 STRING = """ { S-CHAR | S-ESCAPE } """
 string
-    : /"[ \w]*"/
+    : /"[' \w]*"/
     ;
 
 // S-CHAR is any member of the Unicode character set
@@ -731,9 +735,12 @@ statement
 //✅      { some-equation ";" }
 //✅    ]
 //✅    end if
+equation_block
+    : expression then^ { some_equation ';'^ }
+    ;
+
 if_equation
-    : if^ expression then^ { some_equation ';'^ } { elseif^ expression then^ { some_equation ';'^ } }
-      [ else^ { some_equation ';'^ } ] end^ if
+    : if^ equation_block { elseif^ equation_block } [ else^ { some_equation ';'^ } ] end^ if
     ;
 
 //✅ if-statement :
@@ -746,9 +753,12 @@ if_equation
 //✅      { statement ";" }
 //✅    ]
 //✅    end if
+statement_block
+    : expression then^ { statement ';'^ }
+    ;
+
 if_statement
-    : if^ expression then^ { statement ';'^ } { elseif^ expression then^ { statement ';'^ } }
-      [ else^ { statement ';'^ } ] end^ if
+    : if^ statement_block { elseif^ statement_block } [ else^ { statement ';'^ } ] end^ if
     ;
 
 //✅ for-equation :
@@ -795,8 +805,7 @@ while_statement
 //✅    }
 //✅    end when
 when_equation
-    : when^ expression then^ { some_equation ';'^ }
-      { elsewhen^ expression then^ { some_equation ';'^ } } end^ when
+    : when^ equation_block { elsewhen^ equation_block } end^ when
     ;
 
 //✅ when-statement :
@@ -807,8 +816,7 @@ when_equation
 //✅    }
 //✅    end when
 when_statement
-    : when^ expression then^ { statement ';'^ } { elsewhen^ expression then^ { statement ';'^ } }
-      end^ when
+    : when^ statement_block { elsewhen^ statement_block } end^ when
     ;
 
 //✅ connect-equation :

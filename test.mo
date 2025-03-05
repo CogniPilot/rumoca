@@ -1,4 +1,4 @@
-model BouncingBall "The classic bouncing ball model"
+model BouncingBall "The 'classic' bouncing ball model"
   parameter Real e=0.8 "Coefficient of restitution";
   parameter Real h0=1.0 "Initial height";
   Real h "Height";
@@ -8,5 +8,7 @@ initial equation
 equation
   v = der(h);
   der(v) = -9.81;
-  reinit(v, -e*pre(v));
+  // when h<0 then
+  //   reinit(v, -e*pre(v));
+  // end when;
 end BouncingBall;

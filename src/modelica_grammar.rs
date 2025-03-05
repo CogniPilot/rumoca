@@ -53,10 +53,6 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ClassDefinition {
     fn try_from(
         ast: &modelica_grammar_trait::ClassDefinition,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut def = ir::ClassDefinition {
-            encapsulated: ast.class_definition_opt.is_some(),
-            ..Default::default()
-        };
         match &ast.class_specifier {
             modelica_grammar_trait::ClassSpecifier::LongClassSpecifier(long) => {
                 match &long.long_class_specifier {
@@ -64,22 +60,34 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ClassDefinition {
                         class_specifier,
                     ) => {
                         let spec = &class_specifier.standard_class_specifier;
-                        def.name = spec.name.clone();
-                        def.equations = spec.composition.equations.clone();
-                        def.algorithms = spec.composition.algorithms.clone();
-                        def.initial_equations = spec.composition.initial_equations.clone();
-                        def.initial_algorithms = spec.composition.initial_algorithms.clone();
-                        def.components = spec.composition.components.clone();
+                        Ok(ir::ClassDefinition {
+                            name: spec.name.clone(),
+                            equations: spec.composition.equations.clone(),
+                            algorithms: spec.composition.algorithms.clone(),
+                            initial_equations: spec.composition.initial_equations.clone(),
+                            initial_algorithms: spec.composition.initial_algorithms.clone(),
+                            components: spec.composition.components.clone(),
+                            encapsulated: ast.class_definition_opt.is_some(),
+                        })
                     }
                     modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(..) => {
                         todo!("extends")
                     }
                 }
             }
-            modelica_grammar_trait::ClassSpecifier::DerClassSpecifier(..) => todo!("der"),
-            modelica_grammar_trait::ClassSpecifier::ShortClassSpecifier(..) => todo!("short"),
+            modelica_grammar_trait::ClassSpecifier::DerClassSpecifier(_spec) => todo!("der"),
+            modelica_grammar_trait::ClassSpecifier::ShortClassSpecifier(short) => {
+                match &short.short_class_specifier {
+                    modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(_spec) => {
+                        todo!("enum class specifier")
+                    }
+                    modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(_spec) => {
+                        //spec.type_class_specifier.base_prefix.
+                        todo!("type class specifier");
+                    }
+                }
+            }
         }
-        Ok(def)
     }
 }
 
@@ -418,12 +426,20 @@ impl TryFrom<&modelica_grammar_trait::Ident> for ir::Token {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Ident) -> std::result::Result<Self, Self::Error> {
-        Ok(ir::Token {
-            location: ast.ident.location.clone(),
-            text: ast.ident.text.clone(),
-            token_number: ast.ident.token_number,
-            token_type: ast.ident.token_type,
-        })
+        match ast {
+            modelica_grammar_trait::Ident::BasicIdent(tok) => Ok(ir::Token {
+                location: tok.basic_ident.location.clone(),
+                text: tok.basic_ident.text.clone(),
+                token_number: tok.basic_ident.token_number,
+                token_type: tok.basic_ident.token_type,
+            }),
+            modelica_grammar_trait::Ident::QIdent(tok) => Ok(ir::Token {
+                location: tok.q_ident.location.clone(),
+                text: tok.q_ident.text.clone(),
+                token_number: tok.q_ident.token_number,
+                token_type: tok.q_ident.token_type,
+            }),
+        }
     }
 }
 
@@ -457,6 +473,40 @@ impl TryFrom<&modelica_grammar_trait::UnsignedReal> for ir::Token {
 }
 
 //-----------------------------------------------------------------------------
+impl TryFrom<&modelica_grammar_trait::EquationBlock> for ir::EquationBlock {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::EquationBlock,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(ir::EquationBlock {
+            cond: ast.expression.clone(),
+            eqs: ast
+                .equation_block_list
+                .iter()
+                .map(|x| x.some_equation.clone())
+                .collect(),
+        })
+    }
+}
+
+impl TryFrom<&modelica_grammar_trait::StatementBlock> for ir::StatementBlock {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::StatementBlock,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(ir::StatementBlock {
+            cond: ast.expression.clone(),
+            stmts: ast
+                .statement_block_list
+                .iter()
+                .map(|x| x.statement.clone())
+                .collect(),
+        })
+    }
+}
+
 impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
     type Error = anyhow::Error;
 
@@ -495,7 +545,17 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
             }
             modelica_grammar_trait::SomeEquationOption::ForEquation(..) => todo!("for"),
             modelica_grammar_trait::SomeEquationOption::IfEquation(..) => todo!("if"),
-            modelica_grammar_trait::SomeEquationOption::WhenEquation(..) => todo!("when"),
+            modelica_grammar_trait::SomeEquationOption::WhenEquation(_eq) => {
+                todo!("when")
+                // let blocks = vec![];
+                // for block in eq.when_equation.equation_block.equation_block_list {
+                //     blocks.push(block.clone());
+                // }
+                // Ok(ir::Equation::When {
+                //     condition: eq.when_equation.expression.clone(),
+                //     equations: eq.when_equation.,
+                // })
+            }
         }
     }
 }

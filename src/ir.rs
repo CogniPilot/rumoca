@@ -106,6 +106,20 @@ impl Debug for ComponentReference {
     }
 }
 
+#[derive(Default, Debug, Clone)]
+#[allow(unused)]
+pub struct EquationBlock {
+    pub cond: Expression,
+    pub eqs: Vec<Equation>,
+}
+
+#[derive(Default, Debug, Clone)]
+#[allow(unused)]
+pub struct StatementBlock {
+    pub cond: Expression,
+    pub stmts: Vec<Statement>,
+}
+
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub enum Equation {
@@ -125,8 +139,7 @@ pub enum Equation {
         equations: Vec<Equation>,
     },
     When {
-        condition: Expression,
-        equations: Vec<Equation>,
+        blocks: Vec<EquationBlock>,
     },
     FunctionCall {
         comp: ComponentReference,
