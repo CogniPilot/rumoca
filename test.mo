@@ -8,7 +8,7 @@ initial equation
 equation
   v = der(h);
   der(v) = -9.81;
-  // when h<0 then
-  //   reinit(v, -e*pre(v));
-  // end when;
+  when h<0 then
+    reinit(v, -e*pre(v));
+  end when;
 end BouncingBall;

@@ -544,17 +544,30 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::Equation {
                 })
             }
             modelica_grammar_trait::SomeEquationOption::ForEquation(..) => todo!("for"),
-            modelica_grammar_trait::SomeEquationOption::IfEquation(..) => todo!("if"),
-            modelica_grammar_trait::SomeEquationOption::WhenEquation(_eq) => {
-                todo!("when")
-                // let blocks = vec![];
-                // for block in eq.when_equation.equation_block.equation_block_list {
-                //     blocks.push(block.clone());
-                // }
-                // Ok(ir::Equation::When {
-                //     condition: eq.when_equation.expression.clone(),
-                //     equations: eq.when_equation.,
-                // })
+            modelica_grammar_trait::SomeEquationOption::IfEquation(eq) => {
+                let mut blocks = vec![eq.if_equation.if0.clone()];
+                for when in &eq.if_equation.if_equation_list {
+                    blocks.push(when.elseif0.clone());
+                }
+                Ok(ir::Equation::If {
+                    cond_blocks: blocks,
+                    else_block: match &eq.if_equation.if_equation_opt {
+                        Some(opt) => Some(
+                            opt.if_equation_opt_list
+                                .iter()
+                                .map(|x| x.some_equation.clone())
+                                .collect(),
+                        ),
+                        None => None,
+                    },
+                })
+            }
+            modelica_grammar_trait::SomeEquationOption::WhenEquation(eq) => {
+                let mut cond_blocks = vec![eq.when_equation.when0.clone()];
+                for when in &eq.when_equation.when_equation_list {
+                    cond_blocks.push(when.elsewhen0.clone());
+                }
+                Ok(ir::Equation::When(cond_blocks))
             }
         }
     }
@@ -717,6 +730,22 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
 }
 
 //-----------------------------------------------------------------------------
+impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::FunctionCallArgs,
+    ) -> std::result::Result<Self, Self::Error> {
+        if let Some(opt) = &ast.function_call_args_opt {
+            Ok(ExpressionList {
+                args: opt.function_arguments.args.clone(),
+            })
+        } else {
+            Ok(ExpressionList { args: vec![] })
+        }
+    }
+}
+
 impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
     type Error = anyhow::Error;
 
@@ -726,10 +755,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
                 match &comp.component_primary.component_primary_opt {
                     Some(args) => Ok(ir::Expression::FunctionCall {
                         comp: (*comp.component_primary.component_reference).clone(),
-                        args: match &args.function_call_args.function_call_args_opt {
-                            Some(opt) => opt.function_arguments.args.clone(),
-                            None => vec![],
-                        },
+                        args: args.function_call_args.args.clone(),
                     }),
                     None => Ok(ir::Expression::ComponentReference(
                         comp.component_primary.component_reference.as_ref().clone(),
@@ -798,7 +824,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
                         local: false,
                         parts: vec![part],
                     },
-                    args: vec![],
+                    args: expr.global_function_call.function_call_args.args.clone(),
                 })
             }
         }

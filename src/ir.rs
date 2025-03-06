@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use parol_runtime::Location;
 use std::fmt::Debug;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 #[allow(unused)]
 pub struct Token {
     pub text: String,
@@ -17,7 +17,7 @@ impl Debug for Token {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 #[allow(unused)]
 pub struct Name {
     pub name: Vec<Token>,
@@ -33,14 +33,14 @@ impl Debug for Name {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub struct StoredDefinition {
     pub class_list: IndexMap<String, ClassDefinition>,
     pub within: Option<Name>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 #[allow(unused)]
 pub struct Component {
     pub name: String,
@@ -50,7 +50,26 @@ pub struct Component {
     pub connection: Connection,
 }
 
-#[derive(Debug, Default, Clone)]
+impl Debug for Component {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut builder = f.debug_struct("Component");
+        builder
+            .field("name", &self.name)
+            .field("type_name", &self.type_name);
+        if self.variability != Variability::Empty {
+            builder.field("variability", &self.variability);
+        }
+        if self.causality != Causality::Empty {
+            builder.field("causality", &self.causality);
+        }
+        if self.connection != Connection::Empty {
+            builder.field("connection", &self.connection);
+        }
+        builder.finish()
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub struct ClassDefinition {
     pub name: Token,
@@ -65,7 +84,7 @@ pub struct ClassDefinition {
     pub initial_algorithms: Vec<Vec<Statement>>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 #[allow(unused)]
 pub struct ComponentRefPart {
     pub ident: Token,
@@ -89,7 +108,7 @@ impl Debug for ComponentRefPart {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 #[allow(unused)]
 pub struct ComponentReference {
     pub local: bool,
@@ -106,21 +125,21 @@ impl Debug for ComponentReference {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq)]
 #[allow(unused)]
 pub struct EquationBlock {
     pub cond: Expression,
     pub eqs: Vec<Equation>,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq)]
 #[allow(unused)]
 pub struct StatementBlock {
     pub cond: Expression,
     pub stmts: Vec<Statement>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Equation {
     #[default]
@@ -138,8 +157,10 @@ pub enum Equation {
         range: Expression,
         equations: Vec<Equation>,
     },
-    When {
-        blocks: Vec<EquationBlock>,
+    When(Vec<EquationBlock>),
+    If {
+        cond_blocks: Vec<EquationBlock>,
+        else_block: Option<Vec<Equation>>,
     },
     FunctionCall {
         comp: ComponentReference,
@@ -147,7 +168,7 @@ pub enum Equation {
     },
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum OpBinary {
     #[default]
     Add,
@@ -169,7 +190,7 @@ pub enum OpBinary {
     DivElem,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum OpUnary {
     #[default]
     Plus,
@@ -177,7 +198,7 @@ pub enum OpUnary {
     Not,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum TerminalType {
     #[default]
     Empty,
@@ -188,7 +209,7 @@ pub enum TerminalType {
     End,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Expression {
     #[default]
@@ -251,7 +272,7 @@ impl Debug for Expression {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Statement {
     #[default]
@@ -266,9 +287,10 @@ pub enum Statement {
     Break {
         token: Token,
     },
+    While(StatementBlock),
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Subscript {
     #[default]
@@ -279,7 +301,7 @@ pub enum Subscript {
     },
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Variability {
     #[default]
@@ -289,7 +311,7 @@ pub enum Variability {
     Parameter(Token),
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Connection {
     #[default]
@@ -298,7 +320,7 @@ pub enum Connection {
     Stream(Token),
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Causality {
     #[default]
