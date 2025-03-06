@@ -48,6 +48,8 @@ pub struct Component {
     pub variability: Variability,
     pub causality: Causality,
     pub connection: Connection,
+    pub description: Vec<Token>,
+    //pub annotation: Option<Token>,
 }
 
 impl Debug for Component {
@@ -64,6 +66,9 @@ impl Debug for Component {
         }
         if self.connection != Connection::Empty {
             builder.field("connection", &self.connection);
+        }
+        if self.description.len() > 0 {
+            builder.field("description", &self.description);
         }
         builder.finish()
     }

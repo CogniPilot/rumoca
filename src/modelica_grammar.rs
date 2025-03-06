@@ -210,6 +210,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     variability: variability.clone(),
                                     causality: ir::Causality::Empty,
                                     connection: connection.clone(),
+                                    description: c.description.description_string.tokens.clone(),
+                                    //annotation,
                                 };
                                 def.components
                                     .insert(c.declaration.ident.text.clone(), value);
@@ -233,42 +235,40 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
 }
 
 //-----------------------------------------------------------------------------
-// #[derive(Debug, Default, Clone)]
-// #[allow(unused)]
-// pub struct Element {
-//     pub name: String,
-// }
+impl TryFrom<&modelica_grammar_trait::String> for ir::Token {
+    type Error = anyhow::Error;
 
-// impl TryFrom<&modelica_grammar_trait::Element> for Element {
-//     type Error = anyhow::Error;
-
-//     fn try_from(ast: &modelica_grammar_trait::Element) -> std::result::Result<Self, Self::Error> {
-//         Ok(Element {
-//             name: "".to_string(),
-//             span: ast.span().clone(),
-//         })
-//     }
-// }
+    fn try_from(ast: &modelica_grammar_trait::String) -> std::result::Result<Self, Self::Error> {
+        Ok(ast.string.clone())
+    }
+}
 
 //-----------------------------------------------------------------------------
-// #[derive(Debug, Default, Clone)]
-// #[allow(unused)]
-// pub struct ComponentClause {
-//     pub name: String,
-// }
+#[derive(Default, Clone, Debug, PartialEq)]
+#[allow(unused)]
+pub struct TokenList {
+    pub tokens: Vec<ir::Token>,
+}
 
-// impl TryFrom<&modelica_grammar_trait::ComponentClause> for ComponentClause {
-//     type Error = anyhow::Error;
+impl TryFrom<&modelica_grammar_trait::DescriptionString> for TokenList {
+    type Error = anyhow::Error;
 
-//     fn try_from(
-//         ast: &modelica_grammar_trait::ComponentClause,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         Ok(ComponentClause {
-//             name: "".to_string(),
-//             span: ast.span().clone(),
-//         })
-//     }
-// }
+    fn try_from(
+        ast: &modelica_grammar_trait::DescriptionString,
+    ) -> std::result::Result<Self, Self::Error> {
+        let mut tokens = Vec::new();
+        match &ast.description_string_opt {
+            Some(opt) => {
+                tokens.push(opt.string.clone());
+                for string in &opt.description_string_opt_list {
+                    tokens.push(string.string.clone());
+                }
+            }
+            None => {}
+        }
+        Ok(TokenList { tokens })
+    }
+}
 
 //-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
@@ -290,46 +290,6 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
         Ok(ComponentList { components })
     }
 }
-
-//-----------------------------------------------------------------------------
-// #[derive(Debug, Default, Clone)]
-// #[allow(unused)]
-// pub struct ComponentDeclaration {
-//     pub name: String,
-// }
-
-// impl TryFrom<&modelica_grammar_trait::ComponentDeclaration> for ComponentDeclaration {
-//     type Error = anyhow::Error;
-
-//     fn try_from(
-//         ast: &modelica_grammar_trait::ComponentDeclaration,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         Ok(ComponentDeclaration {
-//             name: "".to_string(),
-//             span: ast.span().clone(),
-//         })
-//     }
-// }
-
-//-----------------------------------------------------------------------------
-// #[derive(Debug, Default, Clone)]
-// #[allow(unused)]
-// pub struct Declaration {
-//     pub name: String,
-// }
-
-// impl TryFrom<&modelica_grammar_trait::Declaration> for Declaration {
-//     type Error = anyhow::Error;
-
-//     fn try_from(
-//         ast: &modelica_grammar_trait::Declaration,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         Ok(Declaration {
-//             name: "".to_string(),
-//             span: ast.span().clone(),
-//         })
-//     }
-// }
 
 //-----------------------------------------------------------------------------
 #[derive(Debug, Default, Clone)]
@@ -382,46 +342,6 @@ impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
 }
 
 //-----------------------------------------------------------------------------
-// #[derive(Debug, Default, Clone)]
-// #[allow(unused)]
-// pub struct TypePrefix {
-//     pub name: String,
-// }
-
-// impl TryFrom<&modelica_grammar_trait::TypePrefix> for TypePrefix {
-//     type Error = anyhow::Error;
-
-//     fn try_from(
-//         ast: &modelica_grammar_trait::TypePrefix,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         Ok(TypePrefix {
-//             name: "".to_string(),
-//             span: ast.span().clone(),
-//         })
-//     }
-// }
-
-//-----------------------------------------------------------------------------
-// #[derive(Debug, Default, Clone)]
-// #[allow(unused)]
-// pub struct TypeSpecifier {
-//     pub name: String,
-// }
-
-// impl TryFrom<&modelica_grammar_trait::TypeSpecifier> for TypeSpecifier {
-//     type Error = anyhow::Error;
-
-//     fn try_from(
-//         ast: &modelica_grammar_trait::TypeSpecifier,
-//     ) -> std::result::Result<Self, Self::Error> {
-//         Ok(TypeSpecifier {
-//             name: "".to_string(),
-//             span: ast.span().clone(),
-//         })
-//     }
-// }
-
-//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::Ident> for ir::Token {
     type Error = anyhow::Error;
 
@@ -443,6 +363,7 @@ impl TryFrom<&modelica_grammar_trait::Ident> for ir::Token {
     }
 }
 
+//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for ir::Token {
     type Error = anyhow::Error;
 
@@ -458,6 +379,7 @@ impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for ir::Token {
     }
 }
 
+//-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::UnsignedReal> for ir::Token {
     type Error = anyhow::Error;
 
@@ -786,7 +708,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
             }
             modelica_grammar_trait::Primary::String(string) => Ok(ir::Expression::Terminal {
                 terminal_type: ir::TerminalType::String,
-                token: string.string.string.clone(),
+                token: string.string.clone(),
             }),
             modelica_grammar_trait::Primary::True(bool) => Ok(ir::Expression::Terminal {
                 terminal_type: ir::TerminalType::Bool,
