@@ -587,8 +587,11 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::Statement {
                             value: assign.expression.clone(),
                         })
                     }
-                    modelica_grammar_trait::ComponentStatementGroup::FunctionCallArgs(..) => {
-                        todo!("function call")
+                    modelica_grammar_trait::ComponentStatementGroup::FunctionCallArgs(args) => {
+                        Ok(ir::Statement::FunctionCall {
+                            comp: stmt.component_statement.component_reference.clone(),
+                            args: args.function_call_args.args.clone(),
+                        })
                     }
                 }
             }
@@ -598,7 +601,10 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::Statement {
             modelica_grammar_trait::StatementOption::Return(tok) => Ok(ir::Statement::Return {
                 token: tok.r#return.r#return.clone(),
             }),
-            modelica_grammar_trait::StatementOption::ForStatement(..) => todo!("for"),
+            modelica_grammar_trait::StatementOption::ForStatement(..) => Ok(ir::Statement::For {
+                indices: vec![], // todo
+                equations: vec![],
+            }),
             modelica_grammar_trait::StatementOption::IfStatement(..) => todo!("if"),
             modelica_grammar_trait::StatementOption::WhenStatement(..) => todo!("when"),
             modelica_grammar_trait::StatementOption::WhileStatement(..) => todo!("while"),

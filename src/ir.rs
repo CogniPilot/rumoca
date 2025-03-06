@@ -139,6 +139,13 @@ pub struct StatementBlock {
     pub stmts: Vec<Statement>,
 }
 
+#[derive(Default, Debug, Clone, PartialEq)]
+#[allow(unused)]
+pub struct ForIndex {
+    pub ident: Token,
+    pub range: Expression,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 #[allow(unused)]
 pub enum Equation {
@@ -153,8 +160,7 @@ pub enum Equation {
         rhs: ComponentReference,
     },
     For {
-        index: Token,
-        range: Expression,
+        indices: Vec<ForIndex>,
         equations: Vec<Equation>,
     },
     When(Vec<EquationBlock>),
@@ -287,7 +293,15 @@ pub enum Statement {
     Break {
         token: Token,
     },
+    For {
+        indices: Vec<ForIndex>,
+        equations: Vec<Statement>,
+    },
     While(StatementBlock),
+    FunctionCall {
+        comp: ComponentReference,
+        args: Vec<Expression>,
+    },
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
