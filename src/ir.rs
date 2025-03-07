@@ -1,8 +1,19 @@
 use indexmap::IndexMap;
-use parol_runtime::Location;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Location {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub start: u32,
+    pub end: u32,
+    pub file_name: String,
+}
+
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct Token {
     pub text: String,
@@ -17,7 +28,7 @@ impl Debug for Token {
     }
 }
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct Name {
     pub name: Vec<Token>,
@@ -33,14 +44,14 @@ impl Debug for Name {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct StoredDefinition {
     pub class_list: IndexMap<String, ClassDefinition>,
     pub within: Option<Name>,
 }
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct Component {
     pub name: String,
@@ -74,7 +85,7 @@ impl Debug for Component {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct ClassDefinition {
     pub name: Token,
@@ -89,7 +100,7 @@ pub struct ClassDefinition {
     pub initial_algorithms: Vec<Vec<Statement>>,
 }
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct ComponentRefPart {
     pub ident: Token,
@@ -113,7 +124,7 @@ impl Debug for ComponentRefPart {
     }
 }
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct ComponentReference {
     pub local: bool,
@@ -130,28 +141,28 @@ impl Debug for ComponentReference {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct EquationBlock {
     pub cond: Expression,
     pub eqs: Vec<Equation>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct StatementBlock {
     pub cond: Expression,
     pub stmts: Vec<Statement>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct ForIndex {
     pub ident: Token,
     pub range: Expression,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub enum Equation {
     #[default]
@@ -179,7 +190,7 @@ pub enum Equation {
     },
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpBinary {
     #[default]
     Add,
@@ -201,7 +212,7 @@ pub enum OpBinary {
     DivElem,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpUnary {
     #[default]
     Plus,
@@ -209,7 +220,7 @@ pub enum OpUnary {
     Not,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TerminalType {
     #[default]
     Empty,
@@ -220,7 +231,7 @@ pub enum TerminalType {
     End,
 }
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub enum Expression {
     #[default]
@@ -247,6 +258,9 @@ pub enum Expression {
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
+    },
+    Array {
+        elements: Vec<Expression>,
     },
 }
 
@@ -279,11 +293,12 @@ impl Debug for Expression {
                 terminal_type,
                 token,
             } => write!(f, "{:?}({:?})", terminal_type, token),
+            Expression::Array { elements } => f.debug_list().entries(elements.iter()).finish(),
         }
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub enum Statement {
     #[default]
@@ -309,7 +324,7 @@ pub enum Statement {
     },
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub enum Subscript {
     #[default]
@@ -320,7 +335,7 @@ pub enum Subscript {
     },
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub enum Variability {
     #[default]
@@ -330,7 +345,7 @@ pub enum Variability {
     Parameter(Token),
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub enum Connection {
     #[default]
@@ -339,7 +354,7 @@ pub enum Connection {
     Stream(Token),
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub enum Causality {
     #[default]

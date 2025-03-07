@@ -39,7 +39,22 @@ impl TryFrom<&Token<'_>> for ir::Token {
     fn try_from(value: &Token<'_>) -> std::result::Result<Self, Self::Error> {
         Ok(ir::Token {
             text: value.text().to_string(),
-            location: value.location.clone(),
+            location: ir::Location {
+                start_line: value.location.start_line,
+                start_column: value.location.start_column,
+                end_line: value.location.end_line,
+                end_column: value.location.end_column,
+                start: value.location.start,
+                end: value.location.end,
+                file_name: value
+                    .location
+                    .file_name
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            },
             token_number: value.token_number,
             token_type: value.token_type,
         })

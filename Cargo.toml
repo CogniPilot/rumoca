@@ -5,11 +5,14 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
+clap = "4.5.31"
 env_logger = "0.11"
-indexmap = "2.7.1"
+indexmap = { version = "2.7.1", features = ["serde"] }
+minijinja = "2.8.0"
 parol = { path = "../parol/crates/parol" }
 #parol = "3.0.0"
 parol_runtime = { path = "../parol/crates/parol_runtime" }
+serde = "1.0.218"
 # parol_runtime = "2.2.1"
 thiserror = "1.0"
 
