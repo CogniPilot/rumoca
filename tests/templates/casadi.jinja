@@ -1,5 +1,5 @@
 {%- macro render_class(class) -%}
-class {{ class.name.text }}(BaseModel)
+class {{ class.name.text }}(BaseModel):
 
     def __init__(self):
 
@@ -26,11 +26,20 @@ class {{ class.name.text }}(BaseModel)
             {% endif -%}
         {%- endfor %}
 
-        self.x_dot = ca.vertcat(
+        self.ode = ca.vertcat(
             {%- for cname, comp in class.components | items %}
             der_{{ comp.name }} {%- if not loop.last %}, {% endif %}
             {%- endfor %}
         )
+        self.z = ca.vertcat()
+        self.u = ca.vertcat()
+        self.y = ca.vertcat()
+        self.p = ca.vertcat()
+        self.alg = ca.vertcat()
+
+        self.p0 = {}
+        self.z0 = {}
+        self.x0 = {}
 
 {%- endmacro -%}
 
@@ -96,4 +105,4 @@ def cat(axis, *args):
 
 
 {{ render_class(class) }}
-{%- endfor -%}
+{%- endfor %}

@@ -673,6 +673,25 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
 }
 
 //-----------------------------------------------------------------------------
+impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::OutputExpressionList,
+    ) -> std::result::Result<Self, Self::Error> {
+        let mut v = Vec::new();
+        if let Some(opt) = &ast.output_expression_list_opt {
+            v.push(opt.expression.clone());
+        }
+        for expr in &ast.output_expression_list_list {
+            if let Some(opt) = &expr.output_expression_list_opt0 {
+                v.push(opt.expression.clone());
+            }
+        }
+        Ok(ExpressionList { args: v })
+    }
+}
+
 impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
     type Error = anyhow::Error;
 
@@ -743,8 +762,15 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::Expression {
             modelica_grammar_trait::Primary::RangePrimary(..) => {
                 todo!("expression list")
             }
-            modelica_grammar_trait::Primary::OutputPrimary(..) => {
-                todo!("output_expression")
+            modelica_grammar_trait::Primary::OutputPrimary(output) => {
+                let primary = &output.output_primary;
+                if primary.output_primary_opt.is_some() {
+                    todo!("output_primary array subs/ ident");
+                };
+                if primary.output_expression_list.args.len() > 1 {
+                    todo!("comma in output primary");
+                }
+                Ok(primary.output_expression_list.args[0].clone())
             }
             modelica_grammar_trait::Primary::GlobalFunctionCall(expr) => {
                 let tok = match &expr.global_function_call.global_function_call_group {

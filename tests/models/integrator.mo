@@ -1,5 +1,5 @@
 model Integrator
     Real x;
 equation
-    der(x) = 1;
+    der(x) = time;
 end Integrator;

@@ -26,6 +26,7 @@
 %nt_type logical_factor = crate::ir::Expression
 %nt_type logical_term = crate::ir::Expression
 %nt_type name = crate::ir::Name
+%nt_type output_expression_list = crate::modelica_grammar::ExpressionList
 %nt_type primary = crate::ir::Expression
 %nt_type relation = crate::ir::Expression
 %nt_type simple_expression = crate::ir::Expression
