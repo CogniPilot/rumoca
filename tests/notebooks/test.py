@@ -55,9 +55,7 @@ class Integrator(BaseModel):
             x
         )
 
-        der_x = 
-    {"ComponentReference": {"local": false, "parts": [{"ident": {"location": {"end": 55, "end_column": 18, "end_line": 4, "file_name": "integrator.mo", "start": 51, "start_column": 14, "start_line": 4}, "text": "time", "token_number": 11, "token_type": 64}, "subs": none}]}}
-    ;
+        der_x = 1;
 
         self.ode = ca.vertcat(
             der_x
@@ -71,6 +69,3 @@ class Integrator(BaseModel):
         self.p0 = {}
         self.z0 = {}
         self.x0 = {}
-
-if __name__ == '__main__':
-    Clasee
