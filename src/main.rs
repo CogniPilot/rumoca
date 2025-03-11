@@ -6,6 +6,8 @@ mod dae;
 mod ir;
 mod modelica_grammar_trait;
 mod modelica_parser;
+use indexmap::IndexMap;
+use ir::StoredDefinition;
 use minijinja::{Environment, context};
 
 use crate::modelica_grammar::ModelicaGrammar;
@@ -59,13 +61,55 @@ fn main() -> Result<()> {
         Ok(_syntax_tree) => {
             let elapsed_time = now.elapsed();
 
+            // parse
             let def = modelica_grammar.modelica.expect("failed to parse");
-
             if args.verbose {
                 println!("Parsing took {} milliseconds.", elapsed_time.as_millis());
                 println!("Success!\n{:#?}", def);
             }
 
+            // flatten the syntax tree
+            let mut count = 0;
+            let mut main_class_name = String::new();
+            let mut class_dict = IndexMap::new();
+
+            for (class_name, class) in &def.class_list {
+                if count == 0 {
+                    main_class_name = class.name.text.clone();
+                } else {
+                    class_dict.insert(class_name.clone(), class.clone());
+                }
+                count += 1;
+            }
+
+            let mut flat_class = None;
+
+            if let Some(main_class) = def.class_list.get(&main_class_name) {
+                let mut fclass = main_class.clone();
+                for (comp_name, comp) in &main_class.components {
+                    if class_dict.contains_key(&comp.type_name.to_string()) {
+                        println!("Component: {:#?}", comp);
+                        let comp_class = class_dict.get(&comp.type_name.to_string()).unwrap();
+                        for eq in &comp_class.equations {
+                            fclass.equations.push(eq.clone());
+                        }
+                        for (subcomp_name, subcomp) in &comp_class.components {
+                            let mut scomp = subcomp.clone();
+                            let name = format!("{}.{}", comp_name, subcomp_name);
+                            scomp.name = name.clone();
+                            fclass.components.insert(name, scomp);
+                        }
+                        fclass.components.swap_remove(comp_name);
+                    }
+                }
+                flat_class = Some(fclass);
+            }
+
+            if let Some(fclass) = flat_class {
+                println!("Flat Class: {:#?}", fclass);
+            }
+
+            // render template
             if args.template_file.is_some() {
                 if let Some(template_file) = &args.template_file {
                     let template_txt = fs::read_to_string(template_file)

@@ -1,6 +1,6 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{fmt::Debug, fmt::Display};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Location {
@@ -32,6 +32,16 @@ impl Debug for Token {
 #[allow(unused)]
 pub struct Name {
     pub name: Vec<Token>,
+}
+
+impl Display for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut s = Vec::new();
+        for n in &self.name {
+            s.push(n.text.clone());
+        }
+        write!(f, "{}", s.join("."))
+    }
 }
 
 impl Debug for Name {
