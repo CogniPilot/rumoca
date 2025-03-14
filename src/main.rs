@@ -6,9 +6,10 @@ mod dae;
 mod ir;
 mod modelica_grammar_trait;
 mod modelica_parser;
+mod visitor;
 use indexmap::IndexMap;
-use ir::StoredDefinition;
 use minijinja::{Environment, context};
+use visitor::Visitor;
 
 use crate::modelica_grammar::ModelicaGrammar;
 use crate::modelica_parser::parse;
@@ -62,7 +63,7 @@ fn main() -> Result<()> {
             let elapsed_time = now.elapsed();
 
             // parse
-            let def = modelica_grammar.modelica.expect("failed to parse");
+            let mut def = modelica_grammar.modelica.expect("failed to parse");
             if args.verbose {
                 println!("Parsing took {} milliseconds.", elapsed_time.as_millis());
                 println!("Success!\n{:#?}", def);
@@ -85,27 +86,40 @@ fn main() -> Result<()> {
             let mut flat_class = None;
 
             if let Some(main_class) = def.class_list.get(&main_class_name) {
+                // create flat class
                 let mut fclass = main_class.clone();
+
+                // for each component in the main class
                 for (comp_name, comp) in &main_class.components {
+                    // if the the component type is a class
                     if class_dict.contains_key(&comp.type_name.to_string()) {
-                        println!("Component: {:#?}", comp);
                         let comp_class = class_dict.get(&comp.type_name.to_string()).unwrap();
+
+                        // add equaition from component to flat class
                         for eq in &comp_class.equations {
                             fclass.equations.push(eq.clone());
                         }
+
+                        fclass.accept(&mut visitor::sub_comp_namer::SubCompNamer {
+                            comp: comp_name.clone(),
+                        });
+
+                        // add subcomponents from component to flat class
                         for (subcomp_name, subcomp) in &comp_class.components {
                             let mut scomp = subcomp.clone();
-                            let name = format!("{}.{}", comp_name, subcomp_name);
+                            let name = format!("{}_{}", comp_name, subcomp_name);
                             scomp.name = name.clone();
                             fclass.components.insert(name, scomp);
                         }
+
+                        // remove compoment from flat class, as it has been expanded
                         fclass.components.swap_remove(comp_name);
                     }
                 }
                 flat_class = Some(fclass);
             }
 
-            if let Some(fclass) = flat_class {
+            if let Some(mut fclass) = flat_class {
                 println!("Flat Class: {:#?}", fclass);
             }
 

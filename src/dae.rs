@@ -33,6 +33,7 @@ use indexmap::IndexMap;
 ///                   when-clauses after conversion, see section 8.3.5).
 /// * `relation(v)` : A relation containing variables v_i, e.g. v1 > v2, v3 >= 0.
 ///                   algebraic equations
+#[allow(unused)]
 pub struct Dae {
     pub p: IndexMap<String, String>,
     pub t: IndexMap<String, String>,
