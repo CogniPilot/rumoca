@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 
 /// # DAE: Differential Algebraic Equations
 ///
@@ -34,6 +35,7 @@ use indexmap::IndexMap;
 /// * `relation(v)` : A relation containing variables v_i, e.g. v1 > v2, v3 >= 0.
 ///                   algebraic equations
 #[allow(unused)]
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dae {
     pub p: IndexMap<String, String>,
     pub t: IndexMap<String, String>,

@@ -1,20 +1,12 @@
 extern crate parol_runtime;
-
-use indexmap::IndexMap;
-use minijinja::{Environment, context};
-
-use rumoca::ir::visitor::Visitable;
-use rumoca::ir::visitors::scope_pusher::ScopePusher;
-use rumoca::ir::visitors::sub_comp_namer::SubCompNamer;
+use clap::Parser;
+use parol_runtime::{Report, log::debug};
 use rumoca::modelica_grammar::ModelicaGrammar;
 use rumoca::modelica_parser::parse;
-
-use anyhow::{Context, Result};
-
-use parol_runtime::{Report, log::debug};
+use rumoca::{dae, ir::flatten::flatten};
 use std::{fs, time::Instant};
 
-use clap::Parser;
+use anyhow::{Context, Result};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Rumoca Modelica Translator", long_about = None)]
@@ -32,14 +24,6 @@ struct Args {
     verbose: bool,
 }
 
-pub fn panic(msg: &str) {
-    panic!("{:?}", msg);
-}
-
-pub fn warn(msg: &str) {
-    eprintln!("{:?}", msg);
-}
-
 struct ErrorReporter;
 impl Report for ErrorReporter {}
 
@@ -54,89 +38,29 @@ fn main() -> Result<()> {
 
     let mut modelica_grammar = ModelicaGrammar::new();
     let now = Instant::now();
+
     match parse(&input, &file_name, &mut modelica_grammar) {
         Ok(_syntax_tree) => {
             let elapsed_time = now.elapsed();
 
-            // parse
+            // parse tree
             let def = modelica_grammar.modelica.expect("failed to parse");
             if args.verbose {
                 println!("Parsing took {} milliseconds.", elapsed_time.as_millis());
                 println!("Success!\n{:#?}", def);
             }
 
-            // flatten the syntax tree
-            let mut count = 0;
-            let mut main_class_name = String::new();
-            let mut class_dict = IndexMap::new();
+            // flatten tree
+            let fclass = flatten(&def);
 
-            for (class_name, class) in &def.class_list {
-                if count == 0 {
-                    main_class_name = class.name.text.clone();
-                } else {
-                    class_dict.insert(class_name.clone(), class.clone());
-                }
-                count += 1;
-            }
-
-            let mut flat_class = None;
-
-            if let Some(main_class) = def.class_list.get(&main_class_name) {
-                // create flat class
-                let mut fclass = main_class.clone();
-
-                // for each component in the main class
-                for (comp_name, comp) in &main_class.components {
-                    // if the the component type is a class
-                    if class_dict.contains_key(&comp.type_name.to_string()) {
-                        let comp_class = class_dict.get(&comp.type_name.to_string()).unwrap();
-
-                        // add equation from component to flat class
-                        for eq in &comp_class.equations {
-                            let mut feq = eq.clone();
-                            feq.accept(&mut ScopePusher {
-                                comp: comp_name.clone(),
-                            });
-                            fclass.equations.push(feq);
-                        }
-
-                        fclass.accept(&mut SubCompNamer {
-                            comp: comp_name.clone(),
-                        });
-
-                        // add subcomponents from component to flat class
-                        for (subcomp_name, subcomp) in &comp_class.components {
-                            let mut scomp = subcomp.clone();
-                            let name = format!("{}_{}", comp_name, subcomp_name);
-                            scomp.name = name.clone();
-                            fclass.components.insert(name, scomp);
-                        }
-
-                        // remove compoment from flat class, as it has been expanded
-                        fclass.components.swap_remove(comp_name);
-                    }
-                }
-                flat_class = Some(fclass);
-            }
-
-            if let Some(fclass) = flat_class {
-                println!("Flat Class: {:#?}", fclass);
-            }
+            println!("Flat Class: {:#?}", fclass);
+            // create DAE
+            let dae = rumoca::dae::ast::Dae::default();
 
             // render template
             if args.template_file.is_some() {
-                if let Some(template_file) = &args.template_file {
-                    let template_txt = fs::read_to_string(template_file)
-                        .with_context(|| format!("Can't read file {}", template_file))?;
-
-                    let mut env = Environment::new();
-                    env.add_function("panic", panic);
-                    env.add_function("warn", warn);
-                    env.add_template("template", &template_txt)?;
-                    let tmpl = env.get_template("template")?;
-                    let txt = tmpl.render(context!(def => def)).unwrap();
-                    println!("{}", txt);
-                }
+                let s = args.template_file.unwrap();
+                dae::jinja::render_template(dae, &s)?;
             }
             Ok(())
         }
