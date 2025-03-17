@@ -2,43 +2,43 @@
 %title "Modelica grammar"
 %comment "Modelica grammar 3.7-dev for `parol`"
 %line_comment "//"
-%t_type crate::ir::Token
+%t_type crate::ir::ast::Token
 %nt_type algorithm_section = crate::modelica_grammar::AlgorithmSection
-%nt_type arithmetic_expression = crate::ir::Expression
+%nt_type arithmetic_expression = crate::ir::ast::Expression
 %nt_type array_subscripts = crate::modelica_grammar::ArraySubscripts
-%nt_type class_definition = crate::ir::ClassDefinition
+%nt_type class_definition = crate::ir::ast::ClassDefinition
 %nt_type component_list = crate::modelica_grammar::ComponentList
-%nt_type component_reference = crate::ir::ComponentReference
-%nt_type component_ref_part = crate::ir::ComponentRefPart
+%nt_type component_reference = crate::ir::ast::ComponentReference
+%nt_type component_ref_part = crate::ir::ast::ComponentRefPart
 %nt_type composition = crate::modelica_grammar::Composition
 %nt_type description_string = crate::modelica_grammar::TokenList
 %nt_type element_list = crate::modelica_grammar::ElementList
-%nt_type equation_block = crate::ir::EquationBlock
+%nt_type equation_block = crate::ir::ast::EquationBlock
 %nt_type equation_section = crate::modelica_grammar::EquationSection
-%nt_type expression = crate::ir::Expression
-%nt_type factor = crate::ir::Expression
+%nt_type expression = crate::ir::ast::Expression
+%nt_type factor = crate::ir::ast::Expression
 %nt_type function_call_args = crate::modelica_grammar::ExpressionList
-%nt_type function_argument = crate::ir::Expression
+%nt_type function_argument = crate::ir::ast::Expression
 %nt_type function_arguments = crate::modelica_grammar::ExpressionList
 %nt_type function_arguments_non_first = crate::modelica_grammar::ExpressionList
-%nt_type ident = crate::ir::Token
-%nt_type logical_expression = crate::ir::Expression
-%nt_type logical_factor = crate::ir::Expression
-%nt_type logical_term = crate::ir::Expression
-%nt_type name = crate::ir::Name
+%nt_type ident = crate::ir::ast::Token
+%nt_type logical_expression = crate::ir::ast::Expression
+%nt_type logical_factor = crate::ir::ast::Expression
+%nt_type logical_term = crate::ir::ast::Expression
+%nt_type name = crate::ir::ast::Name
 %nt_type output_expression_list = crate::modelica_grammar::ExpressionList
-%nt_type primary = crate::ir::Expression
-%nt_type relation = crate::ir::Expression
-%nt_type simple_expression = crate::ir::Expression
-%nt_type some_equation = crate::ir::Equation
-%nt_type statement = crate::ir::Statement
-%nt_type statement_block = crate::ir::StatementBlock
-%nt_type stored_definition = crate::ir::StoredDefinition
-%nt_type string = crate::ir::Token
-%nt_type subscript = crate::ir::Subscript
-%nt_type term = crate::ir::Expression
-%nt_type unsigned_integer = crate::ir::Token
-%nt_type unsigned_real = crate::ir::Token
+%nt_type primary = crate::ir::ast::Expression
+%nt_type relation = crate::ir::ast::Expression
+%nt_type simple_expression = crate::ir::ast::Expression
+%nt_type some_equation = crate::ir::ast::Equation
+%nt_type statement = crate::ir::ast::Statement
+%nt_type statement_block = crate::ir::ast::StatementBlock
+%nt_type stored_definition = crate::ir::ast::StoredDefinition
+%nt_type string = crate::ir::ast::Token
+%nt_type subscript = crate::ir::ast::Subscript
+%nt_type term = crate::ir::ast::Expression
+%nt_type unsigned_integer = crate::ir::ast::Token
+%nt_type unsigned_real = crate::ir::ast::Token
 
 %%
 

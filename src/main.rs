@@ -1,18 +1,14 @@
 extern crate parol_runtime;
 
-mod modelica_grammar;
-
-mod dae;
-mod ir;
-mod modelica_grammar_trait;
-mod modelica_parser;
-mod visitor;
 use indexmap::IndexMap;
 use minijinja::{Environment, context};
-use visitor::Visitor;
 
-use crate::modelica_grammar::ModelicaGrammar;
-use crate::modelica_parser::parse;
+use rumoca::ir::visitor::Visitable;
+use rumoca::ir::visitors::scope_pusher::ScopePusher;
+use rumoca::ir::visitors::sub_comp_namer::SubCompNamer;
+use rumoca::modelica_grammar::ModelicaGrammar;
+use rumoca::modelica_parser::parse;
+
 use anyhow::{Context, Result};
 
 use parol_runtime::{Report, log::debug};
@@ -63,7 +59,7 @@ fn main() -> Result<()> {
             let elapsed_time = now.elapsed();
 
             // parse
-            let mut def = modelica_grammar.modelica.expect("failed to parse");
+            let def = modelica_grammar.modelica.expect("failed to parse");
             if args.verbose {
                 println!("Parsing took {} milliseconds.", elapsed_time.as_millis());
                 println!("Success!\n{:#?}", def);
@@ -95,12 +91,16 @@ fn main() -> Result<()> {
                     if class_dict.contains_key(&comp.type_name.to_string()) {
                         let comp_class = class_dict.get(&comp.type_name.to_string()).unwrap();
 
-                        // add equaition from component to flat class
+                        // add equation from component to flat class
                         for eq in &comp_class.equations {
-                            fclass.equations.push(eq.clone());
+                            let mut feq = eq.clone();
+                            feq.accept(&mut ScopePusher {
+                                comp: comp_name.clone(),
+                            });
+                            fclass.equations.push(feq);
                         }
 
-                        fclass.accept(&mut visitor::sub_comp_namer::SubCompNamer {
+                        fclass.accept(&mut SubCompNamer {
                             comp: comp_name.clone(),
                         });
 
@@ -119,7 +119,7 @@ fn main() -> Result<()> {
                 flat_class = Some(fclass);
             }
 
-            if let Some(mut fclass) = flat_class {
+            if let Some(fclass) = flat_class {
                 println!("Flat Class: {:#?}", fclass);
             }
 
