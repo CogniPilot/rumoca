@@ -9,16 +9,14 @@ clap = "4.5.31"
 env_logger = "0.11"
 indexmap = { version = "2.7.1", features = ["serde"] }
 minijinja = "2.8.0"
-parol = { path = "../parol/crates/parol" }
-#parol = "3.0.0"
-parol_runtime = { path = "../parol/crates/parol_runtime" }
+parol = "3.0.1"
+parol_runtime = "3.0.0"
 serde = "1.0.218"
 # parol_runtime = "2.2.1"
 thiserror = "1.0"
 
 [build-dependencies]
-parol = { path = "../parol/crates/parol" }
-# parol = "3.0.0"
+parol = "3.0.1"
 
 # For faster builds.
 [profile.dev.build-override]
