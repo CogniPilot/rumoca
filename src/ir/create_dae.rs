@@ -35,6 +35,9 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
             Variability::Empty => {
                 if state_finder.states.contains(&comp.name) {
                     dae.x.push(comp.clone());
+                    let mut der_comp = comp.clone();
+                    der_comp.name = format!("der_{}", comp.name);
+                    dae.x_dot.push(der_comp);
                 } else {
                     match comp.causality {
                         Causality::Input(..) => {

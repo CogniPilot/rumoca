@@ -1,0 +1,152 @@
+{%- macro render_dae(dae) -%}
+    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'y', 'z'] -%}
+import sympy
+import numpy as np
+import scipy.integrate
+
+class Model:
+    """
+    Flattened Modelica Model
+    """
+
+    def __init__(self):
+        # ============================================
+        # Declare time
+        time = sympy.symbols('time')
+
+        {% for var in vars_vects -%}
+        # ============================================
+        # Declare {{ var }}
+        {% for c in dae[var] -%}
+        {{ c.name }} = sympy.symbols('{{ c.name }}')
+        {% endfor -%}
+        self.{{var }} {{ "= sympy.Matrix([" }}{%- for c in dae[var] %}
+            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {% endfor -%} {{ "])" }}
+        self.{{ var }}0 = {{ "{" }} {% for c in dae[var] %}
+            '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {%- endfor -%}{{ "}" }}
+        
+        {% endfor %}
+
+        # ============================================
+        # Declare x_dot
+        {% for c in dae.x_dot -%}
+        {{ c.name }} = sympy.symbols('{{ c.name }}')
+        {% endfor -%}
+        self.x_dot {{ "= sympy.Matrix([" }}{%- for c in dae.x_dot %}
+            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {% endfor -%} {{ "])" }}
+
+        # ============================================
+        # Define Continous Update Function: fx
+        self.fx = sympy.Matrix([{% for eq in dae.fx %}
+            {{ render_equation(eq) }} {%- if not loop.last -%}{{ ", " }}{%- endif %}
+        {%- endfor %}])
+
+        # ============================================
+        # Solve for explicit ODE
+        self.x_dot_eq = self.x_dot.subs(sympy.solve(self.fx, self.x_dot))
+        self.f_x_dot_eq = sympy.lambdify([self.x, self.u, self.p], list(self.x_dot_eq))
+
+    def __repr__(self):
+        return repr(self.__dict__)
+
+    def simulate(self, t=None, u=None):
+        """
+        Simulate the modelica model
+        """
+        if t is None:
+            t = np.arange(0, 1, 0.01)
+        if u is None:
+            def u(t):
+                return 0
+
+        # ============================================
+        # Declare initial vectors
+        {% for var in vars_vects -%}
+        {{ var }}0 = np.array([self.{{ var }}0[k] for k in self.{{ var }}0.keys()])
+        {% endfor %}
+
+        print('x0', x0)
+
+        print('p0', p0)
+        print('u(1)', u(1))
+        print('t', t)
+
+        fun = lambda ti, x: self.f_x_dot_eq(x, u(ti), p0)
+
+        res = scipy.integrate.solve_ivp(
+            y0=x0,
+            fun=fun,
+            t_span=[t[0], t[-1]],
+            t_eval=t,
+        )
+
+{%- endmacro -%}
+
+{%- macro render_expression(expr) -%}
+    {%- if "Terminal" in expr -%}
+        {{- expr.Terminal.token.text -}}
+    {%- elif "FunctionCall" in expr -%}
+        {{- render_function(expr.FunctionCall) -}}
+    {%- elif "ComponentReference" in expr -%}
+        {{- render_component_reference(expr.ComponentReference) -}}
+    {%- elif "Binary" in expr -%}
+        {{- render_binary(expr.Binary) -}}
+    {%- elif "Unary" in expr -%}
+        {{- render_unary(expr.Unary) -}}
+    {%- else -%}
+        UNHANDLED EXPRESSION: {{ expr }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_equation(eq) -%}
+    {%- if "Simple" in eq -%}
+        {{- render_expression(eq.Simple.lhs) -}} {{- " - (" -}}
+        {{- render_expression(eq.Simple.rhs) -}} {{- ")" -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_terminal(term) -%}
+    {% if term.terimanal_type == "UnsignedInteger" %}
+    {{ term.token.text | float }}
+    {% elif term.terimanal_type == "UnsignedReal" %}
+    {{ term.token.text | float }}
+    {% endif %}
+{%- endmacro -%}
+
+{%- macro render_binary(expr) -%}
+    {{- render_expression(expr.lhs) -}} {{- " " -}}
+    {%- if expr.op == "Add" -%}
+        {{ "+" }}
+    {%- elif expr.op == "Sub" -%}
+        {{ "-" }}
+    {%- elif expr.op == "Mul" -%}
+        {{ "*" }}
+    {%- elif expr.op == "Div" -%}
+        {{ "/" }}
+    {%- else -%}
+        UNHANDLED OP: {{ expr.op }}
+    {%- endif -%}
+    {{- " " -}} {{- render_expression(expr.rhs) -}}
+{%- endmacro -%}
+
+
+{%- macro render_unary(expr) -%}
+    {{ expr.op.text }} {{ render_expression(expr.rhs) }}
+{%- endmacro -%}
+
+{%- macro render_component_reference(comp) -%}
+    {%- for part in comp.parts -%}
+        {{ part.ident.text }}{% if not loop.last %}.{% endif %}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_function(func) -%}
+    {{ render_component_reference(func.comp) }} {{- "(" -}}{%- for arg in func.args -%}
+        {{- render_expression(arg) -}} {%- if not loop.last -%}, {%- endif -%}
+    {%- endfor -%}{{ ")" }}
+{%- endmacro -%}
+
+{{ render_dae(dae) }}

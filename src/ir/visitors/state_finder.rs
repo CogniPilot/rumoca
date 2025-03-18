@@ -17,6 +17,9 @@ impl Visitor for StateFinder {
                     match &arg {
                         ir::ast::Expression::ComponentReference(comp) => {
                             self.states.insert(comp.parts[0].ident.text.clone());
+                            let mut der_comp = comp.clone();
+                            der_comp.parts[0].ident.text = format!("der_{}", comp.parts[0].ident.text);
+                            *node = ir::ast::Expression::ComponentReference(der_comp);
                         }
                         _ => {}
                     }

@@ -41,8 +41,10 @@ pub struct Dae {
     pub cp: Vec<Component>,    // constant parameters (ADDED)
     pub t: Component,          // time
     pub x: Vec<Component>,     // continous states
+    pub x_dot: Vec<Component>, // derivatives of continuous states
     pub y: Vec<Component>,     // alg. variables
     pub u: Vec<Component>,     // input (ADDED)
+    pub pre_z: Vec<Component>, // z before event time t_e
     pub z: Vec<Component>,     // real discrete variables, only change at t_e
     pub m: Vec<Component>,     // variables of discrete-value types, only change at t_e
     pub c: Vec<String>,        // conditions of all if-expressions/ when-clauses
