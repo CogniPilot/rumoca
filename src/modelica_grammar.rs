@@ -203,6 +203,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     },
                                     None => ir::ast::Connection::Empty,
                                 };
+                            
                             let variability = match &clause
                                 .component_clause
                                 .type_prefix
@@ -223,12 +224,29 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                 },
                                 None => ir::ast::Variability::Empty,
                             };
+
+                            let causality = match &clause
+                                .component_clause
+                                .type_prefix
+                                .type_prefix_opt1
+                            {
+                                Some(opt) => match &opt.type_prefix_opt1_group {
+                                    modelica_grammar_trait::TypePrefixOpt1Group::Input(c) => {
+                                        ir::ast::Causality::Input(c.input.input.clone())
+                                    }
+                                    modelica_grammar_trait::TypePrefixOpt1Group::Output(c) => {
+                                        ir::ast::Causality::Output(c.output.output.clone())
+                                    }
+                                }
+                                None => ir::ast::Causality::Empty,
+                            };
+
                             for c in &clause.component_clause.component_list.components {
                                 let mut value = ir::ast::Component {
                                     name: c.declaration.ident.text.clone(),
                                     type_name: clause.component_clause.type_specifier.name.clone(),
                                     variability: variability.clone(),
-                                    causality: ir::ast::Causality::Empty,
+                                    causality: causality.clone(),
                                     connection: connection.clone(),
                                     description: c.description.description_string.tokens.clone(),
                                     start: ir::ast::Expression::Terminal {
