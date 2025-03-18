@@ -4,6 +4,10 @@ import sympy
 import numpy as np
 import scipy.integrate
 
+cos = sympy.cos
+sin = sympy.sin
+tan = sympy.tan
+
 class Model:
     """
     Flattened Modelica Model
@@ -46,8 +50,11 @@ class Model:
 
         # ============================================
         # Solve for explicit ODE
-        self.x_dot_eq = self.x_dot.subs(sympy.solve(self.fx, self.x_dot))
-        self.f_x_dot_eq = sympy.lambdify([self.x, self.u, self.p], list(self.x_dot_eq))
+        sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+        self.sol_x_dot = self.x_dot.subs(sol)
+        self.sol_y = self.y.subs(sol)
+        self.f_x_dot = sympy.lambdify([time, self.x, self.u, self.p], list(self.sol_x_dot))
+        self.f_y = sympy.lambdify([time, self.x, self.u, self.p], list(self.sol_y))
 
     def __repr__(self):
         return repr(self.__dict__)
@@ -68,12 +75,24 @@ class Model:
         {{ var }}0 = np.array([self.{{ var }}0[k] for k in self.{{ var }}0.keys()])
         {% endfor %}
 
-        return scipy.integrate.solve_ivp(
+        res = scipy.integrate.solve_ivp(
             y0=x0,
-            fun=lambda ti, x: self.f_x_dot_eq(x, u(ti), p0),
+            fun=lambda ti, x: self.f_x_dot(ti, x, u(ti), p0),
             t_span=[t[0], t[-1]],
             t_eval=t,
         )
+
+        x = res['y']
+        #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]
+        #y = self.f_y(0, [1, 2, 3, 4], [1], [1, 2, 3, 4])
+        print(self.sol_y)
+
+        return {
+            't': t,
+            'x': x,
+            'u': u(t),
+            #'y': y,
+        }
 
 {%- endmacro -%}
 
