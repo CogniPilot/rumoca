@@ -16,27 +16,42 @@ class Model:
         if u is None:
             u = 0
 
-        p0 = {{ "{" }} {% for c in dae.p %}
+        # initial equation
+        self.u0 = {{ "{" }} {% for c in dae.u %}
             '{{ c.name }}': {{ render_expression(c.start) }}
         {%- endfor -%} {{ "}" }}
 
-        x0 = {{ "{" }} {% for c in dae.x %}
+        self.cp0 = {{ "{" }} {% for c in dae.cp %}
             '{{ c.name }}': {{ render_expression(c.start) }}
         {%- endfor -%} {{ "}" }}
 
-        y0 = {{ "{" }} {% for c in dae.y %}
+        self.p0 = {{ "{" }} {% for c in dae.p %}
+            '{{ c.name }}': {{ render_expression(c.start) }}
+        {%- endfor -%} {{ "}" }}
+
+        self.x0 = {{ "{" }} {% for c in dae.x %}
+            '{{ c.name }}': {{ render_expression(c.start) }}
+        {%- endfor -%} {{ "}" }}
+
+        self.y0 = {{ "{" }} {% for c in dae.y %}
             '{{ c.name }}': {{ render_expression(c.start) }}
         {%- endfor -%} {{ "}" }}
     
-        z0 = {{ "{" }} {% for c in dae.z %}
+        self.z0 = {{ "{" }} {% for c in dae.z %}
             '{{ c.name }}': {{ render_expression(c.start) }}
         {%- endfor -%} {{ "}" }}
 
 
+        cp0 = np.array([self.cp0[k] for k in self.cp0.keys()])
         p0 = np.array([self.p0[k] for k in self.p0.keys()])
         x0 = np.array([self.x0[k] for k in self.x0.keys()])
         y0 = np.array([self.y0[k] for k in self.y0.keys()])
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
+
+
+        {% for eq in dae.fx %}
+        {{ render_equation(eq) }}
+        {%- endfor -%} {{ "}" }}
 
         F = ca.integrator(
             'F', 'idas',
@@ -62,11 +77,26 @@ def cat(axis, *args):
 {%- endmacro -%}
 
 {%- macro render_expression(expr) -%}
-    {% if "Terminal" in expr %}
+    {%- if "Terminal" in expr -%}
         {{- expr.Terminal.token.text -}}
-    {% else %}
-    {{ expr }}
-    {% endif %}
+    {%- elif "FunctionCall" in expr -%}
+        {{- render_function(expr.FunctionCall) -}}
+    {%- elif "ComponentReference" in expr -%}
+        {{- render_component_reference(expr.ComponentReference) -}}
+    {%- elif "Binary" in expr -%}
+        {{- render_binary(expr.Binary) -}}
+    {%- elif "Unary" in expr -%}
+        {{- render_unary(expr.Unary) -}}
+    {%- else -%}
+        UNHANDLED EXPRESSION: {{ expr }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_equation(eq) -%}
+    {%- if "Simple" in eq -%}
+        {{- render_expression(eq.Simple.lhs) -}} {{- " = " -}} 
+        {{- render_expression(eq.Simple.rhs) -}}
+    {%- endif -%}
 {%- endmacro -%}
 
 {%- macro render_terminal(term) -%}
@@ -75,6 +105,39 @@ def cat(axis, *args):
     {% elif term.terimanal_type == "UnsignedReal" %}
     {{ term.token.text | float }}
     {% endif %}
+{%- endmacro -%}
+
+{%- macro render_binary(expr) -%}
+    {{- render_expression(expr.lhs) -}} {{- " " -}}
+    {%- if expr.op == "Add" -%}
+        {{ "+" }}
+    {%- elif expr.op == "Sub" -%}
+        {{ "-" }}
+    {%- elif expr.op == "Mul" -%}
+        {{ "*" }}
+    {%- elif expr.op == "Div" -%}
+        {{ "/" }}
+    {%- else -%}
+        UNHANDLED OP: {{ expr.op }}
+    {%- endif -%}
+    {{- " " -}} {{- render_expression(expr.rhs) -}}
+{%- endmacro -%}
+
+
+{%- macro render_unary(expr) -%}
+    {{ expr.op.text }} {{ render_expression(expr.rhs) }}
+{%- endmacro -%}
+
+{%- macro render_component_reference(comp) -%}
+    {%- for part in comp.parts -%}
+        {{ part.ident.text }}{% if not loop.last %}.{% endif %}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_function(func) -%}
+    {{ render_component_reference(func.comp) }} {{- "(" -}}{%- for arg in func.args -%}
+        {{- render_expression(arg) -}} {%- if not loop.last -%}, {%- endif -%}
+    {%- endfor -%}{{ ")" }}
 {%- endmacro -%}
 
 {{ render_dae(dae) }}

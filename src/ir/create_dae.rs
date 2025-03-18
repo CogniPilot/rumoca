@@ -7,7 +7,7 @@ use anyhow::Result;
 pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     let mut dae = Dae {
         t: Component {
-            name: "time".to_string(),
+            name: "t".to_string(),
             type_name: Name {
                 name: vec![Token {
                     text: "Real".to_string(),

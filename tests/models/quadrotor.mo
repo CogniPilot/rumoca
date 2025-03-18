@@ -3,6 +3,8 @@ model Quadrotor
 equation
     m1.omega_ref = time;
     m2.omega_ref = time;
+    m3.omega_ref = time;
+    m4.omega_ref = time;
 end Quadrotor;
 
 model Motor
