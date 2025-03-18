@@ -1,5 +1,5 @@
 {%- macro render_dae(dae) -%}
-    {%- set vars_vects = ['u', 'cp', 'x', 'y', 'z'] -%}
+    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'y', 'z'] -%}
 import casadi as ca
 import numpy as np
 
@@ -26,7 +26,7 @@ class Model:
 
         # ============================================
         # Declare time
-        t = ca.SX.sym('t')
+        time = ca.SX.sym('time')
 
         {% for var in vars_vects -%}
         # ============================================
@@ -38,7 +38,7 @@ class Model:
             {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
         {% endfor -%} {{ ")" }}
         self.{{ var }}0 = {{ "{" }} {% for c in dae[var] %}
-            '{{ c.name }}': {{ render_expression(c.start) }}
+            '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
         {%- endfor -%}{{ "}" }}
         {{ var }}0 = np.array([self.{{ var }}[k] for k in self.{{ var }}0.keys()])
         
