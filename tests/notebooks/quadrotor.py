@@ -132,17 +132,9 @@ class Model:
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
 
-        print('x0', x0)
-
-        print('p0', p0)
-        print('u(1)', u(1))
-        print('t', t)
-
-        fun = lambda ti, x: self.f_x_dot_eq(x, u(ti), p0)
-
-        res = scipy.integrate.solve_ivp(
+        return scipy.integrate.solve_ivp(
             y0=x0,
-            fun=fun,
+            fun=lambda ti, x: self.f_x_dot_eq(x, u(ti), p0),
             t_span=[t[0], t[-1]],
             t_eval=t,
         )
