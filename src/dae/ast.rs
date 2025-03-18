@@ -37,10 +37,12 @@ use serde::{Deserialize, Serialize};
 #[allow(unused)]
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dae {
-    pub p: Vec<Component>,
+    pub p: Vec<Component>,     // parameters
+    pub cp: Vec<Component>,    // constant parameters (ADDED)
     pub t: Component,          // time
     pub x: Vec<Component>,     // continous states
     pub y: Vec<Component>,     // alg. variables
+    pub u: Vec<Component>,     // input (ADDED)
     pub z: Vec<Component>,     // real discrete variables, only change at t_e
     pub m: Vec<Component>,     // variables of discrete-value types, only change at t_e
     pub c: Vec<String>,        // conditions of all if-expressions/ when-clauses

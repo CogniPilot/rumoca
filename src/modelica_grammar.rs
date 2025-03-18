@@ -224,7 +224,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                 None => ir::ast::Variability::Empty,
                             };
                             for c in &clause.component_clause.component_list.components {
-                                let value = ir::ast::Component {
+                                let mut value = ir::ast::Component {
                                     name: c.declaration.ident.text.clone(),
                                     type_name: clause.component_clause.type_specifier.name.clone(),
                                     variability: variability.clone(),
@@ -239,6 +239,56 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         },
                                     },
                                 };
+
+                                // set default start value
+                                value.start = match value.type_name.to_string().as_str() {
+                                    "Real" => ir::ast::Expression::Terminal {
+                                        terminal_type: ir::ast::TerminalType::UnsignedReal,
+                                        token: ir::ast::Token {
+                                            text: "0.0".to_string(),
+                                            ..Default::default()
+                                        },
+                                    },
+                                    "Integer" => ir::ast::Expression::Terminal {
+                                        terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                        token: ir::ast::Token {
+                                            text: "0".to_string(),
+                                            ..Default::default()
+                                        },
+                                    },
+                                    "Bool" => ir::ast::Expression::Terminal {
+                                        terminal_type: ir::ast::TerminalType::Bool,
+                                        token: ir::ast::Token {
+                                            text: "0".to_string(),
+                                            ..Default::default()
+                                        },
+                                    },
+                                    _ => ir::ast::Expression::Empty {},
+                                };
+
+                                // handle for component modification
+                                if let Some(modif) = &c.declaration.declaration_opt0 {
+                                    match &modif.modification {
+                                        modelica_grammar_trait::Modification::ClassModificationModificationOpt(
+                                            _class_mod,
+                                        ) => {
+                                            todo!("class modification")                                            
+                                        }
+                                        modelica_grammar_trait::Modification::EquModificationExpression(
+                                            eq_mod,
+                                        ) => {
+                                            match &eq_mod.modification_expression {
+                                                modelica_grammar_trait::ModificationExpression::Expression(expr) => {
+                                                    value.start = expr.expression.clone();
+                                                }
+                                                &modelica_grammar_trait::ModificationExpression::Break(..) => {
+                                                    todo!("break")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 def.components
                                     .insert(c.declaration.ident.text.clone(), value);
                             }
