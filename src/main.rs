@@ -3,7 +3,7 @@ use clap::Parser;
 use parol_runtime::{Report, log::debug};
 use rumoca::modelica_grammar::ModelicaGrammar;
 use rumoca::modelica_parser::parse;
-use rumoca::{dae, ir::flatten::flatten};
+use rumoca::{dae, ir::create_dae::create_dae, ir::flatten::flatten};
 use std::{fs, time::Instant};
 
 use anyhow::{Context, Result};
@@ -51,11 +51,16 @@ fn main() -> Result<()> {
             }
 
             // flatten tree
-            let fclass = flatten(&def);
+            let mut fclass = flatten(&def)?;
+            if args.verbose {
+                println!("{:#?}", fclass);
+            }
 
-            println!("Flat Class: {:#?}", fclass);
             // create DAE
-            let dae = rumoca::dae::ast::Dae::default();
+            let dae = create_dae(&mut fclass)?;
+            if args.verbose {
+                println!("{:#?}", dae);
+            }
 
             // render template
             if args.template_file.is_some() {

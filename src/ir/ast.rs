@@ -70,6 +70,7 @@ pub struct Component {
     pub causality: Causality,
     pub connection: Connection,
     pub description: Vec<Token>,
+    pub start: Expression,
     //pub annotation: Option<Token>,
 }
 
@@ -139,6 +140,16 @@ impl Debug for ComponentRefPart {
 pub struct ComponentReference {
     pub local: bool,
     pub parts: Vec<ComponentRefPart>,
+}
+
+impl Display for ComponentReference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = Vec::new();
+        for part in &self.parts {
+            s.push(format!("{:?}", part));
+        }
+        write!(f, "{:?}", s.join("."))
+    }
 }
 
 impl Debug for ComponentReference {

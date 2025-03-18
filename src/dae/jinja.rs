@@ -11,7 +11,7 @@ pub fn warn(msg: &str) {
     eprintln!("{:?}", msg);
 }
 
-pub fn render_template(def: Dae, template_file: &str) -> Result<()> {
+pub fn render_template(dae: Dae, template_file: &str) -> Result<()> {
     let template_txt = fs::read_to_string(template_file)
         .with_context(|| format!("Can't read file {}", template_file))?;
 
@@ -20,7 +20,7 @@ pub fn render_template(def: Dae, template_file: &str) -> Result<()> {
     env.add_function("warn", warn);
     env.add_template("template", &template_txt)?;
     let tmpl = env.get_template("template")?;
-    let txt = tmpl.render(context!(def => def)).unwrap();
+    let txt = tmpl.render(context!(dae => dae)).unwrap();
     println!("{}", txt);
     Ok(())
 }

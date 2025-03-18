@@ -1,5 +1,5 @@
 model Quadrotor
-    Motor m1, m2;
+    Motor m1, m2, m3, m4;
 equation
     m1.omega_ref = time;
     m2.omega_ref = time;

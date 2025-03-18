@@ -231,7 +231,13 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     causality: ir::ast::Causality::Empty,
                                     connection: connection.clone(),
                                     description: c.description.description_string.tokens.clone(),
-                                    //annotation,
+                                    start: ir::ast::Expression::Terminal {
+                                        terminal_type: ir::ast::TerminalType::UnsignedReal,
+                                        token: ir::ast::Token {
+                                            text: "0.0".to_string(),
+                                            ..Default::default()
+                                        },
+                                    },
                                 };
                                 def.components
                                     .insert(c.declaration.ident.text.clone(), value);

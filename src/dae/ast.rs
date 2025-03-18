@@ -1,4 +1,4 @@
-use indexmap::IndexMap;
+use crate::ir::ast::{Component, Equation};
 use serde::{Deserialize, Serialize};
 
 /// # DAE: Differential Algebraic Equations
@@ -35,21 +35,18 @@ use serde::{Deserialize, Serialize};
 /// * `relation(v)` : A relation containing variables v_i, e.g. v1 > v2, v3 >= 0.
 ///                   algebraic equations
 #[allow(unused)]
-#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dae {
-    pub p: IndexMap<String, String>,
-    pub t: IndexMap<String, String>,
-    pub x: IndexMap<String, String>,
-    pub y: IndexMap<String, String>,
-    pub z: IndexMap<String, String>,
-    pub pre_z: IndexMap<String, String>,
-    pub m: IndexMap<String, String>,
-    pub pre_m: IndexMap<String, String>,
-    pub c: IndexMap<String, String>,
-    pub relation: IndexMap<String, String>,
-    pub fx: IndexMap<String, String>,
-    pub fz: IndexMap<String, String>,
-    pub fm: IndexMap<String, String>,
-    pub fc: IndexMap<String, String>,
-    pub x_dot: IndexMap<String, String>,
+    pub p: Vec<Component>,
+    pub t: Component,          // time
+    pub x: Vec<Component>,     // continous states
+    pub y: Vec<Component>,     // alg. variables
+    pub z: Vec<Component>,     // real discrete variables, only change at t_e
+    pub m: Vec<Component>,     // variables of discrete-value types, only change at t_e
+    pub c: Vec<String>,        // conditions of all if-expressions/ when-clauses
+    pub relation: Vec<String>, //
+    pub fx: Vec<Equation>,     // continuous time equations
+    pub fz: Vec<Equation>,     // event update equations
+    pub fm: Vec<Equation>,     // discrete update equations
+    pub fc: Vec<Equation>,     // conditions of all if-expressions/ when-clauses
 }
