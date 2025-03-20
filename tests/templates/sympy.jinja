@@ -87,6 +87,8 @@ class Model:
         {{ var }}0 = np.array([self.{{ var }}0[k] for k in self.{{ var }}0.keys()])
         {% endfor %}
 
+        # ============================================
+        # Solve IVP
         res = scipy.integrate.solve_ivp(
             y0=x0,
             fun=lambda ti, x: self.f_x_dot(ti, x, m0, u(ti), p0),

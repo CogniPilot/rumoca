@@ -19,8 +19,8 @@ class Model:
         # ============================================
         # Declare u
         u = sympy.symbols('u')
-        self.u = sympy.Matrix([
-            u])
+        self.u = sympy.Matrix([[
+            u]]).T
         self.u0 = { 
             'u': 0.0}
         
@@ -30,11 +30,11 @@ class Model:
         m2_tau = sympy.symbols('m2_tau')
         m3_tau = sympy.symbols('m3_tau')
         m4_tau = sympy.symbols('m4_tau')
-        self.p = sympy.Matrix([
+        self.p = sympy.Matrix([[
             m1_tau, 
             m2_tau, 
             m3_tau, 
-            m4_tau])
+            m4_tau]]).T
         self.p0 = { 
             'm1_tau': 1.0, 
             'm2_tau': 1.0, 
@@ -43,7 +43,7 @@ class Model:
         
         # ============================================
         # Declare cp
-        self.cp = sympy.Matrix([])
+        self.cp = sympy.Matrix([[]]).T
         self.cp0 = { }
         
         # ============================================
@@ -52,11 +52,11 @@ class Model:
         m2_omega = sympy.symbols('m2_omega')
         m3_omega = sympy.symbols('m3_omega')
         m4_omega = sympy.symbols('m4_omega')
-        self.x = sympy.Matrix([
+        self.x = sympy.Matrix([[
             m1_omega, 
             m2_omega, 
             m3_omega, 
-            m4_omega])
+            m4_omega]]).T
         self.x0 = { 
             'm1_omega': 0.0, 
             'm2_omega': 0.0, 
@@ -66,8 +66,8 @@ class Model:
         # ============================================
         # Declare m
         a = sympy.symbols('a')
-        self.m = sympy.Matrix([
-            a])
+        self.m = sympy.Matrix([[
+            a]]).T
         self.m0 = { 
             'a': 0.0}
         
@@ -77,11 +77,11 @@ class Model:
         m2_omega_ref = sympy.symbols('m2_omega_ref')
         m3_omega_ref = sympy.symbols('m3_omega_ref')
         m4_omega_ref = sympy.symbols('m4_omega_ref')
-        self.y = sympy.Matrix([
+        self.y = sympy.Matrix([[
             m1_omega_ref, 
             m2_omega_ref, 
             m3_omega_ref, 
-            m4_omega_ref])
+            m4_omega_ref]]).T
         self.y0 = { 
             'm1_omega_ref': 0.0, 
             'm2_omega_ref': 0.0, 
@@ -90,7 +90,7 @@ class Model:
         
         # ============================================
         # Declare z
-        self.z = sympy.Matrix([])
+        self.z = sympy.Matrix([[]]).T
         self.z0 = { }
         
         
@@ -101,15 +101,15 @@ class Model:
         der_m2_omega = sympy.symbols('der_m2_omega')
         der_m3_omega = sympy.symbols('der_m3_omega')
         der_m4_omega = sympy.symbols('der_m4_omega')
-        self.x_dot = sympy.Matrix([
+        self.x_dot = sympy.Matrix([[
             der_m1_omega, 
             der_m2_omega, 
             der_m3_omega, 
-            der_m4_omega])
+            der_m4_omega]]).T
 
         # ============================================
         # Define Continous Update Function: fx
-        self.fx = sympy.Matrix([
+        self.fx = sympy.Matrix([[
             m1_omega_ref - (u), 
             m2_omega_ref - (u), 
             m3_omega_ref - (u), 
@@ -117,7 +117,7 @@ class Model:
             der_m1_omega - (1 / m1_tau * m1_omega_ref - m1_omega), 
             der_m2_omega - (1 / m2_tau * m2_omega_ref - m2_omega), 
             der_m3_omega - (1 / m3_tau * m3_omega_ref - m3_omega), 
-            der_m4_omega - (1 / m4_tau * m4_omega_ref - m4_omega)])
+            der_m4_omega - (1 / m4_tau * m4_omega_ref - m4_omega)]]).T
 
         # ============================================
         # Events and Event callbacks
@@ -127,10 +127,12 @@ class Model:
         # ============================================
         # Solve for explicit ODE
         try:
-            sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+            v = sympy.Matrix.vstack(self.x_dot, self.y)
+            sol = sympy.solve(self.fx, v)
         except Exception as e:
             print('solving failed')
-            print(self)
+            for k in self.__dict__.keys():
+                print(k, self.__dict__[k])
             raise(e)
         self.sol_x_dot = self.x_dot.subs(sol)
         self.sol_y = self.y.subs(sol)
@@ -148,7 +150,7 @@ class Model:
             t = np.arange(0, 1, 0.01)
         if u is None:
             def u(t):
-                return 0
+                return np.zeros(self.u.shape[0])
 
         # ============================================
         # Declare initial vectors
@@ -161,6 +163,8 @@ class Model:
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
 
+        # ============================================
+        # Solve IVP
         res = scipy.integrate.solve_ivp(
             y0=x0,
             fun=lambda ti, x: self.f_x_dot(ti, x, m0, u(ti), p0),
@@ -181,7 +185,6 @@ class Model:
         x = res['y']
         #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]
         #y = self.f_y(0, [1, 2, 3, 4], [1], [1, 2, 3, 4])
-        print(self.sol_y)
 
         return {
             't': t,

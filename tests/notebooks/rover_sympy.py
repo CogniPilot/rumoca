@@ -20,9 +20,9 @@ class Model:
         # Declare u
         thr = sympy.symbols('thr')
         str = sympy.symbols('str')
-        self.u = sympy.Matrix([
+        self.u = sympy.Matrix([[
             thr, 
-            str])
+            str]]).T
         self.u0 = { 
             'thr': 0.0, 
             'str': 0.0}
@@ -32,10 +32,10 @@ class Model:
         l = sympy.symbols('l')
         r = sympy.symbols('r')
         m1_tau = sympy.symbols('m1_tau')
-        self.p = sympy.Matrix([
+        self.p = sympy.Matrix([[
             l, 
             r, 
-            m1_tau])
+            m1_tau]]).T
         self.p0 = { 
             'l': 1.0, 
             'r': 0.1, 
@@ -43,7 +43,7 @@ class Model:
         
         # ============================================
         # Declare cp
-        self.cp = sympy.Matrix([])
+        self.cp = sympy.Matrix([[]]).T
         self.cp0 = { }
         
         # ============================================
@@ -52,11 +52,11 @@ class Model:
         x = sympy.symbols('x')
         y = sympy.symbols('y')
         theta = sympy.symbols('theta')
-        self.x = sympy.Matrix([
+        self.x = sympy.Matrix([[
             m1_omega, 
             x, 
             y, 
-            theta])
+            theta]]).T
         self.x0 = { 
             'm1_omega': 0.0, 
             'x': 0.0, 
@@ -66,8 +66,8 @@ class Model:
         # ============================================
         # Declare m
         a = sympy.symbols('a')
-        self.m = sympy.Matrix([
-            a])
+        self.m = sympy.Matrix([[
+            a]]).T
         self.m0 = { 
             'a': 0.0}
         
@@ -75,16 +75,16 @@ class Model:
         # Declare y
         v = sympy.symbols('v')
         m1_omega_ref = sympy.symbols('m1_omega_ref')
-        self.y = sympy.Matrix([
+        self.y = sympy.Matrix([[
             v, 
-            m1_omega_ref])
+            m1_omega_ref]]).T
         self.y0 = { 
             'v': 0.0, 
             'm1_omega_ref': 0.0}
         
         # ============================================
         # Declare z
-        self.z = sympy.Matrix([])
+        self.z = sympy.Matrix([[]]).T
         self.z0 = { }
         
         
@@ -95,22 +95,22 @@ class Model:
         der_x = sympy.symbols('der_x')
         der_y = sympy.symbols('der_y')
         der_theta = sympy.symbols('der_theta')
-        self.x_dot = sympy.Matrix([
+        self.x_dot = sympy.Matrix([[
             der_m1_omega, 
             der_x, 
             der_y, 
-            der_theta])
+            der_theta]]).T
 
         # ============================================
         # Define Continous Update Function: fx
-        self.fx = sympy.Matrix([
+        self.fx = sympy.Matrix([[
             v - (r * m1_omega), 
             der_x - (v * cos(theta)), 
             der_y - (v * sin(theta)), 
             der_theta - (v / l * tan(str)), 
             m1_omega_ref - (thr), 
             a - (1), 
-            der_m1_omega - (1 / m1_tau * m1_omega_ref - m1_omega)])
+            der_m1_omega - (1 / m1_tau * m1_omega_ref - m1_omega)]]).T
 
         # ============================================
         # Events and Event callbacks
@@ -120,10 +120,12 @@ class Model:
         # ============================================
         # Solve for explicit ODE
         try:
-            sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+            v = sympy.Matrix.vstack(self.x_dot, self.y)
+            sol = sympy.solve(self.fx, v)
         except Exception as e:
             print('solving failed')
-            print(self)
+            for k in self.__dict__.keys():
+                print(k, self.__dict__[k])
             raise(e)
         self.sol_x_dot = self.x_dot.subs(sol)
         self.sol_y = self.y.subs(sol)
@@ -141,7 +143,7 @@ class Model:
             t = np.arange(0, 1, 0.01)
         if u is None:
             def u(t):
-                return 0
+                return np.zeros(self.u.shape[0])
 
         # ============================================
         # Declare initial vectors
@@ -154,6 +156,8 @@ class Model:
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
 
+        # ============================================
+        # Solve IVP
         res = scipy.integrate.solve_ivp(
             y0=x0,
             fun=lambda ti, x: self.f_x_dot(ti, x, m0, u(ti), p0),
@@ -174,7 +178,6 @@ class Model:
         x = res['y']
         #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]
         #y = self.f_y(0, [1, 2, 3, 4], [1], [1, 2, 3, 4])
-        print(self.sol_y)
 
         return {
             't': t,
