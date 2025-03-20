@@ -1,3 +1,44 @@
+//! This module defines the Abstract Syntax Tree (AST) and Intermediate Representation (IR) 
+//! structures for a custom language or model representation. It provides a comprehensive set 
+//! of data structures to represent various components, expressions, equations, and statements 
+//! in the language. The module also includes serialization and deserialization support via 
+//! `serde` and custom implementations of `Debug` and `Display` traits for better debugging 
+//! and formatting.
+//!
+//! # Key Structures
+//!
+//! - **Location**: Represents the location of a token or element in the source file, including 
+//!   line and column numbers.
+//! - **Token**: Represents a lexical token with its text, location, type, and number.
+//! - **Name**: Represents a hierarchical name composed of multiple tokens.
+//! - **StoredDefinition**: Represents a collection of class definitions and an optional 
+//!   "within" clause.
+//! - **Component**: Represents a component with its name, type, variability, causality, 
+//!   connection, description, and initial value.
+//! - **ClassDefinition**: Represents a class definition with its name, components, equations, 
+//!   and algorithms.
+//! - **ComponentReference**: Represents a reference to a component, including its parts and 
+//!   optional subscripts.
+//! - **Equation**: Represents various types of equations, such as simple equations, connect 
+//!   equations, and conditional equations.
+//! - **Expression**: Represents various types of expressions, including binary, unary, 
+//!   terminal, and function call expressions.
+//! - **Statement**: Represents various types of statements, such as assignments, loops, and 
+//!   function calls.
+//!
+//! # Enums
+//!
+//! - **OpBinary**: Represents binary operators like addition, subtraction, multiplication, etc.
+//! - **OpUnary**: Represents unary operators like negation and logical NOT.
+//! - **TerminalType**: Represents the type of a terminal expression, such as real, integer, 
+//!   string, or boolean.
+//! - **Variability**: Represents the variability of a component (e.g., constant, discrete, 
+//!   parameter).
+//! - **Connection**: Represents the connection type of a component (e.g., flow, stream).
+//! - **Causality**: Represents the causality of a component (e.g., input, output).
+//!
+//! This module is designed to be extensible and serves as the foundation for parsing, 
+//! analyzing, and generating code for the custom language or model representation.
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, fmt::Display};

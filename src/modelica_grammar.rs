@@ -1,3 +1,41 @@
+//! This module provides implementations for converting the automatic Parol AST
+//! (Abstract Syntax Tree) into the internal AST representation (`crate::ir::ast`).
+//!
+//! The module includes various `TryFrom` implementations for converting between
+//! the `modelica_grammar_trait` types and the internal `ir::ast` types. These
+//! conversions handle different Modelica constructs such as stored definitions,
+//! class definitions, equations, statements, expressions, and more.
+//!
+//! # Key Features
+//!
+//! - **StoredDefinition Conversion**: Converts a `StoredDefinition` from the
+//!   `modelica_grammar_trait` to the internal `ir::ast::StoredDefinition`.
+//! - **Token Conversion**: Converts tokens from the Parol runtime to the internal
+//!   `ir::ast::Token` representation.
+//! - **ClassDefinition Conversion**: Handles the conversion of Modelica class
+//!   definitions, including long and short class specifiers.
+//! - **Composition and ElementList**: Converts Modelica compositions and element
+//!   lists into their internal representations.
+//! - **Equation and Algorithm Sections**: Converts Modelica equation and algorithm
+//!   sections, including initial and non-initial variants.
+//! - **Expressions and Statements**: Provides detailed conversions for Modelica
+//!   expressions and statements, including binary, unary, and function call expressions.
+//! - **Component References**: Converts Modelica component references and their parts
+//!   into the internal representation.
+//!
+//! # Notes
+//!
+//! - Some features, such as `extends`, `der`, `enum class specifier`, and others,
+//!   are marked as `todo!` and are not yet implemented.
+//! - The module uses `anyhow::Error` for error handling during conversions.
+//! - Default values are provided for certain constructs, such as default start values
+//!   for components based on their type.
+//!
+//! # Example Usage
+//!
+//! This module is primarily used internally by the `ModelicaGrammar` struct, which
+//! implements the `modelica_grammar_trait::ModelicaGrammarTrait` trait. The `stored_definition`
+//! method is used to parse and store the converted Modelica AST.
 use crate::ir;
 use crate::modelica_grammar_trait;
 use indexmap::IndexMap;

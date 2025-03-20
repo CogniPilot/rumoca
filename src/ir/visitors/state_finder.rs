@@ -1,3 +1,26 @@
+//! A visitor implementation for finding and transforming state variables in an
+//! abstract syntax tree (AST). The `StateFinder` struct is designed to traverse
+//! the AST and identify state variables that are referenced within derivative
+//! function calls (`der`). It collects these state variable names into a
+//! `HashSet` and modifies the AST to replace the original state variable
+//! references with their derivative counterparts.
+//!
+//! # Fields
+//! - `states`: A `HashSet` containing the names of the state variables found
+//!   during the traversal.
+//!
+//! # Visitor Implementation
+//! - The `exit_expression` method is invoked when exiting an expression node
+//!   during the AST traversal. It performs the following actions:
+//!   - Checks if the expression is a function call with the identifier `der`.
+//!   - If the first argument of the `der` function is a component reference,
+//!     the state variable name is extracted and added to the `states` set.
+//!   - Modifies the AST by replacing the original state variable reference with
+//!     a new component reference prefixed with `der_`.
+//!
+//! This visitor is useful for analyzing and transforming ASTs in scenarios
+//! where state variables and their derivatives need to be explicitly tracked
+//! and processed.
 use std::collections::HashSet;
 
 use crate::ir;
