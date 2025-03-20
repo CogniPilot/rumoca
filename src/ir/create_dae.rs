@@ -3,12 +3,17 @@
 //! Differential-Algebraic Equation (DAE) domain. It is used to model and
 //! manipulate DAE-related constructs within the application.
 use crate::dae::ast::Dae;
-use crate::ir::ast::{Causality, ClassDefinition, Component, Name, Token, Variability};
+use crate::ir::ast::{Causality, ClassDefinition, Component, Name, Token, Variability, Equation};
 use crate::ir::visitor::Visitable;
 use crate::ir::visitors::state_finder::StateFinder;
+use crate::ir::visitors::condition_finder::ConditionFinder;
+
 use anyhow::Result;
 
+
 pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
+
+    // create default Dae struct
     let mut dae = Dae {
         t: Component {
             name: "t".to_string(),
@@ -22,9 +27,17 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
         },
         ..Default::default()
     };
+
+    // run statefinder to find states and replace
+    // derivative references
     let mut state_finder = StateFinder::default();
     fclass.accept(&mut state_finder);
 
+    // find conditions
+    let mut condition_finder = ConditionFinder::default();
+    fclass.accept(&mut condition_finder);
+
+    // handle components
     for (_, comp) in &fclass.components {
         match comp.variability {
             Variability::Parameter(..) => {
@@ -59,8 +72,20 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
         }
     }
 
+    // handle equations
     for eq in &fclass.equations {
-        dae.fx.push(eq.clone());
+        match &eq {
+            Equation::Simple {..} => {
+                dae.fx.push(eq.clone());
+            }
+            Equation::When(blocks) => {
+                for block in blocks {
+                    dae.c.push(block.cond.clone());
+                    dae.fc.push(block.eqs.clone());
+                }
+            }
+            _ => {}
+        }
     }
     Ok(dae)
 }

@@ -32,7 +32,7 @@
 //! * `relation(v)` : A relation containing variables v_i, e.g. v1 > v2, v3 >= 0.
 //!                   algebraic equations
 
-use crate::ir::ast::{Component, Equation};
+use crate::ir::ast::{Component, Equation, Expression};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,10 +47,10 @@ pub struct Dae {
     pub pre_z: Vec<Component>, // z before event time t_e
     pub z: Vec<Component>,     // real discrete variables, only change at t_e
     pub m: Vec<Component>,     // variables of discrete-value types, only change at t_e
-    pub c: Vec<String>,        // conditions of all if-expressions/ when-clauses
-    pub relation: Vec<String>, //
+    pub c: Vec<Expression>,        // conditions of all if-expressions/ when-clauses
+    pub relation: Vec<Expression>, // relations
     pub fx: Vec<Equation>,     // continuous time equations
     pub fz: Vec<Equation>,     // event update equations
     pub fm: Vec<Equation>,     // discrete update equations
-    pub fc: Vec<Equation>,     // conditions of all if-expressions/ when-clauses
+    pub fc: Vec<Vec<Equation>>,  // callback for conditions
 }

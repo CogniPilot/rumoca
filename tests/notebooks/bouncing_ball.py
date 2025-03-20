@@ -80,6 +80,8 @@ class Model:
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([[
             v - (der_h), 
+            v - (der_h), 
+            der_v - (-9.81), 
             der_v - (-9.81), 
             ]]).T
 
