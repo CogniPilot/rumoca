@@ -952,7 +952,7 @@ impl TryFrom<&modelica_grammar_trait::Factor> for ir::ast::Expression {
             return Ok(ast.primary.as_ref().clone());
         } else {
             Ok(ir::ast::Expression::Binary {
-                op: ir::ast::OpBinary::Exp,
+                op: ir::ast::OpBinary::Exp(ir::ast::Token::default()),
                 lhs: Box::new(ast.primary.as_ref().clone()),
                 rhs: Box::new(ast.factor_list[0].primary.clone()),
             })
@@ -971,14 +971,18 @@ impl TryFrom<&modelica_grammar_trait::Term> for ir::ast::Expression {
             for factor in &ast.term_list {
                 lhs = ir::ast::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: match factor.mul_operator {
-                        modelica_grammar_trait::MulOperator::Star(..) => ir::ast::OpBinary::Mul,
-                        modelica_grammar_trait::MulOperator::Slash(..) => ir::ast::OpBinary::Div,
-                        modelica_grammar_trait::MulOperator::DotSlash(..) => {
-                            ir::ast::OpBinary::DivElem
+                    op: match &factor.mul_operator {
+                        modelica_grammar_trait::MulOperator::Star(op) => {
+                            ir::ast::OpBinary::Mul(op.star.clone())
                         }
-                        modelica_grammar_trait::MulOperator::DotStar(..) => {
-                            ir::ast::OpBinary::MulElem
+                        modelica_grammar_trait::MulOperator::Slash(op) => {
+                            ir::ast::OpBinary::Div(op.slash.clone())
+                        }
+                        modelica_grammar_trait::MulOperator::DotSlash(op) => {
+                            ir::ast::OpBinary::DivElem(op.dot_slash.clone())
+                        }
+                        modelica_grammar_trait::MulOperator::DotStar(op) => {
+                            ir::ast::OpBinary::MulElem(op.dot_star.clone())
                         }
                     },
                     rhs: Box::new(factor.factor.clone()),
@@ -995,22 +999,44 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for ir::ast::Express
     fn try_from(
         ast: &modelica_grammar_trait::ArithmeticExpression,
     ) -> std::result::Result<Self, Self::Error> {
-        // TODO unary term
         if ast.arithmetic_expression_list.is_empty() {
-            return Ok(ast.term.as_ref().clone());
+            match &ast.arithmetic_expression_opt {
+                Some(opt) => Ok(ir::ast::Expression::Unary {
+                    op: match &opt.add_operator {
+                        modelica_grammar_trait::AddOperator::Minus(tok) => {
+                            ir::ast::OpUnary::Minus(tok.minus.clone())
+                        }
+                        modelica_grammar_trait::AddOperator::Plus(tok) => {
+                            ir::ast::OpUnary::Plus(tok.plus.clone())
+                        }
+                        modelica_grammar_trait::AddOperator::DotMinus(tok) => {
+                            ir::ast::OpUnary::DotMinus(tok.dot_minus.clone())
+                        }
+                        modelica_grammar_trait::AddOperator::DotPlus(tok) => {
+                            ir::ast::OpUnary::DotPlus(tok.dot_plus.clone())
+                        }
+                    },
+                    rhs: Box::new(ast.term.as_ref().clone()),
+                }),
+                None => Ok(ast.term.as_ref().clone()),
+            }
         } else {
             let mut lhs = ast.term.as_ref().clone();
             for term in &ast.arithmetic_expression_list {
                 lhs = ir::ast::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: match term.add_operator {
-                        modelica_grammar_trait::AddOperator::Plus(..) => ir::ast::OpBinary::Add,
-                        modelica_grammar_trait::AddOperator::Minus(..) => ir::ast::OpBinary::Sub,
-                        modelica_grammar_trait::AddOperator::DotPlus(..) => {
-                            ir::ast::OpBinary::AddElem
+                    op: match &term.add_operator {
+                        modelica_grammar_trait::AddOperator::Plus(tok) => {
+                            ir::ast::OpBinary::Add(tok.plus.clone())
                         }
-                        modelica_grammar_trait::AddOperator::DotMinus(..) => {
-                            ir::ast::OpBinary::SubElem
+                        modelica_grammar_trait::AddOperator::Minus(tok) => {
+                            ir::ast::OpBinary::Sub(tok.minus.clone())
+                        }
+                        modelica_grammar_trait::AddOperator::DotPlus(tok) => {
+                            ir::ast::OpBinary::AddElem(tok.dot_plus.clone())
+                        }
+                        modelica_grammar_trait::AddOperator::DotMinus(tok) => {
+                            ir::ast::OpBinary::SubElem(tok.dot_minus.clone())
                         }
                     },
                     rhs: Box::new(term.term.clone()),
@@ -1028,13 +1054,25 @@ impl TryFrom<&modelica_grammar_trait::Relation> for ir::ast::Expression {
         match &ast.relation_opt {
             Some(relation) => Ok(ir::ast::Expression::Binary {
                 lhs: Box::new(ast.arithmetic_expression.as_ref().clone()),
-                op: match relation.relational_operator {
-                    modelica_grammar_trait::RelationalOperator::EquEqu(..) => ir::ast::OpBinary::Eq,
-                    modelica_grammar_trait::RelationalOperator::GT(..) => ir::ast::OpBinary::Gt,
-                    modelica_grammar_trait::RelationalOperator::LT(..) => ir::ast::OpBinary::Lt,
-                    modelica_grammar_trait::RelationalOperator::GTEqu(..) => ir::ast::OpBinary::Ge,
-                    modelica_grammar_trait::RelationalOperator::LTEqu(..) => ir::ast::OpBinary::Le,
-                    modelica_grammar_trait::RelationalOperator::LTGT(..) => ir::ast::OpBinary::Neq,
+                op: match &relation.relational_operator {
+                    modelica_grammar_trait::RelationalOperator::EquEqu(tok) => {
+                        ir::ast::OpBinary::Eq(tok.equ_equ.clone())
+                    }
+                    modelica_grammar_trait::RelationalOperator::GT(tok) => {
+                        ir::ast::OpBinary::Gt(tok.g_t.clone())
+                    }
+                    modelica_grammar_trait::RelationalOperator::LT(tok) => {
+                        ir::ast::OpBinary::Lt(tok.l_t.clone())
+                    }
+                    modelica_grammar_trait::RelationalOperator::GTEqu(tok) => {
+                        ir::ast::OpBinary::Ge(tok.g_t_equ.clone())
+                    }
+                    modelica_grammar_trait::RelationalOperator::LTEqu(tok) => {
+                        ir::ast::OpBinary::Le(tok.l_t_equ.clone())
+                    }
+                    modelica_grammar_trait::RelationalOperator::LTGT(tok) => {
+                        ir::ast::OpBinary::Neq(tok.l_t_g_t.clone())
+                    }
                 },
                 rhs: Box::new(relation.arithmetic_expression.clone()),
             }),
@@ -1049,13 +1087,15 @@ impl TryFrom<&modelica_grammar_trait::LogicalFactor> for ir::ast::Expression {
     fn try_from(
         ast: &modelica_grammar_trait::LogicalFactor,
     ) -> std::result::Result<Self, Self::Error> {
-        if ast.logical_factor_opt.is_some() {
-            Ok(ir::ast::Expression::Unary {
-                op: ir::ast::OpUnary::Not,
-                rhs: Box::new(ast.relation.as_ref().clone()),
-            })
-        } else {
-            Ok(ast.relation.as_ref().clone())
+        match &ast.logical_factor_opt {
+            Some(opt) => {
+                let not_tok = opt.not.not.clone();
+                Ok(ir::ast::Expression::Unary {
+                    op: ir::ast::OpUnary::Not(not_tok),
+                    rhs: Box::new(ast.relation.as_ref().clone()),
+                })
+            }
+            None => Ok(ast.relation.as_ref().clone()),
         }
     }
 }
@@ -1073,7 +1113,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalTerm> for ir::ast::Expression {
             for term in &ast.logical_term_list {
                 lhs = ir::ast::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: ir::ast::OpBinary::And,
+                    op: ir::ast::OpBinary::And(ir::ast::Token::default()),
                     rhs: Box::new(term.logical_factor.clone()),
                 };
             }
@@ -1095,7 +1135,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalExpression> for ir::ast::Expression
             for term in &ast.logical_expression_list {
                 lhs = ir::ast::Expression::Binary {
                     lhs: Box::new(lhs),
-                    op: ir::ast::OpBinary::Or,
+                    op: ir::ast::OpBinary::Or(ir::ast::Token::default()),
                     rhs: Box::new(term.logical_term.clone()),
                 };
             }

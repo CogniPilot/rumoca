@@ -214,31 +214,35 @@ pub enum Equation {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpBinary {
     #[default]
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Eq,
-    Neq,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    And,
-    Or,
-    Exp,
-    AddElem,
-    SubElem,
-    MulElem,
-    DivElem,
+    Empty,
+    Add(Token),
+    Sub(Token),
+    Mul(Token),
+    Div(Token),
+    Eq(Token),
+    Neq(Token),
+    Lt(Token),
+    Le(Token),
+    Gt(Token),
+    Ge(Token),
+    And(Token),
+    Or(Token),
+    Exp(Token),
+    AddElem(Token),
+    SubElem(Token),
+    MulElem(Token),
+    DivElem(Token),
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpUnary {
     #[default]
-    Plus,
-    // Minus,
-    Not,
+    Empty,
+    Minus(Token),
+    Plus(Token),
+    DotMinus(Token),
+    DotPlus(Token),
+    Not(Token),
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

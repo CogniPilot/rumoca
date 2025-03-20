@@ -56,8 +56,6 @@ class Model:
         # ============================================
         # Solve for explicit ODE
         try:
-            print(self.x_dot.shape)
-            print(self.y.shape)
             v = sympy.Matrix.vstack(self.x_dot, self.y)
             sol = sympy.solve(self.fx, v)
         except Exception as e:
@@ -109,7 +107,6 @@ class Model:
         x = res['y']
         #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]
         #y = self.f_y(0, [1, 2, 3, 4], [1], [1, 2, 3, 4])
-        print(self.sol_y)
 
         return {
             't': t,
@@ -132,7 +129,7 @@ class Model:
     {%- elif "Unary" in expr -%}
         {{- render_unary(expr.Unary) -}}
     {%- else -%}
-        UNHANDLED EXPRESSION: {{ expr }}
+        UNHANDLED EXPRESSION: {{ expr | pprint }}
     {%- endif -%}
 {%- endmacro -%}
 
@@ -140,6 +137,9 @@ class Model:
     {%- if "Simple" in eq -%}
         {{- render_expression(eq.Simple.lhs) -}} {{- " - (" -}}
         {{- render_expression(eq.Simple.rhs) -}} {{- ")" -}}
+    {%- elif "When" in eq -%}
+    {%- else -%}
+        UNHANDLED EQUATION: {{ eq | pprint }}
     {%- endif -%}
 {%- endmacro -%}
 
@@ -148,28 +148,35 @@ class Model:
     {{ term.token.text | float }}
     {% elif term.terimanal_type == "UnsignedReal" %}
     {{ term.token.text | float }}
+    {%- else -%}
+        UNHANDLED TERM: {{ term | pprint }}
     {% endif %}
 {%- endmacro -%}
 
 {%- macro render_binary(expr) -%}
     {{- render_expression(expr.lhs) -}} {{- " " -}}
-    {%- if expr.op == "Add" -%}
+    {%- if "Add" in expr.op -%}
         {{ "+" }}
-    {%- elif expr.op == "Sub" -%}
+    {%- elif "Sub" in expr.op -%}
         {{ "-" }}
-    {%- elif expr.op == "Mul" -%}
+    {%- elif "Mul" in expr.op -%}
         {{ "*" }}
-    {%- elif expr.op == "Div" -%}
+    {%- elif "Div" in expr.op -%}
         {{ "/" }}
     {%- else -%}
-        UNHANDLED OP: {{ expr.op }}
+        UNHANDLED OP: {{ expr.op | pprint }}
     {%- endif -%}
     {{- " " -}} {{- render_expression(expr.rhs) -}}
 {%- endmacro -%}
 
 
 {%- macro render_unary(expr) -%}
-    {{ expr.op.text }} {{ render_expression(expr.rhs) }}
+    {%- if "Minus" in expr.op -%}
+        {{ "-" }}
+    {%- else -%}
+        UNHANDLED OP: {{ expr.op | pprint }}
+    {%- endif -%}
+    {{- render_expression(expr.rhs) -}}
 {%- endmacro -%}
 
 {%- macro render_component_reference(comp) -%}

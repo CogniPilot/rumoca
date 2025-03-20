@@ -45,7 +45,7 @@ class Model:
             h, 
             v]]).T
         self.x0 = { 
-            'h': 0.0, 
+            'h': 1.0, 
             'v': 0.0}
         
         # ============================================
@@ -77,7 +77,7 @@ class Model:
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([[
             v - (der_h), 
-            der_v - (9.81), 
+            der_v - (-9.81), 
             ]]).T
 
         # ============================================
@@ -88,8 +88,6 @@ class Model:
         # ============================================
         # Solve for explicit ODE
         try:
-            print(self.x_dot.shape)
-            print(self.y.shape)
             v = sympy.Matrix.vstack(self.x_dot, self.y)
             sol = sympy.solve(self.fx, v)
         except Exception as e:
@@ -146,7 +144,6 @@ class Model:
         x = res['y']
         #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]
         #y = self.f_y(0, [1, 2, 3, 4], [1], [1, 2, 3, 4])
-        print(self.sol_y)
 
         return {
             't': t,
