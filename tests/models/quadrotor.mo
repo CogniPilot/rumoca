@@ -1,6 +1,7 @@
 model Quadrotor
     Motor m1, m2, m3, m4;
     input Real u;
+    discrete Real a;
 equation
     m1.omega_ref = u;
     m2.omega_ref = u;

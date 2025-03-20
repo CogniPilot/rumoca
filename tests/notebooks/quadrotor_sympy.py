@@ -2,6 +2,10 @@ import sympy
 import numpy as np
 import scipy.integrate
 
+cos = sympy.cos
+sin = sympy.sin
+tan = sympy.tan
+
 class Model:
     """
     Flattened Modelica Model
@@ -60,6 +64,14 @@ class Model:
             'm4_omega': 0.0}
         
         # ============================================
+        # Declare m
+        a = sympy.symbols('a')
+        self.m = sympy.Matrix([
+            a])
+        self.m0 = { 
+            'a': 0.0}
+        
+        # ============================================
         # Declare y
         m1_omega_ref = sympy.symbols('m1_omega_ref')
         m2_omega_ref = sympy.symbols('m2_omega_ref')
@@ -108,12 +120,22 @@ class Model:
             der_m4_omega - (1 / m4_tau * m4_omega_ref - m4_omega)])
 
         # ============================================
+        # Events and Event callbacks
+        self.events = []
+        self.event_callback = {}
+
+        # ============================================
         # Solve for explicit ODE
-        sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+        try:
+            sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+        except Exception as e:
+            print('solving failed')
+            print(self)
+            raise(e)
         self.sol_x_dot = self.x_dot.subs(sol)
         self.sol_y = self.y.subs(sol)
-        self.f_x_dot = sympy.lambdify([time, self.x, self.u, self.p], list(self.sol_x_dot))
-        self.f_y = sympy.lambdify([time, self.x, self.u, self.p], list(self.sol_y))
+        self.f_x_dot = sympy.lambdify([time, self.x, self.m, self.u, self.p], list(self.sol_x_dot))
+        self.f_y = sympy.lambdify([time, self.x, self.m, self.u, self.p], list(self.sol_y))
 
     def __repr__(self):
         return repr(self.__dict__)
@@ -134,16 +156,27 @@ class Model:
         p0 = np.array([self.p0[k] for k in self.p0.keys()])
         cp0 = np.array([self.cp0[k] for k in self.cp0.keys()])
         x0 = np.array([self.x0[k] for k in self.x0.keys()])
+        m0 = np.array([self.m0[k] for k in self.m0.keys()])
         y0 = np.array([self.y0[k] for k in self.y0.keys()])
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
 
         res = scipy.integrate.solve_ivp(
             y0=x0,
-            fun=lambda ti, x: self.f_x_dot(ti, x, u(ti), p0),
+            fun=lambda ti, x: self.f_x_dot(ti, x, m0, u(ti), p0),
             t_span=[t[0], t[-1]],
             t_eval=t,
         )
+
+        # check for event
+        y0 = res['y'][:, -1]
+        if res.t_events is not None:
+            for i, t_event in enumerate(res.t_events):
+                if len(t_event) > 0:
+                    print('event', i)
+                    if i in self.event_callback:
+                        print('detected event', i, t_event[i])
+                        y0 = self.event_callback[i](t_event[i], y0)
 
         x = res['y']
         #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]

@@ -18,28 +18,19 @@ class Model:
 
         # ============================================
         # Declare u
-        thr = sympy.symbols('thr')
-        str = sympy.symbols('str')
-        self.u = sympy.Matrix([
-            thr, 
-            str])
-        self.u0 = { 
-            'thr': 0.0, 
-            'str': 0.0}
+        self.u = sympy.Matrix([])
+        self.u0 = { }
         
         # ============================================
         # Declare p
-        l = sympy.symbols('l')
-        r = sympy.symbols('r')
-        m1_tau = sympy.symbols('m1_tau')
+        e = sympy.symbols('e')
+        h0 = sympy.symbols('h0')
         self.p = sympy.Matrix([
-            l, 
-            r, 
-            m1_tau])
+            e, 
+            h0])
         self.p0 = { 
-            'l': 1.0, 
-            'r': 0.1, 
-            'm1_tau': 1.0}
+            'e': 0.8, 
+            'h0': 1.0}
         
         # ============================================
         # Declare cp
@@ -48,39 +39,24 @@ class Model:
         
         # ============================================
         # Declare x
-        m1_omega = sympy.symbols('m1_omega')
-        x = sympy.symbols('x')
-        y = sympy.symbols('y')
-        theta = sympy.symbols('theta')
+        h = sympy.symbols('h')
+        v = sympy.symbols('v')
         self.x = sympy.Matrix([
-            m1_omega, 
-            x, 
-            y, 
-            theta])
+            h, 
+            v])
         self.x0 = { 
-            'm1_omega': 0.0, 
-            'x': 0.0, 
-            'y': 0.0, 
-            'theta': 0.0}
+            'h': 0.0, 
+            'v': 0.0}
         
         # ============================================
         # Declare m
-        a = sympy.symbols('a')
-        self.m = sympy.Matrix([
-            a])
-        self.m0 = { 
-            'a': 0.0}
+        self.m = sympy.Matrix([])
+        self.m0 = { }
         
         # ============================================
         # Declare y
-        v = sympy.symbols('v')
-        m1_omega_ref = sympy.symbols('m1_omega_ref')
-        self.y = sympy.Matrix([
-            v, 
-            m1_omega_ref])
-        self.y0 = { 
-            'v': 0.0, 
-            'm1_omega_ref': 0.0}
+        self.y = sympy.Matrix([])
+        self.y0 = { }
         
         # ============================================
         # Declare z
@@ -91,26 +67,18 @@ class Model:
 
         # ============================================
         # Declare x_dot
-        der_m1_omega = sympy.symbols('der_m1_omega')
-        der_x = sympy.symbols('der_x')
-        der_y = sympy.symbols('der_y')
-        der_theta = sympy.symbols('der_theta')
+        der_h = sympy.symbols('der_h')
+        der_v = sympy.symbols('der_v')
         self.x_dot = sympy.Matrix([
-            der_m1_omega, 
-            der_x, 
-            der_y, 
-            der_theta])
+            der_h, 
+            der_v])
 
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            v - (r * m1_omega), 
-            der_x - (v * cos(theta)), 
-            der_y - (v * sin(theta)), 
-            der_theta - (v / l * tan(str)), 
-            m1_omega_ref - (thr), 
-            a - (1), 
-            der_m1_omega - (1 / m1_tau * m1_omega_ref - m1_omega)])
+            v - (der_h), 
+            der_v - (9.81), 
+            ])
 
         # ============================================
         # Events and Event callbacks

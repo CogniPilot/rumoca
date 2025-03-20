@@ -1,5 +1,5 @@
 {%- macro render_dae(dae) -%}
-    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'y', 'z'] -%}
+    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'm', 'y', 'z'] -%}
 import sympy
 import numpy as np
 import scipy.integrate
@@ -49,12 +49,22 @@ class Model:
         {%- endfor %}])
 
         # ============================================
+        # Events and Event callbacks
+        self.events = []
+        self.event_callback = {}
+
+        # ============================================
         # Solve for explicit ODE
-        sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+        try:
+            sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+        except Exception as e:
+            print('solving failed')
+            print(self)
+            raise(e)
         self.sol_x_dot = self.x_dot.subs(sol)
         self.sol_y = self.y.subs(sol)
-        self.f_x_dot = sympy.lambdify([time, self.x, self.u, self.p], list(self.sol_x_dot))
-        self.f_y = sympy.lambdify([time, self.x, self.u, self.p], list(self.sol_y))
+        self.f_x_dot = sympy.lambdify([time, self.x, self.m, self.u, self.p], list(self.sol_x_dot))
+        self.f_y = sympy.lambdify([time, self.x, self.m, self.u, self.p], list(self.sol_y))
 
     def __repr__(self):
         return repr(self.__dict__)
@@ -77,10 +87,20 @@ class Model:
 
         res = scipy.integrate.solve_ivp(
             y0=x0,
-            fun=lambda ti, x: self.f_x_dot(ti, x, u(ti), p0),
+            fun=lambda ti, x: self.f_x_dot(ti, x, m0, u(ti), p0),
             t_span=[t[0], t[-1]],
             t_eval=t,
         )
+
+        # check for event
+        y0 = res['y'][:, -1]
+        if res.t_events is not None:
+            for i, t_event in enumerate(res.t_events):
+                if len(t_event) > 0:
+                    print('event', i)
+                    if i in self.event_callback:
+                        print('detected event', i, t_event[i])
+                        y0 = self.event_callback[i](t_event[i], y0)
 
         x = res['y']
         #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]

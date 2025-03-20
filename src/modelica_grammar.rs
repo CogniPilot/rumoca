@@ -203,7 +203,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     },
                                     None => ir::ast::Connection::Empty,
                                 };
-                            
+
                             let variability = match &clause
                                 .component_clause
                                 .type_prefix
@@ -225,21 +225,18 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                 None => ir::ast::Variability::Empty,
                             };
 
-                            let causality = match &clause
-                                .component_clause
-                                .type_prefix
-                                .type_prefix_opt1
-                            {
-                                Some(opt) => match &opt.type_prefix_opt1_group {
-                                    modelica_grammar_trait::TypePrefixOpt1Group::Input(c) => {
-                                        ir::ast::Causality::Input(c.input.input.clone())
-                                    }
-                                    modelica_grammar_trait::TypePrefixOpt1Group::Output(c) => {
-                                        ir::ast::Causality::Output(c.output.output.clone())
-                                    }
-                                }
-                                None => ir::ast::Causality::Empty,
-                            };
+                            let causality =
+                                match &clause.component_clause.type_prefix.type_prefix_opt1 {
+                                    Some(opt) => match &opt.type_prefix_opt1_group {
+                                        modelica_grammar_trait::TypePrefixOpt1Group::Input(c) => {
+                                            ir::ast::Causality::Input(c.input.input.clone())
+                                        }
+                                        modelica_grammar_trait::TypePrefixOpt1Group::Output(c) => {
+                                            ir::ast::Causality::Output(c.output.output.clone())
+                                        }
+                                    },
+                                    None => ir::ast::Causality::Empty,
+                                };
 
                             for c in &clause.component_clause.component_list.components {
                                 let mut value = ir::ast::Component {
@@ -288,9 +285,15 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                 if let Some(modif) = &c.declaration.declaration_opt0 {
                                     match &modif.modification {
                                         modelica_grammar_trait::Modification::ClassModificationModificationOpt(
-                                            _class_mod,
+                                            class_mod,
                                         ) => {
-                                            todo!("class modification")                                            
+                                            let modif = &*(class_mod.class_modification);
+                                            match &modif.class_modification_opt {
+                                                Some(_opt) => {
+                                                    //opt.argument_list.args
+                                                },
+                                                None => {},
+                                            }
                                         }
                                         modelica_grammar_trait::Modification::EquModificationExpression(
                                             eq_mod,
@@ -750,6 +753,64 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
             }
             modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(..) => {
                 todo!("named arguments")
+            }
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+impl TryFrom<&modelica_grammar_trait::ArgumentList> for ExpressionList {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::ArgumentList,
+    ) -> std::result::Result<Self, Self::Error> {
+        let mut args = vec![(*ast.argument).clone()];
+        for arg in &ast.argument_list_list {
+            args.push(arg.argument.clone())
+        }
+        Ok(ExpressionList { args })
+    }
+}
+
+impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
+    type Error = anyhow::Error;
+
+    fn try_from(ast: &modelica_grammar_trait::Argument) -> std::result::Result<Self, Self::Error> {
+        match ast {
+            modelica_grammar_trait::Argument::ElementModificationOrReplaceable(modif) => {
+                match &modif.element_modification_or_replaceable.element_modification_or_replaceable_group {
+                    modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementModification(elem) => {
+                        match &elem.element_modification.element_modification_opt {
+                            Some(opt) => {
+                                match &opt.modification {
+                                    modelica_grammar_trait::Modification::ClassModificationModificationOpt(_modif) => {
+                                        todo!("argument class modification")
+                                    }
+                                    modelica_grammar_trait::Modification::EquModificationExpression(modif) => {
+                                        match &modif.modification_expression {
+                                            modelica_grammar_trait::ModificationExpression::Break(..) => {
+                                                todo!("break expression")
+                                            }
+                                            modelica_grammar_trait::ModificationExpression::Expression(expr) => {
+                                                Ok(expr.expression.clone())
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                Ok(ir::ast::Expression::Empty)
+                            }
+                        }
+                    }
+                    modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementReplaceable(..) => {
+                        todo!("element replaceable")
+                    }
+                }
+            }
+            modelica_grammar_trait::Argument::ElementRedeclaration(_redcl) => {
+                todo!("element redeclaration")
             }
         }
     }
