@@ -1,3 +1,7 @@
+//! This module provides functionality for working with the `Dae` structure,
+//! which is part of the Abstract Syntax Tree (AST) representation in the
+//! Differential-Algebraic Equation (DAE) domain. It is used to model and
+//! manipulate DAE-related constructs within the application.
 use crate::dae::ast::Dae;
 use crate::ir::ast::{Causality, ClassDefinition, Component, Name, Token, Variability};
 use crate::ir::visitor::Visitable;

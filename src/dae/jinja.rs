@@ -1,3 +1,7 @@
+//! This module provides functionality for working with the `Dae` structure,
+//! which is part of the Abstract Syntax Tree (AST) representation in the
+//! Differential-Algebraic Equation (DAE) system. The `Dae` structure is used
+//! to model and manipulate DAE-related data within the application.
 use crate::dae::ast::Dae;
 use anyhow::{Context, Result};
 use minijinja::{Environment, context};

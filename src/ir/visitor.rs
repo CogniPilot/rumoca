@@ -1,3 +1,40 @@
+//! This module defines the `Visitor` and `Visitable` traits for implementing
+//! the Visitor design pattern in the context of an intermediate representation (IR)
+//! for an abstract syntax tree (AST).
+//!
+//! ## Overview
+//!
+//! The `Visitor` trait provides a set of methods for entering and exiting various
+//! types of AST nodes. These methods can be overridden to implement custom behavior
+//! when traversing the AST.
+//!
+//! The `Visitable` trait is implemented by AST node types to allow them to accept
+//! a `Visitor`. This enables recursive traversal of the AST, where each node
+//! delegates the visitation of its children to the visitor.
+//!
+//! ## Key Components
+//!
+//! - **`Visitor` Trait**: Defines methods for entering and exiting specific AST node types,
+//!   such as `StoredDefinition`, `ClassDefinition`, `Equation`, `Expression`, `Component`,
+//!   and `ComponentReference`. These methods are no-op by default and can be overridden
+//!   as needed.
+//!
+//! - **`Visitable` Trait**: Provides the `accept` method, which takes a mutable reference
+//!   to a `Visitor` and allows the visitor to traverse the node and its children.
+//!
+//! - **Implementations of `Visitable`**: Each AST node type implements the `Visitable`
+//!   trait, defining how the visitor should traverse its children. For example, a
+//!   `ClassDefinition` node delegates visitation to its equations, and an `Equation`
+//!   node delegates visitation to its left-hand side (LHS) and right-hand side (RHS).
+//!
+//! ## Usage
+//!
+//! To use this module, define a struct that implements the `Visitor` trait, overriding
+//! the methods for the node types you are interested in. Then, call the `accept` method
+//! on the root node of the AST, passing a mutable reference to your visitor.
+//!
+//! This design pattern is useful for implementing operations such as code generation,
+//! optimization, or analysis on the AST.
 use crate::ir;
 
 #[allow(unused)]

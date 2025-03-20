@@ -1,3 +1,36 @@
+//! # Rumoca Modelica Translator
+//!
+//! This module provides a command-line tool for parsing, flattening, and translating
+//! Modelica files into Differential Algebraic Equations (DAE) representations. It also
+//! supports rendering the DAE representation using a user-provided template file.
+//!
+//! ## Features
+//! - **Parsing**: Parses Modelica files into an abstract syntax tree (AST) using a custom grammar.
+//! - **Flattening**: Flattens the parsed AST into a simplified representation.
+//! - **DAE Creation**: Converts the flattened representation into a DAE format.
+//! - **Template Rendering**: Renders the DAE representation using a Jinja2 template.
+//!
+//! ## Command-Line Arguments
+//! - `--template-file` (`-t`): Optional path to a template file for rendering the DAE.
+//! - `MODELICA_FILE`: Path to the Modelica file to parse.
+//! - `--verbose` (`-v`): Enables verbose output for detailed logging and debugging.
+//!
+//! ## Usage
+//! ```sh
+//! rumoca_parol --template-file template.j2 example.mo --verbose
+//! ```
+//!
+//! ## Error Handling
+//! Errors encountered during file reading, parsing, or processing are reported using
+//! the `anyhow` crate for detailed context. Parsing errors are handled by the custom
+//! `ErrorReporter` implementation.
+//!
+//! ## Dependencies
+//! - `parol_runtime`: Used for parsing Modelica files.
+//! - `clap`: Command-line argument parsing.
+//! - `env_logger`: Logging support.
+//! - `anyhow`: Error handling with context.
+//! - `rumoca`: Core library for Modelica grammar, parsing, and DAE generation.
 extern crate parol_runtime;
 use clap::Parser;
 use parol_runtime::{Report, log::debug};
