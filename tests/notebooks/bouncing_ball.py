@@ -18,49 +18,49 @@ class Model:
 
         # ============================================
         # Declare u
-        self.u = sympy.Matrix([])
+        self.u = sympy.Matrix([[]]).T
         self.u0 = { }
         
         # ============================================
         # Declare p
         e = sympy.symbols('e')
         h0 = sympy.symbols('h0')
-        self.p = sympy.Matrix([
+        self.p = sympy.Matrix([[
             e, 
-            h0])
+            h0]]).T
         self.p0 = { 
             'e': 0.8, 
             'h0': 1.0}
         
         # ============================================
         # Declare cp
-        self.cp = sympy.Matrix([])
+        self.cp = sympy.Matrix([[]]).T
         self.cp0 = { }
         
         # ============================================
         # Declare x
         h = sympy.symbols('h')
         v = sympy.symbols('v')
-        self.x = sympy.Matrix([
+        self.x = sympy.Matrix([[
             h, 
-            v])
+            v]]).T
         self.x0 = { 
             'h': 0.0, 
             'v': 0.0}
         
         # ============================================
         # Declare m
-        self.m = sympy.Matrix([])
+        self.m = sympy.Matrix([[]]).T
         self.m0 = { }
         
         # ============================================
         # Declare y
-        self.y = sympy.Matrix([])
+        self.y = sympy.Matrix([[]]).T
         self.y0 = { }
         
         # ============================================
         # Declare z
-        self.z = sympy.Matrix([])
+        self.z = sympy.Matrix([[]]).T
         self.z0 = { }
         
         
@@ -69,16 +69,16 @@ class Model:
         # Declare x_dot
         der_h = sympy.symbols('der_h')
         der_v = sympy.symbols('der_v')
-        self.x_dot = sympy.Matrix([
+        self.x_dot = sympy.Matrix([[
             der_h, 
-            der_v])
+            der_v]]).T
 
         # ============================================
         # Define Continous Update Function: fx
-        self.fx = sympy.Matrix([
+        self.fx = sympy.Matrix([[
             v - (der_h), 
             der_v - (9.81), 
-            ])
+            ]]).T
 
         # ============================================
         # Events and Event callbacks
@@ -88,10 +88,14 @@ class Model:
         # ============================================
         # Solve for explicit ODE
         try:
-            sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+            print(self.x_dot.shape)
+            print(self.y.shape)
+            v = sympy.Matrix.vstack(self.x_dot, self.y)
+            sol = sympy.solve(self.fx, v)
         except Exception as e:
             print('solving failed')
-            print(self)
+            for k in self.__dict__.keys():
+                print(k, self.__dict__[k])
             raise(e)
         self.sol_x_dot = self.x_dot.subs(sol)
         self.sol_y = self.y.subs(sol)
@@ -109,7 +113,7 @@ class Model:
             t = np.arange(0, 1, 0.01)
         if u is None:
             def u(t):
-                return 0
+                return np.zeros(self.u.shape[0])
 
         # ============================================
         # Declare initial vectors

@@ -1,4 +1,4 @@
-model BouncingSimpBall "The 'classic' bouncing ball model"
+model BouncingBall "The 'classic' bouncing ball model"
   parameter Real e=0.8 "Coefficient of restitution";
   parameter Real h0=1.0 "Initial height";
   Real h "Height";

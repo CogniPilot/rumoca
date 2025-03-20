@@ -24,9 +24,9 @@ class Model:
         {% for c in dae[var] -%}
         {{ c.name }} = sympy.symbols('{{ c.name }}')
         {% endfor -%}
-        self.{{var }} {{ "= sympy.Matrix([" }}{%- for c in dae[var] %}
+        self.{{var }} {{ "= sympy.Matrix([[" }}{%- for c in dae[var] %}
             {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
-        {% endfor -%} {{ "])" }}
+        {% endfor -%} {{ "]]).T" }}
         self.{{ var }}0 = {{ "{" }} {% for c in dae[var] %}
             '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
         {%- endfor -%}{{ "}" }}
@@ -38,15 +38,15 @@ class Model:
         {% for c in dae.x_dot -%}
         {{ c.name }} = sympy.symbols('{{ c.name }}')
         {% endfor -%}
-        self.x_dot {{ "= sympy.Matrix([" }}{%- for c in dae.x_dot %}
+        self.x_dot {{ "= sympy.Matrix([[" }}{%- for c in dae.x_dot %}
             {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
-        {% endfor -%} {{ "])" }}
+        {% endfor -%} {{ "]]).T" }}
 
         # ============================================
         # Define Continous Update Function: fx
-        self.fx = sympy.Matrix([{% for eq in dae.fx %}
+        self.fx = sympy.Matrix([[{% for eq in dae.fx %}
             {{ render_equation(eq) }} {%- if not loop.last -%}{{ ", " }}{%- endif %}
-        {%- endfor %}])
+        {%- endfor %}]]).T
 
         # ============================================
         # Events and Event callbacks
@@ -56,10 +56,14 @@ class Model:
         # ============================================
         # Solve for explicit ODE
         try:
-            sol = sympy.solve(self.fx, sympy.Matrix.vstack(self.x_dot, self.y))
+            print(self.x_dot.shape)
+            print(self.y.shape)
+            v = sympy.Matrix.vstack(self.x_dot, self.y)
+            sol = sympy.solve(self.fx, v)
         except Exception as e:
             print('solving failed')
-            print(self)
+            for k in self.__dict__.keys():
+                print(k, self.__dict__[k])
             raise(e)
         self.sol_x_dot = self.x_dot.subs(sol)
         self.sol_y = self.y.subs(sol)
@@ -77,7 +81,7 @@ class Model:
             t = np.arange(0, 1, 0.01)
         if u is None:
             def u(t):
-                return 0
+                return np.zeros(self.u.shape[0])
 
         # ============================================
         # Declare initial vectors
