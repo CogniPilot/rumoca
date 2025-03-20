@@ -18,19 +18,7 @@
 //! - `anyhow::Result`: For error handling.
 //! - `indexmap::IndexMap`: To maintain the order of class definitions and components.
 //!
-//! # Example Usage
-//! ```rust
-//! use crate::ir::flatten::flatten;
-//! use crate::ir::ast::{StoredDefinition, ClassDefinition};
-//! use anyhow::Result;
-//!
-//! fn main() -> Result<()> {
-//!     let stored_def: StoredDefinition = // Load or construct the IR definition
-//!     let flat_class: ClassDefinition = flatten(&stored_def)?;
-//!     println!("Flattened class: {:?}", flat_class);
-//!     Ok(())
-//! }
-//! ```
+
 use crate::ir;
 use crate::ir::visitor::Visitable;
 use crate::ir::visitors::scope_pusher::ScopePusher;
