@@ -82,7 +82,7 @@ class Model:
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            z - (h), 
+            z - (2 * h + v), 
             v - (der_h), 
             der_v - (-9.81)])
 

@@ -1,17 +1,17 @@
-//! This module provides functionality to flatten a hierarchical intermediate representation (IR) 
-//! of a syntax tree into a flat representation. The primary purpose of this process is to 
-//! simplify the structure of the IR by expanding nested components and incorporating their 
+//! This module provides functionality to flatten a hierarchical intermediate representation (IR)
+//! of a syntax tree into a flat representation. The primary purpose of this process is to
+//! simplify the structure of the IR by expanding nested components and incorporating their
 //! equations and subcomponents into a single flat class definition.
 //!
-//! The main function in this module is `flatten`, which takes a stored definition of the IR 
+//! The main function in this module is `flatten`, which takes a stored definition of the IR
 //! and produces a flattened class definition. The process involves:
-//! 
+//!
 //! - Identifying the main class and other class definitions from the provided IR.
 //! - Iteratively expanding components in the main class that reference other class definitions.
 //! - Propagating equations and subcomponents from referenced classes into the main class.
 //! - Removing expanded components from the main class to ensure a flat structure.
 //!
-//! This module relies on visitors such as `ScopePusher` and `SubCompNamer` to handle 
+//! This module relies on visitors such as `ScopePusher` and `SubCompNamer` to handle
 //! scoping and naming during the flattening process.
 //!
 //! # Dependencies

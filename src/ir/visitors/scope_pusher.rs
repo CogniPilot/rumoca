@@ -22,16 +22,13 @@ pub struct ScopePusher {
 impl Visitor for ScopePusher {
     fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
         if node.parts[0].ident.text != "der" {
-            node.parts.insert(
-                0,
-                ir::ast::ComponentRefPart {
-                    ident: ir::ast::Token {
-                        text: self.comp.clone(),
-                        ..Default::default()
-                    },
-                    subs: None,
+            node.parts.insert(0, ir::ast::ComponentRefPart {
+                ident: ir::ast::Token {
+                    text: self.comp.clone(),
+                    ..Default::default()
                 },
-            );
+                subs: None,
+            });
         }
     }
 }

@@ -5,7 +5,7 @@ model BouncingBall "The 'classic' bouncing ball model"
   Real v "Velocity";
   Real z;
 equation
-  z = h;
+  z = 2*h + v;
   v = der(h);
   der(v) = -9.81;
   when h<0 then
