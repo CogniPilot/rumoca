@@ -16,95 +16,298 @@ class Model:
 
     def __init__(self):
         # ============================================
+        # Initialize
+        self.solved = False
+
+        # ============================================
         # Declare time
         self.time = sympy.symbols('time')
 
         # ============================================
         # Declare u
-        u = sympy.symbols('u')
+        u1 = sympy.symbols('u1')
+        u2 = sympy.symbols('u2')
+        u3 = sympy.symbols('u3')
+        u4 = sympy.symbols('u4')
         self.u = sympy.Matrix([
-            u])
+            u1, 
+            u2, 
+            u3, 
+            u4])
         self.u0 = { 
-            'u': 0.0}
-        
+            'u1': 0.0, 
+            'u2': 0.0, 
+            'u3': 0.0, 
+            'u4': 0.0}
+
         # ============================================
         # Declare p
+        m = sympy.symbols('m')
+        g = sympy.symbols('g')
+        Jx = sympy.symbols('Jx')
+        Jy = sympy.symbols('Jy')
+        Jz = sympy.symbols('Jz')
+        Jxz = sympy.symbols('Jxz')
+        Lambda = sympy.symbols('Lambda')
+        l = sympy.symbols('l')
+        m1_Cm = sympy.symbols('m1_Cm')
+        m1_Ct = sympy.symbols('m1_Ct')
         m1_tau = sympy.symbols('m1_tau')
+        m2_Cm = sympy.symbols('m2_Cm')
+        m2_Ct = sympy.symbols('m2_Ct')
         m2_tau = sympy.symbols('m2_tau')
+        m3_Cm = sympy.symbols('m3_Cm')
+        m3_Ct = sympy.symbols('m3_Ct')
         m3_tau = sympy.symbols('m3_tau')
+        m4_Cm = sympy.symbols('m4_Cm')
+        m4_Ct = sympy.symbols('m4_Ct')
         m4_tau = sympy.symbols('m4_tau')
         self.p = sympy.Matrix([
+            m, 
+            g, 
+            Jx, 
+            Jy, 
+            Jz, 
+            Jxz, 
+            Lambda, 
+            l, 
+            m1_Cm, 
+            m1_Ct, 
             m1_tau, 
+            m2_Cm, 
+            m2_Ct, 
             m2_tau, 
+            m3_Cm, 
+            m3_Ct, 
             m3_tau, 
+            m4_Cm, 
+            m4_Ct, 
             m4_tau])
         self.p0 = { 
-            'm1_tau': 1.0, 
-            'm2_tau': 1.0, 
-            'm3_tau': 1.0, 
-            'm4_tau': 1.0}
-        
+            'm': 1.0, 
+            'g': 9.81, 
+            'Jx': 1, 
+            'Jy': 1, 
+            'Jz': 1, 
+            'Jxz': 0.0, 
+            'Lambda': 0.01, 
+            'l': 1.0, 
+            'm1_Cm': 0, 
+            'm1_Ct': 1.0, 
+            'm1_tau': 10.0, 
+            'm2_Cm': 0, 
+            'm2_Ct': 1.0, 
+            'm2_tau': 10.0, 
+            'm3_Cm': 0, 
+            'm3_Ct': 1.0, 
+            'm3_tau': 10.0, 
+            'm4_Cm': 0, 
+            'm4_Ct': 1.0, 
+            'm4_tau': 10.0}
+
         # ============================================
         # Declare cp
         self.cp = sympy.Matrix([])
         self.cp0 = { }
-        
+
         # ============================================
         # Declare x
+        x = sympy.symbols('x')
+        y = sympy.symbols('y')
+        z = sympy.symbols('z')
+        P = sympy.symbols('P')
+        Q = sympy.symbols('Q')
+        R = sympy.symbols('R')
+        U = sympy.symbols('U')
+        V = sympy.symbols('V')
+        W = sympy.symbols('W')
+        phi = sympy.symbols('phi')
+        theta = sympy.symbols('theta')
+        psi = sympy.symbols('psi')
         m1_omega = sympy.symbols('m1_omega')
         m2_omega = sympy.symbols('m2_omega')
         m3_omega = sympy.symbols('m3_omega')
         m4_omega = sympy.symbols('m4_omega')
         self.x = sympy.Matrix([
+            x, 
+            y, 
+            z, 
+            P, 
+            Q, 
+            R, 
+            U, 
+            V, 
+            W, 
+            phi, 
+            theta, 
+            psi, 
             m1_omega, 
             m2_omega, 
             m3_omega, 
             m4_omega])
         self.x0 = { 
+            'x': 0.0, 
+            'y': 0.0, 
+            'z': 0.0, 
+            'P': 0.0, 
+            'Q': 0.0, 
+            'R': 0.0, 
+            'U': 0.0, 
+            'V': 0.0, 
+            'W': 0.0, 
+            'phi': 0.0, 
+            'theta': 0.0, 
+            'psi': 0.0, 
             'm1_omega': 0.0, 
             'm2_omega': 0.0, 
             'm3_omega': 0.0, 
             'm4_omega': 0.0}
-        
+
         # ============================================
         # Declare m
-        a = sympy.symbols('a')
-        self.m = sympy.Matrix([
-            a])
-        self.m0 = { 
-            'a': 0.0}
-        
+        self.m = sympy.Matrix([])
+        self.m0 = { }
+
         # ============================================
         # Declare y
+        Fx = sympy.symbols('Fx')
+        Fy = sympy.symbols('Fy')
+        Fz = sympy.symbols('Fz')
+        Mx = sympy.symbols('Mx')
+        My = sympy.symbols('My')
+        Mz = sympy.symbols('Mz')
+        m1_moment = sympy.symbols('m1_moment')
+        m2_moment = sympy.symbols('m2_moment')
+        m3_moment = sympy.symbols('m3_moment')
+        m4_moment = sympy.symbols('m4_moment')
         m1_omega_ref = sympy.symbols('m1_omega_ref')
+        m1_thrust = sympy.symbols('m1_thrust')
         m2_omega_ref = sympy.symbols('m2_omega_ref')
+        m2_thrust = sympy.symbols('m2_thrust')
         m3_omega_ref = sympy.symbols('m3_omega_ref')
+        m3_thrust = sympy.symbols('m3_thrust')
         m4_omega_ref = sympy.symbols('m4_omega_ref')
+        m4_thrust = sympy.symbols('m4_thrust')
         self.y = sympy.Matrix([
+            Fx, 
+            Fy, 
+            Fz, 
+            Mx, 
+            My, 
+            Mz, 
+            m1_moment, 
+            m2_moment, 
+            m3_moment, 
+            m4_moment, 
             m1_omega_ref, 
+            m1_thrust, 
             m2_omega_ref, 
+            m2_thrust, 
             m3_omega_ref, 
-            m4_omega_ref])
+            m3_thrust, 
+            m4_omega_ref, 
+            m4_thrust])
         self.y0 = { 
+            'Fx': 0.0, 
+            'Fy': 0.0, 
+            'Fz': 0.0, 
+            'Mx': 0.0, 
+            'My': 0.0, 
+            'Mz': 0.0, 
+            'm1_moment': 0.0, 
+            'm2_moment': 0.0, 
+            'm3_moment': 0.0, 
+            'm4_moment': 0.0, 
             'm1_omega_ref': 0.0, 
+            'm1_thrust': 0.0, 
             'm2_omega_ref': 0.0, 
+            'm2_thrust': 0.0, 
             'm3_omega_ref': 0.0, 
-            'm4_omega_ref': 0.0}
-        
+            'm3_thrust': 0.0, 
+            'm4_omega_ref': 0.0, 
+            'm4_thrust': 0.0}
+
         # ============================================
         # Declare z
         self.z = sympy.Matrix([])
         self.z0 = { }
+
         
-        
+        # ============================================
+        # Declare pre_x
+        pre_x = sympy.symbols('pre_x')
+        pre_y = sympy.symbols('pre_y')
+        pre_z = sympy.symbols('pre_z')
+        pre_P = sympy.symbols('pre_P')
+        pre_Q = sympy.symbols('pre_Q')
+        pre_R = sympy.symbols('pre_R')
+        pre_U = sympy.symbols('pre_U')
+        pre_V = sympy.symbols('pre_V')
+        pre_W = sympy.symbols('pre_W')
+        pre_phi = sympy.symbols('pre_phi')
+        pre_theta = sympy.symbols('pre_theta')
+        pre_psi = sympy.symbols('pre_psi')
+        pre_m1_omega = sympy.symbols('pre_m1_omega')
+        pre_m2_omega = sympy.symbols('pre_m2_omega')
+        pre_m3_omega = sympy.symbols('pre_m3_omega')
+        pre_m4_omega = sympy.symbols('pre_m4_omega')
+        self.pre_x = sympy.Matrix([
+            pre_x, 
+            pre_y, 
+            pre_z, 
+            pre_P, 
+            pre_Q, 
+            pre_R, 
+            pre_U, 
+            pre_V, 
+            pre_W, 
+            pre_phi, 
+            pre_theta, 
+            pre_psi, 
+            pre_m1_omega, 
+            pre_m2_omega, 
+            pre_m3_omega, 
+            pre_m4_omega])
+
+        # ============================================
+        # Declare pre_m
+        self.pre_m = sympy.Matrix([])
+
+        # ============================================
+        # Declare pre_z
+        self.pre_z = sympy.Matrix([])
 
         # ============================================
         # Declare x_dot
+        der_x = sympy.symbols('der_x')
+        der_y = sympy.symbols('der_y')
+        der_z = sympy.symbols('der_z')
+        der_P = sympy.symbols('der_P')
+        der_Q = sympy.symbols('der_Q')
+        der_R = sympy.symbols('der_R')
+        der_U = sympy.symbols('der_U')
+        der_V = sympy.symbols('der_V')
+        der_W = sympy.symbols('der_W')
+        der_phi = sympy.symbols('der_phi')
+        der_theta = sympy.symbols('der_theta')
+        der_psi = sympy.symbols('der_psi')
         der_m1_omega = sympy.symbols('der_m1_omega')
         der_m2_omega = sympy.symbols('der_m2_omega')
         der_m3_omega = sympy.symbols('der_m3_omega')
         der_m4_omega = sympy.symbols('der_m4_omega')
         self.x_dot = sympy.Matrix([
+            der_x, 
+            der_y, 
+            der_z, 
+            der_P, 
+            der_Q, 
+            der_R, 
+            der_U, 
+            der_V, 
+            der_W, 
+            der_phi, 
+            der_theta, 
+            der_psi, 
             der_m1_omega, 
             der_m2_omega, 
             der_m3_omega, 
@@ -113,20 +316,51 @@ class Model:
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            m1_omega_ref - (u), 
-            m2_omega_ref - (u), 
-            m3_omega_ref - (u), 
-            m4_omega_ref - (u), 
+            der_U - (R * V - Q * W - g * sin(theta) + Fx / m), 
+            der_V - (R * U + P * W + g * sin(phi) * cos(theta) + Fy / m), 
+            der_W - (Q * U - P * V + g * cos(phi) * cos(theta) + Fz / m), 
+            der_phi - (P), 
+            der_theta - (Q), 
+            der_psi - (R), 
+            Lambda * der_P - (Jxz * Jx - Jy + Jz * P * Q - Jz * Jz - Jy + Jxz * Jxz * Q * R + Jz * Mx + Jxz * Mz), 
+            Jy * der_Q - (Jz - Jx * P * R - Jxz * P * P - R * R + My), 
+            Lambda * der_R - (Jx - Jy * Jx + Jxz * Jxz * P * Q - Jxz * Jx - Jy + Jz * Q * R + Jxz * Mx + Jx * Mz), 
+            der_x - (U * cos(theta) * cos(psi) + V * cos(phi) * sin(psi) + sin(phi) * sin(theta) * cos(psi) + W * sin(phi) * sin(psi) + cos(phi) * sin(theta) * cos(psi)), 
+            der_y - (U * cos(theta) * sin(psi) + V * cos(phi) * sin(psi) + sin(phi) * sin(theta) * sin(psi) + W * sin(phi) * cos(psi) + cos(phi) * sin(theta) * sin(psi)), 
+            der_z - (U * sin(theta) - V * sin(phi) * cos(theta) - W * cos(phi) * cos(theta)), 
+            Fx - (0), 
+            Fy - (0), 
+            Fz - (m1_thrust + m2_thrust + m3_thrust + m4_thrust), 
+            Mx - (0 * l * m1_thrust + m2_thrust - m3_thrust + m4_thrust), 
+            My - (0 * l * m1_thrust + m2_thrust + m3_thrust - m4_thrust), 
+            Mz - (m1_moment + m2_moment - m3_moment - m4_moment), 
+            m1_omega_ref - (u1), 
+            m2_omega_ref - (u2), 
+            m3_omega_ref - (u3), 
+            m4_omega_ref - (u4), 
             der_m1_omega - (1 / m1_tau * m1_omega_ref - m1_omega), 
+            m1_thrust - (m1_Ct * m1_omega * m1_omega), 
+            m1_moment - (m1_Cm * m1_thrust), 
             der_m2_omega - (1 / m2_tau * m2_omega_ref - m2_omega), 
+            m2_thrust - (m2_Ct * m2_omega * m2_omega), 
+            m2_moment - (m2_Cm * m2_thrust), 
             der_m3_omega - (1 / m3_tau * m3_omega_ref - m3_omega), 
-            der_m4_omega - (1 / m4_tau * m4_omega_ref - m4_omega)])
+            m3_thrust - (m3_Ct * m3_omega * m3_omega), 
+            m3_moment - (m3_Cm * m3_thrust), 
+            der_m4_omega - (1 / m4_tau * m4_omega_ref - m4_omega), 
+            m4_thrust - (m4_Ct * m4_omega * m4_omega), 
+            m4_moment - (m4_Cm * m4_thrust)])
+
+        # ============================================
+        # Define Conditions: c
+        self.c = {  }
+
+        # ============================================
+        # Define Reset Functions: fr
 
         # ============================================
         # Events and Event callbacks
-        self.events = []
-        self.event_callback = {}
-        self.solved = False
+
 
     def solve(self):
         # ============================================
@@ -163,6 +397,11 @@ class Model:
         y0 = np.array([self.y0[k] for k in self.y0.keys()])
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
+        # ============================================
+        # Declare Events
+        events = []
+
+        event_callback = {}
 
         # ============================================
         # Solve IVP
@@ -175,7 +414,6 @@ class Model:
             'y': [],
         }
 
-
         while t0 < tf - dt and event_count < max_events:
             t_eval = np.arange(t0, tf, dt)
             res = scipy.integrate.solve_ivp(
@@ -183,7 +421,7 @@ class Model:
                 fun=lambda ti, x: self.f_x_dot(ti, x, m0, f_u(ti), p0),
                 t_span=[t_eval[0], t_eval[-1]],
                 t_eval=t_eval,
-                events=self.events,
+                events=events,
             )
 
             # check for event
@@ -193,8 +431,8 @@ class Model:
                 event_count += 1
                 for i, t_event in enumerate(res.t_events):
                     if len(t_event) > 0:
-                        if i in self.event_callback:
-                            x1 = self.event_callback[i](t_event[i], x1)
+                        if i in event_callback:
+                            x1 = event_callback[i](t_event[i], x1)
 
             x = res['y']
             t = res['t']
