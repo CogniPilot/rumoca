@@ -4,13 +4,16 @@
 //! manipulate DAE-related constructs within the application.
 use crate::dae::ast::Dae;
 use crate::ir::ast::{
-    Causality, ClassDefinition, Component, Equation, Expression, Name, Token, Variability,
+    Causality, ClassDefinition, Component, Equation, Expression, Name, Statement, Token,
+    Variability,
 };
 use crate::ir::visitor::Visitable;
 use crate::ir::visitors::condition_finder::ConditionFinder;
 use crate::ir::visitors::state_finder::StateFinder;
 
 use anyhow::Result;
+
+use super::visitors::pre_finder::PreFinder;
 
 pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // create default Dae struct
@@ -72,6 +75,13 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
         }
     }
 
+    // handle pre
+    let mut pre_finder = PreFinder::default();
+    fclass.accept(&mut pre_finder);
+    add_pre_components(&dae.x, &mut dae.pre_x);
+    add_pre_components(&dae.m, &mut dae.pre_m);
+    add_pre_components(&dae.z, &mut dae.pre_z);
+
     // handle conditions and relations
     dae.c = condition_finder.conditions.clone();
 
@@ -97,8 +107,10 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                     }
                                     match &args[0] {
                                         Expression::ComponentReference(cref) => {
-                                            dae.fr
-                                                .insert(cond_name, (cref.clone(), args[1].clone()));
+                                            dae.fr.insert(cond_name, Statement::Assignment {
+                                                comp: cref.clone(),
+                                                value: args[1].clone(),
+                                            });
                                         }
                                         _ => panic!(
                                             "first argument of reinit must be a component reference"
@@ -115,4 +127,12 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
         }
     }
     Ok(dae)
+}
+
+fn add_pre_components(source: &Vec<Component>, target: &mut Vec<Component>) {
+    for comp in source {
+        let mut pre_comp = comp.clone();
+        pre_comp.name = format!("pre_{}", comp.name);
+        target.push(pre_comp);
+    }
 }

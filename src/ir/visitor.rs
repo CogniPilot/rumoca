@@ -99,6 +99,14 @@ impl Visitable for ir::ast::Equation {
                     arg.accept(visitor);
                 }
             }
+            ir::ast::Equation::When(blocks) => {
+                for block in blocks {
+                    block.cond.accept(visitor);
+                    for eq in &mut block.eqs {
+                        eq.accept(visitor);
+                    }
+                }
+            }
             _ => {}
         }
         visitor.exit_equation(self);

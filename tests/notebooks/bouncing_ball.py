@@ -16,6 +16,10 @@ class Model:
 
     def __init__(self):
         # ============================================
+        # Initialize
+        self.solved = False
+
+        # ============================================
         # Declare time
         self.time = sympy.symbols('time')
 
@@ -23,7 +27,7 @@ class Model:
         # Declare u
         self.u = sympy.Matrix([])
         self.u0 = { }
-        
+
         # ============================================
         # Declare p
         e = sympy.symbols('e')
@@ -34,12 +38,12 @@ class Model:
         self.p0 = { 
             'e': 0.8, 
             'h0': 1.0}
-        
+
         # ============================================
         # Declare cp
         self.cp = sympy.Matrix([])
         self.cp0 = { }
-        
+
         # ============================================
         # Declare x
         h = sympy.symbols('h')
@@ -50,12 +54,12 @@ class Model:
         self.x0 = { 
             'h': 1.0, 
             'v': 0.0}
-        
+
         # ============================================
         # Declare m
         self.m = sympy.Matrix([])
         self.m0 = { }
-        
+
         # ============================================
         # Declare y
         z = sympy.symbols('z')
@@ -63,13 +67,28 @@ class Model:
             z])
         self.y0 = { 
             'z': 0.0}
-        
+
         # ============================================
         # Declare z
         self.z = sympy.Matrix([])
         self.z0 = { }
+
         
-        
+        # ============================================
+        # Declare pre_x
+        pre_h = sympy.symbols('pre_h')
+        pre_v = sympy.symbols('pre_v')
+        self.pre_x = sympy.Matrix([
+            pre_h, 
+            pre_v])
+
+        # ============================================
+        # Declare pre_m
+        self.pre_m = sympy.Matrix([])
+
+        # ============================================
+        # Declare pre_z
+        self.pre_z = sympy.Matrix([])
 
         # ============================================
         # Declare x_dot
@@ -87,10 +106,26 @@ class Model:
             der_v - (-9.81)])
 
         # ============================================
+        # Define Conditions: c
+        self.c = { 
+            '__c0': h < 0 }
+
+        # ============================================
+        # Define Reset Functions: fr
+        def __fr___c0(x):
+            pre_h, pre_v= self.x
+            h, v= self.x
+            v = -e * pre_v
+            return [
+            h, 
+            v]
+        self.fr___c0 = sympy.lambdify([self.x, self.p], __fr___c0(self.x))
+
+        # ============================================
         # Events and Event callbacks
-        self.events = []
-        self.event_callback = {}
-        self.solved = False
+        self.zc___c0 = sympy.lambdify([self.time, self.x], h - 0)
+        self.zc___c0.terminal = True
+
 
     def solve(self):
         # ============================================
@@ -127,6 +162,15 @@ class Model:
         y0 = np.array([self.y0[k] for k in self.y0.keys()])
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
+        # ============================================
+        # Declare Events
+        events = [
+            self.zc___c0
+        ]
+
+        event_callback = {
+            0: lambda t, x: self.fr___c0(x, p0),
+        }
 
         # ============================================
         # Solve IVP
@@ -139,7 +183,6 @@ class Model:
             'y': [],
         }
 
-
         while t0 < tf - dt and event_count < max_events:
             t_eval = np.arange(t0, tf, dt)
             res = scipy.integrate.solve_ivp(
@@ -147,7 +190,7 @@ class Model:
                 fun=lambda ti, x: self.f_x_dot(ti, x, m0, f_u(ti), p0),
                 t_span=[t_eval[0], t_eval[-1]],
                 t_eval=t_eval,
-                events=self.events,
+                events=events,
             )
 
             # check for event
@@ -157,8 +200,8 @@ class Model:
                 event_count += 1
                 for i, t_event in enumerate(res.t_events):
                     if len(t_event) > 0:
-                        if i in self.event_callback:
-                            x1 = self.event_callback[i](t_event[i], x1)
+                        if i in event_callback:
+                            x1 = event_callback[i](t_event[i], x1)
 
             x = res['y']
             t = res['t']

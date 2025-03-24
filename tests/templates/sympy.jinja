@@ -1,5 +1,6 @@
 {%- macro render_dae(dae) -%}
-    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'm', 'y', 'z'] -%}
+    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'm', 'y', 'z', ] -%}
+    {%- set vars_pre_vects = ['pre_x', 'pre_m', 'pre_z'] -%}
 import sympy
 import numpy as np
 import scipy.integrate
@@ -14,6 +15,10 @@ class Model:
     """
 
     def __init__(self):
+        # ============================================
+        # Initialize
+        self.solved = False
+
         # ============================================
         # Declare time
         self.time = sympy.symbols('time')
@@ -30,9 +35,19 @@ class Model:
         self.{{ var }}0 = {{ "{" }} {% for c in dae[var] %}
             '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
         {%- endfor -%}{{ "}" }}
-        
-        {% endfor %}
 
+        {% endfor %}
+        {% for var in vars_pre_vects -%}
+        # ============================================
+        # Declare {{ var }}
+        {% for c in dae[var] -%}
+        {{ c.name }} = sympy.symbols('{{ c.name }}')
+        {% endfor -%}
+        self.{{var }} {{ "= sympy.Matrix([" }}{%- for c in dae[var] %}
+            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {% endfor -%} {{ "])" }}
+
+        {% endfor -%}
         # ============================================
         # Declare x_dot
         {% for c in dae.x_dot -%}
@@ -49,10 +64,35 @@ class Model:
         {%- endfor %}])
 
         # ============================================
+        # Define Conditions: c
+        self.c = {{ "{" }} {% for key, val in dae.c | items %}
+            '{{ key }}': {{ render_expression(val) }} {%- if not loop.last -%}{{ ", " }}{%- endif %}
+        {%- endfor %} {{ "}" }}
+
+        # ============================================
+        # Define Reset Functions: fr
+        {%- for key, val in dae.fr | items %}
+        def __fr_{{ key }}(x):
+            {% for c in dae.x -%}
+            pre_{{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {% endfor -%}  = self.x
+            {% for c in dae.x -%}
+            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {% endfor -%}  = self.x
+            {{ render_statement(val) }}
+            return [{%- for c in dae.x %}
+            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {% endfor -%}]
+        self.fr_{{ key }} = sympy.lambdify([self.x, self.p], __fr_{{ key }}(self.x))
+        {%- endfor %}
+
+        # ============================================
         # Events and Event callbacks
-        self.events = []
-        self.event_callback = {}
-        self.solved = False
+        {%- for key, val in dae.c | items %}
+        self.zc_{{key}} = sympy.lambdify([self.time, self.x], {{ render_zero_crossing(val) }})
+        self.zc_{{key}}.terminal = True
+        {%- endfor %}
+
 
     def solve(self):
         # ============================================
@@ -84,6 +124,15 @@ class Model:
         {% for var in vars_vects -%}
         {{ var }}0 = np.array([self.{{ var }}0[k] for k in self.{{ var }}0.keys()])
         {% endfor %}
+        # ============================================
+        # Declare Events
+        events = [{% for key, val in dae.c | items %}
+            self.zc_{{key}} {%- if not loop.last -%}{{ ", " }}{%- endif %}
+        {% endfor %}]
+
+        event_callback = {{ "{" }}{% for key, val in dae.fr | items %}
+            {{ loop.index0 }}: lambda t, x: self.fr_{{ key }}(x, p0),
+        {% endfor %} {{- "}" }}
 
         # ============================================
         # Solve IVP
@@ -96,7 +145,6 @@ class Model:
             'y': [],
         }
 
-
         while t0 < tf - dt and event_count < max_events:
             t_eval = np.arange(t0, tf, dt)
             res = scipy.integrate.solve_ivp(
@@ -104,7 +152,7 @@ class Model:
                 fun=lambda ti, x: self.f_x_dot(ti, x, m0, f_u(ti), p0),
                 t_span=[t_eval[0], t_eval[-1]],
                 t_eval=t_eval,
-                events=self.events,
+                events=events,
             )
 
             # check for event
@@ -114,8 +162,8 @@ class Model:
                 event_count += 1
                 for i, t_event in enumerate(res.t_events):
                     if len(t_event) > 0:
-                        if i in self.event_callback:
-                            x1 = self.event_callback[i](t_event[i], x1)
+                        if i in event_callback:
+                            x1 = event_callback[i](t_event[i], x1)
 
             x = res['y']
             t = res['t']
@@ -152,13 +200,39 @@ class Model:
     {%- endif -%}
 {%- endmacro -%}
 
+{%- macro render_zero_crossing(expr) -%}
+    {%- if "Binary" in expr -%}
+        {%- if "Lt" in expr.Binary.op -%}
+            {{- render_expression(expr.Binary.lhs) -}}
+            {{- " - " -}}
+            {{- render_expression(expr.Binary.rhs) -}}
+        {%- elif "Gt" in expr.Binary.op -%}
+            {{- render_expression(expr.Binary.lhs) -}}
+            {{- " - " -}}
+            {{- render_expression(expr.Binary.rhs) -}}
+        {%- else -%}
+            UNHANDLED ZERO CROSSING OP: {{ expr.Binary.op | pprint }}
+        {%- endif -%}
+    {%- else -%}
+        UNHANDLED ZERO CROSSING EXPRESSION: {{ expr | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
 {%- macro render_equation(eq) -%}
     {%- if "Simple" in eq -%}
         {{- render_expression(eq.Simple.lhs) -}} {{- " - (" -}}
         {{- render_expression(eq.Simple.rhs) -}} {{- ")" -}}
-    {%- elif "When" in eq -%}
     {%- else -%}
         UNHANDLED EQUATION: {{ eq | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_statement(stmt) -%}
+    {%- if "Assignment" in stmt -%}
+        {{- render_component_reference(stmt.Assignment.comp) -}} {{- " = " -}}
+        {{- render_expression(stmt.Assignment.value) -}}
+    {%- else -%}
+        UNHANDLED RESET STATEMENT: {{ stmt | pprint }}
     {%- endif -%}
 {%- endmacro -%}
 
@@ -182,6 +256,10 @@ class Model:
         {{ "*" }}
     {%- elif "Div" in expr.op -%}
         {{ "/" }}
+    {%- elif "Lt" in expr.op -%}
+        {{ "<" }}
+    {%- elif "Gt" in expr.op -%}
+        {{ ">" }}
     {%- else -%}
         UNHANDLED OP: {{ expr.op | pprint }}
     {%- endif -%}
