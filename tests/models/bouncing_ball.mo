@@ -3,7 +3,9 @@ model BouncingBall "The 'classic' bouncing ball model"
   parameter Real h0=1.0 "Initial height";
   Real h = 1.0 "Height";
   Real v "Velocity";
+  Real z;
 equation
+  z = h;
   v = der(h);
   der(v) = -9.81;
   when h<0 then

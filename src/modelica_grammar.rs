@@ -374,7 +374,10 @@ impl TryFrom<&modelica_grammar_trait::String> for ir::ast::Token {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::String) -> std::result::Result<Self, Self::Error> {
-        Ok(ast.string.clone())
+        let mut tok = ast.string.clone();
+        // remove quotes from string text
+        tok.text = tok.text[1..tok.text.len() - 1].to_string();
+        Ok(tok)
     }
 }
 

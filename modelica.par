@@ -2,6 +2,7 @@
 %title "Modelica grammar"
 %comment "Modelica grammar 3.7-dev for `parol`"
 %line_comment "//"
+%block_comment "/\*" "\*/"
 %t_type crate::ir::ast::Token
 %nt_type algorithm_section = crate::modelica_grammar::AlgorithmSection
 %nt_type argument = crate::ir::ast::Expression
@@ -283,7 +284,7 @@ ident
 //    | "?" | "@" | "[" | "]" | "^" | "{" | "}" | "|" | "~" | " " | """
 // 🟥 S-ESCAPE = "\'" | "\"" | "\?" | "\\"
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
-// 🟨 STRING = """ { S-CHAR | S-ESCAPE } """
+// 🟨 STRING = """ { S-CHAR | S-ESCAPE } """ ;
 string
     : /"[' \w]*"/
     ;

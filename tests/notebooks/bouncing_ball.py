@@ -17,53 +17,56 @@ class Model:
     def __init__(self):
         # ============================================
         # Declare time
-        time = sympy.symbols('time')
+        self.time = sympy.symbols('time')
 
         # ============================================
         # Declare u
-        self.u = sympy.Matrix([[]]).T
+        self.u = sympy.Matrix([])
         self.u0 = { }
         
         # ============================================
         # Declare p
         e = sympy.symbols('e')
         h0 = sympy.symbols('h0')
-        self.p = sympy.Matrix([[
+        self.p = sympy.Matrix([
             e, 
-            h0]]).T
+            h0])
         self.p0 = { 
             'e': 0.8, 
             'h0': 1.0}
         
         # ============================================
         # Declare cp
-        self.cp = sympy.Matrix([[]]).T
+        self.cp = sympy.Matrix([])
         self.cp0 = { }
         
         # ============================================
         # Declare x
         h = sympy.symbols('h')
         v = sympy.symbols('v')
-        self.x = sympy.Matrix([[
+        self.x = sympy.Matrix([
             h, 
-            v]]).T
+            v])
         self.x0 = { 
             'h': 1.0, 
             'v': 0.0}
         
         # ============================================
         # Declare m
-        self.m = sympy.Matrix([[]]).T
+        self.m = sympy.Matrix([])
         self.m0 = { }
         
         # ============================================
         # Declare y
-        self.y = sympy.Matrix([[]]).T
-        self.y0 = { }
+        z = sympy.symbols('z')
+        self.y = sympy.Matrix([
+            z])
+        self.y0 = { 
+            'z': 0.0}
         
         # ============================================
         # Declare z
-        self.z = sympy.Matrix([[]]).T
+        self.z = sympy.Matrix([])
         self.z0 = { }
         
         
@@ -72,50 +75,46 @@ class Model:
         # Declare x_dot
         der_h = sympy.symbols('der_h')
         der_v = sympy.symbols('der_v')
-        self.x_dot = sympy.Matrix([[
+        self.x_dot = sympy.Matrix([
             der_h, 
-            der_v]]).T
+            der_v])
 
         # ============================================
         # Define Continous Update Function: fx
-        self.fx = sympy.Matrix([[
+        self.fx = sympy.Matrix([
+            z - (h), 
             v - (der_h), 
-            v - (der_h), 
-            der_v - (-9.81), 
-            der_v - (-9.81), 
-            ]]).T
+            der_v - (-9.81)])
 
         # ============================================
         # Events and Event callbacks
         self.events = []
         self.event_callback = {}
+        self.solved = False
 
+    def solve(self):
         # ============================================
         # Solve for explicit ODE
-        try:
-            v = sympy.Matrix.vstack(self.x_dot, self.y)
-            sol = sympy.solve(self.fx, v)
-        except Exception as e:
-            print('solving failed')
-            for k in self.__dict__.keys():
-                print(k, self.__dict__[k])
-            raise(e)
+        v = sympy.Matrix(list(self.x_dot) + list(self.y))
+        sol = sympy.solve(self.fx, v)
         self.sol_x_dot = self.x_dot.subs(sol)
         self.sol_y = self.y.subs(sol)
-        self.f_x_dot = sympy.lambdify([time, self.x, self.m, self.u, self.p], list(self.sol_x_dot))
-        self.f_y = sympy.lambdify([time, self.x, self.m, self.u, self.p], list(self.sol_y))
+        self.f_x_dot = sympy.lambdify([self.time, self.x, self.m, self.u, self.p], list(self.sol_x_dot))
+        self.f_y = sympy.lambdify([self.time, self.x, self.m, self.u, self.p], list(self.sol_y))
+        self.solved = True
 
     def __repr__(self):
         return repr(self.__dict__)
 
-    def simulate(self, t=None, u=None):
+    def simulate(self, t0, tf, dt, f_u=None, max_events=100):
         """
         Simulate the modelica model
         """
-        if t is None:
-            t = np.arange(0, 1, 0.01)
-        if u is None:
-            def u(t):
+        if not self.solved:
+            self.solve()
+        
+        if f_u is None:
+            def f_u(t):
                 return np.zeros(self.u.shape[0])
 
         # ============================================
@@ -131,30 +130,50 @@ class Model:
 
         # ============================================
         # Solve IVP
-        res = scipy.integrate.solve_ivp(
-            y0=x0,
-            fun=lambda ti, x: self.f_x_dot(ti, x, m0, u(ti), p0),
-            t_span=[t[0], t[-1]],
-            t_eval=t,
-        )
-
-        # check for event
-        y0 = res['y'][:, -1]
-        if res.t_events is not None:
-            for i, t_event in enumerate(res.t_events):
-                if len(t_event) > 0:
-                    print('event', i)
-                    if i in self.event_callback:
-                        print('detected event', i, t_event[i])
-                        y0 = self.event_callback[i](t_event[i], y0)
-
-        x = res['y']
-        #y = [ self.f_y(ti, xi, u(ti), p0) for (ti, xi) in zip(t, x) ]
-        #y = self.f_y(0, [1, 2, 3, 4], [1], [1, 2, 3, 4])
-
-        return {
-            't': t,
-            'x': x,
-            'u': u(t),
-            #'y': y,
+        event_count = 0
+        t1 = tf
+        data = {
+            't': [],
+            'x': [],
+            'u': [],
+            'y': [],
         }
+
+
+        while t0 < tf - dt and event_count < max_events:
+            t_eval = np.arange(t0, tf, dt)
+            res = scipy.integrate.solve_ivp(
+                y0=x0,
+                fun=lambda ti, x: self.f_x_dot(ti, x, m0, f_u(ti), p0),
+                t_span=[t_eval[0], t_eval[-1]],
+                t_eval=t_eval,
+                events=self.events,
+            )
+
+            # check for event
+            x1 = res['y'][:, -1]
+            t1 = res['t'][-1]
+            if res.t_events is not None:
+                event_count += 1
+                for i, t_event in enumerate(res.t_events):
+                    if len(t_event) > 0:
+                        if i in self.event_callback:
+                            x1 = self.event_callback[i](t_event[i], x1)
+
+            x = res['y']
+            t = res['t']
+            u = np.array([ f_u(ti) for ti in t ]).T
+            y = np.array([ self.f_y(ti, xi, m0, ui, p0) for (ti, xi, ui) in zip(t, x.T, u.T) ]).T
+
+            data['x'].append(x)
+            data['t'].append(t)
+            data['u'].append(u)
+            data['y'].append(y)
+
+            t0 = t1
+            x0 = x1
+        
+        for k in data.keys():
+            if len(data[k]) > 0:
+                data[k] = np.hstack(data[k])
+        return data
