@@ -13,15 +13,23 @@
 //! to their identifiers when necessary.
 use crate::ir;
 use crate::ir::visitor::Visitor;
+use indexmap::IndexSet;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScopePusher {
+    pub global_funcs: IndexSet<String>,
+    pub symbols: IndexSet<String>,
     pub comp: String,
 }
 
 impl Visitor for ScopePusher {
     fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
-        if node.parts[0].ident.text != "der" {
+        let name = node.to_string();
+        // if not a global function
+        if !self.global_funcs.contains(&name) {
+            // if symbol is already defined
+            //if self.symbols.contains(&name) {
+            // prepend component name
             node.parts.insert(0, ir::ast::ComponentRefPart {
                 ident: ir::ast::Token {
                     text: self.comp.clone(),
@@ -29,6 +37,7 @@ impl Visitor for ScopePusher {
                 },
                 subs: None,
             });
+            //}
         }
     }
 }

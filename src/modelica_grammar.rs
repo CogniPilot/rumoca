@@ -115,6 +115,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         let spec = &class_specifier.standard_class_specifier;
                         Ok(ir::ast::ClassDefinition {
                             name: spec.name.clone(),
+                            extends: spec.composition.extends.clone(),
                             equations: spec.composition.equations.clone(),
                             algorithms: spec.composition.algorithms.clone(),
                             initial_equations: spec.composition.initial_equations.clone(),
@@ -148,6 +149,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
 #[derive(Debug, Default, Clone)]
 #[allow(unused)]
 pub struct Composition {
+    pub extends: Vec<ir::ast::Extend>,
     pub components: IndexMap<String, ir::ast::Component>,
     pub equations: Vec<ir::ast::Equation>,
     pub initial_equations: Vec<ir::ast::Equation>,
@@ -166,6 +168,7 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
         };
 
         comp.components = ast.element_list.components.clone();
+        comp.extends = ast.element_list.extends.clone();
 
         for comp_list in &ast.composition_list {
             match &comp_list.composition_list_group {
@@ -208,6 +211,8 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
 #[allow(unused)]
 pub struct ElementList {
     pub components: IndexMap<String, ir::ast::Component>,
+    pub imports: Vec<ir::ast::Token>,
+    pub extends: Vec<ir::ast::Extend>,
 }
 
 impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
@@ -218,6 +223,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
     ) -> std::result::Result<Self, Self::Error> {
         let mut def = ElementList {
             components: IndexMap::new(),
+            ..Default::default()
         };
         for elem_list in &ast.element_list_list {
             match &elem_list.element {
@@ -357,8 +363,16 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                 modelica_grammar_trait::Element::ImportClause(..) => {
                     todo!("import clause")
                 }
-                modelica_grammar_trait::Element::ExtendsClause(..) => {
-                    todo!("extends clause")
+                modelica_grammar_trait::Element::ExtendsClause(clause) => {
+                    if let Some(_opt) = &clause.extends_clause.extends_clause_opt {
+                        todo!("unhandled extends class or inheritance modification")
+                    }
+                    if let Some(_opt) = &clause.extends_clause.extends_clause_opt0 {
+                        todo!("unhandled annotation")
+                    }
+                    def.extends.push(ir::ast::Extend {
+                        comp: clause.extends_clause.type_specifier.name.clone(),
+                    });
                 }
                 modelica_grammar_trait::Element::ElementReplaceableDefinition(..) => {
                     todo!("element replaceable definition")

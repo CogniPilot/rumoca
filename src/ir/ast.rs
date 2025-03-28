@@ -142,7 +142,7 @@ impl Debug for Component {
 pub struct ClassDefinition {
     pub name: Token,
     pub encapsulated: bool,
-    //pub extends: Vec<Extend>,
+    pub extends: Vec<Extend>,
     //pub imports: Vec<Import>,
     //pub classes: IndexMap<String, ClassDefinition>,
     pub components: IndexMap<String, Component>,
@@ -150,6 +150,12 @@ pub struct ClassDefinition {
     pub initial_equations: Vec<Equation>,
     pub algorithms: Vec<Vec<Statement>>,
     pub initial_algorithms: Vec<Vec<Statement>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(unused)]
+pub struct Extend {
+    pub comp: Name,
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]

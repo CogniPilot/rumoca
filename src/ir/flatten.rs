@@ -24,7 +24,7 @@ use crate::ir::visitor::Visitable;
 use crate::ir::visitors::scope_pusher::ScopePusher;
 use crate::ir::visitors::sub_comp_namer::SubCompNamer;
 use anyhow::Result;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefinition> {
     // flatten the syntax tree
@@ -51,6 +51,35 @@ pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefiniti
     // create flat class
     let mut fclass = main_class.clone();
 
+    let mut scope_pusher = ScopePusher {
+        global_funcs: IndexSet::from([
+            "der".to_string(),
+            "pre".to_string(),
+            "cos".to_string(),
+            "sin".to_string(),
+            "tan".to_string(),
+        ]),
+        symbols: IndexSet::new(),
+        comp: main_class_name.clone(),
+    };
+
+    for extend in &main_class.extends {
+        let class_name = extend.comp.to_string();
+        let class = class_dict
+            .get(&class_name)
+            .expect(&format!("Class for extend '{}' not found", class_name));
+
+        // add components
+        for comp in &class.components {
+            fclass.components.insert(comp.0.clone(), comp.1.clone());
+        }
+
+        // add equations
+        for eq in &class.equations {
+            fclass.equations.push(eq.clone());
+        }
+    }
+
     // for each component in the main class
     for (comp_name, comp) in &main_class.components {
         // if the the component type is a class
@@ -60,12 +89,12 @@ pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefiniti
             // add equation from component to flat class
             for eq in &comp_class.equations {
                 let mut feq = eq.clone();
-                feq.accept(&mut ScopePusher {
-                    comp: comp_name.clone(),
-                });
+                scope_pusher.comp = comp_name.clone();
+                feq.accept(&mut scope_pusher);
                 fclass.equations.push(feq);
             }
 
+            // expand comp.sub_comp names to use underscores
             fclass.accept(&mut SubCompNamer {
                 comp: comp_name.clone(),
             });

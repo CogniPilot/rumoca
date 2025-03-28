@@ -1,5 +1,5 @@
 {%- macro render_dae(dae) -%}
-    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'm', 'y', 'z', ] -%}
+    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'm', 'y', 'z'] -%}
     {%- set vars_pre_vects = ['pre_x', 'pre_m', 'pre_z'] -%}
 import sympy
 import numpy as np
@@ -108,7 +108,7 @@ class Model:
     def __repr__(self):
         return repr(self.__dict__)
 
-    def simulate(self, t0, tf, dt, f_u=None, max_events=100):
+    def simulate(self, t0, tf, dt, x0=None, f_u=None, max_events=100):
         """
         Simulate the modelica model
         """
@@ -121,9 +121,12 @@ class Model:
 
         # ============================================
         # Declare initial vectors
-        {% for var in vars_vects -%}
+        {% for var in ['u', 'p', 'cp', 'm', 'y', 'z'] -%}
         {{ var }}0 = np.array([self.{{ var }}0[k] for k in self.{{ var }}0.keys()])
         {% endfor %}
+        if x0 is None:
+            x0 = np.array([self.x0[k] for k in self.x0.keys()])
+
         # ============================================
         # Declare Events
         events = [{% for key, val in dae.c | items %}
@@ -222,6 +225,8 @@ class Model:
     {%- if "Simple" in eq -%}
         {{- render_expression(eq.Simple.lhs) -}} {{- " - (" -}}
         {{- render_expression(eq.Simple.rhs) -}} {{- ")" -}}
+    {%- elif "If" in eq -%}
+        {{ eq | pprint }}
     {%- else -%}
         UNHANDLED EQUATION: {{ eq | pprint }}
     {%- endif -%}
@@ -273,7 +278,7 @@ class Model:
     {%- else -%}
         UNHANDLED OP: {{ expr.op | pprint }}
     {%- endif -%}
-    {{- render_expression(expr.rhs) -}}
+    {{ "(" }} {{- render_expression(expr.rhs) -}} {{ ")" }}
 {%- endmacro -%}
 
 {%- macro render_component_reference(comp) -%}

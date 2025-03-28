@@ -91,6 +91,9 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
             Equation::Simple { .. } => {
                 dae.fx.push(eq.clone());
             }
+            Equation::If { .. } => {
+                dae.fx.push(eq.clone());
+            }
             Equation::When(blocks) => {
                 for block in blocks {
                     for eq in &block.eqs {

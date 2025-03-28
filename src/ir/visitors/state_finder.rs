@@ -21,21 +21,22 @@
 //! This visitor is useful for analyzing and transforming ASTs in scenarios
 //! where state variables and their derivatives need to be explicitly tracked
 //! and processed.
-use std::collections::HashSet;
+
+use indexmap::IndexSet;
 
 use crate::ir;
 use crate::ir::visitor::Visitor;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct StateFinder {
-    pub states: HashSet<String>,
+    pub states: IndexSet<String>,
 }
 
 impl Visitor for StateFinder {
     fn exit_expression(&mut self, node: &mut ir::ast::Expression) {
         match &node {
             ir::ast::Expression::FunctionCall { comp, args } => {
-                if comp.parts[0].ident.text == "der" {
+                if comp.to_string() == "der" {
                     let arg = args.get(0).unwrap();
                     match &arg {
                         ir::ast::Expression::ComponentReference(comp) => {
