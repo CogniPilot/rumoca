@@ -35,7 +35,12 @@ class Model:
         self.{{ var }}0 = {{ "{" }} {% for c in dae[var] %}
             '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
         {%- endfor -%}{{ "}" }}
-
+        self.{{ var }}_index = {{ "{" }} {% for c in dae[var] %}
+            '{{ c.name }}': {{ loop.index0 }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {%- endfor -%}{{ "}" }}
+        self.{{ var }}_index_rev = {{ "[" }} {% for c in dae[var] %}
+            '{{ c.name }}' {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {%- endfor -%}{{ "]" }}
         {% endfor %}
         {% for var in vars_pre_vects -%}
         # ============================================
@@ -252,7 +257,7 @@ class Model:
 {%- endmacro -%}
 
 {%- macro render_binary(expr) -%}
-    {{- render_expression(expr.lhs) -}} {{- " " -}}
+    {{ "(" }} {{- render_expression(expr.lhs) -}} {{- " " -}}
     {%- if "Add" in expr.op -%}
         {{ "+" }}
     {%- elif "Sub" in expr.op -%}
@@ -268,7 +273,7 @@ class Model:
     {%- else -%}
         UNHANDLED OP: {{ expr.op | pprint }}
     {%- endif -%}
-    {{- " " -}} {{- render_expression(expr.rhs) -}}
+    {{- " " -}} {{- render_expression(expr.rhs) -}} {{ ")" }}
 {%- endmacro -%}
 
 

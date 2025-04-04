@@ -5,3 +5,4 @@ src/modelica_parser.rs
 src/modelica_grammar_trait.rs
 .vscode/
 __pycache__/
+.venv/

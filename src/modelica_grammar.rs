@@ -604,9 +604,10 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::ast::Equation {
                                     args: args.clone(),
                                 })
                             }
-                            _ => {
-                                panic!("Modelica only allows functional call statement as equation")
-                            }
+                            _ => Err(anyhow::anyhow!(
+                                "Modelica only allows functional call statement as equation: {:?}",
+                                ast
+                            )),
                         }
                     }
                 }
@@ -1054,29 +1055,30 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for ir::ast::Express
     fn try_from(
         ast: &modelica_grammar_trait::ArithmeticExpression,
     ) -> std::result::Result<Self, Self::Error> {
-        if ast.arithmetic_expression_list.is_empty() {
-            match &ast.arithmetic_expression_opt {
-                Some(opt) => Ok(ir::ast::Expression::Unary {
-                    op: match &opt.add_operator {
-                        modelica_grammar_trait::AddOperator::Minus(tok) => {
-                            ir::ast::OpUnary::Minus(tok.minus.clone())
-                        }
-                        modelica_grammar_trait::AddOperator::Plus(tok) => {
-                            ir::ast::OpUnary::Plus(tok.plus.clone())
-                        }
-                        modelica_grammar_trait::AddOperator::DotMinus(tok) => {
-                            ir::ast::OpUnary::DotMinus(tok.dot_minus.clone())
-                        }
-                        modelica_grammar_trait::AddOperator::DotPlus(tok) => {
-                            ir::ast::OpUnary::DotPlus(tok.dot_plus.clone())
-                        }
-                    },
-                    rhs: Box::new(ast.term.as_ref().clone()),
-                }),
-                None => Ok(ast.term.as_ref().clone()),
-            }
-        } else {
-            let mut lhs = ast.term.as_ref().clone();
+        // handle first term
+        let mut lhs = match &ast.arithmetic_expression_opt {
+            Some(opt) => ir::ast::Expression::Unary {
+                op: match &opt.add_operator {
+                    modelica_grammar_trait::AddOperator::Minus(tok) => {
+                        ir::ast::OpUnary::Minus(tok.minus.clone())
+                    }
+                    modelica_grammar_trait::AddOperator::Plus(tok) => {
+                        ir::ast::OpUnary::Plus(tok.plus.clone())
+                    }
+                    modelica_grammar_trait::AddOperator::DotMinus(tok) => {
+                        ir::ast::OpUnary::DotMinus(tok.dot_minus.clone())
+                    }
+                    modelica_grammar_trait::AddOperator::DotPlus(tok) => {
+                        ir::ast::OpUnary::DotPlus(tok.dot_plus.clone())
+                    }
+                },
+                rhs: Box::new(ast.term.as_ref().clone()),
+            },
+            None => ast.term.as_ref().clone(),
+        };
+
+        // if has term list, process expressions
+        if !ast.arithmetic_expression_list.is_empty() {
             for term in &ast.arithmetic_expression_list {
                 lhs = ir::ast::Expression::Binary {
                     lhs: Box::new(lhs),
@@ -1097,8 +1099,8 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for ir::ast::Express
                     rhs: Box::new(term.term.clone()),
                 };
             }
-            Ok(lhs)
         }
+        Ok(lhs)
     }
 }
 
