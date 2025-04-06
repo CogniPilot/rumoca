@@ -13,7 +13,7 @@ model Quadrotor
     Real R_z "ground reaction force";
 equation
     if h < 0 then
-        R_z = 1;
+        R_z = 10*h;
     else
         R_z = 0;
     end if;

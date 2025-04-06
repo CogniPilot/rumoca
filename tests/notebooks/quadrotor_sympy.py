@@ -506,7 +506,7 @@ class Model:
         self.fx = sympy.Matrix([
             sympy.Piecewise(
             (
-                sympy.Matrix([R_z - (1.0)]),
+                sympy.Matrix([R_z - ((10.0 * h))]),
                 c0,
             ),
             (
@@ -551,6 +551,15 @@ class Model:
 
         # ============================================
         # Define Reset Functions: fr
+
+        # ============================================
+        # Define Condition Update Function: fc
+        self.fc = sympy.Tuple(*[
+            (h < 0.0)])
+        self.f_c = sympy.lambdify(
+            args=[self.time, self.x],
+            expr=self.fc,
+            modules=['numpy'])
 
         # ============================================
         # Events and Event callbacks
@@ -635,11 +644,18 @@ class Model:
             'x': [],
             'u': [],
             'y': [],
+            'c': [],
         }
 
         while t0 < tf - dt:
+            # check for max events
             if event_count > max_events:
                 raise RuntimeError("Max events reached")
+            
+            # update conditions
+            c0 = self.f_c(t0, x0)
+
+            # solve ivp
             t_eval = np.arange(t0, tf, dt)
             res = scipy.integrate.solve_ivp(
                 y0=x0,
@@ -659,20 +675,24 @@ class Model:
                         if i in event_callback:
                             x1 = event_callback[i](t_event[i], x1)
 
+            # store data
             x = res['y']
             t = res['t']
             u = np.array([ f_u(ti) for ti in t ]).T
             y = np.array([ self.f_y(ti, xi, m0, ui, p0, c0) for (ti, xi, ui) in zip(t, x.T, u.T) ]).T
-
             data['x'].append(x)
             data['t'].append(t)
             data['u'].append(u)
             data['y'].append(y)
+            data['c'].append(c0)
 
-            t0 = t1
+            # update for next step
+            t0 = t1 + dt
             x0 = x1
         
+        # convert lists to numpy array
         for k in data.keys():
             if len(data[k]) > 0:
                 data[k] = np.hstack(data[k])
+                
         return data
