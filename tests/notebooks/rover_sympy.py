@@ -16,6 +16,10 @@ class Model:
 
     def __init__(self):
         # ============================================
+        # Initialize
+        self.solved = False
+
+        # ============================================
         # Declare time
         self.time = sympy.symbols('time')
 
@@ -29,7 +33,12 @@ class Model:
         self.u0 = { 
             'thr': 0.0, 
             'str': 0.0}
-        
+        self.u_index = { 
+            'thr': 0, 
+            'str': 1}
+        self.u_index_rev = [ 
+            'thr', 
+            'str']
         # ============================================
         # Declare p
         l = sympy.symbols('l')
@@ -43,12 +52,26 @@ class Model:
             'l': 1.0, 
             'r': 0.1, 
             'm1_tau': 1.0}
-        
+        self.p_index = { 
+            'l': 0, 
+            'r': 1, 
+            'm1_tau': 2}
+        self.p_index_rev = [ 
+            'l', 
+            'r', 
+            'm1_tau']
+        # ============================================
+        # Declare c
+        self.c = sympy.Matrix([])
+        self.c0 = { }
+        self.c_index = { }
+        self.c_index_rev = [ ]
         # ============================================
         # Declare cp
         self.cp = sympy.Matrix([])
         self.cp0 = { }
-        
+        self.cp_index = { }
+        self.cp_index_rev = [ ]
         # ============================================
         # Declare x
         m1_omega = sympy.symbols('m1_omega')
@@ -65,7 +88,16 @@ class Model:
             'x': 0.0, 
             'y': 0.0, 
             'theta': 0.0}
-        
+        self.x_index = { 
+            'm1_omega': 0, 
+            'x': 1, 
+            'y': 2, 
+            'theta': 3}
+        self.x_index_rev = [ 
+            'm1_omega', 
+            'x', 
+            'y', 
+            'theta']
         # ============================================
         # Declare m
         a = sympy.symbols('a')
@@ -73,7 +105,10 @@ class Model:
             a])
         self.m0 = { 
             'a': 0.0}
-        
+        self.m_index = { 
+            'a': 0}
+        self.m_index_rev = [ 
+            'a']
         # ============================================
         # Declare y
         v = sympy.symbols('v')
@@ -84,13 +119,41 @@ class Model:
         self.y0 = { 
             'v': 0.0, 
             'm1_omega_ref': 0.0}
-        
+        self.y_index = { 
+            'v': 0, 
+            'm1_omega_ref': 1}
+        self.y_index_rev = [ 
+            'v', 
+            'm1_omega_ref']
         # ============================================
         # Declare z
         self.z = sympy.Matrix([])
         self.z0 = { }
+        self.z_index = { }
+        self.z_index_rev = [ ]
         
-        
+
+        # ============================================
+        # Declare pre_x
+        pre_m1_omega = sympy.symbols('pre_m1_omega')
+        pre_x = sympy.symbols('pre_x')
+        pre_y = sympy.symbols('pre_y')
+        pre_theta = sympy.symbols('pre_theta')
+        self.pre_x = sympy.Matrix([
+            pre_m1_omega, 
+            pre_x, 
+            pre_y, 
+            pre_theta])
+
+        # ============================================
+        # Declare pre_m
+        pre_a = sympy.symbols('pre_a')
+        self.pre_m = sympy.Matrix([
+            pre_a])
+
+        # ============================================
+        # Declare pre_z
+        self.pre_z = sympy.Matrix([])
 
         # ============================================
         # Declare x_dot
@@ -107,19 +170,19 @@ class Model:
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            v - (r * m1_omega), 
-            der_x - (v * cos(theta)), 
-            der_y - (v * sin(theta)), 
-            der_theta - (v / l * tan(str)), 
+            v - ((r * m1_omega)), 
+            der_x - ((v * cos(theta))), 
+            der_y - ((v * sin(theta))), 
+            der_theta - (((v / l) * tan(str))), 
             m1_omega_ref - (thr), 
-            a - (1), 
-            der_m1_omega - (1 / m1_tau * m1_omega_ref - m1_omega)])
+            a - (1.0), 
+            der_m1_omega - (((1.0 / m1_tau) * (m1_omega_ref - m1_omega)))])
+
+        # ============================================
+        # Define Reset Functions: fr
 
         # ============================================
         # Events and Event callbacks
-        self.events = []
-        self.event_callback = {}
-        self.solved = False
 
     def solve(self):
         # ============================================
@@ -135,7 +198,7 @@ class Model:
     def __repr__(self):
         return repr(self.__dict__)
 
-    def simulate(self, t0, tf, dt, f_u=None, max_events=100):
+    def simulate(self, t0, tf, dt, x0=None, f_u=None, max_events=100):
         """
         Simulate the modelica model
         """
@@ -151,11 +214,18 @@ class Model:
         u0 = np.array([self.u0[k] for k in self.u0.keys()])
         p0 = np.array([self.p0[k] for k in self.p0.keys()])
         cp0 = np.array([self.cp0[k] for k in self.cp0.keys()])
-        x0 = np.array([self.x0[k] for k in self.x0.keys()])
         m0 = np.array([self.m0[k] for k in self.m0.keys()])
         y0 = np.array([self.y0[k] for k in self.y0.keys()])
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
+        if x0 is None:
+            x0 = np.array([self.x0[k] for k in self.x0.keys()])
+
+        # ============================================
+        # Declare Events
+        events = []
+
+        event_callback = {}
 
         # ============================================
         # Solve IVP
@@ -168,7 +238,6 @@ class Model:
             'y': [],
         }
 
-
         while t0 < tf - dt and event_count < max_events:
             t_eval = np.arange(t0, tf, dt)
             res = scipy.integrate.solve_ivp(
@@ -176,7 +245,7 @@ class Model:
                 fun=lambda ti, x: self.f_x_dot(ti, x, m0, f_u(ti), p0),
                 t_span=[t_eval[0], t_eval[-1]],
                 t_eval=t_eval,
-                events=self.events,
+                events=events,
             )
 
             # check for event
@@ -186,8 +255,8 @@ class Model:
                 event_count += 1
                 for i, t_event in enumerate(res.t_events):
                     if len(t_event) > 0:
-                        if i in self.event_callback:
-                            x1 = self.event_callback[i](t_event[i], x1)
+                        if i in event_callback:
+                            x1 = event_callback[i](t_event[i], x1)
 
             x = res['y']
             t = res['t']
