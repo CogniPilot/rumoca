@@ -311,7 +311,7 @@ class Model:
             data['c'].append(c0)
 
             # update for next step
-            t0 = t1 + dt
+            t0 = t1
             x0 = x1
         
         # convert lists to numpy array
