@@ -12,12 +12,11 @@ model Quadrotor
     input Real t "throttle";
     Real R_z "ground reaction force";
 equation
-    R_z = 0;
-    // if h < 0 then
-    //     R_z = 1;
-    // else
-    //     R_z = 0;
-    // end if;
+    if h < 0 then
+        R_z = 1;
+    else
+        R_z = 0;
+    end if;
 
     // body forces
     F_x = -(m*g - R_z)*sin(theta);

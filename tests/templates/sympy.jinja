@@ -2,12 +2,40 @@
     {%- set vars_vects = ['u', 'p', 'c', 'cp', 'x', 'm', 'y', 'z'] -%}
     {%- set vars_pre_vects = ['pre_x', 'pre_m', 'pre_z'] -%}
 import sympy
+from sympy import Matrix, ImmutableDenseMatrix, Piecewise, Tuple
 import numpy as np
 import scipy.integrate
 
 cos = sympy.cos
 sin = sympy.sin
 tan = sympy.tan
+
+
+def flatten_piecewise_with_nested_matrices(matrix):
+    assert isinstance(matrix, (Matrix, ImmutableDenseMatrix, Tuple)), "Input must be a Matrix object or Tuple"
+    piecewise = sympy.piecewise_fold(sympy.Piecewise((matrix, True)))
+
+    if isinstance(piecewise, (Matrix, ImmutableDenseMatrix, Tuple)):
+        return piecewise
+
+    def flatten_matrix(matrix):
+        """Recursively flatten nested matrices."""
+        if isinstance(matrix, (Matrix, ImmutableDenseMatrix, Tuple)):
+            flattened = []
+            for elem in matrix:
+                if isinstance(elem, (Matrix, ImmutableDenseMatrix, Tuple)):
+                    flattened.extend(flatten_matrix(elem))
+                else:
+                    flattened.append(elem)
+            return Matrix(flattened)
+        return matrix
+
+    flattened_conditions = []
+    for expr, cond in piecewise.args:
+        flattened_expr = flatten_matrix(expr) if isinstance(expr, (Matrix, ImmutableDenseMatrix, Tuple)) else expr
+        flattened_conditions.append((flattened_expr, cond))
+    return sympy.piecewise_exclusive(Piecewise(*flattened_conditions))
+
 
 class Model:
     """
@@ -68,6 +96,7 @@ class Model:
         self.fx = sympy.Matrix([{% for eq in dae.fx %}
             {{ render_equation(eq) }} {%- if not loop.last -%}{{ ", " }}{%- endif %}
         {%- endfor %}])
+        self.fx = flatten_piecewise_with_nested_matrices(self.fx)
 
         # ============================================
         # Define Reset Functions: fr
@@ -97,11 +126,34 @@ class Model:
         # ============================================
         # Solve for explicit ODE
         v = sympy.Matrix(list(self.x_dot) + list(self.y))
-        sol = sympy.solve(self.fx, v)
-        self.sol_x_dot = self.x_dot.subs(sol)
-        self.sol_y = self.y.subs(sol)
-        self.f_x_dot = sympy.lambdify([self.time, self.x, self.m, self.u, self.p], list(self.sol_x_dot))
-        self.f_y = sympy.lambdify([self.time, self.x, self.m, self.u, self.p], list(self.sol_y))
+
+        if isinstance(self.fx, sympy.Piecewise):
+            sol_x_dot = []
+            sol_y = []
+            for arg in self.fx.args:
+                condition = arg[1]
+                sol_i = sympy.solve(arg[0], v)
+                x_dot_i = sympy.Tuple(* [xi for xi in self.x_dot.subs(sol_i)])
+                sol_x_dot.append((x_dot_i, condition))
+                y_i = sympy.Tuple(* [yi for yi in self.y.subs(sol_i)])
+                sol_y.append((y_i, condition))
+            self.sol_x_dot = sympy.Piecewise(*sol_x_dot)
+            self.sol_y = sympy.Piecewise(*sol_y)
+        else:
+            sol = sympy.solve(self.fx, v)
+            self.sol_x_dot = sympy.Tuple(* [xi for xi in self.x_dot.subs(sol)])
+            self.sol_y = sympy.Tuple(* [yi for yi in self.y.subs(sol)])
+        
+        self.f_x_dot = sympy.lambdify(
+            args=[self.time, self.x, self.m, self.u, self.p, self.c],
+            expr=self.sol_x_dot,
+            modules=['numpy'])
+
+        self.f_y = sympy.lambdify(
+            args=[self.time, self.x, self.m, self.u, self.p, self.c],
+            expr=self.sol_y,
+            modules=['numpy'])
+
         self.solved = True
 
     def __repr__(self):
@@ -120,7 +172,7 @@ class Model:
 
         # ============================================
         # Declare initial vectors
-        {% for var in ['u', 'p', 'cp', 'm', 'y', 'z'] -%}
+        {% for var in ['u', 'p', 'cp', 'c', 'm', 'y', 'z'] -%}
         {{ var }}0 = np.array([self.{{ var }}0[k] for k in self.{{ var }}0.keys()])
         {% endfor %}
         if x0 is None:
@@ -147,11 +199,13 @@ class Model:
             'y': [],
         }
 
-        while t0 < tf - dt and event_count < max_events:
+        while t0 < tf - dt:
+            if event_count > max_events:
+                raise RuntimeError("Max events reached")
             t_eval = np.arange(t0, tf, dt)
             res = scipy.integrate.solve_ivp(
                 y0=x0,
-                fun=lambda ti, x: self.f_x_dot(ti, x, m0, f_u(ti), p0),
+                fun=lambda ti, x: self.f_x_dot(ti, x, m0, f_u(ti), p0, c0),
                 t_span=[t_eval[0], t_eval[-1]],
                 t_eval=t_eval,
                 events=events,
@@ -170,7 +224,7 @@ class Model:
             x = res['y']
             t = res['t']
             u = np.array([ f_u(ti) for ti in t ]).T
-            y = np.array([ self.f_y(ti, xi, m0, ui, p0) for (ti, xi, ui) in zip(t, x.T, u.T) ]).T
+            y = np.array([ self.f_y(ti, xi, m0, ui, p0, c0) for (ti, xi, ui) in zip(t, x.T, u.T) ]).T
 
             data['x'].append(x)
             data['t'].append(t)
