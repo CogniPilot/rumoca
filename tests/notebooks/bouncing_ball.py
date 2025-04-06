@@ -27,7 +27,8 @@ class Model:
         # Declare u
         self.u = sympy.Matrix([])
         self.u0 = { }
-
+        self.u_index = { }
+        self.u_index_rev = [ ]
         # ============================================
         # Declare p
         e = sympy.symbols('e')
@@ -38,12 +39,29 @@ class Model:
         self.p0 = { 
             'e': 0.8, 
             'h0': 1.0}
-
+        self.p_index = { 
+            'e': 0, 
+            'h0': 1}
+        self.p_index_rev = [ 
+            'e', 
+            'h0']
+        # ============================================
+        # Declare c
+        c0 = sympy.symbols('c0')
+        self.c = sympy.Matrix([
+            c0])
+        self.c0 = { 
+            'c0': False}
+        self.c_index = { 
+            'c0': 0}
+        self.c_index_rev = [ 
+            'c0']
         # ============================================
         # Declare cp
         self.cp = sympy.Matrix([])
         self.cp0 = { }
-
+        self.cp_index = { }
+        self.cp_index_rev = [ ]
         # ============================================
         # Declare x
         h = sympy.symbols('h')
@@ -54,12 +72,18 @@ class Model:
         self.x0 = { 
             'h': 1.0, 
             'v': 0.0}
-
+        self.x_index = { 
+            'h': 0, 
+            'v': 1}
+        self.x_index_rev = [ 
+            'h', 
+            'v']
         # ============================================
         # Declare m
         self.m = sympy.Matrix([])
         self.m0 = { }
-
+        self.m_index = { }
+        self.m_index_rev = [ ]
         # ============================================
         # Declare y
         z = sympy.symbols('z')
@@ -67,13 +91,18 @@ class Model:
             z])
         self.y0 = { 
             'z': 0.0}
-
+        self.y_index = { 
+            'z': 0}
+        self.y_index_rev = [ 
+            'z']
         # ============================================
         # Declare z
         self.z = sympy.Matrix([])
         self.z0 = { }
-
+        self.z_index = { }
+        self.z_index_rev = [ ]
         
+
         # ============================================
         # Declare pre_x
         pre_h = sympy.symbols('pre_h')
@@ -101,31 +130,25 @@ class Model:
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            z - (2 * h + v), 
+            z - (((2.0 * h) + v)), 
             v - (der_h), 
-            der_v - (-9.81)])
-
-        # ============================================
-        # Define Conditions: c
-        self.c = { 
-            '__c0': h < 0 }
+            der_v - (-(9.81))])
 
         # ============================================
         # Define Reset Functions: fr
-        def __fr___c0(x):
+        def __fr_c0(x):
             pre_h, pre_v= self.x
             h, v= self.x
-            v = -e * pre_v
+            v = -((e * pre_v))
             return [
             h, 
             v]
-        self.fr___c0 = sympy.lambdify([self.x, self.p], __fr___c0(self.x))
+        self.fr_c0 = sympy.lambdify([self.x, self.p], __fr_c0(self.x))
 
         # ============================================
         # Events and Event callbacks
-        self.zc___c0 = sympy.lambdify([self.time, self.x], h - 0)
-        self.zc___c0.terminal = True
-
+        self.zc_c0 = sympy.lambdify([self.time, self.x], h - 0.0)
+        self.zc_c0.terminal = True
 
     def solve(self):
         # ============================================
@@ -141,7 +164,7 @@ class Model:
     def __repr__(self):
         return repr(self.__dict__)
 
-    def simulate(self, t0, tf, dt, f_u=None, max_events=100):
+    def simulate(self, t0, tf, dt, x0=None, f_u=None, max_events=100):
         """
         Simulate the modelica model
         """
@@ -157,19 +180,21 @@ class Model:
         u0 = np.array([self.u0[k] for k in self.u0.keys()])
         p0 = np.array([self.p0[k] for k in self.p0.keys()])
         cp0 = np.array([self.cp0[k] for k in self.cp0.keys()])
-        x0 = np.array([self.x0[k] for k in self.x0.keys()])
         m0 = np.array([self.m0[k] for k in self.m0.keys()])
         y0 = np.array([self.y0[k] for k in self.y0.keys()])
         z0 = np.array([self.z0[k] for k in self.z0.keys()])
         
+        if x0 is None:
+            x0 = np.array([self.x0[k] for k in self.x0.keys()])
+
         # ============================================
         # Declare Events
         events = [
-            self.zc___c0
+            self.zc_c0
         ]
 
         event_callback = {
-            0: lambda t, x: self.fr___c0(x, p0),
+            0: lambda t, x: self.fr_c0(x, p0),
         }
 
         # ============================================

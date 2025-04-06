@@ -84,6 +84,7 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
 
     // handle conditions and relations
     dae.c = condition_finder.conditions.clone();
+    dae.fc = condition_finder.expressions.clone();
 
     // handle equations
     for eq in &fclass.equations {

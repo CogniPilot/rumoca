@@ -1,48 +1,56 @@
 model Quadrotor
     extends RigidBody6DOF;
     parameter Real l = 1.0;
-    parameter Real aileron_mix = 1;
-    parameter Real elevator_mix = 1;
-    parameter Real rudder_mix = 10;
-    parameter Real throttle_mix = 16.0;
-    Motor m1, m2, m3, m4;
-    input Real ail "aileron";
-    input Real elv "elevator";
-    input Real rdr "rudder";
-    input Real thr "throttle";
+    parameter Real mix_a = 1;
+    parameter Real mix_e = 1;
+    parameter Real mix_r = 10;
+    parameter Real mix_t = 32.0;
+    Motor m_1, m_2, m_3, m_4;
+    input Real a "aileron";
+    input Real e "elevator";
+    input Real r "rudder";
+    input Real t "throttle";
+    Real R_z "ground reaction force";
 equation
-    // body forces
-    Fx = 0;
-    Fy = 0;
-    Fz = -(m1.thrust + m2.thrust + m3.thrust + m4.thrust);
+    R_z = 0;
+    // if h < 0 then
+    //     R_z = 1;
+    // else
+    //     R_z = 0;
+    // end if;
 
-    // momments
-    Mx = l*(-m1.thrust + m2.thrust - m3.thrust + m4.thrust);
-    My = l*(-m1.thrust + m2.thrust + m3.thrust - m4.thrust);
-    Mz = m1.moment + m2.moment - m3.moment - m4.moment;
+    // body forces
+    F_x = -(m*g - R_z)*sin(theta);
+    F_y = (m*g - R_z)*sin(phi)*cos(theta);
+    F_z = (m*g - R_z)*cos(phi)*cos(theta) -
+        (m_1.thrust + m_2.thrust + m_3.thrust + m_4.thrust);
+
+    // body momments
+    M_x = l*(-m_1.thrust + m_2.thrust - m_3.thrust + m_4.thrust);
+    M_y = l*(-m_1.thrust + m_2.thrust + m_3.thrust - m_4.thrust);
+    M_z = m_1.moment + m_2.moment - m_3.moment - m_4.moment;
 
     // motor equations
-    m1.omega_ref = thr*throttle_mix - ail*aileron_mix + elv*elevator_mix + rdr*rudder_mix;
-    m2.omega_ref = thr*throttle_mix + ail*aileron_mix - elv*elevator_mix + rdr*rudder_mix;
-    m3.omega_ref = thr*throttle_mix - ail*aileron_mix - elv*elevator_mix - rdr*rudder_mix;
-    m4.omega_ref = thr*throttle_mix + ail*aileron_mix + elv*elevator_mix - rdr*rudder_mix;
+    m_1.omega_ref = t*mix_t - a*mix_a + e*mix_e + r*mix_r;
+    m_2.omega_ref = t*mix_t + a*mix_a - e*mix_e + r*mix_r;
+    m_3.omega_ref = t*mix_t - a*mix_a - e*mix_e - r*mix_r;
+    m_4.omega_ref = t*mix_t + a*mix_a + e*mix_e - r*mix_r;
 end Quadrotor;
 
 model RigidBody6DOF
     // stevens and lewis pg 111
     parameter Real m = 1.0;
     parameter Real g = 9.81;
-    parameter Real Jx = 1;
-    parameter Real Jy = 1;
-    parameter Real Jz = 1;
-    parameter Real Jxz = 0.0;
-    parameter Real m = 1.0;
+    parameter Real J_x = 1;
+    parameter Real J_y = 1;
+    parameter Real J_z = 1;
+    parameter Real J_xz = 0.0;
     parameter Real Lambda = 1; // Jx*Jz - Jxz*Jxz;
     Real x, y, h;
     Real P, Q, R;
     Real U, V, W;
-    Real Fx, Fy, Fz;
-    Real Mx, My, Mz;
+    Real F_x, F_y, F_z;
+    Real M_x, M_y, M_z;
     Real phi, theta, psi;
 equation
     // navigation equations
@@ -51,9 +59,9 @@ equation
     der(h) = U*sin(theta) - V*sin(phi)*cos(theta) - W*cos(phi)*cos(theta);
 
     // force equations
-    der(U) = R*V - Q*W - g*sin(theta) + Fx/m;
-    der(V) = -R*U + P*W + g*sin(phi)*cos(theta) + Fy/m;
-    der(W) = Q*U - P*V + g*cos(phi)*cos(theta) + Fz/m;
+    der(U) = R*V - Q*W + F_x/m;
+    der(V) = -R*U + P*W + F_y/m;
+    der(W) = Q*U - P*V + F_z/m;
 
     // kinematic equations
     der(phi) = P + tan(theta)*(Q*sin(phi) + R*cos(phi));
@@ -61,9 +69,9 @@ equation
     der(psi) = (Q*sin(phi) + R*cos(phi))/cos(theta);
 
     // moment equations
-    Lambda*der(P) = Jxz*(Jx - Jy + Jz)*P*Q - (Jz*(Jz - Jy) + Jxz*Jxz)*Q*R + Jz*Mx + Jxz*Mz;
-    Jy*der(Q) = (Jz - Jx)*P*R - Jxz*(P*P - R*R) + My;
-    Lambda*der(R) = ((Jx - Jy)*Jx + Jxz*Jxz)*P*Q - Jxz*(Jx - Jy + Jz)*Q*R + Jxz*Mx + Jx*Mz;
+    Lambda*der(P) = J_xz*(J_x - J_y + J_z)*P*Q - (J_z*(J_z - J_y) + J_xz*J_xz)*Q*R + J_z*M_x + J_xz*M_z;
+    J_y*der(Q) = (J_z - J_x)*P*R - J_xz*(P*P - R*R) + M_y;
+    Lambda*der(R) = ((J_x - J_y)*J_x + J_xz*J_xz)*P*Q - J_xz*(J_x - J_y + J_z)*Q*R + J_xz*M_x + J_x*M_z;
 
 
 end RigidBody6DOF;

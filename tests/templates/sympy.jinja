@@ -1,5 +1,5 @@
 {%- macro render_dae(dae) -%}
-    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'm', 'y', 'z'] -%}
+    {%- set vars_vects = ['u', 'p', 'c', 'cp', 'x', 'm', 'y', 'z'] -%}
     {%- set vars_pre_vects = ['pre_x', 'pre_m', 'pre_z'] -%}
 import sympy
 import numpy as np
@@ -42,6 +42,7 @@ class Model:
             '{{ c.name }}' {%- if not loop.last -%}{{ ", " }}{%- endif -%}
         {%- endfor -%}{{ "]" }}
         {% endfor %}
+
         {% for var in vars_pre_vects -%}
         # ============================================
         # Declare {{ var }}
@@ -69,12 +70,6 @@ class Model:
         {%- endfor %}])
 
         # ============================================
-        # Define Conditions: c
-        self.c = {{ "{" }} {% for key, val in dae.c | items %}
-            '{{ key }}': {{ render_expression(val) }} {%- if not loop.last -%}{{ ", " }}{%- endif %}
-        {%- endfor %} {{ "}" }}
-
-        # ============================================
         # Define Reset Functions: fr
         {%- for key, val in dae.fr | items %}
         def __fr_{{ key }}(x):
@@ -93,11 +88,10 @@ class Model:
 
         # ============================================
         # Events and Event callbacks
-        {%- for key, val in dae.c | items %}
+        {%- for key, val in dae.fc | items %}
         self.zc_{{key}} = sympy.lambdify([self.time, self.x], {{ render_zero_crossing(val) }})
         self.zc_{{key}}.terminal = True
         {%- endfor %}
-
 
     def solve(self):
         # ============================================
@@ -134,7 +128,7 @@ class Model:
 
         # ============================================
         # Declare Events
-        events = [{% for key, val in dae.c | items %}
+        events = [{% for key, val in dae.fc | items %}
             self.zc_{{key}} {%- if not loop.last -%}{{ ", " }}{%- endif %}
         {% endfor %}]
 
@@ -194,7 +188,7 @@ class Model:
 
 {%- macro render_expression(expr) -%}
     {%- if "Terminal" in expr -%}
-        {{- expr.Terminal.token.text -}}
+        {{- render_terminal(expr.Terminal) -}}
     {%- elif "FunctionCall" in expr -%}
         {{- render_function(expr.FunctionCall) -}}
     {%- elif "ComponentReference" in expr -%}
@@ -231,7 +225,20 @@ class Model:
         {{- render_expression(eq.Simple.lhs) -}} {{- " - (" -}}
         {{- render_expression(eq.Simple.rhs) -}} {{- ")" -}}
     {%- elif "If" in eq -%}
-        {{ eq | pprint }}
+        sympy.Piecewise(
+            {% for b in eq.If.cond_blocks %}(
+                sympy.Matrix([{%- for e in b.eqs -%}
+                    {{ render_equation(e) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+                {%- endfor -%}]),
+                {{ render_expression(b.cond) }},
+            ),{%- endfor %}
+            {% if "else_block" in eq.If %}(
+                sympy.Matrix([{%- for e in eq.If.else_block -%}
+                    {{ render_equation(e) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+                {%- endfor -%}]),
+                True,
+            ){%- endif -%}
+        )
     {%- else -%}
         UNHANDLED EQUATION: {{ eq | pprint }}
     {%- endif -%}
@@ -247,13 +254,21 @@ class Model:
 {%- endmacro -%}
 
 {%- macro render_terminal(term) -%}
-    {% if term.terimanal_type == "UnsignedInteger" %}
+    {%- if term.terminal_type == "UnsignedInteger" -%}
     {{ term.token.text | float }}
-    {% elif term.terimanal_type == "UnsignedReal" %}
+    {%- elif term.terminal_type == "UnsignedReal" -%}
     {{ term.token.text | float }}
+    {%- elif term.terminal_type == "Bool" -%}
+        {%- if term.token.text == "true" -%}
+            {{ "True" }}
+        {%- elif term.token.text == "false" -%}
+            {{ "False" }}
+        {%- else -%}
+            UNHANDLED BOOLEAN: {{ term | pprint }}
+        {%- endif -%}
     {%- else -%}
-        UNHANDLED TERM: {{ term | pprint }}
-    {% endif %}
+        UNHANDLED Terminal: {{ term | pprint }}
+    {%- endif -%}
 {%- endmacro -%}
 
 {%- macro render_binary(expr) -%}

@@ -51,21 +51,22 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dae {
-    pub p: Vec<Component>,               // parameters
-    pub cp: Vec<Component>,              // constant parameters (ADDED)
-    pub t: Component,                    // time
-    pub x: Vec<Component>,               // continous states
-    pub x_dot: Vec<Component>,           // derivatives of continuous states
-    pub y: Vec<Component>,               // alg. variables
-    pub u: Vec<Component>,               // input (ADDED)
-    pub pre_z: Vec<Component>,           // z before event time t_e
-    pub pre_x: Vec<Component>,           // x before event time t_e
-    pub pre_m: Vec<Component>,           // m before event time t_e
-    pub z: Vec<Component>,               // real discrete variables, only change at t_e
-    pub m: Vec<Component>,               // variables of discrete-value types, only change at t_e
-    pub c: IndexMap<String, Expression>, // conditions of all if-expressions/ when-clauses
-    pub fx: Vec<Equation>,               // continuous time equations
-    pub fz: Vec<Equation>,               // event update equations
-    pub fm: Vec<Equation>,               // discrete update equations
-    pub fr: IndexMap<String, Statement>, // reset expressions, condition -> (component, expression)
+    pub p: Vec<Component>,                // parameters
+    pub cp: Vec<Component>,               // constant parameters (ADDED)
+    pub t: Component,                     // time
+    pub x: Vec<Component>,                // continous states
+    pub x_dot: Vec<Component>,            // derivatives of continuous states
+    pub y: Vec<Component>,                // alg. variables
+    pub u: Vec<Component>,                // input (ADDED)
+    pub pre_z: Vec<Component>,            // z before event time t_e
+    pub pre_x: Vec<Component>,            // x before event time t_e
+    pub pre_m: Vec<Component>,            // m before event time t_e
+    pub z: Vec<Component>,                // real discrete variables, only change at t_e
+    pub m: Vec<Component>,                // variables of discrete-value types, only change at t_e
+    pub c: Vec<Component>,                // conditions of all if-expressions/ when-clauses
+    pub fx: Vec<Equation>,                // continuous time equations
+    pub fz: Vec<Equation>,                // event update equations
+    pub fm: Vec<Equation>,                // discrete update equations
+    pub fr: IndexMap<String, Statement>,  // reset expressions, condition -> assignment statements
+    pub fc: IndexMap<String, Expression>, // condition updates, condition -> expression
 }

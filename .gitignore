@@ -6,3 +6,4 @@ src/modelica_grammar_trait.rs
 .vscode/
 __pycache__/
 .venv/
+res
