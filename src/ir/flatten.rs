@@ -51,19 +51,7 @@ pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefiniti
     // create flat class
     let mut fclass = main_class.clone();
 
-    let mut scope_pusher = ScopePusher {
-        global_symbols: IndexSet::from([
-            "time".to_string(),
-            "der".to_string(),
-            "pre".to_string(),
-            "cos".to_string(),
-            "sin".to_string(),
-            "tan".to_string(),
-        ]),
-        symbols: IndexSet::new(),
-        comp: main_class_name.clone(),
-    };
-
+    //  handle extend clauses
     for extend in &main_class.extends {
         let class_name = extend.comp.to_string();
         let class = class_dict
@@ -80,6 +68,25 @@ pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefiniti
             fclass.equations.push(eq.clone());
         }
     }
+
+    // expaand connection equations
+    for eq in &main_class.equations {
+        if let ir::ast::Equation::Connect { .. } = eq {}
+    }
+
+    // flatten the class by expanding components
+    let mut scope_pusher = ScopePusher {
+        global_symbols: IndexSet::from([
+            "time".to_string(),
+            "der".to_string(),
+            "pre".to_string(),
+            "cos".to_string(),
+            "sin".to_string(),
+            "tan".to_string(),
+        ]),
+        symbols: IndexSet::new(),
+        comp: main_class_name.clone(),
+    };
 
     // for each component in the main class
     for (comp_name, comp) in &main_class.components {
