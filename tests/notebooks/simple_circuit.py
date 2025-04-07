@@ -60,31 +60,51 @@ class Model:
         self.u_index_rev = [ ]
         # ============================================
         # Declare p
-        e = sympy.symbols('e')
-        h0 = sympy.symbols('h0')
+        R1_R = sympy.symbols('R1_R')
+        C_C = sympy.symbols('C_C')
+        R2_R = sympy.symbols('R2_R')
+        L1_L = sympy.symbols('L1_L')
+        AC_PI = sympy.symbols('AC_PI')
+        AC_VA = sympy.symbols('AC_VA')
+        AC_f = sympy.symbols('AC_f')
         self.p = sympy.Matrix([
-            e, 
-            h0])
+            R1_R, 
+            C_C, 
+            R2_R, 
+            L1_L, 
+            AC_PI, 
+            AC_VA, 
+            AC_f])
         self.p0 = { 
-            'e': 0.8, 
-            'h0': 1.0}
+            'R1_R': 0.0, 
+            'C_C': 0.0, 
+            'R2_R': 0.0, 
+            'L1_L': 0.0, 
+            'AC_PI': 3.141592653589793, 
+            'AC_VA': 220.0, 
+            'AC_f': 0.0}
         self.p_index = { 
-            'e': 0, 
-            'h0': 1}
+            'R1_R': 0, 
+            'C_C': 1, 
+            'R2_R': 2, 
+            'L1_L': 3, 
+            'AC_PI': 4, 
+            'AC_VA': 5, 
+            'AC_f': 6}
         self.p_index_rev = [ 
-            'e', 
-            'h0']
+            'R1_R', 
+            'C_C', 
+            'R2_R', 
+            'L1_L', 
+            'AC_PI', 
+            'AC_VA', 
+            'AC_f']
         # ============================================
         # Declare c
-        c0 = sympy.symbols('c0')
-        self.c = sympy.Matrix([
-            c0])
-        self.c0 = { 
-            'c0': False}
-        self.c_index = { 
-            'c0': 0}
-        self.c_index_rev = [ 
-            'c0']
+        self.c = sympy.Matrix([])
+        self.c0 = { }
+        self.c_index = { }
+        self.c_index_rev = [ ]
         # ============================================
         # Declare cp
         self.cp = sympy.Matrix([])
@@ -93,20 +113,10 @@ class Model:
         self.cp_index_rev = [ ]
         # ============================================
         # Declare x
-        h = sympy.symbols('h')
-        v = sympy.symbols('v')
-        self.x = sympy.Matrix([
-            h, 
-            v])
-        self.x0 = { 
-            'h': 1.0, 
-            'v': 0.0}
-        self.x_index = { 
-            'h': 0, 
-            'v': 1}
-        self.x_index_rev = [ 
-            'h', 
-            'v']
+        self.x = sympy.Matrix([])
+        self.x0 = { }
+        self.x_index = { }
+        self.x_index_rev = [ ]
         # ============================================
         # Declare m
         self.m = sympy.Matrix([])
@@ -115,15 +125,15 @@ class Model:
         self.m_index_rev = [ ]
         # ============================================
         # Declare y
-        z = sympy.symbols('z')
+        G_p = sympy.symbols('G_p')
         self.y = sympy.Matrix([
-            z])
+            G_p])
         self.y0 = { 
-            'z': 0.0}
+            'G_p': UNHANDLED EXPRESSION: "Empty"}
         self.y_index = { 
-            'z': 0}
+            'G_p': 0}
         self.y_index_rev = [ 
-            'z']
+            'G_p']
         # ============================================
         # Declare z
         self.z = sympy.Matrix([])
@@ -134,11 +144,7 @@ class Model:
 
         # ============================================
         # Declare pre_x
-        pre_h = sympy.symbols('pre_h')
-        pre_v = sympy.symbols('pre_v')
-        self.pre_x = sympy.Matrix([
-            pre_h, 
-            pre_v])
+        self.pre_x = sympy.Matrix([])
 
         # ============================================
         # Declare pre_m
@@ -150,35 +156,32 @@ class Model:
 
         # ============================================
         # Declare x_dot
-        der_h = sympy.symbols('der_h')
-        der_v = sympy.symbols('der_v')
-        self.x_dot = sympy.Matrix([
-            der_h, 
-            der_v])
+        self.x_dot = sympy.Matrix([])
 
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            z - (((2.0 * h) + v)), 
-            v - (der_h), 
-            der_v - (-(9.81))])
+            AC.p - (R1.p), 
+            R1.n - (C.p), 
+            C.n - (AC.n), 
+            R1.p - (R2.p), 
+            R2.n - (L.p), 
+            L.n - (C.n), 
+            AC.n - (G.p), 
+            (R1_R * R1_i) - (R1_v), 
+            (C_C * der_C_v) - (C_i), 
+            (R2_R * R2_i) - (R2_v), 
+            (L1_L * der_L1_i) - (L1_v), 
+            AC_v - ((AC_VA * sin((((2.0 * AC_PI) * AC_f) * time)))), 
+            G_p.v - (0.0)])
         self.fx = flatten_piecewise_with_nested_matrices(self.fx)
 
         # ============================================
         # Define Reset Functions: fr
-        def __fr_c0(x):
-            pre_h, pre_v= self.x
-            h, v= self.x
-            v = -((e * pre_v))
-            return [
-            h, 
-            v]
-        self.fr_c0 = sympy.lambdify([self.x, self.p], __fr_c0(self.x))
 
         # ============================================
         # Define Condition Update Function: fc
-        self.fc = sympy.Tuple(*[
-            (h < 0.0)])
+        self.fc = sympy.Tuple(*[])
         self.f_c = sympy.lambdify(
             args=[self.time, self.x],
             expr=self.fc,
@@ -186,8 +189,6 @@ class Model:
 
         # ============================================
         # Events and Event callbacks
-        self.zc_c0 = sympy.lambdify([self.time, self.x], h - 0.0)
-        self.zc_c0.terminal = True
 
     def solve(self):
         # ============================================
@@ -252,13 +253,9 @@ class Model:
 
         # ============================================
         # Declare Events
-        events = [
-            self.zc_c0
-        ]
+        events = []
 
-        event_callback = {
-            0: lambda t, x: self.fr_c0(x, p0),
-        }
+        event_callback = {}
 
         # ============================================
         # Solve IVP

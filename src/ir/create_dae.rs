@@ -95,6 +95,12 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
             Equation::If { .. } => {
                 dae.fx.push(eq.clone());
             }
+            Equation::Connect { lhs, rhs } => {
+                dae.fx.push(Equation::Simple {
+                    lhs: Expression::ComponentReference(lhs.clone()),
+                    rhs: Expression::ComponentReference(rhs.clone()),
+                });
+            }
             Equation::When(blocks) => {
                 for block in blocks {
                     for eq in &block.eqs {

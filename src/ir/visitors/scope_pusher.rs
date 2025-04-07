@@ -17,7 +17,7 @@ use indexmap::IndexSet;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScopePusher {
-    pub global_funcs: IndexSet<String>,
+    pub global_symbols: IndexSet<String>,
     pub symbols: IndexSet<String>,
     pub comp: String,
 }
@@ -25,8 +25,8 @@ pub struct ScopePusher {
 impl Visitor for ScopePusher {
     fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
         let name = node.to_string();
-        // if not a global function
-        if !self.global_funcs.contains(&name) {
+        // if not a global symbol
+        if !self.global_symbols.contains(&name) {
             // if symbol is already defined
             //if self.symbols.contains(&name) {
             // prepend component name

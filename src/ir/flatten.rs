@@ -52,7 +52,8 @@ pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefiniti
     let mut fclass = main_class.clone();
 
     let mut scope_pusher = ScopePusher {
-        global_funcs: IndexSet::from([
+        global_symbols: IndexSet::from([
+            "time".to_string(),
             "der".to_string(),
             "pre".to_string(),
             "cos".to_string(),
