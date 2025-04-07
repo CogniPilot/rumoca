@@ -68,36 +68,36 @@ class Model:
         AC_VA = sympy.symbols('AC_VA')
         AC_f = sympy.symbols('AC_f')
         self.p = sympy.Matrix([
-            R1_R, 
-            C_C, 
-            R2_R, 
-            L1_L, 
-            AC_PI, 
-            AC_VA, 
+            R1_R,
+            C_C,
+            R2_R,
+            L1_L,
+            AC_PI,
+            AC_VA,
             AC_f])
         self.p0 = { 
-            'R1_R': 0.0, 
-            'C_C': 0.0, 
-            'R2_R': 0.0, 
-            'L1_L': 0.0, 
-            'AC_PI': 3.141592653589793, 
-            'AC_VA': 220.0, 
+            'R1_R': 0.0,
+            'C_C': 0.0,
+            'R2_R': 0.0,
+            'L1_L': 0.0,
+            'AC_PI': 3.141592653589793,
+            'AC_VA': 220.0,
             'AC_f': 0.0}
         self.p_index = { 
-            'R1_R': 0, 
-            'C_C': 1, 
-            'R2_R': 2, 
-            'L1_L': 3, 
-            'AC_PI': 4, 
-            'AC_VA': 5, 
+            'R1_R': 0,
+            'C_C': 1,
+            'R2_R': 2,
+            'L1_L': 3,
+            'AC_PI': 4,
+            'AC_VA': 5,
             'AC_f': 6}
         self.p_index_rev = [ 
-            'R1_R', 
-            'C_C', 
-            'R2_R', 
-            'L1_L', 
-            'AC_PI', 
-            'AC_VA', 
+            'R1_R',
+            'C_C',
+            'R2_R',
+            'L1_L',
+            'AC_PI',
+            'AC_VA',
             'AC_f']
         # ============================================
         # Declare c
@@ -161,18 +161,18 @@ class Model:
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            AC.p - (R1.p), 
-            R1.n - (C.p), 
-            C.n - (AC.n), 
-            R1.p - (R2.p), 
-            R2.n - (L.p), 
-            L.n - (C.n), 
-            AC.n - (G.p), 
-            (R1_R * R1_i) - (R1_v), 
-            (C_C * der_C_v) - (C_i), 
-            (R2_R * R2_i) - (R2_v), 
-            (L1_L * der_L1_i) - (L1_v), 
-            AC_v - ((AC_VA * sin((((2.0 * AC_PI) * AC_f) * time)))), 
+            AC_p - (R1_p),
+            R1_n - (C_p),
+            C_n - (AC_n),
+            R1_p - (R2_p),
+            R2_n - (L.p),
+            L.n - (C_n),
+            AC_n - (G_p),
+            (R1_R * R1_i) - (R1_v),
+            (C_C * der_C_v) - (C_i),
+            (R2_R * R2_i) - (R2_v),
+            (L1_L * der_L1_i) - (L1_v),
+            AC_v - ((AC_VA * sin((((2.0 * AC_PI) * AC_f) * time)))),
             G_p.v - (0.0)])
         self.fx = flatten_piecewise_with_nested_matrices(self.fx)
 

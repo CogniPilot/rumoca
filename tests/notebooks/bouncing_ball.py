@@ -63,16 +63,16 @@ class Model:
         e = sympy.symbols('e')
         h0 = sympy.symbols('h0')
         self.p = sympy.Matrix([
-            e, 
+            e,
             h0])
         self.p0 = { 
-            'e': 0.8, 
+            'e': 0.8,
             'h0': 1.0}
         self.p_index = { 
-            'e': 0, 
+            'e': 0,
             'h0': 1}
         self.p_index_rev = [ 
-            'e', 
+            'e',
             'h0']
         # ============================================
         # Declare c
@@ -96,16 +96,16 @@ class Model:
         h = sympy.symbols('h')
         v = sympy.symbols('v')
         self.x = sympy.Matrix([
-            h, 
+            h,
             v])
         self.x0 = { 
-            'h': 1.0, 
+            'h': 1.0,
             'v': 0.0}
         self.x_index = { 
-            'h': 0, 
+            'h': 0,
             'v': 1}
         self.x_index_rev = [ 
-            'h', 
+            'h',
             'v']
         # ============================================
         # Declare m
@@ -137,7 +137,7 @@ class Model:
         pre_h = sympy.symbols('pre_h')
         pre_v = sympy.symbols('pre_v')
         self.pre_x = sympy.Matrix([
-            pre_h, 
+            pre_h,
             pre_v])
 
         # ============================================
@@ -153,25 +153,25 @@ class Model:
         der_h = sympy.symbols('der_h')
         der_v = sympy.symbols('der_v')
         self.x_dot = sympy.Matrix([
-            der_h, 
+            der_h,
             der_v])
 
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            z - (((2.0 * h) + v)), 
-            v - (der_h), 
+            z - (((2.0 * h) + v)),
+            v - (der_h),
             der_v - (-(9.81))])
         self.fx = flatten_piecewise_with_nested_matrices(self.fx)
 
         # ============================================
         # Define Reset Functions: fr
         def __fr_c0(x):
-            pre_h, pre_v= self.x
-            h, v= self.x
+            pre_h,pre_v= self.x
+            h,v= self.x
             v = -((e * pre_v))
             return [
-            h, 
+            h,
             v]
         self.fr_c0 = sympy.lambdify([self.x, self.p], __fr_c0(self.x))
 

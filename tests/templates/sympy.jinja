@@ -59,16 +59,16 @@ class Model:
         {{ c.name }} = sympy.symbols('{{ c.name }}')
         {% endfor -%}
         self.{{var }} {{ "= sympy.Matrix([" }}{%- for c in dae[var] %}
-            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
         {% endfor -%} {{ "])" }}
         self.{{ var }}0 = {{ "{" }} {% for c in dae[var] %}
-            '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
         {%- endfor -%}{{ "}" }}
         self.{{ var }}_index = {{ "{" }} {% for c in dae[var] %}
-            '{{ c.name }}': {{ loop.index0 }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            '{{ c.name }}': {{ loop.index0 }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
         {%- endfor -%}{{ "}" }}
         self.{{ var }}_index_rev = {{ "[" }} {% for c in dae[var] %}
-            '{{ c.name }}' {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            '{{ c.name }}' {%- if not loop.last -%}{{ "," }}{%- endif -%}
         {%- endfor -%}{{ "]" }}
         {% endfor %}
 
@@ -79,7 +79,7 @@ class Model:
         {{ c.name }} = sympy.symbols('{{ c.name }}')
         {% endfor -%}
         self.{{var }} {{ "= sympy.Matrix([" }}{%- for c in dae[var] %}
-            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
         {% endfor -%} {{ "])" }}
 
         {% endfor -%}
@@ -89,13 +89,13 @@ class Model:
         {{ c.name }} = sympy.symbols('{{ c.name }}')
         {% endfor -%}
         self.x_dot {{ "= sympy.Matrix([" }}{%- for c in dae.x_dot %}
-            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
         {% endfor -%} {{ "])" }}
 
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([{% for eq in dae.fx %}
-            {{ render_equation(eq) }} {%- if not loop.last -%}{{ ", " }}{%- endif %}
+            {{ render_equation(eq) }} {%- if not loop.last -%}{{ "," }}{%- endif %}
         {%- endfor %}])
         self.fx = flatten_piecewise_with_nested_matrices(self.fx)
 
@@ -104,14 +104,14 @@ class Model:
         {%- for key, val in dae.fr | items %}
         def __fr_{{ key }}(x):
             {% for c in dae.x -%}
-            pre_{{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            pre_{{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
             {% endfor -%}  = self.x
             {% for c in dae.x -%}
-            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
             {% endfor -%}  = self.x
             {{ render_statement(val) }}
             return [{%- for c in dae.x %}
-            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+            {{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
             {% endfor -%}]
         self.fr_{{ key }} = sympy.lambdify([self.x, self.p], __fr_{{ key }}(self.x))
         {%- endfor %}
@@ -119,7 +119,7 @@ class Model:
         # ============================================
         # Define Condition Update Function: fc
         self.fc = sympy.Tuple(*[{% for name, expr in dae.fc | items %}
-            {{ render_expression(expr) }} {%- if not loop.last -%}{{ ", " }}{%- endif %}
+            {{ render_expression(expr) }} {%- if not loop.last -%}{{ "," }}{%- endif %}
         {%- endfor %}])
         self.f_c = sympy.lambdify(
             args=[self.time, self.x],
@@ -192,7 +192,7 @@ class Model:
         # ============================================
         # Declare Events
         events = [{% for key, val in dae.fc | items %}
-            self.zc_{{key}} {%- if not loop.last -%}{{ ", " }}{%- endif %}
+            self.zc_{{key}} {%- if not loop.last -%}{{ "," }}{%- endif %}
         {% endfor %}]
 
         event_callback = {{ "{" }}{% for key, val in dae.fr | items %}
@@ -304,13 +304,13 @@ class Model:
         sympy.Piecewise(
             {% for b in eq.If.cond_blocks %}(
                 sympy.Matrix([{%- for e in b.eqs -%}
-                    {{ render_equation(e) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+                    {{ render_equation(e) }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
                 {%- endfor -%}]),
                 {{ render_expression(b.cond) }},
             ),{%- endfor %}
             {% if "else_block" in eq.If %}(
                 sympy.Matrix([{%- for e in eq.If.else_block -%}
-                    {{ render_equation(e) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+                    {{ render_equation(e) }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
                 {%- endfor -%}]),
                 True,
             ){%- endif -%}

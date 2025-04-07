@@ -99,6 +99,18 @@ impl Visitable for ir::ast::Equation {
                     arg.accept(visitor);
                 }
             }
+            ir::ast::Equation::For { indices, equations } => {
+                for index in indices {
+                    index.range.accept(visitor);
+                }
+                for eq in equations {
+                    eq.accept(visitor);
+                }
+            }
+            ir::ast::Equation::Connect { lhs, rhs } => {
+                lhs.accept(visitor);
+                rhs.accept(visitor);
+            }
             ir::ast::Equation::When(blocks) => {
                 for block in blocks {
                     block.cond.accept(visitor);
@@ -107,7 +119,23 @@ impl Visitable for ir::ast::Equation {
                     }
                 }
             }
-            _ => {}
+            ir::ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    block.cond.accept(visitor);
+                    for eq in &mut block.eqs {
+                        eq.accept(visitor);
+                    }
+                }
+                if let Some(else_block) = else_block {
+                    for eq in else_block {
+                        eq.accept(visitor);
+                    }
+                }
+            }
+            ir::ast::Equation::Empty => {}
         }
         visitor.exit_equation(self);
     }
@@ -134,7 +162,20 @@ impl Visitable for ir::ast::Expression {
                     arg.accept(visitor);
                 }
             }
-            _ => {}
+            ir::ast::Expression::Array { elements } => {
+                for element in elements {
+                    element.accept(visitor);
+                }
+            }
+            ir::ast::Expression::Range { start, step, end } => {
+                start.accept(visitor);
+                if step.is_some() {
+                    step.as_mut().unwrap().accept(visitor);
+                }
+                end.accept(visitor);
+            }
+            ir::ast::Expression::Terminal { .. } => {}
+            ir::ast::Expression::Empty => {}
         }
         visitor.exit_expression(self);
     }

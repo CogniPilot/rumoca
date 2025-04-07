@@ -49,23 +49,24 @@ class Model:
 
         # ============================================
         # Declare time
-        self.time = sympy.symbols('time')
+        time = sympy.symbols('time')
+        self.time = time
 
         # ============================================
         # Declare u
         thr = sympy.symbols('thr')
         str = sympy.symbols('str')
         self.u = sympy.Matrix([
-            thr, 
+            thr,
             str])
         self.u0 = { 
-            'thr': 0.0, 
+            'thr': 0.0,
             'str': 0.0}
         self.u_index = { 
-            'thr': 0, 
+            'thr': 0,
             'str': 1}
         self.u_index_rev = [ 
-            'thr', 
+            'thr',
             'str']
         # ============================================
         # Declare p
@@ -73,20 +74,20 @@ class Model:
         r = sympy.symbols('r')
         m1_tau = sympy.symbols('m1_tau')
         self.p = sympy.Matrix([
-            l, 
-            r, 
+            l,
+            r,
             m1_tau])
         self.p0 = { 
-            'l': 1.0, 
-            'r': 0.1, 
+            'l': 1.0,
+            'r': 0.1,
             'm1_tau': 1.0}
         self.p_index = { 
-            'l': 0, 
-            'r': 1, 
+            'l': 0,
+            'r': 1,
             'm1_tau': 2}
         self.p_index_rev = [ 
-            'l', 
-            'r', 
+            'l',
+            'r',
             'm1_tau']
         # ============================================
         # Declare c
@@ -107,24 +108,24 @@ class Model:
         y = sympy.symbols('y')
         theta = sympy.symbols('theta')
         self.x = sympy.Matrix([
-            m1_omega, 
-            x, 
-            y, 
+            m1_omega,
+            x,
+            y,
             theta])
         self.x0 = { 
-            'm1_omega': 0.0, 
-            'x': 0.0, 
-            'y': 0.0, 
+            'm1_omega': 0.0,
+            'x': 0.0,
+            'y': 0.0,
             'theta': 0.0}
         self.x_index = { 
-            'm1_omega': 0, 
-            'x': 1, 
-            'y': 2, 
+            'm1_omega': 0,
+            'x': 1,
+            'y': 2,
             'theta': 3}
         self.x_index_rev = [ 
-            'm1_omega', 
-            'x', 
-            'y', 
+            'm1_omega',
+            'x',
+            'y',
             'theta']
         # ============================================
         # Declare m
@@ -142,16 +143,16 @@ class Model:
         v = sympy.symbols('v')
         m1_omega_ref = sympy.symbols('m1_omega_ref')
         self.y = sympy.Matrix([
-            v, 
+            v,
             m1_omega_ref])
         self.y0 = { 
-            'v': 0.0, 
+            'v': 0.0,
             'm1_omega_ref': 0.0}
         self.y_index = { 
-            'v': 0, 
+            'v': 0,
             'm1_omega_ref': 1}
         self.y_index_rev = [ 
-            'v', 
+            'v',
             'm1_omega_ref']
         # ============================================
         # Declare z
@@ -168,9 +169,9 @@ class Model:
         pre_y = sympy.symbols('pre_y')
         pre_theta = sympy.symbols('pre_theta')
         self.pre_x = sympy.Matrix([
-            pre_m1_omega, 
-            pre_x, 
-            pre_y, 
+            pre_m1_omega,
+            pre_x,
+            pre_y,
             pre_theta])
 
         # ============================================
@@ -190,20 +191,20 @@ class Model:
         der_y = sympy.symbols('der_y')
         der_theta = sympy.symbols('der_theta')
         self.x_dot = sympy.Matrix([
-            der_m1_omega, 
-            der_x, 
-            der_y, 
+            der_m1_omega,
+            der_x,
+            der_y,
             der_theta])
 
         # ============================================
         # Define Continous Update Function: fx
         self.fx = sympy.Matrix([
-            v - ((r * m1_omega)), 
-            der_x - ((v * cos(theta))), 
-            der_y - ((v * sin(theta))), 
-            der_theta - (((v / l) * tan(str))), 
-            m1_omega_ref - (thr), 
-            a - (1.0), 
+            v - ((r * m1_omega)),
+            der_x - ((v * cos(theta))),
+            der_y - ((v * sin(theta))),
+            der_theta - (((v / l) * tan(str))),
+            m1_omega_ref - (thr),
+            a - (1.0),
             der_m1_omega - (((1.0 / m1_tau) * (m1_omega_ref - m1_omega)))])
         self.fx = flatten_piecewise_with_nested_matrices(self.fx)
 
