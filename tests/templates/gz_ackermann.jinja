@@ -1,0 +1,493 @@
+{%- macro render_class(class) %}
+    {%- set c = class.components -%}
+<?xml version='1.0' encoding="UTF-8"?>
+<!--
+  rumoca pkg version : {{ def.rumoca_version }}
+  rumoca git version : {{ def.rumoca_git_hash }}
+  template md5       : {{ def.template_md5 }}
+  model md5          : {{ def.model_md5 }}
+-->
+<sdf version="1.10">
+  <world name="default">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu">
+    </plugin>
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.5 0.5 0.5 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+    <model name="ground_plane">
+      <static>true</static>
+      <pose>0 0 0 0 {{ c.world_declination.start_value.data[0] }} 0</pose>
+      <link name="ground_plane_link">
+        <collision name="ground_plane_collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1000 1000</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="ground_plane_visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1000 1000</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='vehicle'>
+      <self_collide>false</self_collide>
+      <static>false</static>
+      <pose>0 0 {{ c.model_pos_z.start_value.data[0] }} 0 0 0</pose>
+      <link name='chassis'>
+        <pose>0 0 0 0 0 0</pose>
+        <inertial>
+          <mass>{{ c.chassis_mass.start_value.data[0] }}</mass>
+          <inertia>
+            <ixx>{{ c.chassis_inertia_ixx.start_value.data[0] }}</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>{{ c.chassis_inertia_iyy.start_value.data[0] }}</iyy>
+            <iyz>0</iyz>
+            <izz>{{ c.chassis_inertia_izz.start_value.data[0] }}</izz>
+          </inertia>
+        </inertial>
+        <visual name='chassis_visual'>
+          <geometry>
+            <box>
+              <size>{{ c.chassis_length.start_value.data[0] }} {{ c.chassis_width.start_value.data[0] }} {{ c.chassis_height.start_value.data[0] }}</size>
+            </box>
+          </geometry>
+          <material>
+            <diffuse>.5 .5 .5 1.0</diffuse>
+            <specular>.5 .5 .5 1.0</specular>
+          </material>
+        </visual>
+        <collision name='chassis_collision'>
+          <geometry>
+            <box>
+              <size>{{ c.chassis_length.start_value.data[0] }} {{ c.chassis_width.start_value.data[0] }} {{ c.chassis_height.start_value.data[0] }}</size>
+            </box>
+          </geometry>
+        </collision>
+        <sensor name="imu_sensor" type="imu">
+          <pose degrees="true">0 0 0 180 0 0</pose>
+          <always_on>1</always_on>
+          <update_rate>1000</update_rate>
+        </sensor>
+      </link>
+      <link name='FLWheelLink'>
+        <pose relative_to="FLWheelJoint">0 0 0 1.57079632679 0 0</pose>
+        <inertial>
+          <mass>{{ c.wheel_mass.start_value.data[0] }}</mass>
+          <inertia>
+            <ixx>{{ c.wheel_inertia_ixx.start_value.data[0] }}</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>{{ c.wheel_inertia_iyy.start_value.data[0] }}</iyy>
+            <iyz>0</iyz>
+            <izz>{{ c.wheel_inertia_izz.start_value.data[0] }}</izz>
+          </inertia>
+        </inertial>
+        <visual name='FLWheelVisual'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+        </visual>
+        <visual name='FLWheelVisualPoint'>
+          <pose>0 {{ c.wheel_width.start_value.data[0] }} 0 0 0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>.01</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <diffuse>1.0 1.0 1.0 1.0</diffuse>
+            <specular>1.0 1.0 1.0 1.0</specular>
+            <shininess>1.0</shininess>
+          </material>
+        </visual>
+        <collision name='FLWheelCollision'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>0.5</mu2>
+                <fdir1>0 0 1</fdir1>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+      </link>
+      <link name='RLWheelLink'>
+        <pose relative_to="RLWheelJoint">0 0 0 1.57079632679 0 0</pose>
+        <inertial>
+          <mass>{{ c.wheel_mass.start_value.data[0] }}</mass>
+          <inertia>
+            <ixx>{{ c.wheel_inertia_ixx.start_value.data[0] }}</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>{{ c.wheel_inertia_iyy.start_value.data[0] }}</iyy>
+            <iyz>0</iyz>
+            <izz>{{ c.wheel_inertia_izz.start_value.data[0] }}</izz>
+          </inertia>
+        </inertial>
+        <visual name='RLWheelVisual'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+        </visual>
+        <visual name='RLWheelVisualPoint'>
+          <pose>0 {{ c.wheel_width.start_value.data[0] }} 0 0 0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>.01</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <diffuse>1.0 1.0 1.0 1.0</diffuse>
+            <specular>1.0 1.0 1.0 1.0</specular>
+            <shininess>1.0</shininess>
+          </material>
+        </visual>
+        <collision name='RLWheelCollision'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>0.5</mu2>
+                <fdir1>0 0 1</fdir1>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+      </link>
+      <link name='FRWheelLink'>
+        <pose relative_to="FRWheelJoint">0 0 0 1.57079632679 0 0</pose>
+        <inertial>
+          <mass>{{ c.wheel_mass.start_value.data[0] }}</mass>
+          <inertia>
+            <ixx>{{ c.wheel_inertia_ixx.start_value.data[0] }}</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>{{ c.wheel_inertia_iyy.start_value.data[0] }}</iyy>
+            <iyz>0</iyz>
+            <izz>{{ c.wheel_inertia_izz.start_value.data[0] }}</izz>
+          </inertia>
+        </inertial>
+        <visual name='FRWheelVisual'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+        </visual>
+        <visual name='FRWheelVisualPoint'>
+          <pose>0 {{ c.wheel_width.start_value.data[0] }} 0 0 0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>.01</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <diffuse>1.0 1.0 1.0 1.0</diffuse>
+            <specular>1.0 1.0 1.0 1.0</specular>
+            <shininess>1.0</shininess>
+          </material>
+        </visual>
+        <collision name='FRWheelCollision'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>0.5</mu2>
+                <fdir1>0 0 1</fdir1>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+      </link>
+      <link name='RRWheelLink'>
+        <pose relative_to="RRWheelJoint">0 0 0 1.57079632679 0 0</pose>
+        <inertial>
+          <mass>{{ c.wheel_mass.start_value.data[0] }}</mass>
+          <inertia>
+            <ixx>{{ c.wheel_inertia_ixx.start_value.data[0] }}</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>{{ c.wheel_inertia_iyy.start_value.data[0] }}</iyy>
+            <iyz>0</iyz>
+            <izz>{{ c.wheel_inertia_izz.start_value.data[0] }}</izz>
+          </inertia>
+        </inertial>
+        <visual name='RRWheelVisual'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+        </visual>
+        <visual name='RRWheelVisualPoint'>
+          <pose>0 {{ c.wheel_width.start_value.data[0] }} 0 0 0 0</pose>
+          <geometry>
+            <sphere>
+              <radius>.01</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <diffuse>1.0 1.0 1.0 1.0</diffuse>
+            <specular>1.0 1.0 1.0 1.0</specular>
+            <shininess>1.0</shininess>
+          </material>
+        </visual>
+        <collision name='RRWheelCollision'>
+          <geometry>
+            <cylinder>
+              <length>{{ c.wheel_width.start_value.data[0] }}</length>
+              <radius>{{ c.wheel_radius.start_value.data[0] }}</radius>
+            </cylinder>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>0.5</mu2>
+                <fdir1>0 0 1</fdir1>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+      </link>
+      <link name="FRWheelSteeringLink">
+        <pose relative_to="FRWheelSteeringJoint">0 0 0 0 0 0</pose>
+        <inertial>
+          <mass>0.005</mass>
+          <inertia>
+            <ixx>0.0000018</ixx>
+            <iyy>0.0000018</iyy>
+            <izz>0.0000018</izz>
+          </inertia>
+        </inertial>
+      </link>
+      <link name="FLWheelSteeringLink">
+        <pose relative_to="FLWheelSteeringJoint">0 0 0 0 0 0</pose>
+        <inertial>
+          <mass>0.005</mass>
+          <inertia>
+            <ixx>0.0000018</ixx>
+            <iyy>0.0000018</iyy>
+            <izz>0.0000018</izz>
+          </inertia>
+        </inertial>
+      </link>
+      <joint name="FRWheelSteeringJoint" type="revolute">
+        <parent>chassis</parent>
+        <child>FRWheelSteeringLink</child>
+        <pose relative_to="chassis">{{ c.wheels_front_pos_x.start_value.data[0] }} {{ c.wheels_right_pos_y.start_value.data[0] }} {{ c.wheels_pos_z.start_value.data[0] }} 0 0 0</pose>
+        <axis>
+          <xyz>0 0 1</xyz>
+          <limit>
+            <lower>-{{ c.wheel_max_turn_angle.start_value.data[0] }}</lower>
+            <upper>{{ c.wheel_max_turn_angle.start_value.data[0] }}</upper>
+            <velocity>1000</velocity>
+            <effort>1000</effort>
+          </limit>
+        </axis>
+      </joint>
+      <joint name="FRWheelJoint" type="revolute">
+        <parent>FRWheelSteeringLink</parent>
+        <child>FRWheelLink</child>
+        <pose relative_to="FRWheelSteeringJoint">0 0 0 0 0 0</pose>
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1.79769e+308</lower>
+            <upper>1.79769e+308</upper>
+          </limit>
+          <dynamics>
+            <spring_reference>0</spring_reference>
+            <spring_stiffness>0</spring_stiffness>
+          </dynamics>
+        </axis>
+      </joint>
+      <joint name="FLWheelSteeringJoint" type="revolute">
+        <parent>chassis</parent>
+        <child>FLWheelSteeringLink</child>
+        <pose relative_to="chassis">{{ c.wheels_front_pos_x.start_value.data[0] }} {{ c.wheels_left_pos_y.start_value.data[0] }} {{ c.wheels_pos_z.start_value.data[0] }} 0 0 0</pose>
+        <axis>
+          <xyz>0 0 1</xyz>
+          <limit>
+            <lower>-{{ c.wheel_max_turn_angle.start_value.data[0] }}</lower>
+            <upper>{{ c.wheel_max_turn_angle.start_value.data[0] }}</upper>
+            <velocity>1000</velocity>
+            <effort>1000</effort>
+          </limit>
+        </axis>
+      </joint>
+      <joint name="FLWheelJoint" type="revolute">
+        <parent>FLWheelSteeringLink</parent>
+        <child>FLWheelLink</child>
+        <pose relative_to="FLWheelSteeringJoint">0 0 0 0 0 0</pose>
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1.79769e+308</lower>
+            <upper>1.79769e+308</upper>
+          </limit>
+          <dynamics>
+            <spring_reference>0</spring_reference>
+            <spring_stiffness>0</spring_stiffness>
+          </dynamics>
+        </axis>
+      </joint>
+      <joint name="RRWheelJoint" type="revolute">
+        <parent>chassis</parent>
+        <child>RRWheelLink</child>
+        <pose relative_to="chassis">{{ c.wheels_rear_pos_x.start_value.data[0] }} {{ c.wheels_right_pos_y.start_value.data[0] }} {{ c.wheels_pos_z.start_value.data[0] }} 0 0 0</pose>
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1.79769e+308</lower>
+            <upper>1.79769e+308</upper>
+          </limit>
+          <dynamics>
+            <spring_reference>0</spring_reference>
+            <spring_stiffness>0</spring_stiffness>
+          </dynamics>
+        </axis>
+      </joint>
+      <joint name="RLWheelJoint" type="revolute">
+        <parent>chassis</parent>
+        <child>RLWheelLink</child>
+        <pose relative_to="chassis">{{ c.wheels_rear_pos_x.start_value.data[0] }} {{ c.wheels_left_pos_y.start_value.data[0] }} {{ c.wheels_pos_z.start_value.data[0] }} 0 0 0</pose>
+        <axis>
+          <xyz>0 1 0</xyz>
+          <limit>
+            <lower>-1.79769e+308</lower>
+            <upper>1.79769e+308</upper>
+          </limit>
+          <dynamics>
+            <spring_reference>0</spring_reference>
+            <spring_stiffness>0</spring_stiffness>
+          </dynamics>
+        </axis>
+      </joint>
+      <plugin
+        filename="gz-sim-ackermann-steering-system"
+        name="gz::sim::systems::AckermannSteering">
+        <steering_only>true</steering_only>
+        <use_actuator_msg>false</use_actuator_msg>
+        <left_steering_joint>FLWheelSteeringJoint</left_steering_joint>
+        <right_steering_joint>FRWheelSteeringJoint</right_steering_joint>
+        <steering_limit>{{ c.wheel_max_turn_angle.start_value.data[0] }}</steering_limit>
+        <wheel_base>{{ c.wheel_base.start_value.data[0] }}</wheel_base>
+        <wheel_separation>{{ c.wheel_seperation.start_value.data[0] }}</wheel_separation>
+        <wheel_radius>{{ c.wheel_radius.start_value.data[0] }}</wheel_radius>
+      </plugin>
+      <plugin
+        filename="gz-sim-joint-controller-system"
+        name="gz::sim::systems::JointController">
+        <joint_name>RLWheelJoint</joint_name>
+        <joint_name>RRWheelJoint</joint_name>
+        <joint_name>FLWheelJoint</joint_name>
+        <joint_name>FRWheelJoint</joint_name>
+        <use_force_commands>false</use_force_commands>
+        <use_actuator_msg>false</use_actuator_msg>
+        <topic>/vehicle/throttle</topic>
+      </plugin>
+      <plugin name="ArduPilotPlugin"
+        filename="ArduPilotPlugin">
+        <fdm_addr>127.0.0.1</fdm_addr>
+        <fdm_port_in>9002</fdm_port_in>
+        <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
+        <lock_step>1</lock_step>
+        <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
+        <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
+        <imuName>chassis::imu_sensor</imuName>
+        <control channel="0">
+          <jointName>FLWheelSteeringJoint</jointName>
+          <useForce>1</useForce>
+          <multiplier>-1.571</multiplier>
+          <offset>-0.5</offset>
+          <servo_min>1000</servo_min>
+          <servo_max>2000</servo_max>
+          <type>COMMAND</type>
+          <cmd_topic>/model/vehicle/steer_angle</cmd_topic>
+        </control>
+        <control channel="2">
+          <jointName>RLWheelJoint</jointName>
+          <multiplier>100.0</multiplier>
+          <offset>-0.5</offset>
+          <servo_min>500</servo_min>
+          <servo_max>2000</servo_max>
+          <type>COMMAND</type>
+          <cmd_topic>/vehicle/throttle</cmd_topic>
+        </control>
+      </plugin>
+    </model>
+  </world>
+</sdf>
+{%- endmacro %}
+
+{%- for key, val in def.classes | items %}
+{{ render_class(class=val) }}
+{%- endfor %}

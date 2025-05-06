@@ -98,11 +98,13 @@ Type the following to test that rumoca is in your path.
 $ rumoca --help
 Rumoca Modelica Translator
 
-Usage: rumoca [OPTIONS] --template-file <TEMPLATE_FILE> --model-file <MODEL_FILE>
+Usage: rumoca [OPTIONS] <MODELICA_FILE>
+
+Arguments:
+  <MODELICA_FILE>  Modelica file to parse
 
 Options:
-  -t, --template-file <TEMPLATE_FILE>  The template
-  -m, --model-file <MODEL_FILE>        The model file to compile
+  -t, --template-file <TEMPLATE_FILE>  Template file to render to
   -v, --verbose                        Verbose output
   -h, --help                           Print help
   -V, --version                        Print version
@@ -116,7 +118,7 @@ This package uses the standard cargo conventions for rust.
 cargo build
 cargo run
 cargo test
-cargo run -- -t test/templates/casadi_sx.jinja -m test/models/integrator.mo
+cargo run -- tests/templates/bouncing_ball.mo -t tests/templates/sympy.jinja
 ```
 
 This package uses the standard cargo installation conventions.
@@ -179,20 +181,17 @@ or create your own using the widely used [JINJA](https://docs.rs/minijinja/lates
 
 ## Dependencies
 
-* [LALRPOP](https://github.com/lalrpop/lalrpop) : Parsing, AST generation
-* [LOGOS](https://github.com/maciejhirsz/logos) : Lexing
+* [PAROL](https://github.com/jsinger67/parol) : Parsing, AST generation, Lexing
 * [MINIJINJA](https://github.com/mitsuhiko/minijinja) : JINJA Template Engine
 * [SERDE](https://github.com/serde-rs/serde) : AST Serialization
 * [CLAP](https://github.com/clap-rs/clap) : Command Line Argument Parser
-* [NDARRAY](https://github.com/rust-ndarray/ndarray) : N-dimensional arrays
 
 ## Roadmap
 
 ### DONE
-1. Flat subset of full Modelica Grammar using LALRPOP
-2. Initial Lexer using LOGOS
-3. Generation using JINJA for Sympy/CasADi/Json
-4. Command line interface using CLAP
+1. Flat subset of full Modelica Grammar using PAROL
+2. Generation using JINJA for Sympy/CasADi/Gazebo
+3. Command line interface using CLAP
 
 ### TODO
 1. Add more language features (non-flat models, equations, statements)
