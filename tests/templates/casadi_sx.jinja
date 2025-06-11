@@ -1,0 +1,144 @@
+{%- macro render_dae(dae) -%}
+    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'y', 'z'] -%}
+import casadi as ca
+import numpy as np
+
+
+class Model:
+    """
+    Flattened Modelica Model
+    """
+
+    def __init__(self):
+        pass
+
+    def __repr__(self):
+        return repr(self.__dict__)
+
+    def simulate(self, t=None, u=None):
+        """
+        Simulate the modelica model
+        """
+        if t is None:
+            t = np.arange(0, 1, 0.01)
+        if u is None:
+            u = 0
+
+        # ============================================
+        # Declare time
+        time = ca.SX.sym('time')
+
+        {% for var in vars_vects -%}
+        # ============================================
+        # Declare {{ var }}
+        {% for c in dae[var] -%}
+        {{ c.name }} = ca.SX.sym('{{ c.name }}')
+        {% endfor -%}
+        self.{{var }} {{ "= ca.vertcat(" }}{%- for c in dae[var] %}
+            {{ c.name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {% endfor -%} {{ ")" }}
+        self.{{ var }}0 = {{ "{" }} {% for c in dae[var] %}
+            '{{ c.name }}': {{ render_expression(c.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {%- endfor -%}{{ "}" }}
+        {{ var }}0 = np.array([self.{{ var }}[k] for k in self.{{ var }}0.keys()])
+        
+        {% endfor %}
+        # ============================================
+        # Define Continous Update Function: fx
+        {% for eq in dae.fx -%}
+        {{ render_equation(eq) }}
+        {% endfor%}
+
+        # ============================================
+        # Create Integrator
+        F = ca.integrator(
+            'F', 'idas',
+            {'x': self.x, 'z': self.z, 'p': self.p, 'u': self.u, 'ode': self.ode, 'alg': self.alg},
+            t[0], t)
+
+        res = F(x0=x0, z0=z0, p=p0, u=u)
+        return {
+            't': t,
+            'x': res['xf'].T
+        }
+    
+    def linearize(self):
+        """
+        Linearize the model
+        """
+        A = ca.jacobian(self.ode, self.x)
+        B = ca.jacobian(self.ode, self.u)
+        C = ca.jacobian(self.y, self.x)
+        D = ca.jacobian(self.y, self.u)
+        return (A, B, C, D)
+
+
+def cat(axis, *args):
+    return ca.vertcat(*args)
+{%- endmacro -%}
+
+{%- macro render_expression(expr) -%}
+    {%- if "Terminal" in expr -%}
+        {{- expr.Terminal.token.text -}}
+    {%- elif "FunctionCall" in expr -%}
+        {{- render_function(expr.FunctionCall) -}}
+    {%- elif "ComponentReference" in expr -%}
+        {{- render_component_reference(expr.ComponentReference) -}}
+    {%- elif "Binary" in expr -%}
+        {{- render_binary(expr.Binary) -}}
+    {%- elif "Unary" in expr -%}
+        {{- render_unary(expr.Unary) -}}
+    {%- else -%}
+        UNHANDLED EXPRESSION: {{ expr }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_equation(eq) -%}
+    {%- if "Simple" in eq -%}
+        {{- render_expression(eq.Simple.lhs) -}} {{- " = " -}} 
+        {{- render_expression(eq.Simple.rhs) -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_terminal(term) -%}
+    {% if term.terimanal_type == "UnsignedInteger" %}
+    {{ term.token.text | float }}
+    {% elif term.terimanal_type == "UnsignedReal" %}
+    {{ term.token.text | float }}
+    {% endif %}
+{%- endmacro -%}
+
+{%- macro render_binary(expr) -%}
+    {{- render_expression(expr.lhs) -}} {{- " " -}}
+    {%- if expr.op == "Add" -%}
+        {{ "+" }}
+    {%- elif expr.op == "Sub" -%}
+        {{ "-" }}
+    {%- elif expr.op == "Mul" -%}
+        {{ "*" }}
+    {%- elif expr.op == "Div" -%}
+        {{ "/" }}
+    {%- else -%}
+        UNHANDLED OP: {{ expr.op }}
+    {%- endif -%}
+    {{- " " -}} {{- render_expression(expr.rhs) -}}
+{%- endmacro -%}
+
+
+{%- macro render_unary(expr) -%}
+    {{ expr.op.text }} {{ render_expression(expr.rhs) }}
+{%- endmacro -%}
+
+{%- macro render_component_reference(comp) -%}
+    {%- for part in comp.parts -%}
+        {{ part.ident.text }}{% if not loop.last %}.{% endif %}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_function(func) -%}
+    {{ render_component_reference(func.comp) }} {{- "(" -}}{%- for arg in func.args -%}
+        {{- render_expression(arg) -}} {%- if not loop.last -%}, {%- endif -%}
+    {%- endfor -%}{{ ")" }}
+{%- endmacro -%}
+
+{{ render_dae(dae) }}

@@ -10,18 +10,11 @@ model Quadrotor
     input Real e "elevator";
     input Real r "rudder";
     input Real t "throttle";
-    Real R_z "ground reaction force";
 equation
-    if h < 0 then
-        R_z = 10*h;
-    else
-        R_z = 0;
-    end if;
-
     // body forces
-    F_x = -(m*g - R_z)*sin(theta);
-    F_y = (m*g - R_z)*sin(phi)*cos(theta);
-    F_z = (m*g - R_z)*cos(phi)*cos(theta) -
+    F_x = -(m*g)*sin(theta);
+    F_y = (m*g)*sin(phi)*cos(theta);
+    F_z = (m*g)*cos(phi)*cos(theta) -
         (m_1.thrust + m_2.thrust + m_3.thrust + m_4.thrust);
 
     // body momments
@@ -68,9 +61,9 @@ equation
     der(psi) = (Q*sin(phi) + R*cos(phi))/cos(theta);
 
     // moment equations
-    Lambda*der(P) = J_xz*(J_x - J_y + J_z)*P*Q - (J_z*(J_z - J_y) + J_xz*J_xz)*Q*R + J_z*M_x + J_xz*M_z;
-    J_y*der(Q) = (J_z - J_x)*P*R - J_xz*(P*P - R*R) + M_y;
-    Lambda*der(R) = ((J_x - J_y)*J_x + J_xz*J_xz)*P*Q - J_xz*(J_x - J_y + J_z)*Q*R + J_xz*M_x + J_x*M_z;
+    der(P) = (J_xz*(J_x - J_y + J_z)*P*Q - (J_z*(J_z - J_y) + J_xz*J_xz)*Q*R + J_z*M_x + J_xz*M_z)/Lambda;
+    der(Q) = ((J_z - J_x)*P*R - J_xz*(P*P - R*R) + M_y)/J_y;
+    der(R) = (((J_x - J_y)*J_x + J_xz*J_xz)*P*Q - J_xz*(J_x - J_y + J_z)*Q*R + J_xz*M_x + J_x*M_z)/Lambda;
 
 
 end RigidBody6DOF;
