@@ -22,6 +22,8 @@ class Model:
         # ============================================
         # Declare time
         time = dae.add('time', 'independent')
+        # If equations update time
+        dt = 0.01
 
         # ============================================
         # Declare u
@@ -84,13 +86,17 @@ class Model:
         der_y = dae.der(y)
         der_theta = dae.der(theta)
         # ============================================
-        # This function helps keep track of discrete states
-        def if_else_builder(builder, terminal_state):
+        def if_else_builder(s, builder, terminal_state):
             state = terminal_state
             for i, (cond, value) in enumerate(reversed(builder)):
-                state = ca.if_else(cond(), value, state)
+                state = ca.if_else(s == int(cond[1:]), value, state)
             return state
 
+        def if_else_builder2(builder, terminal_state):
+            state = terminal_state
+            for cond, value in reversed(builder):
+                state = ca.if_else(cond, value, state)
+            return state
         # ============================================
 
         def add_expression(dictionary, var, expression):
@@ -110,7 +116,7 @@ class Model:
         
 
 
-
+        dae.sort('w')
         self.dae = dae
     def display(self):
         self.dae.disp(True)
@@ -126,10 +132,14 @@ class Model:
             x0 = self.dae.start(self.dae.x())
 
         tgrid = np.arange(t0, tf, dt)
+        simopts = dict(transition = self.dae.transition(), verbose = False,
+            event_tol = 1e-12, max_events = 100000, max_event_iter = 2000)
 
-        sim = ca.integrator('sim', 'cvodes', self.dae.create(), 0, tgrid,
-                    dict(transition = self.dae.transition()))
+        sim = ca.integrator('sim', 'cvodes', self.dae.create(), 0, tgrid, simopts)
 
-        simres = sim(x0 = x0, p = p0, u=f_u)
+        if f_u is None:
+            simres = sim(x0 = x0, p = p0)
+        else:
+            simres = sim(x0 = x0, p = p0, u=f_u)
 
         return tgrid, simres

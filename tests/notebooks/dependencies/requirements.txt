@@ -1,0 +1,7 @@
+control==0.10.1
+matplotlib==3.10.1
+pandas==2.2.3
+scipy==1.15.2
+sympy==1.14.0
+jupyterlab==4.0.9
+
