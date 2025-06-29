@@ -110,13 +110,13 @@ def cat(axis, *args):
 
 {%- macro render_binary(expr) -%}
     {{- render_expression(expr.lhs) -}} {{- " " -}}
-    {%- if expr.op == "Add" -%}
+    {%- if "Add" in expr.op -%}
         {{ "+" }}
-    {%- elif expr.op == "Sub" -%}
+    {%- elif "Sub" in expr.op -%}
         {{ "-" }}
-    {%- elif expr.op == "Mul" -%}
+    {%- elif "Mul" in expr.op -%}
         {{ "*" }}
-    {%- elif expr.op == "Div" -%}
+    {%- elif "Div" in expr.op -%}
         {{ "/" }}
     {%- else -%}
         UNHANDLED OP: {{ expr.op }}
