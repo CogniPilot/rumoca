@@ -36,7 +36,9 @@ use clap::Parser;
 use parol_runtime::{Report, log::debug};
 use rumoca::modelica_grammar::ModelicaGrammar;
 use rumoca::modelica_parser::parse;
-use rumoca::{dae, ir::create_dae::create_dae, ir::flatten::flatten};
+use rumoca::{
+    dae, ir::create_dae::create_dae, ir::flatten::flatten, ir::symbol_table::build_symbol_table,
+};
 use std::{fs, time::Instant};
 
 use anyhow::{Context, Result};
@@ -83,8 +85,14 @@ fn main() -> Result<()> {
                 println!("Success!\n{:#?}", def);
             }
 
+            let mut new_def = &mut def.clone();
+
+            let sym_table = build_symbol_table(&mut new_def);
+
+            //println!("Symbol Table: {:#?}", sym_table);
+
             // flatten tree
-            let mut fclass = flatten(&def)?;
+            let mut fclass = flatten(&new_def)?;
             if args.verbose {
                 println!("{:#?}", fclass);
             }

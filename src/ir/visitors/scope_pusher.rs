@@ -17,27 +17,26 @@ use indexmap::IndexSet;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScopePusher {
-    pub global_symbols: IndexSet<String>,
-    pub symbols: IndexSet<String>,
-    pub comp: String,
+    pub global_symbols: IndexSet<String>, // dictionary of global symbols
+    pub symbols: IndexSet<String>,        // dictionary of local symbols
+    pub comp: String,                     // scope name to prepend
 }
 
 impl Visitor for ScopePusher {
-    fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
-        let name = node.to_string();
+    fn exit_component_reference(&mut self, cref: &mut ir::ast::ComponentReference) {
+        let name = cref.to_string();
         // if not a global symbol
         if !self.global_symbols.contains(&name) {
-            // if symbol is already defined
-            //if self.symbols.contains(&name) {
-            // prepend component name
-            node.parts.insert(0, ir::ast::ComponentRefPart {
-                ident: ir::ast::Token {
-                    text: self.comp.clone(),
-                    ..Default::default()
+            cref.parts.insert(
+                0,
+                ir::ast::ComponentRefPart {
+                    ident: ir::ast::Token {
+                        text: self.comp.clone(),
+                        ..Default::default()
+                    },
+                    subs: None,
                 },
-                subs: None,
-            });
-            //}
+            );
         }
     }
 }

@@ -114,10 +114,13 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                     }
                                     match &args[0] {
                                         Expression::ComponentReference(cref) => {
-                                            dae.fr.insert(cond_name, Statement::Assignment {
-                                                comp: cref.clone(),
-                                                value: args[1].clone(),
-                                            });
+                                            dae.fr.insert(
+                                                cond_name,
+                                                Statement::Assignment {
+                                                    comp: cref.clone(),
+                                                    value: args[1].clone(),
+                                                },
+                                            );
                                         }
                                         _ => panic!(
                                             "first argument of reinit must be a component reference"

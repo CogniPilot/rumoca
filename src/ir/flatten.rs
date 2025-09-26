@@ -19,25 +19,27 @@
 //! - `indexmap::IndexMap`: To maintain the order of class definitions and components.
 //!
 
-use crate::ir;
 use crate::ir::visitor::Visitable;
 use crate::ir::visitors::scope_pusher::ScopePusher;
 use crate::ir::visitors::sub_comp_namer::SubCompNamer;
+use crate::ir::{self, ast::ClassDefinition};
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 
 pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefinition> {
     // flatten the syntax tree
     let mut count = 0;
-    let mut main_class_name = String::new();
-    let mut class_dict = IndexMap::new();
+    let mut main_class_name: String = String::new();
+    let mut class_dict: IndexMap<String, ClassDefinition> = IndexMap::new();
 
     // find all class definitions
     for (class_name, class) in &def.class_list {
         if count == 0 {
             main_class_name = class.name.text.clone();
+            println!("found main class: {:#?}", main_class_name);
         } else {
             class_dict.insert(class_name.clone(), class.clone());
+            println!("found class: {:#?}", class_name);
         }
         count += 1;
     }
@@ -48,30 +50,65 @@ pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefiniti
         .get(&main_class_name)
         .expect("Main class not found");
 
+    flatten_class(main_class, &mut class_dict)
+}
+
+pub fn flatten_class(
+    class: &ClassDefinition,
+    class_dict: &mut IndexMap<String, ClassDefinition>,
+) -> Result<ir::ast::ClassDefinition> {
+    let main_class_name: String = class.name.text.clone();
+
     // create flat class
-    let mut fclass = main_class.clone();
+    let mut fclass = ClassDefinition {
+        name: class.name.clone(),
+        initial_algorithms: class.initial_algorithms.clone(),
+        encapsulated: class.encapsulated,
+        ..Default::default()
+    };
 
     //  handle extend clauses
-    for extend in &main_class.extends {
+    for extend in &class.extends {
+        println!("handling extends clause");
+
         let class_name = extend.comp.to_string();
         let class = class_dict
             .get(&class_name)
             .expect(&format!("Class for extend '{}' not found", class_name));
 
         // add components
-        for comp in &class.components {
-            fclass.components.insert(comp.0.clone(), comp.1.clone());
+        for (name, comp) in &class.components {
+            println!("print adding comp from extends clause {:#?}", comp);
+            fclass.components.insert(name.clone(), comp.clone());
         }
 
         // add equations
         for eq in &class.equations {
-            fclass.equations.push(eq.clone());
+            match eq {
+                ir::ast::Equation::Connect { lhs, rhs } => {
+                    // skip connection equations for now
+                    println!("skipping lhs: {:#?} rhs: {:#?}", lhs, rhs);
+                }
+                _ => fclass.equations.push(eq.clone()),
+            }
         }
     }
 
-    // expaand connection equations
-    for eq in &main_class.equations {
-        if let ir::ast::Equation::Connect { .. } = eq {}
+    // copy components from main class to flat class
+    fclass.components = class.components.clone();
+
+    // only keep equations that are not connections in flat class from main class
+    for eq in &class.equations {
+        match eq {
+            ir::ast::Equation::Connect { lhs, rhs } => {
+                // skip connection equations for now
+                println!(
+                    "skipping connect copy from main class lhs: {:#?} rhs: {:#?}",
+                    lhs, rhs
+                );
+            }
+            _ => fclass.equations.push(eq.clone()),
+        }
     }
 
     // flatten the class by expanding components
@@ -89,17 +126,26 @@ pub fn flatten(def: &ir::ast::StoredDefinition) -> Result<ir::ast::ClassDefiniti
     };
 
     // for each component in the main class
-    for (comp_name, comp) in &main_class.components {
-        // if the the component type is a class
+    for (comp_name, comp) in &class.components {
+        // if the the component type is a user defined class
         if class_dict.contains_key(&comp.type_name.to_string()) {
-            let comp_class = class_dict.get(&comp.type_name.to_string()).unwrap();
+            let comp_class = class_dict.get(&comp.type_name.to_string()).unwrap().clone();
 
             // add equation from component to flat class
             for eq in &comp_class.equations {
                 let mut feq = eq.clone();
                 scope_pusher.comp = comp_name.clone();
                 feq.accept(&mut scope_pusher);
-                fclass.equations.push(feq);
+
+                match &feq {
+                    ir::ast::Equation::Connect { lhs, rhs } => {
+                        // skip connection equations for now
+                        println!("skipping lhs: {:#?} rhs: {:#?}", lhs, rhs);
+                    }
+                    _ => {
+                        fclass.equations.push(feq);
+                    }
+                }
             }
 
             // expand comp.sub_comp names to use underscores
