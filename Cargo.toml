@@ -17,6 +17,10 @@ serde = "1.0.218"
 # parol_runtime = "2.2.1"
 thiserror = "1.0"
 
+[features]
+regen-parser = []
+default = []
+
 [build-dependencies]
 parol = "3.0.1"
 

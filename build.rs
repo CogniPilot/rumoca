@@ -17,17 +17,26 @@
 //!
 //! This script ensures that the parser and related files are always up-to-date
 //! with the grammar definition, streamlining the development process.
-use std::process;
-
-use parol::parol_runtime::Report;
+// build.rs
+use std::{env, process};
 use parol::{ParolErrorReporter, build::Builder};
+use parol::parol_runtime::Report;
 
 fn main() {
-    // CLI equivalent is:
-    // parol -f ./modelica.par -e ./modelica-exp.par -p ./src/modelica_parser.rs -a ./src/modelica_grammar_trait.rs -t ModelicaGrammar -m modelica_grammar -g
+    println!("cargo:rerun-if-changed=modelica.par");
+
+    // Pedantic rule: only rebuild if explicitly requested.
+    let rebuild = env::var_os("CARGO_FEATURE_REGEN_PARSER").is_some();
+
+    if !rebuild {
+        return;
+    }
+
+    println!("cargo:warning=Regenerating parser (triggered by feature=regen-parser)");
+
     if let Err(err) = Builder::with_explicit_output_dir("src")
         .grammar_file("modelica.par")
-        .expanded_grammar_output_file("../modelica-exp.par")
+        .expanded_grammar_output_file("modelica-exp.par")
         .parser_output_file("modelica_parser.rs")
         .actions_output_file("modelica_grammar_trait.rs")
         .user_type_name("ModelicaGrammar")
