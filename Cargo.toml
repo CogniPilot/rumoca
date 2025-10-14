@@ -2,6 +2,8 @@
 name = "rumoca"
 version = "0.6.0"
 edition = "2024"
+description = "Modelica translator written in RUST"
+license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
