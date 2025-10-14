@@ -1,0 +1,13 @@
+{
+  // Existing settings...
+  "python.defaultInterpreterPath": "${workspaceFolder}/tests/notebooks/python/.venv/bin/python",
+
+  // Auto-select this Jupyter kernel when opening notebooks
+  "jupyter.defaultKernel": "rumoca",
+
+  // (Optional) automatically connect notebooks to this env
+  "jupyter.interactiveWindow.kernelProvider": "rumoca",
+
+  // Keep terminals auto-activated too
+  "python.terminal.activateEnvironment": true
+}
