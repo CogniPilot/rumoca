@@ -8,7 +8,7 @@ from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from tf2_ros import TransformBroadcaster
 import numpy as np  # Ensure numpy is imported
-import quadrotor_sympy
+import gen.quadrotor_sympy as quadrotor_sympy
 import tf_transformations
 from geometry_msgs.msg import Quaternion
 

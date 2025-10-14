@@ -8,12 +8,14 @@ in-project = true
 path = ".venv-rumoca"
 
 [tool.poetry.dependencies]
-python = "^3.12"
-sympy = "^1.14.0"
-control = "^0.10.2"
-matplotlib = "^3.10.7"
-scipy = "^1.16.2"
-ipykernel = "^7.0.1"
+python = "~3.12"
+sympy = "~1.12"
+numpy = "~1.26"
+control = "0.10.1"
+matplotlib = "~3.6"
+scipy = "~1.11"
+ipykernel = "~6.29"
+slycot = "~0.6.0"
 
 [build-system]
 requires = ["poetry-core"]
