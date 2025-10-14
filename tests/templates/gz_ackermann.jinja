@@ -20,10 +20,10 @@
   {%- set wheel_max_turn_angle = render_expression(dae['p']['wheel_max_turn_angle']['start']) -%}
   {%- set wheel_base = render_expression(dae['p']['wheel_base']['start']) -%}
   {%- set wheel_separation = render_expression(dae['p']['wheel_separation']['start']) -%}
-  {%- set front_wheel_pos_x = render_expression(dae['p']['front_wheel_pos_x']['start']) -%}
-  {%- set front_wheel_pos_y = render_expression(dae['p']['front_wheel_pos_y']['start']) -%}
-  {%- set rear_wheel_pos_x = render_expression(dae['p']['rear_wheel_pos_x']['start']) -%}
-  {%- set rear_wheel_pos_y = render_expression(dae['p']['rear_wheel_pos_y']['start']) -%}
+  {%- set wheel_front_pos_x = render_expression(dae['p']['wheel_front_pos_x']['start']) -%}
+  {%- set wheel_rear_pos_x = render_expression(dae['p']['wheel_rear_pos_x']['start']) -%}
+  {%- set wheel_left_pos_y = render_expression(dae['p']['wheel_left_pos_y']['start']) -%}
+  {%- set wheel_right_pos_y = render_expression(dae['p']['wheel_right_pos_y']['start']) -%}
   {%- set wheel_pos_z = render_expression(dae['p']['wheel_pos_z']['start']) -%}
 <?xml version='1.0' encoding="UTF-8"?>
 <!--
@@ -96,7 +96,7 @@
     <model name='vehicle'>
       <self_collide>false</self_collide>
       <static>false</static>
-      <pose>{{ x0 }}{{ y0 }}{{ z0 }} 0 0 0</pose>
+      <pose>{{ x0 }} {{ y0 }} {{ z0 }} 0 0 0</pose>
       <link name='chassis'>
         <pose>0 0 0 0 0 0</pose>
         <inertial>
@@ -367,7 +367,7 @@
       <joint name="FRWheelSteeringJoint" type="revolute">
         <parent>chassis</parent>
         <child>FRWheelSteeringLink</child>
-        <pose relative_to="chassis">{{ front_wheel_pos_x }} {{ front_wheel_pos_y }} {{ wheel_pos_z }} 0 0 0</pose>
+        <pose relative_to="chassis">{{ wheel_front_pos_x }} -{{ wheel_right_pos_y }} -{{ wheel_pos_z }} 0 0 0</pose>
         <axis>
           <xyz>0 0 1</xyz>
           <limit>
@@ -397,7 +397,7 @@
       <joint name="FLWheelSteeringJoint" type="revolute">
         <parent>chassis</parent>
         <child>FLWheelSteeringLink</child>
-        <pose relative_to="chassis">{{ wheels_front_pos_x}} {{ wheels_left_pos_y }} {{ wheels_pos_z }} 0 0 0</pose>
+        <pose relative_to="chassis">{{ wheel_front_pos_x}} {{ wheel_left_pos_y }} -{{ wheel_pos_z }} 0 0 0</pose>
         <axis>
           <xyz>0 0 1</xyz>
           <limit>
@@ -427,7 +427,7 @@
       <joint name="RRWheelJoint" type="revolute">
         <parent>chassis</parent>
         <child>RRWheelLink</child>
-        <pose relative_to="chassis">{{ wheel_rear_pos_x }} {{ wheel_right_pos_y }} {{ wheel_pos_z }} 0 0 0</pose>
+        <pose relative_to="chassis">-{{ wheel_rear_pos_x }} -{{ wheel_right_pos_y }} -{{ wheel_pos_z }} 0 0 0</pose>
         <axis>
           <xyz>0 1 0</xyz>
           <limit>
@@ -443,7 +443,7 @@
       <joint name="RLWheelJoint" type="revolute">
         <parent>chassis</parent>
         <child>RLWheelLink</child>
-        <pose relative_to="chassis">{{ wheel_rear_pos_x }} {{ wheel_left_pos_y }} {{ wheel_pos_z }} 0 0 0</pose>
+        <pose relative_to="chassis">-{{ wheel_rear_pos_x }} {{ wheel_left_pos_y }} -{{ wheel_pos_z }} 0 0 0</pose>
         <axis>
           <xyz>0 1 0</xyz>
           <limit>

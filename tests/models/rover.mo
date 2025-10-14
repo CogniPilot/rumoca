@@ -2,11 +2,11 @@ model Rover
     // parmeters
     parameter Real x0 = 0 "initial x position";
     parameter Real y0 = 0 "initial y position";
-    parameter Real z0 = 0 "initial z position";
+    parameter Real z0 = 0.25 "initial z position";
     parameter Real theta0 = 0 "initial orientation";
-    parameter Real l = 1.0 "length of chassis";
-    parameter Real w = 0.5 "width of chassis";
-    parameter Real h = 0.5 "height of chassis";
+    parameter Real l = 0.7 "length of chassis";
+    parameter Real w = 0.3 "width of chassis";
+    parameter Real h = 0.1 "height of chassis";
     parameter Real r = 0.1 "radius of wheel";
     parameter Real ixx = 1 "moment of inertia of about body x axis";
     parameter Real iyy = 1 "moment of inertia of about body y axis";
@@ -22,11 +22,11 @@ model Rover
     parameter Real wheel_izz = 0.1 "moment of inertia of wheel about z axis";
     parameter Real wheel_max_turn_angle = 0.7854 "maximum steering angle of wheel";
     parameter Real mag_decl = 0 "world magnetic declination";
-    parameter Real front_wheel_pos_x = 0 "front wheel x position";
-    parameter Real front_wheel_pos_y = 0 "front wheel y position";
-    parameter Real rear_wheel_pos_x = 0 "rear wheel x position";
-    parameter Real rear_wheel_pos_y = 0 "rear wheel y position";
-    parameter Real wheel_pos_z = 0 "wheel z position";
+    parameter Real wheel_front_pos_x = 0.25 "front wheel x position";
+    parameter Real wheel_rear_pos_x = 0.25 "rear wheel x position";
+    parameter Real wheel_left_pos_y = 0.175 "left wheel y position";
+    parameter Real wheel_right_pos_y = 0.175 "right wheel y position";
+    parameter Real wheel_pos_z = .05 "wheel z position";
 
     // states
     Real x(start=x0), y(start=y0), theta(start=theta0), z(start=z0), v;
