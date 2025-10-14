@@ -1,41 +1,45 @@
-model Quadrotor
+model NightVapor
     extends RigidBody6DOF;
-    parameter Real l = 1.0;
     parameter Real g = 9.81;
-    parameter Real mix_a = 1;
-    parameter Real mix_e = 1;
-    parameter Real mix_r = 10;
-    parameter Real mix_t = 32.0;
-    Motor m_1, m_2, m_3, m_4;
+    parameter Real rho = 1.225;
+    parameter Real CL0 = 0.1;
+    parameter Real CLa = 3.14;
+    parameter Real CD0 = 0.02;
+    parameter Real k = 0.02;
+    parameter Real S = 0.5;
+
     input Real a "aileron";
     input Real e "elevator";
     input Real r "rudder";
     input Real t "throttle";
-    Real R_z "ground reaction force";
+
+    Real aoa "angle of attack";
+    Real q "dynamic pressure";
+    Real CL "lift coefficient";
+    Real CD "drag coefficient";
+    Real L "lift";
+    //Real D "drag";
+
 equation
-    if h < 0 then
-        R_z = 10*h;
-    else
-        R_z = 0;
-    end if;
+
+    // aerodynamic
+    aoa = 0;
+    q = rho*(U*U + V*V + W*W)/2;
+    CL = CL0 + CLa*aoa;
+    CD = CD0 + k*CL;
+    L = CL*q;
+    //D = CD*q*S;
 
     // body forces
-    F_x = -(m*g - R_z)*sin(theta);
-    F_y = (m*g - R_z)*sin(phi)*cos(theta);
-    F_z = (m*g - R_z)*cos(phi)*cos(theta) -
-        (m_1.thrust + m_2.thrust + m_3.thrust + m_4.thrust);
+    F_x = t -m*g*sin(theta);
+    F_y = m*g*sin(phi)*cos(theta);
+    F_z = m*g*cos(phi)*cos(theta);
 
     // body momments
-    M_x = l*(-m_1.thrust + m_2.thrust - m_3.thrust + m_4.thrust);
-    M_y = l*(-m_1.thrust + m_2.thrust + m_3.thrust - m_4.thrust);
-    M_z = m_1.moment + m_2.moment - m_3.moment - m_4.moment;
-
-    // motor equations
-    m_1.omega_ref = t*mix_t - a*mix_a + e*mix_e + r*mix_r;
-    m_2.omega_ref = t*mix_t + a*mix_a - e*mix_e + r*mix_r;
-    m_3.omega_ref = t*mix_t - a*mix_a - e*mix_e - r*mix_r;
-    m_4.omega_ref = t*mix_t + a*mix_a + e*mix_e - r*mix_r;
-end Quadrotor;
+    M_x = a;
+    M_y = e;
+    M_z = r;
+end NightVapor;
 
 model RigidBody6DOF
     // stevens and lewis pg 111
@@ -74,17 +78,3 @@ equation
 
 
 end RigidBody6DOF;
-
-model Motor
-    parameter Real Cm = 0.01;
-    parameter Real Ct = 0.01;
-    parameter Real tau = 0.1;
-    Real omega_ref;
-    Real omega;
-    Real thrust;
-    Real moment;
-equation
-    der(omega) = (1/tau) * (omega_ref - omega);
-    thrust = Ct*omega*omega;
-    moment = Cm*thrust;
-end Motor;

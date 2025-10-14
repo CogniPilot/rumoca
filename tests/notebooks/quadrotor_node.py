@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
@@ -20,13 +21,16 @@ class QuadrotorNode(Node):
             self.joy_callback,
             10
         )
+        self.dt = 0.01
         self.model = quadrotor_sympy.Model()
         self.tf_broadcaster = TransformBroadcaster(self)  # Initialize the TF2 broadcaster
         self.sim_time_publisher = self.create_publisher(Clock, '/clock', 10)  # Sim time publisher
-        self.timer = self.create_timer(0.1, self.step_simulation)  # Timer to publish sim time
+        self.timer = self.create_timer(self.dt, self.step_simulation)  # Timer to publish sim time
 
         self.sim_time = 0.0  # Initialize simulation time
         self.x0 = np.zeros(16)
+        self.x0[self.model.x_index['h']] = 10
+
         self.joy_aileron = 0
         self.joy_elevator = 0
         self.joy_rudder = 0
@@ -36,22 +40,32 @@ class QuadrotorNode(Node):
     def step_simulation(self):
         """Step the simulation."""
         # publish sim time
-        self.sim_time += 0.1  # Increment simulation time by 0.1 seconds
+        self.sim_time += self.dt  # Increment simulation time
         sim_time_msg = Clock()
         sim_time_msg.clock = Time()
         sim_time_msg.clock.sec = int(self.sim_time)
         sim_time_msg.clock.nanosec = int((self.sim_time - int(self.sim_time)) * 1e9)
         self.sim_time_publisher.publish(sim_time_msg)
-        # self.get_logger().info(f"Published sim_time: {sim_time_msg.clock.sec}.{sim_time_msg.clock.nanosec}")
+
+        #self.get_logger().info(f"Published sim_time: {sim_time_msg.clock.sec}.{sim_time_msg.clock.nanosec}")
         
         u= np.array([
             self.joy_aileron,
             self.joy_elevator,
             self.joy_rudder,
             self.joy_throttle])
+
+        #self.get_logger().info(f"input: {u}")
+        #self.get_logger().info(f"state: {self.x0}")
+
+        try:
+            res = self.model.simulate(t0=0, tf=0.1, dt=0.01, x0=self.x0, f_u=lambda t: u)
+        except Exception as e:
+            self.get_logger().error(f"Simulation error: {e}")
+            return
         
-        res = self.model.simulate(t0=0, tf=0.1, dt=0.01, x0=self.x0, f_u=lambda t: u)
         self.x0 = res['x'][:, -1]
+
 
         q = tf_transformations.quaternion_from_euler(
             self.x0[9], # roll (same)
@@ -74,11 +88,22 @@ class QuadrotorNode(Node):
         self.tf_broadcaster.sendTransform(transform)
 
     def joy_callback(self, msg):
-        self.joy_aileron = -0.1*msg.axes[3]
-        self.joy_elevator = 0.1*msg.axes[4]
-        self.joy_rudder = -1*msg.axes[0]
-        self.joy_throttle = msg.axes[1]/2 + 0.6
-        print(f"ail: {self.joy_aileron}, elv: {self.joy_elevator}, rdr: {self.joy_rudder}, thr: {self.joy_throttle}")
+        # Apply exponential scaling to joystick inputs for smoother control
+        def exp_scale(value, exp_factor=3):
+            return np.sign(value) * abs(value) ** exp_factor
+
+        # Scale joystick inputs
+        aileron_input = exp_scale(msg.axes[3])
+        elevator_input = exp_scale(msg.axes[4])
+        rudder_input = exp_scale(msg.axes[0])
+        throttle_input = exp_scale(msg.axes[1])
+
+        # Assign scaled inputs
+        self.joy_aileron = -0.1*aileron_input
+        self.joy_elevator = 0.1*elevator_input
+        self.joy_rudder = 0.1*rudder_input
+        self.joy_throttle = 0.5 + 0.05 * throttle_input
+        self.get_logger().info(f"ail: {self.joy_aileron}, elv: {self.joy_elevator}, rdr: {self.joy_rudder}, thr: {self.joy_throttle}")
 
 def run(args=None):
     # Create a scoped ROS 2 context
@@ -95,3 +120,7 @@ def run(args=None):
         context.try_shutdown()
         del executor
         del context
+
+
+if __name__ == '__main__':
+    run()

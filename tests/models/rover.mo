@@ -1,17 +1,49 @@
 model Rover
-    Motor m1;
-    Real x, y, theta, v;
-    input Real thr, str;
-    discrete Real a;
+    // parmeters
+    parameter Real x0 = 0 "initial x position";
+    parameter Real y0 = 0 "initial y position";
+    parameter Real z0 = 0 "initial z position";
+    parameter Real theta0 = 0 "initial orientation";
     parameter Real l = 1.0 "length of chassis";
+    parameter Real w = 0.5 "width of chassis";
+    parameter Real h = 0.5 "height of chassis";
     parameter Real r = 0.1 "radius of wheel";
+    parameter Real ixx = 1 "moment of inertia of about body x axis";
+    parameter Real iyy = 1 "moment of inertia of about body y axis";
+    parameter Real izz = 1 "moment of inertia of about body z axis";
+    parameter Real m = 1.0 "mass of chassis";
+    parameter Real wheel_m = 0.1 "mass of wheel";
+    parameter Real wheel_base = 0.5 "wheel base";
+    parameter Real wheel_separation = 0.5 "wheel separation";
+    parameter Real wheel_radius = 0.1 "radius of wheel";
+    parameter Real wheel_width = 0.05 "width of wheel";
+    parameter Real wheel_ixx = 0.1 "moment of inertia of wheel about x axis";
+    parameter Real wheel_iyy = 0.1 "moment of inertia of wheel about y axis";
+    parameter Real wheel_izz = 0.1 "moment of inertia of wheel about z axis";
+    parameter Real wheel_max_turn_angle = 0.7854 "maximum steering angle of wheel";
+    parameter Real mag_decl = 0 "world magnetic declination";
+    parameter Real front_wheel_pos_x = 0 "front wheel x position";
+    parameter Real front_wheel_pos_y = 0 "front wheel y position";
+    parameter Real rear_wheel_pos_x = 0 "rear wheel x position";
+    parameter Real rear_wheel_pos_y = 0 "rear wheel y position";
+    parameter Real wheel_pos_z = 0 "wheel z position";
+
+    // states
+    Real x(start=x0), y(start=y0), theta(start=theta0), z(start=z0), v;
+
+    // inputs
+    input Real thr, str;
+
+    // subsystems
+    Motor m1;
+
 equation
     v = r*m1.omega;
     der(x) = v*cos(theta);
     der(y) = v*sin(theta);
-    der(theta) = (v/l)*tan(str); 
+    der(z) = 0;
+    der(theta) = (v/wheel_base)*tan(str); 
     m1.omega_ref = thr;
-    a = 1;
 end Rover;
 
 model Motor

@@ -10,7 +10,7 @@ use crate::ir::visitor::Visitor;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ConditionFinder {
-    pub conditions: Vec<Component>,
+    pub conditions: IndexMap<String, Component>,
     pub expressions: IndexMap<String, Expression>,
 }
 
@@ -35,8 +35,8 @@ impl ConditionFinder {
             },
             ..Default::default()
         };
-        self.conditions.push(comp.clone());
-        self.expressions.insert(name, block.cond.clone());
+        self.conditions.insert(name.clone(), comp.clone());
+        self.expressions.insert(name.clone(), block.cond.clone());
         block.cond = Expression::ComponentReference(ComponentReference {
             local: false,
             parts: vec![ComponentRefPart {

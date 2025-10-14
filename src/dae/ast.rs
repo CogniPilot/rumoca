@@ -51,22 +51,26 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dae {
-    pub p: Vec<Component>,                // parameters
-    pub cp: Vec<Component>,               // constant parameters (ADDED)
-    pub t: Component,                     // time
-    pub x: Vec<Component>,                // continous states
-    pub x_dot: Vec<Component>,            // derivatives of continuous states
-    pub y: Vec<Component>,                // alg. variables
-    pub u: Vec<Component>,                // input (ADDED)
-    pub pre_z: Vec<Component>,            // z before event time t_e
-    pub pre_x: Vec<Component>,            // x before event time t_e
-    pub pre_m: Vec<Component>,            // m before event time t_e
-    pub z: Vec<Component>,                // real discrete variables, only change at t_e
-    pub m: Vec<Component>,                // variables of discrete-value types, only change at t_e
-    pub c: Vec<Component>,                // conditions of all if-expressions/ when-clauses
-    pub fx: Vec<Equation>,                // continuous time equations
-    pub fz: Vec<Equation>,                // event update equations
-    pub fm: Vec<Equation>,                // discrete update equations
-    pub fr: IndexMap<String, Statement>,  // reset expressions, condition -> assignment statements
+    pub rumoca_version: String, // version of rumoca used to generate this DAE
+    pub git_version: String,    // git hash of rumoca used to generate this DAE
+    pub model_hash: String,     // md5 hash of the model used to generate this DAE
+    pub template_hash: String,  // md5 hash of the template used to generate this
+    pub t: Component,           // time
+    pub p: IndexMap<String, Component>, // parameters
+    pub cp: IndexMap<String, Component>, // constant parameters (ADDED)
+    pub x: IndexMap<String, Component>, // continous states
+    pub x_dot: IndexMap<String, Component>, // derivatives of continuous states
+    pub y: IndexMap<String, Component>, // alg. variables
+    pub u: IndexMap<String, Component>, // input (ADDED)
+    pub pre_z: IndexMap<String, Component>, // z before event time t_e
+    pub pre_x: IndexMap<String, Component>, // x before event time t_e
+    pub pre_m: IndexMap<String, Component>, // m before event time t_e
+    pub z: IndexMap<String, Component>, // real discrete variables, only change at t_e
+    pub m: IndexMap<String, Component>, // variables of discrete-value types, only change at t_e
+    pub c: IndexMap<String, Component>, // conditions of all if-expressions/ when-clauses
+    pub fx: Vec<Equation>,      // continuous time equations
+    pub fz: Vec<Equation>,      // event update equations
+    pub fm: Vec<Equation>,      // discrete update equations
+    pub fr: IndexMap<String, Statement>, // reset expressions, condition -> assignment statements
     pub fc: IndexMap<String, Expression>, // condition updates, condition -> expression
 }

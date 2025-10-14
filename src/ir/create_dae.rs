@@ -10,14 +10,20 @@ use crate::ir::ast::{
 use crate::ir::visitor::Visitable;
 use crate::ir::visitors::condition_finder::ConditionFinder;
 use crate::ir::visitors::state_finder::StateFinder;
+use git_version::git_version;
 
 use anyhow::Result;
+use indexmap::IndexMap;
 
 use super::visitors::pre_finder::PreFinder;
+
+const GIT_VERSION: &str = git_version!();
 
 pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // create default Dae struct
     let mut dae = Dae {
+        rumoca_version: env!("CARGO_PKG_VERSION").to_string(),
+        git_version: GIT_VERSION.to_string(),
         t: Component {
             name: "t".to_string(),
             type_name: Name {
@@ -44,30 +50,30 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     for (_, comp) in &fclass.components {
         match comp.variability {
             Variability::Parameter(..) => {
-                dae.p.push(comp.clone());
+                dae.p.insert(comp.name.clone(), comp.clone());
             }
             Variability::Constant(..) => {
-                dae.cp.push(comp.clone());
+                dae.cp.insert(comp.name.clone(), comp.clone());
             }
             Variability::Discrete(..) => {
-                dae.m.push(comp.clone());
+                dae.m.insert(comp.name.clone(), comp.clone());
             }
             Variability::Empty => {
                 if state_finder.states.contains(&comp.name) {
-                    dae.x.push(comp.clone());
+                    dae.x.insert(comp.name.clone(), comp.clone());
                     let mut der_comp = comp.clone();
                     der_comp.name = format!("der_{}", comp.name);
-                    dae.x_dot.push(der_comp);
+                    dae.x_dot.insert(der_comp.name.clone(), der_comp);
                 } else {
                     match comp.causality {
                         Causality::Input(..) => {
-                            dae.u.push(comp.clone());
+                            dae.u.insert(comp.name.clone(), comp.clone());
                         }
                         Causality::Output(..) => {
-                            dae.y.push(comp.clone());
+                            dae.y.insert(comp.name.clone(), comp.clone());
                         }
                         Causality::Empty => {
-                            dae.y.push(comp.clone());
+                            dae.y.insert(comp.name.clone(), comp.clone());
                         }
                     }
                 }
@@ -114,10 +120,13 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                     }
                                     match &args[0] {
                                         Expression::ComponentReference(cref) => {
-                                            dae.fr.insert(cond_name, Statement::Assignment {
-                                                comp: cref.clone(),
-                                                value: args[1].clone(),
-                                            });
+                                            dae.fr.insert(
+                                                cond_name,
+                                                Statement::Assignment {
+                                                    comp: cref.clone(),
+                                                    value: args[1].clone(),
+                                                },
+                                            );
                                         }
                                         _ => panic!(
                                             "first argument of reinit must be a component reference"
@@ -136,10 +145,13 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     Ok(dae)
 }
 
-fn add_pre_components(source: &Vec<Component>, target: &mut Vec<Component>) {
-    for comp in source {
+fn add_pre_components(
+    source: &IndexMap<String, Component>,
+    target: &mut IndexMap<String, Component>,
+) {
+    for comp in source.values() {
         let mut pre_comp = comp.clone();
         pre_comp.name = format!("pre_{}", comp.name);
-        target.push(pre_comp);
+        target.insert(pre_comp.name.clone(), pre_comp);
     }
 }

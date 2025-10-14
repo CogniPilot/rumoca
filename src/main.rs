@@ -32,6 +32,7 @@
 //! - `anyhow`: Error handling with context.
 //! - `rumoca`: Core library for Modelica grammar, parsing, and DAE generation.
 extern crate parol_runtime;
+use chksum_md5;
 use clap::Parser;
 use parol_runtime::{Report, log::debug};
 use rumoca::modelica_grammar::ModelicaGrammar;
@@ -68,6 +69,7 @@ fn main() -> Result<()> {
     let file_name = args.model_file.clone();
     let input = fs::read_to_string(file_name.clone())
         .with_context(|| format!("Can't read file {}", file_name))?;
+    let model_md5 = format!("{:x}", chksum_md5::hash(&input));
 
     let mut modelica_grammar = ModelicaGrammar::new();
     let now = Instant::now();
@@ -90,7 +92,8 @@ fn main() -> Result<()> {
             }
 
             // create DAE
-            let dae = create_dae(&mut fclass)?;
+            let mut dae = create_dae(&mut fclass)?;
+            dae.model_hash = model_md5;
             if args.verbose {
                 println!("{:#?}", dae);
             }
@@ -98,6 +101,11 @@ fn main() -> Result<()> {
             // render template
             if args.template_file.is_some() {
                 let s = args.template_file.unwrap();
+                let template_txt = fs::read_to_string(s.clone())
+                    .with_context(|| format!("Can't read template file {}", s.clone()))?;
+                let template_md5 = chksum_md5::hash(template_txt);
+                dae.template_hash = format!("{:x}", template_md5);
+
                 dae::jinja::render_template(dae, &s)?;
             }
             Ok(())

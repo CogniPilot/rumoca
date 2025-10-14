@@ -30,13 +30,16 @@ impl Visitor for ScopePusher {
             // if symbol is already defined
             //if self.symbols.contains(&name) {
             // prepend component name
-            node.parts.insert(0, ir::ast::ComponentRefPart {
-                ident: ir::ast::Token {
-                    text: self.comp.clone(),
-                    ..Default::default()
+            node.parts.insert(
+                0,
+                ir::ast::ComponentRefPart {
+                    ident: ir::ast::Token {
+                        text: self.comp.clone(),
+                        ..Default::default()
+                    },
+                    subs: None,
                 },
-                subs: None,
-            });
+            );
             //}
         }
     }
