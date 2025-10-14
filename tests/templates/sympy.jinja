@@ -112,15 +112,15 @@ class Model:
         # Define Reset Functions: fr
         {%- for key, val in dae.fr | items %}
         def __fr_{{ key }}(x):
-            {% for c in dae.x -%}
-            pre_{{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
+            {% for name, comp in dae.x | items -%}
+            pre_{{ name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
             {% endfor -%}  = self.x
-            {% for c in dae.x -%}
-            {{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
+            {% for name, comp in dae.x | items -%}
+            {{ name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
             {% endfor -%}  = self.x
             {{ render_statement(val) }}
-            return [{%- for c in dae.x %}
-            {{ c.name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
+            return [{%- for name, comp in dae.x | items %}
+            {{ name }} {%- if not loop.last -%}{{ "," }}{%- endif -%}
             {% endfor -%}]
         self.fr_{{ key }} = sympy.lambdify([self.x, self.p], __fr_{{ key }}(self.x))
         {%- endfor %}

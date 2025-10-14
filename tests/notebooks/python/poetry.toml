@@ -1,0 +1,7 @@
+[virtualenvs]
+in-project = true
+create = true
+prompt = "rumoca"
+
+[virtualenvs.options]
+system-site-packages = true
