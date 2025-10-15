@@ -2,24 +2,19 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Poetry Install (if needed)",
+      "label": "Poetry Install",
       "type": "shell",
       "options": { "cwd": "${workspaceFolder}/tests/notebooks/python" },
-      "command": "if [ ! -d .venv ]; then \
-  echo '🔧 Creating Poetry environment...'; \
-  poetry install; \
-elif [ ! -d .venv/lib/python3.12/site-packages ]; then \
-  echo '⚙️  Missing site-packages; reinstalling...'; \
-  poetry install; \
-elif [ poetry.lock -nt .venv/lib/python3.12/site-packages ]; then \
-  echo '🔄 Dependencies changed; reinstalling...'; \
-  poetry install; \
-else \
-  echo '✅ Environment up to date'; \
-fi",
+      "command": "poetry install",
       "problemMatcher": [],
-      "presentation": { "reveal": "never", "close": true },
-      "runOptions": { "runOn": "folderOpen" }
+      "presentation": { "reveal": "silent", "close": false }
+    },
+    {
+      "label": "Detect ROS Python path",
+      "type": "shell",
+      "command": "bash .vscode/detect_ros_path.sh",
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "close": false }
     },
     {
       "label": "Register Jupyter Kernel (Poetry)",
@@ -27,14 +22,18 @@ fi",
       "options": { "cwd": "${workspaceFolder}/tests/notebooks/python" },
       "command": "poetry run python -m ipykernel install --user --name=rumoca --display-name \"Python (rumoca)\"",
       "problemMatcher": [],
-      "presentation": { "reveal": "never", "close": true },
-      "detail": "Registers the Poetry environment as a Jupyter kernel"
+      "presentation": { "reveal": "silent", "close": false }
     },
     {
       "label": "Setup Poetry Environment",
-      "dependsOn": ["Poetry Install (if needed)", "Register Jupyter Kernel (Poetry)"],
+      "dependsOn": [
+        "Poetry Install",
+        "Detect ROS Python path",
+        "Register Jupyter Kernel (Poetry)"
+      ],
       "dependsOrder": "sequence",
-      "runOptions": { "runOn": "folderOpen" }
+      "runOptions": { "runOn": "folderOpen" },
+      "presentation": { "reveal": "never", "close": false }
     }
   ]
 }

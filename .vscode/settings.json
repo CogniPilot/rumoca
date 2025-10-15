@@ -1,13 +1,15 @@
 {
-  // Existing settings...
+  "cmake.configureOnOpen": false,
   "python.defaultInterpreterPath": "${workspaceFolder}/tests/notebooks/python/.venv/bin/python",
-
-  // Auto-select this Jupyter kernel when opening notebooks
+  "python.terminal.activateEnvironment": true,
   "jupyter.defaultKernel": "rumoca",
-
-  // (Optional) automatically connect notebooks to this env
-  "jupyter.interactiveWindow.kernelProvider": "rumoca",
-
-  // Keep terminals auto-activated too
-  "python.terminal.activateEnvironment": true
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/.vscode/ros_path"
+  ],
+  "python.envFile": "${workspaceFolder}/.vscode/env",
+  "terminal.integrated.env.linux": {
+    "VIRTUAL_ENV": "${workspaceFolder}/tests/notebooks/python/.venv",
+    "PATH": "${workspaceFolder}/tests/notebooks/python/.venv/bin:${env:PATH}"
+  },
+  "terminal.integrated.defaultProfile.linux": "bash"
 }

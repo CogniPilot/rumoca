@@ -4,4 +4,4 @@ create = true
 prompt = "rumoca"
 
 [virtualenvs.options]
-system-site-packages = true
+system-site-packages = false
