@@ -456,15 +456,11 @@ Key areas where help is needed:
 - Documentation improvements
 - Bug reports and fixes
 - Integration with Cyecca backends
+- By contributing to this project, you agree that your contributions will be licensed under the Apache License, Version 2.0.
 
 ## License
 
-Licensed under either of:
-
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
 
 ## Dependencies
 
