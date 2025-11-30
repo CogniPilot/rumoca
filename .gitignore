@@ -4,3 +4,7 @@ tests/notebooks/python/.venv/
 tests/notebooks/python/poetry.lock
 res
 .vscode/ros_path
+build/
+__pycache__/
+dist/
+*.egg-info/

@@ -1,0 +1,209 @@
+//! Function inliner visitor
+//!
+//! This visitor inlines user-defined function calls by substituting
+//! the function body with actual arguments.
+
+use crate::ir::ast::{Causality, ClassDefinition, ClassType, Expression, Statement};
+use crate::ir::visitor::Visitor;
+use indexmap::IndexMap;
+
+/// Visitor that inlines user-defined function calls
+pub struct FunctionInliner {
+    /// Map of function names to their definitions
+    functions: IndexMap<String, ClassDefinition>,
+}
+
+impl FunctionInliner {
+    /// Create a new function inliner with the given function definitions
+    pub fn new(functions: IndexMap<String, ClassDefinition>) -> Self {
+        Self { functions }
+    }
+
+    /// Create from a class list, extracting functions recursively (including nested)
+    pub fn from_class_list(class_list: &IndexMap<String, ClassDefinition>) -> Self {
+        let mut functions: IndexMap<String, ClassDefinition> = IndexMap::new();
+        for (_name, class) in class_list {
+            Self::collect_functions_recursive(class, "", &mut functions);
+        }
+        Self { functions }
+    }
+
+    /// Recursively collect functions from a class and its nested classes
+    fn collect_functions_recursive(
+        class: &ClassDefinition,
+        prefix: &str,
+        functions: &mut IndexMap<String, ClassDefinition>,
+    ) {
+        let full_name = if prefix.is_empty() {
+            class.name.text.clone()
+        } else {
+            format!("{}.{}", prefix, class.name.text)
+        };
+
+        // If this is a function, add it with its full path
+        if matches!(class.class_type, ClassType::Function) {
+            functions.insert(full_name.clone(), class.clone());
+            // Also add the short name for calls within the same package
+            functions.insert(class.name.text.clone(), class.clone());
+        }
+
+        // Recursively process nested classes
+        for (_name, nested_class) in &class.classes {
+            Self::collect_functions_recursive(nested_class, &full_name, functions);
+        }
+
+        // For packages, also add relative paths for their children
+        // This allows Package.function to be called from sibling classes
+        if matches!(class.class_type, ClassType::Package) {
+            Self::collect_functions_with_relative_paths(class, &class.name.text, functions);
+        }
+    }
+
+    /// Collect functions with relative paths from a given package root
+    /// This allows functions to be called with package-relative names
+    fn collect_functions_with_relative_paths(
+        class: &ClassDefinition,
+        relative_prefix: &str,
+        functions: &mut IndexMap<String, ClassDefinition>,
+    ) {
+        for (_name, nested_class) in &class.classes {
+            let relative_name = format!("{}.{}", relative_prefix, nested_class.name.text);
+
+            if matches!(nested_class.class_type, ClassType::Function) {
+                functions.insert(relative_name.clone(), nested_class.clone());
+            }
+
+            // Recursively process nested packages
+            if matches!(nested_class.class_type, ClassType::Package) {
+                Self::collect_functions_with_relative_paths(
+                    nested_class,
+                    &relative_name,
+                    functions,
+                );
+            }
+        }
+    }
+
+    /// Inline a function call, returning the substituted expression
+    /// For single-output functions, returns the single expression
+    /// For multi-output functions, returns a Tuple of expressions
+    fn inline_call(&self, func_name: &str, args: &[Expression]) -> Option<Expression> {
+        let func = self.functions.get(func_name)?;
+
+        // Get input and output parameters from function components
+        let inputs: Vec<(&String, &crate::ir::ast::Component)> = func
+            .components
+            .iter()
+            .filter(|(_, comp)| matches!(comp.causality, Causality::Input(_)))
+            .collect();
+
+        let outputs: Vec<(&String, &crate::ir::ast::Component)> = func
+            .components
+            .iter()
+            .filter(|(_, comp)| matches!(comp.causality, Causality::Output(_)))
+            .collect();
+
+        if outputs.is_empty() {
+            return None;
+        }
+
+        // Check argument count matches input count
+        if args.len() != inputs.len() {
+            return None;
+        }
+
+        // Build substitution map: input_name -> actual_arg
+        let mut substitutions: IndexMap<String, Expression> = IndexMap::new();
+        for (i, (input_name, _)) in inputs.iter().enumerate() {
+            substitutions.insert((*input_name).clone(), args[i].clone());
+        }
+
+        // Build a map of output_name -> expression from algorithm assignments
+        let mut output_exprs: IndexMap<String, Expression> = IndexMap::new();
+        for algo in &func.algorithms {
+            for stmt in algo {
+                if let Statement::Assignment { comp, value } = stmt {
+                    let comp_name = comp.to_string();
+                    // Check if this is an output variable assignment
+                    if outputs.iter().any(|(name, _)| **name == comp_name) {
+                        output_exprs.insert(comp_name, substitute_vars(value, &substitutions));
+                    }
+                }
+            }
+        }
+
+        // Return based on number of outputs
+        if outputs.len() == 1 {
+            // Single output - return the expression directly
+            let output_name = outputs[0].0;
+            output_exprs.get(output_name).cloned()
+        } else {
+            // Multi-output - return a Tuple in the same order as outputs are declared
+            let mut elements = Vec::new();
+            for (output_name, _) in &outputs {
+                if let Some(expr) = output_exprs.get(*output_name) {
+                    elements.push(expr.clone());
+                } else {
+                    // Output not assigned - can't inline this function
+                    return None;
+                }
+            }
+            Some(Expression::Tuple { elements })
+        }
+    }
+}
+
+/// Substitute variable references in an expression with their replacements
+fn substitute_vars(expr: &Expression, substitutions: &IndexMap<String, Expression>) -> Expression {
+    match expr {
+        Expression::ComponentReference(comp_ref) => {
+            let var_name = comp_ref.to_string();
+            if let Some(replacement) = substitutions.get(&var_name) {
+                replacement.clone()
+            } else {
+                expr.clone()
+            }
+        }
+        Expression::Binary { op, lhs, rhs } => Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(substitute_vars(lhs, substitutions)),
+            rhs: Box::new(substitute_vars(rhs, substitutions)),
+        },
+        Expression::Unary { op, rhs } => Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(substitute_vars(rhs, substitutions)),
+        },
+        Expression::FunctionCall { comp, args } => Expression::FunctionCall {
+            comp: comp.clone(),
+            args: args
+                .iter()
+                .map(|a| substitute_vars(a, substitutions))
+                .collect(),
+        },
+        Expression::Array { elements } => Expression::Array {
+            elements: elements
+                .iter()
+                .map(|e| substitute_vars(e, substitutions))
+                .collect(),
+        },
+        Expression::Tuple { elements } => Expression::Tuple {
+            elements: elements
+                .iter()
+                .map(|e| substitute_vars(e, substitutions))
+                .collect(),
+        },
+        // Terminal expressions and other types don't need substitution
+        _ => expr.clone(),
+    }
+}
+
+impl Visitor for FunctionInliner {
+    fn exit_expression(&mut self, expr: &mut Expression) {
+        if let Expression::FunctionCall { comp, args } = expr {
+            let func_name = comp.to_string();
+            if let Some(inlined) = self.inline_call(&func_name, args) {
+                *expr = inlined;
+            }
+        }
+    }
+}

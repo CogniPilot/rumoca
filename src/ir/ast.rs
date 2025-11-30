@@ -112,6 +112,8 @@ pub struct Component {
     pub connection: Connection,
     pub description: Vec<Token>,
     pub start: Expression,
+    /// Array dimensions - empty for scalars, e.g., [2, 3] for a 2x3 matrix
+    pub shape: Vec<usize>,
     //pub annotation: Option<Token>,
 }
 
@@ -130,21 +132,41 @@ impl Debug for Component {
         if self.connection != Connection::Empty {
             builder.field("connection", &self.connection);
         }
-        if self.description.len() > 0 {
+        if !self.description.is_empty() {
             builder.field("description", &self.description);
+        }
+        if !self.shape.is_empty() {
+            builder.field("shape", &self.shape);
         }
         builder.finish()
     }
+}
+
+/// Type of class (model, function, connector, etc.)
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClassType {
+    #[default]
+    Model,
+    Class,
+    Block,
+    Connector,
+    Record,
+    Type,
+    Package,
+    Function,
+    Operator,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct ClassDefinition {
     pub name: Token,
+    pub class_type: ClassType,
     pub encapsulated: bool,
     pub extends: Vec<Extend>,
-    //pub imports: Vec<Import>,
-    //pub classes: IndexMap<String, ClassDefinition>,
+    pub imports: Vec<Import>,
+    /// Nested class definitions (functions, models, packages, etc.)
+    pub classes: IndexMap<String, ClassDefinition>,
     pub components: IndexMap<String, Component>,
     pub equations: Vec<Equation>,
     pub initial_equations: Vec<Equation>,
@@ -156,6 +178,36 @@ pub struct ClassDefinition {
 #[allow(unused)]
 pub struct Extend {
     pub comp: Name,
+}
+
+/// Import clause for bringing names into scope
+/// Modelica supports several import styles:
+/// - `import A.B.C;` - qualified import (use as C)
+/// - `import D = A.B.C;` - renamed import (use as D)
+/// - `import A.B.*;` - unqualified import (all names from A.B)
+/// - `import A.B.{C, D, E};` - selective import (specific names)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Import {
+    /// Qualified import: `import A.B.C;` - imports C, accessed as C
+    Qualified { path: Name },
+    /// Renamed import: `import D = A.B.C;` - imports C, accessed as D
+    Renamed { alias: Token, path: Name },
+    /// Unqualified import: `import A.B.*;` - imports all from A.B
+    Unqualified { path: Name },
+    /// Selective import: `import A.B.{C, D};` - imports specific names
+    Selective { path: Name, names: Vec<Token> },
+}
+
+impl Import {
+    /// Get the base path for this import
+    pub fn base_path(&self) -> &Name {
+        match self {
+            Import::Qualified { path } => path,
+            Import::Renamed { path, .. } => path,
+            Import::Unqualified { path } => path,
+            Import::Selective { path, .. } => path,
+        }
+    }
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,6 +261,13 @@ impl Debug for ComponentReference {
     }
 }
 
+impl ComponentReference {
+    /// Get the source location of the first token in this component reference.
+    pub fn get_location(&self) -> Option<&Location> {
+        self.parts.first().map(|part| &part.ident.location)
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct EquationBlock {
@@ -256,6 +315,24 @@ pub enum Equation {
         comp: ComponentReference,
         args: Vec<Expression>,
     },
+}
+
+impl Equation {
+    /// Get the source location of the first token in this equation.
+    /// Returns None for Empty equations.
+    pub fn get_location(&self) -> Option<&Location> {
+        match self {
+            Equation::Empty => None,
+            Equation::Simple { lhs, .. } => lhs.get_location(),
+            Equation::Connect { lhs, .. } => lhs.get_location(),
+            Equation::For { indices, .. } => indices.first().map(|i| &i.ident.location),
+            Equation::When(blocks) => blocks.first().and_then(|b| b.cond.get_location()),
+            Equation::If { cond_blocks, .. } => {
+                cond_blocks.first().and_then(|b| b.cond.get_location())
+            }
+            Equation::FunctionCall { comp, .. } => comp.get_location(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -334,6 +411,17 @@ pub enum Expression {
     Array {
         elements: Vec<Expression>,
     },
+    /// Tuple expression for multi-output function calls: (a, b) = func()
+    Tuple {
+        elements: Vec<Expression>,
+    },
+    /// If expression: if cond then expr elseif cond2 then expr2 else expr3
+    If {
+        /// List of (condition, expression) pairs for if and elseif branches
+        branches: Vec<(Expression, Expression)>,
+        /// The else branch expression
+        else_branch: Box<Expression>,
+    },
 }
 
 impl Debug for Expression {
@@ -366,6 +454,54 @@ impl Debug for Expression {
                 token,
             } => write!(f, "{:?}({:?})", terminal_type, token),
             Expression::Array { elements } => f.debug_list().entries(elements.iter()).finish(),
+            Expression::Tuple { elements } => {
+                write!(f, "(")?;
+                for (i, e) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}", e)?;
+                }
+                write!(f, ")")
+            }
+            Expression::If {
+                branches,
+                else_branch,
+            } => {
+                write!(f, "if ")?;
+                for (i, (cond, expr)) in branches.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " elseif ")?;
+                    }
+                    write!(f, "{:?} then {:?}", cond, expr)?;
+                }
+                write!(f, " else {:?}", else_branch)
+            }
+        }
+    }
+}
+
+impl Expression {
+    /// Get the source location of the first token in this expression.
+    /// Returns None for Empty expressions.
+    pub fn get_location(&self) -> Option<&Location> {
+        match self {
+            Expression::Empty => None,
+            Expression::Range { start, .. } => start.get_location(),
+            Expression::Unary { rhs, .. } => rhs.get_location(),
+            Expression::Binary { lhs, .. } => lhs.get_location(),
+            Expression::Terminal { token, .. } => Some(&token.location),
+            Expression::ComponentReference(comp) => {
+                comp.parts.first().map(|part| &part.ident.location)
+            }
+            Expression::FunctionCall { comp, .. } => {
+                comp.parts.first().map(|part| &part.ident.location)
+            }
+            Expression::Array { elements } => elements.first().and_then(|e| e.get_location()),
+            Expression::Tuple { elements } => elements.first().and_then(|e| e.get_location()),
+            Expression::If { branches, .. } => {
+                branches.first().and_then(|(cond, _)| cond.get_location())
+            }
         }
     }
 }

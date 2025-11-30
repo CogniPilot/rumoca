@@ -1,0 +1,145 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Modelica",
+  "scopeName": "source.modelica",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#operators" },
+    { "include": "#functions" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.modelica",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.modelica",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.modelica",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.modelica",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.modelica",
+          "match": "\\b\\d+\\.\\d*([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.modelica",
+          "match": "\\b\\d*\\.\\d+([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.modelica",
+          "match": "\\b\\d+([eE][+-]?\\d+)?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.modelica",
+          "match": "\\b(if|then|else|elseif|for|loop|while|when|elsewhen|break|return)\\b"
+        },
+        {
+          "name": "keyword.declaration.modelica",
+          "match": "\\b(model|class|connector|record|block|type|package|function|operator|end|extends|import|within|encapsulated|partial|final|replaceable|redeclare|constrainedby|inner|outer)\\b"
+        },
+        {
+          "name": "keyword.other.modelica",
+          "match": "\\b(equation|algorithm|initial|public|protected|external|annotation|each)\\b"
+        },
+        {
+          "name": "storage.modifier.modelica",
+          "match": "\\b(parameter|constant|discrete|input|output|flow|stream)\\b"
+        },
+        {
+          "name": "constant.language.modelica",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "variable.language.modelica",
+          "match": "\\b(time)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.modelica",
+          "match": "\\b(Real|Integer|Boolean|String)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arithmetic.modelica",
+          "match": "[+\\-*/^]"
+        },
+        {
+          "name": "keyword.operator.comparison.modelica",
+          "match": "(==|<>|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.assignment.modelica",
+          "match": ":="
+        },
+        {
+          "name": "keyword.operator.logical.modelica",
+          "match": "\\b(and|or|not)\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.modelica",
+          "match": "\\b(der|pre|noEvent|smooth|sample|initial|terminal|reinit|edge|change|cardinality|homotopy|semiLinear|spatialDistribution|getInstanceName)\\b"
+        },
+        {
+          "name": "support.function.math.modelica",
+          "match": "\\b(abs|sign|sqrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|log|log10|floor|ceil|integer|mod|rem|min|max|sum|product|transpose|symmetric|cross|skew|identity|diagonal|zeros|ones|fill|linspace|scalar|vector|matrix|array|cat|ndims|size|String|Integer|Real|Boolean)\\b"
+        },
+        {
+          "name": "support.function.connection.modelica",
+          "match": "\\b(connect|inStream|actualStream)\\b"
+        },
+        {
+          "name": "entity.name.function.modelica",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.modelica",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

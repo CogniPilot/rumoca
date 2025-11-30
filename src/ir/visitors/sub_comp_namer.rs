@@ -31,7 +31,9 @@ pub struct SubCompNamer {
 
 impl Visitor for SubCompNamer {
     fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
-        if node.parts[0].ident.text == self.comp {
+        // Only transform if there are at least 2 parts (e.g., comp.subcomp)
+        // A single-part reference doesn't need transformation
+        if node.parts.len() >= 2 && node.parts[0].ident.text == self.comp {
             node.parts.remove(0);
             node.parts[0].ident.text = format!("{}_{}", self.comp, node.parts[0].ident.text);
         }

@@ -1,0 +1,90 @@
+{
+  "name": "rumoca-modelica",
+  "displayName": "Rumoca Modelica",
+  "description": "Modelica language support powered by rumoca-lsp",
+  "version": "0.7.0",
+  "publisher": "jgoppert",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jgoppert/rumoca"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "modelica",
+    "simulation",
+    "dae",
+    "modeling"
+  ],
+  "activationEvents": [
+    "onLanguage:modelica"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "modelica",
+        "aliases": [
+          "Modelica",
+          "modelica"
+        ],
+        "extensions": [
+          ".mo"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "modelica",
+        "scopeName": "source.modelica",
+        "path": "./syntaxes/modelica.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Rumoca Modelica",
+      "properties": {
+        "rumoca.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the rumoca-lsp executable. If empty, will search in PATH."
+        },
+        "rumoca.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/vsce": "^2.15.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.0.0",
+    "vsce": "^1.100.2"
+  }
+}

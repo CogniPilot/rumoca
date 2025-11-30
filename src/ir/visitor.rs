@@ -170,12 +170,28 @@ impl Visitable for ir::ast::Expression {
             ir::ast::Expression::Range { start, step, end } => {
                 start.accept(visitor);
                 if step.is_some() {
+                    // SAFETY: We just checked that step is Some above
                     step.as_mut().unwrap().accept(visitor);
                 }
                 end.accept(visitor);
             }
             ir::ast::Expression::Terminal { .. } => {}
             ir::ast::Expression::Empty => {}
+            ir::ast::Expression::Tuple { elements } => {
+                for element in elements {
+                    element.accept(visitor);
+                }
+            }
+            ir::ast::Expression::If {
+                branches,
+                else_branch,
+            } => {
+                for (cond, then_expr) in branches {
+                    cond.accept(visitor);
+                    then_expr.accept(visitor);
+                }
+                else_branch.accept(visitor);
+            }
         }
         visitor.exit_expression(self);
     }

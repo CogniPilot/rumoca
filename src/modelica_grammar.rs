@@ -36,11 +36,81 @@
 //! This module is primarily used internally by the `ModelicaGrammar` struct, which
 //! implements the `modelica_grammar_trait::ModelicaGrammarTrait` trait. The `stored_definition`
 //! method is used to parse and store the converted Modelica AST.
+
+// Disable clippy warnings that can result from auto-generated Display implementations
+#![allow(clippy::extra_unused_lifetimes)]
+
 use crate::ir;
 use crate::modelica_grammar_trait;
 use indexmap::IndexMap;
 use parol_runtime::{Result, Token};
 use std::fmt::{Debug, Display, Error, Formatter};
+
+/// Helper to format location info from a token for error messages
+fn loc_info(token: &ir::ast::Token) -> String {
+    let loc = &token.location;
+    format!(
+        " at {}:{}:{}",
+        loc.file_name, loc.start_line, loc.start_column
+    )
+}
+
+/// Helper to format location info from an expression
+fn expr_loc_info(expr: &ir::ast::Expression) -> String {
+    expr.get_location()
+        .map(|loc| {
+            format!(
+                " at {}:{}:{}",
+                loc.file_name, loc.start_line, loc.start_column
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// Helper to collect elements from array_arguments into a Vec<Expression>
+/// Handles both simple arrays like {1, 2, 3} and nested arrays like {{1, 2}, {3, 4}}
+fn collect_array_elements(
+    args: &modelica_grammar_trait::ArrayArguments,
+) -> anyhow::Result<Vec<ir::ast::Expression>> {
+    let mut elements = Vec::new();
+
+    // First element
+    elements.push((*args.expression).clone());
+
+    // Collect remaining elements from the optional chain
+    if let Some(opt) = &args.array_arguments_opt {
+        match &opt.array_arguments_opt_group {
+            modelica_grammar_trait::ArrayArgumentsOptGroup::CommaArrayArgumentsNonFirst(
+                comma_args,
+            ) => {
+                collect_array_non_first(&comma_args.array_arguments_non_first, &mut elements);
+            }
+            modelica_grammar_trait::ArrayArgumentsOptGroup::ForForIndices(_for_indices) => {
+                // Array comprehension like {i for i in 1:10} - not yet supported
+                anyhow::bail!(
+                    "Array comprehension with 'for' is not yet supported{}",
+                    expr_loc_info(&args.expression)
+                );
+            }
+        }
+    }
+
+    Ok(elements)
+}
+
+/// Helper to recursively collect elements from array_arguments_non_first chain
+fn collect_array_non_first(
+    args: &modelica_grammar_trait::ArrayArgumentsNonFirst,
+    elements: &mut Vec<ir::ast::Expression>,
+) {
+    // Add current element
+    elements.push(args.expression.clone());
+
+    // Recursively collect remaining elements
+    if let Some(opt) = &args.array_arguments_non_first_opt {
+        collect_array_non_first(&opt.array_arguments_non_first, elements);
+    }
+}
 
 //-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::ast::StoredDefinition {
@@ -60,10 +130,10 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::ast::StoredDefin
             );
         }
         def.within = match &ast.stored_definition_opt {
-            Some(within) => match &within.stored_definition_opt1 {
-                Some(within) => Some(within.name.clone()),
-                None => None,
-            },
+            Some(within) => within
+                .stored_definition_opt1
+                .as_ref()
+                .map(|within| within.name.clone()),
             None => None,
         };
         Ok(def)
@@ -99,6 +169,25 @@ impl TryFrom<&Token<'_>> for ir::ast::Token {
     }
 }
 
+/// Convert grammar ClassType to IR ClassType
+fn convert_class_type(class_type: &modelica_grammar_trait::ClassType) -> ir::ast::ClassType {
+    match class_type {
+        modelica_grammar_trait::ClassType::Class(_) => ir::ast::ClassType::Class,
+        modelica_grammar_trait::ClassType::Model(_) => ir::ast::ClassType::Model,
+        modelica_grammar_trait::ClassType::ClassTypeOptRecord(_) => ir::ast::ClassType::Record,
+        modelica_grammar_trait::ClassType::Block(_) => ir::ast::ClassType::Block,
+        modelica_grammar_trait::ClassType::ClassTypeOpt0Connector(_) => {
+            ir::ast::ClassType::Connector
+        }
+        modelica_grammar_trait::ClassType::Type(_) => ir::ast::ClassType::Type,
+        modelica_grammar_trait::ClassType::Package(_) => ir::ast::ClassType::Package,
+        modelica_grammar_trait::ClassType::ClassTypeOpt1ClassTypeOpt2Function(_) => {
+            ir::ast::ClassType::Function
+        }
+        modelica_grammar_trait::ClassType::Operator(_) => ir::ast::ClassType::Operator,
+    }
+}
+
 //-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinition {
     type Error = anyhow::Error;
@@ -106,6 +195,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
     fn try_from(
         ast: &modelica_grammar_trait::ClassDefinition,
     ) -> std::result::Result<Self, Self::Error> {
+        let class_type = convert_class_type(&ast.class_prefixes.class_type);
         match &ast.class_specifier {
             modelica_grammar_trait::ClassSpecifier::LongClassSpecifier(long) => {
                 match &long.long_class_specifier {
@@ -115,7 +205,10 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         let spec = &class_specifier.standard_class_specifier;
                         Ok(ir::ast::ClassDefinition {
                             name: spec.name.clone(),
+                            class_type,
                             extends: spec.composition.extends.clone(),
+                            imports: spec.composition.imports.clone(),
+                            classes: spec.composition.classes.clone(),
                             equations: spec.composition.equations.clone(),
                             algorithms: spec.composition.algorithms.clone(),
                             initial_equations: spec.composition.initial_equations.clone(),
@@ -124,20 +217,52 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             encapsulated: ast.class_definition_opt.is_some(),
                         })
                     }
-                    modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(..) => {
-                        todo!("extends")
+                    modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(ext) => {
+                        anyhow::bail!(
+                            "'extends' class specifier is not yet supported{}",
+                            loc_info(&ext.extends_class_specifier.ident)
+                        )
                     }
                 }
             }
-            modelica_grammar_trait::ClassSpecifier::DerClassSpecifier(_spec) => todo!("der"),
+            modelica_grammar_trait::ClassSpecifier::DerClassSpecifier(spec) => {
+                anyhow::bail!(
+                    "'der' class specifier is not yet supported{}",
+                    loc_info(&spec.der_class_specifier.ident)
+                )
+            }
             modelica_grammar_trait::ClassSpecifier::ShortClassSpecifier(short) => {
                 match &short.short_class_specifier {
-                    modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(_spec) => {
-                        todo!("enum class specifier")
+                    modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(spec) => {
+                        anyhow::bail!(
+                            "'enumeration' class specifier is not yet supported{}",
+                            loc_info(&spec.enum_class_specifier.ident)
+                        )
                     }
-                    modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(_spec) => {
-                        //spec.type_class_specifier.base_prefix.
-                        todo!("type class specifier");
+                    modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(spec) => {
+                        // type MyType = BaseType "description";
+                        // Creates a class that extends the base type
+                        let type_spec = &spec.type_class_specifier;
+                        let base_type_name = type_spec.type_specifier.name.clone();
+
+                        // Create an Extend clause for the base type
+                        let extend = ir::ast::Extend {
+                            comp: base_type_name,
+                        };
+
+                        Ok(ir::ast::ClassDefinition {
+                            name: type_spec.ident.clone(),
+                            class_type,
+                            extends: vec![extend],
+                            imports: vec![],
+                            classes: IndexMap::new(),
+                            equations: vec![],
+                            algorithms: vec![],
+                            initial_equations: vec![],
+                            initial_algorithms: vec![],
+                            components: IndexMap::new(),
+                            encapsulated: ast.class_definition_opt.is_some(),
+                        })
                     }
                 }
             }
@@ -150,7 +275,9 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
 #[allow(unused)]
 pub struct Composition {
     pub extends: Vec<ir::ast::Extend>,
+    pub imports: Vec<ir::ast::Import>,
     pub components: IndexMap<String, ir::ast::Component>,
+    pub classes: IndexMap<String, ir::ast::ClassDefinition>,
     pub equations: Vec<ir::ast::Equation>,
     pub initial_equations: Vec<ir::ast::Equation>,
     pub algorithms: Vec<Vec<ir::ast::Statement>>,
@@ -168,15 +295,23 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
         };
 
         comp.components = ast.element_list.components.clone();
+        comp.classes = ast.element_list.classes.clone();
         comp.extends = ast.element_list.extends.clone();
+        comp.imports = ast.element_list.imports.clone();
 
         for comp_list in &ast.composition_list {
             match &comp_list.composition_list_group {
-                modelica_grammar_trait::CompositionListGroup::PublicElementList(_elem_list) => {
-                    todo!("public element list")
+                modelica_grammar_trait::CompositionListGroup::PublicElementList(elem_list) => {
+                    anyhow::bail!(
+                        "'public' element list is not yet supported{}",
+                        loc_info(&elem_list.public.public)
+                    )
                 }
-                modelica_grammar_trait::CompositionListGroup::ProtectedElementList(_elem_list) => {
-                    todo!("protected element list")
+                modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
+                    anyhow::bail!(
+                        "'protected' element list is not yet supported{}",
+                        loc_info(&elem_list.protected.protected)
+                    )
                 }
                 modelica_grammar_trait::CompositionListGroup::EquationSection(eq_sec) => {
                     let sec = &eq_sec.equation_section;
@@ -211,7 +346,8 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
 #[allow(unused)]
 pub struct ElementList {
     pub components: IndexMap<String, ir::ast::Component>,
-    pub imports: Vec<ir::ast::Token>,
+    pub classes: IndexMap<String, ir::ast::ClassDefinition>,
+    pub imports: Vec<ir::ast::Import>,
     pub extends: Vec<ir::ast::Extend>,
 }
 
@@ -229,8 +365,10 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
             match &elem_list.element {
                 modelica_grammar_trait::Element::ElementDefinition(edef) => {
                     match &edef.element_definition.element_definition_group {
-                        modelica_grammar_trait::ElementDefinitionGroup::ClassDefinition(_class) => {
-                            todo!("class definition")
+                        modelica_grammar_trait::ElementDefinitionGroup::ClassDefinition(class) => {
+                            let nested_class = class.class_definition.clone();
+                            let name = nested_class.name.text.clone();
+                            def.classes.insert(name, nested_class);
                         }
                         modelica_grammar_trait::ElementDefinitionGroup::ComponentClause(clause) => {
                             let connection =
@@ -297,6 +435,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             ..Default::default()
                                         },
                                     },
+                                    shape: Vec::new(), // Scalar by default, populated from array subscripts
                                 };
 
                                 // set default start value
@@ -325,6 +464,25 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     _ => ir::ast::Expression::Empty {},
                                 };
 
+                                // Extract array dimensions from declaration subscripts (e.g., Real[2,3] or Real[2][3])
+                                if let Some(decl_opt) = &c.declaration.declaration_opt {
+                                    for subscript in &decl_opt.array_subscripts.subscripts {
+                                        // Extract integer dimension from subscript expression
+                                        if let ir::ast::Subscript::Expression(
+                                            ir::ast::Expression::Terminal {
+                                                token,
+                                                terminal_type:
+                                                    ir::ast::TerminalType::UnsignedInteger,
+                                            },
+                                        ) = subscript
+                                        {
+                                            if let Ok(dim) = token.text.parse::<usize>() {
+                                                value.shape.push(dim);
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // handle for component modification
                                 if let Some(modif) = &c.declaration.declaration_opt0 {
                                     match &modif.modification {
@@ -332,11 +490,20 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             class_mod,
                                         ) => {
                                             let modif = &*(class_mod.class_modification);
-                                            match &modif.class_modification_opt {
-                                                Some(_opt) => {
-                                                    //opt.argument_list.args
-                                                },
-                                                None => {},
+                                            if let Some(opt) = &modif.class_modification_opt {
+                                                // Look for start= in the modifier arguments
+                                                for arg in &opt.argument_list.args {
+                                                    if let ir::ast::Expression::Binary { op, lhs, rhs } = arg {
+                                                        if matches!(op, ir::ast::OpBinary::Eq(_)) {
+                                                            // This is a named argument like start=2.5
+                                                            if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
+                                                                if comp.to_string() == "start" {
+                                                                    value.start = (**rhs).clone();
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                         modelica_grammar_trait::Modification::EquModificationExpression(
@@ -346,8 +513,11 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                 modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                                                     value.start = expr.expression.clone();
                                                 }
-                                                &modelica_grammar_trait::ModificationExpression::Break(..) => {
-                                                    todo!("break")
+                                                modelica_grammar_trait::ModificationExpression::Break(brk) => {
+                                                    anyhow::bail!(
+                                                        "'break' in modification expression is not yet supported{}",
+                                                        loc_info(&brk.r#break.r#break)
+                                                    )
                                                 }
                                             }
                                         }
@@ -360,22 +530,86 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                         }
                     }
                 }
-                modelica_grammar_trait::Element::ImportClause(..) => {
-                    todo!("import clause")
+                modelica_grammar_trait::Element::ImportClause(import_elem) => {
+                    let import_clause = &import_elem.import_clause;
+                    let parsed_import = match &import_clause.import_clause_group {
+                        // import D = A.B.C; (renamed import)
+                        modelica_grammar_trait::ImportClauseGroup::IdentEquName(renamed) => {
+                            ir::ast::Import::Renamed {
+                                alias: renamed.ident.clone(),
+                                path: renamed.name.clone(),
+                            }
+                        }
+                        // import A.B.C; or import A.B.*; or import A.B.{C, D};
+                        modelica_grammar_trait::ImportClauseGroup::NameImportClauseOpt(
+                            name_opt,
+                        ) => {
+                            let path = name_opt.name.clone();
+                            match &name_opt.import_clause_opt {
+                                None => {
+                                    // import A.B.C; (qualified import)
+                                    ir::ast::Import::Qualified { path }
+                                }
+                                Some(opt) => {
+                                    match &opt.import_clause_opt_group {
+                                        // import A.B.*;
+                                        modelica_grammar_trait::ImportClauseOptGroup::DotStar(
+                                            _,
+                                        ) => ir::ast::Import::Unqualified { path },
+                                        // import A.B.* or import A.B.{C, D}
+                                        modelica_grammar_trait::ImportClauseOptGroup::DotImportClauseOptGroupGroup(dot_group) => {
+                                            match &dot_group.import_clause_opt_group_group {
+                                                // import A.B.*
+                                                modelica_grammar_trait::ImportClauseOptGroupGroup::Star(_) => {
+                                                    ir::ast::Import::Unqualified { path }
+                                                }
+                                                // import A.B.{C, D, E}
+                                                modelica_grammar_trait::ImportClauseOptGroupGroup::LBraceImportListRBrace(list) => {
+                                                    let mut names = vec![list.import_list.ident.clone()];
+                                                    for item in &list.import_list.import_list_list {
+                                                        names.push(item.ident.clone());
+                                                    }
+                                                    ir::ast::Import::Selective { path, names }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    def.imports.push(parsed_import);
                 }
                 modelica_grammar_trait::Element::ExtendsClause(clause) => {
-                    if let Some(_opt) = &clause.extends_clause.extends_clause_opt {
-                        todo!("unhandled extends class or inheritance modification")
+                    let type_loc = clause
+                        .extends_clause
+                        .type_specifier
+                        .name
+                        .name
+                        .first()
+                        .map(loc_info)
+                        .unwrap_or_default();
+                    if clause.extends_clause.extends_clause_opt.is_some() {
+                        anyhow::bail!(
+                            "Class or inheritance modification in 'extends' is not yet supported{}",
+                            type_loc
+                        )
                     }
-                    if let Some(_opt) = &clause.extends_clause.extends_clause_opt0 {
-                        todo!("unhandled annotation")
+                    if clause.extends_clause.extends_clause_opt0.is_some() {
+                        anyhow::bail!(
+                            "Annotation in 'extends' clause is not yet supported{}",
+                            type_loc
+                        )
                     }
                     def.extends.push(ir::ast::Extend {
                         comp: clause.extends_clause.type_specifier.name.clone(),
                     });
                 }
-                modelica_grammar_trait::Element::ElementReplaceableDefinition(..) => {
-                    todo!("element replaceable definition")
+                modelica_grammar_trait::Element::ElementReplaceableDefinition(repl) => {
+                    anyhow::bail!(
+                        "'replaceable' element definition is not yet supported{}",
+                        loc_info(&repl.element_replaceable_definition.replaceable.replaceable)
+                    )
                 }
             }
         }
@@ -409,14 +643,11 @@ impl TryFrom<&modelica_grammar_trait::DescriptionString> for TokenList {
         ast: &modelica_grammar_trait::DescriptionString,
     ) -> std::result::Result<Self, Self::Error> {
         let mut tokens = Vec::new();
-        match &ast.description_string_opt {
-            Some(opt) => {
-                tokens.push(opt.string.clone());
-                for string in &opt.description_string_opt_list {
-                    tokens.push(string.string.clone());
-                }
+        if let Some(opt) = &ast.description_string_opt {
+            tokens.push(opt.string.clone());
+            for string in &opt.description_string_opt_list {
+                tokens.push(string.string.clone());
             }
-            None => {}
         }
         Ok(TokenList { tokens })
     }
@@ -618,7 +849,12 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::ast::Equation {
                     rhs: eq.connect_equation.component_reference0.clone(),
                 })
             }
-            modelica_grammar_trait::SomeEquationOption::ForEquation(..) => todo!("for"),
+            modelica_grammar_trait::SomeEquationOption::ForEquation(eq) => {
+                anyhow::bail!(
+                    "'for' equation is not yet supported{}",
+                    loc_info(&eq.for_equation.for_indices.for_index.ident)
+                )
+            }
             modelica_grammar_trait::SomeEquationOption::IfEquation(eq) => {
                 let mut blocks = vec![eq.if_equation.if0.clone()];
                 for when in &eq.if_equation.if_equation_list {
@@ -626,15 +862,12 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::ast::Equation {
                 }
                 Ok(ir::ast::Equation::If {
                     cond_blocks: blocks,
-                    else_block: match &eq.if_equation.if_equation_opt {
-                        Some(opt) => Some(
-                            opt.if_equation_opt_list
-                                .iter()
-                                .map(|x| x.some_equation.clone())
-                                .collect(),
-                        ),
-                        None => None,
-                    },
+                    else_block: eq.if_equation.if_equation_opt.as_ref().map(|opt| {
+                        opt.if_equation_opt_list
+                            .iter()
+                            .map(|x| x.some_equation.clone())
+                            .collect()
+                    }),
                 })
             }
             modelica_grammar_trait::SomeEquationOption::WhenEquation(eq) => {
@@ -684,11 +917,36 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::ast::Statement {
                     equations: vec![],
                 })
             }
-            modelica_grammar_trait::StatementOption::IfStatement(..) => todo!("if"),
-            modelica_grammar_trait::StatementOption::WhenStatement(..) => todo!("when"),
-            modelica_grammar_trait::StatementOption::WhileStatement(..) => todo!("while"),
-            modelica_grammar_trait::StatementOption::FunctionCallOutputStatement(..) => {
-                todo!("function call")
+            modelica_grammar_trait::StatementOption::IfStatement(stmt) => {
+                anyhow::bail!(
+                    "'if' statement is not yet supported{}",
+                    expr_loc_info(&stmt.if_statement.r#if0.cond)
+                )
+            }
+            modelica_grammar_trait::StatementOption::WhenStatement(stmt) => {
+                anyhow::bail!(
+                    "'when' statement is not yet supported{}",
+                    expr_loc_info(&stmt.when_statement.when0.cond)
+                )
+            }
+            modelica_grammar_trait::StatementOption::WhileStatement(stmt) => {
+                anyhow::bail!(
+                    "'while' statement is not yet supported{}",
+                    expr_loc_info(&stmt.while_statement.expression)
+                )
+            }
+            modelica_grammar_trait::StatementOption::FunctionCallOutputStatement(stmt) => {
+                let loc = stmt
+                    .function_call_output_statement
+                    .component_reference
+                    .parts
+                    .first()
+                    .map(|p| loc_info(&p.ident))
+                    .unwrap_or_default();
+                anyhow::bail!(
+                    "Function call with output list like '(a, b) = func()' is not yet supported{}",
+                    loc
+                )
             }
         }
     }
@@ -747,8 +1005,15 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgument> for ir::ast::Expression 
             modelica_grammar_trait::FunctionArgument::Expression(expr) => {
                 Ok(expr.expression.as_ref().clone())
             }
-            modelica_grammar_trait::FunctionArgument::FunctionPartialApplication(..) => {
-                todo!("partial application")
+            modelica_grammar_trait::FunctionArgument::FunctionPartialApplication(fpa) => {
+                let loc = &fpa.function_partial_application.function.function.location;
+                anyhow::bail!(
+                    "Function partial application is not supported at line {}, column {}. \
+                     This may indicate a syntax error in your Modelica code - \
+                     check for stray text or missing semicolons near function calls.",
+                    loc.start_line,
+                    loc.start_column
+                )
             }
         }
     }
@@ -763,28 +1028,36 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
         match &ast {
             modelica_grammar_trait::FunctionArguments::ExpressionFunctionArgumentsOpt(def) => {
                 let mut args = vec![*def.expression.clone()];
-                match &def.function_arguments_opt {
-                    Some(opt) => {
-                        match &opt.function_arguments_opt_group {
-                            modelica_grammar_trait::FunctionArgumentsOptGroup::CommaFunctionArgumentsNonFirst(
-                                expr,
-                            ) => {
-                                args.append(&mut expr.function_arguments_non_first.args.clone());
-                            }
-                            modelica_grammar_trait::FunctionArgumentsOptGroup::ForForIndices(..) => {
-                                todo!("for indices")
-                            }
+                if let Some(opt) = &def.function_arguments_opt {
+                    match &opt.function_arguments_opt_group {
+                        modelica_grammar_trait::FunctionArgumentsOptGroup::CommaFunctionArgumentsNonFirst(
+                            expr,
+                        ) => {
+                            args.append(&mut expr.function_arguments_non_first.args.clone());
+                        }
+                        modelica_grammar_trait::FunctionArgumentsOptGroup::ForForIndices(..) => {
+                            anyhow::bail!(
+                                "Array comprehensions with 'for' are not yet supported."
+                            )
                         }
                     }
-                    None => {}
                 }
                 Ok(ExpressionList { args })
             }
-            modelica_grammar_trait::FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(..) => {
-                todo!("partial application")
+            modelica_grammar_trait::FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(fpa) => {
+                let loc = &fpa.function_partial_application.function.function.location;
+                anyhow::bail!(
+                    "Function partial application is not supported at line {}, column {}. \
+                     This may indicate a syntax error in your Modelica code - \
+                     check for stray text or missing semicolons near function calls.",
+                    loc.start_line, loc.start_column
+                )
             }
             modelica_grammar_trait::FunctionArguments::NamedArguments(..) => {
-                todo!("named arguments")
+                anyhow::bail!(
+                    "Named function arguments are not yet supported. \
+                     Use positional arguments instead."
+                )
             }
         }
     }
@@ -799,16 +1072,17 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
         match &ast {
             modelica_grammar_trait::FunctionArgumentsNonFirst::FunctionArgumentFunctionArgumentsNonFirstOpt(expr) => {
                 let mut args = vec![expr.function_argument.clone()];
-                match &expr.function_arguments_non_first_opt {
-                    Some(opt) => {
-                        args.append(&mut opt.function_arguments_non_first.args.clone());
-                    }
-                    None => {}
+                if let Some(opt) = &expr.function_arguments_non_first_opt {
+                    args.append(&mut opt.function_arguments_non_first.args.clone());
                 }
                 Ok(ExpressionList { args })
             }
-            modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(..) => {
-                todo!("named arguments")
+            modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(args) => {
+                anyhow::bail!(
+                    "Named arguments like 'func(x=1, y=2)' are not yet supported{}. \
+                     Use positional arguments instead.",
+                    loc_info(&args.named_arguments.named_argument.ident)
+                )
             }
         }
     }
@@ -837,19 +1111,51 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
             modelica_grammar_trait::Argument::ElementModificationOrReplaceable(modif) => {
                 match &modif.element_modification_or_replaceable.element_modification_or_replaceable_group {
                     modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementModification(elem) => {
+                        let name_loc = elem
+                            .element_modification
+                            .name
+                            .name
+                            .first()
+                            .map(loc_info)
+                            .unwrap_or_default();
                         match &elem.element_modification.element_modification_opt {
                             Some(opt) => {
                                 match &opt.modification {
                                     modelica_grammar_trait::Modification::ClassModificationModificationOpt(_modif) => {
-                                        todo!("argument class modification")
+                                        anyhow::bail!(
+                                            "Class modification in argument is not yet supported{}",
+                                            name_loc
+                                        )
                                     }
                                     modelica_grammar_trait::Modification::EquModificationExpression(modif) => {
                                         match &modif.modification_expression {
-                                            modelica_grammar_trait::ModificationExpression::Break(..) => {
-                                                todo!("break expression")
+                                            modelica_grammar_trait::ModificationExpression::Break(brk) => {
+                                                anyhow::bail!(
+                                                    "'break' in modification expression is not yet supported{}",
+                                                    loc_info(&brk.r#break.r#break)
+                                                )
                                             }
                                             modelica_grammar_trait::ModificationExpression::Expression(expr) => {
-                                                Ok(expr.expression.clone())
+                                                // Create a Binary expression to preserve the name=value structure
+                                                // LHS = name (as ComponentReference), RHS = value
+                                                let name = &elem.element_modification.name;
+                                                let parts = name.name.iter().map(|token| {
+                                                    ir::ast::ComponentRefPart {
+                                                        ident: token.clone(),
+                                                        subs: None,
+                                                    }
+                                                }).collect();
+                                                let name_expr = ir::ast::Expression::ComponentReference(
+                                                    ir::ast::ComponentReference {
+                                                        local: false,
+                                                        parts,
+                                                    }
+                                                );
+                                                Ok(ir::ast::Expression::Binary {
+                                                    op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                    lhs: Box::new(name_expr),
+                                                    rhs: Box::new(expr.expression.clone()),
+                                                })
                                             }
                                         }
                                     }
@@ -860,13 +1166,19 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                             }
                         }
                     }
-                    modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementReplaceable(..) => {
-                        todo!("element replaceable")
+                    modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementReplaceable(repl) => {
+                        anyhow::bail!(
+                            "'replaceable' element in modification is not yet supported{}",
+                            loc_info(&repl.element_replaceable.replaceable.replaceable)
+                        )
                     }
                 }
             }
-            modelica_grammar_trait::Argument::ElementRedeclaration(_redcl) => {
-                todo!("element redeclaration")
+            modelica_grammar_trait::Argument::ElementRedeclaration(redcl) => {
+                anyhow::bail!(
+                    "'redeclare' in argument is not yet supported{}",
+                    loc_info(&redcl.element_redeclaration.redeclare.redeclare)
+                )
             }
         }
     }
@@ -956,21 +1268,49 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::ast::Expression {
                 terminal_type: ir::ast::TerminalType::End,
                 token: end.end.end.clone(),
             }),
-            modelica_grammar_trait::Primary::ArrayPrimary(..) => {
-                todo!("array")
+            modelica_grammar_trait::Primary::ArrayPrimary(arr) => {
+                let elements = collect_array_elements(&arr.array_primary.array_arguments)?;
+                Ok(ir::ast::Expression::Array { elements })
             }
-            modelica_grammar_trait::Primary::RangePrimary(..) => {
-                todo!("expression list")
+            modelica_grammar_trait::Primary::RangePrimary(range) => {
+                anyhow::bail!(
+                    "Range primary like '{{1:10}}' is not yet supported{}",
+                    expr_loc_info(&range.range_primary.expression_list.expression)
+                )
             }
             modelica_grammar_trait::Primary::OutputPrimary(output) => {
                 let primary = &output.output_primary;
+                let location_info = primary
+                    .output_expression_list
+                    .args
+                    .first()
+                    .and_then(|e| e.get_location())
+                    .map(|loc| {
+                        format!(
+                            " at {}:{}:{}",
+                            loc.file_name, loc.start_line, loc.start_column
+                        )
+                    })
+                    .unwrap_or_default();
+
                 if primary.output_primary_opt.is_some() {
-                    todo!("output_primary array subs/ ident");
+                    anyhow::bail!(
+                        "Output primary with array subscripts or identifiers is not yet supported{}. \
+                         This may indicate a syntax error - check for stray text near parenthesized expressions.",
+                        location_info
+                    );
                 };
                 if primary.output_expression_list.args.len() > 1 {
-                    todo!("comma in output primary");
+                    // Multiple outputs like (a, b) = func() - create a Tuple
+                    Ok(ir::ast::Expression::Tuple {
+                        elements: primary.output_expression_list.args.clone(),
+                    })
+                } else if primary.output_expression_list.args.len() == 1 {
+                    Ok(primary.output_expression_list.args[0].clone())
+                } else {
+                    // Empty parentheses - return Empty expression
+                    Ok(ir::ast::Expression::Empty)
                 }
-                Ok(primary.output_expression_list.args[0].clone())
             }
             modelica_grammar_trait::Primary::GlobalFunctionCall(expr) => {
                 let tok = match &expr.global_function_call.global_function_call_group {
@@ -1005,7 +1345,7 @@ impl TryFrom<&modelica_grammar_trait::Factor> for ir::ast::Expression {
 
     fn try_from(ast: &modelica_grammar_trait::Factor) -> std::result::Result<Self, Self::Error> {
         if ast.factor_list.is_empty() {
-            return Ok(ast.primary.as_ref().clone());
+            Ok(ast.primary.as_ref().clone())
         } else {
             Ok(ir::ast::Expression::Binary {
                 op: ir::ast::OpBinary::Exp(ir::ast::Token::default()),
@@ -1021,7 +1361,7 @@ impl TryFrom<&modelica_grammar_trait::Term> for ir::ast::Expression {
 
     fn try_from(ast: &modelica_grammar_trait::Term) -> std::result::Result<Self, Self::Error> {
         if ast.term_list.is_empty() {
-            return Ok(ast.factor.clone());
+            Ok(ast.factor.clone())
         } else {
             let mut lhs = ast.factor.clone();
             for factor in &ast.term_list {
@@ -1164,7 +1504,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalTerm> for ir::ast::Expression {
         ast: &modelica_grammar_trait::LogicalTerm,
     ) -> std::result::Result<Self, Self::Error> {
         if ast.logical_term_list.is_empty() {
-            return Ok(ast.logical_factor.as_ref().clone());
+            Ok(ast.logical_factor.as_ref().clone())
         } else {
             let mut lhs = ast.logical_factor.as_ref().clone();
             for term in &ast.logical_term_list {
@@ -1186,7 +1526,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalExpression> for ir::ast::Expression
         ast: &modelica_grammar_trait::LogicalExpression,
     ) -> std::result::Result<Self, Self::Error> {
         if ast.logical_expression_list.is_empty() {
-            return Ok(ast.logical_term.as_ref().clone());
+            Ok(ast.logical_term.as_ref().clone())
         } else {
             let mut lhs = ast.logical_term.as_ref().clone();
             for term in &ast.logical_expression_list {
@@ -1235,8 +1575,31 @@ impl TryFrom<&modelica_grammar_trait::Expression> for ir::ast::Expression {
             modelica_grammar_trait::Expression::SimpleExpression(simple_expression) => {
                 Ok(simple_expression.simple_expression.as_ref().clone())
             }
-            modelica_grammar_trait::Expression::IfExpression(..) => {
-                todo!("if")
+            modelica_grammar_trait::Expression::IfExpression(expr) => {
+                let if_expr = &expr.if_expression;
+
+                // Build the branches: first the main if, then any elseifs
+                let mut branches = Vec::new();
+
+                // The main if branch: condition is expression, result is expression0
+                let condition = (*if_expr.expression).clone();
+                let then_expr = if_expr.expression0.clone();
+                branches.push((condition, then_expr));
+
+                // Add any elseif branches from the list
+                for elseif in &if_expr.if_expression_list {
+                    let elseif_cond = elseif.expression.clone();
+                    let elseif_expr = elseif.expression0.clone();
+                    branches.push((elseif_cond, elseif_expr));
+                }
+
+                // The else branch is expression1
+                let else_branch = Box::new(if_expr.expression1.clone());
+
+                Ok(ir::ast::Expression::If {
+                    branches,
+                    else_branch,
+                })
             }
         }
     }
@@ -1273,10 +1636,10 @@ impl TryFrom<&modelica_grammar_trait::ComponentRefPart> for ir::ast::ComponentRe
     ) -> std::result::Result<Self, Self::Error> {
         Ok(ir::ast::ComponentRefPart {
             ident: ast.ident.clone(),
-            subs: match &ast.component_ref_part_opt {
-                Some(subs) => Some(subs.array_subscripts.subscripts.clone()),
-                None => None,
-            },
+            subs: ast
+                .component_ref_part_opt
+                .as_ref()
+                .map(|subs| subs.array_subscripts.subscripts.clone()),
         })
     }
 }

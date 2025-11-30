@@ -6,6 +6,7 @@ use crate::ir::ast::{
     Component, ComponentRefPart, ComponentReference, Equation, EquationBlock, Expression, Name,
     Token,
 };
+use crate::ir::constants::{TYPE_BOOL, condition_name};
 use crate::ir::visitor::Visitor;
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -17,12 +18,12 @@ pub struct ConditionFinder {
 impl ConditionFinder {
     fn process_condition_block(&mut self, block: &mut EquationBlock) {
         let i = self.conditions.len();
-        let name = format!("c{}", i);
+        let name = condition_name(i);
         let comp = Component {
             name: name.clone(),
             type_name: Name {
                 name: vec![Token {
-                    text: "Bool".to_string(),
+                    text: TYPE_BOOL.to_string(),
                     ..Default::default()
                 }],
             },

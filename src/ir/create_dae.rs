@@ -7,18 +7,44 @@ use crate::ir::ast::{
     Causality, ClassDefinition, Component, Equation, Expression, Name, Statement, Token,
     Variability,
 };
+use crate::ir::constants::BUILTIN_REINIT;
+use crate::ir::error::IrError;
 use crate::ir::visitor::Visitable;
 use crate::ir::visitors::condition_finder::ConditionFinder;
 use crate::ir::visitors::state_finder::StateFinder;
 use git_version::git_version;
 
 use anyhow::Result;
-use indexmap::IndexMap;
-
-use super::visitors::pre_finder::PreFinder;
 
 const GIT_VERSION: &str = git_version!();
 
+/// Creates a DAE (Differential-Algebraic Equation) representation from a flattened class definition.
+///
+/// This function transforms a flattened Modelica class into a structured DAE representation suitable
+/// for numerical solving. It performs the following transformations:
+///
+/// - Identifies state variables (those appearing in `der()` calls) and their derivatives
+/// - Classifies components by variability (parameters, constants, discrete, continuous)
+/// - Classifies components by causality (inputs, outputs, algebraic variables)
+/// - Finds and extracts conditions from when/if clauses
+/// - Processes `reinit` statements in when clauses
+/// - Creates previous value variables for discrete and state variables
+/// - Collects all equations into the appropriate DAE categories
+///
+/// # Arguments
+///
+/// * `fclass` - A mutable reference to a flattened class definition (output from the `flatten` function)
+///
+/// # Returns
+///
+/// * `Result<Dae>` - The DAE representation on success, or an error if:
+///   - Connection equations are not yet expanded (not implemented)
+///   - Invalid reinit function calls are encountered
+///
+/// # Errors
+///
+/// Returns an error if connection equations are encountered (they should be expanded during
+/// flattening but this feature is not yet implemented).
 pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // create default Dae struct
     let mut dae = Dae {
@@ -60,10 +86,8 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
             }
             Variability::Empty => {
                 if state_finder.states.contains(&comp.name) {
+                    // Add state variable only - derivatives remain as der() calls in equations
                     dae.x.insert(comp.name.clone(), comp.clone());
-                    let mut der_comp = comp.clone();
-                    der_comp.name = format!("der_{}", comp.name);
-                    dae.x_dot.insert(der_comp.name.clone(), der_comp);
                 } else {
                     match comp.causality {
                         Causality::Input(..) => {
@@ -81,19 +105,15 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
         }
     }
 
-    // handle pre
-    let mut pre_finder = PreFinder::default();
-    fclass.accept(&mut pre_finder);
-    add_pre_components(&dae.x, &mut dae.pre_x);
-    add_pre_components(&dae.m, &mut dae.pre_m);
-    add_pre_components(&dae.z, &mut dae.pre_z);
-
     // handle conditions and relations
     dae.c = condition_finder.conditions.clone();
     dae.fc = condition_finder.expressions.clone();
 
+    // Apply BLT transformation to reorder and normalize equations
+    let transformed_equations = crate::ir::blt::blt_transform(fclass.equations.clone());
+
     // handle equations
-    for eq in &fclass.equations {
+    for eq in &transformed_equations {
         match &eq {
             Equation::Simple { .. } => {
                 dae.fx.push(eq.clone());
@@ -102,7 +122,7 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                 dae.fx.push(eq.clone());
             }
             Equation::Connect { .. } => {
-                panic!("connection equations should already by expanded in flatten")
+                return Err(IrError::UnexpandedConnectionEquation.into());
             }
             Equation::When(blocks) => {
                 for block in blocks {
@@ -110,13 +130,30 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                         match eq {
                             Equation::FunctionCall { comp, args } => {
                                 let name = comp.to_string();
-                                if name == "reinit" {
+                                if name == BUILTIN_REINIT {
                                     let cond_name = match &block.cond {
                                         Expression::ComponentReference(cref) => cref.to_string(),
-                                        _ => todo!("handle other condition types"),
+                                        other => {
+                                            let loc = other
+                                                .get_location()
+                                                .map(|l| {
+                                                    format!(
+                                                        " at {}:{}:{}",
+                                                        l.file_name, l.start_line, l.start_column
+                                                    )
+                                                })
+                                                .unwrap_or_default();
+                                            anyhow::bail!(
+                                                "Unsupported condition type in 'when' block{}. \
+                                                 Expected a component reference.",
+                                                loc
+                                            )
+                                        }
                                     };
                                     if args.len() != 2 {
-                                        panic!("reinit function call must have two arguments");
+                                        return Err(
+                                            IrError::InvalidReinitArgCount(args.len()).into()
+                                        );
                                     }
                                     match &args[0] {
                                         Expression::ComponentReference(cref) => {
@@ -128,13 +165,32 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                                 },
                                             );
                                         }
-                                        _ => panic!(
-                                            "first argument of reinit must be a component reference"
-                                        ),
+                                        _ => {
+                                            return Err(IrError::InvalidReinitFirstArg(format!(
+                                                "{:?}",
+                                                args[0]
+                                            ))
+                                            .into());
+                                        }
                                     }
                                 }
                             }
-                            _ => todo!("handle other equation types"),
+                            other => {
+                                let loc = other
+                                    .get_location()
+                                    .map(|l| {
+                                        format!(
+                                            " at {}:{}:{}",
+                                            l.file_name, l.start_line, l.start_column
+                                        )
+                                    })
+                                    .unwrap_or_default();
+                                anyhow::bail!(
+                                    "Unsupported equation type in 'when' block{}. \
+                                     Only 'reinit' function calls are currently supported.",
+                                    loc
+                                )
+                            }
                         }
                     }
                 }
@@ -143,15 +199,4 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
         }
     }
     Ok(dae)
-}
-
-fn add_pre_components(
-    source: &IndexMap<String, Component>,
-    target: &mut IndexMap<String, Component>,
-) {
-    for comp in source.values() {
-        let mut pre_comp = comp.clone();
-        pre_comp.name = format!("pre_{}", comp.name);
-        target.insert(pre_comp.name.clone(), pre_comp);
-    }
 }

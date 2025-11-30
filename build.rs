@@ -18,9 +18,9 @@
 //! This script ensures that the parser and related files are always up-to-date
 //! with the grammar definition, streamlining the development process.
 // build.rs
-use std::{env, process};
-use parol::{ParolErrorReporter, build::Builder};
 use parol::parol_runtime::Report;
+use parol::{ParolErrorReporter, build::Builder};
+use std::{env, process};
 
 fn main() {
     println!("cargo:rerun-if-changed=modelica.par");

@@ -1,0 +1,3 @@
+include README.md
+# Templates are NOT installed - they are examples only in the source repository
+# Users should use the --json flag for Base Modelica export

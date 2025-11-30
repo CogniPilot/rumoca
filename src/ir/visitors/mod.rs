@@ -1,5 +1,9 @@
 pub mod condition_finder;
-pub mod pre_finder;
-pub mod scope_pusher;
+pub mod expression_visitor;
+pub mod function_inliner;
+pub mod import_resolver;
 pub mod state_finder;
 pub mod sub_comp_namer;
+pub mod symbol_table;
+pub mod tuple_expander;
+pub mod var_validator;
