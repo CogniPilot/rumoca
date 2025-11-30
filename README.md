@@ -485,7 +485,7 @@ If you use Rumoca in academic work, please cite:
 
 ## See Also
 
-- [Cyecca](https://github.com/cognipilot/cyecca) - Code generation from Base Modelica IR (currently ir branch)
+- [Cyecca](https://github.com/cognipilot/cyecca/tree/ir) - Code generation from Base Modelica IR (currently ir branch)
 - [Base Modelica Specification (MCP-0031)](https://modelica.org/mcp/)
 - [Modelica Language](https://www.modelica.org/)
 
