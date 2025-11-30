@@ -16,7 +16,7 @@ use git_version::git_version;
 
 use anyhow::Result;
 
-const GIT_VERSION: &str = git_version!();
+const GIT_VERSION: &str = git_version!(fallback = "unknown");
 
 /// Creates a DAE (Differential-Algebraic Equation) representation from a flattened class definition.
 ///

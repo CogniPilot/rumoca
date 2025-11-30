@@ -5,6 +5,7 @@ use rumoca::modelica_parser::parse;
 use std::fs;
 
 /// Parse a test file from the fixtures directory
+#[allow(dead_code)]
 pub fn parse_test_file(name: &str) -> Result<StoredDefinition> {
     let path = format!("tests/fixtures/{}.mo", name);
     let input = fs::read_to_string(&path)
