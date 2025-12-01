@@ -204,7 +204,7 @@ cargo clippy --all-features
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome! All contributions must be made under the Apache-2.0 license.
 
 ## License
 
