@@ -1,3 +1,6 @@
+// Allow mutable_key_type - Uri has interior mutability but we use it correctly as a key
+#![allow(clippy::mutable_key_type)]
+
 //! Comprehensive LSP tests for the Rumoca Modelica compiler.
 //!
 //! Tests all LSP features including:

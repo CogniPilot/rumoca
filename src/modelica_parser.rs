@@ -125,8 +125,8 @@ pub const TERMINALS: &[(&str, Option<(bool, &str)>); 100] = &[
     /*  99 */ (ERROR_TOKEN, None),
 ];
 
-pub const TERMINAL_NAMES: &[&str; 100] = &[
-    /*   0 */ "EndOfInput",
+pub const TERMINAL_NAMES : & [& str; 100] = &
+[    /*   0 */ "EndOfInput",
     /*   1 */ "Newline",
     /*   2 */ "Whitespace",
     /*   3 */ "LineComment",
@@ -190,17 +190,13 @@ pub const TERMINAL_NAMES: &[&str; 100] = &[
     /*  61 */ "When",
     /*  62 */ "While",
     /*  63 */ "Within",
-    /*  64 */
-    "LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar",
-    /*  65 */
-    "TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick",
+    /*  64 */ "LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar",
+    /*  65 */ "TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick",
     /*  66 */ "String",
     /*  67 */ "UnsignedInteger",
     /*  68 */ "LBracket0Minus9RBracketPlusDotLBracket0Minus9RBracketPlus",
-    /*  69 */
-    "LBracket0Minus9RBracketPlusDotLParenLBracket0Minus9RBracketPlusRParenQuestLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
-    /*  70 */
-    "DotLBracket0Minus9RBracketPlusLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
+    /*  69 */ "LBracket0Minus9RBracketPlusDotLParenLBracket0Minus9RBracketPlusRParenQuestLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
+    /*  70 */ "DotLBracket0Minus9RBracketPlusLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
     /*  71 */ "Semicolon",
     /*  72 */ "Equ",
     /*  73 */ "LParen",
