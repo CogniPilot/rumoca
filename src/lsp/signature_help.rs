@@ -94,7 +94,8 @@ pub fn handle_signature_help(
                         )
                     };
 
-                    let signature = format!("{}({}) -> {}", func_class_name, params_str, return_str);
+                    let signature =
+                        format!("{}({}) -> {}", func_class_name, params_str, return_str);
 
                     let params: Vec<ParameterInformation> = inputs
                         .iter()

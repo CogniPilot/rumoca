@@ -303,7 +303,9 @@ fn collect_file_path_links(text: &str, _base_uri: &Uri, links: &mut Vec<Document
 /// Check if a string looks like a file path
 fn looks_like_file_path(s: &str) -> bool {
     // Check for common file path patterns
-    let file_extensions = [".mo", ".csv", ".mat", ".txt", ".json", ".xml", ".svg", ".png", ".jpg"];
+    let file_extensions = [
+        ".mo", ".csv", ".mat", ".txt", ".json", ".xml", ".svg", ".png", ".jpg",
+    ];
 
     // Check if it ends with a known extension
     if file_extensions.iter().any(|ext| s.ends_with(ext)) {
@@ -311,9 +313,7 @@ fn looks_like_file_path(s: &str) -> bool {
     }
 
     // Check for path separators and common patterns
-    if (s.contains('/') || s.contains('\\')) &&
-       !s.contains(' ') &&
-       s.len() < 200 {
+    if (s.contains('/') || s.contains('\\')) && !s.contains(' ') && s.len() < 200 {
         return true;
     }
 
@@ -322,9 +322,9 @@ fn looks_like_file_path(s: &str) -> bool {
 
 /// Check if a string is a valid URL
 fn is_valid_url(s: &str) -> bool {
-    (s.starts_with("http://") || s.starts_with("https://") || s.starts_with("file://")) &&
-    s.len() > 10 &&
-    !s.contains(char::is_whitespace)
+    (s.starts_with("http://") || s.starts_with("https://") || s.starts_with("file://"))
+        && s.len() > 10
+        && !s.contains(char::is_whitespace)
 }
 
 #[cfg(test)]

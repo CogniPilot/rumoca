@@ -28,18 +28,18 @@ use std::collections::HashMap;
 use lsp_types::{
     CallHierarchyPrepareParams, CodeActionContext, CodeActionParams, CodeLensParams,
     CompletionParams, CompletionTriggerKind, DocumentFormattingParams, DocumentLinkParams,
-    DocumentSymbolParams, FoldingRangeParams, FormattingOptions, GotoDefinitionParams,
-    HoverParams, InlayHintParams, Position, Range, ReferenceContext, ReferenceParams,
-    SemanticTokensParams, SignatureHelpParams, TextDocumentIdentifier,
-    TextDocumentPositionParams, Uri, WorkspaceSymbolParams,
+    DocumentSymbolParams, FoldingRangeParams, FormattingOptions, GotoDefinitionParams, HoverParams,
+    InlayHintParams, Position, Range, ReferenceContext, ReferenceParams, SemanticTokensParams,
+    SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams, Uri,
+    WorkspaceSymbolParams,
 };
 
 use rumoca::lsp::{
-    compute_diagnostics, get_semantic_token_legend, handle_code_action, handle_code_lens,
-    handle_completion, handle_document_links, handle_document_symbols, handle_folding_range,
-    handle_formatting, handle_goto_definition, handle_hover, handle_inlay_hints,
-    handle_prepare_call_hierarchy, handle_references, handle_semantic_tokens,
-    handle_signature_help, handle_workspace_symbol, WorkspaceState,
+    WorkspaceState, compute_diagnostics, get_semantic_token_legend, handle_code_action,
+    handle_code_lens, handle_completion, handle_document_links, handle_document_symbols,
+    handle_folding_range, handle_formatting, handle_goto_definition, handle_hover,
+    handle_inlay_hints, handle_prepare_call_hierarchy, handle_references, handle_semantic_tokens,
+    handle_signature_help, handle_workspace_symbol,
 };
 
 /// Helper to create a test document map
@@ -69,7 +69,10 @@ end Test;"#;
 
     let diagnostics = compute_diagnostics(&uri, text);
     // Valid model should have no errors
-    assert!(diagnostics.is_empty(), "Expected no diagnostics for valid model");
+    assert!(
+        diagnostics.is_empty(),
+        "Expected no diagnostics for valid model"
+    );
 }
 
 #[test]
@@ -78,7 +81,10 @@ fn test_diagnostics_syntax_error() {
     let text = "model Test\n  Real x\nend Test;"; // Missing semicolon
 
     let diagnostics = compute_diagnostics(&uri, text);
-    assert!(!diagnostics.is_empty(), "Expected diagnostics for syntax error");
+    assert!(
+        !diagnostics.is_empty(),
+        "Expected diagnostics for syntax error"
+    );
 }
 
 // ============================================================================
@@ -911,7 +917,10 @@ fn test_empty_document() {
     };
     let result = handle_document_symbols(&documents, params);
     // Should not crash, may return None or empty
-    assert!(result.is_none() || matches!(result, Some(lsp_types::DocumentSymbolResponse::Nested(v)) if v.is_empty()));
+    assert!(
+        result.is_none()
+            || matches!(result, Some(lsp_types::DocumentSymbolResponse::Nested(v)) if v.is_empty())
+    );
 }
 
 #[test]

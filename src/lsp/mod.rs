@@ -43,7 +43,9 @@ pub mod workspace;
 pub mod workspace_symbols;
 
 pub use builtin_functions::get_builtin_functions;
-pub use call_hierarchy::{handle_prepare_call_hierarchy, handle_incoming_calls, handle_outgoing_calls};
+pub use call_hierarchy::{
+    handle_incoming_calls, handle_outgoing_calls, handle_prepare_call_hierarchy,
+};
 pub use code_actions::handle_code_action;
 pub use code_lens::handle_code_lens;
 pub use completion::{handle_completion, handle_completion_workspace};

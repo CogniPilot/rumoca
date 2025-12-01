@@ -299,35 +299,34 @@ impl<'a> Serialize for StartValueWrapper<'a> {
     {
         match self.0 {
             Expression::Empty => serializer.serialize_none(),
-            Expression::Terminal { terminal_type, token } => {
-                match terminal_type {
-                    TerminalType::UnsignedInteger => {
-                        if let Ok(val) = token.text.parse::<i64>() {
-                            serializer.serialize_i64(val)
-                        } else {
-                            serializer.serialize_str(&token.text)
-                        }
-                    }
-                    TerminalType::UnsignedReal => {
-                        if let Ok(val) = token.text.parse::<f64>() {
-                            serializer.serialize_f64(val)
-                        } else {
-                            serializer.serialize_str(&token.text)
-                        }
-                    }
-                    TerminalType::Bool => {
-                        let val = token.text.to_lowercase() == "true";
-                        serializer.serialize_bool(val)
-                    }
-                    TerminalType::String => {
+            Expression::Terminal {
+                terminal_type,
+                token,
+            } => match terminal_type {
+                TerminalType::UnsignedInteger => {
+                    if let Ok(val) = token.text.parse::<i64>() {
+                        serializer.serialize_i64(val)
+                    } else {
                         serializer.serialize_str(&token.text)
                     }
-                    _ => serializer.serialize_str(&token.text)
                 }
-            }
+                TerminalType::UnsignedReal => {
+                    if let Ok(val) = token.text.parse::<f64>() {
+                        serializer.serialize_f64(val)
+                    } else {
+                        serializer.serialize_str(&token.text)
+                    }
+                }
+                TerminalType::Bool => {
+                    let val = token.text.to_lowercase() == "true";
+                    serializer.serialize_bool(val)
+                }
+                TerminalType::String => serializer.serialize_str(&token.text),
+                _ => serializer.serialize_str(&token.text),
+            },
             // For complex expressions, we fall back to null
             // (schema says start is optional)
-            _ => serializer.serialize_none()
+            _ => serializer.serialize_none(),
         }
     }
 }
@@ -354,10 +353,7 @@ impl<'a> Serialize for ClassifiedEquations<'a> {
         map.serialize_entry("discrete_real", &EquationList { eqs: &self.dae.fz })?;
 
         // Discrete valued equations (fm)
-        map.serialize_entry(
-            "discrete_valued",
-            &EquationList { eqs: &self.dae.fm },
-        )?;
+        map.serialize_entry("discrete_valued", &EquationList { eqs: &self.dae.fm })?;
 
         // Initial equations
         map.serialize_entry(

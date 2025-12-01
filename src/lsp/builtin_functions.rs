@@ -293,7 +293,10 @@ pub fn get_builtin_functions() -> Vec<FunctionInfo> {
             documentation: "Convert to string representation",
             parameters: vec![
                 ("x", "Value to convert"),
-                ("significantDigits", "Number of significant digits (optional)"),
+                (
+                    "significantDigits",
+                    "Number of significant digits (optional)",
+                ),
                 ("minimumLength", "Minimum string length (optional)"),
                 ("leftJustified", "Left justify in field (optional)"),
             ],
@@ -305,7 +308,10 @@ pub fn get_builtin_functions() -> Vec<FunctionInfo> {
             parameters: vec![
                 ("expr", "Expression to delay"),
                 ("delayTime", "Delay time"),
-                ("delayMax", "Maximum delay (optional, for fixed-size buffer)"),
+                (
+                    "delayMax",
+                    "Maximum delay (optional, for fixed-size buffer)",
+                ),
             ],
         },
         FunctionInfo {

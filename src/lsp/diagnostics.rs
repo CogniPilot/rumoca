@@ -14,8 +14,8 @@ use std::collections::{HashMap, HashSet};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
 
 use crate::ir::ast::{
-    ClassDefinition, ComponentReference, Equation, Expression, OpBinary, Statement,
-    TerminalType, Variability,
+    ClassDefinition, ComponentReference, Equation, Expression, OpBinary, Statement, TerminalType,
+    Variability,
 };
 use crate::ir::constants::global_builtins;
 
@@ -239,10 +239,7 @@ impl InferredType {
     }
 
     fn is_numeric(&self) -> bool {
-        matches!(
-            self.base_type(),
-            InferredType::Real | InferredType::Integer
-        )
+        matches!(self.base_type(), InferredType::Real | InferredType::Integer)
     }
 
     fn is_compatible_with(&self, other: &InferredType) -> bool {
@@ -340,9 +337,9 @@ fn infer_expression_type(
             if let Some(first) = comp.parts.first() {
                 match first.ident.text.as_str() {
                     // Trigonometric and math functions return Real
-                    "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "sinh" | "cosh"
-                    | "tanh" | "exp" | "log" | "log10" | "sqrt" | "abs" | "sign" | "floor"
-                    | "ceil" | "mod" | "rem" | "max" | "min" | "sum" | "product" => {
+                    "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "sinh"
+                    | "cosh" | "tanh" | "exp" | "log" | "log10" | "sqrt" | "abs" | "sign"
+                    | "floor" | "ceil" | "mod" | "rem" | "max" | "min" | "sum" | "product" => {
                         InferredType::Real
                     }
                     // der returns Real
@@ -373,7 +370,11 @@ fn infer_expression_type(
                 // Logical operators return Boolean
                 OpBinary::And(_) | OpBinary::Or(_) => InferredType::Boolean,
                 // Arithmetic operators: promote to Real if either side is Real
-                OpBinary::Add(_) | OpBinary::Sub(_) | OpBinary::Mul(_) | OpBinary::Div(_) | OpBinary::Exp(_) => {
+                OpBinary::Add(_)
+                | OpBinary::Sub(_)
+                | OpBinary::Mul(_)
+                | OpBinary::Div(_)
+                | OpBinary::Exp(_) => {
                     if matches!(lhs_type.base_type(), InferredType::Real)
                         || matches!(rhs_type.base_type(), InferredType::Real)
                     {
@@ -451,10 +452,8 @@ fn collect_equation_symbols(
             }
 
             // Check for Boolean = numeric mismatch specifically
-            if (matches!(lhs_type.base_type(), InferredType::Boolean)
-                && rhs_type.is_numeric())
-                || (lhs_type.is_numeric()
-                    && matches!(rhs_type.base_type(), InferredType::Boolean))
+            if (matches!(lhs_type.base_type(), InferredType::Boolean) && rhs_type.is_numeric())
+                || (lhs_type.is_numeric() && matches!(rhs_type.base_type(), InferredType::Boolean))
             {
                 if let Some(loc) = lhs.get_location() {
                     diagnostics.push(create_diagnostic(
@@ -486,7 +485,13 @@ fn collect_equation_symbols(
                         shape: vec![],
                     },
                 );
-                collect_and_check_expression(&index.range, used, diagnostics, &local_defined, globals);
+                collect_and_check_expression(
+                    &index.range,
+                    used,
+                    diagnostics,
+                    &local_defined,
+                    globals,
+                );
             }
             for sub_eq in equations {
                 collect_equation_symbols(sub_eq, used, diagnostics, &local_defined, globals);
@@ -560,7 +565,13 @@ fn collect_statement_symbols(
                         shape: vec![],
                     },
                 );
-                collect_and_check_expression(&index.range, used, diagnostics, &local_defined, globals);
+                collect_and_check_expression(
+                    &index.range,
+                    used,
+                    diagnostics,
+                    &local_defined,
+                    globals,
+                );
             }
             for sub_stmt in equations {
                 collect_statement_symbols(sub_stmt, used, diagnostics, &local_defined, globals);
@@ -744,7 +755,12 @@ fn collect_and_check_component_ref(
     }
 }
 
-fn create_diagnostic(line: u32, col: u32, message: String, severity: DiagnosticSeverity) -> Diagnostic {
+fn create_diagnostic(
+    line: u32,
+    col: u32,
+    message: String,
+    severity: DiagnosticSeverity,
+) -> Diagnostic {
     Diagnostic {
         range: Range {
             start: Position {

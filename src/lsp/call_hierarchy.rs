@@ -16,7 +16,9 @@ use lsp_types::{
     Position, Range, SymbolKind, Uri,
 };
 
-use crate::ir::ast::{ClassDefinition, ClassType, ComponentReference, Equation, Expression, Statement};
+use crate::ir::ast::{
+    ClassDefinition, ClassType, ComponentReference, Equation, Expression, Statement,
+};
 
 use super::utils::{get_word_at_position, parse_document};
 
@@ -61,11 +63,7 @@ pub fn handle_incoming_calls(
         }
     }
 
-    if calls.is_empty() {
-        None
-    } else {
-        Some(calls)
-    }
+    if calls.is_empty() { None } else { Some(calls) }
 }
 
 /// Handle outgoing calls request
@@ -95,11 +93,7 @@ pub fn handle_outgoing_calls(
         }
     }
 
-    if calls.is_empty() {
-        None
-    } else {
-        Some(calls)
-    }
+    if calls.is_empty() { None } else { Some(calls) }
 }
 
 /// Find a call hierarchy item for the given name
@@ -132,14 +126,20 @@ fn find_call_hierarchy_item(
             detail: Some(format!("{:?}", class.class_type)),
             uri: uri.clone(),
             range: Range {
-                start: Position { line, character: col },
+                start: Position {
+                    line,
+                    character: col,
+                },
                 end: Position {
                     line,
                     character: col + class.name.text.len() as u32,
                 },
             },
             selection_range: Range {
-                start: Position { line, character: col },
+                start: Position {
+                    line,
+                    character: col,
+                },
                 end: Position {
                     line,
                     character: col + class.name.text.len() as u32,
@@ -214,14 +214,20 @@ fn collect_incoming_calls(
                 detail: Some(format!("{:?}", class.class_type)),
                 uri: uri.clone(),
                 range: Range {
-                    start: Position { line, character: col },
+                    start: Position {
+                        line,
+                        character: col,
+                    },
                     end: Position {
                         line,
                         character: col + class.name.text.len() as u32,
                     },
                 },
                 selection_range: Range {
-                    start: Position { line, character: col },
+                    start: Position {
+                        line,
+                        character: col,
+                    },
                     end: Position {
                         line,
                         character: col + class.name.text.len() as u32,
@@ -293,7 +299,10 @@ fn collect_call_ranges_from_equation(eq: &Equation, target: &str, ranges: &mut V
                 collect_call_ranges_from_equation(sub_eq, target, ranges);
             }
         }
-        Equation::If { cond_blocks, else_block } => {
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
             for block in cond_blocks {
                 collect_call_ranges_from_expression(&block.cond, target, ranges);
                 for eq in &block.eqs {
@@ -411,7 +420,10 @@ fn collect_call_ranges_from_expression(expr: &Expression, target: &str, ranges: 
                 collect_call_ranges_from_expression(elem, target, ranges);
             }
         }
-        Expression::If { branches, else_branch } => {
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
             for (cond, then_expr) in branches {
                 collect_call_ranges_from_expression(cond, target, ranges);
                 collect_call_ranges_from_expression(then_expr, target, ranges);
@@ -434,7 +446,10 @@ fn collect_function_calls_from_equation(eq: &Equation, calls: &mut HashMap<Strin
                 collect_function_calls_from_equation(sub_eq, calls);
             }
         }
-        Equation::If { cond_blocks, else_block } => {
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
             for block in cond_blocks {
                 collect_function_calls_from_expression(&block.cond, calls);
                 for eq in &block.eqs {
@@ -479,7 +494,10 @@ fn collect_function_calls_from_equation(eq: &Equation, calls: &mut HashMap<Strin
 }
 
 /// Collect function calls from a statement
-fn collect_function_calls_from_statement(stmt: &Statement, calls: &mut HashMap<String, Vec<Range>>) {
+fn collect_function_calls_from_statement(
+    stmt: &Statement,
+    calls: &mut HashMap<String, Vec<Range>>,
+) {
     match stmt {
         Statement::Assignment { value, .. } => {
             collect_function_calls_from_expression(value, calls);
@@ -519,7 +537,10 @@ fn collect_function_calls_from_statement(stmt: &Statement, calls: &mut HashMap<S
 }
 
 /// Collect function calls from an expression
-fn collect_function_calls_from_expression(expr: &Expression, calls: &mut HashMap<String, Vec<Range>>) {
+fn collect_function_calls_from_expression(
+    expr: &Expression,
+    calls: &mut HashMap<String, Vec<Range>>,
+) {
     match expr {
         Expression::FunctionCall { comp, args } => {
             let name = get_function_name(comp);
@@ -552,7 +573,10 @@ fn collect_function_calls_from_expression(expr: &Expression, calls: &mut HashMap
                 collect_function_calls_from_expression(elem, calls);
             }
         }
-        Expression::If { branches, else_branch } => {
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
             for (cond, then_expr) in branches {
                 collect_function_calls_from_expression(cond, calls);
                 collect_function_calls_from_expression(then_expr, calls);

@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use lsp_types::{
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
-    SemanticTokensLegend, SemanticTokensParams, SemanticTokensResult, Uri,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
+    SemanticTokensParams, SemanticTokensResult, Uri,
 };
 
 use crate::ir::ast::{Causality, ClassDefinition, ClassType, Expression, Variability};
@@ -37,18 +37,18 @@ const MOD_READONLY: u32 = 1 << 2;
 pub fn get_semantic_token_legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
         token_types: vec![
-            SemanticTokenType::NAMESPACE,    // 0: package
-            SemanticTokenType::TYPE,         // 1: type (model, block, connector, record)
-            SemanticTokenType::CLASS,        // 2: class
-            SemanticTokenType::PARAMETER,    // 3: parameter
-            SemanticTokenType::VARIABLE,     // 4: variable
-            SemanticTokenType::PROPERTY,     // 5: constant
-            SemanticTokenType::FUNCTION,     // 6: function
-            SemanticTokenType::KEYWORD,      // 7: keyword
-            SemanticTokenType::COMMENT,      // 8: comment
-            SemanticTokenType::STRING,       // 9: string
-            SemanticTokenType::NUMBER,       // 10: number
-            SemanticTokenType::OPERATOR,     // 11: operator
+            SemanticTokenType::NAMESPACE, // 0: package
+            SemanticTokenType::TYPE,      // 1: type (model, block, connector, record)
+            SemanticTokenType::CLASS,     // 2: class
+            SemanticTokenType::PARAMETER, // 3: parameter
+            SemanticTokenType::VARIABLE,  // 4: variable
+            SemanticTokenType::PROPERTY,  // 5: constant
+            SemanticTokenType::FUNCTION,  // 6: function
+            SemanticTokenType::KEYWORD,   // 7: keyword
+            SemanticTokenType::COMMENT,   // 8: comment
+            SemanticTokenType::STRING,    // 9: string
+            SemanticTokenType::NUMBER,    // 10: number
+            SemanticTokenType::OPERATOR,  // 11: operator
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,  // 0: declaration

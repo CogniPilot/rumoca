@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Uri, WorkspaceSymbolParams};
+use lsp_types::{
+    Location, Position, Range, SymbolInformation, SymbolKind, Uri, WorkspaceSymbolParams,
+};
 
 use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition, Variability};
 
@@ -120,7 +122,12 @@ fn collect_symbols_from_class(
                 .type_name
                 .name
                 .first()
-                .map(|t| (t.location.start_line.saturating_sub(1), t.location.start_column.saturating_sub(1)))
+                .map(|t| {
+                    (
+                        t.location.start_line.saturating_sub(1),
+                        t.location.start_column.saturating_sub(1),
+                    )
+                })
                 .unwrap_or((0, 0));
 
             let location = Location {
@@ -155,7 +162,13 @@ fn collect_symbols_from_class(
     };
 
     for nested_class in class.classes.values() {
-        collect_symbols_from_class(nested_class, uri, query, symbols, Some(container_name.clone()));
+        collect_symbols_from_class(
+            nested_class,
+            uri,
+            query,
+            symbols,
+            Some(container_name.clone()),
+        );
     }
 }
 

@@ -263,7 +263,12 @@ impl WorkspaceState {
                 .type_name
                 .name
                 .first()
-                .map(|t| (t.location.start_line.saturating_sub(1), t.location.start_column.saturating_sub(1)))
+                .map(|t| {
+                    (
+                        t.location.start_line.saturating_sub(1),
+                        t.location.start_column.saturating_sub(1),
+                    )
+                })
                 .unwrap_or((0, 0));
 
             let symbol = WorkspaceSymbol {
@@ -295,9 +300,7 @@ impl WorkspaceState {
     pub fn lookup_by_simple_name(&self, name: &str) -> Vec<&WorkspaceSymbol> {
         self.symbol_index
             .iter()
-            .filter(|(qn, _)| {
-                qn.rsplit('.').next() == Some(name) || *qn == name
-            })
+            .filter(|(qn, _)| qn.rsplit('.').next() == Some(name) || *qn == name)
             .map(|(_, sym)| sym)
             .collect()
     }

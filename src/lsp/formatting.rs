@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use lsp_types::{DocumentFormattingParams, FormattingOptions, TextEdit, Uri, Range, Position};
+use lsp_types::{DocumentFormattingParams, FormattingOptions, Position, Range, TextEdit, Uri};
 
 /// Handle document formatting request
 pub fn handle_formatting(
@@ -125,9 +125,13 @@ fn format_modelica_code(text: &str, options: &FormattingOptions) -> String {
 /// Check if we should decrease indent before this line
 fn should_decrease_indent_before(line: &str) -> bool {
     let keywords = [
-        "end ", "end;",
-        "else", "elseif", "elsewhen",
-        "protected", "public",
+        "end ",
+        "end;",
+        "else",
+        "elseif",
+        "elsewhen",
+        "protected",
+        "public",
     ];
     keywords.iter().any(|k| line.starts_with(k))
 }
@@ -135,11 +139,17 @@ fn should_decrease_indent_before(line: &str) -> bool {
 /// Check if we should increase indent after this line
 fn should_increase_indent_after(line: &str) -> bool {
     // Class/model/function declarations
-    if (line.starts_with("model ") || line.starts_with("class ") ||
-        line.starts_with("function ") || line.starts_with("record ") ||
-        line.starts_with("connector ") || line.starts_with("package ") ||
-        line.starts_with("block ") || line.starts_with("type ") ||
-        line.starts_with("operator ")) && !line.contains("end ") {
+    if (line.starts_with("model ")
+        || line.starts_with("class ")
+        || line.starts_with("function ")
+        || line.starts_with("record ")
+        || line.starts_with("connector ")
+        || line.starts_with("package ")
+        || line.starts_with("block ")
+        || line.starts_with("type ")
+        || line.starts_with("operator "))
+        && !line.contains("end ")
+    {
         return true;
     }
 
@@ -150,18 +160,28 @@ fn should_increase_indent_after(line: &str) -> bool {
 
     // Section keywords
     let section_keywords = [
-        "equation", "initial equation",
-        "algorithm", "initial algorithm",
-        "protected", "public",
+        "equation",
+        "initial equation",
+        "algorithm",
+        "initial algorithm",
+        "protected",
+        "public",
     ];
-    if section_keywords.iter().any(|k| line == *k || line.starts_with(&format!("{} ", k))) {
+    if section_keywords
+        .iter()
+        .any(|k| line == *k || line.starts_with(&format!("{} ", k)))
+    {
         return true;
     }
 
     // Control structures (if not single-line)
-    if (line.starts_with("if ") || line.starts_with("for ") ||
-        line.starts_with("while ") || line.starts_with("when ")) &&
-        line.ends_with("then") || line.ends_with("loop") {
+    if (line.starts_with("if ")
+        || line.starts_with("for ")
+        || line.starts_with("while ")
+        || line.starts_with("when "))
+        && line.ends_with("then")
+        || line.ends_with("loop")
+    {
         return true;
     }
 
@@ -176,8 +196,10 @@ fn should_increase_indent_after(line: &str) -> bool {
 /// Check if we should decrease indent after this line
 fn should_decrease_indent_after(line: &str) -> bool {
     // end statements for control structures decrease indent
-    line.starts_with("end if") || line.starts_with("end for") ||
-    line.starts_with("end while") || line.starts_with("end when")
+    line.starts_with("end if")
+        || line.starts_with("end for")
+        || line.starts_with("end while")
+        || line.starts_with("end when")
 }
 
 /// Format a single line with proper indentation and spacing
@@ -292,8 +314,8 @@ fn format_operators(line: &str) -> String {
         if "+-*/^".contains(c) {
             // Check if it's a sign (unary)
             let prev_nonspace = result.trim_end().chars().last();
-            let is_unary = prev_nonspace.is_none() ||
-                prev_nonspace.is_some_and(|p| "=(<[,;:".contains(p));
+            let is_unary =
+                prev_nonspace.is_none() || prev_nonspace.is_some_and(|p| "=(<[,;:".contains(p));
 
             if is_unary {
                 // Unary operator - don't add space before
@@ -355,8 +377,13 @@ fn format_operators(line: &str) -> String {
 
 /// Ensure there's a space before the current position
 fn ensure_space_before(result: &mut String) {
-    if !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\t') &&
-       !result.ends_with('(') && !result.ends_with('[') && !result.ends_with('{') {
+    if !result.is_empty()
+        && !result.ends_with(' ')
+        && !result.ends_with('\t')
+        && !result.ends_with('(')
+        && !result.ends_with('[')
+        && !result.ends_with('{')
+    {
         result.push(' ');
     }
 }
@@ -364,8 +391,15 @@ fn ensure_space_before(result: &mut String) {
 /// Ensure there's a space after (by not consuming if next char is space)
 fn ensure_space_after(result: &mut String, next: Option<char>) {
     if let Some(c) = next {
-        if c != ' ' && c != '\t' && c != ')' && c != ']' && c != '}' &&
-           c != ',' && c != ';' && c != '\n' {
+        if c != ' '
+            && c != '\t'
+            && c != ')'
+            && c != ']'
+            && c != '}'
+            && c != ','
+            && c != ';'
+            && c != '\n'
+        {
             result.push(' ');
         }
     }

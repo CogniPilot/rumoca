@@ -10,12 +10,10 @@
 
 use std::collections::HashMap;
 
-use lsp_types::{
-    InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Position, Uri,
-};
+use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Position, Uri};
 
 use crate::ir::ast::{ClassDefinition, Equation, Expression, Statement};
-use crate::lsp::builtin_functions::{get_builtin_functions, FunctionInfo};
+use crate::lsp::builtin_functions::{FunctionInfo, get_builtin_functions};
 
 use super::utils::parse_document;
 
@@ -31,10 +29,7 @@ pub fn handle_inlay_hints(
 
     let mut hints = Vec::new();
     let builtin_vec = get_builtin_functions();
-    let builtins: HashMap<&str, &FunctionInfo> = builtin_vec
-        .iter()
-        .map(|f| (f.name, f))
-        .collect();
+    let builtins: HashMap<&str, &FunctionInfo> = builtin_vec.iter().map(|f| (f.name, f)).collect();
 
     if let Some(ast) = parse_document(text, path) {
         for class in ast.class_list.values() {
@@ -139,12 +134,18 @@ fn collect_equation_hints(
             collect_expression_hints(lhs, range, builtins, hints);
             collect_expression_hints(rhs, range, builtins, hints);
         }
-        Equation::For { indices: _, equations } => {
+        Equation::For {
+            indices: _,
+            equations,
+        } => {
             for sub_eq in equations {
                 collect_equation_hints(sub_eq, range, builtins, hints);
             }
         }
-        Equation::If { cond_blocks, else_block } => {
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
             for block in cond_blocks {
                 collect_expression_hints(&block.cond, range, builtins, hints);
                 for eq in &block.eqs {
@@ -185,7 +186,10 @@ fn collect_statement_hints(
         Statement::Assignment { comp: _, value } => {
             collect_expression_hints(value, range, builtins, hints);
         }
-        Statement::For { indices: _, equations } => {
+        Statement::For {
+            indices: _,
+            equations,
+        } => {
             for sub_stmt in equations {
                 collect_statement_hints(sub_stmt, range, builtins, hints);
             }
@@ -234,7 +238,9 @@ fn collect_expression_hints(
                         }
 
                         // Get parameter name from signature
-                        if let Some(param_name) = get_param_name_from_signature(builtin.signature, i) {
+                        if let Some(param_name) =
+                            get_param_name_from_signature(builtin.signature, i)
+                        {
                             hints.push(InlayHint {
                                 position: Position {
                                     line,
@@ -270,7 +276,10 @@ fn collect_expression_hints(
                 collect_expression_hints(elem, range, builtins, hints);
             }
         }
-        Expression::If { branches, else_branch } => {
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
             for (cond, then_expr) in branches {
                 collect_expression_hints(cond, range, builtins, hints);
                 collect_expression_hints(then_expr, range, builtins, hints);

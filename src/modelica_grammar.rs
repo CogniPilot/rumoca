@@ -1649,9 +1649,10 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for ir::ast::Component
         let mut parts = Vec::new();
 
         // Handle subscripts for the first part (e.g., x[i] in component_reference_opt0)
-        let first_subs = ast.component_reference_opt0.as_ref().map(|opt| {
-            opt.array_subscripts.subscripts.clone()
-        });
+        let first_subs = ast
+            .component_reference_opt0
+            .as_ref()
+            .map(|opt| opt.array_subscripts.subscripts.clone());
 
         parts.push(ir::ast::ComponentRefPart {
             ident: ast.ident.clone(),

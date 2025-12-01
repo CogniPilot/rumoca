@@ -37,7 +37,10 @@ fn test_bouncing_ball_dae_ir_json() {
     assert!(h_state.is_some(), "Should have 'h' state");
     let h_state = h_state.unwrap();
     assert_eq!(h_state["vartype"], "Real");
-    assert!(h_state["state_index"].is_number(), "State should have state_index");
+    assert!(
+        h_state["state_index"].is_number(),
+        "State should have state_index"
+    );
 
     // Check that h has correct start value (simple value, not expression)
     assert_eq!(h_state["start"], 1.0);
@@ -65,7 +68,10 @@ fn test_bouncing_ball_dae_ir_json() {
 
     // Validate continuous equations
     let continuous_eqs = eqs["continuous"].as_array().unwrap();
-    assert!(!continuous_eqs.is_empty(), "Should have continuous equations");
+    assert!(
+        !continuous_eqs.is_empty(),
+        "Should have continuous equations"
+    );
 
     // Count simple equations
     let simple_eqs: Vec<_> = continuous_eqs
@@ -86,7 +92,10 @@ fn test_bouncing_ball_dae_ir_json() {
     let structure = &json_value["structure"];
     assert!(structure.is_object(), "Should have structure metadata");
     assert_eq!(structure["n_states"], 2, "Should have 2 states (h, v)");
-    assert!(structure["n_equations"].as_i64().unwrap() >= 3, "Should have at least 3 equations");
+    assert!(
+        structure["n_equations"].as_i64().unwrap() >= 3,
+        "Should have at least 3 equations"
+    );
 
     println!("\n=== CHECKING DAE IR STRUCTURE ===");
     println!("States: {}", states.len());
@@ -114,7 +123,9 @@ fn test_bouncing_ball_dae_ir_json() {
         }
     }
 
-    println!("\n✓✓✓ SUCCESS: DAE IR format correctly exports with explicit variable classification! ✓✓✓");
+    println!(
+        "\n✓✓✓ SUCCESS: DAE IR format correctly exports with explicit variable classification! ✓✓✓"
+    );
 }
 
 #[test]
@@ -137,14 +148,23 @@ fn test_integrator_dae_ir_json() {
     // Should have classified variables
     let vars = &json_value["variables"];
     assert!(vars["states"].is_array(), "Should have states array");
-    assert!(vars["parameters"].is_array(), "Should have parameters array");
+    assert!(
+        vars["parameters"].is_array(),
+        "Should have parameters array"
+    );
 
     // Should have classified equations
     let eqs = &json_value["equations"];
-    assert!(eqs["continuous"].is_array(), "Should have continuous equations array");
+    assert!(
+        eqs["continuous"].is_array(),
+        "Should have continuous equations array"
+    );
 
     let continuous_eqs = eqs["continuous"].as_array().unwrap();
-    assert!(!continuous_eqs.is_empty(), "Integrator should have continuous equations");
+    assert!(
+        !continuous_eqs.is_empty(),
+        "Integrator should have continuous equations"
+    );
 
     println!("Integrator DAE IR export successful");
 }
@@ -160,7 +180,10 @@ fn test_der_in_equations() {
     let json_str = serde_json::to_string_pretty(&dae_ir).unwrap();
 
     // Verify that der() calls appear in the JSON (as function calls in equations)
-    assert!(json_str.contains("\"op\": \"der\""), "Equations should contain der() function calls");
+    assert!(
+        json_str.contains("\"op\": \"der\""),
+        "Equations should contain der() function calls"
+    );
 
     println!("✓ der() function calls appear in equations");
 }

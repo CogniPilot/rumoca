@@ -30,14 +30,14 @@ use lsp_types::{
     CallHierarchyServerCapability, CodeActionProviderCapability, CodeLensOptions,
     CompletionOptions, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentLinkOptions, HoverProviderCapability, InitializeParams,
-    InlayHintOptions, InlayHintServerCapabilities, RenameOptions, ServerCapabilities,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
+    InlayHintOptions, InlayHintServerCapabilities, RenameOptions, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
     SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
     notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Initialized},
     request::{
         CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
         CodeActionRequest, CodeLensRequest, Completion, DocumentLinkRequest, DocumentSymbolRequest,
-        Formatting, FoldingRangeRequest, GotoDefinition, GotoTypeDefinition, HoverRequest,
+        FoldingRangeRequest, Formatting, GotoDefinition, GotoTypeDefinition, HoverRequest,
         InlayHintRequest, PrepareRenameRequest, References, Rename, SemanticTokensFullRequest,
         SignatureHelpRequest, WorkspaceSymbolRequest,
     },
@@ -46,9 +46,10 @@ use rumoca::lsp::{
     WorkspaceState, compute_diagnostics, get_semantic_token_legend, handle_code_action,
     handle_code_lens, handle_completion_workspace, handle_document_links, handle_document_symbols,
     handle_folding_range, handle_formatting, handle_goto_definition_workspace, handle_hover,
-    handle_incoming_calls, handle_inlay_hints, handle_outgoing_calls, handle_prepare_call_hierarchy,
-    handle_prepare_rename, handle_references, handle_rename_workspace, handle_semantic_tokens,
-    handle_signature_help, handle_type_definition, handle_workspace_symbol,
+    handle_incoming_calls, handle_inlay_hints, handle_outgoing_calls,
+    handle_prepare_call_hierarchy, handle_prepare_rename, handle_references,
+    handle_rename_workspace, handle_semantic_tokens, handle_signature_help, handle_type_definition,
+    handle_workspace_symbol,
 };
 use std::error::Error;
 use std::path::PathBuf;
@@ -90,12 +91,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         })),
         folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-        inlay_hint_provider: Some(lsp_types::OneOf::Right(InlayHintServerCapabilities::Options(
-            InlayHintOptions {
+        inlay_hint_provider: Some(lsp_types::OneOf::Right(
+            InlayHintServerCapabilities::Options(InlayHintOptions {
                 work_done_progress_options: Default::default(),
                 resolve_provider: Some(false),
-            },
-        ))),
+            }),
+        )),
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(false),
@@ -179,8 +180,10 @@ fn main_loop(
 
                 let req = match cast_request::<GotoTypeDefinition>(req) {
                     Ok((id, params)) => {
-                        let result =
-                            handle_type_definition(workspace.documents(), params.text_document_position_params);
+                        let result = handle_type_definition(
+                            workspace.documents(),
+                            params.text_document_position_params,
+                        );
                         let resp = Response::new_ok(id, result);
                         connection.sender.send(Message::Response(resp))?;
                         continue;

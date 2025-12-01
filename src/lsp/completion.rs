@@ -58,7 +58,11 @@ pub fn handle_completion_workspace(
         if !prefix.is_empty() {
             // Try local AST first
             if let Some(ast) = parse_document(text, path) {
-                items.extend(get_member_completions(&ast, &format!("{}.", prefix), position));
+                items.extend(get_member_completions(
+                    &ast,
+                    &format!("{}.", prefix),
+                    position,
+                ));
             }
 
             // Also get workspace completions for qualified names
@@ -143,7 +147,11 @@ pub fn handle_completion(
 
         if !prefix.is_empty() {
             if let Some(ast) = parse_document(text, path) {
-                items.extend(get_member_completions(&ast, &format!("{}.", prefix), position));
+                items.extend(get_member_completions(
+                    &ast,
+                    &format!("{}.", prefix),
+                    position,
+                ));
             }
         }
 
@@ -422,7 +430,10 @@ fn is_in_import_context(text_before: &str) -> bool {
 }
 
 /// Get completions from workspace symbols
-fn get_workspace_completions(workspace: &WorkspaceState, is_import_context: bool) -> Vec<CompletionItem> {
+fn get_workspace_completions(
+    workspace: &WorkspaceState,
+    is_import_context: bool,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -480,7 +491,10 @@ fn get_workspace_completions(workspace: &WorkspaceState, is_import_context: bool
 }
 
 /// Get member completions from workspace symbols for dot completion
-fn get_workspace_member_completions(workspace: &WorkspaceState, prefix: &str) -> Vec<CompletionItem> {
+fn get_workspace_member_completions(
+    workspace: &WorkspaceState,
+    prefix: &str,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let prefix_with_dot = format!("{}.", prefix);
 
@@ -525,39 +539,95 @@ fn get_keyword_completions() -> Vec<CompletionItem> {
     let keywords = vec![
         ("model", "model declaration", CompletionItemKind::KEYWORD),
         ("class", "class declaration", CompletionItemKind::KEYWORD),
-        ("connector", "connector declaration", CompletionItemKind::KEYWORD),
-        ("package", "package declaration", CompletionItemKind::KEYWORD),
-        ("function", "function declaration", CompletionItemKind::KEYWORD),
+        (
+            "connector",
+            "connector declaration",
+            CompletionItemKind::KEYWORD,
+        ),
+        (
+            "package",
+            "package declaration",
+            CompletionItemKind::KEYWORD,
+        ),
+        (
+            "function",
+            "function declaration",
+            CompletionItemKind::KEYWORD,
+        ),
         ("record", "record declaration", CompletionItemKind::KEYWORD),
         ("block", "block declaration", CompletionItemKind::KEYWORD),
         ("type", "type declaration", CompletionItemKind::KEYWORD),
-        ("parameter", "parameter variable", CompletionItemKind::KEYWORD),
+        (
+            "parameter",
+            "parameter variable",
+            CompletionItemKind::KEYWORD,
+        ),
         ("constant", "constant variable", CompletionItemKind::KEYWORD),
         ("input", "input connector", CompletionItemKind::KEYWORD),
         ("output", "output connector", CompletionItemKind::KEYWORD),
         ("flow", "flow variable", CompletionItemKind::KEYWORD),
         ("stream", "stream variable", CompletionItemKind::KEYWORD),
         ("discrete", "discrete variable", CompletionItemKind::KEYWORD),
-        ("Real", "Real number type", CompletionItemKind::TYPE_PARAMETER),
-        ("Integer", "Integer type", CompletionItemKind::TYPE_PARAMETER),
-        ("Boolean", "Boolean type", CompletionItemKind::TYPE_PARAMETER),
+        (
+            "Real",
+            "Real number type",
+            CompletionItemKind::TYPE_PARAMETER,
+        ),
+        (
+            "Integer",
+            "Integer type",
+            CompletionItemKind::TYPE_PARAMETER,
+        ),
+        (
+            "Boolean",
+            "Boolean type",
+            CompletionItemKind::TYPE_PARAMETER,
+        ),
         ("String", "String type", CompletionItemKind::TYPE_PARAMETER),
         ("extends", "inheritance", CompletionItemKind::KEYWORD),
         ("import", "import statement", CompletionItemKind::KEYWORD),
         ("within", "within statement", CompletionItemKind::KEYWORD),
         ("equation", "equation section", CompletionItemKind::KEYWORD),
-        ("algorithm", "algorithm section", CompletionItemKind::KEYWORD),
-        ("initial equation", "initial equation section", CompletionItemKind::KEYWORD),
-        ("initial algorithm", "initial algorithm section", CompletionItemKind::KEYWORD),
-        ("protected", "protected section", CompletionItemKind::KEYWORD),
+        (
+            "algorithm",
+            "algorithm section",
+            CompletionItemKind::KEYWORD,
+        ),
+        (
+            "initial equation",
+            "initial equation section",
+            CompletionItemKind::KEYWORD,
+        ),
+        (
+            "initial algorithm",
+            "initial algorithm section",
+            CompletionItemKind::KEYWORD,
+        ),
+        (
+            "protected",
+            "protected section",
+            CompletionItemKind::KEYWORD,
+        ),
         ("public", "public section", CompletionItemKind::KEYWORD),
         ("final", "final modifier", CompletionItemKind::KEYWORD),
         ("partial", "partial class", CompletionItemKind::KEYWORD),
-        ("replaceable", "replaceable element", CompletionItemKind::KEYWORD),
-        ("redeclare", "redeclare element", CompletionItemKind::KEYWORD),
+        (
+            "replaceable",
+            "replaceable element",
+            CompletionItemKind::KEYWORD,
+        ),
+        (
+            "redeclare",
+            "redeclare element",
+            CompletionItemKind::KEYWORD,
+        ),
         ("inner", "inner element", CompletionItemKind::KEYWORD),
         ("outer", "outer element", CompletionItemKind::KEYWORD),
-        ("encapsulated", "encapsulated class", CompletionItemKind::KEYWORD),
+        (
+            "encapsulated",
+            "encapsulated class",
+            CompletionItemKind::KEYWORD,
+        ),
         ("annotation", "annotation", CompletionItemKind::KEYWORD),
         ("if", "if statement", CompletionItemKind::KEYWORD),
         ("then", "then clause", CompletionItemKind::KEYWORD),

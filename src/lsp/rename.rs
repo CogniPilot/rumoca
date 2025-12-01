@@ -491,7 +491,11 @@ fn find_end_class_name(text: &str, old_name: &str, new_name: &str, edits: &mut V
             let valid_start = after_end <= line.len();
             let valid_end = after_name <= line.len();
             let char_after_valid = after_name >= line.len()
-                || !line.chars().nth(after_name).unwrap_or(' ').is_alphanumeric();
+                || !line
+                    .chars()
+                    .nth(after_name)
+                    .unwrap_or(' ')
+                    .is_alphanumeric();
 
             if valid_start && valid_end && char_after_valid {
                 edits.push(TextEdit {

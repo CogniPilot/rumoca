@@ -46,7 +46,10 @@ fn collect_class_lenses(
     let class_line = class.name.location.start_line.saturating_sub(1);
 
     // Add component count lens for models/blocks
-    if matches!(class.class_type, ClassType::Model | ClassType::Block | ClassType::Class) {
+    if matches!(
+        class.class_type,
+        ClassType::Model | ClassType::Block | ClassType::Class
+    ) {
         let comp_count = class.components.len();
         let eq_count = class.equations.len() + class.initial_equations.len();
 
@@ -80,11 +83,7 @@ fn collect_class_lenses(
 
     // Add extends lens if class extends another
     if !class.extends.is_empty() {
-        let extends_names: Vec<String> = class
-            .extends
-            .iter()
-            .map(|e| e.comp.to_string())
-            .collect();
+        let extends_names: Vec<String> = class.extends.iter().map(|e| e.comp.to_string()).collect();
 
         lenses.push(CodeLens {
             range: Range {
@@ -191,14 +190,15 @@ fn count_references(name: &str, text: &str, ast: &StoredDefinition) -> usize {
     // (This catches references in equations/expressions that may not be in the AST components)
     for line in text.lines() {
         // Skip the definition line itself
-        if line.contains(&format!("model {}", name)) ||
-           line.contains(&format!("class {}", name)) ||
-           line.contains(&format!("function {}", name)) ||
-           line.contains(&format!("record {}", name)) ||
-           line.contains(&format!("connector {}", name)) ||
-           line.contains(&format!("block {}", name)) ||
-           line.contains(&format!("type {}", name)) ||
-           line.contains(&format!("package {}", name)) {
+        if line.contains(&format!("model {}", name))
+            || line.contains(&format!("class {}", name))
+            || line.contains(&format!("function {}", name))
+            || line.contains(&format!("record {}", name))
+            || line.contains(&format!("connector {}", name))
+            || line.contains(&format!("block {}", name))
+            || line.contains(&format!("type {}", name))
+            || line.contains(&format!("package {}", name))
+        {
             continue;
         }
 
@@ -206,10 +206,18 @@ fn count_references(name: &str, text: &str, ast: &StoredDefinition) -> usize {
         let mut search_pos = 0;
         while let Some(pos) = line[search_pos..].find(name) {
             let abs_pos = search_pos + pos;
-            let before_ok = abs_pos == 0 ||
-                !line.chars().nth(abs_pos - 1).unwrap_or(' ').is_alphanumeric();
-            let after_ok = abs_pos + name.len() >= line.len() ||
-                !line.chars().nth(abs_pos + name.len()).unwrap_or(' ').is_alphanumeric();
+            let before_ok = abs_pos == 0
+                || !line
+                    .chars()
+                    .nth(abs_pos - 1)
+                    .unwrap_or(' ')
+                    .is_alphanumeric();
+            let after_ok = abs_pos + name.len() >= line.len()
+                || !line
+                    .chars()
+                    .nth(abs_pos + name.len())
+                    .unwrap_or(' ')
+                    .is_alphanumeric();
 
             if before_ok && after_ok {
                 count += 1;
