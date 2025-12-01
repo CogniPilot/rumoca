@@ -70,6 +70,7 @@ pub struct Dae {
     pub m: IndexMap<String, Component>,     // variables of discrete-value types, only change at t_e
     pub c: IndexMap<String, Component>,     // conditions of all if-expressions/ when-clauses
     pub fx: Vec<Equation>,                  // continuous time equations
+    pub fx_init: Vec<Equation>,             // initial equations (only hold at t=0)
     pub fz: Vec<Equation>,                  // event update equations
     pub fm: Vec<Equation>,                  // discrete update equations
     pub fr: IndexMap<String, Statement>,    // reset expressions, condition -> assignment statements
@@ -77,14 +78,15 @@ pub struct Dae {
 }
 
 impl Dae {
-    /// Export to Base Modelica JSON format using native serde_json serialization.
+    /// Export to DAE IR JSON format using native serde_json serialization.
     ///
-    /// This is the recommended way to export Base Modelica IR, providing fast,
-    /// type-safe serialization that conforms to the MCP-0031 specification.
+    /// This is the recommended way to export DAE IR, providing fast,
+    /// type-safe serialization with explicit variable classification matching
+    /// the Modelica specification's DAE formalism (Appendix B).
     ///
     /// # Returns
     ///
-    /// A pretty-printed JSON string conforming to the Base Modelica IR schema.
+    /// A pretty-printed JSON string conforming to the DAE IR schema (dae-0.1.0).
     ///
     /// # Errors
     ///
@@ -96,15 +98,15 @@ impl Dae {
     /// # use rumoca::Compiler;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let result = Compiler::new().compile_file("model.mo")?;
-    /// let json = result.dae.to_base_modelica_json()?;
+    /// let json = result.dae.to_dae_ir_json()?;
     /// println!("{}", json);
     /// # Ok(())
     /// # }
     /// ```
-    pub fn to_base_modelica_json(&self) -> Result<String, serde_json::Error> {
-        use crate::dae::base_modelica::BaseModelicaIR;
+    pub fn to_dae_ir_json(&self) -> Result<String, serde_json::Error> {
+        use crate::dae::dae_ir::DaeIR;
 
-        let ir = BaseModelicaIR::from_dae(self);
+        let ir = DaeIR::from_dae(self);
         serde_json::to_string_pretty(&ir)
     }
 }

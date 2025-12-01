@@ -1,4 +1,4 @@
 pub mod ast;
-pub mod base_modelica;
+pub mod dae_ir;
 pub mod error;
 pub mod jinja;

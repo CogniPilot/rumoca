@@ -75,7 +75,7 @@ fn main() -> Result<()> {
     // Export using native JSON or template
     if args.json {
         // Native JSON export (recommended)
-        let json = result.dae.to_base_modelica_json()?;
+        let json = result.dae.to_dae_ir_json()?;
         println!("{}", json);
     } else if let Some(template_file) = args.template_file {
         // Template-based export (advanced)

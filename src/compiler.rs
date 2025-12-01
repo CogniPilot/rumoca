@@ -942,14 +942,14 @@ impl CompilationResult {
     /// let result = Compiler::new()
     ///     .model("MyModel")
     ///     .compile_file("model.mo")?;
-    /// let json = result.to_base_modelica_json()?;
+    /// let json = result.to_dae_ir_json()?;
     /// println!("{}", json);
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    pub fn to_base_modelica_json(&self) -> Result<String> {
+    pub fn to_dae_ir_json(&self) -> Result<String> {
         self.dae
-            .to_base_modelica_json()
-            .context("Failed to serialize DAE to Base Modelica JSON")
+            .to_dae_ir_json()
+            .context("Failed to serialize DAE to DAE IR JSON")
     }
 }
 

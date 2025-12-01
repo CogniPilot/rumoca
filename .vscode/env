@@ -1,7 +1,0 @@
-# Environment variables loaded by VS Code
-
-# Overlay ROS and local workspace paths
-PYTHONPATH=${workspaceFolder}/.vscode/ros_path:$PYTHONPATH
-
-# Optional: ROS environment (helps notebooks)
-ROS_DISTRO=jazzy

@@ -301,15 +301,6 @@ Python → subprocess(rumoca --json) → Base Modelica JSON → Python dict
                                      Generated Code
 ```
 
-### Future: PyO3 Bindings
-
-A future version may use [PyO3](https://pyo3.rs/) for native Rust-Python bindings:
-
-- Direct access to Rumoca's DAE structures
-- No subprocess overhead
-- Zero-copy data transfer
-- Tighter integration possibilities
-
 ## Troubleshooting
 
 ### "Rumoca binary not found"

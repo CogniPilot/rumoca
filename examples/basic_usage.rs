@@ -53,8 +53,8 @@ end Integrator;
         println!("  {}: {:?}", i, eq);
     }
 
-    println!("\n=== Export to Base Modelica JSON ===");
-    match result.to_base_modelica_json() {
+    println!("\n=== Export to DAE IR JSON ===");
+    match result.to_dae_ir_json() {
         Ok(json) => println!("JSON export successful ({} bytes)", json.len()),
         Err(e) => println!("JSON export failed: {}", e),
     }

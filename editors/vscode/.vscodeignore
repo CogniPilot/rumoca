@@ -6,3 +6,4 @@ tsconfig.json
 **/*.ts
 **/*.map
 node_modules/**
+!bin/**

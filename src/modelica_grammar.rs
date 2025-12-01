@@ -850,10 +850,44 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for ir::ast::Equation {
                 })
             }
             modelica_grammar_trait::SomeEquationOption::ForEquation(eq) => {
-                anyhow::bail!(
-                    "'for' equation is not yet supported{}",
-                    loc_info(&eq.for_equation.for_indices.for_index.ident)
-                )
+                // Convert for indices
+                let mut indices = Vec::new();
+
+                // First index
+                let first_idx = &eq.for_equation.for_indices.for_index;
+                let range = first_idx
+                    .for_index_opt
+                    .as_ref()
+                    .map(|opt| opt.expression.clone())
+                    .unwrap_or_default();
+                indices.push(ir::ast::ForIndex {
+                    ident: first_idx.ident.clone(),
+                    range,
+                });
+
+                // Additional indices
+                for idx_item in &eq.for_equation.for_indices.for_indices_list {
+                    let idx = &idx_item.for_index;
+                    let range = idx
+                        .for_index_opt
+                        .as_ref()
+                        .map(|opt| opt.expression.clone())
+                        .unwrap_or_default();
+                    indices.push(ir::ast::ForIndex {
+                        ident: idx.ident.clone(),
+                        range,
+                    });
+                }
+
+                // Convert equations in the loop body
+                let equations: Vec<ir::ast::Equation> = eq
+                    .for_equation
+                    .for_equation_list
+                    .iter()
+                    .map(|eq_item| eq_item.some_equation.clone())
+                    .collect();
+
+                Ok(ir::ast::Equation::For { indices, equations })
             }
             modelica_grammar_trait::SomeEquationOption::IfEquation(eq) => {
                 let mut blocks = vec![eq.if_equation.if0.clone()];
@@ -1613,9 +1647,15 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for ir::ast::Component
         ast: &modelica_grammar_trait::ComponentReference,
     ) -> std::result::Result<Self, Self::Error> {
         let mut parts = Vec::new();
+
+        // Handle subscripts for the first part (e.g., x[i] in component_reference_opt0)
+        let first_subs = ast.component_reference_opt0.as_ref().map(|opt| {
+            opt.array_subscripts.subscripts.clone()
+        });
+
         parts.push(ir::ast::ComponentRefPart {
             ident: ast.ident.clone(),
-            subs: None,
+            subs: first_subs,
         });
         for comp_ref in &ast.component_reference_list {
             parts.push(comp_ref.component_ref_part.clone());

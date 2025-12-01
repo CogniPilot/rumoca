@@ -19,7 +19,7 @@ fn test_noevent_basic() {
     assert!(result.dae.x.contains_key("x"), "Should have state x");
 
     // Check that noEvent is in the JSON output
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("noEvent"), "JSON should contain noEvent");
 }
 
@@ -42,7 +42,7 @@ fn test_smooth_basic() {
     assert!(result.dae.x.contains_key("x"), "Should have state x");
 
     // Check that smooth is in the JSON output
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("smooth"), "JSON should contain smooth");
 }
 
@@ -66,7 +66,7 @@ fn test_smooth_with_order() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("smooth"), "JSON should contain smooth");
 }
 
@@ -121,7 +121,7 @@ fn test_noevent_in_when() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(
         json.contains("noEvent"),
         "JSON should contain noEvent in when condition"
@@ -145,7 +145,7 @@ fn test_combined_noevent_smooth() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("noEvent"), "JSON should contain noEvent");
     assert!(json.contains("smooth"), "JSON should contain smooth");
 }

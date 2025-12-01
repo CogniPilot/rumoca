@@ -121,6 +121,11 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
             Equation::If { .. } => {
                 dae.fx.push(eq.clone());
             }
+            Equation::For { .. } => {
+                // For equations are passed through directly - they will be
+                // either expanded by the backend or serialized as-is
+                dae.fx.push(eq.clone());
+            }
             Equation::Connect { .. } => {
                 return Err(IrError::UnexpandedConnectionEquation.into());
             }
@@ -198,5 +203,20 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
             _ => {}
         }
     }
+
+    // Handle initial equations
+    for eq in &fclass.initial_equations {
+        match eq {
+            Equation::Simple { .. } | Equation::For { .. } | Equation::If { .. } => {
+                dae.fx_init.push(eq.clone());
+            }
+            _ => {
+                // Other equation types in initial section are less common
+                // but we'll pass them through
+                dae.fx_init.push(eq.clone());
+            }
+        }
+    }
+
     Ok(dae)
 }

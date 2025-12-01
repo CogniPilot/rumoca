@@ -8,6 +8,8 @@ pub mod compiler;
 pub mod dae;
 pub mod errors;
 pub mod ir;
+#[cfg(feature = "lsp")]
+pub mod lsp;
 pub mod modelica_grammar;
 pub mod modelica_grammar_trait;
 pub mod modelica_parser;

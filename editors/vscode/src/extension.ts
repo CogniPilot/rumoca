@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import {
     LanguageClient,
@@ -9,6 +10,28 @@ import {
 
 let client: LanguageClient | undefined;
 
+function getBundledServerPath(extensionPath: string): string | undefined {
+    const platform = process.platform;
+    const arch = process.arch;
+
+    let binaryName: string;
+    if (platform === 'win32') {
+        binaryName = 'rumoca-lsp-win32-x64.exe';
+    } else if (platform === 'darwin') {
+        binaryName = arch === 'arm64' ? 'rumoca-lsp-darwin-arm64.bin' : 'rumoca-lsp-darwin-x64.bin';
+    } else if (platform === 'linux') {
+        binaryName = arch === 'arm64' ? 'rumoca-lsp-linux-arm64.bin' : 'rumoca-lsp-linux-x64.bin';
+    } else {
+        return undefined;
+    }
+
+    const bundledPath = path.join(extensionPath, 'bin', binaryName);
+    if (fs.existsSync(bundledPath)) {
+        return bundledPath;
+    }
+    return undefined;
+}
+
 export async function activate(context: vscode.ExtensionContext) {
     const config = vscode.workspace.getConfiguration('rumoca');
 
@@ -16,20 +39,21 @@ export async function activate(context: vscode.ExtensionContext) {
     let serverPath = config.get<string>('serverPath');
 
     if (!serverPath) {
-        // Try to find rumoca-lsp in common locations
-        const possiblePaths = [
-            'rumoca-lsp',  // In PATH
-            path.join(context.extensionPath, '..', '..', '..', 'target', 'release', 'rumoca-lsp'),
-            path.join(context.extensionPath, '..', '..', '..', 'target', 'debug', 'rumoca-lsp'),
-        ];
+        // First, try bundled binary
+        const bundledPath = getBundledServerPath(context.extensionPath);
+        if (bundledPath) {
+            serverPath = bundledPath;
+        } else {
+            // Fall back to searching in PATH and common locations
+            const possiblePaths = [
+                'rumoca-lsp',  // In PATH
+                path.join(context.extensionPath, '..', '..', '..', 'target', 'release', 'rumoca-lsp'),
+                path.join(context.extensionPath, '..', '..', '..', 'target', 'debug', 'rumoca-lsp'),
+            ];
 
-        for (const p of possiblePaths) {
-            try {
-                // Just use the first one that might exist
+            for (const p of possiblePaths) {
                 serverPath = p;
                 break;
-            } catch {
-                continue;
             }
         }
     }

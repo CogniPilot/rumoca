@@ -1,0 +1,171 @@
+name: VS Code Extension
+
+on:
+  push:
+    branches: [main, develop]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "nightly-2025-04-13"
+
+jobs:
+  build-lsp-binaries:
+    name: Build LSP Server
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: rumoca-lsp
+            artifact_name: rumoca-lsp-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: rumoca-lsp
+            artifact_name: rumoca-lsp-linux-arm64
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: rumoca-lsp
+            artifact_name: rumoca-lsp-darwin-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: rumoca-lsp
+            artifact_name: rumoca-lsp-darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: rumoca-lsp.exe
+            artifact_name: rumoca-lsp-win32-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure cross-compilation (Linux ARM64)
+        if: matrix.cross
+        run: |
+          mkdir -p .cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build LSP server
+        run: cargo build --release --features lsp --target ${{ matrix.target }}
+
+      - name: Strip binary (Linux)
+        if: runner.os == 'Linux' && !matrix.cross
+        run: strip target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+
+      - name: Strip binary (Linux ARM64 cross)
+        if: matrix.cross
+        run: aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+
+      - name: Strip binary (macOS)
+        if: runner.os == 'macOS'
+        run: strip target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+
+  build-extension:
+    name: Build VS Code Extension
+    needs: build-lsp-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download all LSP binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: editors/vscode/bin
+
+      - name: Organize binaries
+        run: |
+          cd editors/vscode
+          mkdir -p bin
+          # Move binaries from artifact directories to bin/
+          mv bin/rumoca-lsp-linux-x64/rumoca-lsp bin/rumoca-lsp-linux-x64.bin && rm -rf bin/rumoca-lsp-linux-x64
+          mv bin/rumoca-lsp-linux-arm64/rumoca-lsp bin/rumoca-lsp-linux-arm64.bin && rm -rf bin/rumoca-lsp-linux-arm64
+          mv bin/rumoca-lsp-darwin-x64/rumoca-lsp bin/rumoca-lsp-darwin-x64.bin && rm -rf bin/rumoca-lsp-darwin-x64
+          mv bin/rumoca-lsp-darwin-arm64/rumoca-lsp bin/rumoca-lsp-darwin-arm64.bin && rm -rf bin/rumoca-lsp-darwin-arm64
+          mv bin/rumoca-lsp-win32-x64/rumoca-lsp.exe bin/rumoca-lsp-win32-x64.exe && rm -rf bin/rumoca-lsp-win32-x64
+          # Make binaries executable
+          chmod +x bin/rumoca-lsp-*.bin || true
+          ls -la bin/
+
+      - name: Install dependencies
+        run: |
+          cd editors/vscode
+          npm ci
+
+      - name: Compile extension
+        run: |
+          cd editors/vscode
+          npm run compile
+
+      - name: Package extension
+        run: |
+          cd editors/vscode
+          npx @vscode/vsce package --no-dependencies
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumoca-modelica-vsix
+          path: editors/vscode/*.vsix
+
+  publish-extension:
+    name: Publish to VS Code Marketplace
+    needs: build-extension
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: rumoca-modelica-vsix
+          path: .
+
+      - name: Publish to VS Code Marketplace
+        run: |
+          npx @vscode/vsce publish --packagePath *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

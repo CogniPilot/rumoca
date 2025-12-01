@@ -19,7 +19,7 @@ fn test_sample_basic() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("sample"), "JSON should contain sample");
 }
 
@@ -44,7 +44,7 @@ fn test_edge_basic() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("edge"), "JSON should contain edge");
 }
 
@@ -69,7 +69,7 @@ fn test_change_basic() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("change"), "JSON should contain change");
 }
 
@@ -91,7 +91,7 @@ fn test_initial_basic() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("initial"), "JSON should contain initial");
 }
 
@@ -113,7 +113,7 @@ fn test_terminal_basic() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("terminal"), "JSON should contain terminal");
 }
 
@@ -139,7 +139,7 @@ fn test_combined_event_functions() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("sample"), "JSON should contain sample");
     assert!(json.contains("edge"), "JSON should contain edge");
 }
@@ -164,6 +164,6 @@ fn test_initial_in_when() {
     assert!(result.is_ok(), "Failed to compile: {:?}", result.err());
 
     let result = result.unwrap();
-    let json = result.to_base_modelica_json().unwrap();
+    let json = result.to_dae_ir_json().unwrap();
     assert!(json.contains("initial"), "JSON should contain initial");
 }
