@@ -1,4 +1,4 @@
-within ;
+within;
 package NestedTestPackage
 
   package MathUtils
@@ -7,7 +7,7 @@ package NestedTestPackage
       input Real a, b, c, x;
       output Real y;
     algorithm
-      y := a*x*x + b*x + c;
+      y := a * x * x + b * x + c;
     end polyEval;
 
     function scale
@@ -20,7 +20,6 @@ package NestedTestPackage
 
   end MathUtils;
 
-
   package Controllers
 
     function pid
@@ -30,7 +29,7 @@ package NestedTestPackage
       input Real ei;
       output Real u;
     algorithm
-      u := kP*e + kD*de + kI*ei;
+      u := kP * e + kD * de + kI * ei;
     end pid;
 
     model SimpleController
@@ -59,7 +58,6 @@ package NestedTestPackage
 
   end Controllers;
 
-
   package Tests
 
     model CrossPackageTest
@@ -74,13 +72,11 @@ package NestedTestPackage
 
     end CrossPackageTest;
 
-
     model ControllerTest
       Controllers.SimpleController ctrl;
     end ControllerTest;
 
   end Tests;
-
 
   model RootTest
     Tests.CrossPackageTest t1;

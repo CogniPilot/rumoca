@@ -9,6 +9,7 @@
 pub mod compiler;
 pub mod dae;
 pub mod errors;
+pub mod formatter;
 pub mod ir;
 #[cfg(feature = "lsp")]
 pub mod lsp;
@@ -18,3 +19,4 @@ pub mod modelica_parser;
 
 // Re-export the main API types for convenience
 pub use compiler::{CompilationResult, Compiler};
+pub use formatter::{FormatOptions, format_modelica};

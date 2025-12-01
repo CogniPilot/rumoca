@@ -2,7 +2,7 @@
 name = "rumoca"
 version = "0.7.2"
 edition = "2024"
-description = "Modelica translator written in RUST"
+description = "Modelica compiler written in RUST"
 license = "Apache-2.0"
 repository = "https://github.com/jgoppert/rumoca"
 homepage = "https://github.com/jgoppert/rumoca"
@@ -10,6 +10,7 @@ documentation = "https://docs.rs/rumoca"
 keywords = ["modelica", "compiler", "dae", "simulation"]
 categories = ["compilers", "science", "simulation"]
 readme = "README.md"
+default-run = "rumoca"
 
 [dependencies]
 anyhow = "1.0"
@@ -41,6 +42,10 @@ lsp = ["lsp-server", "lsp-types"]
 name = "rumoca-lsp"
 path = "src/bin/rumoca_lsp.rs"
 required-features = ["lsp"]
+
+[[bin]]
+name = "rumoca-fmt"
+path = "src/bin/rumoca_fmt.rs"
 
 [build-dependencies]
 parol = "3.0.1"

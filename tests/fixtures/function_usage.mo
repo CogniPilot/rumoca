@@ -5,7 +5,7 @@ function polyEval
   input Real x;
   output Real y;
 algorithm
-  y := a*x*x + b*x + c;
+  y := a * x * x + b * x + c;
 end polyEval;
 
 model FunctionTest

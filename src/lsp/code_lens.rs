@@ -3,7 +3,7 @@
 //! Provides inline actionable information:
 //! - Reference counts for classes, functions, and variables
 //! - "Extends" information for models
-//! - Component counts for models
+//! - Component counts and balance status for models
 
 // Allow mutable key type warning - Uri has interior mutability but we use it correctly
 #![allow(clippy::mutable_key_type)]
@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use lsp_types::{CodeLens, CodeLensParams, Command, Position, Range, Uri};
 
 use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition};
+use crate::ir::balance_check::check_class_balance;
 
 use super::utils::parse_document;
 
@@ -45,15 +46,29 @@ fn collect_class_lenses(
 ) {
     let class_line = class.name.location.start_line.saturating_sub(1);
 
-    // Add component count lens for models/blocks
+    // Add component count and balance status lens for models/blocks
     if matches!(
         class.class_type,
         ClassType::Model | ClassType::Block | ClassType::Class
     ) {
-        let comp_count = class.components.len();
-        let eq_count = class.equations.len() + class.initial_equations.len();
+        let balance = check_class_balance(class);
 
-        if comp_count > 0 || eq_count > 0 {
+        if balance.num_unknowns > 0 || balance.num_equations > 0 {
+            // Build status string with balance indicator
+            let status_icon = if balance.is_balanced {
+                "✓"
+            } else if balance.difference() > 0 {
+                "⚠ over"
+            } else {
+                "⚠ under"
+            };
+
+            // Format: "states, unknowns, equations, [status]"
+            let title = format!(
+                "{} states, {} unknowns, {} equations [{}]",
+                balance.num_states, balance.num_unknowns, balance.num_equations, status_icon
+            );
+
             lenses.push(CodeLens {
                 range: Range {
                     start: Position {
@@ -66,13 +81,7 @@ fn collect_class_lenses(
                     },
                 },
                 command: Some(Command {
-                    title: format!(
-                        "{} component{}, {} equation{}",
-                        comp_count,
-                        if comp_count == 1 { "" } else { "s" },
-                        eq_count,
-                        if eq_count == 1 { "" } else { "s" }
-                    ),
+                    title,
                     command: String::new(), // No action, just informational
                     arguments: None,
                 }),
@@ -177,56 +186,14 @@ fn collect_class_lenses(
     }
 }
 
-/// Count references to a name in the document
-fn count_references(name: &str, text: &str, ast: &StoredDefinition) -> usize {
+/// Count references to a name in the document (usages only, not declarations)
+fn count_references(name: &str, _text: &str, ast: &StoredDefinition) -> usize {
     let mut count = 0;
 
-    // Count type references in components
+    // Count type references in components and extends clauses
+    // This only counts actual usages, not the declaration itself
     for class in ast.class_list.values() {
         count += count_references_in_class(name, class);
-    }
-
-    // Also do a simple text search as fallback
-    // (This catches references in equations/expressions that may not be in the AST components)
-    for line in text.lines() {
-        // Skip the definition line itself
-        if line.contains(&format!("model {}", name))
-            || line.contains(&format!("class {}", name))
-            || line.contains(&format!("function {}", name))
-            || line.contains(&format!("record {}", name))
-            || line.contains(&format!("connector {}", name))
-            || line.contains(&format!("block {}", name))
-            || line.contains(&format!("type {}", name))
-            || line.contains(&format!("package {}", name))
-        {
-            continue;
-        }
-
-        // Count occurrences as a word boundary
-        let mut search_pos = 0;
-        while let Some(pos) = line[search_pos..].find(name) {
-            let abs_pos = search_pos + pos;
-            let before_ok = abs_pos == 0
-                || !line
-                    .chars()
-                    .nth(abs_pos - 1)
-                    .unwrap_or(' ')
-                    .is_alphanumeric();
-            let after_ok = abs_pos + name.len() >= line.len()
-                || !line
-                    .chars()
-                    .nth(abs_pos + name.len())
-                    .unwrap_or(' ')
-                    .is_alphanumeric();
-
-            if before_ok && after_ok {
-                count += 1;
-            }
-            search_pos = abs_pos + 1;
-            if search_pos >= line.len() {
-                break;
-            }
-        }
     }
 
     count

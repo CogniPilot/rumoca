@@ -326,6 +326,177 @@ end Test;"#;
     }
 }
 
+#[test]
+fn test_completion_modifiers() {
+    let uri = test_uri();
+    // Test that typing inside parentheses after a type declaration shows modifier completions
+    let text = r#"model Test
+  Real h(
+end Test;"#;
+
+    let documents = create_test_documents(&uri, text);
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 1,
+                character: 9,
+            }, // after "Real h("
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+        context: None,
+    };
+
+    let result = handle_completion(&documents, params);
+    assert!(result.is_some(), "Expected completion items for modifiers");
+
+    if let Some(lsp_types::CompletionResponse::Array(items)) = result {
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+        // Should include common modifiers
+        assert!(
+            labels.contains(&"start"),
+            "Expected 'start' modifier in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"fixed"),
+            "Expected 'fixed' modifier in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"min"),
+            "Expected 'min' modifier in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"max"),
+            "Expected 'max' modifier in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"unit"),
+            "Expected 'unit' modifier in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"stateSelect"),
+            "Expected 'stateSelect' modifier in completions, got: {:?}",
+            labels
+        );
+
+        // Should NOT include keywords (we're in modifier context)
+        assert!(
+            !labels.contains(&"model"),
+            "Should NOT have 'model' keyword in modifier completions"
+        );
+    }
+}
+
+#[test]
+fn test_completion_modifiers_after_comma() {
+    let uri = test_uri();
+    // Test that typing after a comma in modifiers shows completions
+    let text = r#"model Test
+  Real h(start=10.0,
+end Test;"#;
+
+    let documents = create_test_documents(&uri, text);
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 1,
+                character: 21,
+            }, // after "Real h(start=10.0, "
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+        context: None,
+    };
+
+    let result = handle_completion(&documents, params);
+    assert!(
+        result.is_some(),
+        "Expected completion items for modifiers after comma"
+    );
+
+    if let Some(lsp_types::CompletionResponse::Array(items)) = result {
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+        // Should still show modifier completions
+        assert!(
+            labels.contains(&"fixed"),
+            "Expected 'fixed' modifier in completions after comma, got: {:?}",
+            labels
+        );
+    }
+}
+
+#[test]
+fn test_completion_member_access() {
+    let uri = test_uri();
+    // Test that typing "ball." after declaring a component shows its members
+    // Use a simpler structure where the model is in the same scope
+    // Note: The document must be syntactically valid for parsing to succeed
+    let text = r#"model BouncingBall
+  parameter Real g = 9.81;
+  Real h(start = 10.0);
+  Real v(start = 0.0);
+equation
+  der(h) = v;
+  der(v) = -g;
+end BouncingBall;
+
+model B
+  BouncingBall ball;
+equation
+  ball.h = 1;
+end B;"#;
+
+    let documents = create_test_documents(&uri, text);
+    // Position cursor after "ball." on line "  ball.h = 1;"
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 12,
+                character: 7,
+            }, // after "ball."
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+        context: Some(lsp_types::CompletionContext {
+            trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+            trigger_character: Some(".".to_string()),
+        }),
+    };
+
+    let result = handle_completion(&documents, params);
+    assert!(result.is_some(), "Expected completion items for ball.");
+
+    if let Some(lsp_types::CompletionResponse::Array(items)) = result {
+        // Should include members of BouncingBall: g, h, v
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"g"),
+            "Expected 'g' parameter in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"h"),
+            "Expected 'h' variable in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"v"),
+            "Expected 'v' variable in completions, got: {:?}",
+            labels
+        );
+    }
+}
+
 // ============================================================================
 // Signature Help Tests
 // ============================================================================
@@ -960,6 +1131,190 @@ fn test_position_out_of_bounds() {
     let result = handle_hover(&documents, params);
     // Should not crash, may return None
     assert!(result.is_none());
+}
+
+#[test]
+fn test_completion_member_access_with_syntax_error() {
+    // Test that member completion works even when the document has syntax errors
+    // This simulates typing "ball." mid-expression, which causes a parse error
+    let uri = test_uri();
+
+    // First, open the document in a VALID state (this caches the AST)
+    let valid_text = r#"model BouncingBall
+  parameter Real g = 9.81;
+  Real h(start = 10.0);
+  Real v(start = 0.0);
+equation
+  der(h) = v;
+  der(v) = -g;
+end BouncingBall;
+
+model B
+  BouncingBall ball;
+equation
+  ball.h = 1;
+end B;"#;
+
+    let mut ws = WorkspaceState::new();
+    ws.open_document(uri.clone(), valid_text.to_string());
+
+    // Now simulate the user typing - document becomes invalid with "ball."
+    let invalid_text = r#"model BouncingBall
+  parameter Real g = 9.81;
+  Real h(start = 10.0);
+  Real v(start = 0.0);
+equation
+  der(h) = v;
+  der(v) = -g;
+end BouncingBall;
+
+model B
+  BouncingBall ball;
+equation
+  ball.
+end B;"#;
+    // Note: "ball." is incomplete syntax - will cause parse error
+
+    // Update the document (simulates typing)
+    ws.update_document(uri.clone(), invalid_text.to_string());
+
+    // Use the handle_completion_workspace function
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 12,
+                character: 7,
+            }, // after "ball."
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+        context: Some(lsp_types::CompletionContext {
+            trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+            trigger_character: Some(".".to_string()),
+        }),
+    };
+
+    let result = rumoca::lsp::handle_completion_workspace(&ws, params);
+    assert!(
+        result.is_some(),
+        "Expected completion items for ball. even with syntax error"
+    );
+
+    if let Some(lsp_types::CompletionResponse::Array(items)) = result {
+        // Should include members of BouncingBall: g, h, v
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+        // Should NOT have keywords (that would indicate fallback to general completion)
+        assert!(
+            !labels.contains(&"model"),
+            "Should NOT have keywords in dot completion: {:?}",
+            labels
+        );
+        assert!(
+            !labels.contains(&"parameter"),
+            "Should NOT have keywords in dot completion: {:?}",
+            labels
+        );
+
+        // Should have class members
+        assert!(
+            labels.contains(&"g"),
+            "Expected 'g' parameter in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"h"),
+            "Expected 'h' variable in completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"v"),
+            "Expected 'v' variable in completions, got: {:?}",
+            labels
+        );
+    }
+}
+
+#[test]
+fn test_completion_class_instance_modifiers() {
+    // Test that typing after opening paren for a class instance shows member modifiers
+    // We use a valid document so the parser can succeed and we can look up class members
+    let uri = test_uri();
+    // Valid document - we simulate the user typing after opening paren by positioning the cursor
+    // The document needs to be syntactically valid for parsing to succeed
+    let text = r#"model BouncingBall
+  parameter Real g = 9.81;
+  Real h(start = 10.0);
+  Real v(start = 0.0);
+equation
+  der(h) = v;
+  der(v) = -g;
+end BouncingBall;
+
+model B
+  BouncingBall ball(g = 1);
+end B;"#;
+
+    let documents = create_test_documents(&uri, text);
+    // Position cursor right after "ball(" - character 20 is after the opening paren
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 10,
+                character: 20,
+            }, // after "BouncingBall ball("
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+        context: Some(lsp_types::CompletionContext {
+            trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+            trigger_character: Some("(".to_string()),
+        }),
+    };
+
+    let result = handle_completion(&documents, params);
+    assert!(
+        result.is_some(),
+        "Expected completion items for class instance modifiers"
+    );
+
+    if let Some(lsp_types::CompletionResponse::Array(items)) = result {
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+        // Should include members of BouncingBall that can be modified: g, h, v
+        assert!(
+            labels.contains(&"g"),
+            "Expected 'g' parameter in instance modifier completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"h"),
+            "Expected 'h' variable in instance modifier completions, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"v"),
+            "Expected 'v' variable in instance modifier completions, got: {:?}",
+            labels
+        );
+
+        // Should NOT include primitive type modifiers like 'start', 'fixed'
+        // (those are for primitive types, not class instances)
+        assert!(
+            !labels.contains(&"start"),
+            "Should NOT have primitive modifiers like 'start' for class instance, got: {:?}",
+            labels
+        );
+
+        // Should include general modifiers like 'each', 'redeclare', 'final'
+        assert!(
+            labels.contains(&"each"),
+            "Expected 'each' modifier for class instance, got: {:?}",
+            labels
+        );
+    }
 }
 
 #[test]

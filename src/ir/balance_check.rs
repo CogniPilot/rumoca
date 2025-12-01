@@ -60,6 +60,14 @@ impl BalanceCheckResult {
     }
 }
 
+/// Check if a type name represents a primitive/built-in type
+fn is_primitive_type(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "Real" | "Integer" | "Boolean" | "String" | "StateSelect" | "ExternalObject"
+    )
+}
+
 /// Check balance of a flattened class definition
 pub fn check_class_balance(class: &ClassDefinition) -> BalanceCheckResult {
     // Count equations
@@ -71,6 +79,14 @@ pub fn check_class_balance(class: &ClassDefinition) -> BalanceCheckResult {
     let mut num_inputs: usize = 0;
 
     for (_name, comp) in &class.components {
+        let type_name = comp.type_name.to_string();
+
+        // Skip class instances - they have their own balance
+        // Only count primitive types (Real, Integer, Boolean, String)
+        if !is_primitive_type(&type_name) {
+            continue;
+        }
+
         // Skip constants and parameters - they are known
         if matches!(
             comp.variability,

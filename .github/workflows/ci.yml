@@ -68,6 +68,35 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  modelica-fmt:
+    name: Modelica Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build rumoca-fmt
+        run: cargo build --release --bin rumoca-fmt
+
+      - name: Check Modelica formatting
+        run: ./target/release/rumoca-fmt --check
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

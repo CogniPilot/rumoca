@@ -6,7 +6,7 @@ model SimpleIfExpression
   Real y;
 equation
   der(x) = 1;
-  y = if x > 0 then 1 else -1;
+  y = if x > 0 then 1 else - 1;
 end SimpleIfExpression;
 
 // If expression with elseif
@@ -15,7 +15,7 @@ model ElseIfExpression
   Real y;
 equation
   der(x) = 1;
-  y = if x < -1 then -1 elseif x > 1 then 1 else 0;
+  y = if x < -1 then - 1 elseif x > 1 then 1 else 0;
 end ElseIfExpression;
 
 // Multiple elseif branches
@@ -26,9 +26,9 @@ equation
   der(x) = 1;
   // Categorize x into ranges
   category = if x < -2 then 1
-             elseif x < 0 then 2
-             elseif x < 2 then 3
-             else 4;
+elseif x < 0 then 2
+elseif x < 2 then 3
+else 4;
 end MultipleElseIf;
 
 // Nested if expressions
@@ -50,7 +50,7 @@ model ComplexCondition
 equation
   der(x) = 1;
   der(y) = -0.1;
-  z = if x > 0 and y > 0 then x*y else 0;
+  z = if x > 0 and y > 0 then x * y else 0;
 end ComplexCondition;
 
 // If expression in equation RHS
@@ -60,5 +60,5 @@ model IfInEquation
   Real clamped;
 equation
   der(x) = 1;
-  clamped = if x > threshold then threshold elseif x < -threshold then -threshold else x;
+  clamped = if x > threshold then threshold elseif x < -threshold then - threshold else x;
 end IfInEquation;

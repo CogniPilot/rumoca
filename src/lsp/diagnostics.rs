@@ -118,6 +118,7 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
                 col,
                 name_len: comp_name.len() as u32,
                 is_parameter,
+                is_class: false,
                 has_default: has_start,
                 type_name: type_name.clone(),
                 shape: comp.shape.clone(),
@@ -128,7 +129,7 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
         collect_used_symbols(&comp.start, &mut used);
     }
 
-    // Add nested class names as defined
+    // Add nested class names as defined (these are types, not variables)
     for nested_name in class.classes.keys() {
         defined.insert(
             nested_name.clone(),
@@ -137,6 +138,7 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
                 col: 1,
                 name_len: nested_name.len() as u32,
                 is_parameter: false,
+                is_class: true,
                 has_default: true,
                 type_name: nested_name.clone(), // class type
                 shape: vec![],
@@ -171,8 +173,9 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
     // Check for unused variables (warning)
     for (name, sym) in &defined {
         if !used.contains(name) && !name.starts_with('_') {
-            // Skip parameters - they might be used externally
-            if !sym.is_parameter {
+            // Skip parameters, classes, and class instances (submodels)
+            // Class instances contribute to the system even without explicit references
+            if !sym.is_parameter && !sym.is_class && !is_class_instance_type(&sym.type_name) {
                 diagnostics.push(create_diagnostic(
                     sym.line,
                     sym.col,
@@ -212,6 +215,7 @@ struct DefinedSymbol {
     #[allow(dead_code)]
     name_len: u32,
     is_parameter: bool,
+    is_class: bool,
     has_default: bool,
     /// The base type (Real, Integer, Boolean, String)
     type_name: String,
@@ -287,6 +291,14 @@ fn type_from_name(name: &str) -> InferredType {
         "String" => InferredType::String,
         _ => InferredType::Unknown, // User-defined types
     }
+}
+
+/// Check if a type name represents a class instance (not a primitive type)
+fn is_class_instance_type(type_name: &str) -> bool {
+    !matches!(
+        type_name,
+        "Real" | "Integer" | "Boolean" | "String" | "StateSelect" | "ExternalObject"
+    )
 }
 
 /// Infer the type of an expression
@@ -480,6 +492,7 @@ fn collect_equation_symbols(
                         col: index.ident.location.start_column,
                         name_len: index.ident.text.len() as u32,
                         is_parameter: false,
+                        is_class: false,
                         has_default: true,
                         type_name: "Integer".to_string(), // loop indices are integers
                         shape: vec![],
@@ -560,6 +573,7 @@ fn collect_statement_symbols(
                         col: index.ident.location.start_column,
                         name_len: index.ident.text.len() as u32,
                         is_parameter: false,
+                        is_class: false,
                         has_default: true,
                         type_name: "Integer".to_string(), // loop indices are integers
                         shape: vec![],

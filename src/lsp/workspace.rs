@@ -73,7 +73,7 @@ impl From<&ClassType> for SymbolKind {
 pub struct WorkspaceState {
     /// All open documents and their content
     documents: HashMap<Uri, String>,
-    /// Parsed ASTs for each document
+    /// Parsed ASTs for each document (last successful parse)
     parsed_asts: HashMap<Uri, StoredDefinition>,
     /// Global symbol index: qualified name -> symbol info
     symbol_index: HashMap<String, WorkspaceSymbol>,
@@ -85,6 +85,9 @@ pub struct WorkspaceState {
     workspace_roots: Vec<PathBuf>,
     /// Files that have been discovered but not opened
     discovered_files: HashSet<PathBuf>,
+    /// Cache of last successfully parsed ASTs (kept even when current parse fails)
+    /// This allows completions to work while the user is typing (causing syntax errors)
+    cached_asts: HashMap<Uri, StoredDefinition>,
 }
 
 impl Default for WorkspaceState {
@@ -104,6 +107,7 @@ impl WorkspaceState {
             package_roots: Vec::new(),
             workspace_roots: Vec::new(),
             discovered_files: HashSet::new(),
+            cached_asts: HashMap::new(),
         }
     }
 
@@ -183,15 +187,23 @@ impl WorkspaceState {
 
         let path = uri.path().as_str();
 
-        // Remove old symbols from this file
-        self.remove_file_symbols(uri);
-
         // Parse the document
         if let Some(ast) = parse_document(&text, path) {
-            // Index symbols from this file
+            // Successful parse - remove old symbols and index new ones
+            self.remove_file_symbols(uri);
             self.index_stored_definition(uri, &ast);
-            self.parsed_asts.insert(uri.clone(), ast);
+            self.parsed_asts.insert(uri.clone(), ast.clone());
+            // Also update the cache with the successful parse
+            self.cached_asts.insert(uri.clone(), ast);
         }
+        // If parse fails, keep the cached AST for completion support
+        // but don't update the symbol index (it stays as it was from last good parse)
+    }
+
+    /// Get the cached AST for a document (from last successful parse)
+    /// This is useful for completions when the current document has syntax errors
+    pub fn get_cached_ast(&self, uri: &Uri) -> Option<&StoredDefinition> {
+        self.cached_asts.get(uri)
     }
 
     /// Remove symbols from a file from the index

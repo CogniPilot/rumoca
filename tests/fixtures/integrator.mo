@@ -1,5 +1,5 @@
 model Integrator
-    Real x;
+  Real x;
 equation
-    der(x) = 1;
+  der(x) = 1;
 end Integrator;

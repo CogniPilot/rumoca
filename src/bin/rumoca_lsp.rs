@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let server_capabilities = serde_json::to_value(ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         completion_provider: Some(CompletionOptions {
-            trigger_characters: Some(vec![".".to_string(), "(".to_string()]),
+            trigger_characters: Some(vec![".".to_string(), "(".to_string(), ",".to_string()]),
             resolve_provider: Some(false),
             ..Default::default()
         }),
@@ -197,8 +197,22 @@ fn main_loop(
 
                 let req = match cast_request::<Completion>(req) {
                     Ok((id, params)) => {
+                        eprintln!(
+                            "Completion request for: {:?}",
+                            params.text_document_position.text_document.uri
+                        );
                         // Use workspace-aware completion
                         let result = handle_completion_workspace(&workspace, params);
+                        eprintln!(
+                            "Completion result: {} items",
+                            result
+                                .as_ref()
+                                .map(|r| match r {
+                                    lsp_types::CompletionResponse::Array(items) => items.len(),
+                                    lsp_types::CompletionResponse::List(list) => list.items.len(),
+                                })
+                                .unwrap_or(0)
+                        );
                         let resp = Response::new_ok(id, result);
                         connection.sender.send(Message::Response(resp))?;
                         continue;

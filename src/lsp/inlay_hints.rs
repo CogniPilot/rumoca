@@ -209,6 +209,39 @@ fn collect_statement_hints(
     }
 }
 
+/// Functions where parameter hints are not useful (single obvious parameter)
+const SKIP_HINT_FUNCTIONS: &[&str] = &[
+    "der",
+    "pre",
+    "noEvent",
+    "edge",
+    "change",
+    "initial",
+    "terminal",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "sinh",
+    "cosh",
+    "tanh",
+    "exp",
+    "log",
+    "log10",
+    "sqrt",
+    "abs",
+    "sign",
+    "floor",
+    "ceil",
+    "sum",
+    "product",
+    "transpose",
+    "ndims",
+    "integer",
+];
+
 /// Collect hints from expressions (mainly for function call parameter names)
 fn collect_expression_hints(
     expr: &Expression,
@@ -225,35 +258,43 @@ fn collect_expression_hints(
                 .map(|p| p.ident.text.as_str())
                 .unwrap_or("");
 
+            // Skip functions where parameter hints aren't useful
+            let should_skip = SKIP_HINT_FUNCTIONS.contains(&func_name);
+
             // Look up the function in builtins
-            if let Some(builtin) = builtins.get(func_name) {
-                // Add parameter name hints for each argument
-                for (i, arg) in args.iter().enumerate() {
-                    if let Some(loc) = arg.get_location() {
-                        let line = loc.start_line.saturating_sub(1);
+            if !should_skip {
+                if let Some(builtin) = builtins.get(func_name) {
+                    // Only show hints for functions with multiple parameters
+                    if builtin.parameters.len() > 1 {
+                        // Add parameter name hints for each argument
+                        for (i, arg) in args.iter().enumerate() {
+                            if let Some(loc) = arg.get_location() {
+                                let line = loc.start_line.saturating_sub(1);
 
-                        // Check if in range
-                        if line < range.start.line || line > range.end.line {
-                            continue;
-                        }
+                                // Check if in range
+                                if line < range.start.line || line > range.end.line {
+                                    continue;
+                                }
 
-                        // Get parameter name from signature
-                        if let Some(param_name) =
-                            get_param_name_from_signature(builtin.signature, i)
-                        {
-                            hints.push(InlayHint {
-                                position: Position {
-                                    line,
-                                    character: loc.start_column.saturating_sub(1),
-                                },
-                                label: InlayHintLabel::String(format!("{}:", param_name)),
-                                kind: Some(InlayHintKind::PARAMETER),
-                                text_edits: None,
-                                tooltip: None,
-                                padding_left: Some(false),
-                                padding_right: Some(true),
-                                data: None,
-                            });
+                                // Get parameter name from signature
+                                if let Some(param_name) =
+                                    get_param_name_from_signature(builtin.signature, i)
+                                {
+                                    hints.push(InlayHint {
+                                        position: Position {
+                                            line,
+                                            character: loc.start_column.saturating_sub(1),
+                                        },
+                                        label: InlayHintLabel::String(format!("{}:", param_name)),
+                                        kind: Some(InlayHintKind::PARAMETER),
+                                        text_edits: None,
+                                        tooltip: None,
+                                        padding_left: Some(false),
+                                        padding_right: Some(true),
+                                        data: None,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -293,19 +334,48 @@ fn collect_expression_hints(
 /// Extract parameter name from a function signature string
 fn get_param_name_from_signature(signature: &str, index: usize) -> Option<String> {
     // Parse signature like "sin(x)" or "atan2(y, x)" or "smooth(order, expr)"
+    // Handle signatures with return types like "pre(x) -> typeof(x)"
     let start = signature.find('(')?;
-    let end = signature.rfind(')')?;
-    let params_str = &signature[start + 1..end];
 
+    // Find the matching closing parenthesis by counting parens
+    let after_open = &signature[start + 1..];
+    let mut paren_count = 1;
+    let mut end_offset = 0;
+    for (i, c) in after_open.char_indices() {
+        match c {
+            '(' => paren_count += 1,
+            ')' => {
+                paren_count -= 1;
+                if paren_count == 0 {
+                    end_offset = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if paren_count != 0 {
+        return None; // Unbalanced parentheses
+    }
+
+    let params_str = &after_open[..end_offset];
     let params: Vec<&str> = params_str.split(',').map(|s| s.trim()).collect();
 
     params.get(index).map(|p| {
         // Extract just the parameter name (remove type info if present)
-        p.split_whitespace()
-            .last()
-            .unwrap_or(p)
-            .trim_end_matches("...")
-            .to_string()
+        // Handle formats like "x: Real" or "Real x" or just "x"
+        if let Some(colon_pos) = p.find(':') {
+            // Format: "x: Real" - take the part before the colon
+            p[..colon_pos].trim().to_string()
+        } else {
+            // Format: "Real x" or just "x" - take the last word
+            p.split_whitespace()
+                .last()
+                .unwrap_or(p)
+                .trim_end_matches("...")
+                .to_string()
+        }
     })
 }
 
@@ -342,6 +412,28 @@ mod tests {
         assert_eq!(
             get_param_name_from_signature("smooth(Integer order, Real expr)", 1),
             Some("expr".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_param_name_with_typeof_return() {
+        // pre(x) -> typeof(x) should correctly parse the parameter as "x"
+        assert_eq!(
+            get_param_name_from_signature("pre(x) -> typeof(x)", 0),
+            Some("x".to_string())
+        );
+        assert_eq!(
+            get_param_name_from_signature("noEvent(expr) -> typeof(expr)", 0),
+            Some("expr".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_param_name_colon_format() {
+        // Handle "x: Real" format
+        assert_eq!(
+            get_param_name_from_signature("der(x: Real) -> Real", 0),
+            Some("x".to_string())
         );
     }
 }
