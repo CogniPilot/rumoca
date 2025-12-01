@@ -508,14 +508,46 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         ) => {
                                             let modif = &*(class_mod.class_modification);
                                             if let Some(opt) = &modif.class_modification_opt {
-                                                // Look for start= in the modifier arguments
+                                                // Look for start= and shape= in the modifier arguments
                                                 for arg in &opt.argument_list.args {
                                                     if let ir::ast::Expression::Binary { op, lhs, rhs } = arg {
                                                         if matches!(op, ir::ast::OpBinary::Eq(_)) {
-                                                            // This is a named argument like start=2.5
+                                                            // This is a named argument like start=2.5 or shape=(3)
                                                             if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
-                                                                if comp.to_string() == "start" {
-                                                                    value.start = (**rhs).clone();
+                                                                match comp.to_string().as_str() {
+                                                                    "start" => {
+                                                                        value.start = (**rhs).clone();
+                                                                    }
+                                                                    "shape" => {
+                                                                        // Extract shape from expression like (3) or {3, 2}
+                                                                        match &**rhs {
+                                                                            // Handle shape=(3) - single dimension
+                                                                            ir::ast::Expression::Terminal {
+                                                                                token,
+                                                                                terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                                                            } => {
+                                                                                if let Ok(dim) = token.text.parse::<usize>() {
+                                                                                    value.shape = vec![dim];
+                                                                                }
+                                                                            }
+                                                                            // Handle shape={3, 2} - multi-dimensional
+                                                                            ir::ast::Expression::Array { elements } => {
+                                                                                value.shape.clear();
+                                                                                for elem in elements {
+                                                                                    if let ir::ast::Expression::Terminal {
+                                                                                        token,
+                                                                                        terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                                                                    } = elem {
+                                                                                        if let Ok(dim) = token.text.parse::<usize>() {
+                                                                                            value.shape.push(dim);
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            _ => {}
+                                                                        }
+                                                                    }
+                                                                    _ => {}
                                                                 }
                                                             }
                                                         }

@@ -344,7 +344,7 @@ fn infer_expression_type(
             TerminalType::Bool => InferredType::Boolean,
             _ => InferredType::Unknown,
         },
-        Expression::FunctionCall { comp, args: _ } => {
+        Expression::FunctionCall { comp, args } => {
             // Infer return type based on function name
             if let Some(first) = comp.parts.first() {
                 match first.ident.text.as_str() {
@@ -354,8 +354,14 @@ fn infer_expression_type(
                     | "floor" | "ceil" | "mod" | "rem" | "max" | "min" | "sum" | "product" => {
                         InferredType::Real
                     }
-                    // der returns Real
-                    "der" => InferredType::Real,
+                    // der returns the same type as its argument (preserves array dimensions)
+                    "der" => {
+                        if let Some(arg) = args.first() {
+                            infer_expression_type(arg, defined)
+                        } else {
+                            InferredType::Real
+                        }
+                    }
                     // Boolean functions
                     "initial" | "terminal" | "edge" | "change" | "sample" => InferredType::Boolean,
                     // Size returns Integer
