@@ -6,7 +6,7 @@ model ArrayLiteralTest
   parameter Real A[2, 3] = {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
 
   // Array with integer elements
-  parameter Integer idx[4] = {1, 2, 3, 4};
+  parameter Integer idx[4] = {1, 2, 3, 4}
 
   // Array with expressions
   Real y[3];

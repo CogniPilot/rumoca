@@ -6,9 +6,14 @@
   "publisher": "JamesGoppert",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jgoppert/rumoca"
+    "url": "https://github.com/cognipilot/rumoca"
+  },
+  "homepage": "https://github.com/cognipilot/rumoca#readme",
+  "bugs": {
+    "url": "https://github.com/cognipilot/rumoca/issues"
   },
   "license": "Apache-2.0",
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -72,7 +77,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "package": "npx @vscode/vsce package"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
@@ -84,7 +90,6 @@
     "@typescript-eslint/parser": "^7.0.0",
     "@vscode/vsce": "^2.15.0",
     "eslint": "^8.57.0",
-    "typescript": "^5.0.0",
-    "vsce": "^1.100.2"
+    "typescript": "^5.0.0"
   }
 }

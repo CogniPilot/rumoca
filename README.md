@@ -1,6 +1,8 @@
 # Rumoca
 
-[![CI](https://github.com/jgoppert/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/jgoppert/rumoca/actions)
+<img src="editors/vscode/icon.png" alt="Rumoca Logo" width="128" align="right">
+
+[![CI](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/cognipilot/rumoca/actions)
 [![Crates.io](https://img.shields.io/crates/v/rumoca)](https://crates.io/crates/rumoca)
 [![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
 [![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
