@@ -21,13 +21,23 @@ A VS Code extension providing language support for [Modelica](https://modelica.o
 
 ## Installation
 
-### From VS Code Marketplace
+### Prerequisites
 
-Search for "Rumoca Modelica" in the VS Code Extensions view, or install from the [marketplace](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica).
+Install the `rumoca-lsp` language server:
 
-The extension includes bundled LSP binaries for all major platforms (Linux, macOS, Windows) - no additional installation required!
+```bash
+cargo install rumoca --features lsp
+```
 
-### From VSIX file
+This requires [Rust](https://rustup.rs/) to be installed.
+
+### Install the Extension
+
+**From VS Code Marketplace:**
+
+Search for "Rumoca Modelica" in the VS Code Extensions view.
+
+**From VSIX file:**
 
 1. Download the `.vsix` file from [GitHub Releases](https://github.com/jgoppert/rumoca/releases)
 2. In VS Code, open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
@@ -38,12 +48,10 @@ The extension includes bundled LSP binaries for all major platforms (Linux, macO
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `rumoca.serverPath` | Path to a custom `rumoca-lsp` executable (leave empty to use bundled binary) | `""` |
+| `rumoca.serverPath` | Path to a custom `rumoca-lsp` executable | `""` (auto-detect) |
 | `rumoca.trace.server` | Traces communication with the language server | `"off"` |
 
-## Building from source
-
-If you want to build the extension yourself:
+## Building from Source
 
 ```bash
 # Build the LSP server

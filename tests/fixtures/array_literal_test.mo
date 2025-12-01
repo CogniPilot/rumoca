@@ -10,7 +10,7 @@ model ArrayLiteralTest
 
   // Array with expressions
   Real y[3];
-  Real x(start=0.0);
+  Real x(start=0.0)
 
 equation
   der(x) = -0.1 * x;

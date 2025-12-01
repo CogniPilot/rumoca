@@ -1,13 +1,14 @@
 name: VS Code Extension
 
+# Disabled - extension now requires users to install rumoca-lsp via cargo
+# Re-enable when bundled binary packaging is fixed
 on:
-  push:
-    branches: [main, develop]
-    tags:
-      - 'v*'
-  pull_request:
-    branches: [main, develop]
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run the workflow'
+        required: false
+        default: 'false'
 
 env:
   CARGO_TERM_COLOR: always

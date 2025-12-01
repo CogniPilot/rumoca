@@ -12,28 +12,6 @@ import {
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel;
 
-function getBundledServerPath(extensionPath: string): string | undefined {
-    const platform = process.platform;
-    const arch = process.arch;
-
-    let binaryName: string;
-    if (platform === 'win32') {
-        binaryName = 'rumoca-lsp-win32-x64.exe';
-    } else if (platform === 'darwin') {
-        binaryName = arch === 'arm64' ? 'rumoca-lsp-darwin-arm64.bin' : 'rumoca-lsp-darwin-x64.bin';
-    } else if (platform === 'linux') {
-        binaryName = arch === 'arm64' ? 'rumoca-lsp-linux-arm64.bin' : 'rumoca-lsp-linux-x64.bin';
-    } else {
-        return undefined;
-    }
-
-    const bundledPath = path.join(extensionPath, 'bin', binaryName);
-    if (fs.existsSync(bundledPath)) {
-        return bundledPath;
-    }
-    return undefined;
-}
-
 function findInPath(command: string): string | undefined {
     try {
         const result = execSync(process.platform === 'win32' ? `where ${command}` : `which ${command}`, {
@@ -51,7 +29,7 @@ function findInPath(command: string): string | undefined {
     return undefined;
 }
 
-export async function activate(context: vscode.ExtensionContext) {
+export async function activate(_context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Rumoca Modelica');
     outputChannel.appendLine('Activating Rumoca Modelica extension...');
 
@@ -65,40 +43,35 @@ export async function activate(context: vscode.ExtensionContext) {
     } else {
         outputChannel.appendLine('No serverPath configured, searching for rumoca-lsp...');
 
-        // First, try bundled binary
-        const bundledPath = getBundledServerPath(context.extensionPath);
-        if (bundledPath) {
-            serverPath = bundledPath;
-            outputChannel.appendLine(`Found bundled binary: ${serverPath}`);
+        // Try to find rumoca-lsp in PATH
+        const pathResult = findInPath('rumoca-lsp');
+        if (pathResult) {
+            serverPath = pathResult;
+            outputChannel.appendLine(`Found rumoca-lsp in PATH: ${serverPath}`);
         } else {
-            // Try to find rumoca-lsp in PATH
-            const pathResult = findInPath('rumoca-lsp');
-            if (pathResult) {
-                serverPath = pathResult;
-                outputChannel.appendLine(`Found rumoca-lsp in PATH: ${serverPath}`);
-            } else {
-                // Fall back to common locations
-                const possiblePaths = [
-                    path.join(context.extensionPath, '..', '..', '..', 'target', 'release', 'rumoca-lsp'),
-                    path.join(context.extensionPath, '..', '..', '..', 'target', 'debug', 'rumoca-lsp'),
-                    path.join(process.env.HOME || '', '.cargo', 'bin', 'rumoca-lsp'),
-                ];
-
-                for (const p of possiblePaths) {
-                    if (fs.existsSync(p)) {
-                        serverPath = p;
-                        outputChannel.appendLine(`Found rumoca-lsp at: ${serverPath}`);
-                        break;
-                    }
-                }
+            // Try common cargo installation location
+            const cargoPath = path.join(process.env.HOME || '', '.cargo', 'bin', 'rumoca-lsp');
+            if (fs.existsSync(cargoPath)) {
+                serverPath = cargoPath;
+                outputChannel.appendLine(`Found rumoca-lsp at: ${serverPath}`);
             }
         }
     }
 
     if (!serverPath) {
-        const msg = 'Could not find rumoca-lsp executable. Please install it with "cargo install rumoca" or set rumoca.serverPath in settings.';
+        const installAction = 'Install with cargo';
+        const msg = 'rumoca-lsp not found. Install it with: cargo install rumoca --features lsp';
         outputChannel.appendLine(`ERROR: ${msg}`);
-        vscode.window.showErrorMessage(msg);
+
+        const selection = await vscode.window.showErrorMessage(msg, installAction, 'Configure Path');
+        if (selection === installAction) {
+            // Open terminal with install command
+            const terminal = vscode.window.createTerminal('Rumoca Install');
+            terminal.show();
+            terminal.sendText('cargo install rumoca --features lsp');
+        } else if (selection === 'Configure Path') {
+            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.serverPath');
+        }
         return;
     }
 
@@ -125,9 +98,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'modelica' }],
-        synchronize: {
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.mo')
-        },
         outputChannelName: 'Rumoca Modelica'
     };
 
