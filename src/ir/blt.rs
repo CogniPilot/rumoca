@@ -23,7 +23,10 @@
 //! - Tarjan, R. (1972). "Depth-first search and linear graph algorithms"
 //! - Pantelides, C. (1988). "The consistent initialization of differential-algebraic systems"
 
-use crate::ir::ast::{Equation, Expression};
+use crate::ir::ast::{
+    ComponentRefPart, ComponentReference, Equation, Expression, OpBinary, OpUnary, TerminalType,
+    Token,
+};
 use crate::ir::visitors::expression_visitor::ExpressionVisitor;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -229,9 +232,15 @@ impl HopcroftKarp {
 /// Build bipartite graph and find maximum matching using Hopcroft-Karp
 ///
 /// Returns a mapping from equation index to matched variable name
+///
+/// This implementation uses essential assignment preprocessing:
+/// Variables that can only be defined by a single equation are force-matched first.
+/// This ensures a correct assignment when there are multiple valid matchings,
+/// but only one leads to a complete solution.
 fn find_maximum_matching(
     eq_infos: &[EquationInfo],
     all_variables: &[String],
+    exclude_from_matching: &HashSet<String>,
 ) -> HashMap<usize, String> {
     let n_equations = eq_infos.len();
     let n_variables = all_variables.len();
@@ -243,26 +252,22 @@ fn find_maximum_matching(
         .map(|(i, v)| (v, i))
         .collect();
 
-    // Build adjacency list: which variables can each equation solve for
+    // Build adjacency lists (equation -> variables it can solve for)
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_equations];
+    // Build reverse adjacency (variable -> equations that can solve for it)
+    let mut reverse_adj: Vec<Vec<usize>> = vec![Vec::new(); n_variables];
 
     for (eq_idx, info) in eq_infos.iter().enumerate() {
-        // Prefer LHS variable if available (explicit assignment form)
-        // But also include all variables the equation contains
         let mut candidates: Vec<usize> = Vec::new();
 
-        // First priority: LHS variable (if equation is in assignment form)
-        if let Some(ref lhs_var) = info.lhs_variable {
-            if let Some(&var_idx) = var_to_idx.get(lhs_var) {
-                candidates.push(var_idx);
-            }
-        }
-
-        // Second priority: all other variables in the equation
+        // Collect all variables this equation can solve for
         for var in &info.all_variables {
-            if let Some(&var_idx) = var_to_idx.get(var) {
-                if !candidates.contains(&var_idx) {
-                    candidates.push(var_idx);
+            if !exclude_from_matching.contains(var) {
+                if let Some(&var_idx) = var_to_idx.get(var) {
+                    if !candidates.contains(&var_idx) {
+                        candidates.push(var_idx);
+                        reverse_adj[var_idx].push(eq_idx);
+                    }
                 }
             }
         }
@@ -270,8 +275,83 @@ fn find_maximum_matching(
         adj[eq_idx] = candidates;
     }
 
-    // Run Hopcroft-Karp algorithm
-    let mut hk = HopcroftKarp::new(n_equations, n_variables, adj);
+    // Find essential assignments: variables that can only be solved by one equation
+    // These MUST be matched to that equation, otherwise the system is structurally singular
+    let mut forced_eq_to_var: HashMap<usize, usize> = HashMap::new();
+    let mut forced_var_to_eq: HashMap<usize, usize> = HashMap::new();
+
+    // Iteratively find and propagate essential assignments
+    // This handles chains: if var A is essential for eq1, and eq1 had another var B
+    // that was essential for eq2, we need to update after removing eq1's other options
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        for (var_idx, var_eqs) in reverse_adj.iter().enumerate() {
+            if forced_var_to_eq.contains_key(&var_idx) {
+                continue; // Already assigned
+            }
+
+            // Count equations that can still solve for this variable
+            let available_eqs: Vec<usize> = var_eqs
+                .iter()
+                .filter(|&&eq_idx| !forced_eq_to_var.contains_key(&eq_idx))
+                .copied()
+                .collect();
+
+            if available_eqs.len() == 1 {
+                // Essential assignment: only one equation can solve for this variable
+                let eq_idx = available_eqs[0];
+                forced_eq_to_var.insert(eq_idx, var_idx);
+                forced_var_to_eq.insert(var_idx, eq_idx);
+                changed = true;
+            }
+        }
+    }
+
+    // Build modified adjacency list that respects forced assignments
+    // For forced equations, only allow the forced variable
+    let mut adj_modified: Vec<Vec<usize>> = vec![Vec::new(); n_equations];
+
+    for eq_idx in 0..n_equations {
+        if let Some(&forced_var) = forced_eq_to_var.get(&eq_idx) {
+            // This equation is forced to match this variable
+            adj_modified[eq_idx] = vec![forced_var];
+        } else {
+            // Keep only non-forced variables, preferring LHS variable
+            let info = &eq_infos[eq_idx];
+            let mut candidates: Vec<usize> = Vec::new();
+
+            // First priority: LHS variable (if not forced elsewhere)
+            if let Some(ref lhs_var) = info.lhs_variable {
+                if !exclude_from_matching.contains(lhs_var) {
+                    if let Some(&var_idx) = var_to_idx.get(lhs_var) {
+                        if !forced_var_to_eq.contains_key(&var_idx) {
+                            candidates.push(var_idx);
+                        }
+                    }
+                }
+            }
+
+            // Second priority: all other non-forced variables
+            for var in &info.all_variables {
+                if !exclude_from_matching.contains(var) {
+                    if let Some(&var_idx) = var_to_idx.get(var) {
+                        if !forced_var_to_eq.contains_key(&var_idx)
+                            && !candidates.contains(&var_idx)
+                        {
+                            candidates.push(var_idx);
+                        }
+                    }
+                }
+            }
+
+            adj_modified[eq_idx] = candidates;
+        }
+    }
+
+    // Run Hopcroft-Karp algorithm with modified adjacency
+    let mut hk = HopcroftKarp::new(n_equations, n_variables, adj_modified.clone());
     let _matching_size = hk.max_matching();
 
     // Convert matching to variable names
@@ -281,6 +361,180 @@ fn find_maximum_matching(
     for (eq_idx, var_idx_opt) in matching.iter().enumerate() {
         if let Some(var_idx) = var_idx_opt {
             result.insert(eq_idx, all_variables[*var_idx].clone());
+        }
+    }
+
+    // Check if all variables are matched; if not, try to fix by reassigning
+    let matched_vars: HashSet<_> = result.values().cloned().collect();
+    let all_vars_set: HashSet<_> = all_variables.iter().cloned().collect();
+    let unmatched_vars: Vec<_> = all_vars_set.difference(&matched_vars).cloned().collect();
+
+    #[cfg(debug_assertions)]
+    {
+        eprintln!(
+            "BLT Debug: Initial matching has {} equations matched to {} unique variables",
+            result.len(),
+            matched_vars.len()
+        );
+        eprintln!(
+            "BLT Debug: n_equations={}, n_variables={}",
+            n_equations, n_variables
+        );
+        eprintln!("BLT Debug: all_variables={:?}", all_variables);
+
+        // Show reverse_adj for unmatched variables
+        for uv in &unmatched_vars {
+            if let Some(&var_idx) = var_to_idx.get(uv) {
+                let eqs = &reverse_adj[var_idx];
+                eprintln!(
+                    "BLT Debug: '{}' (idx {}) appears in equations: {:?}",
+                    uv, var_idx, eqs
+                );
+                for &eq in eqs {
+                    let eq_vars: Vec<_> = adj[eq].iter().map(|&v| &all_variables[v]).collect();
+                    eprintln!("  eq {}: can solve for {:?}", eq, eq_vars);
+                }
+            }
+        }
+    }
+
+    if !unmatched_vars.is_empty() {
+        // Try to fix unmatched variables by reassigning equations
+        result = fix_unmatched_variables(
+            &result,
+            &unmatched_vars,
+            &adj,
+            &reverse_adj,
+            all_variables,
+            eq_infos,
+        );
+
+        // Debug output if still unmatched after fix attempt
+        #[cfg(debug_assertions)]
+        {
+            let matched_vars: HashSet<_> = result.values().cloned().collect();
+            let still_unmatched: Vec<_> = all_vars_set.difference(&matched_vars).collect();
+            if !still_unmatched.is_empty() {
+                eprintln!(
+                    "BLT Warning: Still unmatched variables after fix attempt: {:?}",
+                    still_unmatched
+                );
+            }
+        }
+    }
+
+    result
+}
+
+/// Try to fix unmatched variables by reassigning equations.
+///
+/// For each unmatched variable, find an equation that could solve for it,
+/// and try to reassign that equation (moving its current assignment elsewhere).
+fn fix_unmatched_variables(
+    initial_matching: &HashMap<usize, String>,
+    unmatched_vars: &[String],
+    _adj: &[Vec<usize>],
+    reverse_adj: &[Vec<usize>],
+    all_variables: &[String],
+    _eq_infos: &[EquationInfo],
+) -> HashMap<usize, String> {
+    let mut result = initial_matching.clone();
+
+    // Build var_to_idx for quick lookup
+    let var_to_idx: HashMap<&String, usize> = all_variables
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v, i))
+        .collect();
+
+    // Build current var_to_eq mapping (which equation defines each variable)
+    let mut var_to_eq: HashMap<usize, usize> = HashMap::new();
+    for (&eq_idx, var_name) in &result {
+        if let Some(&var_idx) = var_to_idx.get(var_name) {
+            var_to_eq.insert(var_idx, eq_idx);
+        }
+    }
+
+    // For each unmatched variable, try to find an equation to assign it
+    for unmatched_var in unmatched_vars {
+        let Some(&unmatched_var_idx) = var_to_idx.get(unmatched_var) else {
+            continue;
+        };
+
+        // Find equations that can solve for this variable
+        let candidate_eqs: Vec<usize> = reverse_adj[unmatched_var_idx].clone();
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "BLT Debug: Trying to fix unmatched var '{}' (idx {}), candidate eqs: {:?}",
+            unmatched_var, unmatched_var_idx, candidate_eqs
+        );
+
+        let mut found_fix = false;
+        for candidate_eq in candidate_eqs {
+            // What variable is this equation currently assigned to?
+            let current_var_name = match result.get(&candidate_eq) {
+                None => {
+                    // Equation not assigned - can directly assign to unmatched var
+                    result.insert(candidate_eq, unmatched_var.clone());
+                    var_to_eq.insert(unmatched_var_idx, candidate_eq);
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "  -> Assigned eq {} directly to '{}'",
+                        candidate_eq, unmatched_var
+                    );
+                    found_fix = true;
+                    break;
+                }
+                Some(name) => name.clone(),
+            };
+
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "  -> eq {} currently assigned to '{}', checking alternatives...",
+                candidate_eq, current_var_name
+            );
+
+            let Some(&current_var_idx) = var_to_idx.get(&current_var_name) else {
+                continue;
+            };
+
+            // Can the current variable be solved by another equation?
+            // Note: we check if eq is NOT in result.values() indirectly by checking
+            // if an equation is already matched to a different variable
+            let matched_eqs: HashSet<usize> = result.keys().copied().collect();
+            let other_eqs: Vec<usize> = reverse_adj[current_var_idx]
+                .iter()
+                .filter(|&&eq| eq != candidate_eq && !matched_eqs.contains(&eq))
+                .copied()
+                .collect();
+
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "     '{}' can also be solved by unassigned eqs: {:?}",
+                current_var_name, other_eqs
+            );
+
+            if !other_eqs.is_empty() {
+                // Yes! Reassign: candidate_eq -> unmatched_var, other_eq -> current_var
+                let other_eq = other_eqs[0];
+                result.insert(candidate_eq, unmatched_var.clone());
+                result.insert(other_eq, current_var_name.clone());
+                var_to_eq.insert(unmatched_var_idx, candidate_eq);
+                var_to_eq.insert(current_var_idx, other_eq);
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "  -> Reassigned: eq {} -> '{}', eq {} -> '{}'",
+                    candidate_eq, unmatched_var, other_eq, current_var_name
+                );
+                found_fix = true;
+                break;
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        if !found_fix {
+            eprintln!("  -> Could not fix '{}'", unmatched_var);
         }
     }
 
@@ -307,8 +561,16 @@ pub struct BltResult {
 /// 2. Uses Hopcroft-Karp algorithm to find maximum matching between equations and variables
 /// 3. Uses Tarjan's SCC algorithm for topological ordering
 /// 4. Normalizes derivative equations (der(x) on LHS)
-pub fn blt_transform(equations: Vec<Equation>) -> Vec<Equation> {
-    blt_transform_with_info(equations).equations
+///
+/// The `exclude_from_matching` parameter specifies variables that should not
+/// be matched to equations (e.g., parameters, constants, time). This ensures that
+/// equations like `R * i = v` are solved for the algebraic variable `i` rather
+/// than the parameter `R`.
+pub fn blt_transform(
+    equations: Vec<Equation>,
+    exclude_from_matching: &HashSet<String>,
+) -> Vec<Equation> {
+    blt_transform_with_info(equations, exclude_from_matching).equations
 }
 
 /// Perform BLT transformation and return detailed structural information
@@ -318,7 +580,10 @@ pub fn blt_transform(equations: Vec<Equation>) -> Vec<Equation> {
 /// - Index reduction (detecting high-index DAEs)
 /// - Tearing (optimizing algebraic loop solving)
 /// - Diagnostics (debugging structural issues)
-pub fn blt_transform_with_info(equations: Vec<Equation>) -> BltResult {
+pub fn blt_transform_with_info(
+    equations: Vec<Equation>,
+    exclude_from_matching: &HashSet<String>,
+) -> BltResult {
     // Parse equations and extract variable information
     let mut eq_infos: Vec<EquationInfo> = Vec::new();
     let mut all_variables_set: HashSet<String> = HashSet::new();
@@ -395,14 +660,18 @@ pub fn blt_transform_with_info(equations: Vec<Equation>) -> BltResult {
     }
 
     // Convert variable set to sorted vector for consistent ordering
+    // Exclude specified variables from the matching (e.g., parameters, constants, time)
     let all_variables: Vec<String> = {
-        let mut vars: Vec<_> = all_variables_set.into_iter().collect();
+        let mut vars: Vec<_> = all_variables_set
+            .into_iter()
+            .filter(|v| !exclude_from_matching.contains(v))
+            .collect();
         vars.sort();
         vars
     };
 
     // Use Hopcroft-Karp to find maximum matching
-    let matching = find_maximum_matching(&eq_infos, &all_variables);
+    let matching = find_maximum_matching(&eq_infos, &all_variables, exclude_from_matching);
 
     // Update eq_infos with matched variables
     for (eq_idx, var_name) in &matching {
@@ -412,7 +681,7 @@ pub fn blt_transform_with_info(equations: Vec<Equation>) -> BltResult {
     // Build dependency graph and find ordering using Tarjan's SCC algorithm
     let tarjan_result = tarjan_scc(&eq_infos);
 
-    // Reorder and normalize equations
+    // Reorder, normalize, and causalize equations
     let mut result_equations = Vec::new();
     for idx in &tarjan_result.ordered_indices {
         let info = &eq_infos[*idx];
@@ -427,8 +696,20 @@ pub fn blt_transform_with_info(equations: Vec<Equation>) -> BltResult {
                     lhs: rhs.clone(),
                     rhs: lhs.clone(),
                 });
+            } else if let Some(normalized) = normalize_derivative_equation(lhs, rhs) {
+                // Normalize derivative equations like C * der(x) = y to der(x) = y / C
+                result_equations.push(normalized);
             } else {
-                result_equations.push(info.equation.clone());
+                // Check if we need to causalize (solve for matched variable)
+                if let Some(matched_var) = &info.matched_variable {
+                    if let Some(causalized) = causalize_equation(lhs, rhs, matched_var) {
+                        result_equations.push(causalized);
+                    } else {
+                        result_equations.push(info.equation.clone());
+                    }
+                } else {
+                    result_equations.push(info.equation.clone());
+                }
             }
         } else {
             result_equations.push(info.equation.clone());
@@ -455,11 +736,485 @@ fn check_if_needs_swap(lhs: &Expression, rhs: &Expression) -> bool {
     !lhs_has_der && rhs_has_der
 }
 
+/// Normalize derivative equations of the form `coeff * der(x) = expr` to `der(x) = expr / coeff`
+///
+/// This handles cases from component models like:
+/// - `C * der(v) = i` (capacitor) -> `der(v) = i / C`
+/// - `L * der(i) = v` (inductor) -> `der(i) = v / L`
+///
+/// Returns None if the equation is not of this form.
+fn normalize_derivative_equation(lhs: &Expression, rhs: &Expression) -> Option<Equation> {
+    // Check if LHS is coeff * der(x) or der(x) * coeff
+    if let Expression::Binary {
+        op: OpBinary::Mul(_),
+        lhs: mult_lhs,
+        rhs: mult_rhs,
+    } = lhs
+    {
+        // Case 1: coeff * der(x)
+        if let Expression::FunctionCall { comp, args } = mult_rhs.as_ref() {
+            if comp.to_string() == "der" && args.len() == 1 {
+                // Extract der(x) and coefficient
+                let der_expr = mult_rhs.as_ref().clone();
+                let coeff = mult_lhs.as_ref().clone();
+                return Some(Equation::Simple {
+                    lhs: der_expr,
+                    rhs: Expression::Binary {
+                        op: OpBinary::Div(Token::default()),
+                        lhs: Box::new(rhs.clone()),
+                        rhs: Box::new(coeff),
+                    },
+                });
+            }
+        }
+
+        // Case 2: der(x) * coeff
+        if let Expression::FunctionCall { comp, args } = mult_lhs.as_ref() {
+            if comp.to_string() == "der" && args.len() == 1 {
+                // Extract der(x) and coefficient
+                let der_expr = mult_lhs.as_ref().clone();
+                let coeff = mult_rhs.as_ref().clone();
+                return Some(Equation::Simple {
+                    lhs: der_expr,
+                    rhs: Expression::Binary {
+                        op: OpBinary::Div(Token::default()),
+                        lhs: Box::new(rhs.clone()),
+                        rhs: Box::new(coeff),
+                    },
+                });
+            }
+        }
+    }
+
+    None
+}
+
 /// Check if expression contains a der() call
 fn has_der_call(expr: &Expression) -> bool {
     let mut finder = DerivativeFinder::new();
     visit_expression(&mut finder, expr);
     !finder.derivatives.is_empty()
+}
+
+/// Causalize an equation by solving for a specific variable.
+///
+/// Given an equation `lhs = rhs` and a variable to solve for, this function
+/// attempts to algebraically rewrite the equation so the variable is isolated
+/// on the left-hand side.
+///
+/// Currently handles linear equations of the form:
+/// - `var = expr` (already causalized, returns None)
+/// - `a + b = 0` where solving for `a` gives `a = -b`
+/// - `a + b + c = 0` where solving for `a` gives `a = -(b + c)`
+///
+/// Returns None if:
+/// - The equation is already in the correct form
+/// - The variable cannot be isolated (e.g., nonlinear in the variable)
+fn causalize_equation(lhs: &Expression, rhs: &Expression, solve_for: &str) -> Option<Equation> {
+    // Check if LHS is already just the variable we're solving for
+    if let Expression::ComponentReference(cref) = lhs {
+        if cref.to_string() == solve_for {
+            return None; // Already in correct form
+        }
+    }
+
+    // Check if RHS is just the variable we're solving for - swap if so
+    // E.g., expr = var => var = expr
+    if let Expression::ComponentReference(cref) = rhs {
+        if cref.to_string() == solve_for {
+            return Some(Equation::Simple {
+                lhs: rhs.clone(),
+                rhs: lhs.clone(),
+            });
+        }
+    }
+
+    // Helper to check if an expression is zero
+    let is_zero = |expr: &Expression| -> bool {
+        match expr {
+            Expression::Terminal { token, .. } => token.text == "0" || token.text == "0.0",
+            _ => false,
+        }
+    };
+
+    // Check if RHS is zero (common case for KCL equations: a + b + c = 0)
+    let rhs_is_zero = is_zero(rhs);
+    // Also check if LHS is zero (alternate form: 0 = a + b + c)
+    let lhs_is_zero = is_zero(lhs);
+
+    if rhs_is_zero {
+        // Equation is: lhs = 0, where lhs is a sum
+        // We need to solve for `solve_for`: solve_for = -(other terms)
+        if let Some((coeff, other_terms)) = extract_linear_term(lhs, solve_for) {
+            // If coeff is 1: solve_for = -other_terms
+            // If coeff is -1: solve_for = other_terms
+            let new_rhs = if coeff > 0.0 {
+                // solve_for + other = 0 => solve_for = -other
+                negate_expression(&other_terms)
+            } else {
+                // -solve_for + other = 0 => solve_for = other
+                other_terms
+            };
+
+            return Some(Equation::Simple {
+                lhs: Expression::ComponentReference(ComponentReference {
+                    local: false,
+                    parts: vec![ComponentRefPart {
+                        ident: Token {
+                            text: solve_for.to_string(),
+                            ..Default::default()
+                        },
+                        subs: None,
+                    }],
+                }),
+                rhs: new_rhs,
+            });
+        }
+    }
+
+    if lhs_is_zero {
+        // Equation is: 0 = rhs, where rhs is a sum (alternate form of KCL equations)
+        // We need to solve for `solve_for`: solve_for = -(other terms)
+        if let Some((coeff, other_terms)) = extract_linear_term(rhs, solve_for) {
+            // If coeff is 1: solve_for = -other_terms
+            // If coeff is -1: solve_for = other_terms
+            let new_rhs = if coeff > 0.0 {
+                // 0 = solve_for + other => solve_for = -other
+                negate_expression(&other_terms)
+            } else {
+                // 0 = -solve_for + other => solve_for = other
+                other_terms
+            };
+
+            return Some(Equation::Simple {
+                lhs: Expression::ComponentReference(ComponentReference {
+                    local: false,
+                    parts: vec![ComponentRefPart {
+                        ident: Token {
+                            text: solve_for.to_string(),
+                            ..Default::default()
+                        },
+                        subs: None,
+                    }],
+                }),
+                rhs: new_rhs,
+            });
+        }
+    }
+
+    // Handle case: coeff * var = expr (multiplication on LHS)
+    // E.g., R * i = v => solving for i gives i = v / R
+    if let Expression::Binary {
+        op: OpBinary::Mul(_),
+        lhs: mult_lhs,
+        rhs: mult_rhs,
+    } = lhs
+    {
+        // Check if solve_for is on the right side of multiplication: coeff * var
+        if let Expression::ComponentReference(cref) = mult_rhs.as_ref() {
+            if cref.to_string() == solve_for {
+                return Some(Equation::Simple {
+                    lhs: Expression::ComponentReference(ComponentReference {
+                        local: false,
+                        parts: vec![ComponentRefPart {
+                            ident: Token {
+                                text: solve_for.to_string(),
+                                ..Default::default()
+                            },
+                            subs: None,
+                        }],
+                    }),
+                    rhs: Expression::Binary {
+                        op: OpBinary::Div(Token::default()),
+                        lhs: Box::new(rhs.clone()),
+                        rhs: mult_lhs.clone(),
+                    },
+                });
+            }
+        }
+        // Check if solve_for is on the left side of multiplication: var * coeff
+        if let Expression::ComponentReference(cref) = mult_lhs.as_ref() {
+            if cref.to_string() == solve_for {
+                return Some(Equation::Simple {
+                    lhs: Expression::ComponentReference(ComponentReference {
+                        local: false,
+                        parts: vec![ComponentRefPart {
+                            ident: Token {
+                                text: solve_for.to_string(),
+                                ..Default::default()
+                            },
+                            subs: None,
+                        }],
+                    }),
+                    rhs: Expression::Binary {
+                        op: OpBinary::Div(Token::default()),
+                        lhs: Box::new(rhs.clone()),
+                        rhs: mult_rhs.clone(),
+                    },
+                });
+            }
+        }
+    }
+
+    // Handle case: lhs = rhs where lhs contains solve_for
+    // E.g., a + b = c => solving for a gives a = c - b
+    if let Some((coeff, other_terms)) = extract_linear_term(lhs, solve_for) {
+        // lhs contains solve_for: coeff*solve_for + other_terms = rhs
+        // => solve_for = (rhs - other_terms) / coeff
+        let rhs_minus_other = if is_zero_expression(&other_terms) {
+            rhs.clone()
+        } else {
+            Expression::Binary {
+                op: OpBinary::Sub(Token::default()),
+                lhs: Box::new(rhs.clone()),
+                rhs: Box::new(other_terms),
+            }
+        };
+
+        let new_rhs = if (coeff - 1.0).abs() < 1e-10 {
+            rhs_minus_other
+        } else if (coeff + 1.0).abs() < 1e-10 {
+            negate_expression(&rhs_minus_other)
+        } else {
+            // General case: divide by coefficient
+            Expression::Binary {
+                op: OpBinary::Div(Token::default()),
+                lhs: Box::new(rhs_minus_other),
+                rhs: Box::new(Expression::Terminal {
+                    terminal_type: TerminalType::UnsignedReal,
+                    token: Token {
+                        text: coeff.to_string(),
+                        ..Default::default()
+                    },
+                }),
+            }
+        };
+
+        return Some(Equation::Simple {
+            lhs: Expression::ComponentReference(ComponentReference {
+                local: false,
+                parts: vec![ComponentRefPart {
+                    ident: Token {
+                        text: solve_for.to_string(),
+                        ..Default::default()
+                    },
+                    subs: None,
+                }],
+            }),
+            rhs: new_rhs,
+        });
+    }
+
+    // Handle case: lhs = rhs where rhs contains solve_for
+    // E.g., a = b - c where solving for b gives b = a + c
+    if let Some((coeff, other_terms)) = extract_linear_term(rhs, solve_for) {
+        // rhs contains solve_for: lhs = coeff*solve_for + other_terms
+        // => solve_for = (lhs - other_terms) / coeff
+        let lhs_minus_other = if is_zero_expression(&other_terms) {
+            lhs.clone()
+        } else {
+            Expression::Binary {
+                op: OpBinary::Sub(Token::default()),
+                lhs: Box::new(lhs.clone()),
+                rhs: Box::new(other_terms),
+            }
+        };
+
+        let new_rhs = if (coeff - 1.0).abs() < 1e-10 {
+            lhs_minus_other
+        } else if (coeff + 1.0).abs() < 1e-10 {
+            negate_expression(&lhs_minus_other)
+        } else {
+            // General case: divide by coefficient
+            Expression::Binary {
+                op: OpBinary::Div(Token::default()),
+                lhs: Box::new(lhs_minus_other),
+                rhs: Box::new(Expression::Terminal {
+                    terminal_type: TerminalType::UnsignedReal,
+                    token: Token {
+                        text: coeff.to_string(),
+                        ..Default::default()
+                    },
+                }),
+            }
+        };
+
+        return Some(Equation::Simple {
+            lhs: Expression::ComponentReference(ComponentReference {
+                local: false,
+                parts: vec![ComponentRefPart {
+                    ident: Token {
+                        text: solve_for.to_string(),
+                        ..Default::default()
+                    },
+                    subs: None,
+                }],
+            }),
+            rhs: new_rhs,
+        });
+    }
+
+    None
+}
+
+/// Check if an expression is effectively zero
+fn is_zero_expression(expr: &Expression) -> bool {
+    match expr {
+        Expression::Terminal { token, .. } => token.text == "0" || token.text == "0.0",
+        _ => false,
+    }
+}
+
+/// Negate an expression: expr -> -expr or -(expr)
+fn negate_expression(expr: &Expression) -> Expression {
+    // Handle simple cases to produce cleaner output
+    match expr {
+        // -(-x) = x
+        Expression::Unary {
+            op: OpUnary::Minus(_),
+            rhs,
+        } => (**rhs).clone(),
+        // -(a - b) = b - a
+        Expression::Binary {
+            op: OpBinary::Sub(_),
+            lhs,
+            rhs,
+        } => Expression::Binary {
+            op: OpBinary::Sub(Token::default()),
+            lhs: rhs.clone(),
+            rhs: lhs.clone(),
+        },
+        // For other expressions, just negate
+        _ => Expression::Unary {
+            op: OpUnary::Minus(Token::default()),
+            rhs: Box::new(expr.clone()),
+        },
+    }
+}
+
+/// Extract the coefficient and remaining terms for a variable in a linear expression.
+///
+/// Given an expression like `a + b + c` and variable `a`, returns `(1.0, b + c)`.
+/// Given an expression like `-a + b` and variable `a`, returns `(-1.0, b)`.
+///
+/// Returns None if the variable is not found or appears nonlinearly.
+fn extract_linear_term(expr: &Expression, var_name: &str) -> Option<(f64, Expression)> {
+    match expr {
+        Expression::ComponentReference(cref) => {
+            if cref.to_string() == var_name {
+                // Just the variable itself: coefficient is 1, no other terms
+                Some((
+                    1.0,
+                    Expression::Terminal {
+                        terminal_type: TerminalType::UnsignedReal,
+                        token: Token {
+                            text: "0".to_string(),
+                            ..Default::default()
+                        },
+                    },
+                ))
+            } else {
+                None // Variable not found in this expression
+            }
+        }
+        Expression::Unary {
+            op: OpUnary::Minus(_),
+            rhs,
+        } => {
+            // -expr: check if rhs is the variable
+            if let Expression::ComponentReference(cref) = rhs.as_ref() {
+                if cref.to_string() == var_name {
+                    return Some((
+                        -1.0,
+                        Expression::Terminal {
+                            terminal_type: TerminalType::UnsignedReal,
+                            token: Token {
+                                text: "0".to_string(),
+                                ..Default::default()
+                            },
+                        },
+                    ));
+                }
+            }
+            // Recursively check inside the negation
+            if let Some((coeff, other)) = extract_linear_term(rhs, var_name) {
+                Some((-coeff, negate_expression(&other)))
+            } else {
+                None
+            }
+        }
+        Expression::Binary {
+            op: OpBinary::Add(_),
+            lhs,
+            rhs,
+        } => {
+            // a + b: check both sides
+            if let Some((coeff, other_from_lhs)) = extract_linear_term(lhs, var_name) {
+                // Variable found in lhs
+                let combined_other = if is_zero_expression(&other_from_lhs) {
+                    (**rhs).clone()
+                } else {
+                    Expression::Binary {
+                        op: OpBinary::Add(Token::default()),
+                        lhs: Box::new(other_from_lhs),
+                        rhs: rhs.clone(),
+                    }
+                };
+                Some((coeff, combined_other))
+            } else if let Some((coeff, other_from_rhs)) = extract_linear_term(rhs, var_name) {
+                // Variable found in rhs
+                let combined_other = if is_zero_expression(&other_from_rhs) {
+                    (**lhs).clone()
+                } else {
+                    Expression::Binary {
+                        op: OpBinary::Add(Token::default()),
+                        lhs: lhs.clone(),
+                        rhs: Box::new(other_from_rhs),
+                    }
+                };
+                Some((coeff, combined_other))
+            } else {
+                None
+            }
+        }
+        Expression::Binary {
+            op: OpBinary::Sub(_),
+            lhs,
+            rhs,
+        } => {
+            // a - b: check both sides
+            if let Some((coeff, other_from_lhs)) = extract_linear_term(lhs, var_name) {
+                // Variable found in lhs: (coeff*var + other) - rhs
+                let combined_other = if is_zero_expression(&other_from_lhs) {
+                    negate_expression(rhs)
+                } else {
+                    Expression::Binary {
+                        op: OpBinary::Sub(Token::default()),
+                        lhs: Box::new(other_from_lhs),
+                        rhs: rhs.clone(),
+                    }
+                };
+                Some((coeff, combined_other))
+            } else if let Some((coeff, other_from_rhs)) = extract_linear_term(rhs, var_name) {
+                // Variable found in rhs: lhs - (coeff*var + other)
+                // = lhs - coeff*var - other
+                // = -coeff*var + (lhs - other)
+                let combined_other = if is_zero_expression(&other_from_rhs) {
+                    (**lhs).clone()
+                } else {
+                    Expression::Binary {
+                        op: OpBinary::Sub(Token::default()),
+                        lhs: lhs.clone(),
+                        rhs: Box::new(other_from_rhs),
+                    }
+                };
+                Some((-coeff, combined_other))
+            } else {
+                None
+            }
+        }
+        _ => None, // Other expression types not handled
+    }
 }
 
 /// Tarjan's algorithm state for finding strongly connected components
@@ -706,7 +1461,7 @@ mod tests {
             rhs: make_der(make_var("h")),
         }];
 
-        let result = blt_transform(equations);
+        let result = blt_transform(equations, &HashSet::new());
 
         assert_eq!(result.len(), 1);
         if let Equation::Simple { lhs, rhs, .. } = &result[0] {
@@ -841,7 +1596,7 @@ mod tests {
 
         let all_variables = vec!["x".to_string(), "y".to_string(), "z".to_string()];
 
-        let matching = find_maximum_matching(&eq_infos, &all_variables);
+        let matching = find_maximum_matching(&eq_infos, &all_variables, &HashSet::new());
 
         assert_eq!(matching.len(), 2, "Both equations should be matched");
         assert!(matching.contains_key(&0));
@@ -878,7 +1633,7 @@ mod tests {
             },
         ];
 
-        let result = blt_transform(equations);
+        let result = blt_transform(equations, &HashSet::new());
 
         // After BLT, z=1 should come first, then y=z, then x=y
         assert_eq!(result.len(), 3);
@@ -955,9 +1710,207 @@ mod tests {
             },
         ];
 
-        let result = blt_transform(equations);
+        let result = blt_transform(equations, &HashSet::new());
 
         // Both equations should be present (algebraic loop)
         assert_eq!(result.len(), 2);
+    }
+
+    // ========================================================================
+    // Causalization Tests
+    // ========================================================================
+
+    fn make_zero() -> Expression {
+        Expression::Terminal {
+            terminal_type: TerminalType::UnsignedReal,
+            token: Token {
+                text: "0".to_string(),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn test_causalize_sum_to_zero() {
+        // Test: a + b = 0 with matching to "a" should become a = -b
+        let lhs = Expression::Binary {
+            op: OpBinary::Add(Token::default()),
+            lhs: Box::new(make_var("a")),
+            rhs: Box::new(make_var("b")),
+        };
+        let rhs = make_zero();
+
+        let result = causalize_equation(&lhs, &rhs, "a");
+        assert!(
+            result.is_some(),
+            "Should be able to causalize a + b = 0 for a"
+        );
+
+        if let Some(Equation::Simple { lhs, rhs }) = result {
+            // LHS should be "a"
+            if let Expression::ComponentReference(cref) = lhs {
+                assert_eq!(cref.to_string(), "a");
+            } else {
+                panic!("LHS should be ComponentReference");
+            }
+
+            // RHS should be -b (Unary minus of b)
+            if let Expression::Unary {
+                op: OpUnary::Minus(_),
+                rhs,
+            } = rhs
+            {
+                if let Expression::ComponentReference(cref) = *rhs {
+                    assert_eq!(cref.to_string(), "b");
+                } else {
+                    panic!("RHS of negation should be ComponentReference");
+                }
+            } else {
+                panic!("RHS should be Unary negation, got: {:?}", rhs);
+            }
+        }
+    }
+
+    #[test]
+    fn test_causalize_three_term_sum() {
+        // Test: a + b + c = 0 with matching to "a" should become a = -(b + c)
+        let inner = Expression::Binary {
+            op: OpBinary::Add(Token::default()),
+            lhs: Box::new(make_var("a")),
+            rhs: Box::new(make_var("b")),
+        };
+        let lhs = Expression::Binary {
+            op: OpBinary::Add(Token::default()),
+            lhs: Box::new(inner),
+            rhs: Box::new(make_var("c")),
+        };
+        let rhs = make_zero();
+
+        let result = causalize_equation(&lhs, &rhs, "a");
+        assert!(
+            result.is_some(),
+            "Should be able to causalize a + b + c = 0 for a"
+        );
+
+        if let Some(Equation::Simple { lhs, .. }) = result {
+            // LHS should be "a"
+            if let Expression::ComponentReference(cref) = lhs {
+                assert_eq!(cref.to_string(), "a");
+            } else {
+                panic!("LHS should be ComponentReference");
+            }
+        }
+    }
+
+    #[test]
+    fn test_causalize_already_causal() {
+        // Test: a = b should return None (already in causal form for "a")
+        let lhs = make_var("a");
+        let rhs = make_var("b");
+
+        let result = causalize_equation(&lhs, &rhs, "a");
+        assert!(
+            result.is_none(),
+            "Should return None for already causal equation"
+        );
+    }
+
+    #[test]
+    fn test_kcl_style_equation() {
+        // Simulate KCL equation from circuit: R2_n_i + L1_p_i = 0
+        // This should be causalized to R2_n_i = -L1_p_i
+        let equations = vec![Equation::Simple {
+            lhs: Expression::Binary {
+                op: OpBinary::Add(Token::default()),
+                lhs: Box::new(make_var("R2_n_i")),
+                rhs: Box::new(make_var("L1_p_i")),
+            },
+            rhs: make_zero(),
+        }];
+
+        let result = blt_transform(equations, &HashSet::new());
+        assert_eq!(result.len(), 1);
+
+        // The equation should now be causalized
+        if let Equation::Simple { lhs, .. } = &result[0] {
+            // LHS should be a simple variable reference, not a binary expression
+            assert!(
+                matches!(lhs, Expression::ComponentReference(_)),
+                "LHS should be a simple variable after causalization, got: {:?}",
+                lhs
+            );
+        } else {
+            panic!("Expected Simple equation");
+        }
+    }
+
+    #[test]
+    fn test_causalize_zero_on_lhs() {
+        // Test: 0 = a + b (alternate form) with matching to "a" should become a = -b
+        let lhs = make_zero();
+        let rhs = Expression::Binary {
+            op: OpBinary::Add(Token::default()),
+            lhs: Box::new(make_var("a")),
+            rhs: Box::new(make_var("b")),
+        };
+
+        let result = causalize_equation(&lhs, &rhs, "a");
+        assert!(
+            result.is_some(),
+            "Should be able to causalize 0 = a + b for a"
+        );
+
+        if let Some(Equation::Simple { lhs, rhs }) = result {
+            // LHS should be "a"
+            if let Expression::ComponentReference(cref) = lhs {
+                assert_eq!(cref.to_string(), "a");
+            } else {
+                panic!("LHS should be ComponentReference");
+            }
+
+            // RHS should be -b (Unary minus of b)
+            if let Expression::Unary {
+                op: OpUnary::Minus(_),
+                rhs,
+            } = rhs
+            {
+                if let Expression::ComponentReference(cref) = *rhs {
+                    assert_eq!(cref.to_string(), "b");
+                } else {
+                    panic!("RHS of negation should be ComponentReference");
+                }
+            } else {
+                panic!("RHS should be Unary negation, got: {:?}", rhs);
+            }
+        }
+    }
+
+    #[test]
+    fn test_kcl_style_equation_zero_on_lhs() {
+        // Simulate KCL equation from circuit in the form: 0 = R2_n_i + L1_p_i
+        // This should be causalized to one of the variables
+        let equations = vec![Equation::Simple {
+            lhs: make_zero(),
+            rhs: Expression::Binary {
+                op: OpBinary::Add(Token::default()),
+                lhs: Box::new(make_var("R2_n_i")),
+                rhs: Box::new(make_var("L1_p_i")),
+            },
+        }];
+
+        let result = blt_transform(equations, &HashSet::new());
+        assert_eq!(result.len(), 1);
+
+        // The equation should now be causalized
+        if let Equation::Simple { lhs, .. } = &result[0] {
+            // LHS should be a simple variable reference, not zero
+            assert!(
+                matches!(lhs, Expression::ComponentReference(_)),
+                "LHS should be a simple variable after causalization, got: {:?}",
+                lhs
+            );
+        } else {
+            panic!("Expected Simple equation");
+        }
     }
 }

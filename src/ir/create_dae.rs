@@ -13,6 +13,7 @@ use crate::ir::visitor::Visitable;
 use crate::ir::visitors::condition_finder::ConditionFinder;
 use crate::ir::visitors::state_finder::StateFinder;
 use git_version::git_version;
+use std::collections::HashSet;
 
 use anyhow::Result;
 
@@ -109,8 +110,27 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     dae.c = condition_finder.conditions.clone();
     dae.fc = condition_finder.expressions.clone();
 
+    // Build set of variables to exclude from BLT matching
+    // (parameters, constants, inputs, states, and "time" should not be solved for)
+    // States are excluded because their values come from integration, not algebraic equations
+    let mut exclude_from_matching: HashSet<String> = HashSet::new();
+    for name in dae.p.keys() {
+        exclude_from_matching.insert(name.clone());
+    }
+    for name in dae.cp.keys() {
+        exclude_from_matching.insert(name.clone());
+    }
+    for name in dae.u.keys() {
+        exclude_from_matching.insert(name.clone());
+    }
+    for name in dae.x.keys() {
+        exclude_from_matching.insert(name.clone());
+    }
+    exclude_from_matching.insert("time".to_string());
+
     // Apply BLT transformation to reorder and normalize equations
-    let transformed_equations = crate::ir::blt::blt_transform(fclass.equations.clone());
+    let transformed_equations =
+        crate::ir::blt::blt_transform(fclass.equations.clone(), &exclude_from_matching);
 
     // handle equations
     for eq in &transformed_equations {

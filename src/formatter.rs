@@ -133,6 +133,7 @@ fn should_decrease_indent_before(line: &str) -> bool {
 /// Check if we should increase indent after this line
 fn should_increase_indent_after(line: &str) -> bool {
     // Class/model/function declarations
+    // Don't increase indent if line ends with ; (single-line definition)
     if (line.starts_with("model ")
         || line.starts_with("class ")
         || line.starts_with("function ")
@@ -143,12 +144,13 @@ fn should_increase_indent_after(line: &str) -> bool {
         || line.starts_with("type ")
         || line.starts_with("operator "))
         && !line.contains("end ")
+        && !line.ends_with(';')
     {
         return true;
     }
 
     // Partial classes
-    if line.starts_with("partial ") && !line.contains("end ") {
+    if line.starts_with("partial ") && !line.contains("end ") && !line.ends_with(';') {
         return true;
     }
 
@@ -658,5 +660,45 @@ end Test;"#;
             "Comments should not be corrupted: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_format_single_line_type_definitions() {
+        // Single-line type definitions should not increase indent
+        let input = r#"class Main
+Real x;
+end Main;
+
+type Voltage = Real(unit="V");
+type Current = Real(unit="A");
+
+connector Pin
+Real v;
+end Pin;"#;
+        let expected = r#"class Main
+  Real x;
+end Main;
+
+type Voltage = Real(unit="V");
+type Current = Real(unit="A");
+
+connector Pin
+  Real v;
+end Pin;"#;
+        let result = format_modelica(input, &FormatOptions::default());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_format_multiline_type_definition() {
+        // Multi-line type definitions (without ;) should increase indent
+        let input = r#"type MyType
+extends Real;
+end MyType;"#;
+        let expected = r#"type MyType
+  extends Real;
+end MyType;"#;
+        let result = format_modelica(input, &FormatOptions::default());
+        assert_eq!(result, expected);
     }
 }
