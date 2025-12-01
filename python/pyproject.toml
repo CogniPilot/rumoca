@@ -1,17 +1,10 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "rumoca"
 version = "0.7.2"
 description = "Python interface for the Rumoca Modelica compiler"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "Apache-2.0"}
-authors = [
-    {name = "Rumoca Contributors"}
-]
+license = "Apache-2.0"
+authors = ["Rumoca Contributors"]
 keywords = ["modelica", "compiler", "simulation", "dae", "code-generation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -28,46 +21,30 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Compilers",
 ]
+packages = [{include = "rumoca"}]
 
-dependencies = []
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "black>=23.0",
-    "mypy>=1.0",
-]
-
-cyecca = [
-    "cyecca>=0.1.0",
-]
-
-notebook = [
-    "jupyter>=1.0",
-    "matplotlib>=3.5",
-    "numpy>=1.20",
-]
-
-all = [
-    "rumoca[dev,cyecca,notebook]",
-]
-
-[project.urls]
+[tool.poetry.urls]
 Homepage = "https://github.com/jgoppert/rumoca"
 Documentation = "https://github.com/jgoppert/rumoca/blob/main/python/README.md"
 Repository = "https://github.com/jgoppert/rumoca"
 Issues = "https://github.com/jgoppert/rumoca/issues"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["rumoca*"]
+[tool.poetry.dependencies]
+python = ">=3.8"
 
-[tool.setuptools.package-data]
-rumoca = ["py.typed"]
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0"
+pytest-cov = ">=4.0"
+black = ">=23.0"
+mypy = ">=1.0"
 
-[tool.setuptools]
-include-package-data = true
+[tool.poetry.extras]
+cyecca = ["cyecca"]
+notebook = ["jupyter", "matplotlib", "numpy"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 line-length = 100
