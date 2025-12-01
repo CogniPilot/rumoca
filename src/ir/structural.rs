@@ -138,10 +138,8 @@ pub fn pantelides_index_reduction(
     let mut analysis = StructuralAnalysis::default();
 
     // Parse equations to extract structure
-    let mut eq_structures: Vec<EquationStructure> = equations
-        .iter()
-        .map(|eq| analyze_equation_structure(eq))
-        .collect();
+    let mut eq_structures: Vec<EquationStructure> =
+        equations.iter().map(analyze_equation_structure).collect();
 
     // Collect all variables that appear in equations
     let mut all_equation_vars: HashSet<String> = HashSet::new();
