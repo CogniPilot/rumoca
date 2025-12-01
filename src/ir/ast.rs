@@ -114,7 +114,8 @@ pub struct Component {
     pub start: Expression,
     /// Array dimensions - empty for scalars, e.g., [2, 3] for a 2x3 matrix
     pub shape: Vec<usize>,
-    //pub annotation: Option<Token>,
+    /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)
+    pub annotation: Vec<Expression>,
 }
 
 impl Debug for Component {
@@ -137,6 +138,9 @@ impl Debug for Component {
         }
         if !self.shape.is_empty() {
             builder.field("shape", &self.shape);
+        }
+        if !self.annotation.is_empty() {
+            builder.field("annotation", &self.annotation);
         }
         builder.finish()
     }

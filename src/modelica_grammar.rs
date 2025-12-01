@@ -421,6 +421,22 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                 };
 
                             for c in &clause.component_clause.component_list.components {
+                                // Extract annotation arguments if present
+                                let annotation =
+                                    if let Some(desc_opt) = &c.description.description_opt {
+                                        if let Some(class_mod_opt) = &desc_opt
+                                            .annotation_clause
+                                            .class_modification
+                                            .class_modification_opt
+                                        {
+                                            class_mod_opt.argument_list.args.clone()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    } else {
+                                        Vec::new()
+                                    };
+
                                 let mut value = ir::ast::Component {
                                     name: c.declaration.ident.text.clone(),
                                     type_name: clause.component_clause.type_specifier.name.clone(),
@@ -436,6 +452,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         },
                                     },
                                     shape: Vec::new(), // Scalar by default, populated from array subscripts
+                                    annotation,
                                 };
 
                                 // set default start value

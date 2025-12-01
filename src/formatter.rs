@@ -205,8 +205,40 @@ fn format_line(line: &str, indent_level: i32, indent_str: &str) -> String {
         return format!("{}{}", indent, line);
     }
 
+    // Check for inline comments - split code from comment
+    // Need to handle // but not inside strings
+    if let Some((code, comment)) = split_at_line_comment(line) {
+        let formatted_code = format_operators(code.trim_end());
+        return format!("{}{}  {}", indent, formatted_code, comment);
+    }
+
     let formatted = format_operators(line);
     format!("{}{}", indent, formatted)
+}
+
+/// Split a line at a line comment (//) that's not inside a string
+fn split_at_line_comment(line: &str) -> Option<(&str, &str)> {
+    let mut in_string = false;
+    let chars: Vec<char> = line.chars().collect();
+
+    for i in 0..chars.len() {
+        let c = chars[i];
+
+        // Track string literals
+        if c == '"' && (i == 0 || chars[i - 1] != '\\') {
+            in_string = !in_string;
+            continue;
+        }
+
+        // Look for // outside of strings
+        if !in_string && c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            let code = &line[..i];
+            let comment = &line[i..];
+            return Some((code, comment));
+        }
+    }
+
+    None
 }
 
 /// Format a comment line (preserve content, fix indentation)
@@ -541,5 +573,90 @@ end test;"#;
 end test;"#;
         let result = format_modelica(input, &FormatOptions::default());
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_preserve_inline_comments() {
+        // Inline comments should not have their // turned into / /
+        // This tests the full formatting pipeline (format_line), not just format_operators
+        let input = "x = 2 * time;  // Extra equation";
+        let result = format_line(input, 0, "  ");
+        // The // should remain intact, not become / /
+        assert!(
+            result.contains("//"),
+            "Inline comment // should be preserved, got: {}",
+            result
+        );
+        assert!(
+            !result.contains("/ /"),
+            "Comment should not be split into / /, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_line_with_inline_comment() {
+        // Full line formatting should preserve inline comments
+        let input = "x = 2 * time;  // This is a comment";
+        let result = format_line(input, 0, "  ");
+        assert!(
+            result.contains("//"),
+            "Inline comment // should be preserved, got: {}",
+            result
+        );
+        assert!(
+            !result.contains("/ /"),
+            "Comment should not be split into / /, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_split_at_line_comment() {
+        // Test the split function
+        let line = "x = 1;  // comment";
+        let result = split_at_line_comment(line);
+        assert!(result.is_some());
+        let (code, comment) = result.unwrap();
+        assert_eq!(code, "x = 1;  ");
+        assert_eq!(comment, "// comment");
+
+        // Should not split inside strings
+        let line_with_string = r#"s = "http://example.com";"#;
+        let result = split_at_line_comment(line_with_string);
+        assert!(
+            result.is_none(),
+            "Should not split // inside string literal"
+        );
+
+        // No comment case
+        let no_comment = "x = 1;";
+        assert!(split_at_line_comment(no_comment).is_none());
+    }
+
+    #[test]
+    fn test_format_modelica_preserves_inline_comments() {
+        // Integration test with full formatter
+        let input = r#"model Test
+Real x;  // state variable
+equation
+der(x) = 1;  // simple ODE
+end Test;"#;
+        let result = format_modelica(input, &FormatOptions::default());
+        assert!(
+            result.contains("// state variable"),
+            "Comment should be preserved: {}",
+            result
+        );
+        assert!(
+            result.contains("// simple ODE"),
+            "Comment should be preserved: {}",
+            result
+        );
+        assert!(
+            !result.contains("/ /"),
+            "Comments should not be corrupted: {}",
+            result
+        );
     }
 }

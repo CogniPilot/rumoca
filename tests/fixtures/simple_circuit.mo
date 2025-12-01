@@ -6,13 +6,13 @@ class SimpleCircuit
   VsourceAC AC;
   Ground G;
 equation
-  connect(AC.p, R1.p); / / 1, Capacitor circuit
-  connect(R1.n, C.p);  / /    Wire 2
-  connect(C.n, AC.n);  / /    Wire 3
-  connect(R1.p, R2.p); / / 2, Inductor circuit
-  connect(R2.n, L1.p);  / /    Wire 5
-  connect(L1.n, C.n);   / /    Wire 6
-  connect(AC.n, G.p);  / / 7, Ground
+  connect(AC.p, R1.p);  // 1, Capacitor circuit
+  connect(R1.n, C.p);  //    Wire 2
+  connect(C.n, AC.n);  //    Wire 3
+  connect(R1.p, R2.p);  // 2, Inductor circuit
+  connect(R2.n, L1.p);  //    Wire 5
+  connect(L1.n, C.n);  //    Wire 6
+  connect(AC.n, G.p);  // 7, Ground
 end SimpleCircuit;
 
 type Voltage = Real(unit="V") "Voltage";

@@ -6,5 +6,6 @@ pub mod create_dae;
 pub mod error;
 pub mod flatten;
 pub mod multi_file;
+pub mod structural;
 pub mod visitor;
 pub mod visitors;

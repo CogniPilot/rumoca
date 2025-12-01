@@ -4,5 +4,5 @@ model UnbalancedOverdetermined
   Real x(start=0);
 equation
   der(x) = 1;
-  x = 2 * time;  / / Extra equation makes it over - determined
+  x = 2 * time;  // Extra equation makes it over-determined
 end UnbalancedOverdetermined;

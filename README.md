@@ -5,7 +5,9 @@
 [![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
 [![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
 
-A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports a DAE IR (a superset of [Base Modelica](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) supporting both implicit and explicit model serialization). The IR is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, JAX, and other backends.
+> **Note:** Rumoca is in active development. APIs may change between releases.
+
+A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports a [DAE IR](https://github.com/CogniPilot/modelica_ir) (a superset of [Base Modelica](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) supporting both implicit and explicit model serialization). The IR is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, JAX, and other backends.
 
 Future export targets include [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) and [eFMI/GALEC](https://www.efmi-standard.org/).
 
@@ -145,13 +147,13 @@ See [`templates/examples/`](templates/examples/) for complete template examples 
 - **Functions**: Single and multi-output functions, tuple equations `(a,b) = func()`
 - **Built-in operators**: `der()`, `pre()`, `reinit()`, `time`, trig functions, array functions
 - **Event functions**: `noEvent`, `smooth`, `sample`, `edge`, `change`, `initial`, `terminal`
+- **Annotations**: Parsed and exported to JSON on components
 
 ### Partially Supported
 
 | Feature | Status |
 |---------|--------|
 | Connect equations | Flow/potential semantics implemented; `stream` not yet supported |
-| Annotations | Parsed but not processed |
 | External functions | `external` keyword recognized; no linking |
 
 ### Not Yet Implemented
@@ -169,13 +171,19 @@ See [`templates/examples/`](templates/examples/) for complete template examples 
 ## Architecture
 
 ```
-Modelica Source -> Parse -> Flatten -> DAE -> DAE IR (JSON)
-                   (AST)   (Flat)    (DAE)
-                                                 |
-                                              Cyecca
-                                                 |
-                                      CasADi/SymPy/JAX/etc.
+Modelica Source -> Parse -> Flatten -> BLT -> DAE -> DAE IR (JSON)
+                   (AST)   (Flat)    (Match)  (DAE)
+                                                          |
+                                                       Cyecca
+                                                          |
+                                               CasADi/SymPy/JAX/etc.
 ```
+
+**Structural Analysis:**
+- **Hopcroft-Karp matching** (O(E√V)) for equation-variable assignment
+- **Tarjan's SCC algorithm** for topological ordering and algebraic loop detection
+- **Pantelides algorithm** for DAE index reduction (detects high-index systems)
+- **Tearing** for algebraic loops (reduces nonlinear system size)
 
 ## Development
 
@@ -216,6 +224,7 @@ Apache-2.0 ([LICENSE](LICENSE))
 
 ## See Also
 
+- [Modelica IR](https://github.com/CogniPilot/modelica_ir) - DAE IR specification
 - [Cyecca](https://github.com/cognipilot/cyecca) - Model simulation, analysis, and code generation
 - [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) - Planned export target
 - [eFMI/GALEC](https://www.efmi-standard.org/) - Planned export target

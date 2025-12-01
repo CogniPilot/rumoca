@@ -199,7 +199,14 @@ impl<'a> Serialize for StateVariableWrapper<'a> {
         S: Serializer,
     {
         let has_comment = !self.comp.description.is_empty();
-        let map_size = if has_comment { 5 } else { 4 };
+        let has_annotation = !self.comp.annotation.is_empty();
+        let mut map_size = 4;
+        if has_comment {
+            map_size += 1;
+        }
+        if has_annotation {
+            map_size += 1;
+        }
 
         let mut map = serializer.serialize_map(Some(map_size))?;
 
@@ -217,6 +224,10 @@ impl<'a> Serialize for StateVariableWrapper<'a> {
                 .collect::<Vec<_>>()
                 .join(" ");
             map.serialize_entry("comment", &comment)?;
+        }
+
+        if has_annotation {
+            map.serialize_entry("annotation", &AnnotationWrapper(&self.comp.annotation))?;
         }
 
         map.end()
@@ -253,7 +264,14 @@ impl<'a> Serialize for BasicVariableWrapper<'a> {
         S: Serializer,
     {
         let has_comment = !self.comp.description.is_empty();
-        let map_size = if has_comment { 4 } else { 3 };
+        let has_annotation = !self.comp.annotation.is_empty();
+        let mut map_size = 3;
+        if has_comment {
+            map_size += 1;
+        }
+        if has_annotation {
+            map_size += 1;
+        }
 
         let mut map = serializer.serialize_map(Some(map_size))?;
 
@@ -272,6 +290,10 @@ impl<'a> Serialize for BasicVariableWrapper<'a> {
             map.serialize_entry("comment", &comment)?;
         }
 
+        if has_annotation {
+            map.serialize_entry("annotation", &AnnotationWrapper(&self.comp.annotation))?;
+        }
+
         map.end()
     }
 }
@@ -286,6 +308,22 @@ impl<'a> Serialize for NameWrapper<'a> {
     {
         let parts: Vec<&str> = self.0.name.iter().map(|t| t.text.as_str()).collect();
         serializer.serialize_str(&parts.join("."))
+    }
+}
+
+/// Wrapper for annotation serialization (array of expressions)
+struct AnnotationWrapper<'a>(&'a Vec<Expression>);
+
+impl<'a> Serialize for AnnotationWrapper<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for expr in self.0 {
+            seq.serialize_element(&ExpressionWrapper(expr))?;
+        }
+        seq.end()
     }
 }
 

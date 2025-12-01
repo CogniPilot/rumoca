@@ -48,7 +48,7 @@ model RigidBody6DOF
   parameter Real J_y = 1;
   parameter Real J_z = 1;
   parameter Real J_xz = 0.0;
-  parameter Real Lambda = 1; / / Jx * Jz - Jxz * Jxz;
+  parameter Real Lambda = 1;  // Jx * Jz - Jxz * Jxz;
   Real x, y, h;
   Real P, Q, R;
   Real U, V, W;

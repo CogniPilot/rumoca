@@ -110,14 +110,16 @@ class CompilationResult:
             >>> code = result.export("/path/to/my_template.jinja")
         """
         template_path = _resolve_template_path(template)
+        model_name = _extract_model_name(self._model_file)
 
         try:
             proc_result = subprocess.run(
                 [
                     str(self._rumoca_bin),
-                    str(self._model_file),
+                    "-m", model_name,
                     "--template-file",
                     str(template_path),
+                    str(self._model_file),
                 ],
                 capture_output=True,
                 text=True,
@@ -142,8 +144,10 @@ class CompilationResult:
             CompilationError: If export fails (requires Rumoca v0.6.0+)
         """
         try:
+            # Extract model name from file
+            model_name = _extract_model_name(self._model_file)
             proc_result = subprocess.run(
-                [str(self._rumoca_bin), str(self._model_file), "--json"],
+                [str(self._rumoca_bin), "--json", "-m", model_name, str(self._model_file)],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -229,10 +233,11 @@ def compile(
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_file}")
 
-    # Quick validation: try to compile without template
+    # Extract model name and quick validation
+    model_name = _extract_model_name(model_path)
     try:
         subprocess.run(
-            [str(rumoca_path), str(model_path)],
+            [str(rumoca_path), "-m", model_name, str(model_path)],
             capture_output=True,
             text=True,
             check=True,
@@ -346,6 +351,39 @@ def _extract_unimplemented_feature(stderr: str) -> str:
             if len(parts) == 2:
                 return parts[1].strip()
     return "unknown feature"
+
+
+def _extract_model_name(model_file: Path) -> str:
+    """
+    Extract the model name from a Modelica file.
+
+    Searches for 'model <name>' or 'class <name>' declaration.
+
+    Args:
+        model_file: Path to the Modelica file
+
+    Returns:
+        Model name extracted from file
+
+    Raises:
+        CompilationError: If no model declaration found
+    """
+    import re
+
+    try:
+        with open(model_file, 'r') as f:
+            content = f.read()
+
+        # Look for model or class declaration
+        match = re.search(r'\b(model|class)\s+(\w+)', content)
+        if match:
+            return match.group(2)
+
+        raise CompilationError(
+            f"Could not find model or class declaration in {model_file}"
+        )
+    except IOError as e:
+        raise CompilationError(f"Could not read model file {model_file}: {e}")
 
 
 def _find_rumoca_binary() -> Optional[Path]:
