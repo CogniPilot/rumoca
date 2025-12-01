@@ -145,7 +145,7 @@ fn test_create_dae_connection_equations() {
     assert!(
         var_names
             .iter()
-            .any(|n| n.contains("_v") || n.contains("_i")),
+            .any(|n| n.contains(".v") || n.contains(".i")),
         "Should have voltage or current state variables"
     );
 }
@@ -154,7 +154,7 @@ fn test_create_dae_connection_equations() {
 fn test_simple_circuit_blt_causalization() {
     // This test verifies the BLT transformation properly causalizes the circuit equations.
     // The circuit has:
-    // - 2 state variables: C_v (capacitor voltage), L1_i (inductor current)
+    // - 2 state variables: C.v (capacitor voltage), L1.i (inductor current)
     // - 30 algebraic variables from expanded connect equations and component equations
     // - 32 equations total (all should be causalized to form: var = expr)
     use rumoca::ir::ast::Equation;
@@ -164,9 +164,9 @@ fn test_simple_circuit_blt_causalization() {
     let dae = create_dae(&mut fclass).unwrap();
 
     // Verify we have the expected states
-    assert_eq!(dae.x.len(), 2, "Should have exactly 2 states (C_v, L1_i)");
-    assert!(dae.x.contains_key("C_v"), "Should have C_v state");
-    assert!(dae.x.contains_key("L1_i"), "Should have L1_i state");
+    assert_eq!(dae.x.len(), 2, "Should have exactly 2 states (C.v, L1.i)");
+    assert!(dae.x.contains_key("C.v"), "Should have C.v state");
+    assert!(dae.x.contains_key("L1.i"), "Should have L1.i state");
 
     // Verify we have 32 continuous equations
     assert_eq!(
@@ -205,10 +205,10 @@ fn test_simple_circuit_blt_causalization() {
     );
 
     // Verify parameters exist
-    assert!(dae.p.contains_key("R1_R"), "Should have R1_R parameter");
-    assert!(dae.p.contains_key("C_C"), "Should have C_C parameter");
-    assert!(dae.p.contains_key("R2_R"), "Should have R2_R parameter");
-    assert!(dae.p.contains_key("L1_L"), "Should have L1_L parameter");
+    assert!(dae.p.contains_key("R1.R"), "Should have R1.R parameter");
+    assert!(dae.p.contains_key("C.C"), "Should have C.C parameter");
+    assert!(dae.p.contains_key("R2.R"), "Should have R2.R parameter");
+    assert!(dae.p.contains_key("L1.L"), "Should have L1.L parameter");
 }
 
 #[test]

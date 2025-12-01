@@ -30,11 +30,11 @@ fn test_flatten_hierarchical_rover() {
     let fclass = flatten(&def, Some("Rover")).unwrap();
 
     // Rover has hierarchical components that should be flattened
-    // Look for underscores in component names (flattened subcomponents)
-    let has_flattened_names = fclass.components.keys().any(|k| k.contains('_'));
+    // Look for dots in component names (flattened subcomponents)
+    let has_flattened_names = fclass.components.keys().any(|k| k.contains('.'));
 
     if !has_flattened_names {
-        // If no underscores, model might be simpler than expected
+        // If no dots, model might be simpler than expected
         // Just ensure it flattened successfully
         assert!(!fclass.components.is_empty());
     }
@@ -110,46 +110,46 @@ fn test_flatten_scoping_with_nested_extends() {
     // This tests that nested inheritance is properly handled:
     // - ScopingTest has components e1, e2 of type Extended
     // - Extended extends Base, which has x and k
-    // - After flattening, we should have e1_x, e1_k, e1_y, e2_x, e2_k, e2_y, total
+    // - After flattening, we should have e1.x, e1.k, e1.y, e2.x, e2.k, e2.y, total
     let def = parse_test_file("scoping_test").unwrap();
     let fclass = flatten(&def, Some("ScopingTest")).unwrap();
 
     // Check that we have the expected flattened components
     let component_names: Vec<&String> = fclass.components.keys().collect();
 
-    // Should have e1_x (inherited from Base via Extended)
+    // Should have e1.x (inherited from Base via Extended)
     assert!(
-        fclass.components.contains_key("e1_x"),
-        "Should have e1_x (inherited from Base). Got: {:?}",
+        fclass.components.contains_key("e1.x"),
+        "Should have e1.x (inherited from Base). Got: {:?}",
         component_names
     );
-    // Should have e1_k (inherited from Base via Extended)
+    // Should have e1.k (inherited from Base via Extended)
     assert!(
-        fclass.components.contains_key("e1_k"),
-        "Should have e1_k (inherited from Base). Got: {:?}",
+        fclass.components.contains_key("e1.k"),
+        "Should have e1.k (inherited from Base). Got: {:?}",
         component_names
     );
-    // Should have e1_y (from Extended)
+    // Should have e1.y (from Extended)
     assert!(
-        fclass.components.contains_key("e1_y"),
-        "Should have e1_y (from Extended). Got: {:?}",
+        fclass.components.contains_key("e1.y"),
+        "Should have e1.y (from Extended). Got: {:?}",
         component_names
     );
 
     // Same for e2
     assert!(
-        fclass.components.contains_key("e2_x"),
-        "Should have e2_x. Got: {:?}",
+        fclass.components.contains_key("e2.x"),
+        "Should have e2.x. Got: {:?}",
         component_names
     );
     assert!(
-        fclass.components.contains_key("e2_k"),
-        "Should have e2_k. Got: {:?}",
+        fclass.components.contains_key("e2.k"),
+        "Should have e2.k. Got: {:?}",
         component_names
     );
     assert!(
-        fclass.components.contains_key("e2_y"),
-        "Should have e2_y. Got: {:?}",
+        fclass.components.contains_key("e2.y"),
+        "Should have e2.y. Got: {:?}",
         component_names
     );
 

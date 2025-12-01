@@ -118,8 +118,8 @@ fn resolve_class(
     Ok(resolved)
 }
 
-/// Creates a component reference from a flattened name like "R1_p_v"
-/// The name stays as a single identifier (no dots) since flattened names use underscores
+/// Creates a component reference from a flattened name like "R1.p.v"
+/// The name stays as a single identifier since flattened names use dots
 fn make_comp_ref(name: &str) -> ComponentReference {
     ComponentReference {
         local: false,
@@ -218,7 +218,7 @@ fn expand_connect_equations(
     }
 
     // Build connection sets using a simple union-find approach
-    // Each pin is represented as "component_subcomponent" (e.g., "R1_p")
+    // Each pin is represented as "component.subcomponent" (e.g., "R1.p")
     let mut parent: IndexMap<String, String> = IndexMap::new();
 
     fn find(parent: &mut IndexMap<String, String>, x: &str) -> String {
@@ -245,15 +245,15 @@ fn expand_connect_equations(
 
     // Process connect equations to build union-find structure
     for (lhs, rhs) in &connect_eqs {
-        let lhs_name = lhs.to_string().replace('.', "_");
-        let rhs_name = rhs.to_string().replace('.', "_");
+        let lhs_name = lhs.to_string();
+        let rhs_name = rhs.to_string();
         union(&mut parent, &lhs_name, &rhs_name);
     }
 
     // Group all pins by their root
     for (lhs, rhs) in &connect_eqs {
-        let lhs_name = lhs.to_string().replace('.', "_");
-        let rhs_name = rhs.to_string().replace('.', "_");
+        let lhs_name = lhs.to_string();
+        let rhs_name = rhs.to_string();
 
         let root = find(&mut parent, &lhs_name);
         connection_sets
@@ -305,14 +305,14 @@ fn generate_connection_equations(
             // Flow variable: sum of all = 0
             let flow_vars: Vec<String> = pins
                 .iter()
-                .map(|pin| format!("{}_{}", pin, var_name))
+                .map(|pin| format!("{}.{}", pin, var_name))
                 .collect();
             equations.push(make_sum_eq(&flow_vars));
         } else {
             // Non-flow (potential) variable: all equal to first
-            let first_var = format!("{}_{}", pins[0], var_name);
+            let first_var = format!("{}.{}", pins[0], var_name);
             for pin in pins.iter().skip(1) {
-                let other_var = format!("{}_{}", pin, var_name);
+                let other_var = format!("{}.{}", pin, var_name);
                 equations.push(make_simple_eq(&first_var, &other_var));
             }
         }
@@ -375,7 +375,7 @@ fn expand_component(
         fclass.equations.push(feq);
     }
 
-    // Expand comp.sub_comp names to use underscores in existing equations
+    // Expand comp.sub_comp names to use dots in existing equations
     fclass.accept(&mut SubCompNamer {
         comp: comp_name.to_string(),
     });
@@ -387,7 +387,7 @@ fn expand_component(
         .iter()
         .map(|(subcomp_name, subcomp)| {
             let mut scomp = subcomp.clone();
-            let name = format!("{}_{}", comp_name, subcomp_name);
+            let name = format!("{}.{}", comp_name, subcomp_name);
             scomp.name = name.clone();
             (name, scomp)
         })
@@ -427,7 +427,7 @@ fn expand_component(
 /// - Extracting the main class (specified by name, or first in the definition if None)
 /// - Processing extend clauses to inherit components and equations
 /// - Expanding components that reference other classes by:
-///   - Flattening nested component names with underscores (e.g., `comp.subcomp` → `comp_subcomp`)
+///   - Flattening nested component names with dots (e.g., `comp.subcomp` stays as `comp.subcomp`)
 ///   - Adding scoped prefixes to equation references
 ///   - Removing the parent component and adding all subcomponents directly
 ///
@@ -463,8 +463,8 @@ fn expand_component(
 /// This function produces a flat class:
 /// ```text
 /// class Main
-///   Real comp_x;
-///   Real comp_y;
+///   Real comp.x;
+///   Real comp.y;
 /// end Main;
 /// ```
 ///
@@ -555,7 +555,7 @@ pub fn flatten(
     let symbol_table = SymbolTable::new();
 
     // Track connector types for connect equation expansion
-    // Maps flattened pin names (e.g., "R1_p") to their connector type (e.g., "Pin")
+    // Maps flattened pin names (e.g., "R1.p") to their connector type (e.g., "Pin")
     let mut pin_types: IndexMap<String, String> = IndexMap::new();
 
     // Collect component names that need expansion (to avoid borrow issues)

@@ -5,14 +5,14 @@
 //! It operates by checking if the first part of the component reference matches
 //! the specified component name (`comp`). If a match is found, the first part
 //! of the reference is removed, and the next part is renamed by prefixing it
-//! with the component name.
+//! with the component name using dot notation.
 //!
 //! # Fields
 //! - `comp`: The name of the component to match and use as a prefix for renaming.
 //!
 //! # Example
 //! Given a component reference like `comp.subcomp`, if `comp` is set to `"comp"`,
-//! the visitor will transform it into `comp_subcomp`.
+//! the visitor will transform it into `comp.subcomp` (flattened with dot separator).
 //!
 //! # Trait Implementations
 //! Implements the `Visitor` trait, specifically overriding the
@@ -35,7 +35,7 @@ impl Visitor for SubCompNamer {
         // A single-part reference doesn't need transformation
         if node.parts.len() >= 2 && node.parts[0].ident.text == self.comp {
             node.parts.remove(0);
-            node.parts[0].ident.text = format!("{}_{}", self.comp, node.parts[0].ident.text);
+            node.parts[0].ident.text = format!("{}.{}", self.comp, node.parts[0].ident.text);
         }
     }
 }
