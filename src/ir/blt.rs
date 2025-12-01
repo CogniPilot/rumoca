@@ -887,10 +887,8 @@ mod tests {
         let order: Vec<String> = result
             .iter()
             .filter_map(|eq| {
-                if let Equation::Simple { lhs, .. } = eq {
-                    if let Expression::ComponentReference(cref) = lhs {
-                        return Some(cref.to_string());
-                    }
+                if let Equation::Simple { lhs: Expression::ComponentReference(cref), .. } = eq {
+                    return Some(cref.to_string());
                 }
                 None
             })
