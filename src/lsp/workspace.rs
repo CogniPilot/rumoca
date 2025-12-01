@@ -19,6 +19,51 @@ use crate::ir::multi_file::{discover_modelica_files, get_modelica_path, is_model
 
 use super::utils::parse_document;
 
+/// Directories to skip when discovering Modelica packages.
+/// These are common directories that should never contain Modelica code.
+const IGNORED_DIRECTORIES: &[&str] = &[
+    // Version control
+    ".git",
+    ".hg",
+    ".svn",
+    // Build artifacts
+    "target",
+    "build",
+    "out",
+    "dist",
+    "_build",
+    "cmake-build-debug",
+    "cmake-build-release",
+    // Dependencies
+    "node_modules",
+    ".npm",
+    "vendor",
+    // Virtual environments
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "__pycache__",
+    ".tox",
+    // IDE/Editor
+    ".idea",
+    ".vscode",
+    ".vs",
+    // Rust
+    ".cargo",
+    // Python
+    ".eggs",
+    "*.egg-info",
+    ".mypy_cache",
+    ".pytest_cache",
+    // Other
+    ".cache",
+    ".tmp",
+    "tmp",
+    "temp",
+    ".DS_Store",
+];
+
 /// Information about a symbol in the workspace
 #[derive(Debug, Clone)]
 pub struct WorkspaceSymbol {
@@ -124,8 +169,28 @@ impl WorkspaceState {
         }
     }
 
+    /// Check if a directory should be ignored during package discovery
+    fn should_ignore_directory(path: &Path) -> bool {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            // Check against the ignore list
+            if IGNORED_DIRECTORIES.contains(&name) {
+                return true;
+            }
+            // Also ignore hidden directories (starting with .)
+            if name.starts_with('.') && name != "." && name != ".." {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Discover Modelica packages in a folder
     fn discover_packages_in_folder(&mut self, folder: &Path) {
+        // Skip ignored directories
+        if Self::should_ignore_directory(folder) {
+            return;
+        }
+
         if is_modelica_package(folder) {
             self.package_roots.push(folder.to_path_buf());
             // Discover all files in this package
@@ -140,7 +205,10 @@ impl WorkspaceState {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
-                        self.discover_packages_in_folder(&path);
+                        // Skip ignored directories
+                        if !Self::should_ignore_directory(&path) {
+                            self.discover_packages_in_folder(&path);
+                        }
                     } else if path.extension().is_some_and(|e| e == "mo") {
                         self.discovered_files.insert(path);
                     }

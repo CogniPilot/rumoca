@@ -13,6 +13,64 @@ use crate::ir::ast::{ClassDefinition, StoredDefinition};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Directories to skip when discovering Modelica files.
+/// These are common directories that should never contain Modelica code.
+const IGNORED_DIRECTORIES: &[&str] = &[
+    // Version control
+    ".git",
+    ".hg",
+    ".svn",
+    // Build artifacts
+    "target",
+    "build",
+    "out",
+    "dist",
+    "_build",
+    "cmake-build-debug",
+    "cmake-build-release",
+    // Dependencies
+    "node_modules",
+    ".npm",
+    "vendor",
+    // Virtual environments
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "__pycache__",
+    ".tox",
+    // IDE/Editor
+    ".idea",
+    ".vscode",
+    ".vs",
+    // Rust
+    ".cargo",
+    // Python
+    ".eggs",
+    ".mypy_cache",
+    ".pytest_cache",
+    // Other
+    ".cache",
+    ".tmp",
+    "tmp",
+    "temp",
+];
+
+/// Check if a directory should be ignored during file discovery
+fn should_ignore_directory(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        // Check against the ignore list
+        if IGNORED_DIRECTORIES.contains(&name) {
+            return true;
+        }
+        // Also ignore hidden directories (starting with .)
+        if name.starts_with('.') && name != "." && name != ".." {
+            return true;
+        }
+    }
+    false
+}
+
 /// Merge multiple StoredDefinitions into a single one.
 ///
 /// This function combines class definitions from multiple files, using the `within`
@@ -233,13 +291,18 @@ pub fn find_modelica_files(search_paths: &[std::path::PathBuf]) -> Result<Vec<st
 
 /// Recursively find .mo files in a directory
 fn find_files_recursive(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> Result<()> {
+    // Skip ignored directories
+    if should_ignore_directory(dir) {
+        return Ok(());
+    }
+
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_file() && path.extension().is_some_and(|e| e == "mo") {
             files.push(path);
-        } else if path.is_dir() {
+        } else if path.is_dir() && !should_ignore_directory(&path) {
             find_files_recursive(&path, files)?;
         }
     }
