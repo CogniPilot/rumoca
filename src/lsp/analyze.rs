@@ -4,7 +4,7 @@
 
 use lsp_types::Uri;
 
-use crate::ir::balance_check::check_dae_balance;
+use crate::ir::analysis::balance_check::check_dae_balance;
 
 use super::WorkspaceState;
 use super::utils::parse_document;

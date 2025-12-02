@@ -23,6 +23,8 @@
 
 #![cfg(feature = "lsp")]
 
+mod common;
+
 use std::collections::HashMap;
 
 use lsp_types::{
@@ -42,16 +44,12 @@ use rumoca::lsp::{
     handle_signature_help, handle_workspace_symbol,
 };
 
-/// Helper to create a test document map
-fn create_test_documents(uri: &Uri, content: &str) -> HashMap<Uri, String> {
-    let mut docs = HashMap::new();
-    docs.insert(uri.clone(), content.to_string());
-    docs
-}
+// Use common LSP test utilities
+use common::lsp::{create_documents, test_uri};
 
-/// Helper to create a test URI
-fn test_uri() -> Uri {
-    "file:///tmp/test.mo".parse().unwrap()
+// Backwards compatible alias
+fn create_test_documents(uri: &Uri, content: &str) -> HashMap<Uri, String> {
+    create_documents(uri, content)
 }
 
 // ============================================================================

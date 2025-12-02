@@ -8,19 +8,20 @@
 
 pub mod compiler;
 pub mod dae;
-pub mod errors;
-pub mod formatter;
+pub mod fmt;
 pub mod ir;
 pub mod lint;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod modelica_grammar;
-pub mod modelica_grammar_trait;
-pub mod modelica_parser;
+
+// Re-export generated modules from modelica_grammar::generated for backward compatibility
+pub use modelica_grammar::generated::modelica_grammar_trait;
+pub use modelica_grammar::generated::modelica_parser;
 
 // Re-export the main API types for convenience
 pub use compiler::{CompilationResult, Compiler};
-pub use formatter::{CONFIG_FILE_NAMES, FormatOptions, format_modelica};
+pub use fmt::{format_modelica, FormatOptions, CONFIG_FILE_NAMES};
 pub use lint::{
     LINT_CONFIG_FILE_NAMES, LintConfig, LintLevel, LintMessage, LintResult, lint_file, lint_str,
 };

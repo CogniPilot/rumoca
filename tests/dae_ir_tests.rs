@@ -2,8 +2,8 @@ mod common;
 
 use common::parse_test_file;
 use rumoca::dae::dae_ir::DaeIR;
-use rumoca::ir::create_dae::create_dae;
-use rumoca::ir::flatten::flatten;
+use rumoca::ir::structural::create_dae::create_dae;
+use rumoca::ir::transform::flatten::flatten;
 use serde_json::Value;
 
 #[test]

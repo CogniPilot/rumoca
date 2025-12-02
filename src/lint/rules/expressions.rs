@@ -1,0 +1,171 @@
+//! Expression analysis lint rules.
+//!
+//! Rules for checking magic numbers and complex expressions.
+
+use std::collections::HashSet;
+
+use crate::ir::ast::{ClassDefinition, Expression, TerminalType};
+use crate::lint::{LintLevel, LintMessage, LintResult};
+
+/// Check for magic numbers in equations
+pub fn lint_magic_numbers(
+    class: &ClassDefinition,
+    file_path: &str,
+    _source: &str,
+    result: &mut LintResult,
+) {
+    // Common "acceptable" numbers that don't need to be constants
+    let acceptable_numbers: HashSet<&str> = [
+        "0",
+        "1",
+        "2",
+        "-1",
+        "0.0",
+        "1.0",
+        "2.0",
+        "-1.0",
+        "0.5",
+        "10",
+        "100",
+        "3.14159",
+        "3.141592653589793", // pi approximations
+        "2.718281828",       // e approximations
+    ]
+    .iter()
+    .cloned()
+    .collect();
+
+    for eq in &class.equations {
+        check_magic_numbers_in_equation(eq, file_path, &acceptable_numbers, result);
+    }
+}
+
+fn check_magic_numbers_in_equation(
+    eq: &crate::ir::ast::Equation,
+    file_path: &str,
+    acceptable: &HashSet<&str>,
+    result: &mut LintResult,
+) {
+    match eq {
+        crate::ir::ast::Equation::Simple { lhs, rhs } => {
+            check_magic_numbers_in_expr(lhs, file_path, acceptable, result);
+            check_magic_numbers_in_expr(rhs, file_path, acceptable, result);
+        }
+        crate::ir::ast::Equation::For { equations, .. } => {
+            for sub_eq in equations {
+                check_magic_numbers_in_equation(sub_eq, file_path, acceptable, result);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_magic_numbers_in_expr(
+    expr: &Expression,
+    file_path: &str,
+    acceptable: &HashSet<&str>,
+    result: &mut LintResult,
+) {
+    match expr {
+        Expression::Terminal {
+            terminal_type: TerminalType::UnsignedReal,
+            token,
+        } => {
+            if !acceptable.contains(token.text.as_str()) {
+                // Check if it looks like a "magic number" (specific constants)
+                if let Ok(val) = token.text.parse::<f64>() {
+                    // Skip very small or very large numbers (likely physical constants)
+                    if val.abs() > 1e-6 && val.abs() < 1e6 && val.fract() != 0.0 {
+                        result.messages.push(
+                            LintMessage::new(
+                                "magic-number",
+                                LintLevel::Help,
+                                format!(
+                                    "Consider using a named constant instead of '{}'",
+                                    token.text
+                                ),
+                                file_path,
+                                token.location.start_line,
+                                token.location.start_column,
+                            )
+                            .with_suggestion(
+                                "Define as a parameter: parameter Real myConstant = ...",
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            check_magic_numbers_in_expr(lhs, file_path, acceptable, result);
+            check_magic_numbers_in_expr(rhs, file_path, acceptable, result);
+        }
+        Expression::Unary { rhs, .. } => {
+            check_magic_numbers_in_expr(rhs, file_path, acceptable, result);
+        }
+        Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                check_magic_numbers_in_expr(arg, file_path, acceptable, result);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Check for overly complex expressions
+pub fn lint_complex_expressions(class: &ClassDefinition, file_path: &str, result: &mut LintResult) {
+    for eq in &class.equations {
+        if let crate::ir::ast::Equation::Simple { lhs, rhs } = eq {
+            let lhs_depth = expression_depth(lhs);
+            let rhs_depth = expression_depth(rhs);
+
+            if lhs_depth > 5 || rhs_depth > 5 {
+                if let Some(loc) = lhs.get_location() {
+                    result.messages.push(
+                        LintMessage::new(
+                            "complex-expression",
+                            LintLevel::Note,
+                            "Expression is deeply nested - consider breaking into intermediate variables",
+                            file_path,
+                            loc.start_line,
+                            loc.start_column,
+                        )
+                        .with_suggestion("Extract sub-expressions into named variables for clarity"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn expression_depth(expr: &Expression) -> usize {
+    match expr {
+        Expression::Empty | Expression::Terminal { .. } | Expression::ComponentReference(_) => 1,
+        Expression::Binary { lhs, rhs, .. } => 1 + expression_depth(lhs).max(expression_depth(rhs)),
+        Expression::Unary { rhs, .. } => 1 + expression_depth(rhs),
+        Expression::FunctionCall { args, .. } => {
+            1 + args.iter().map(expression_depth).max().unwrap_or(0)
+        }
+        Expression::Array { elements } | Expression::Tuple { elements } => {
+            1 + elements.iter().map(expression_depth).max().unwrap_or(0)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            let branch_depth = branches
+                .iter()
+                .map(|(c, e)| expression_depth(c).max(expression_depth(e)))
+                .max()
+                .unwrap_or(0);
+            1 + branch_depth.max(expression_depth(else_branch))
+        }
+        Expression::Range { start, step, end } => {
+            let step_depth = step.as_ref().map(|s| expression_depth(s)).unwrap_or(0);
+            1 + expression_depth(start)
+                .max(step_depth)
+                .max(expression_depth(end))
+        }
+        Expression::Parenthesized { inner } => expression_depth(inner),
+    }
+}

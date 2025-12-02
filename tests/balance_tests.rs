@@ -1,13 +1,14 @@
+//! Balance check tests for Modelica models.
+//!
+//! Tests that models are correctly analyzed for equation/variable balance.
+
 mod common;
 
-use rumoca::Compiler;
+use common::compile_fixture;
 
 #[test]
 fn test_balanced_integrator() {
-    let result = Compiler::new()
-        .model("Integrator")
-        .compile_file("tests/fixtures/integrator.mo")
-        .unwrap();
+    let result = compile_fixture("integrator", "Integrator").unwrap();
 
     assert!(result.is_balanced(), "Integrator should be balanced");
     assert!(result.balance_status().contains("balanced"));
@@ -18,10 +19,7 @@ fn test_balanced_integrator() {
 
 #[test]
 fn test_balanced_bouncing_ball() {
-    let result = Compiler::new()
-        .model("BouncingBall")
-        .compile_file("tests/fixtures/bouncing_ball.mo")
-        .unwrap();
+    let result = compile_fixture("bouncing_ball", "BouncingBall").unwrap();
 
     assert!(result.is_balanced(), "BouncingBall should be balanced");
     // h and v are states, one algebraic (flying)
@@ -30,10 +28,7 @@ fn test_balanced_bouncing_ball() {
 
 #[test]
 fn test_over_determined_model() {
-    let result = Compiler::new()
-        .model("UnbalancedOverdetermined")
-        .compile_file("tests/fixtures/unbalanced_overdetermined.mo")
-        .unwrap();
+    let result = compile_fixture("unbalanced_overdetermined", "UnbalancedOverdetermined").unwrap();
 
     assert!(
         !result.is_balanced(),
@@ -45,10 +40,8 @@ fn test_over_determined_model() {
 
 #[test]
 fn test_under_determined_model() {
-    let result = Compiler::new()
-        .model("UnbalancedUnderdetermined")
-        .compile_file("tests/fixtures/unbalanced_underdetermined.mo")
-        .unwrap();
+    let result =
+        compile_fixture("unbalanced_underdetermined", "UnbalancedUnderdetermined").unwrap();
 
     assert!(
         !result.is_balanced(),
@@ -60,10 +53,7 @@ fn test_under_determined_model() {
 
 #[test]
 fn test_balance_difference() {
-    let result = Compiler::new()
-        .model("UnbalancedOverdetermined")
-        .compile_file("tests/fixtures/unbalanced_overdetermined.mo")
-        .unwrap();
+    let result = compile_fixture("unbalanced_overdetermined", "UnbalancedOverdetermined").unwrap();
 
     let diff = result.balance.difference();
     assert!(
@@ -71,10 +61,8 @@ fn test_balance_difference() {
         "Over-determined model should have positive difference"
     );
 
-    let result = Compiler::new()
-        .model("UnbalancedUnderdetermined")
-        .compile_file("tests/fixtures/unbalanced_underdetermined.mo")
-        .unwrap();
+    let result =
+        compile_fixture("unbalanced_underdetermined", "UnbalancedUnderdetermined").unwrap();
 
     let diff = result.balance.difference();
     assert!(

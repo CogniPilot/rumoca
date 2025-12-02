@@ -1,14 +1,20 @@
+//! DAE (Differential-Algebraic Equation) creation tests.
+//!
+//! Tests that models are correctly converted to DAE form.
+
 mod common;
 
-use common::parse_test_file;
-use rumoca::ir::create_dae::create_dae;
-use rumoca::ir::flatten::flatten;
+use common::{create_dae_from_fixture, parse_test_file};
+use rumoca::ir::structural::create_dae::create_dae;
+use rumoca::ir::transform::flatten::flatten;
+
+// =============================================================================
+// Basic DAE Creation Tests
+// =============================================================================
 
 #[test]
 fn test_create_dae_integrator() {
-    let def = parse_test_file("integrator").unwrap();
-    let mut fclass = flatten(&def, Some("Integrator")).unwrap();
-    let dae = create_dae(&mut fclass).unwrap();
+    let dae = create_dae_from_fixture("integrator", "Integrator").unwrap();
 
     // Integrator should have state variable
     assert!(!dae.x.is_empty(), "Should have states");
@@ -19,9 +25,7 @@ fn test_create_dae_integrator() {
 
 #[test]
 fn test_create_dae_bouncing_ball() {
-    let def = parse_test_file("bouncing_ball").unwrap();
-    let mut fclass = flatten(&def, Some("BouncingBall")).unwrap();
-    let dae = create_dae(&mut fclass).unwrap();
+    let dae = create_dae_from_fixture("bouncing_ball", "BouncingBall").unwrap();
 
     // Bouncing ball should have states (position, velocity)
     assert!(!dae.x.is_empty(), "Should have states");
@@ -36,9 +40,7 @@ fn test_create_dae_bouncing_ball() {
 
 #[test]
 fn test_create_dae_parameters() {
-    let def = parse_test_file("bouncing_ball").unwrap();
-    let mut fclass = flatten(&def, Some("BouncingBall")).unwrap();
-    let dae = create_dae(&mut fclass).unwrap();
+    let dae = create_dae_from_fixture("bouncing_ball", "BouncingBall").unwrap();
 
     // Bouncing ball has parameters (e, g, etc.)
     assert!(
@@ -49,9 +51,7 @@ fn test_create_dae_parameters() {
 
 #[test]
 fn test_create_dae_metadata() {
-    let def = parse_test_file("integrator").unwrap();
-    let mut fclass = flatten(&def, Some("Integrator")).unwrap();
-    let dae = create_dae(&mut fclass).unwrap();
+    let dae = create_dae_from_fixture("integrator", "Integrator").unwrap();
 
     // Check metadata fields
     assert!(!dae.rumoca_version.is_empty(), "Should have rumoca version");
@@ -63,9 +63,7 @@ fn test_create_dae_metadata() {
 
 #[test]
 fn test_create_dae_rover() {
-    let def = parse_test_file("rover").unwrap();
-    let mut fclass = flatten(&def, Some("Rover")).unwrap();
-    let dae = create_dae(&mut fclass).unwrap();
+    let dae = create_dae_from_fixture("rover", "Rover").unwrap();
 
     // Rover is complex and should have many states
     assert!(!dae.x.is_empty(), "Should have states");
@@ -76,10 +74,14 @@ fn test_create_dae_rover() {
     }
 }
 
+// =============================================================================
+// Multi-Model DAE Tests
+// =============================================================================
+
 #[test]
 fn test_create_dae_supported_models() {
     // Models that we can fully process (no unsupported features)
-    let models = vec![
+    let models = [
         ("integrator", "Integrator"),
         ("bouncing_ball", "BouncingBall"),
         ("rover", "Rover"),
@@ -88,13 +90,7 @@ fn test_create_dae_supported_models() {
     ];
 
     for (file, model_name) in models {
-        let def =
-            parse_test_file(file).unwrap_or_else(|e| panic!("Failed to parse {}: {}", file, e));
-
-        let mut fclass = flatten(&def, Some(model_name))
-            .unwrap_or_else(|e| panic!("Failed to flatten {}: {}", file, e));
-
-        let dae = create_dae(&mut fclass)
+        let dae = create_dae_from_fixture(file, model_name)
             .unwrap_or_else(|e| panic!("Failed to create DAE for {}: {}", file, e));
 
         // All models should have some form of equations or states
@@ -109,23 +105,14 @@ fn test_create_dae_supported_models() {
     }
 }
 
+// =============================================================================
+// Circuit Model Tests
+// =============================================================================
+
 #[test]
 fn test_create_dae_connection_equations() {
     // simple_circuit has connection equations that are now properly expanded
-    let def = parse_test_file("simple_circuit").unwrap();
-
-    // Flattening should succeed with connection equation expansion
-    let mut fclass = flatten(&def, Some("SimpleCircuit")).unwrap();
-
-    // DAE creation should now succeed with expanded connect equations
-    let result = create_dae(&mut fclass);
-    assert!(
-        result.is_ok(),
-        "simple_circuit should now compile successfully: {:?}",
-        result.err()
-    );
-
-    let dae = result.unwrap();
+    let dae = create_dae_from_fixture("simple_circuit", "SimpleCircuit").unwrap();
 
     // Verify the DAE has the expected structure
     // simple_circuit has: R1, C, R2, L1, AC, G
@@ -222,9 +209,7 @@ fn test_simple_circuit_equation_order() {
     use rumoca::ir::ast::{Equation, Expression};
     use std::collections::HashSet;
 
-    let def = parse_test_file("simple_circuit").unwrap();
-    let mut fclass = flatten(&def, Some("SimpleCircuit")).unwrap();
-    let dae = create_dae(&mut fclass).unwrap();
+    let dae = create_dae_from_fixture("simple_circuit", "SimpleCircuit").unwrap();
 
     // Build set of "known" variables before processing equations
     let mut known: HashSet<String> = HashSet::new();
@@ -296,6 +281,10 @@ fn test_simple_circuit_equation_order() {
     }
 }
 
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
 /// Extract variable names from an expression (helper for tests)
 fn extract_variables(expr: &rumoca::ir::ast::Expression) -> Vec<String> {
     use rumoca::ir::ast::Expression;
@@ -341,6 +330,9 @@ fn extract_variables(expr: &rumoca::ir::ast::Expression) -> Vec<String> {
         }
         Expression::Terminal { .. } | Expression::Empty => {
             // No variables in terminals/literals
+        }
+        Expression::Parenthesized { inner } => {
+            vars.extend(extract_variables(inner));
         }
     }
 

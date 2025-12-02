@@ -55,7 +55,7 @@ pub struct Location {
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct Token {
     pub text: String,
     pub location: Location,
@@ -70,7 +70,7 @@ impl Debug for Token {
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct Name {
     pub name: Vec<Token>,
 }
@@ -96,14 +96,14 @@ impl Debug for Name {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct StoredDefinition {
     pub class_list: IndexMap<String, ClassDefinition>,
     pub within: Option<Name>,
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct Component {
     pub name: String,
     /// The token for the component name with exact source location
@@ -114,6 +114,8 @@ pub struct Component {
     pub connection: Connection,
     pub description: Vec<Token>,
     pub start: Expression,
+    /// True if start value is from a modification (start=x), false if from binding (= x)
+    pub start_is_modification: bool,
     /// Array dimensions - empty for scalars, e.g., [2, 3] for a 2x3 matrix
     pub shape: Vec<usize>,
     /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)
@@ -172,11 +174,13 @@ pub enum ClassType {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct ClassDefinition {
     pub name: Token,
     pub class_type: ClassType,
     pub encapsulated: bool,
+    /// Description string for this class (e.g., "A test model")
+    pub description: Vec<Token>,
     /// Full source location spanning from class keyword to end statement
     pub location: Location,
     pub extends: Vec<Extend>,
@@ -201,7 +205,7 @@ pub struct ClassDefinition {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct Extend {
     pub comp: Name,
     /// Source location of the extends clause
@@ -257,7 +261,7 @@ impl Import {
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct ComponentRefPart {
     pub ident: Token,
     pub subs: Option<Vec<Subscript>>,
@@ -281,7 +285,7 @@ impl Debug for ComponentRefPart {
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct ComponentReference {
     pub local: bool,
     pub parts: Vec<ComponentRefPart>,
@@ -315,28 +319,28 @@ impl ComponentReference {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct EquationBlock {
     pub cond: Expression,
     pub eqs: Vec<Equation>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct StatementBlock {
     pub cond: Expression,
     pub stmts: Vec<Statement>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub struct ForIndex {
     pub ident: Token,
     pub range: Expression,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub enum Equation {
     #[default]
     Empty,
@@ -427,7 +431,7 @@ pub enum TerminalType {
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub enum Expression {
     #[default]
     Empty,
@@ -467,6 +471,10 @@ pub enum Expression {
         branches: Vec<(Expression, Expression)>,
         /// The else branch expression
         else_branch: Box<Expression>,
+    },
+    /// Parenthesized expression to preserve explicit parentheses from source
+    Parenthesized {
+        inner: Box<Expression>,
     },
 }
 
@@ -523,6 +531,9 @@ impl Debug for Expression {
                 }
                 write!(f, " else {:?}", else_branch)
             }
+            Expression::Parenthesized { inner } => {
+                write!(f, "({:?})", inner)
+            }
         }
     }
 }
@@ -548,12 +559,13 @@ impl Expression {
             Expression::If { branches, .. } => {
                 branches.first().and_then(|(cond, _)| cond.get_location())
             }
+            Expression::Parenthesized { inner } => inner.get_location(),
         }
     }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub enum Statement {
     #[default]
     Empty,
@@ -586,7 +598,7 @@ pub enum Statement {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub enum Subscript {
     #[default]
     Empty,
@@ -597,7 +609,7 @@ pub enum Subscript {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub enum Variability {
     #[default]
     Empty,
@@ -607,7 +619,7 @@ pub enum Variability {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub enum Connection {
     #[default]
     Empty,
@@ -616,7 +628,7 @@ pub enum Connection {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(unused)]
+
 pub enum Causality {
     #[default]
     Empty,

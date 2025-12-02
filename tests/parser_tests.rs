@@ -1,6 +1,10 @@
+//! Parser tests for Modelica files.
+//!
+//! Tests that various Modelica model files parse correctly.
+
 mod common;
 
-use common::parse_test_file;
+use common::{parse_test_file, STANDARD_FIXTURES};
 
 #[test]
 fn test_parse_integrator() {
@@ -52,16 +56,7 @@ fn test_parse_nightvapor() {
 
 #[test]
 fn test_all_models_parse_successfully() {
-    let models = vec![
-        "integrator",
-        "bouncing_ball",
-        "rover",
-        "quadrotor",
-        "simple_circuit",
-        "nightvapor",
-    ];
-
-    for model in models {
+    for model in STANDARD_FIXTURES {
         parse_test_file(model).unwrap_or_else(|e| panic!("Failed to parse {}: {}", model, e));
     }
 }

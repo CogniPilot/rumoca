@@ -66,7 +66,7 @@ pub trait Visitable {
 /// Mutable visitor trait for AST transformations.
 ///
 /// Implement this trait to modify the AST during traversal.
-#[allow(unused)]
+
 pub trait MutVisitor {
     fn enter_stored_definition(&mut self, _node: &mut ir::ast::StoredDefinition) {}
     fn exit_stored_definition(&mut self, _node: &mut ir::ast::StoredDefinition) {}
@@ -91,7 +91,7 @@ pub trait MutVisitor {
 }
 
 /// Trait for AST nodes that can accept a mutable visitor.
-#[allow(unused)]
+
 pub trait MutVisitable {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V);
 }
@@ -312,6 +312,9 @@ impl Visitable for ir::ast::Expression {
                 }
                 else_branch.accept(visitor);
             }
+            ir::ast::Expression::Parenthesized { inner } => {
+                inner.accept(visitor);
+            }
         }
         visitor.exit_expression(self);
     }
@@ -336,7 +339,7 @@ impl Visitable for ir::ast::ComponentReference {
 // Mutable Visitable Implementations
 // =============================================================================
 
-#[allow(unused)]
+
 impl MutVisitable for ir::ast::StoredDefinition {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_stored_definition(self);
@@ -347,7 +350,7 @@ impl MutVisitable for ir::ast::StoredDefinition {
     }
 }
 
-#[allow(unused)]
+
 impl MutVisitable for ir::ast::ClassDefinition {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_class_definition(self);
@@ -386,7 +389,7 @@ impl MutVisitable for ir::ast::ClassDefinition {
     }
 }
 
-#[allow(unused)]
+
 impl MutVisitable for ir::ast::Equation {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_equation(self);
@@ -443,7 +446,7 @@ impl MutVisitable for ir::ast::Equation {
     }
 }
 
-#[allow(unused)]
+
 impl MutVisitable for ir::ast::Statement {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_statement(self);
@@ -503,7 +506,7 @@ impl MutVisitable for ir::ast::Statement {
     }
 }
 
-#[allow(unused)]
+
 impl MutVisitable for ir::ast::Expression {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_expression(self);
@@ -553,12 +556,15 @@ impl MutVisitable for ir::ast::Expression {
                 }
                 else_branch.accept_mut(visitor);
             }
+            ir::ast::Expression::Parenthesized { inner } => {
+                inner.accept_mut(visitor);
+            }
         }
         visitor.exit_expression(self);
     }
 }
 
-#[allow(unused)]
+
 impl MutVisitable for ir::ast::Component {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_component(self);
@@ -567,7 +573,7 @@ impl MutVisitable for ir::ast::Component {
     }
 }
 
-#[allow(unused)]
+
 impl MutVisitable for ir::ast::ComponentReference {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_component_reference(self);

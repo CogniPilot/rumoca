@@ -1,15 +1,10 @@
+//! Intermediate Representation (IR) for Modelica.
+//!
+//! This module provides the core IR types and transformation passes.
+
+pub mod analysis;
 pub mod ast;
-pub mod balance_check;
-pub mod blt;
-pub mod constants;
-pub mod create_dae;
 pub mod error;
-pub mod flatten;
-pub mod location;
-pub mod multi_file;
-pub mod scope_resolver;
 pub mod structural;
-pub mod symbol_table;
-pub mod tuple_expander;
+pub mod transform;
 pub mod visitor;
-pub mod visitors;

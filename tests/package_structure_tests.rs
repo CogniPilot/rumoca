@@ -3,7 +3,7 @@ use std::path::Path;
 
 #[test]
 fn test_discover_package_files() {
-    use rumoca::ir::multi_file::{discover_package_files, parse_package_order};
+    use rumoca::ir::transform::multi_file::{discover_package_files, parse_package_order};
 
     let package_dir = Path::new("tests/fixtures/package_structure/MyLib");
 
@@ -74,7 +74,7 @@ fn test_compile_package_advanced_model() {
 
 #[test]
 fn test_package_order_respected() {
-    use rumoca::ir::multi_file::discover_package_files;
+    use rumoca::ir::transform::multi_file::discover_package_files;
 
     let examples_dir = Path::new("tests/fixtures/package_structure/MyLib/Examples");
     let files = discover_package_files(examples_dir).unwrap();
@@ -97,7 +97,7 @@ fn test_package_order_respected() {
 
 #[test]
 fn test_modelica_path_lookup() {
-    use rumoca::ir::multi_file::find_package_in_modelica_path;
+    use rumoca::ir::transform::multi_file::find_package_in_modelica_path;
 
     // Save current MODELICAPATH
     let original = std::env::var("MODELICAPATH").ok();

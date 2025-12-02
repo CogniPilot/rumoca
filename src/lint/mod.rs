@@ -30,8 +30,8 @@ use crate::ir::ast::{
     ClassDefinition, ComponentReference, Equation, Expression, Statement, StoredDefinition,
     Variability,
 };
-use crate::ir::constants::global_builtins;
-use crate::ir::flatten::flatten;
+use crate::ir::transform::constants::global_builtins;
+use crate::ir::transform::flatten::flatten;
 
 /// Severity level for lint messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -387,19 +387,17 @@ fn lint_class(
 
 /// Information about a defined symbol for lint analysis
 #[derive(Clone)]
-struct DefinedSymbol {
-    line: u32,
-    col: u32,
-    is_parameter: bool,
-    is_constant: bool,
-    is_class: bool,
-    #[allow(dead_code)]
-    has_default: bool,
-    type_name: String,
+pub struct DefinedSymbol {
+    pub line: u32,
+    pub col: u32,
+    pub is_parameter: bool,
+    pub is_constant: bool,
+    pub is_class: bool,
+    pub type_name: String,
 }
 
 /// Collect defined symbols in a class
-fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, DefinedSymbol> {
+pub fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, DefinedSymbol> {
     let mut defined = HashMap::new();
 
     for (comp_name, comp) in &class.components {
@@ -416,7 +414,6 @@ fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, DefinedSy
             .map(|t| t.location.start_column)
             .unwrap_or(1);
 
-        let has_start = !matches!(comp.start, Expression::Empty);
         let is_parameter = matches!(comp.variability, Variability::Parameter(_));
         let is_constant = matches!(comp.variability, Variability::Constant(_));
         let type_name = comp.type_name.to_string();
@@ -429,7 +426,6 @@ fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, DefinedSy
                 is_parameter,
                 is_constant,
                 is_class: false,
-                has_default: has_start,
                 type_name,
             },
         );
@@ -445,7 +441,6 @@ fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, DefinedSy
                 is_parameter: false,
                 is_constant: false,
                 is_class: true,
-                has_default: true,
                 type_name: nested_name.clone(),
             },
         );
@@ -455,7 +450,7 @@ fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, DefinedSy
 }
 
 /// Collect used symbols from expressions and equations
-fn collect_used_symbols(class: &ClassDefinition) -> HashSet<String> {
+pub fn collect_used_symbols(class: &ClassDefinition) -> HashSet<String> {
     let mut used = HashSet::new();
 
     // From component start expressions
@@ -540,6 +535,9 @@ fn collect_expr_symbols(expr: &Expression, used: &mut HashSet<String>) {
                 collect_expr_symbols(s, used);
             }
             collect_expr_symbols(end, used);
+        }
+        Expression::Parenthesized { inner } => {
+            collect_expr_symbols(inner, used);
         }
     }
 }
@@ -658,7 +656,7 @@ fn collect_comp_ref_symbols(comp_ref: &ComponentReference, used: &mut HashSet<St
 }
 
 /// Check if a type name is a class instance (not primitive)
-fn is_class_instance_type(type_name: &str) -> bool {
+pub fn is_class_instance_type(type_name: &str) -> bool {
     !matches!(
         type_name,
         "Real" | "Integer" | "Boolean" | "String" | "StateSelect" | "ExternalObject"

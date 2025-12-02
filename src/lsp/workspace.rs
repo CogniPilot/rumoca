@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use lsp_types::Uri;
 
 use crate::ir::ast::{ClassDefinition, ClassType, Import, StoredDefinition};
-use crate::ir::balance_check::BalanceCheckResult;
-use crate::ir::multi_file::{discover_modelica_files, get_modelica_path, is_modelica_package};
+use crate::ir::analysis::balance_check::BalanceCheckResult;
+use crate::ir::transform::multi_file::{discover_modelica_files, get_modelica_path, is_modelica_package};
 
 use super::utils::parse_document;
 

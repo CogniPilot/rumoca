@@ -1,7 +1,7 @@
 mod common;
 
 use common::parse_test_file;
-use rumoca::ir::flatten::flatten;
+use rumoca::ir::transform::flatten::flatten;
 
 #[test]
 fn test_flatten_integrator() {
