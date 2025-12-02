@@ -2,8 +2,6 @@
 //!
 //! Provides inline hints for:
 //! - Parameter names in function calls
-//! - Type annotations for variables
-//! - Array dimensions
 
 // Allow mutable key type warning - Uri has interior mutability but we use it correctly
 #![allow(clippy::mutable_key_type)]
@@ -47,53 +45,6 @@ fn collect_class_hints(
     builtins: &HashMap<&str, &FunctionInfo>,
     hints: &mut Vec<InlayHint>,
 ) {
-    // Add type hints for variables with inferred types from expressions
-    for (comp_name, comp) in &class.components {
-        let comp_line = comp
-            .type_name
-            .name
-            .first()
-            .map(|t| t.location.start_line.saturating_sub(1))
-            .unwrap_or(0);
-
-        // Check if this component is in range
-        if comp_line < range.start.line || comp_line > range.end.line {
-            continue;
-        }
-
-        // Add array dimension hints
-        if !comp.shape.is_empty() {
-            let dims = comp
-                .shape
-                .iter()
-                .map(|d| d.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            // Find the position after the variable name
-            // This is approximate - we put it after the type
-            if let Some(last_token) = comp.type_name.name.last() {
-                hints.push(InlayHint {
-                    position: Position {
-                        line: last_token.location.start_line.saturating_sub(1),
-                        character: last_token.location.start_column.saturating_sub(1)
-                            + last_token.text.len() as u32,
-                    },
-                    label: InlayHintLabel::String(format!("[{}]", dims)),
-                    kind: Some(InlayHintKind::TYPE),
-                    text_edits: None,
-                    tooltip: Some(lsp_types::InlayHintTooltip::String(format!(
-                        "Array dimensions for '{}'",
-                        comp_name
-                    ))),
-                    padding_left: Some(false),
-                    padding_right: Some(true),
-                    data: None,
-                });
-            }
-        }
-    }
-
     // Collect hints from equations
     for eq in &class.equations {
         collect_equation_hints(eq, range, builtins, hints);

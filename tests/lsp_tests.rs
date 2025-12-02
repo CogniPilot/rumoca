@@ -67,7 +67,8 @@ equation
   der(x) = 1;
 end Test;"#;
 
-    let diagnostics = compute_diagnostics(&uri, text);
+    let mut workspace = WorkspaceState::new();
+    let diagnostics = compute_diagnostics(&uri, text, &mut workspace);
     // Valid model should have no errors
     assert!(
         diagnostics.is_empty(),
@@ -80,7 +81,8 @@ fn test_diagnostics_syntax_error() {
     let uri = test_uri();
     let text = "model Test\n  Real x\nend Test;"; // Missing semicolon
 
-    let diagnostics = compute_diagnostics(&uri, text);
+    let mut workspace = WorkspaceState::new();
+    let diagnostics = compute_diagnostics(&uri, text, &mut workspace);
     assert!(
         !diagnostics.is_empty(),
         "Expected diagnostics for syntax error"
@@ -1019,14 +1021,18 @@ equation
   y = x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let mut workspace = WorkspaceState::new();
+    workspace.open_document(uri.clone(), text.to_string());
+    // Compute diagnostics first to populate balance cache
+    compute_diagnostics(&uri, text, &mut workspace);
+
     let params = CodeLensParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
         partial_result_params: Default::default(),
     };
 
-    let result = handle_code_lens(&documents, params);
+    let result = handle_code_lens(&workspace, params);
     assert!(result.is_some());
 
     if let Some(lenses) = result {
@@ -1047,14 +1053,18 @@ model Derived
   Real y;
 end Derived;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let mut workspace = WorkspaceState::new();
+    workspace.open_document(uri.clone(), text.to_string());
+    // Compute diagnostics first to populate balance cache
+    compute_diagnostics(&uri, text, &mut workspace);
+
     let params = CodeLensParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
         partial_result_params: Default::default(),
     };
 
-    let result = handle_code_lens(&documents, params);
+    let result = handle_code_lens(&workspace, params);
     assert!(result.is_some());
 }
 
@@ -1483,6 +1493,7 @@ fn test_malformed_modelica() {
     let _ = result;
 
     // Diagnostics should report errors
-    let diags = compute_diagnostics(&uri, text);
+    let mut workspace = WorkspaceState::new();
+    let diags = compute_diagnostics(&uri, text, &mut workspace);
     assert!(!diags.is_empty(), "Expected diagnostics for invalid code");
 }

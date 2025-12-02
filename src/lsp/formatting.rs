@@ -25,6 +25,9 @@ pub fn handle_formatting(
     let options = FormatOptions {
         indent_size: lsp_options.tab_size as usize,
         use_tabs: !lsp_options.insert_spaces,
+        max_line_length: 100,
+        preserve_unformatted: true,
+        blank_lines_between_classes: 1,
     };
 
     let formatted = format_modelica(text, &options);
@@ -70,10 +73,13 @@ mod tests {
     #[test]
     fn test_format_simple_model() {
         let input = "model Test\nReal x;\nend Test;";
-        let expected = "model Test\n  Real x;\nend Test;";
+        let expected = "model Test\n  Real x;\nend Test;\n";
         let options = FormatOptions {
             indent_size: default_options().tab_size as usize,
             use_tabs: !default_options().insert_spaces,
+            max_line_length: 100,
+            preserve_unformatted: true,
+            blank_lines_between_classes: 1,
         };
         let result = format_modelica(input, &options);
         assert_eq!(result, expected);
@@ -92,17 +98,7 @@ end test;
 model B
 test.BouncingBall ball;
 end B;"#;
-        let expected = r#"package test
-  model BouncingBall
-    Real h;
-  equation
-    der(h) = 1;
-  end BouncingBall;
-end test;
-
-model B
-  test.BouncingBall ball;
-end B;"#;
+        let expected = "package test\n  model BouncingBall\n    Real h;\n  equation\n    der(h) = 1;\n  end BouncingBall;\nend test;\n\nmodel B\n  test.BouncingBall ball;\nend B;\n";
         let options = FormatOptions::default();
         let result = format_modelica(input, &options);
         assert_eq!(result, expected);
@@ -118,14 +114,7 @@ when x > 0 then
 reinit(x, 0);
 end when;
 end Test;"#;
-        let expected = r#"model Test
-  Real x;
-equation
-  der(x) = 1;
-  when x > 0 then
-    reinit(x, 0);
-  end when;
-end Test;"#;
+        let expected = "model Test\n  Real x;\nequation\n  der(x) = 1;\n  when x > 0 then\n    reinit(x, 0);\n  end when;\nend Test;\n";
         let options = FormatOptions::default();
         let result = format_modelica(input, &options);
         assert_eq!(result, expected);
@@ -146,18 +135,7 @@ equation
 a = 5.0;
 end Car;
 end test;"#;
-        let expected = r#"package test
-  model BouncingBall
-    Real h;
-  equation
-    der(h) = 1;
-  end BouncingBall;
-  model Car
-    Real a;
-  equation
-    a = 5.0;
-  end Car;
-end test;"#;
+        let expected = "package test\n  model BouncingBall\n    Real h;\n  equation\n    der(h) = 1;\n  end BouncingBall;\n\n  model Car\n    Real a;\n  equation\n    a = 5.0;\n  end Car;\nend test;\n";
         let options = FormatOptions::default();
         let result = format_modelica(input, &options);
         assert_eq!(result, expected);

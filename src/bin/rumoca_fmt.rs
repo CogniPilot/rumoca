@@ -8,6 +8,22 @@
 //! - Normalized line endings
 //! - Multiple consecutive empty lines collapsed to one
 //! - Recursive directory formatting
+//! - Config file support (`.rumoca_fmt.toml` or `rumoca_fmt.toml`)
+//!
+//! ## Configuration
+//!
+//! The formatter looks for config files in the following order:
+//! 1. `.rumoca_fmt.toml` in the file's directory or any parent directory
+//! 2. `rumoca_fmt.toml` in the file's directory or any parent directory
+//!
+//! Example config file:
+//! ```toml
+//! indent_size = 2
+//! use_tabs = false
+//! max_line_length = 100
+//! ```
+//!
+//! CLI options override config file settings.
 //!
 //! ## Usage
 //! ```sh
@@ -26,7 +42,7 @@
 //! # Print files that would be reformatted
 //! rumoca-fmt --check -l
 //!
-//! # Use 4 spaces for indentation
+//! # Use 4 spaces for indentation (overrides config file)
 //! rumoca-fmt --config indent_size=4
 //!
 //! # Use tabs for indentation
@@ -41,7 +57,7 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use rumoca::{FormatOptions, format_modelica};
+use rumoca::{CONFIG_FILE_NAMES, FormatOptions, format_modelica};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -112,11 +128,21 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Parse config options
-    let options = parse_config_options(&args.config)?;
+    // Parse CLI config options
+    let cli_config = parse_cli_config(&args.config)?;
 
     // Collect files to format
     let files = collect_files(&args)?;
+
+    // Determine start directory for config file search
+    let start_dir = if !files.is_empty() {
+        files[0].clone()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    };
+
+    // Load format options (config file + CLI overrides)
+    let options = load_format_options(&start_dir, &cli_config, args.verbose);
 
     if files.is_empty() && !args.stdin {
         if !args.quiet {
@@ -197,9 +223,22 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Parsed CLI config options (None means not specified)
+struct CliConfigOptions {
+    indent_size: Option<usize>,
+    use_tabs: Option<bool>,
+    max_line_length: Option<usize>,
+    blank_lines_between_classes: Option<usize>,
+}
+
 /// Parse configuration options from --config flag
-fn parse_config_options(config: &Option<String>) -> Result<FormatOptions> {
-    let mut options = FormatOptions::default();
+fn parse_cli_config(config: &Option<String>) -> Result<CliConfigOptions> {
+    let mut options = CliConfigOptions {
+        indent_size: None,
+        use_tabs: None,
+        max_line_length: None,
+        blank_lines_between_classes: None,
+    };
 
     if let Some(config_str) = config {
         for part in config_str.split(',') {
@@ -214,20 +253,34 @@ fn parse_config_options(config: &Option<String>) -> Result<FormatOptions> {
 
             match key.trim() {
                 "indent_size" => {
-                    options.indent_size = value
-                        .trim()
-                        .parse()
-                        .with_context(|| format!("Invalid indent_size value: {}", value))?;
+                    options.indent_size = Some(
+                        value
+                            .trim()
+                            .parse()
+                            .with_context(|| format!("Invalid indent_size value: {}", value))?,
+                    );
                 }
                 "use_tabs" => {
-                    options.use_tabs = match value.trim().to_lowercase().as_str() {
+                    options.use_tabs = Some(match value.trim().to_lowercase().as_str() {
                         "true" | "1" | "yes" => true,
                         "false" | "0" | "no" => false,
                         _ => bail!("Invalid use_tabs value: {}. Expected true/false", value),
-                    };
+                    });
+                }
+                "max_line_length" => {
+                    options.max_line_length =
+                        Some(value.trim().parse().with_context(|| {
+                            format!("Invalid max_line_length value: {}", value)
+                        })?);
+                }
+                "blank_lines_between_classes" => {
+                    options.blank_lines_between_classes =
+                        Some(value.trim().parse().with_context(|| {
+                            format!("Invalid blank_lines_between_classes value: {}", value)
+                        })?);
                 }
                 _ => bail!(
-                    "Unknown config option: {}. Available: indent_size, use_tabs",
+                    "Unknown config option: {}. Available: indent_size, use_tabs, max_line_length, blank_lines_between_classes",
                     key
                 ),
             }
@@ -235,6 +288,53 @@ fn parse_config_options(config: &Option<String>) -> Result<FormatOptions> {
     }
 
     Ok(options)
+}
+
+/// Load format options, merging config file and CLI options
+fn load_format_options(
+    start_dir: &Path,
+    cli_config: &CliConfigOptions,
+    verbose: bool,
+) -> FormatOptions {
+    // Start with file-based config or defaults
+    let mut options = if let Some(file_options) = FormatOptions::from_config_file(start_dir) {
+        if verbose {
+            // Find which config file was used
+            let mut current = start_dir.to_path_buf();
+            if current.is_file() {
+                if let Some(parent) = current.parent() {
+                    current = parent.to_path_buf();
+                }
+            }
+            'outer: loop {
+                for config_name in CONFIG_FILE_NAMES {
+                    let config_path = current.join(config_name);
+                    if config_path.exists() {
+                        eprintln!("Using config: {}", config_path.display());
+                        break 'outer;
+                    }
+                }
+                if let Some(parent) = current.parent() {
+                    current = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+        }
+        file_options
+    } else {
+        FormatOptions::default()
+    };
+
+    // Merge CLI options (they take precedence)
+    options.merge_cli_options_ext(
+        cli_config.indent_size,
+        cli_config.use_tabs,
+        cli_config.max_line_length,
+        cli_config.blank_lines_between_classes,
+    );
+
+    options
 }
 
 /// Collect all files to format

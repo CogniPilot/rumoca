@@ -3,34 +3,43 @@
 //! Provides inline actionable information:
 //! - Reference counts for classes, functions, and variables
 //! - "Extends" information for models
-//! - Component counts and balance status for models
+//! - Clickable "Analyze" lens to compile and show balance status for models
 
 // Allow mutable key type warning - Uri has interior mutability but we use it correctly
 #![allow(clippy::mutable_key_type)]
 
-use std::collections::HashMap;
-
 use lsp_types::{CodeLens, CodeLensParams, Command, Position, Range, Uri};
 
 use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition};
-use crate::ir::balance_check::check_class_balance;
 
+use super::WorkspaceState;
 use super::utils::parse_document;
+
+/// Command name for analyzing a Modelica class
+pub const ANALYZE_CLASS_COMMAND: &str = "rumoca.analyzeClass";
 
 /// Handle code lens request
 pub fn handle_code_lens(
-    documents: &HashMap<Uri, String>,
+    workspace: &WorkspaceState,
     params: CodeLensParams,
 ) -> Option<Vec<CodeLens>> {
     let uri = &params.text_document.uri;
-    let text = documents.get(uri)?;
+    let text = workspace.get_document(uri)?;
     let path = uri.path().as_str();
 
     let mut lenses = Vec::new();
 
     if let Some(ast) = parse_document(text, path) {
         for class in ast.class_list.values() {
-            collect_class_lenses(class, text, &ast, &mut lenses);
+            collect_class_lenses(
+                class,
+                text,
+                &ast,
+                uri,
+                workspace,
+                "", // No prefix for top-level classes
+                &mut lenses,
+            );
         }
     }
 
@@ -42,19 +51,28 @@ fn collect_class_lenses(
     class: &ClassDefinition,
     text: &str,
     ast: &StoredDefinition,
+    uri: &Uri,
+    workspace: &WorkspaceState,
+    prefix: &str,
     lenses: &mut Vec<CodeLens>,
 ) {
     let class_line = class.name.location.start_line.saturating_sub(1);
 
-    // Add component count and balance status lens for models/blocks
+    // Build the full class path (for nested classes)
+    let class_path = if prefix.is_empty() {
+        class.name.text.clone()
+    } else {
+        format!("{}.{}", prefix, class.name.text)
+    };
+
+    // Add analyze/balance lens for models/blocks
     if matches!(
         class.class_type,
         ClassType::Model | ClassType::Block | ClassType::Class
     ) {
-        let balance = check_class_balance(class);
-
-        if balance.num_unknowns > 0 || balance.num_equations > 0 {
-            // Build status string with balance indicator
+        // Check if we have cached balance for this specific class
+        if let Some(balance) = workspace.get_balance(uri, &class_path) {
+            // Show cached balance results
             let status_icon = if balance.is_balanced {
                 "✓"
             } else if balance.difference() > 0 {
@@ -63,7 +81,6 @@ fn collect_class_lenses(
                 "⚠ under"
             };
 
-            // Format: "states, unknowns, equations, [status]"
             let title = format!(
                 "{} states, {} unknowns, {} equations [{}]",
                 balance.num_states, balance.num_unknowns, balance.num_equations, status_icon
@@ -82,8 +99,35 @@ fn collect_class_lenses(
                 },
                 command: Some(Command {
                     title,
-                    command: String::new(), // No action, just informational
-                    arguments: None,
+                    // Clicking again will re-analyze
+                    command: ANALYZE_CLASS_COMMAND.to_string(),
+                    arguments: Some(vec![
+                        serde_json::Value::String(uri.to_string()),
+                        serde_json::Value::String(class_path.clone()),
+                    ]),
+                }),
+                data: None,
+            });
+        } else {
+            // No cached balance - show clickable "Analyze" lens
+            lenses.push(CodeLens {
+                range: Range {
+                    start: Position {
+                        line: class_line,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: class_line,
+                        character: 0,
+                    },
+                },
+                command: Some(Command {
+                    title: "▶ Analyze".to_string(),
+                    command: ANALYZE_CLASS_COMMAND.to_string(),
+                    arguments: Some(vec![
+                        serde_json::Value::String(uri.to_string()),
+                        serde_json::Value::String(class_path.clone()),
+                    ]),
                 }),
                 data: None,
             });
@@ -180,9 +224,9 @@ fn collect_class_lenses(
         });
     }
 
-    // Recursively process nested classes
+    // Recursively process nested classes with updated prefix
     for nested in class.classes.values() {
-        collect_class_lenses(nested, text, ast, lenses);
+        collect_class_lenses(nested, text, ast, uri, workspace, &class_path, lenses);
     }
 }
 

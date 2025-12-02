@@ -771,8 +771,10 @@ impl TryFrom<&modelica_grammar_trait::String> for ir::ast::Token {
 
     fn try_from(ast: &modelica_grammar_trait::String) -> std::result::Result<Self, Self::Error> {
         let mut tok = ast.string.clone();
-        // remove quotes from string text
-        tok.text = tok.text[1..tok.text.len() - 1].to_string();
+        // remove quotes from string text (with bounds check for malformed input)
+        if tok.text.len() >= 2 {
+            tok.text = tok.text[1..tok.text.len() - 1].to_string();
+        }
         Ok(tok)
     }
 }
@@ -1867,9 +1869,25 @@ impl TryFrom<&modelica_grammar_trait::Name> for ir::ast::Name {
 }
 
 //-----------------------------------------------------------------------------
+
+/// A parsed comment with its location information
+#[derive(Debug, Clone, Default)]
+pub struct ParsedComment {
+    /// The comment text (including // or /* */)
+    pub text: String,
+    /// Line number (1-based)
+    pub line: u32,
+    /// Column number (1-based)
+    pub column: u32,
+    /// Whether this is a line comment (//) or block comment (/* */)
+    pub is_line_comment: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct ModelicaGrammar<'t> {
     pub modelica: Option<ir::ast::StoredDefinition>,
+    /// Comments collected during parsing, in order of appearance
+    pub comments: Vec<ParsedComment>,
     _phantom: std::marker::PhantomData<&'t str>,
 }
 
@@ -1898,5 +1916,18 @@ impl<'t> modelica_grammar_trait::ModelicaGrammarTrait for ModelicaGrammar<'t> {
     fn stored_definition(&mut self, arg: &modelica_grammar_trait::StoredDefinition) -> Result<()> {
         self.modelica = Some(arg.try_into()?);
         Ok(())
+    }
+
+    /// Collect comments during parsing for later use (e.g., in formatter)
+    fn on_comment(&mut self, token: Token<'_>) {
+        let text = token.text().to_string();
+        let is_line_comment = text.starts_with("//");
+
+        self.comments.push(ParsedComment {
+            text,
+            line: token.location.start_line,
+            column: token.location.start_column,
+            is_line_comment,
+        });
     }
 }

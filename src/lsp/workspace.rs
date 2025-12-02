@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use lsp_types::Uri;
 
 use crate::ir::ast::{ClassDefinition, ClassType, Import, StoredDefinition};
+use crate::ir::balance_check::BalanceCheckResult;
 use crate::ir::multi_file::{discover_modelica_files, get_modelica_path, is_modelica_package};
 
 use super::utils::parse_document;
@@ -133,6 +134,9 @@ pub struct WorkspaceState {
     /// Cache of last successfully parsed ASTs (kept even when current parse fails)
     /// This allows completions to work while the user is typing (causing syntax errors)
     cached_asts: HashMap<Uri, StoredDefinition>,
+    /// Cache of balance check results per class name (computed during diagnostics)
+    /// Key is (Uri, class_name) to support multiple classes per file
+    balance_cache: HashMap<(Uri, String), BalanceCheckResult>,
 }
 
 impl Default for WorkspaceState {
@@ -153,7 +157,24 @@ impl WorkspaceState {
             workspace_roots: Vec::new(),
             discovered_files: HashSet::new(),
             cached_asts: HashMap::new(),
+            balance_cache: HashMap::new(),
         }
+    }
+
+    /// Set the cached balance result for a specific class in a document
+    pub fn set_balance(&mut self, uri: Uri, class_name: String, balance: BalanceCheckResult) {
+        self.balance_cache.insert((uri, class_name), balance);
+    }
+
+    /// Get the cached balance result for a specific class in a document
+    pub fn get_balance(&self, uri: &Uri, class_name: &str) -> Option<&BalanceCheckResult> {
+        self.balance_cache
+            .get(&(uri.clone(), class_name.to_string()))
+    }
+
+    /// Clear all cached balance results for a document
+    pub fn clear_balances(&mut self, uri: &Uri) {
+        self.balance_cache.retain(|(u, _), _| u != uri);
     }
 
     /// Initialize workspace with root folders

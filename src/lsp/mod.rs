@@ -20,6 +20,7 @@
 //! - Call hierarchy
 //! - Document links
 
+pub mod analyze;
 pub mod builtin_functions;
 pub mod call_hierarchy;
 pub mod code_actions;
@@ -43,12 +44,13 @@ pub mod utils;
 pub mod workspace;
 pub mod workspace_symbols;
 
+pub use analyze::{AnalyzeResult, analyze_class};
 pub use builtin_functions::get_builtin_functions;
 pub use call_hierarchy::{
     handle_incoming_calls, handle_outgoing_calls, handle_prepare_call_hierarchy,
 };
 pub use code_actions::handle_code_action;
-pub use code_lens::handle_code_lens;
+pub use code_lens::{ANALYZE_CLASS_COMMAND, handle_code_lens};
 pub use completion::{handle_completion, handle_completion_workspace};
 pub use diagnostics::compute_diagnostics;
 pub use document_links::handle_document_links;

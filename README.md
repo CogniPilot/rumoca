@@ -9,9 +9,11 @@
 
 > **Note:** Rumoca is in active development. APIs may change between releases.
 
-A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports a [DAE IR](https://github.com/CogniPilot/modelica_ir) (a superset of [Base Modelica](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) supporting both implicit and explicit model serialization). The IR is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, JAX, and other backends.
+A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports to the [DAE IR Format](https://github.com/CogniPilot/modelica_ir) supporting both implicit and explicit model serialization), or via user customizable template leveraging [minijinja](https://github.com/mitsuhiko/minijinja). The DAE IR format is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, and other backends planned (e.g. Jax).
 
-Future export targets include [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) and [eFMI/GALEC](https://www.efmi-standard.org/).
+Future targets include:
+- **Export**: [eFMI/GALEC](https://www.efmi-standard.org/)
+- **Import**: [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) to interface with more mature compilers (OpenModelica, Dymola, etc.)
 
 ## Tools
 
@@ -19,12 +21,13 @@ Future export targets include [Base Modelica (MCP-0031)](https://github.com/mode
 |------|-------------|
 | `rumoca` | Main compiler - parses Modelica and exports DAE IR (JSON) |
 | `rumoca-fmt` | Code formatter for Modelica files (like `rustfmt`) |
+| `rumoca-lint` | Linter for Modelica files (like `clippy`) |
 | `rumoca-lsp` | Language Server Protocol server for editor integration |
-| **VSCode Extension** | Full IDE support via the [Rumoca Modelica](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica) extension |
+| **VSCode Extension** | Full Modelica IDE support via the [Rumoca Modelica](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica) extension |
 
 ## Installation
 
-### Compiler and Formatter
+### Compiler, Formatter, and Linter
 
 ```bash
 cargo install rumoca
@@ -32,12 +35,29 @@ cargo install rumoca
 
 ### VSCode Extension
 
+**Prerequisites:**
+
+1. Install [Rust](https://rustup.rs/) if you haven't already:
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+2. Ensure `~/.cargo/bin` is in your PATH (the rustup installer typically adds this automatically). You may need to restart your terminal or run:
+   ```bash
+   source ~/.cargo/env
+   ```
+
+3. Install the language server:
+   ```bash
+   cargo install rumoca
+   ```
+
+**Install the Extension:**
+
 Search for "Rumoca Modelica" in the VSCode Extensions marketplace, or install from the [marketplace page](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica).
 
-The extension includes bundled LSP binaries for all platforms - no additional setup required.
-
 **Features:**
-- Syntax highlighting
+- Syntax highlighting (semantic tokens)
 - Real-time diagnostics
 - Autocomplete for keywords, built-in functions, and class members
 - Go to definition / Find references
@@ -48,6 +68,9 @@ The extension includes bundled LSP binaries for all platforms - no additional se
 - Code folding
 - Inlay hints
 - Code lens with reference counts
+- Rename symbol
+- Call hierarchy
+- Document links
 
 ## Quick Start
 
@@ -71,6 +94,63 @@ rumoca-fmt model.mo library.mo
 
 # Use 4-space indentation
 rumoca-fmt --config indent_size=4
+
+# Configure blank lines between classes
+rumoca-fmt --config blank_lines_between_classes=1
+```
+
+**Configuration:** Create `.rumoca_fmt.toml` or `rumoca_fmt.toml` in your project:
+
+```toml
+indent_size = 2
+use_tabs = false
+max_line_length = 100
+blank_lines_between_classes = 1
+```
+
+### Lint Modelica Files
+
+```bash
+# Lint all .mo files in current directory
+rumoca-lint
+
+# Lint specific files
+rumoca-lint model.mo
+
+# Show only warnings and errors
+rumoca-lint --level warning
+
+# Output as JSON (for CI integration)
+rumoca-lint --format json
+
+# List available lint rules
+rumoca-lint --list-rules
+
+# Exit with error on warnings (CI mode)
+rumoca-lint --deny-warnings
+```
+
+**Available Lint Rules:**
+
+| Rule | Level | Description |
+|------|-------|-------------|
+| `naming-convention` | note | CamelCase for types, camelCase for variables |
+| `missing-documentation` | note | Classes without documentation strings |
+| `unused-variable` | warning | Declared but unused variables |
+| `undefined-reference` | error | References to undefined variables |
+| `parameter-no-default` | help | Parameters without default values |
+| `empty-section` | note | Empty equation or algorithm sections |
+| `magic-number` | help | Magic numbers that should be constants |
+| `complex-expression` | note | Overly complex/deeply nested expressions |
+| `inconsistent-units` | warning | Potential unit inconsistencies |
+| `redundant-extends` | warning | Duplicate or circular extends |
+
+**Configuration:** Create `.rumoca_lint.toml` or `rumoca_lint.toml` in your project:
+
+```toml
+min_level = "warning"
+disabled_rules = ["magic-number", "missing-documentation"]
+deny_warnings = false
 ```
 
 ### Library Usage
@@ -194,14 +274,15 @@ Modelica Source -> Parse -> Flatten -> BLT -> DAE -> DAE IR (JSON)
 cargo build --release
 
 # Run tests
-cargo test --all-features
+cargo test
 
 # Check formatting
 cargo fmt --check
 rumoca-fmt --check
 
 # Lint
-cargo clippy --all-features
+cargo clippy
+rumoca-lint
 ```
 
 ## Contributing
@@ -228,6 +309,6 @@ Apache-2.0 ([LICENSE](LICENSE))
 
 - [Modelica IR](https://github.com/CogniPilot/modelica_ir) - DAE IR specification
 - [Cyecca](https://github.com/cognipilot/cyecca) - Model simulation, analysis, and code generation
-- [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) - Planned export target
-- [eFMI/GALEC](https://www.efmi-standard.org/) - Planned export target
+- [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) - Planned import format
+- [eFMI/GALEC](https://www.efmi-standard.org/) - Planned export format
 - [Modelica Language](https://www.modelica.org/)

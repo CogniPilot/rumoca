@@ -24,8 +24,9 @@ minijinja = { version = "2.8.0", features = ["json"] }
 owo-colors = "4.0"
 parol = "3.0.1"
 parol_runtime = "3.0.0"
-serde = "1.0.218"
+serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.8"
 # parol_runtime = "2.2.1"
 thiserror = "1.0"
 
@@ -35,7 +36,7 @@ lsp-types = { version = "0.97", optional = true }
 
 [features]
 regen-parser = []
-default = []
+default = ["lsp"]
 lsp = ["lsp-server", "lsp-types"]
 
 [[bin]]
@@ -46,6 +47,10 @@ required-features = ["lsp"]
 [[bin]]
 name = "rumoca-fmt"
 path = "src/bin/rumoca_fmt.rs"
+
+[[bin]]
+name = "rumoca-lint"
+path = "src/bin/rumoca_lint.rs"
 
 [build-dependencies]
 parol = "3.0.1"

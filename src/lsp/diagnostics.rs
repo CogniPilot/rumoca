@@ -19,9 +19,16 @@ use crate::ir::ast::{
     Variability,
 };
 use crate::ir::constants::global_builtins;
+use crate::ir::flatten::flatten;
+
+use super::WorkspaceState;
 
 /// Compute diagnostics for a document
-pub fn compute_diagnostics(uri: &Uri, text: &str) -> Vec<Diagnostic> {
+pub fn compute_diagnostics(
+    uri: &Uri,
+    text: &str,
+    workspace: &mut WorkspaceState,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     let path = uri.path().as_str();
@@ -32,38 +39,22 @@ pub fn compute_diagnostics(uri: &Uri, text: &str) -> Vec<Diagnostic> {
         let mut grammar = ModelicaGrammar::new();
         match parse(text, path, &mut grammar) {
             Ok(_) => {
-                // Parsing succeeded, now try to compile with auto-detected model name
-                if let Some(ref ast) = grammar.modelica {
-                    // Get the first class name from the AST
-                    if let Some(first_class_name) = ast.class_list.keys().next() {
-                        // Try full compilation with the detected model name
-                        match crate::Compiler::new()
-                            .model(first_class_name)
-                            .compile_str(text, path)
-                        {
-                            Ok(_) => {
-                                // No compilation errors - run semantic analysis
-                            }
-                            Err(e) => {
-                                let error_msg = format!("{}", e);
-                                let (line, col) = extract_location_from_error_msg(&error_msg);
-                                diagnostics.push(create_diagnostic(
-                                    line,
-                                    col,
-                                    error_msg,
-                                    DiagnosticSeverity::ERROR,
-                                ));
-                            }
-                        }
-                    }
+                // Parsing succeeded - clear stale balance cache since document changed
+                // Balance will be recomputed on-demand when user clicks "Analyze"
+                workspace.clear_balances(uri);
 
-                    // Run semantic analysis for warnings
-                    for class in ast.class_list.values() {
-                        analyze_class(class, &mut diagnostics);
+                // Run semantic analysis on each class (using flattening for inherited symbols)
+                if let Some(ref ast) = grammar.modelica {
+                    for class_name in ast.class_list.keys() {
+                        if let Ok(fclass) = flatten(ast, Some(class_name)) {
+                            analyze_class(&fclass, &mut diagnostics);
+                        }
                     }
                 }
             }
             Err(e) => {
+                // Clear cached balance on parse error
+                workspace.clear_balances(uri);
                 // Use structured error extraction when possible
                 let (line, col, message) = extract_structured_error(&e, text);
                 diagnostics.push(create_diagnostic(
@@ -956,21 +947,4 @@ fn clean_token_name(name: &str) -> String {
         // Clean up CamelCase keywords to lowercase
         s => s.to_lowercase(),
     }
-}
-
-/// Extract line and column from an error message string (fallback for non-ParolError)
-fn extract_location_from_error_msg(error_msg: &str) -> (u32, u32) {
-    // Try pattern like "filename.mo:14:9"
-    if let Some(mo_pos) = error_msg.find(".mo:") {
-        let after = &error_msg[mo_pos + 4..];
-        let parts: Vec<&str> = after.split(':').take(2).collect();
-        let line = parts.first().and_then(|s| s.parse().ok()).unwrap_or(1);
-        let col = parts
-            .get(1)
-            .and_then(|s| s.split('-').next())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
-        return (line, col);
-    }
-    (1, 1)
 }

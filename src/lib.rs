@@ -11,6 +11,7 @@ pub mod dae;
 pub mod errors;
 pub mod formatter;
 pub mod ir;
+pub mod lint;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod modelica_grammar;
@@ -19,4 +20,7 @@ pub mod modelica_parser;
 
 // Re-export the main API types for convenience
 pub use compiler::{CompilationResult, Compiler};
-pub use formatter::{FormatOptions, format_modelica};
+pub use formatter::{CONFIG_FILE_NAMES, FormatOptions, format_modelica};
+pub use lint::{
+    LINT_CONFIG_FILE_NAMES, LintConfig, LintLevel, LintMessage, LintResult, lint_file, lint_str,
+};

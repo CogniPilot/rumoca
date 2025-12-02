@@ -26,7 +26,7 @@ A VS Code extension providing language support for [Modelica](https://modelica.o
 Install the `rumoca-lsp` language server:
 
 ```bash
-cargo install rumoca --features lsp
+cargo install rumoca
 ```
 
 This requires [Rust](https://rustup.rs/) to be installed.

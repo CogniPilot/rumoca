@@ -485,6 +485,7 @@ fn fix_unmatched_variables(
             unmatched_var, unmatched_var_idx, candidate_eqs
         );
 
+        #[cfg(debug_assertions)]
         let mut found_fix = false;
         for candidate_eq in candidate_eqs {
             // What variable is this equation currently assigned to?
@@ -537,11 +538,13 @@ fn fix_unmatched_variables(
                 var_to_eq.insert(unmatched_var_idx, candidate_eq);
                 var_to_eq.insert(current_var_idx, other_eq);
                 #[cfg(debug_assertions)]
-                eprintln!(
-                    "  -> Reassigned: eq {} -> '{}', eq {} -> '{}'",
-                    candidate_eq, unmatched_var, other_eq, current_var_name
-                );
-                found_fix = true;
+                {
+                    eprintln!(
+                        "  -> Reassigned: eq {} -> '{}', eq {} -> '{}'",
+                        candidate_eq, unmatched_var, other_eq, current_var_name
+                    );
+                    found_fix = true;
+                }
                 break;
             }
         }

@@ -120,8 +120,14 @@
           "match": "\\b(der|pre|noEvent|smooth|sample|initial|terminal|reinit|edge|change|cardinality|homotopy|semiLinear|spatialDistribution|getInstanceName)\\b"
         },
         {
+          "comment": "Math functions - note: 'mod' must not match 'model' so we use negative lookahead",
           "name": "support.function.math.modelica",
-          "match": "\\b(abs|sign|sqrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|log|log10|floor|ceil|integer|mod|rem|min|max|sum|product|transpose|symmetric|cross|skew|identity|diagonal|zeros|ones|fill|linspace|scalar|vector|matrix|array|cat|ndims|size|String|Integer|Real|Boolean)\\b"
+          "match": "\\b(abs|sign|sqrt|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|log|log10|floor|ceil|integer|mod(?!el)|rem|min|max|sum|product|transpose|symmetric|cross|skew|identity|diagonal|zeros|ones|fill|linspace|scalar|vector|matrix|array|cat|ndims|size)\\b"
+        },
+        {
+          "comment": "Type conversion functions",
+          "name": "support.function.conversion.modelica",
+          "match": "\\b(String|Integer|Real|Boolean)\\b"
         },
         {
           "name": "support.function.connection.modelica",
