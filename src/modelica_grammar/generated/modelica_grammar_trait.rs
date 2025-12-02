@@ -5448,7 +5448,7 @@ pub struct Stream {
 #[derive(Builder, Debug, Clone)]
 #[builder(crate = "parol_runtime::derive_builder")]
 pub struct String {
-    pub string: crate::ir::ast::Token, /* "[' \w]*" */
+    pub string: crate::ir::ast::Token, /* "([^"\\]|\\.)*" */
 }
 
 ///
@@ -7305,7 +7305,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 61:
     ///
-    /// `string: /"[' \w]*"/;`
+    /// `string: /"([^"\\]|\\.)*"/;`
     ///
     #[parol_runtime::function_name::named]
     fn string(&mut self, string: &ParseTreeType<'t>) -> Result<()> {

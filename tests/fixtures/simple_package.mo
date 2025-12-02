@@ -1,6 +1,6 @@
 within;
-package SimplePackage
 
+package SimplePackage
   function square
     input Real x;
     output Real y;
@@ -15,5 +15,4 @@ package SimplePackage
     der(x) = 1;
     y = square(x);
   end UseSquare;
-
 end SimplePackage;

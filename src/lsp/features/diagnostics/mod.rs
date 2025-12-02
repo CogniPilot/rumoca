@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
-use crate::ir::ast::{ClassDefinition, Expression, Variability};
+use crate::ir::ast::{ClassDefinition, ClassType, Expression, Variability};
 use crate::ir::transform::constants::global_builtins;
 use crate::ir::transform::flatten::flatten;
 
@@ -162,17 +162,20 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
     }
 
     // Check for unused variables (warning)
-    for (name, sym) in &defined {
-        if !used.contains(name) && !name.starts_with('_') {
-            // Skip parameters, classes, and class instances (submodels)
-            // Class instances contribute to the system even without explicit references
-            if !sym.is_parameter && !sym.is_class && !is_class_instance_type(&sym.type_name) {
-                diagnostics.push(create_diagnostic(
-                    sym.line,
-                    sym.col,
-                    format!("Variable '{}' is declared but never used", name),
-                    DiagnosticSeverity::WARNING,
-                ));
+    // Skip for records and connectors since their fields are accessed externally
+    if !matches!(class.class_type, ClassType::Record | ClassType::Connector) {
+        for (name, sym) in &defined {
+            if !used.contains(name) && !name.starts_with('_') {
+                // Skip parameters, classes, and class instances (submodels)
+                // Class instances contribute to the system even without explicit references
+                if !sym.is_parameter && !sym.is_class && !is_class_instance_type(&sym.type_name) {
+                    diagnostics.push(create_diagnostic(
+                        sym.line,
+                        sym.col,
+                        format!("Variable '{}' is declared but never used", name),
+                        DiagnosticSeverity::WARNING,
+                    ));
+                }
             }
         }
     }

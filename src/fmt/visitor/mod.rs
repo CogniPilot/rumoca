@@ -27,6 +27,8 @@ pub struct FormatVisitor {
     next_comment_idx: usize,
     /// Current output line number (1-based to match source)
     current_line: u32,
+    /// Original source text for extracting exact token text
+    pub source: Option<String>,
 }
 
 impl FormatVisitor {
@@ -44,10 +46,15 @@ impl FormatVisitor {
             comments: Vec::new(),
             next_comment_idx: 0,
             current_line: 1,
+            source: None,
         }
     }
 
-    pub fn with_comments(options: &FormatOptions, comments: Vec<CommentInfo>) -> Self {
+    pub fn with_comments_and_source(
+        options: &FormatOptions,
+        comments: Vec<CommentInfo>,
+        source: &str,
+    ) -> Self {
         let indent_str = if options.use_tabs {
             "\t".to_string()
         } else {
@@ -61,6 +68,7 @@ impl FormatVisitor {
             comments,
             next_comment_idx: 0,
             current_line: 1,
+            source: Some(source.to_string()),
         }
     }
 

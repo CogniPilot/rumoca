@@ -23,19 +23,14 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::ast::StoredDefin
                 class.class_definition.clone(),
             );
         }
-        def.within = match &ast.stored_definition_opt {
-            Some(within) => {
-                // If within keyword exists, we have Some(name) where name may be empty
-                Some(
-                    within
-                        .stored_definition_opt1
-                        .as_ref()
-                        .map(|w| w.name.clone())
-                        .unwrap_or_else(|| ir::ast::Name { name: vec![] }),
-                )
-            }
-            None => None,
-        };
+        def.within = ast.stored_definition_opt.as_ref().map(|within| {
+            // If within keyword exists, we have Some(name) where name may be empty
+            within
+                .stored_definition_opt1
+                .as_ref()
+                .map(|w| w.name.clone())
+                .unwrap_or_else(|| ir::ast::Name { name: vec![] })
+        });
         Ok(def)
     }
 }
@@ -88,6 +83,25 @@ fn convert_class_type(class_type: &modelica_grammar_trait::ClassType) -> ir::ast
     }
 }
 
+/// Extract the keyword token from grammar ClassType for semantic highlighting
+fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> ir::ast::Token {
+    match class_type {
+        modelica_grammar_trait::ClassType::Class(c) => c.class.class.clone(),
+        modelica_grammar_trait::ClassType::Model(m) => m.model.model.clone(),
+        modelica_grammar_trait::ClassType::ClassTypeOptRecord(r) => r.record.record.clone(),
+        modelica_grammar_trait::ClassType::Block(b) => b.block.block.clone(),
+        modelica_grammar_trait::ClassType::ClassTypeOpt0Connector(c) => {
+            c.connector.connector.clone()
+        }
+        modelica_grammar_trait::ClassType::Type(t) => t.r#type.r#type.clone(),
+        modelica_grammar_trait::ClassType::Package(p) => p.package.package.clone(),
+        modelica_grammar_trait::ClassType::ClassTypeOpt1ClassTypeOpt2Function(f) => {
+            f.function.function.clone()
+        }
+        modelica_grammar_trait::ClassType::Operator(o) => o.operator.operator.clone(),
+    }
+}
+
 //-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinition {
     type Error = anyhow::Error;
@@ -96,6 +110,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
         ast: &modelica_grammar_trait::ClassDefinition,
     ) -> std::result::Result<Self, Self::Error> {
         let class_type = convert_class_type(&ast.class_prefixes.class_type);
+        let class_type_token = get_class_type_token(&ast.class_prefixes.class_type);
         match &ast.class_specifier {
             modelica_grammar_trait::ClassSpecifier::LongClassSpecifier(long) => {
                 match &long.long_class_specifier {
@@ -106,6 +121,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         Ok(ir::ast::ClassDefinition {
                             name: spec.name.clone(),
                             class_type,
+                            class_type_token,
                             description: spec.description_string.tokens.clone(),
                             location: span_location(&spec.name, &spec.ident),
                             extends: spec.composition.extends.clone(),
@@ -168,6 +184,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         Ok(ir::ast::ClassDefinition {
                             name: type_spec.ident.clone(),
                             class_type,
+                            class_type_token,
                             description: vec![],
                             location: type_spec.ident.location.clone(),
                             extends: vec![extend],
@@ -374,6 +391,26 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     None => ir::ast::Causality::Empty,
                                 };
 
+                            // Extract type-level array subscripts (e.g., Real[3] z)
+                            // These apply to all components in this clause
+                            let mut type_level_shape = Vec::new();
+                            if let Some(clause_opt) = &clause.component_clause.component_clause_opt
+                            {
+                                for subscript in &clause_opt.array_subscripts.subscripts {
+                                    if let ir::ast::Subscript::Expression(
+                                        ir::ast::Expression::Terminal {
+                                            token,
+                                            terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                        },
+                                    ) = subscript
+                                    {
+                                        if let Ok(dim) = token.text.parse::<usize>() {
+                                            type_level_shape.push(dim);
+                                        }
+                                    }
+                                }
+                            }
+
                             for c in &clause.component_clause.component_list.components {
                                 // Extract annotation arguments if present
                                 let annotation =
@@ -417,7 +454,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         },
                                     },
                                     start_is_modification: false,
-                                    shape: Vec::new(), // Scalar by default, populated from array subscripts
+                                    shape: type_level_shape.clone(), // Start with type-level subscripts (Real[3] z)
+                                    shape_is_modification: false,
                                     annotation,
                                     modifications: indexmap::IndexMap::new(),
                                     location: comp_location,
@@ -449,7 +487,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     _ => ir::ast::Expression::Empty {},
                                 };
 
-                                // Extract array dimensions from declaration subscripts (e.g., Real[2,3] or Real[2][3])
+                                // Append declaration-level subscripts (e.g., Real z[2]) to type-level shape
                                 if let Some(decl_opt) = &c.declaration.declaration_opt {
                                     for subscript in &decl_opt.array_subscripts.subscripts {
                                         // Extract integer dimension from subscript expression
@@ -491,7 +529,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                     "shape" => {
                                                                         // Extract shape from expression like (3) or {3, 2}
                                                                         match &**rhs {
-                                                                            // Handle shape=(3) - single dimension
+                                                                            // Handle shape=3 - single dimension without parens
                                                                             ir::ast::Expression::Terminal {
                                                                                 token,
                                                                                 terminal_type: ir::ast::TerminalType::UnsignedInteger,
@@ -500,8 +538,33 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                                     value.shape = vec![dim];
                                                                                 }
                                                                             }
-                                                                            // Handle shape={3, 2} - multi-dimensional
+                                                                            // Handle shape=(3) - single dimension with parens
+                                                                            ir::ast::Expression::Parenthesized { inner } => {
+                                                                                if let ir::ast::Expression::Terminal {
+                                                                                    token,
+                                                                                    terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                                                                } = &**inner {
+                                                                                    if let Ok(dim) = token.text.parse::<usize>() {
+                                                                                        value.shape = vec![dim];
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            // Handle shape={3, 2} - multi-dimensional with array syntax
                                                                             ir::ast::Expression::Array { elements } => {
+                                                                                value.shape.clear();
+                                                                                for elem in elements {
+                                                                                    if let ir::ast::Expression::Terminal {
+                                                                                        token,
+                                                                                        terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                                                                    } = elem {
+                                                                                        if let Ok(dim) = token.text.parse::<usize>() {
+                                                                                            value.shape.push(dim);
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            // Handle shape=(3, 1) - multi-dimensional with tuple syntax
+                                                                            ir::ast::Expression::Tuple { elements } => {
                                                                                 value.shape.clear();
                                                                                 for elem in elements {
                                                                                     if let ir::ast::Expression::Terminal {
@@ -518,8 +581,60 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                         }
                                                                     }
                                                                     _ => {
-                                                                        // Store other modifications (e.g., R=10, C=0.01)
-                                                                        // These will be applied during flattening
+                                                                        // Valid built-in type attributes
+                                                                        const REAL_ATTRS: &[&str] = &[
+                                                                            "start", "fixed", "min", "max", "nominal",
+                                                                            "unit", "displayUnit", "quantity", "stateSelect",
+                                                                            "each", "final"
+                                                                        ];
+                                                                        const INTEGER_ATTRS: &[&str] = &[
+                                                                            "start", "fixed", "min", "max", "quantity",
+                                                                            "each", "final"
+                                                                        ];
+                                                                        const BOOLEAN_ATTRS: &[&str] = &[
+                                                                            "start", "fixed", "quantity", "each", "final"
+                                                                        ];
+                                                                        const STRING_ATTRS: &[&str] = &[
+                                                                            "start", "each", "final"
+                                                                        ];
+
+                                                                        let type_name_str = value.type_name.to_string();
+                                                                        let is_builtin = matches!(
+                                                                            type_name_str.as_str(),
+                                                                            "Real" | "Integer" | "Boolean" | "String"
+                                                                        );
+
+                                                                        if is_builtin {
+                                                                            let valid_attrs = match type_name_str.as_str() {
+                                                                                "Real" => REAL_ATTRS,
+                                                                                "Integer" => INTEGER_ATTRS,
+                                                                                "Boolean" => BOOLEAN_ATTRS,
+                                                                                "String" => STRING_ATTRS,
+                                                                                _ => &[],
+                                                                            };
+
+                                                                            if !valid_attrs.contains(&param_name.as_str()) {
+                                                                                // Get location info for error message
+                                                                                let loc = if let Some(first) = comp.parts.first() {
+                                                                                    format!(
+                                                                                        " at line {}, column {}",
+                                                                                        first.ident.location.start_line,
+                                                                                        first.ident.location.start_column
+                                                                                    )
+                                                                                } else {
+                                                                                    String::new()
+                                                                                };
+                                                                                anyhow::bail!(
+                                                                                    "Invalid modification '{}' for type '{}'{}\nValid attributes are: {}",
+                                                                                    param_name,
+                                                                                    type_name_str,
+                                                                                    loc,
+                                                                                    valid_attrs.join(", ")
+                                                                                );
+                                                                            }
+                                                                        }
+
+                                                                        // Store modification (for user-defined types or valid built-in attrs)
                                                                         value.modifications.insert(param_name, (**rhs).clone());
                                                                     }
                                                                 }

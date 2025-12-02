@@ -60,6 +60,22 @@ pub struct SyntaxError {
 
 /// Create a syntax error diagnostic from a parse error using structured error data
 pub fn create_syntax_error(error: &ParolError, source: &str) -> SyntaxError {
+    // Check for user errors (from anyhow::bail! in grammar actions)
+    if let ParolError::UserError(user_error) = error {
+        let message = user_error.to_string();
+        // Try to extract line/column from the error message
+        let (line, col) = extract_line_col_from_error(&message).unwrap_or((1, 1));
+        let byte_offset = line_col_to_byte_offset(source, line, col);
+        let remaining = source.len().saturating_sub(byte_offset);
+        let span_len = remaining.min(10);
+
+        return SyntaxError {
+            src: source.to_string(),
+            span: SourceSpan::new(byte_offset.into(), span_len),
+            message,
+        };
+    }
+
     // Try to extract structured error information from ParolError
     if let ParolError::ParserError(parser_error) = error {
         if let Some((line, col, message)) = extract_from_parser_error(parser_error, source) {

@@ -27,7 +27,7 @@ mod visitor;
 
 pub use options::{CONFIG_FILE_NAMES, FormatOptions};
 
-use crate::ir::ast::StoredDefinition;
+use crate::ir::ast::{Expression, StoredDefinition};
 use class_formatter::format_class_with_comments;
 use fallback::format_modelica_fallback;
 use visitor::{CommentInfo, FormatVisitor};
@@ -62,7 +62,7 @@ pub fn format_modelica(text: &str, options: &FormatOptions) -> String {
     match parse(text, "<format>", &mut grammar) {
         Ok(_) => {
             if let Some(ast) = grammar.modelica {
-                format_ast_with_comments(&ast, &grammar.comments, options)
+                format_ast_with_comments(&ast, &grammar.comments, text, options)
             } else {
                 text.to_string()
             }
@@ -74,10 +74,18 @@ pub fn format_modelica(text: &str, options: &FormatOptions) -> String {
     }
 }
 
+/// Format a single expression to a string
+/// Useful for displaying expression values in hover info, etc.
+pub fn format_expression(expr: &Expression) -> String {
+    let visitor = FormatVisitor::new(&FormatOptions::default());
+    visitor.format_expression(expr)
+}
+
 /// Format AST with comments reinserted at their original locations
 fn format_ast_with_comments(
     def: &StoredDefinition,
     comments: &[crate::modelica_grammar::ParsedComment],
+    source: &str,
     options: &FormatOptions,
 ) -> String {
     use crate::ir::visitor::Visitor;
@@ -92,8 +100,8 @@ fn format_ast_with_comments(
         .collect();
     comment_infos.sort_by_key(|c| c.line);
 
-    // Create visitor with comments
-    let mut visitor = FormatVisitor::with_comments(options, comment_infos);
+    // Create visitor with comments and source text for exact token preservation
+    let mut visitor = FormatVisitor::with_comments_and_source(options, comment_infos, source);
 
     // Format using the visitor
     visitor.enter_stored_definition(def);

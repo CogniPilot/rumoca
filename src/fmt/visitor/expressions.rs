@@ -32,7 +32,17 @@ impl FormatVisitor {
                 token,
             } => match terminal_type {
                 TerminalType::String => format!("\"{}\"", token.text),
-                _ => token.text.clone(),
+                _ => {
+                    // Use original source text if available to preserve exact user input
+                    if let Some(src) = &self.source {
+                        let start = token.location.start as usize;
+                        let end = token.location.end as usize;
+                        if start < end && end <= src.len() {
+                            return src[start..end].to_string();
+                        }
+                    }
+                    token.text.clone()
+                }
             },
             Expression::ComponentReference(comp_ref) => self.format_comp_ref(comp_ref),
             Expression::Binary { op, lhs, rhs } => {

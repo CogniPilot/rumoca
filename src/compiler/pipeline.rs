@@ -8,7 +8,7 @@ use super::function_collector::collect_all_functions;
 use super::result::CompilationResult;
 use crate::ir::analysis::balance_check::check_dae_balance;
 use crate::ir::analysis::var_validator::VarValidator;
-use crate::ir::ast::StoredDefinition;
+use crate::ir::ast::{ClassType, StoredDefinition};
 use crate::ir::structural::create_dae::create_dae;
 use crate::ir::transform::flatten::flatten;
 use crate::ir::transform::function_inliner::FunctionInliner;
@@ -85,40 +85,50 @@ pub fn compile_from_ast(
     // Collect all function names from the stored definition (including nested)
     let function_names = collect_all_functions(&def);
 
-    // Validate variable references (passing function names so they're recognized)
-    let mut validator = VarValidator::with_functions(&fclass, &function_names);
-    fclass.accept_mut(&mut validator);
+    // Skip validation for packages and classes with nested functions
+    // (function parameters aren't yet properly scoped)
+    let has_nested_functions = fclass
+        .classes
+        .values()
+        .any(|c| c.class_type == ClassType::Function);
+    let should_validate = !matches!(fclass.class_type, ClassType::Package) && !has_nested_functions;
 
-    if !validator.undefined_vars.is_empty() {
-        // Just report the first undefined variable with miette for now
-        let (var_name, _context) = &validator.undefined_vars[0];
+    if should_validate {
+        // Validate variable references (passing function names so they're recognized)
+        let mut validator = VarValidator::with_functions(&fclass, &function_names);
+        fclass.accept_mut(&mut validator);
 
-        // Find the first occurrence of this variable in the source
-        let mut byte_offset = 0;
-        let mut found = false;
-        for line in source.lines() {
-            if let Some(col) = line.find(var_name) {
-                byte_offset += col;
-                found = true;
-                break;
+        if !validator.undefined_vars.is_empty() {
+            // Just report the first undefined variable with miette for now
+            let (var_name, _context) = &validator.undefined_vars[0];
+
+            // Find the first occurrence of this variable in the source
+            let mut byte_offset = 0;
+            let mut found = false;
+            for line in source.lines() {
+                if let Some(col) = line.find(var_name) {
+                    byte_offset += col;
+                    found = true;
+                    break;
+                }
+                byte_offset += line.len() + 1;
             }
-            byte_offset += line.len() + 1;
+
+            let span = if found {
+                SourceSpan::new(byte_offset.into(), var_name.len())
+            } else {
+                SourceSpan::new(0.into(), 1_usize)
+            };
+
+            let diagnostic = UndefinedVariableError {
+                src: source.to_string(),
+                var_name: var_name.clone(),
+                span,
+            };
+
+            let report = miette::Report::new(diagnostic);
+            return Err(anyhow::anyhow!("{:?}", report));
         }
-
-        let span = if found {
-            SourceSpan::new(byte_offset.into(), var_name.len())
-        } else {
-            SourceSpan::new(0.into(), 1_usize)
-        };
-
-        let diagnostic = UndefinedVariableError {
-            src: source.to_string(),
-            var_name: var_name.clone(),
-            span,
-        };
-
-        let report = miette::Report::new(diagnostic);
-        return Err(anyhow::anyhow!("{:?}", report));
     }
 
     // Inline user-defined function calls

@@ -66,7 +66,6 @@ pub trait Visitable {
 /// Mutable visitor trait for AST transformations.
 ///
 /// Implement this trait to modify the AST during traversal.
-
 pub trait MutVisitor {
     fn enter_stored_definition(&mut self, _node: &mut ir::ast::StoredDefinition) {}
     fn exit_stored_definition(&mut self, _node: &mut ir::ast::StoredDefinition) {}
@@ -91,7 +90,6 @@ pub trait MutVisitor {
 }
 
 /// Trait for AST nodes that can accept a mutable visitor.
-
 pub trait MutVisitable {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V);
 }

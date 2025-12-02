@@ -6,6 +6,16 @@ use parol_runtime::{ParolError, ParserError};
 
 /// Extract structured error information from ParolError
 pub fn extract_structured_error(error: &ParolError, source: &str) -> (u32, u32, String) {
+    // Check for user errors (from anyhow::bail! in grammar actions)
+    if let ParolError::UserError(user_error) = error {
+        let message = user_error.to_string();
+        // Try to extract line/column from the error message (e.g., "at line 2, column 20")
+        if let Some((line, col)) = extract_line_col_from_message(&message) {
+            return (line, col, message);
+        }
+        return (1, 1, message);
+    }
+
     if let ParolError::ParserError(parser_error) = error {
         if let Some((line, col, message)) = extract_from_parser_error(parser_error, source) {
             return (line, col, message);
@@ -13,6 +23,25 @@ pub fn extract_structured_error(error: &ParolError, source: &str) -> (u32, u32, 
     }
     // Fallback
     (1, 1, "Syntax error".to_string())
+}
+
+/// Extract line and column from error message like "at line 2, column 20"
+fn extract_line_col_from_message(message: &str) -> Option<(u32, u32)> {
+    // Look for pattern "at line X, column Y"
+    let line_idx = message.find("at line ")?;
+    let after_line = &message[line_idx + 8..];
+    let comma_idx = after_line.find(',')?;
+    let line: u32 = after_line[..comma_idx].trim().parse().ok()?;
+
+    let col_idx = after_line.find("column ")?;
+    let after_col = &after_line[col_idx + 7..];
+    // Find end of number (first non-digit after column)
+    let col_end = after_col
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_col.len());
+    let col: u32 = after_col[..col_end].trim().parse().ok()?;
+
+    Some((line, col))
 }
 
 /// Extract location and message from a ParserError

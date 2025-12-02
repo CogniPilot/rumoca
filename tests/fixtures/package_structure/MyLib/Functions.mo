@@ -1,4 +1,5 @@
 within MyLib;
+
 package Functions "Utility functions"
   function double
     input Real x;

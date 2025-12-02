@@ -89,7 +89,7 @@ pub const TERMINALS: &[(&str, Option<(bool, &str)>); 100] = &[
         r#"\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'"#,
         None,
     ),
-    /*  66 */ (r#""[' \w]*""#, None),
+    /*  66 */ (r#""([^"\\]|\\.)*""#, None),
     /*  67 */ (r"[0-9]+", None),
     /*  68 */ (r"[0-9]+\.[0-9]+", None),
     /*  69 */ (r"[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?", None),
@@ -6449,7 +6449,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 181,
         production: &[ParseType::T(65)],
     },
-    // 61 - string: /"[' \w]*"/;
+    // 61 - string: /"([^"\\]|\\.)*"/;
     Production {
         lhs: 275,
         production: &[ParseType::T(66)],

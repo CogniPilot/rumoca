@@ -284,9 +284,9 @@ ident
 //    | "?" | "@" | "[" | "]" | "^" | "{" | "}" | "|" | "~" | " " | """
 // 🟥 S-ESCAPE = "\'" | "\"" | "\?" | "\\"
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
-// 🟨 STRING = """ { S-CHAR | S-ESCAPE } """ ;
+// ✅ STRING = """ { S-CHAR | S-ESCAPE } """ ;
 string
-    : /"[' \w]*"/
+    : /"([^"\\]|\\.)*"/
     ;
 
 // S-CHAR is any member of the Unicode character set

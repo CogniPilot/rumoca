@@ -118,6 +118,8 @@ pub struct Component {
     pub start_is_modification: bool,
     /// Array dimensions - empty for scalars, e.g., [2, 3] for a 2x3 matrix
     pub shape: Vec<usize>,
+    /// True if shape is from a modification (shape=x), false if from subscript [x]
+    pub shape_is_modification: bool,
     /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)
     pub annotation: Vec<Expression>,
     /// Component modifications (e.g., R=10 in `Resistor R1(R=10)`)
@@ -178,6 +180,8 @@ pub enum ClassType {
 pub struct ClassDefinition {
     pub name: Token,
     pub class_type: ClassType,
+    /// Token for the class type keyword (model, class, function, etc.)
+    pub class_type_token: Token,
     pub encapsulated: bool,
     /// Description string for this class (e.g., "A test model")
     pub description: Vec<Token>,

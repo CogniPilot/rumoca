@@ -1,12 +1,11 @@
 // Test if expressions
-
 // Simple if-then-else
 model SimpleIfExpression
   Real x(start = 0);
   Real y;
 equation
   der(x) = 1;
-  y = if x > 0 then 1 else - 1;
+  y = if x > 0 then 1 else -1;
 end SimpleIfExpression;
 
 // If expression with elseif
@@ -15,7 +14,7 @@ model ElseIfExpression
   Real y;
 equation
   der(x) = 1;
-  y = if x < -1 then - 1 elseif x > 1 then 1 else 0;
+  y = if x < -1 then -1 elseif x > 1 then 1 else 0;
 end ElseIfExpression;
 
 // Multiple elseif branches
@@ -25,10 +24,7 @@ model MultipleElseIf
 equation
   der(x) = 1;
   // Categorize x into ranges
-  category = if x < -2 then 1
-elseif x < 0 then 2
-elseif x < 2 then 3
-else 4;
+  category = if x < -2 then 1 elseif x < 0 then 2 elseif x < 2 then 3 else 4;
 end MultipleElseIf;
 
 // Nested if expressions
@@ -60,5 +56,5 @@ model IfInEquation
   Real clamped;
 equation
   der(x) = 1;
-  clamped = if x > threshold then threshold elseif x < -threshold then - threshold else x;
+  clamped = if x > threshold then threshold elseif x < -threshold then -threshold else x;
 end IfInEquation;

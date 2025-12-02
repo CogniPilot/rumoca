@@ -27,16 +27,16 @@ model Rover
   parameter Real wheel_left_pos_y = 0.175 "left wheel y position";
   parameter Real wheel_right_pos_y = 0.175 "right wheel y position";
   parameter Real wheel_pos_z = .05 "wheel z position";
-
   // states
-  Real x(start=x0), y(start=y0), theta(start=theta0), z(start=z0), v;
-
+  Real x(start = x0);
+  Real y(start = y0);
+  Real theta(start = theta0);
+  Real z(start = z0);
+  Real v;
   // inputs
   input Real thr, str;
-
   // subsystems
   Motor m1;
-
 equation
   v = r * m1.omega;
   der(x) = v * cos(theta);

@@ -22,6 +22,7 @@ const TYPE_PARAMETER: u32 = 3;
 const TYPE_VARIABLE: u32 = 4;
 const TYPE_PROPERTY: u32 = 5; // constant
 const TYPE_FUNCTION: u32 = 6;
+const TYPE_KEYWORD: u32 = 7;
 const TYPE_STRING: u32 = 9;
 const TYPE_NUMBER: u32 = 10;
 
@@ -85,6 +86,18 @@ impl SemanticTokenCollector {
 
 impl Visitor for SemanticTokenCollector {
     fn enter_class_definition(&mut self, node: &ClassDefinition) {
+        // Add class type keyword token (model, class, function, etc.)
+        // This ensures "model" is highlighted as a keyword, preventing "mod" from taking precedence
+        if node.class_type_token.location.start_line > 0 {
+            self.add_token(
+                node.class_type_token.location.start_line,
+                node.class_type_token.location.start_column,
+                node.class_type_token.text.len() as u32,
+                TYPE_KEYWORD,
+                0,
+            );
+        }
+
         // Add class name token
         let class_type_idx = match node.class_type {
             ClassType::Package => TYPE_NAMESPACE,

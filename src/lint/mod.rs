@@ -27,8 +27,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::ir::ast::{
-    ClassDefinition, ComponentReference, Equation, Expression, Statement, StoredDefinition,
-    Variability,
+    ClassDefinition, ClassType, ComponentReference, Equation, Expression, Statement,
+    StoredDefinition, Variability,
 };
 use crate::ir::transform::constants::global_builtins;
 use crate::ir::transform::flatten::flatten;
@@ -339,7 +339,11 @@ fn lint_class(
     }
 
     if config.should_run("unused-variable") {
-        lint_unused_variables(analysis_class, file_path, &globals, result);
+        // Skip unused variable checking for records and connectors
+        // since their fields are accessed externally
+        if !matches!(class.class_type, ClassType::Record | ClassType::Connector) {
+            lint_unused_variables(analysis_class, file_path, &globals, result);
+        }
     }
 
     if config.should_run("undefined-reference") {

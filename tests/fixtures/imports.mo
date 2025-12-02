@@ -58,7 +58,7 @@ end RenamedImportTest;
 
 // Test unqualified import: import A.B.*;
 model UnqualifiedImportTest
-  import MathLib .*;
+  import MathLib.*;
   Real a = 1;
   Real b = 2;
   Real sum_val;
