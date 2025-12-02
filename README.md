@@ -7,9 +7,9 @@
 [![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
 [![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
 
-> **Note:** Rumoca is in active development. APIs may change between releases.
+> **Note:** Rumoca is in early development. While already usable for many practical tasks, you may encounter issues. Please [file bug reports](https://github.com/cognipilot/rumoca/issues) to help improve the compiler. APIs may change between releases.
 
-A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports to the [DAE IR Format](https://github.com/CogniPilot/modelica_ir) supporting both implicit and explicit model serialization), or via user customizable template leveraging [minijinja](https://github.com/mitsuhiko/minijinja). The DAE IR format is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, and other backends planned (e.g. Jax).
+A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports to the [DAE IR Format](https://github.com/CogniPilot/modelica_ir) supporting both implicit and explicit model serialization), or via user customizable template leveraging [minijinja](https://github.com/mitsuhiko/minijinja). The DAE IR format is consumed by [Cyecca](https://github.com/cognipilot/cyecca) (see the [`ir` branch](https://github.com/cognipilot/cyecca/tree/ir) for ongoing integration) for model simulation, analysis, and Python library integration with CasADi, SymPy, and other backends planned (e.g. Jax).
 
 Future targets include:
 - **Export**: [eFMI/GALEC](https://www.efmi-standard.org/)
@@ -37,7 +37,7 @@ cargo install rumoca
 
 **Prerequisites:**
 
-1. Install [Rust](https://rustup.rs/) if you haven't already:
+1. Install [Rust](https://rustup.rs/) if you haven't already (Windows users: see [rustup.rs](https://rustup.rs/) for installer):
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
@@ -145,13 +145,15 @@ rumoca-lint --deny-warnings
 | `inconsistent-units` | warning | Potential unit inconsistencies |
 | `redundant-extends` | warning | Duplicate or circular extends |
 
-**Configuration:** Create `.rumoca_lint.toml` or `rumoca_lint.toml` in your project:
+**Configuration:** Create `.rumoca_lint.toml` or `rumoca_lint.toml` in your project. The linter searches for config files starting from the file's directory and walking up to parent directories:
 
 ```toml
-min_level = "warning"
+min_level = "warning"                                    # help, note, warning, error
 disabled_rules = ["magic-number", "missing-documentation"]
-deny_warnings = false
+deny_warnings = false                                    # exit with error on warnings
 ```
+
+CLI options override config file settings.
 
 ### Library Usage
 
