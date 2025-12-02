@@ -18,6 +18,7 @@ use lsp_types::{
 use crate::ir::ast::{Causality, ClassType, StoredDefinition, Variability};
 
 use super::builtin_functions::get_builtin_functions;
+use super::keywords::get_keyword_completions;
 use super::utils::{get_text_before_cursor, parse_document};
 use super::workspace::{SymbolKind, WorkspaceState};
 
@@ -629,126 +630,6 @@ fn get_workspace_member_completions(
     }
 
     items
-}
-
-/// Get keyword completions
-fn get_keyword_completions() -> Vec<CompletionItem> {
-    let keywords = vec![
-        ("model", "model declaration", CompletionItemKind::KEYWORD),
-        ("class", "class declaration", CompletionItemKind::KEYWORD),
-        (
-            "connector",
-            "connector declaration",
-            CompletionItemKind::KEYWORD,
-        ),
-        (
-            "package",
-            "package declaration",
-            CompletionItemKind::KEYWORD,
-        ),
-        (
-            "function",
-            "function declaration",
-            CompletionItemKind::KEYWORD,
-        ),
-        ("record", "record declaration", CompletionItemKind::KEYWORD),
-        ("block", "block declaration", CompletionItemKind::KEYWORD),
-        ("type", "type declaration", CompletionItemKind::KEYWORD),
-        (
-            "parameter",
-            "parameter variable",
-            CompletionItemKind::KEYWORD,
-        ),
-        ("constant", "constant variable", CompletionItemKind::KEYWORD),
-        ("input", "input connector", CompletionItemKind::KEYWORD),
-        ("output", "output connector", CompletionItemKind::KEYWORD),
-        ("flow", "flow variable", CompletionItemKind::KEYWORD),
-        ("stream", "stream variable", CompletionItemKind::KEYWORD),
-        ("discrete", "discrete variable", CompletionItemKind::KEYWORD),
-        (
-            "Real",
-            "Real number type",
-            CompletionItemKind::TYPE_PARAMETER,
-        ),
-        (
-            "Integer",
-            "Integer type",
-            CompletionItemKind::TYPE_PARAMETER,
-        ),
-        (
-            "Boolean",
-            "Boolean type",
-            CompletionItemKind::TYPE_PARAMETER,
-        ),
-        ("String", "String type", CompletionItemKind::TYPE_PARAMETER),
-        ("extends", "inheritance", CompletionItemKind::KEYWORD),
-        ("import", "import statement", CompletionItemKind::KEYWORD),
-        ("within", "within statement", CompletionItemKind::KEYWORD),
-        ("equation", "equation section", CompletionItemKind::KEYWORD),
-        (
-            "algorithm",
-            "algorithm section",
-            CompletionItemKind::KEYWORD,
-        ),
-        (
-            "initial equation",
-            "initial equation section",
-            CompletionItemKind::KEYWORD,
-        ),
-        (
-            "initial algorithm",
-            "initial algorithm section",
-            CompletionItemKind::KEYWORD,
-        ),
-        (
-            "protected",
-            "protected section",
-            CompletionItemKind::KEYWORD,
-        ),
-        ("public", "public section", CompletionItemKind::KEYWORD),
-        ("final", "final modifier", CompletionItemKind::KEYWORD),
-        ("partial", "partial class", CompletionItemKind::KEYWORD),
-        (
-            "replaceable",
-            "replaceable element",
-            CompletionItemKind::KEYWORD,
-        ),
-        (
-            "redeclare",
-            "redeclare element",
-            CompletionItemKind::KEYWORD,
-        ),
-        ("inner", "inner element", CompletionItemKind::KEYWORD),
-        ("outer", "outer element", CompletionItemKind::KEYWORD),
-        (
-            "encapsulated",
-            "encapsulated class",
-            CompletionItemKind::KEYWORD,
-        ),
-        ("annotation", "annotation", CompletionItemKind::KEYWORD),
-        ("if", "if statement", CompletionItemKind::KEYWORD),
-        ("then", "then clause", CompletionItemKind::KEYWORD),
-        ("else", "else clause", CompletionItemKind::KEYWORD),
-        ("elseif", "elseif clause", CompletionItemKind::KEYWORD),
-        ("for", "for loop", CompletionItemKind::KEYWORD),
-        ("loop", "loop keyword", CompletionItemKind::KEYWORD),
-        ("while", "while loop", CompletionItemKind::KEYWORD),
-        ("when", "when statement", CompletionItemKind::KEYWORD),
-        ("end", "end keyword", CompletionItemKind::KEYWORD),
-        ("time", "simulation time", CompletionItemKind::VARIABLE),
-        ("true", "boolean true", CompletionItemKind::VALUE),
-        ("false", "boolean false", CompletionItemKind::VALUE),
-    ];
-
-    keywords
-        .into_iter()
-        .map(|(label, detail, kind)| CompletionItem {
-            label: label.to_string(),
-            kind: Some(kind),
-            detail: Some(detail.to_string()),
-            ..Default::default()
-        })
-        .collect()
 }
 
 /// Check if we're in a modifier context and return appropriate completions

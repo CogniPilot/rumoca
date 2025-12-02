@@ -12,15 +12,74 @@ use std::collections::HashMap;
 
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
-    CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
-    Position, Range, SymbolKind, Uri,
+    CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, Range,
+    SymbolKind, Uri,
 };
 
-use crate::ir::ast::{
-    ClassDefinition, ClassType, ComponentReference, Equation, Expression, Statement,
-};
+use crate::ir::ast::{ClassDefinition, ClassType, ComponentReference, Expression};
+use crate::ir::visitor::{Visitable, Visitor};
 
-use super::utils::{get_word_at_position, parse_document};
+use super::utils::{get_word_at_position, parse_document, token_to_range};
+
+/// Visitor that finds all calls to a specific target function
+struct CallRangeFinder<'a> {
+    target: &'a str,
+    ranges: Vec<Range>,
+}
+
+impl<'a> CallRangeFinder<'a> {
+    fn new(target: &'a str) -> Self {
+        Self {
+            target,
+            ranges: Vec::new(),
+        }
+    }
+
+    fn check_function_call(&mut self, comp: &ComponentReference) {
+        if get_function_name(comp) == self.target {
+            if let Some(ident) = comp.parts.first().map(|p| &p.ident) {
+                self.ranges.push(token_to_range(ident));
+            }
+        }
+    }
+}
+
+impl Visitor for CallRangeFinder<'_> {
+    fn enter_expression(&mut self, node: &Expression) {
+        if let Expression::FunctionCall { comp, .. } = node {
+            self.check_function_call(comp);
+        }
+    }
+}
+
+/// Visitor that collects all function calls with their ranges
+struct FunctionCallCollector {
+    calls: HashMap<String, Vec<Range>>,
+}
+
+impl FunctionCallCollector {
+    fn new() -> Self {
+        Self {
+            calls: HashMap::new(),
+        }
+    }
+
+    fn record_call(&mut self, comp: &ComponentReference) {
+        let name = get_function_name(comp);
+        if let Some(ident) = comp.parts.first().map(|p| &p.ident) {
+            let range = token_to_range(ident);
+            self.calls.entry(name).or_default().push(range);
+        }
+    }
+}
+
+impl Visitor for FunctionCallCollector {
+    fn enter_expression(&mut self, node: &Expression) {
+        if let Expression::FunctionCall { comp, .. } = node {
+            self.record_call(comp);
+        }
+    }
+}
 
 /// Handle prepare call hierarchy request
 pub fn handle_prepare_call_hierarchy(
@@ -116,8 +175,7 @@ fn find_call_hierarchy_item(
             ClassType::Operator => SymbolKind::OPERATOR,
         };
 
-        let line = class.name.location.start_line.saturating_sub(1);
-        let col = class.name.location.start_column.saturating_sub(1);
+        let range = token_to_range(&class.name);
 
         return Some(CallHierarchyItem {
             name: class.name.text.clone(),
@@ -125,26 +183,8 @@ fn find_call_hierarchy_item(
             tags: None,
             detail: Some(format!("{:?}", class.class_type)),
             uri: uri.clone(),
-            range: Range {
-                start: Position {
-                    line,
-                    character: col,
-                },
-                end: Position {
-                    line,
-                    character: col + class.name.text.len() as u32,
-                },
-            },
-            selection_range: Range {
-                start: Position {
-                    line,
-                    character: col,
-                },
-                end: Position {
-                    line,
-                    character: col + class.name.text.len() as u32,
-                },
-            },
+            range,
+            selection_range: range,
             data: None,
         });
     }
@@ -166,45 +206,17 @@ fn collect_incoming_calls(
     uri: &Uri,
     calls: &mut Vec<CallHierarchyIncomingCall>,
 ) {
-    let mut from_ranges = Vec::new();
+    // Use visitor to find all calls to target
+    let mut finder = CallRangeFinder::new(target_name);
+    class.accept(&mut finder);
 
-    // Check equations for function calls
-    for eq in &class.equations {
-        collect_call_ranges_from_equation(eq, target_name, &mut from_ranges);
-    }
-
-    for eq in &class.initial_equations {
-        collect_call_ranges_from_equation(eq, target_name, &mut from_ranges);
-    }
-
-    // Check algorithms
-    for algo in &class.algorithms {
-        for stmt in algo {
-            collect_call_ranges_from_statement(stmt, target_name, &mut from_ranges);
-        }
-    }
-
-    for algo in &class.initial_algorithms {
-        for stmt in algo {
-            collect_call_ranges_from_statement(stmt, target_name, &mut from_ranges);
-        }
-    }
-
-    // Check component start expressions for function calls
-    for comp in class.components.values() {
-        if !matches!(comp.start, Expression::Empty) {
-            collect_call_ranges_from_expression(&comp.start, target_name, &mut from_ranges);
-        }
-    }
-
-    if !from_ranges.is_empty() {
-        let line = class.name.location.start_line.saturating_sub(1);
-        let col = class.name.location.start_column.saturating_sub(1);
-
+    if !finder.ranges.is_empty() {
         let kind = match class.class_type {
             ClassType::Function => SymbolKind::FUNCTION,
             _ => SymbolKind::CLASS,
         };
+
+        let range = token_to_range(&class.name);
 
         calls.push(CallHierarchyIncomingCall {
             from: CallHierarchyItem {
@@ -213,29 +225,11 @@ fn collect_incoming_calls(
                 tags: None,
                 detail: Some(format!("{:?}", class.class_type)),
                 uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line,
-                        character: col,
-                    },
-                    end: Position {
-                        line,
-                        character: col + class.name.text.len() as u32,
-                    },
-                },
-                selection_range: Range {
-                    start: Position {
-                        line,
-                        character: col,
-                    },
-                    end: Position {
-                        line,
-                        character: col + class.name.text.len() as u32,
-                    },
-                },
+                range,
+                selection_range: range,
                 data: None,
             },
-            from_ranges,
+            from_ranges: finder.ranges,
         });
     }
 
@@ -252,31 +246,12 @@ fn collect_outgoing_calls(
     documents: &HashMap<Uri, String>,
     calls: &mut Vec<CallHierarchyOutgoingCall>,
 ) {
-    let mut called_functions: HashMap<String, Vec<Range>> = HashMap::new();
-
-    // Collect all function calls
-    for eq in &class.equations {
-        collect_function_calls_from_equation(eq, &mut called_functions);
-    }
-
-    for eq in &class.initial_equations {
-        collect_function_calls_from_equation(eq, &mut called_functions);
-    }
-
-    for algo in &class.algorithms {
-        for stmt in algo {
-            collect_function_calls_from_statement(stmt, &mut called_functions);
-        }
-    }
-
-    for algo in &class.initial_algorithms {
-        for stmt in algo {
-            collect_function_calls_from_statement(stmt, &mut called_functions);
-        }
-    }
+    // Use visitor to collect all function calls
+    let mut collector = FunctionCallCollector::new();
+    class.accept(&mut collector);
 
     // Create outgoing calls for each called function
-    for (func_name, from_ranges) in called_functions {
+    for (func_name, from_ranges) in collector.calls {
         // Try to find the function definition
         if let Some(item) = find_function_definition(&func_name, uri, documents) {
             calls.push(CallHierarchyOutgoingCall {
@@ -284,306 +259,6 @@ fn collect_outgoing_calls(
                 from_ranges,
             });
         }
-    }
-}
-
-/// Collect call ranges from an equation
-fn collect_call_ranges_from_equation(eq: &Equation, target: &str, ranges: &mut Vec<Range>) {
-    match eq {
-        Equation::Simple { lhs, rhs } => {
-            collect_call_ranges_from_expression(lhs, target, ranges);
-            collect_call_ranges_from_expression(rhs, target, ranges);
-        }
-        Equation::For { equations, .. } => {
-            for sub_eq in equations {
-                collect_call_ranges_from_equation(sub_eq, target, ranges);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_call_ranges_from_expression(&block.cond, target, ranges);
-                for eq in &block.eqs {
-                    collect_call_ranges_from_equation(eq, target, ranges);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for eq in else_eqs {
-                    collect_call_ranges_from_equation(eq, target, ranges);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                collect_call_ranges_from_expression(&block.cond, target, ranges);
-                for eq in &block.eqs {
-                    collect_call_ranges_from_equation(eq, target, ranges);
-                }
-            }
-        }
-        Equation::FunctionCall { comp, args } => {
-            if get_function_name(comp) == target {
-                if let Some(loc) = comp.parts.first().map(|p| &p.ident.location) {
-                    ranges.push(Range {
-                        start: Position {
-                            line: loc.start_line.saturating_sub(1),
-                            character: loc.start_column.saturating_sub(1),
-                        },
-                        end: Position {
-                            line: loc.start_line.saturating_sub(1),
-                            character: loc.start_column.saturating_sub(1) + target.len() as u32,
-                        },
-                    });
-                }
-            }
-            for arg in args {
-                collect_call_ranges_from_expression(arg, target, ranges);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Collect call ranges from a statement
-fn collect_call_ranges_from_statement(stmt: &Statement, target: &str, ranges: &mut Vec<Range>) {
-    match stmt {
-        Statement::Assignment { value, .. } => {
-            collect_call_ranges_from_expression(value, target, ranges);
-        }
-        Statement::For { equations, .. } => {
-            for sub_stmt in equations {
-                collect_call_ranges_from_statement(sub_stmt, target, ranges);
-            }
-        }
-        Statement::While(block) => {
-            collect_call_ranges_from_expression(&block.cond, target, ranges);
-            for sub_stmt in &block.stmts {
-                collect_call_ranges_from_statement(sub_stmt, target, ranges);
-            }
-        }
-        Statement::FunctionCall { comp, args } => {
-            if get_function_name(comp) == target {
-                if let Some(loc) = comp.parts.first().map(|p| &p.ident.location) {
-                    ranges.push(Range {
-                        start: Position {
-                            line: loc.start_line.saturating_sub(1),
-                            character: loc.start_column.saturating_sub(1),
-                        },
-                        end: Position {
-                            line: loc.start_line.saturating_sub(1),
-                            character: loc.start_column.saturating_sub(1) + target.len() as u32,
-                        },
-                    });
-                }
-            }
-            for arg in args {
-                collect_call_ranges_from_expression(arg, target, ranges);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Collect call ranges from an expression
-fn collect_call_ranges_from_expression(expr: &Expression, target: &str, ranges: &mut Vec<Range>) {
-    match expr {
-        Expression::FunctionCall { comp, args } => {
-            if get_function_name(comp) == target {
-                if let Some(loc) = comp.parts.first().map(|p| &p.ident.location) {
-                    ranges.push(Range {
-                        start: Position {
-                            line: loc.start_line.saturating_sub(1),
-                            character: loc.start_column.saturating_sub(1),
-                        },
-                        end: Position {
-                            line: loc.start_line.saturating_sub(1),
-                            character: loc.start_column.saturating_sub(1) + target.len() as u32,
-                        },
-                    });
-                }
-            }
-            for arg in args {
-                collect_call_ranges_from_expression(arg, target, ranges);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_call_ranges_from_expression(lhs, target, ranges);
-            collect_call_ranges_from_expression(rhs, target, ranges);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_call_ranges_from_expression(rhs, target, ranges);
-        }
-        Expression::Array { elements } => {
-            for elem in elements {
-                collect_call_ranges_from_expression(elem, target, ranges);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_call_ranges_from_expression(cond, target, ranges);
-                collect_call_ranges_from_expression(then_expr, target, ranges);
-            }
-            collect_call_ranges_from_expression(else_branch, target, ranges);
-        }
-        _ => {}
-    }
-}
-
-/// Collect function calls from an equation
-fn collect_function_calls_from_equation(eq: &Equation, calls: &mut HashMap<String, Vec<Range>>) {
-    match eq {
-        Equation::Simple { lhs, rhs } => {
-            collect_function_calls_from_expression(lhs, calls);
-            collect_function_calls_from_expression(rhs, calls);
-        }
-        Equation::For { equations, .. } => {
-            for sub_eq in equations {
-                collect_function_calls_from_equation(sub_eq, calls);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_function_calls_from_expression(&block.cond, calls);
-                for eq in &block.eqs {
-                    collect_function_calls_from_equation(eq, calls);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for eq in else_eqs {
-                    collect_function_calls_from_equation(eq, calls);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                collect_function_calls_from_expression(&block.cond, calls);
-                for eq in &block.eqs {
-                    collect_function_calls_from_equation(eq, calls);
-                }
-            }
-        }
-        Equation::FunctionCall { comp, args } => {
-            let name = get_function_name(comp);
-            if let Some(loc) = comp.parts.first().map(|p| &p.ident.location) {
-                let range = Range {
-                    start: Position {
-                        line: loc.start_line.saturating_sub(1),
-                        character: loc.start_column.saturating_sub(1),
-                    },
-                    end: Position {
-                        line: loc.start_line.saturating_sub(1),
-                        character: loc.start_column.saturating_sub(1) + name.len() as u32,
-                    },
-                };
-                calls.entry(name).or_default().push(range);
-            }
-            for arg in args {
-                collect_function_calls_from_expression(arg, calls);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Collect function calls from a statement
-fn collect_function_calls_from_statement(
-    stmt: &Statement,
-    calls: &mut HashMap<String, Vec<Range>>,
-) {
-    match stmt {
-        Statement::Assignment { value, .. } => {
-            collect_function_calls_from_expression(value, calls);
-        }
-        Statement::For { equations, .. } => {
-            for sub_stmt in equations {
-                collect_function_calls_from_statement(sub_stmt, calls);
-            }
-        }
-        Statement::While(block) => {
-            collect_function_calls_from_expression(&block.cond, calls);
-            for sub_stmt in &block.stmts {
-                collect_function_calls_from_statement(sub_stmt, calls);
-            }
-        }
-        Statement::FunctionCall { comp, args } => {
-            let name = get_function_name(comp);
-            if let Some(loc) = comp.parts.first().map(|p| &p.ident.location) {
-                let range = Range {
-                    start: Position {
-                        line: loc.start_line.saturating_sub(1),
-                        character: loc.start_column.saturating_sub(1),
-                    },
-                    end: Position {
-                        line: loc.start_line.saturating_sub(1),
-                        character: loc.start_column.saturating_sub(1) + name.len() as u32,
-                    },
-                };
-                calls.entry(name).or_default().push(range);
-            }
-            for arg in args {
-                collect_function_calls_from_expression(arg, calls);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Collect function calls from an expression
-fn collect_function_calls_from_expression(
-    expr: &Expression,
-    calls: &mut HashMap<String, Vec<Range>>,
-) {
-    match expr {
-        Expression::FunctionCall { comp, args } => {
-            let name = get_function_name(comp);
-            if let Some(loc) = comp.parts.first().map(|p| &p.ident.location) {
-                let range = Range {
-                    start: Position {
-                        line: loc.start_line.saturating_sub(1),
-                        character: loc.start_column.saturating_sub(1),
-                    },
-                    end: Position {
-                        line: loc.start_line.saturating_sub(1),
-                        character: loc.start_column.saturating_sub(1) + name.len() as u32,
-                    },
-                };
-                calls.entry(name).or_default().push(range);
-            }
-            for arg in args {
-                collect_function_calls_from_expression(arg, calls);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_function_calls_from_expression(lhs, calls);
-            collect_function_calls_from_expression(rhs, calls);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_function_calls_from_expression(rhs, calls);
-        }
-        Expression::Array { elements } => {
-            for elem in elements {
-                collect_function_calls_from_expression(elem, calls);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_function_calls_from_expression(cond, calls);
-                collect_function_calls_from_expression(then_expr, calls);
-            }
-            collect_function_calls_from_expression(else_branch, calls);
-        }
-        _ => {}
     }
 }
 

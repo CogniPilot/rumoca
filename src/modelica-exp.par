@@ -236,7 +236,7 @@
 /* 188 */ import_list: ident import_listList /* Vec */;
 /* 189 */ import_listList /* Vec<T>::Push */: ','^ /* Clipped */ ident import_listList;
 /* 190 */ import_listList /* Vec<T>::New */: ;
-/* 191 */ extends_clause: extends^ /* Clipped */ type_specifier extends_clauseOpt /* Option */ extends_clauseOpt0 /* Option */;
+/* 191 */ extends_clause: extends type_specifier extends_clauseOpt /* Option */ extends_clauseOpt0 /* Option */;
 /* 192 */ extends_clauseOpt0 /* Option<T>::Some */: annotation_clause;
 /* 193 */ extends_clauseOpt0 /* Option<T>::None */: ;
 /* 194 */ extends_clauseOpt /* Option<T>::Some */: class_or_inheritance_modification;
@@ -326,15 +326,15 @@
 /* 278 */ component_clause1: type_prefix type_specifier component_declaration1;
 /* 279 */ component_declaration1: declaration description;
 /* 280 */ short_class_definition: class_prefixes short_class_specifier;
-/* 281 */ equation_section: equation_sectionOpt /* Option */ equation^ /* Clipped */ equation_sectionList /* Vec */;
+/* 281 */ equation_section: equation_sectionOpt /* Option */ equation equation_sectionList /* Vec */;
 /* 282 */ equation_sectionList /* Vec<T>::Push */: some_equation ';'^ /* Clipped */ equation_sectionList;
 /* 283 */ equation_sectionList /* Vec<T>::New */: ;
-/* 284 */ equation_sectionOpt /* Option<T>::Some */: initial^ /* Clipped */;
+/* 284 */ equation_sectionOpt /* Option<T>::Some */: initial;
 /* 285 */ equation_sectionOpt /* Option<T>::None */: ;
-/* 286 */ algorithm_section: algorithm_sectionOpt /* Option */ algorithm^ /* Clipped */ algorithm_sectionList /* Vec */;
+/* 286 */ algorithm_section: algorithm_sectionOpt /* Option */ algorithm algorithm_sectionList /* Vec */;
 /* 287 */ algorithm_sectionList /* Vec<T>::Push */: statement ';'^ /* Clipped */ algorithm_sectionList;
 /* 288 */ algorithm_sectionList /* Vec<T>::New */: ;
-/* 289 */ algorithm_sectionOpt /* Option<T>::Some */: initial^ /* Clipped */;
+/* 289 */ algorithm_sectionOpt /* Option<T>::Some */: initial;
 /* 290 */ algorithm_sectionOpt /* Option<T>::None */: ;
 /* 291 */ some_equation_option: simple_equation;
 /* 292 */ some_equation_option: if_equation;

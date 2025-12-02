@@ -55,6 +55,19 @@ fn loc_info(token: &ir::ast::Token) -> String {
     )
 }
 
+/// Create a location spanning from the start of one token to the end of another
+fn span_location(start: &ir::ast::Token, end: &ir::ast::Token) -> ir::ast::Location {
+    ir::ast::Location {
+        start_line: start.location.start_line,
+        start_column: start.location.start_column,
+        end_line: end.location.end_line,
+        end_column: end.location.end_column,
+        start: start.location.start,
+        end: end.location.end,
+        file_name: start.location.file_name.clone(),
+    }
+}
+
 /// Helper to format location info from an expression
 fn expr_loc_info(expr: &ir::ast::Expression) -> String {
     expr.get_location()
@@ -206,6 +219,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         Ok(ir::ast::ClassDefinition {
                             name: spec.name.clone(),
                             class_type,
+                            location: span_location(&spec.name, &spec.ident),
                             extends: spec.composition.extends.clone(),
                             imports: spec.composition.imports.clone(),
                             classes: spec.composition.classes.clone(),
@@ -215,6 +229,17 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             initial_algorithms: spec.composition.initial_algorithms.clone(),
                             components: spec.composition.components.clone(),
                             encapsulated: ast.class_definition_opt.is_some(),
+                            equation_keyword: spec.composition.equation_keyword.clone(),
+                            initial_equation_keyword: spec
+                                .composition
+                                .initial_equation_keyword
+                                .clone(),
+                            algorithm_keyword: spec.composition.algorithm_keyword.clone(),
+                            initial_algorithm_keyword: spec
+                                .composition
+                                .initial_algorithm_keyword
+                                .clone(),
+                            end_name_token: Some(spec.ident.clone()),
                         })
                     }
                     modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(ext) => {
@@ -246,13 +271,16 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         let base_type_name = type_spec.type_specifier.name.clone();
 
                         // Create an Extend clause for the base type
+                        // For short class specifiers, use ident location for both start and end
                         let extend = ir::ast::Extend {
                             comp: base_type_name,
+                            location: type_spec.ident.location.clone(),
                         };
 
                         Ok(ir::ast::ClassDefinition {
                             name: type_spec.ident.clone(),
                             class_type,
+                            location: type_spec.ident.location.clone(),
                             extends: vec![extend],
                             imports: vec![],
                             classes: IndexMap::new(),
@@ -262,6 +290,11 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             initial_algorithms: vec![],
                             components: IndexMap::new(),
                             encapsulated: ast.class_definition_opt.is_some(),
+                            equation_keyword: None,
+                            initial_equation_keyword: None,
+                            algorithm_keyword: None,
+                            initial_algorithm_keyword: None,
+                            end_name_token: None, // Short class specifiers don't have "end Name"
                         })
                     }
                 }
@@ -282,6 +315,14 @@ pub struct Composition {
     pub initial_equations: Vec<ir::ast::Equation>,
     pub algorithms: Vec<Vec<ir::ast::Statement>>,
     pub initial_algorithms: Vec<Vec<ir::ast::Statement>>,
+    /// Token for "equation" keyword (if present)
+    pub equation_keyword: Option<ir::ast::Token>,
+    /// Token for "initial equation" keyword (if present)
+    pub initial_equation_keyword: Option<ir::ast::Token>,
+    /// Token for "algorithm" keyword (if present)
+    pub algorithm_keyword: Option<ir::ast::Token>,
+    /// Token for "initial algorithm" keyword (if present)
+    pub initial_algorithm_keyword: Option<ir::ast::Token>,
 }
 
 impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
@@ -322,6 +363,19 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                             comp.equations.push(eq.clone());
                         }
                     }
+                    // Store keyword tokens (only store the first occurrence)
+                    if sec.initial {
+                        if comp.initial_equation_keyword.is_none() {
+                            // Use the initial keyword if present, otherwise use the equation keyword
+                            comp.initial_equation_keyword = Some(
+                                sec.initial_keyword
+                                    .clone()
+                                    .unwrap_or(sec.equation_keyword.clone()),
+                            );
+                        }
+                    } else if comp.equation_keyword.is_none() {
+                        comp.equation_keyword = Some(sec.equation_keyword.clone());
+                    }
                 }
                 modelica_grammar_trait::CompositionListGroup::AlgorithmSection(alg_sec) => {
                     let sec = &alg_sec.algorithm_section;
@@ -331,8 +385,19 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                     }
                     if sec.initial {
                         comp.initial_algorithms.push(algo);
+                        // Store keyword token (only store the first occurrence)
+                        if comp.initial_algorithm_keyword.is_none() {
+                            comp.initial_algorithm_keyword = Some(
+                                sec.initial_keyword
+                                    .clone()
+                                    .unwrap_or(sec.algorithm_keyword.clone()),
+                            );
+                        }
                     } else {
                         comp.algorithms.push(algo);
+                        if comp.algorithm_keyword.is_none() {
+                            comp.algorithm_keyword = Some(sec.algorithm_keyword.clone());
+                        }
                     }
                 }
             }
@@ -437,8 +502,19 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         Vec::new()
                                     };
 
+                                // Compute location spanning from type_specifier to declaration ident
+                                let comp_location = clause
+                                    .component_clause
+                                    .type_specifier
+                                    .name
+                                    .name
+                                    .first()
+                                    .map(|start_tok| span_location(start_tok, &c.declaration.ident))
+                                    .unwrap_or_else(|| c.declaration.ident.location.clone());
+
                                 let mut value = ir::ast::Component {
                                     name: c.declaration.ident.text.clone(),
+                                    name_token: c.declaration.ident.clone(),
                                     type_name: clause.component_clause.type_specifier.name.clone(),
                                     variability: variability.clone(),
                                     causality: causality.clone(),
@@ -453,6 +529,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     },
                                     shape: Vec::new(), // Scalar by default, populated from array subscripts
                                     annotation,
+                                    modifications: indexmap::IndexMap::new(),
+                                    location: comp_location,
                                 };
 
                                 // set default start value
@@ -508,13 +586,14 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         ) => {
                                             let modif = &*(class_mod.class_modification);
                                             if let Some(opt) = &modif.class_modification_opt {
-                                                // Look for start= and shape= in the modifier arguments
+                                                // Look for start=, shape=, and other parameter modifications
                                                 for arg in &opt.argument_list.args {
                                                     if let ir::ast::Expression::Binary { op, lhs, rhs } = arg {
                                                         if matches!(op, ir::ast::OpBinary::Eq(_)) {
-                                                            // This is a named argument like start=2.5 or shape=(3)
+                                                            // This is a named argument like start=2.5, shape=(3), or R=10
                                                             if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
-                                                                match comp.to_string().as_str() {
+                                                                let param_name = comp.to_string();
+                                                                match param_name.as_str() {
                                                                     "start" => {
                                                                         value.start = (**rhs).clone();
                                                                     }
@@ -547,7 +626,11 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                             _ => {}
                                                                         }
                                                                     }
-                                                                    _ => {}
+                                                                    _ => {
+                                                                        // Store other modifications (e.g., R=10, C=0.01)
+                                                                        // These will be applied during flattening
+                                                                        value.modifications.insert(param_name, (**rhs).clone());
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -581,12 +664,15 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                 }
                 modelica_grammar_trait::Element::ImportClause(import_elem) => {
                     let import_clause = &import_elem.import_clause;
+                    // Get the location from the import keyword token
+                    let location = import_clause.import.import.location.clone();
                     let parsed_import = match &import_clause.import_clause_group {
                         // import D = A.B.C; (renamed import)
                         modelica_grammar_trait::ImportClauseGroup::IdentEquName(renamed) => {
                             ir::ast::Import::Renamed {
                                 alias: renamed.ident.clone(),
                                 path: renamed.name.clone(),
+                                location,
                             }
                         }
                         // import A.B.C; or import A.B.*; or import A.B.{C, D};
@@ -597,20 +683,20 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                             match &name_opt.import_clause_opt {
                                 None => {
                                     // import A.B.C; (qualified import)
-                                    ir::ast::Import::Qualified { path }
+                                    ir::ast::Import::Qualified { path, location }
                                 }
                                 Some(opt) => {
                                     match &opt.import_clause_opt_group {
                                         // import A.B.*;
                                         modelica_grammar_trait::ImportClauseOptGroup::DotStar(
                                             _,
-                                        ) => ir::ast::Import::Unqualified { path },
+                                        ) => ir::ast::Import::Unqualified { path, location },
                                         // import A.B.* or import A.B.{C, D}
                                         modelica_grammar_trait::ImportClauseOptGroup::DotImportClauseOptGroupGroup(dot_group) => {
                                             match &dot_group.import_clause_opt_group_group {
                                                 // import A.B.*
                                                 modelica_grammar_trait::ImportClauseOptGroupGroup::Star(_) => {
-                                                    ir::ast::Import::Unqualified { path }
+                                                    ir::ast::Import::Unqualified { path, location }
                                                 }
                                                 // import A.B.{C, D, E}
                                                 modelica_grammar_trait::ImportClauseOptGroupGroup::LBraceImportListRBrace(list) => {
@@ -618,7 +704,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                     for item in &list.import_list.import_list_list {
                                                         names.push(item.ident.clone());
                                                     }
-                                                    ir::ast::Import::Selective { path, names }
+                                                    ir::ast::Import::Selective { path, names, location }
                                                 }
                                             }
                                         }
@@ -650,8 +736,21 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                             type_loc
                         )
                     }
+                    // Compute location spanning from 'extends' keyword to end of type_specifier
+                    let extend_location = clause
+                        .extends_clause
+                        .type_specifier
+                        .name
+                        .name
+                        .last()
+                        .map(|end_tok| {
+                            span_location(&clause.extends_clause.extends.extends, end_tok)
+                        })
+                        .unwrap_or_else(|| clause.extends_clause.extends.extends.location.clone());
+
                     def.extends.push(ir::ast::Extend {
                         comp: clause.extends_clause.type_specifier.name.clone(),
+                        location: extend_location,
                     });
                 }
                 modelica_grammar_trait::Element::ElementReplaceableDefinition(repl) => {
@@ -729,6 +828,10 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
 pub struct EquationSection {
     pub initial: bool,
     pub equations: Vec<ir::ast::Equation>,
+    /// Token for "equation" keyword
+    pub equation_keyword: ir::ast::Token,
+    /// Token for "initial" keyword (if present)
+    pub initial_keyword: Option<ir::ast::Token>,
 }
 
 impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
@@ -737,9 +840,15 @@ impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
     fn try_from(
         ast: &modelica_grammar_trait::EquationSection,
     ) -> std::result::Result<Self, Self::Error> {
+        let initial_keyword = ast
+            .equation_section_opt
+            .as_ref()
+            .map(|opt| opt.initial.initial.clone());
         let mut def = EquationSection {
             initial: ast.equation_section_opt.is_some(),
             equations: vec![],
+            equation_keyword: ast.equation.equation.clone(),
+            initial_keyword,
         };
         for eq in &ast.equation_section_list {
             def.equations.push(eq.some_equation.clone());
@@ -754,6 +863,10 @@ impl TryFrom<&modelica_grammar_trait::EquationSection> for EquationSection {
 pub struct AlgorithmSection {
     pub initial: bool,
     pub statements: Vec<ir::ast::Statement>,
+    /// Token for "algorithm" keyword
+    pub algorithm_keyword: ir::ast::Token,
+    /// Token for "initial" keyword (if present)
+    pub initial_keyword: Option<ir::ast::Token>,
 }
 
 impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
@@ -762,9 +875,15 @@ impl TryFrom<&modelica_grammar_trait::AlgorithmSection> for AlgorithmSection {
     fn try_from(
         ast: &modelica_grammar_trait::AlgorithmSection,
     ) -> std::result::Result<Self, Self::Error> {
+        let initial_keyword = ast
+            .algorithm_section_opt
+            .as_ref()
+            .map(|opt| opt.initial.initial.clone());
         let mut def = AlgorithmSection {
             initial: ast.algorithm_section_opt.is_some(),
             statements: vec![],
+            algorithm_keyword: ast.algorithm.algorithm.clone(),
+            initial_keyword,
         };
         for alg in &ast.algorithm_section_list {
             def.statements.push(alg.statement.clone());

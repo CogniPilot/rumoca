@@ -1,44 +1,73 @@
-//! This module defines the `Visitor` and `Visitable` traits for implementing
+//! This module defines the `Visitor` and `MutVisitor` traits for implementing
 //! the Visitor design pattern in the context of an intermediate representation (IR)
 //! for an abstract syntax tree (AST).
 //!
 //! ## Overview
 //!
-//! The `Visitor` trait provides a set of methods for entering and exiting various
-//! types of AST nodes. These methods can be overridden to implement custom behavior
-//! when traversing the AST.
+//! Two visitor traits are provided:
+//! - `Visitor` - For immutable traversal (analysis, code generation, LSP features)
+//! - `MutVisitor` - For mutable traversal (transformations, optimizations)
 //!
-//! The `Visitable` trait is implemented by AST node types to allow them to accept
-//! a `Visitor`. This enables recursive traversal of the AST, where each node
-//! delegates the visitation of its children to the visitor.
+//! Each trait provides methods for entering and exiting various types of AST nodes.
+//! These methods can be overridden to implement custom behavior when traversing the AST.
 //!
 //! ## Key Components
 //!
-//! - **`Visitor` Trait**: Defines methods for entering and exiting specific AST node types,
-//!   such as `StoredDefinition`, `ClassDefinition`, `Equation`, `Expression`, `Component`,
-//!   and `ComponentReference`. These methods are no-op by default and can be overridden
-//!   as needed.
+//! - **`Visitor` Trait**: Immutable visitor for read-only traversal. Used for analysis,
+//!   code generation, and LSP features like semantic tokens, references, etc.
 //!
-//! - **`Visitable` Trait**: Provides the `accept` method, which takes a mutable reference
-//!   to a `Visitor` and allows the visitor to traverse the node and its children.
-//!
-//! - **Implementations of `Visitable`**: Each AST node type implements the `Visitable`
-//!   trait, defining how the visitor should traverse its children. For example, a
-//!   `ClassDefinition` node delegates visitation to its equations, and an `Equation`
-//!   node delegates visitation to its left-hand side (LHS) and right-hand side (RHS).
-//!
-//! ## Usage
-//!
-//! To use this module, define a struct that implements the `Visitor` trait, overriding
-//! the methods for the node types you are interested in. Then, call the `accept` method
-//! on the root node of the AST, passing a mutable reference to your visitor.
-//!
-//! This design pattern is useful for implementing operations such as code generation,
-//! optimization, or analysis on the AST.
+//! - **`MutVisitor` Trait**: Mutable visitor with `enter_*` and `exit_*` methods for each
+//!   AST node type. Used for transformations that modify the AST.
 use crate::ir;
 
-#[allow(unused)]
+// =============================================================================
+// Immutable Visitor (for analysis, LSP features)
+// =============================================================================
+
+/// Immutable visitor trait for AST analysis.
+///
+/// Implement this trait for read-only traversal such as:
+/// - Semantic token collection
+/// - Reference finding
+/// - Symbol collection
+/// - Code analysis
 pub trait Visitor {
+    fn enter_stored_definition(&mut self, _node: &ir::ast::StoredDefinition) {}
+    fn exit_stored_definition(&mut self, _node: &ir::ast::StoredDefinition) {}
+
+    fn enter_class_definition(&mut self, _node: &ir::ast::ClassDefinition) {}
+    fn exit_class_definition(&mut self, _node: &ir::ast::ClassDefinition) {}
+
+    fn enter_equation(&mut self, _node: &ir::ast::Equation) {}
+    fn exit_equation(&mut self, _node: &ir::ast::Equation) {}
+
+    fn enter_statement(&mut self, _node: &ir::ast::Statement) {}
+    fn exit_statement(&mut self, _node: &ir::ast::Statement) {}
+
+    fn enter_expression(&mut self, _node: &ir::ast::Expression) {}
+    fn exit_expression(&mut self, _node: &ir::ast::Expression) {}
+
+    fn enter_component(&mut self, _node: &ir::ast::Component) {}
+    fn exit_component(&mut self, _node: &ir::ast::Component) {}
+
+    fn enter_component_reference(&mut self, _node: &ir::ast::ComponentReference) {}
+    fn exit_component_reference(&mut self, _node: &ir::ast::ComponentReference) {}
+}
+
+/// Trait for AST nodes that can accept an immutable visitor.
+pub trait Visitable {
+    fn accept<V: Visitor>(&self, visitor: &mut V);
+}
+
+// =============================================================================
+// Mutable Visitor (for transformations)
+// =============================================================================
+
+/// Mutable visitor trait for AST transformations.
+///
+/// Implement this trait to modify the AST during traversal.
+#[allow(unused)]
+pub trait MutVisitor {
     fn enter_stored_definition(&mut self, _node: &mut ir::ast::StoredDefinition) {}
     fn exit_stored_definition(&mut self, _node: &mut ir::ast::StoredDefinition) {}
 
@@ -47,6 +76,9 @@ pub trait Visitor {
 
     fn enter_equation(&mut self, _node: &mut ir::ast::Equation) {}
     fn exit_equation(&mut self, _node: &mut ir::ast::Equation) {}
+
+    fn enter_statement(&mut self, _node: &mut ir::ast::Statement) {}
+    fn exit_statement(&mut self, _node: &mut ir::ast::Statement) {}
 
     fn enter_expression(&mut self, _node: &mut ir::ast::Expression) {}
     fn exit_expression(&mut self, _node: &mut ir::ast::Expression) {}
@@ -58,35 +90,66 @@ pub trait Visitor {
     fn exit_component_reference(&mut self, _node: &mut ir::ast::ComponentReference) {}
 }
 
-pub trait Visitable {
-    fn accept<V: Visitor>(&mut self, visitor: &mut V);
+/// Trait for AST nodes that can accept a mutable visitor.
+#[allow(unused)]
+pub trait MutVisitable {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V);
 }
 
-#[allow(unused)]
+// =============================================================================
+// Immutable Visitable Implementations
+// =============================================================================
+
 impl Visitable for ir::ast::StoredDefinition {
-    fn accept<V: Visitor>(&mut self, visitor: &mut V) {
+    fn accept<V: Visitor>(&self, visitor: &mut V) {
         visitor.enter_stored_definition(self);
-        for (_name, class) in &mut self.class_list {
+        for (_name, class) in &self.class_list {
             class.accept(visitor);
         }
         visitor.exit_stored_definition(self);
     }
 }
 
-#[allow(unused)]
 impl Visitable for ir::ast::ClassDefinition {
-    fn accept<V: Visitor>(&mut self, visitor: &mut V) {
+    fn accept<V: Visitor>(&self, visitor: &mut V) {
         visitor.enter_class_definition(self);
-        for eq in &mut self.equations {
+
+        // Visit components
+        for comp in self.components.values() {
+            comp.accept(visitor);
+        }
+
+        // Visit equations
+        for eq in &self.equations {
             eq.accept(visitor);
         }
+        for eq in &self.initial_equations {
+            eq.accept(visitor);
+        }
+
+        // Visit algorithms (statements)
+        for algo in &self.algorithms {
+            for stmt in algo {
+                stmt.accept(visitor);
+            }
+        }
+        for algo in &self.initial_algorithms {
+            for stmt in algo {
+                stmt.accept(visitor);
+            }
+        }
+
+        // Visit nested classes
+        for nested in self.classes.values() {
+            nested.accept(visitor);
+        }
+
         visitor.exit_class_definition(self);
     }
 }
 
-#[allow(unused)]
 impl Visitable for ir::ast::Equation {
-    fn accept<V: Visitor>(&mut self, visitor: &mut V) {
+    fn accept<V: Visitor>(&self, visitor: &mut V) {
         visitor.enter_equation(self);
         match self {
             ir::ast::Equation::Simple { lhs, rhs } => {
@@ -114,7 +177,7 @@ impl Visitable for ir::ast::Equation {
             ir::ast::Equation::When(blocks) => {
                 for block in blocks {
                     block.cond.accept(visitor);
-                    for eq in &mut block.eqs {
+                    for eq in &block.eqs {
                         eq.accept(visitor);
                     }
                 }
@@ -125,7 +188,7 @@ impl Visitable for ir::ast::Equation {
             } => {
                 for block in cond_blocks {
                     block.cond.accept(visitor);
-                    for eq in &mut block.eqs {
+                    for eq in &block.eqs {
                         eq.accept(visitor);
                     }
                 }
@@ -141,15 +204,73 @@ impl Visitable for ir::ast::Equation {
     }
 }
 
-#[allow(unused)]
+impl Visitable for ir::ast::Statement {
+    fn accept<V: Visitor>(&self, visitor: &mut V) {
+        visitor.enter_statement(self);
+        match self {
+            ir::ast::Statement::Empty => {}
+            ir::ast::Statement::Assignment { comp, value } => {
+                comp.accept(visitor);
+                value.accept(visitor);
+            }
+            ir::ast::Statement::Return { .. } | ir::ast::Statement::Break { .. } => {}
+            ir::ast::Statement::For { indices, equations } => {
+                for index in indices {
+                    index.range.accept(visitor);
+                }
+                for stmt in equations {
+                    stmt.accept(visitor);
+                }
+            }
+            ir::ast::Statement::While(block) => {
+                block.cond.accept(visitor);
+                for stmt in &block.stmts {
+                    stmt.accept(visitor);
+                }
+            }
+            ir::ast::Statement::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    block.cond.accept(visitor);
+                    for stmt in &block.stmts {
+                        stmt.accept(visitor);
+                    }
+                }
+                if let Some(else_stmts) = else_block {
+                    for stmt in else_stmts {
+                        stmt.accept(visitor);
+                    }
+                }
+            }
+            ir::ast::Statement::When(blocks) => {
+                for block in blocks {
+                    block.cond.accept(visitor);
+                    for stmt in &block.stmts {
+                        stmt.accept(visitor);
+                    }
+                }
+            }
+            ir::ast::Statement::FunctionCall { comp, args } => {
+                comp.accept(visitor);
+                for arg in args {
+                    arg.accept(visitor);
+                }
+            }
+        }
+        visitor.exit_statement(self);
+    }
+}
+
 impl Visitable for ir::ast::Expression {
-    fn accept<V: Visitor>(&mut self, visitor: &mut V) {
+    fn accept<V: Visitor>(&self, visitor: &mut V) {
         visitor.enter_expression(self);
         match self {
-            ir::ast::Expression::Unary { op, rhs } => {
+            ir::ast::Expression::Unary { rhs, .. } => {
                 rhs.accept(visitor);
             }
-            ir::ast::Expression::Binary { lhs, op, rhs } => {
+            ir::ast::Expression::Binary { lhs, rhs, .. } => {
                 lhs.accept(visitor);
                 rhs.accept(visitor);
             }
@@ -169,9 +290,8 @@ impl Visitable for ir::ast::Expression {
             }
             ir::ast::Expression::Range { start, step, end } => {
                 start.accept(visitor);
-                if step.is_some() {
-                    // SAFETY: We just checked that step is Some above
-                    step.as_mut().unwrap().accept(visitor);
+                if let Some(step) = step {
+                    step.accept(visitor);
                 }
                 end.accept(visitor);
             }
@@ -197,18 +317,355 @@ impl Visitable for ir::ast::Expression {
     }
 }
 
-#[allow(unused)]
 impl Visitable for ir::ast::Component {
-    fn accept<V: Visitor>(&mut self, visitor: &mut V) {
+    fn accept<V: Visitor>(&self, visitor: &mut V) {
         visitor.enter_component(self);
+        self.start.accept(visitor);
+        visitor.exit_component(self);
+    }
+}
+
+impl Visitable for ir::ast::ComponentReference {
+    fn accept<V: Visitor>(&self, visitor: &mut V) {
+        visitor.enter_component_reference(self);
+        visitor.exit_component_reference(self);
+    }
+}
+
+// =============================================================================
+// Mutable Visitable Implementations
+// =============================================================================
+
+#[allow(unused)]
+impl MutVisitable for ir::ast::StoredDefinition {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
+        visitor.enter_stored_definition(self);
+        for (_name, class) in &mut self.class_list {
+            class.accept_mut(visitor);
+        }
+        visitor.exit_stored_definition(self);
+    }
+}
+
+#[allow(unused)]
+impl MutVisitable for ir::ast::ClassDefinition {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
+        visitor.enter_class_definition(self);
+
+        // Visit components
+        for comp in self.components.values_mut() {
+            comp.accept_mut(visitor);
+        }
+
+        // Visit equations
+        for eq in &mut self.equations {
+            eq.accept_mut(visitor);
+        }
+        for eq in &mut self.initial_equations {
+            eq.accept_mut(visitor);
+        }
+
+        // Visit algorithms (statements)
+        for algo in &mut self.algorithms {
+            for stmt in algo {
+                stmt.accept_mut(visitor);
+            }
+        }
+        for algo in &mut self.initial_algorithms {
+            for stmt in algo {
+                stmt.accept_mut(visitor);
+            }
+        }
+
+        // Visit nested classes
+        for nested in self.classes.values_mut() {
+            nested.accept_mut(visitor);
+        }
+
+        visitor.exit_class_definition(self);
+    }
+}
+
+#[allow(unused)]
+impl MutVisitable for ir::ast::Equation {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
+        visitor.enter_equation(self);
+        match self {
+            ir::ast::Equation::Simple { lhs, rhs } => {
+                lhs.accept_mut(visitor);
+                rhs.accept_mut(visitor);
+            }
+            ir::ast::Equation::FunctionCall { comp, args } => {
+                comp.accept_mut(visitor);
+                for arg in args {
+                    arg.accept_mut(visitor);
+                }
+            }
+            ir::ast::Equation::For { indices, equations } => {
+                for index in indices {
+                    index.range.accept_mut(visitor);
+                }
+                for eq in equations {
+                    eq.accept_mut(visitor);
+                }
+            }
+            ir::ast::Equation::Connect { lhs, rhs } => {
+                lhs.accept_mut(visitor);
+                rhs.accept_mut(visitor);
+            }
+            ir::ast::Equation::When(blocks) => {
+                for block in blocks {
+                    block.cond.accept_mut(visitor);
+                    for eq in &mut block.eqs {
+                        eq.accept_mut(visitor);
+                    }
+                }
+            }
+            ir::ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    block.cond.accept_mut(visitor);
+                    for eq in &mut block.eqs {
+                        eq.accept_mut(visitor);
+                    }
+                }
+                if let Some(else_block) = else_block {
+                    for eq in else_block {
+                        eq.accept_mut(visitor);
+                    }
+                }
+            }
+            ir::ast::Equation::Empty => {}
+        }
+        visitor.exit_equation(self);
+    }
+}
+
+#[allow(unused)]
+impl MutVisitable for ir::ast::Statement {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
+        visitor.enter_statement(self);
+        match self {
+            ir::ast::Statement::Empty => {}
+            ir::ast::Statement::Assignment { comp, value } => {
+                comp.accept_mut(visitor);
+                value.accept_mut(visitor);
+            }
+            ir::ast::Statement::Return { .. } | ir::ast::Statement::Break { .. } => {}
+            ir::ast::Statement::For { indices, equations } => {
+                for index in indices {
+                    index.range.accept_mut(visitor);
+                }
+                for stmt in equations {
+                    stmt.accept_mut(visitor);
+                }
+            }
+            ir::ast::Statement::While(block) => {
+                block.cond.accept_mut(visitor);
+                for stmt in &mut block.stmts {
+                    stmt.accept_mut(visitor);
+                }
+            }
+            ir::ast::Statement::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    block.cond.accept_mut(visitor);
+                    for stmt in &mut block.stmts {
+                        stmt.accept_mut(visitor);
+                    }
+                }
+                if let Some(else_stmts) = else_block {
+                    for stmt in else_stmts {
+                        stmt.accept_mut(visitor);
+                    }
+                }
+            }
+            ir::ast::Statement::When(blocks) => {
+                for block in blocks {
+                    block.cond.accept_mut(visitor);
+                    for stmt in &mut block.stmts {
+                        stmt.accept_mut(visitor);
+                    }
+                }
+            }
+            ir::ast::Statement::FunctionCall { comp, args } => {
+                comp.accept_mut(visitor);
+                for arg in args {
+                    arg.accept_mut(visitor);
+                }
+            }
+        }
+        visitor.exit_statement(self);
+    }
+}
+
+#[allow(unused)]
+impl MutVisitable for ir::ast::Expression {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
+        visitor.enter_expression(self);
+        match self {
+            ir::ast::Expression::Unary { rhs, .. } => {
+                rhs.accept_mut(visitor);
+            }
+            ir::ast::Expression::Binary { lhs, rhs, .. } => {
+                lhs.accept_mut(visitor);
+                rhs.accept_mut(visitor);
+            }
+            ir::ast::Expression::ComponentReference(cref) => {
+                cref.accept_mut(visitor);
+            }
+            ir::ast::Expression::FunctionCall { comp, args } => {
+                comp.accept_mut(visitor);
+                for arg in args {
+                    arg.accept_mut(visitor);
+                }
+            }
+            ir::ast::Expression::Array { elements } => {
+                for element in elements {
+                    element.accept_mut(visitor);
+                }
+            }
+            ir::ast::Expression::Range { start, step, end } => {
+                start.accept_mut(visitor);
+                if let Some(step) = step {
+                    step.accept_mut(visitor);
+                }
+                end.accept_mut(visitor);
+            }
+            ir::ast::Expression::Terminal { .. } => {}
+            ir::ast::Expression::Empty => {}
+            ir::ast::Expression::Tuple { elements } => {
+                for element in elements {
+                    element.accept_mut(visitor);
+                }
+            }
+            ir::ast::Expression::If {
+                branches,
+                else_branch,
+            } => {
+                for (cond, then_expr) in branches {
+                    cond.accept_mut(visitor);
+                    then_expr.accept_mut(visitor);
+                }
+                else_branch.accept_mut(visitor);
+            }
+        }
+        visitor.exit_expression(self);
+    }
+}
+
+#[allow(unused)]
+impl MutVisitable for ir::ast::Component {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
+        visitor.enter_component(self);
+        self.start.accept_mut(visitor);
         visitor.exit_component(self);
     }
 }
 
 #[allow(unused)]
-impl Visitable for ir::ast::ComponentReference {
-    fn accept<V: Visitor>(&mut self, visitor: &mut V) {
+impl MutVisitable for ir::ast::ComponentReference {
+    fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_component_reference(self);
         visitor.exit_component_reference(self);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::ast::*;
+    use crate::modelica_grammar::ModelicaGrammar;
+    use crate::modelica_parser::parse;
+
+    fn parse_test_code(code: &str) -> StoredDefinition {
+        let mut grammar = ModelicaGrammar::new();
+        parse(code, "test.mo", &mut grammar).expect("Failed to parse test code");
+        grammar.modelica.expect("No AST produced")
+    }
+
+    /// Test visitor that counts classes, components, and expressions
+    struct CountingVisitor {
+        classes: usize,
+        components: usize,
+        expressions: usize,
+        equations: usize,
+    }
+
+    impl Visitor for CountingVisitor {
+        fn enter_class_definition(&mut self, _node: &ClassDefinition) {
+            self.classes += 1;
+        }
+
+        fn enter_component(&mut self, _node: &Component) {
+            self.components += 1;
+        }
+
+        fn enter_expression(&mut self, _node: &Expression) {
+            self.expressions += 1;
+        }
+
+        fn enter_equation(&mut self, _node: &Equation) {
+            self.equations += 1;
+        }
+    }
+
+    #[test]
+    fn test_visitor_counts() {
+        let code = r#"
+model Test
+  Real x;
+  Real y;
+equation
+  x = 1.0;
+  y = x + 2.0;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let mut visitor = CountingVisitor {
+            classes: 0,
+            components: 0,
+            expressions: 0,
+            equations: 0,
+        };
+
+        ast.accept(&mut visitor);
+
+        assert_eq!(visitor.classes, 1, "Should have 1 class");
+        assert_eq!(visitor.components, 2, "Should have 2 components (x, y)");
+        assert_eq!(visitor.equations, 2, "Should have 2 equations");
+        // Expressions: x, 1.0, y, x, 2.0, (x + 2.0)
+        assert!(visitor.expressions >= 4, "Should have multiple expressions");
+    }
+
+    #[test]
+    fn test_nested_classes() {
+        let code = r#"
+model Outer
+  Real x;
+  model Inner
+    Real y;
+  end Inner;
+end Outer;
+"#;
+        let ast = parse_test_code(code);
+        let mut visitor = CountingVisitor {
+            classes: 0,
+            components: 0,
+            expressions: 0,
+            equations: 0,
+        };
+
+        ast.accept(&mut visitor);
+
+        assert_eq!(visitor.classes, 2, "Should have 2 classes (Outer, Inner)");
+        assert_eq!(
+            visitor.components, 2,
+            "Should have 2 components (x in Outer, y in Inner)"
+        );
     }
 }

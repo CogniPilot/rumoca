@@ -7168,7 +7168,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 200,
         production: &[],
     },
-    // 191 - extends_clause: extends^ /* Clipped */ type_specifier extends_clauseOpt /* Option */ extends_clauseOpt0 /* Option */;
+    // 191 - extends_clause: extends type_specifier extends_clauseOpt /* Option */ extends_clauseOpt0 /* Option */;
     Production {
         lhs: 144,
         production: &[
@@ -7633,7 +7633,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 255,
         production: &[ParseType::N(256), ParseType::N(38)],
     },
-    // 281 - equation_section: equation_sectionOpt /* Option */ equation^ /* Clipped */ equation_sectionList /* Vec */;
+    // 281 - equation_section: equation_sectionOpt /* Option */ equation equation_sectionList /* Vec */;
     Production {
         lhs: 134,
         production: &[ParseType::N(135), ParseType::N(131), ParseType::N(136)],
@@ -7648,7 +7648,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 135,
         production: &[],
     },
-    // 284 - equation_sectionOpt: initial^ /* Clipped */;
+    // 284 - equation_sectionOpt: initial;
     Production {
         lhs: 136,
         production: &[ParseType::N(205)],
@@ -7658,7 +7658,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 136,
         production: &[],
     },
-    // 286 - algorithm_section: algorithm_sectionOpt /* Option */ algorithm^ /* Clipped */ algorithm_sectionList /* Vec */;
+    // 286 - algorithm_section: algorithm_sectionOpt /* Option */ algorithm algorithm_sectionList /* Vec */;
     Production {
         lhs: 2,
         production: &[ParseType::N(3), ParseType::N(1), ParseType::N(4)],
@@ -7673,7 +7673,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 3,
         production: &[],
     },
-    // 289 - algorithm_sectionOpt: initial^ /* Clipped */;
+    // 289 - algorithm_sectionOpt: initial;
     Production {
         lhs: 4,
         production: &[ParseType::N(205)],

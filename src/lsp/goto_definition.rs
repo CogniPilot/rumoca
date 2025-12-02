@@ -8,9 +8,9 @@ use std::collections::HashMap;
 
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, Uri};
 
-use crate::ir::ast::{ClassDefinition, StoredDefinition};
+use crate::ir::ast::{ClassDefinition, StoredDefinition, Token};
 
-use super::utils::get_word_at_position;
+use super::utils::{get_word_at_position, token_to_range};
 use super::workspace::WorkspaceState;
 
 /// Handle go to definition request
@@ -27,20 +27,10 @@ pub fn handle_goto_definition(
     let word = get_word_at_position(text, position)?;
 
     if let Ok(result) = crate::Compiler::new().compile_str(text, path) {
-        if let Some(location) = find_definition_in_ast(&result.def, &word) {
-            let target_uri = uri.clone();
+        if let Some(token) = find_definition_in_ast(&result.def, &word) {
             return Some(GotoDefinitionResponse::Scalar(Location {
-                uri: target_uri,
-                range: Range {
-                    start: Position {
-                        line: location.0.saturating_sub(1),
-                        character: location.1.saturating_sub(1),
-                    },
-                    end: Position {
-                        line: location.0.saturating_sub(1),
-                        character: location.1.saturating_sub(1) + word.len() as u32,
-                    },
-                },
+                uri: uri.clone(),
+                range: token_to_range(token),
             }));
         }
     }
@@ -63,19 +53,10 @@ pub fn handle_goto_definition_workspace(
 
     // First try local definition
     if let Ok(result) = crate::Compiler::new().compile_str(text, path) {
-        if let Some(location) = find_definition_in_ast(&result.def, &word) {
+        if let Some(token) = find_definition_in_ast(&result.def, &word) {
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line: location.0.saturating_sub(1),
-                        character: location.1.saturating_sub(1),
-                    },
-                    end: Position {
-                        line: location.0.saturating_sub(1),
-                        character: location.1.saturating_sub(1) + word.len() as u32,
-                    },
-                },
+                range: token_to_range(token),
             }));
         }
     }
@@ -140,39 +121,31 @@ pub fn handle_goto_definition_workspace(
     None
 }
 
-/// Find a definition in the AST, returning (line, column) if found
-fn find_definition_in_ast(def: &StoredDefinition, name: &str) -> Option<(u32, u32)> {
+/// Find a definition in the AST, returning the Token if found
+fn find_definition_in_ast<'a>(def: &'a StoredDefinition, name: &str) -> Option<&'a Token> {
     for class in def.class_list.values() {
-        if let Some(loc) = find_definition_in_class(class, name) {
-            return Some(loc);
+        if let Some(token) = find_definition_in_class(class, name) {
+            return Some(token);
         }
     }
     None
 }
 
 /// Recursively search for a definition in a class
-fn find_definition_in_class(class: &ClassDefinition, name: &str) -> Option<(u32, u32)> {
+fn find_definition_in_class<'a>(class: &'a ClassDefinition, name: &str) -> Option<&'a Token> {
     if class.name.text == name {
-        return Some((
-            class.name.location.start_line,
-            class.name.location.start_column,
-        ));
+        return Some(&class.name);
     }
 
     for (comp_name, comp) in &class.components {
         if comp_name == name {
-            if let Some(first_token) = comp.type_name.name.first() {
-                return Some((
-                    first_token.location.start_line,
-                    first_token.location.start_column,
-                ));
-            }
+            return Some(&comp.name_token);
         }
     }
 
     for nested_class in class.classes.values() {
-        if let Some(loc) = find_definition_in_class(nested_class, name) {
-            return Some(loc);
+        if let Some(token) = find_definition_in_class(nested_class, name) {
+            return Some(token);
         }
     }
 

@@ -78,9 +78,9 @@ fn collect_import_links(
 ) {
     for import in &class.imports {
         let import_path = match import {
-            crate::ir::ast::Import::Qualified { path } => path.to_string(),
+            crate::ir::ast::Import::Qualified { path, .. } => path.to_string(),
             crate::ir::ast::Import::Renamed { path, .. } => path.to_string(),
-            crate::ir::ast::Import::Unqualified { path } => path.to_string(),
+            crate::ir::ast::Import::Unqualified { path, .. } => path.to_string(),
             crate::ir::ast::Import::Selective { path, .. } => path.to_string(),
         };
 

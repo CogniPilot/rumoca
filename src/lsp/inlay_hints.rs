@@ -200,6 +200,30 @@ fn collect_statement_hints(
                 collect_statement_hints(sub_stmt, range, builtins, hints);
             }
         }
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                collect_expression_hints(&block.cond, range, builtins, hints);
+                for sub_stmt in &block.stmts {
+                    collect_statement_hints(sub_stmt, range, builtins, hints);
+                }
+            }
+            if let Some(else_stmts) = else_block {
+                for sub_stmt in else_stmts {
+                    collect_statement_hints(sub_stmt, range, builtins, hints);
+                }
+            }
+        }
+        Statement::When(blocks) => {
+            for block in blocks {
+                collect_expression_hints(&block.cond, range, builtins, hints);
+                for sub_stmt in &block.stmts {
+                    collect_statement_hints(sub_stmt, range, builtins, hints);
+                }
+            }
+        }
         Statement::FunctionCall { comp: _, args } => {
             for arg in args {
                 collect_expression_hints(arg, range, builtins, hints);

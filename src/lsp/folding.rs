@@ -113,20 +113,11 @@ fn collect_comment_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
 
 /// Collect folding ranges for a class definition
 fn collect_class_ranges(class: &ClassDefinition, text: &str, ranges: &mut Vec<FoldingRange>) {
-    let lines: Vec<&str> = text.lines().collect();
     let class_name = &class.name.text;
 
-    // Find the class start and end
-    let start_line = class.name.location.start_line.saturating_sub(1);
-    let end_pattern = format!("end {}", class_name);
-
-    let mut end_line = start_line;
-    for (i, line) in lines.iter().enumerate().skip(start_line as usize) {
-        if line.contains(&end_pattern) {
-            end_line = i as u32;
-            break;
-        }
-    }
+    // Use the class location (spans from class keyword to end statement)
+    let start_line = class.location.start_line.saturating_sub(1);
+    let end_line = class.location.end_line.saturating_sub(1);
 
     // Add class folding range
     if end_line > start_line {
@@ -140,17 +131,70 @@ fn collect_class_ranges(class: &ClassDefinition, text: &str, ranges: &mut Vec<Fo
         });
     }
 
-    // Find and fold equation sections
-    collect_section_ranges(text, "equation", &mut *ranges);
+    // Fold equation section using keyword token location
+    if let Some(ref eq_kw) = class.equation_keyword {
+        // Find the end of the equation section (next section or class end)
+        let eq_start = eq_kw.location.start_line.saturating_sub(1);
+        let eq_end = find_section_end(class, eq_start, end_line);
+        if eq_end > eq_start {
+            ranges.push(FoldingRange {
+                start_line: eq_start,
+                start_character: None,
+                end_line: eq_end,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Region),
+                collapsed_text: Some("equation ...".to_string()),
+            });
+        }
+    }
 
-    // Find and fold initial equation sections
-    collect_section_ranges(text, "initial equation", &mut *ranges);
+    // Fold initial equation section
+    if let Some(ref eq_kw) = class.initial_equation_keyword {
+        let eq_start = eq_kw.location.start_line.saturating_sub(1);
+        let eq_end = find_section_end(class, eq_start, end_line);
+        if eq_end > eq_start {
+            ranges.push(FoldingRange {
+                start_line: eq_start,
+                start_character: None,
+                end_line: eq_end,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Region),
+                collapsed_text: Some("initial equation ...".to_string()),
+            });
+        }
+    }
 
-    // Find and fold algorithm sections
-    collect_section_ranges(text, "algorithm", &mut *ranges);
+    // Fold algorithm section
+    if let Some(ref alg_kw) = class.algorithm_keyword {
+        let alg_start = alg_kw.location.start_line.saturating_sub(1);
+        let alg_end = find_section_end(class, alg_start, end_line);
+        if alg_end > alg_start {
+            ranges.push(FoldingRange {
+                start_line: alg_start,
+                start_character: None,
+                end_line: alg_end,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Region),
+                collapsed_text: Some("algorithm ...".to_string()),
+            });
+        }
+    }
 
-    // Find and fold initial algorithm sections
-    collect_section_ranges(text, "initial algorithm", &mut *ranges);
+    // Fold initial algorithm section
+    if let Some(ref alg_kw) = class.initial_algorithm_keyword {
+        let alg_start = alg_kw.location.start_line.saturating_sub(1);
+        let alg_end = find_section_end(class, alg_start, end_line);
+        if alg_end > alg_start {
+            ranges.push(FoldingRange {
+                start_line: alg_start,
+                start_character: None,
+                end_line: alg_end,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Region),
+                collapsed_text: Some("initial algorithm ...".to_string()),
+            });
+        }
+    }
 
     // Collect ranges for equations with blocks (if, for, when)
     for eq in &class.equations {
@@ -180,54 +224,38 @@ fn collect_class_ranges(class: &ClassDefinition, text: &str, ranges: &mut Vec<Fo
     }
 }
 
-/// Collect folding ranges for section keywords (equation, algorithm, etc.)
-fn collect_section_ranges(text: &str, section_keyword: &str, ranges: &mut Vec<FoldingRange>) {
-    let lines: Vec<&str> = text.lines().collect();
+/// Find the end of a section by looking for the next section keyword or class end
+/// Uses AST keyword tokens to determine section boundaries
+fn find_section_end(class: &ClassDefinition, section_start: u32, class_end: u32) -> u32 {
+    // Collect all section start lines (0-indexed)
+    let mut section_starts: Vec<u32> = vec![];
 
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
+    if let Some(ref kw) = class.equation_keyword {
+        section_starts.push(kw.location.start_line.saturating_sub(1));
+    }
+    if let Some(ref kw) = class.initial_equation_keyword {
+        section_starts.push(kw.location.start_line.saturating_sub(1));
+    }
+    if let Some(ref kw) = class.algorithm_keyword {
+        section_starts.push(kw.location.start_line.saturating_sub(1));
+    }
+    if let Some(ref kw) = class.initial_algorithm_keyword {
+        section_starts.push(kw.location.start_line.saturating_sub(1));
+    }
 
-        // Check for the section keyword at the start of a line
-        if trimmed == section_keyword || trimmed.starts_with(&format!("{} ", section_keyword)) {
-            let start_line = i as u32;
+    // Sort section starts
+    section_starts.sort();
 
-            // Find the end of this section (next section keyword or end)
-            let section_ends = [
-                "equation",
-                "initial equation",
-                "algorithm",
-                "initial algorithm",
-                "public",
-                "protected",
-                "end ",
-            ];
-
-            let mut end_line = start_line;
-            for j in i + 1..lines.len() {
-                let next_trimmed = lines[j].trim();
-                let is_section_end = section_ends
-                    .iter()
-                    .any(|s| next_trimmed == *s || next_trimmed.starts_with(s));
-
-                if is_section_end {
-                    end_line = (j - 1) as u32;
-                    break;
-                }
-                end_line = j as u32;
-            }
-
-            if end_line > start_line {
-                ranges.push(FoldingRange {
-                    start_line,
-                    start_character: None,
-                    end_line,
-                    end_character: None,
-                    kind: Some(FoldingRangeKind::Region),
-                    collapsed_text: Some(format!("{} ...", section_keyword)),
-                });
-            }
+    // Find the next section after our current section
+    for &start in &section_starts {
+        if start > section_start {
+            // End one line before the next section
+            return start.saturating_sub(1);
         }
     }
+
+    // No next section found, end at class end - 1 (before "end ClassName;")
+    class_end.saturating_sub(1)
 }
 
 /// Collect folding ranges for equations with blocks
@@ -345,6 +373,60 @@ fn collect_statement_ranges(stmt: &Statement, text: &str, ranges: &mut Vec<Foldi
 
             for inner_stmt in &block.stmts {
                 collect_statement_ranges(inner_stmt, text, ranges);
+            }
+        }
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            if let Some(first_block) = cond_blocks.first() {
+                if let Some(loc) = first_block.cond.get_location() {
+                    let start_line = loc.start_line.saturating_sub(1);
+                    if let Some(end_line) = find_end_keyword(text, start_line, "if") {
+                        ranges.push(FoldingRange {
+                            start_line,
+                            start_character: None,
+                            end_line,
+                            end_character: None,
+                            kind: Some(FoldingRangeKind::Region),
+                            collapsed_text: Some("if ... end if".to_string()),
+                        });
+                    }
+                }
+            }
+
+            for block in cond_blocks {
+                for inner_stmt in &block.stmts {
+                    collect_statement_ranges(inner_stmt, text, ranges);
+                }
+            }
+            if let Some(else_stmts) = else_block {
+                for inner_stmt in else_stmts {
+                    collect_statement_ranges(inner_stmt, text, ranges);
+                }
+            }
+        }
+        Statement::When(blocks) => {
+            if let Some(first_block) = blocks.first() {
+                if let Some(loc) = first_block.cond.get_location() {
+                    let start_line = loc.start_line.saturating_sub(1);
+                    if let Some(end_line) = find_end_keyword(text, start_line, "when") {
+                        ranges.push(FoldingRange {
+                            start_line,
+                            start_character: None,
+                            end_line,
+                            end_character: None,
+                            kind: Some(FoldingRangeKind::Region),
+                            collapsed_text: Some("when ... end when".to_string()),
+                        });
+                    }
+                }
+            }
+
+            for block in blocks {
+                for inner_stmt in &block.stmts {
+                    collect_statement_ranges(inner_stmt, text, ranges);
+                }
             }
         }
         _ => {}

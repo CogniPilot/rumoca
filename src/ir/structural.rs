@@ -37,7 +37,7 @@
 //! - Cellier, F.E. & Kofman, E. (2006). "Continuous System Simulation", Chapter 9
 
 use crate::ir::ast::{ComponentRefPart, ComponentReference, Equation, Expression, Token};
-use crate::ir::visitors::expression_visitor::ExpressionVisitor;
+use crate::ir::visitor::{Visitable, Visitor};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 // ============================================================================
@@ -276,14 +276,14 @@ fn analyze_equation_structure(equation: &Equation) -> EquationStructure {
     if let Equation::Simple { lhs, rhs, .. } = equation {
         // Find all variables
         let mut var_finder = VariableFinder::new();
-        visit_expression(&mut var_finder, lhs);
-        visit_expression(&mut var_finder, rhs);
+        lhs.accept(&mut var_finder);
+        rhs.accept(&mut var_finder);
         variables = var_finder.variables;
 
         // Find derivatives
         let mut der_finder = DerivativeCollector::new();
-        visit_expression(&mut der_finder, lhs);
-        visit_expression(&mut der_finder, rhs);
+        lhs.accept(&mut der_finder);
+        rhs.accept(&mut der_finder);
         derivatives = der_finder.derivatives;
     }
 
@@ -679,22 +679,39 @@ pub fn analyze_algebraic_loops(equations: &[Equation], sccs: &[Vec<usize>]) -> V
 // Helper Structures (reused from blt.rs)
 // ============================================================================
 
-/// Visitor to find all variables referenced in an expression
+/// Visitor to find all variables referenced in an expression.
+/// Excludes function names (like "der", "sin", etc.) from the variable list.
 struct VariableFinder {
     variables: HashSet<String>,
+    /// Track when entering a function call to skip the function name
+    skip_next_cref: bool,
 }
 
 impl VariableFinder {
     fn new() -> Self {
         Self {
             variables: HashSet::new(),
+            skip_next_cref: false,
         }
     }
 }
 
-impl ExpressionVisitor for VariableFinder {
-    fn visit_component_reference(&mut self, comp: &ComponentReference) {
-        self.variables.insert(comp.to_string());
+impl Visitor for VariableFinder {
+    fn enter_expression(&mut self, node: &Expression) {
+        // When entering a function call, mark that we should skip the next component reference
+        // (which is the function name, not a variable)
+        if matches!(node, Expression::FunctionCall { .. }) {
+            self.skip_next_cref = true;
+        }
+    }
+
+    fn enter_component_reference(&mut self, node: &ComponentReference) {
+        // Skip function names, only collect actual variable references
+        if self.skip_next_cref {
+            self.skip_next_cref = false;
+        } else {
+            self.variables.insert(node.to_string());
+        }
     }
 }
 
@@ -711,90 +728,40 @@ impl DerivativeCollector {
     }
 }
 
-impl ExpressionVisitor for DerivativeCollector {
-    fn visit_function_call(&mut self, comp: &ComponentReference, args: &[Expression]) {
-        if comp.to_string() == "der" && !args.is_empty() {
-            // Handle der(x) where x is a simple variable
-            if let Expression::ComponentReference(cref) = &args[0] {
-                self.derivatives.insert(cref.to_string());
-            }
-            // Handle der(der(x)) - nested derivatives
-            // In the pendulum case: der(der(x)) represents der(vx) where vx = der(x)
-            // Since vx is a state, we want to record "vx" as a derivative reference
-            else if let Expression::FunctionCall {
-                comp: inner_comp,
-                args: inner_args,
-            } = &args[0]
-            {
-                if inner_comp.to_string() == "der" && !inner_args.is_empty() {
-                    if let Expression::ComponentReference(cref) = &inner_args[0] {
-                        // For der(der(x)), extract the base and prepend "der_" to indicate
-                        // this is a velocity variable's derivative (i.e., acceleration)
-                        // But for matching purposes, we want this to match der(vx) where vx is a state
-                        // The key insight: if der(x) = vx (a state), then der(der(x)) = der(vx)
-                        // So we should record the variable whose derivative is being taken
-                        // which in nested form der(der(x)) means we need der(vx) to match
-                        let base = cref.to_string();
-                        // Record both the base (x) and indicate this is a higher derivative
-                        // For now, we'll use a naming convention: "vx" for velocity of x
-                        // This assumes the velocity is named "v" + base
-                        self.derivatives.insert(format!("v{}", base));
+impl Visitor for DerivativeCollector {
+    fn enter_expression(&mut self, node: &Expression) {
+        if let Expression::FunctionCall { comp, args } = node {
+            if comp.to_string() == "der" && !args.is_empty() {
+                // Handle der(x) where x is a simple variable
+                if let Expression::ComponentReference(cref) = &args[0] {
+                    self.derivatives.insert(cref.to_string());
+                }
+                // Handle der(der(x)) - nested derivatives
+                // In the pendulum case: der(der(x)) represents der(vx) where vx = der(x)
+                // Since vx is a state, we want to record "vx" as a derivative reference
+                else if let Expression::FunctionCall {
+                    comp: inner_comp,
+                    args: inner_args,
+                } = &args[0]
+                {
+                    if inner_comp.to_string() == "der" && !inner_args.is_empty() {
+                        if let Expression::ComponentReference(cref) = &inner_args[0] {
+                            // For der(der(x)), extract the base and prepend "der_" to indicate
+                            // this is a velocity variable's derivative (i.e., acceleration)
+                            // But for matching purposes, we want this to match der(vx) where vx is a state
+                            // The key insight: if der(x) = vx (a state), then der(der(x)) = der(vx)
+                            // So we should record the variable whose derivative is being taken
+                            // which in nested form der(der(x)) means we need der(vx) to match
+                            let base = cref.to_string();
+                            // Record both the base (x) and indicate this is a higher derivative
+                            // For now, we'll use a naming convention: "vx" for velocity of x
+                            // This assumes the velocity is named "v" + base
+                            self.derivatives.insert(format!("v{}", base));
+                        }
                     }
                 }
             }
         }
-    }
-}
-
-/// Helper to visit all nodes in an expression tree
-fn visit_expression<V: ExpressionVisitor>(visitor: &mut V, expr: &Expression) {
-    match expr {
-        Expression::ComponentReference(cref) => {
-            visitor.visit_component_reference(cref);
-        }
-        Expression::FunctionCall { comp, args } => {
-            visitor.visit_function_call(comp, args);
-            for arg in args {
-                visit_expression(visitor, arg);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            visit_expression(visitor, lhs);
-            visit_expression(visitor, rhs);
-        }
-        Expression::Unary { rhs, .. } => {
-            visit_expression(visitor, rhs);
-        }
-        Expression::Array { elements } => {
-            for e in elements {
-                visit_expression(visitor, e);
-            }
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => {
-            visit_expression(visitor, start);
-            if let Some(s) = step {
-                visit_expression(visitor, s);
-            }
-            visit_expression(visitor, end);
-        }
-        Expression::Tuple { elements } => {
-            for e in elements {
-                visit_expression(visitor, e);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                visit_expression(visitor, cond);
-                visit_expression(visitor, then_expr);
-            }
-            visit_expression(visitor, else_branch);
-        }
-        Expression::Terminal { .. } | Expression::Empty => {}
     }
 }
 

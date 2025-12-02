@@ -24,14 +24,14 @@ use indexmap::IndexSet;
 
 use crate::ir;
 use crate::ir::constants::BUILTIN_DER;
-use crate::ir::visitor::Visitor;
+use crate::ir::visitor::MutVisitor;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct StateFinder {
     pub states: IndexSet<String>,
 }
 
-impl Visitor for StateFinder {
+impl MutVisitor for StateFinder {
     fn exit_expression(&mut self, node: &mut ir::ast::Expression) {
         if let ir::ast::Expression::FunctionCall { comp, args } = &node {
             if comp.to_string() == BUILTIN_DER {

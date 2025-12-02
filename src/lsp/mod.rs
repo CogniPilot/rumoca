@@ -33,6 +33,7 @@ pub mod formatting;
 pub mod goto_definition;
 pub mod hover;
 pub mod inlay_hints;
+pub mod keywords;
 pub mod references;
 pub mod rename;
 pub mod semantic_tokens;

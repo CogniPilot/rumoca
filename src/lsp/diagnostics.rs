@@ -603,6 +603,30 @@ fn collect_statement_symbols(
                 collect_statement_symbols(sub_stmt, used, diagnostics, defined, globals);
             }
         }
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                collect_and_check_expression(&block.cond, used, diagnostics, defined, globals);
+                for sub_stmt in &block.stmts {
+                    collect_statement_symbols(sub_stmt, used, diagnostics, defined, globals);
+                }
+            }
+            if let Some(else_stmts) = else_block {
+                for sub_stmt in else_stmts {
+                    collect_statement_symbols(sub_stmt, used, diagnostics, defined, globals);
+                }
+            }
+        }
+        Statement::When(blocks) => {
+            for block in blocks {
+                collect_and_check_expression(&block.cond, used, diagnostics, defined, globals);
+                for sub_stmt in &block.stmts {
+                    collect_statement_symbols(sub_stmt, used, diagnostics, defined, globals);
+                }
+            }
+        }
         Statement::Return { .. } | Statement::Break { .. } => {}
     }
 }

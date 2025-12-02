@@ -2553,6 +2553,7 @@ pub struct Algorithm {
 #[builder(crate = "parol_runtime::derive_builder")]
 pub struct AlgorithmSection {
     pub algorithm_section_opt: Option<AlgorithmSectionOpt>,
+    pub algorithm: Algorithm,
     pub algorithm_section_list: Vec<AlgorithmSectionList>,
 }
 
@@ -2572,7 +2573,9 @@ pub struct AlgorithmSectionList {
 #[allow(dead_code)]
 #[derive(Builder, Debug, Clone)]
 #[builder(crate = "parol_runtime::derive_builder")]
-pub struct AlgorithmSectionOpt {}
+pub struct AlgorithmSectionOpt {
+    pub initial: Initial,
+}
 
 ///
 /// Type derived for non-terminal and
@@ -3950,6 +3953,7 @@ pub struct EquationBlockList {
 #[builder(crate = "parol_runtime::derive_builder")]
 pub struct EquationSection {
     pub equation_section_opt: Option<EquationSectionOpt>,
+    pub equation: Equation,
     pub equation_section_list: Vec<EquationSectionList>,
 }
 
@@ -3969,7 +3973,9 @@ pub struct EquationSectionList {
 #[allow(dead_code)]
 #[derive(Builder, Debug, Clone)]
 #[builder(crate = "parol_runtime::derive_builder")]
-pub struct EquationSectionOpt {}
+pub struct EquationSectionOpt {
+    pub initial: Initial,
+}
 
 ///
 /// Type derived for non-terminal expandable
@@ -4053,6 +4059,7 @@ pub struct ExtendsClassSpecifierOpt {
 #[derive(Builder, Debug, Clone)]
 #[builder(crate = "parol_runtime::derive_builder")]
 pub struct ExtendsClause {
+    pub extends: Extends,
     pub type_specifier: TypeSpecifier,
     pub extends_clause_opt: Option<ExtendsClauseOpt>,
     pub extends_clause_opt0: Option<ExtendsClauseOpt0>,
@@ -10097,7 +10104,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 191:
     ///
-    /// `extends_clause: extends^ /* Clipped */ type_specifier extends_clauseOpt /* Option */ extends_clauseOpt0 /* Option */;`
+    /// `extends_clause: extends type_specifier extends_clauseOpt /* Option */ extends_clauseOpt0 /* Option */;`
     ///
     #[parol_runtime::function_name::named]
     fn extends_clause(
@@ -10112,8 +10119,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let extends_clause_opt0 = pop_item!(self, extends_clause_opt0, ExtendsClauseOpt0, context);
         let extends_clause_opt = pop_item!(self, extends_clause_opt, ExtendsClauseOpt, context);
         let type_specifier = pop_item!(self, type_specifier, TypeSpecifier, context);
-        self.pop(context);
+        let extends = pop_item!(self, extends, Extends, context);
         let extends_clause_built = ExtendsClause {
+            extends,
             type_specifier,
             extends_clause_opt,
             extends_clause_opt0,
@@ -12177,7 +12185,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 281:
     ///
-    /// `equation_section: equation_sectionOpt /* Option */ equation^ /* Clipped */ equation_sectionList /* Vec */;`
+    /// `equation_section: equation_sectionOpt /* Option */ equation equation_sectionList /* Vec */;`
     ///
     #[parol_runtime::function_name::named]
     fn equation_section(
@@ -12190,11 +12198,12 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let equation_section_list =
             pop_and_reverse_item!(self, equation_section_list, EquationSectionList, context);
-        self.pop(context);
+        let equation = pop_item!(self, equation, Equation, context);
         let equation_section_opt =
             pop_item!(self, equation_section_opt, EquationSectionOpt, context);
         let equation_section_built = EquationSection {
             equation_section_opt,
+            equation,
             equation_section_list,
         };
         // Calling user action here
@@ -12249,14 +12258,14 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 284:
     ///
-    /// `equation_sectionOpt /* Option<T>::Some */: initial^ /* Clipped */;`
+    /// `equation_sectionOpt /* Option<T>::Some */: initial;`
     ///
     #[parol_runtime::function_name::named]
     fn equation_section_opt_0(&mut self, _initial: &ParseTreeType<'t>) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
-        self.pop(context);
-        let equation_section_opt_0_built = EquationSectionOpt {};
+        let initial = pop_item!(self, initial, Initial, context);
+        let equation_section_opt_0_built = EquationSectionOpt { initial };
         self.push(
             ASTType::EquationSectionOpt(Some(equation_section_opt_0_built)),
             context,
@@ -12278,7 +12287,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 286:
     ///
-    /// `algorithm_section: algorithm_sectionOpt /* Option */ algorithm^ /* Clipped */ algorithm_sectionList /* Vec */;`
+    /// `algorithm_section: algorithm_sectionOpt /* Option */ algorithm algorithm_sectionList /* Vec */;`
     ///
     #[parol_runtime::function_name::named]
     fn algorithm_section(
@@ -12291,11 +12300,12 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let algorithm_section_list =
             pop_and_reverse_item!(self, algorithm_section_list, AlgorithmSectionList, context);
-        self.pop(context);
+        let algorithm = pop_item!(self, algorithm, Algorithm, context);
         let algorithm_section_opt =
             pop_item!(self, algorithm_section_opt, AlgorithmSectionOpt, context);
         let algorithm_section_built = AlgorithmSection {
             algorithm_section_opt,
+            algorithm,
             algorithm_section_list,
         };
         // Calling user action here
@@ -12353,14 +12363,14 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 289:
     ///
-    /// `algorithm_sectionOpt /* Option<T>::Some */: initial^ /* Clipped */;`
+    /// `algorithm_sectionOpt /* Option<T>::Some */: initial;`
     ///
     #[parol_runtime::function_name::named]
     fn algorithm_section_opt_0(&mut self, _initial: &ParseTreeType<'t>) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
-        self.pop(context);
-        let algorithm_section_opt_0_built = AlgorithmSectionOpt {};
+        let initial = pop_item!(self, initial, Initial, context);
+        let algorithm_section_opt_0_built = AlgorithmSectionOpt { initial };
         self.push(
             ASTType::AlgorithmSectionOpt(Some(algorithm_section_opt_0_built)),
             context,

@@ -4,11 +4,186 @@
 
 use std::collections::HashMap;
 
-use lsp_types::{Location, Position, Range, ReferenceParams, Uri};
+use lsp_types::{Location, ReferenceParams, Uri};
 
-use crate::ir::ast::{ClassDefinition, ComponentReference, Equation, Expression, Statement};
+use crate::ir::ast::{ClassDefinition, Component, ComponentReference, Token};
+use crate::ir::visitor::{Visitable, Visitor};
 
-use super::utils::{get_word_at_position, parse_document};
+use super::utils::{get_word_at_position, parse_document, token_to_range};
+
+/// Visitor that finds all references to a specific symbol name
+struct ReferenceFinder<'a> {
+    /// The symbol name to find
+    name: &'a str,
+    /// The URI for creating Location objects
+    uri: &'a Uri,
+    /// Whether to include declarations
+    include_declaration: bool,
+    /// Collected locations
+    locations: Vec<Location>,
+}
+
+impl<'a> ReferenceFinder<'a> {
+    fn new(name: &'a str, uri: &'a Uri, include_declaration: bool) -> Self {
+        Self {
+            name,
+            uri,
+            include_declaration,
+            locations: Vec::new(),
+        }
+    }
+
+    fn add_location_from_token(&mut self, token: &Token) {
+        self.locations.push(Location {
+            uri: self.uri.clone(),
+            range: token_to_range(token),
+        });
+    }
+}
+
+impl Visitor for ReferenceFinder<'_> {
+    fn enter_class_definition(&mut self, node: &ClassDefinition) {
+        // Check class name (declaration)
+        if node.name.text == self.name && self.include_declaration {
+            self.add_location_from_token(&node.name);
+        }
+
+        // Check nested class names (declarations)
+        for (nested_name, nested_class) in &node.classes {
+            if nested_name == self.name && self.include_declaration {
+                self.add_location_from_token(&nested_class.name);
+            }
+        }
+
+        // Check for loop indices in equations
+        for eq in &node.equations {
+            self.check_equation_indices(eq);
+        }
+        for eq in &node.initial_equations {
+            self.check_equation_indices(eq);
+        }
+
+        // Check for loop indices in statements
+        for algo in &node.algorithms {
+            for stmt in algo {
+                self.check_statement_indices(stmt);
+            }
+        }
+        for algo in &node.initial_algorithms {
+            for stmt in algo {
+                self.check_statement_indices(stmt);
+            }
+        }
+    }
+
+    fn enter_component(&mut self, node: &Component) {
+        // Check component name (declaration)
+        if node.name_token.text == self.name && self.include_declaration {
+            self.add_location_from_token(&node.name_token);
+        }
+
+        // Check type name references
+        for token in &node.type_name.name {
+            if token.text == self.name {
+                self.add_location_from_token(token);
+            }
+        }
+    }
+
+    fn enter_component_reference(&mut self, node: &ComponentReference) {
+        for part in &node.parts {
+            if part.ident.text == self.name {
+                self.add_location_from_token(&part.ident);
+            }
+        }
+    }
+}
+
+impl ReferenceFinder<'_> {
+    /// Check for loop indices in an equation (special handling needed since indices
+    /// are not visited by the standard AstVisitor)
+    fn check_equation_indices(&mut self, eq: &crate::ir::ast::Equation) {
+        match eq {
+            crate::ir::ast::Equation::For { indices, equations } => {
+                for index in indices {
+                    if index.ident.text == self.name {
+                        self.add_location_from_token(&index.ident);
+                    }
+                }
+                for sub_eq in equations {
+                    self.check_equation_indices(sub_eq);
+                }
+            }
+            crate::ir::ast::Equation::When(blocks) => {
+                for block in blocks {
+                    for sub_eq in &block.eqs {
+                        self.check_equation_indices(sub_eq);
+                    }
+                }
+            }
+            crate::ir::ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    for sub_eq in &block.eqs {
+                        self.check_equation_indices(sub_eq);
+                    }
+                }
+                if let Some(else_eqs) = else_block {
+                    for sub_eq in else_eqs {
+                        self.check_equation_indices(sub_eq);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check for loop indices in a statement
+    fn check_statement_indices(&mut self, stmt: &crate::ir::ast::Statement) {
+        match stmt {
+            crate::ir::ast::Statement::For { indices, equations } => {
+                for index in indices {
+                    if index.ident.text == self.name {
+                        self.add_location_from_token(&index.ident);
+                    }
+                }
+                for sub_stmt in equations {
+                    self.check_statement_indices(sub_stmt);
+                }
+            }
+            crate::ir::ast::Statement::While(block) => {
+                for sub_stmt in &block.stmts {
+                    self.check_statement_indices(sub_stmt);
+                }
+            }
+            crate::ir::ast::Statement::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    for sub_stmt in &block.stmts {
+                        self.check_statement_indices(sub_stmt);
+                    }
+                }
+                if let Some(else_stmts) = else_block {
+                    for sub_stmt in else_stmts {
+                        self.check_statement_indices(sub_stmt);
+                    }
+                }
+            }
+            crate::ir::ast::Statement::When(blocks) => {
+                for block in blocks {
+                    for sub_stmt in &block.stmts {
+                        self.check_statement_indices(sub_stmt);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Handle find references request
 pub fn handle_references(
@@ -25,316 +200,12 @@ pub fn handle_references(
     let word = get_word_at_position(text, position)?;
     let ast = parse_document(text, path)?;
 
-    let mut locations = Vec::new();
+    let mut finder = ReferenceFinder::new(&word, uri, include_declaration);
+    ast.accept(&mut finder);
 
-    // Find all references in the AST
-    for class in ast.class_list.values() {
-        collect_references_in_class(class, &word, uri, include_declaration, &mut locations);
-    }
-
-    if locations.is_empty() {
+    if finder.locations.is_empty() {
         None
     } else {
-        Some(locations)
-    }
-}
-
-/// Collect all references to a symbol within a class
-fn collect_references_in_class(
-    class: &ClassDefinition,
-    name: &str,
-    uri: &Uri,
-    include_declaration: bool,
-    locations: &mut Vec<Location>,
-) {
-    // Check if this class name matches
-    if class.name.text == name && include_declaration {
-        locations.push(Location {
-            uri: uri.clone(),
-            range: token_to_range(&class.name),
-        });
-    }
-
-    // Check component declarations
-    for (comp_name, comp) in &class.components {
-        if comp_name == name {
-            if include_declaration {
-                // The declaration itself
-                if let Some(first_token) = comp.type_name.name.first() {
-                    // Estimate component name position after type
-                    let line = first_token.location.start_line.saturating_sub(1);
-                    let type_end = first_token.location.start_column.saturating_sub(1)
-                        + first_token.text.len() as u32;
-                    locations.push(Location {
-                        uri: uri.clone(),
-                        range: Range {
-                            start: Position {
-                                line,
-                                character: type_end + 1,
-                            },
-                            end: Position {
-                                line,
-                                character: type_end + 1 + comp_name.len() as u32,
-                            },
-                        },
-                    });
-                }
-            }
-        }
-
-        // Check if the type name references our symbol
-        for token in &comp.type_name.name {
-            if token.text == name {
-                locations.push(Location {
-                    uri: uri.clone(),
-                    range: token_to_range(token),
-                });
-            }
-        }
-
-        // Check start expression (initialization)
-        collect_references_in_expression(&comp.start, name, uri, locations);
-    }
-
-    // Check equations
-    for eq in &class.equations {
-        collect_references_in_equation(eq, name, uri, locations);
-    }
-
-    // Check initial equations
-    for eq in &class.initial_equations {
-        collect_references_in_equation(eq, name, uri, locations);
-    }
-
-    // Check algorithms
-    for algo in &class.algorithms {
-        for stmt in algo {
-            collect_references_in_statement(stmt, name, uri, locations);
-        }
-    }
-
-    // Check initial algorithms
-    for algo in &class.initial_algorithms {
-        for stmt in algo {
-            collect_references_in_statement(stmt, name, uri, locations);
-        }
-    }
-
-    // Check nested classes recursively
-    for (nested_name, nested_class) in &class.classes {
-        if nested_name == name && include_declaration {
-            locations.push(Location {
-                uri: uri.clone(),
-                range: token_to_range(&nested_class.name),
-            });
-        }
-        collect_references_in_class(nested_class, name, uri, include_declaration, locations);
-    }
-}
-
-/// Collect references in an equation
-fn collect_references_in_equation(
-    eq: &Equation,
-    name: &str,
-    uri: &Uri,
-    locations: &mut Vec<Location>,
-) {
-    match eq {
-        Equation::Empty => {}
-        Equation::Simple { lhs, rhs } => {
-            collect_references_in_expression(lhs, name, uri, locations);
-            collect_references_in_expression(rhs, name, uri, locations);
-        }
-        Equation::Connect { lhs, rhs } => {
-            collect_references_in_component_ref(lhs, name, uri, locations);
-            collect_references_in_component_ref(rhs, name, uri, locations);
-        }
-        Equation::For { indices, equations } => {
-            // Check for loop indices
-            for index in indices {
-                if index.ident.text == name {
-                    locations.push(Location {
-                        uri: uri.clone(),
-                        range: token_to_range(&index.ident),
-                    });
-                }
-                collect_references_in_expression(&index.range, name, uri, locations);
-            }
-            for sub_eq in equations {
-                collect_references_in_equation(sub_eq, name, uri, locations);
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                collect_references_in_expression(&block.cond, name, uri, locations);
-                for sub_eq in &block.eqs {
-                    collect_references_in_equation(sub_eq, name, uri, locations);
-                }
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_references_in_expression(&block.cond, name, uri, locations);
-                for sub_eq in &block.eqs {
-                    collect_references_in_equation(sub_eq, name, uri, locations);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for sub_eq in else_eqs {
-                    collect_references_in_equation(sub_eq, name, uri, locations);
-                }
-            }
-        }
-        Equation::FunctionCall { comp, args } => {
-            collect_references_in_component_ref(comp, name, uri, locations);
-            for arg in args {
-                collect_references_in_expression(arg, name, uri, locations);
-            }
-        }
-    }
-}
-
-/// Collect references in a statement
-fn collect_references_in_statement(
-    stmt: &Statement,
-    name: &str,
-    uri: &Uri,
-    locations: &mut Vec<Location>,
-) {
-    match stmt {
-        Statement::Empty => {}
-        Statement::Assignment { comp, value } => {
-            collect_references_in_component_ref(comp, name, uri, locations);
-            collect_references_in_expression(value, name, uri, locations);
-        }
-        Statement::FunctionCall { comp, args } => {
-            collect_references_in_component_ref(comp, name, uri, locations);
-            for arg in args {
-                collect_references_in_expression(arg, name, uri, locations);
-            }
-        }
-        Statement::For { indices, equations } => {
-            for index in indices {
-                if index.ident.text == name {
-                    locations.push(Location {
-                        uri: uri.clone(),
-                        range: token_to_range(&index.ident),
-                    });
-                }
-                collect_references_in_expression(&index.range, name, uri, locations);
-            }
-            for sub_stmt in equations {
-                collect_references_in_statement(sub_stmt, name, uri, locations);
-            }
-        }
-        Statement::While(block) => {
-            collect_references_in_expression(&block.cond, name, uri, locations);
-            for sub_stmt in &block.stmts {
-                collect_references_in_statement(sub_stmt, name, uri, locations);
-            }
-        }
-        Statement::Return { .. } | Statement::Break { .. } => {}
-    }
-}
-
-/// Collect references in an expression
-fn collect_references_in_expression(
-    expr: &Expression,
-    name: &str,
-    uri: &Uri,
-    locations: &mut Vec<Location>,
-) {
-    match expr {
-        Expression::Empty => {}
-        Expression::ComponentReference(comp_ref) => {
-            collect_references_in_component_ref(comp_ref, name, uri, locations);
-        }
-        Expression::Terminal { .. } => {}
-        Expression::FunctionCall { comp, args } => {
-            collect_references_in_component_ref(comp, name, uri, locations);
-            for arg in args {
-                collect_references_in_expression(arg, name, uri, locations);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_references_in_expression(lhs, name, uri, locations);
-            collect_references_in_expression(rhs, name, uri, locations);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_references_in_expression(rhs, name, uri, locations);
-        }
-        Expression::Array { elements } => {
-            for element in elements {
-                collect_references_in_expression(element, name, uri, locations);
-            }
-        }
-        Expression::Tuple { elements } => {
-            for element in elements {
-                collect_references_in_expression(element, name, uri, locations);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_references_in_expression(cond, name, uri, locations);
-                collect_references_in_expression(then_expr, name, uri, locations);
-            }
-            collect_references_in_expression(else_branch, name, uri, locations);
-        }
-        Expression::Range { start, step, end } => {
-            collect_references_in_expression(start, name, uri, locations);
-            if let Some(step_expr) = step {
-                collect_references_in_expression(step_expr, name, uri, locations);
-            }
-            collect_references_in_expression(end, name, uri, locations);
-        }
-    }
-}
-
-/// Collect references in a component reference
-fn collect_references_in_component_ref(
-    comp_ref: &ComponentReference,
-    name: &str,
-    uri: &Uri,
-    locations: &mut Vec<Location>,
-) {
-    for part in &comp_ref.parts {
-        if part.ident.text == name {
-            locations.push(Location {
-                uri: uri.clone(),
-                range: token_to_range(&part.ident),
-            });
-        }
-        // Check subscripts
-        if let Some(subs) = &part.subs {
-            for sub in subs {
-                match sub {
-                    crate::ir::ast::Subscript::Empty => {}
-                    crate::ir::ast::Subscript::Expression(expr) => {
-                        collect_references_in_expression(expr, name, uri, locations);
-                    }
-                    crate::ir::ast::Subscript::Range { .. } => {}
-                }
-            }
-        }
-    }
-}
-
-/// Convert a token to an LSP range
-fn token_to_range(token: &crate::ir::ast::Token) -> Range {
-    Range {
-        start: Position {
-            line: token.location.start_line.saturating_sub(1),
-            character: token.location.start_column.saturating_sub(1),
-        },
-        end: Position {
-            line: token.location.start_line.saturating_sub(1),
-            character: token.location.start_column.saturating_sub(1) + token.text.len() as u32,
-        },
+        Some(finder.locations)
     }
 }

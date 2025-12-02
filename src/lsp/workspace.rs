@@ -509,10 +509,10 @@ fn collect_imports(class: &ClassDefinition, imports: &mut Vec<String>) {
 /// Convert an Import to a string representation
 fn import_to_string(import: &Import) -> String {
     match import {
-        Import::Qualified { path } => path.to_string(),
-        Import::Renamed { alias, path } => format!("{} = {}", alias.text, path),
-        Import::Unqualified { path } => format!("{}.*", path),
-        Import::Selective { path, names } => {
+        Import::Qualified { path, .. } => path.to_string(),
+        Import::Renamed { alias, path, .. } => format!("{} = {}", alias.text, path),
+        Import::Unqualified { path, .. } => format!("{}.*", path),
+        Import::Selective { path, names, .. } => {
             let names_str: Vec<&str> = names.iter().map(|t| t.text.as_str()).collect();
             format!("{}.{{{}}}", path, names_str.join(", "))
         }

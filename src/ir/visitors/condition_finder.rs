@@ -7,7 +7,7 @@ use crate::ir::ast::{
     Token,
 };
 use crate::ir::constants::{TYPE_BOOL, condition_name};
-use crate::ir::visitor::Visitor;
+use crate::ir::visitor::MutVisitor;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ConditionFinder {
@@ -51,7 +51,7 @@ impl ConditionFinder {
     }
 }
 
-impl Visitor for ConditionFinder {
+impl MutVisitor for ConditionFinder {
     fn exit_equation(&mut self, node: &mut Equation) {
         match node {
             Equation::When(blocks) => {

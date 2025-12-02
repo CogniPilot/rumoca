@@ -4,7 +4,7 @@
 //! to use their fully qualified names based on the imports in scope.
 
 use crate::ir::ast::{ClassDefinition, ComponentReference, Expression, Import, StoredDefinition};
-use crate::ir::visitor::Visitor;
+use crate::ir::visitor::MutVisitor;
 use indexmap::IndexMap;
 
 /// Visitor that resolves imported names to their fully qualified forms
@@ -20,19 +20,19 @@ impl ImportResolver {
 
         for import in &class.imports {
             match import {
-                Import::Qualified { path } => {
+                Import::Qualified { path, .. } => {
                     // import A.B.C; -> C maps to A.B.C
                     let full_path = path.to_string();
                     if let Some(last_part) = path.name.last() {
                         name_map.insert(last_part.text.clone(), full_path);
                     }
                 }
-                Import::Renamed { alias, path } => {
+                Import::Renamed { alias, path, .. } => {
                     // import D = A.B.C; -> D maps to A.B.C
                     let full_path = path.to_string();
                     name_map.insert(alias.text.clone(), full_path);
                 }
-                Import::Unqualified { path } => {
+                Import::Unqualified { path, .. } => {
                     // import A.B.*; -> all names from A.B are imported
                     let package_path = path.to_string();
                     // Find the package and import all its public names
@@ -44,7 +44,7 @@ impl ImportResolver {
                         }
                     }
                 }
-                Import::Selective { path, names } => {
+                Import::Selective { path, names, .. } => {
                     // import A.B.{C, D}; -> C maps to A.B.C, D maps to A.B.D
                     let package_path = path.to_string();
                     for name_token in names {
@@ -85,7 +85,7 @@ fn find_class_by_path<'a>(
     Some(current)
 }
 
-impl Visitor for ImportResolver {
+impl MutVisitor for ImportResolver {
     fn exit_expression(&mut self, expr: &mut Expression) {
         if let Expression::FunctionCall { comp, args: _ } = expr {
             // Get the function name

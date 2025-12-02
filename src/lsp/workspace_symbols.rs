@@ -7,13 +7,11 @@
 
 use std::collections::HashMap;
 
-use lsp_types::{
-    Location, Position, Range, SymbolInformation, SymbolKind, Uri, WorkspaceSymbolParams,
-};
+use lsp_types::{Location, SymbolInformation, SymbolKind, Uri, WorkspaceSymbolParams};
 
 use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition, Variability};
 
-use super::utils::parse_document;
+use super::utils::{parse_document, token_to_range};
 
 /// Handle workspace symbol request
 #[allow(deprecated)] // SymbolInformation::deprecated field is deprecated but required
@@ -86,17 +84,7 @@ fn collect_symbols_from_class(
         let kind = class_type_to_symbol_kind(&class.class_type);
         let location = Location {
             uri: uri.clone(),
-            range: Range {
-                start: Position {
-                    line: class.name.location.start_line.saturating_sub(1),
-                    character: class.name.location.start_column.saturating_sub(1),
-                },
-                end: Position {
-                    line: class.name.location.start_line.saturating_sub(1),
-                    character: class.name.location.start_column.saturating_sub(1)
-                        + class_name.len() as u32,
-                },
-            },
+            range: token_to_range(&class.name),
         };
 
         symbols.push(SymbolInformation {
@@ -117,31 +105,9 @@ fn collect_symbols_from_class(
                 _ => SymbolKind::VARIABLE,
             };
 
-            // Use the type_name's token location as an approximation for the component location
-            let (comp_line, comp_col) = comp
-                .type_name
-                .name
-                .first()
-                .map(|t| {
-                    (
-                        t.location.start_line.saturating_sub(1),
-                        t.location.start_column.saturating_sub(1),
-                    )
-                })
-                .unwrap_or((0, 0));
-
             let location = Location {
                 uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line: comp_line,
-                        character: comp_col,
-                    },
-                    end: Position {
-                        line: comp_line,
-                        character: comp_col + comp_name.len() as u32,
-                    },
-                },
+                range: token_to_range(&comp.name_token),
             };
 
             symbols.push(SymbolInformation {

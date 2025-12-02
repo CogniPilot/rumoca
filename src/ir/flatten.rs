@@ -26,9 +26,9 @@ use crate::ir::ast::{
 };
 use crate::ir::constants::is_primitive_type;
 use crate::ir::error::IrError;
-use crate::ir::visitor::{Visitable, Visitor};
+use crate::ir::symbol_table::SymbolTable;
+use crate::ir::visitor::{MutVisitable, MutVisitor};
 use crate::ir::visitors::sub_comp_namer::SubCompNamer;
-use crate::ir::visitors::symbol_table::SymbolTable;
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 
@@ -53,7 +53,7 @@ impl<'a> ScopeRenamer<'a> {
     }
 }
 
-impl Visitor for ScopeRenamer<'_> {
+impl MutVisitor for ScopeRenamer<'_> {
     fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
         let name = node.to_string();
         // Only prepend scope if not a global symbol
@@ -355,7 +355,7 @@ fn expand_component(
         let mut renamer = ScopeRenamer::new(symbol_table, comp_name);
         for eq in &comp_class.equations {
             let mut feq = eq.clone();
-            feq.accept(&mut renamer);
+            feq.accept_mut(&mut renamer);
             fclass.equations.push(feq);
         }
         return Ok(());
@@ -371,17 +371,18 @@ fn expand_component(
     // Add equations from component class, with scoped variable references
     for eq in &comp_class.equations {
         let mut feq = eq.clone();
-        feq.accept(&mut renamer);
+        feq.accept_mut(&mut renamer);
         fclass.equations.push(feq);
     }
 
     // Expand comp.sub_comp names to use dots in existing equations
-    fclass.accept(&mut SubCompNamer {
+    fclass.accept_mut(&mut SubCompNamer {
         comp: comp_name.to_string(),
     });
 
     // Add subcomponents from component class to flat class
     // We need to collect them first to avoid borrow issues during recursion
+    // Also apply any modifications from the parent component (e.g., R=10 in Resistor R1(R=10))
     let subcomponents: Vec<(String, ir::ast::Component)> = comp_class
         .components
         .iter()
@@ -389,6 +390,13 @@ fn expand_component(
             let mut scomp = subcomp.clone();
             let name = format!("{}.{}", comp_name, subcomp_name);
             scomp.name = name.clone();
+
+            // Apply modifications from parent component
+            // e.g., if comp has modifications {R: 10} and subcomp_name is "R", set scomp.start = 10
+            if let Some(mod_expr) = comp.modifications.get(subcomp_name) {
+                scomp.start = mod_expr.clone();
+            }
+
             (name, scomp)
         })
         .collect();

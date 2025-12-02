@@ -28,10 +28,10 @@ use std::collections::HashMap;
 use lsp_types::{
     CallHierarchyPrepareParams, CodeActionContext, CodeActionParams, CodeLensParams,
     CompletionParams, CompletionTriggerKind, DocumentFormattingParams, DocumentLinkParams,
-    DocumentSymbolParams, FoldingRangeParams, FormattingOptions, GotoDefinitionParams, HoverParams,
-    InlayHintParams, Position, Range, ReferenceContext, ReferenceParams, SemanticTokensParams,
-    SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams, Uri,
-    WorkspaceSymbolParams,
+    DocumentSymbolParams, FoldingRangeParams, FormattingOptions, GotoDefinitionParams,
+    HoverContents, HoverParams, InlayHintParams, Position, Range, ReferenceContext,
+    ReferenceParams, SemanticTokensParams, SignatureHelpParams, TextDocumentIdentifier,
+    TextDocumentPositionParams, Uri, WorkspaceSymbolParams,
 };
 
 use rumoca::lsp::{
@@ -141,6 +141,78 @@ end MyPackage;"#;
     assert!(result.is_some());
 }
 
+/// Helper to recursively validate that selectionRange is contained within range for all symbols
+fn validate_symbol_ranges(symbol: &lsp_types::DocumentSymbol) -> Result<(), String> {
+    // Check that selection_range is contained within range
+    let range = &symbol.range;
+    let sel_range = &symbol.selection_range;
+
+    // Start of selection must be >= start of range
+    let start_ok = sel_range.start.line > range.start.line
+        || (sel_range.start.line == range.start.line
+            && sel_range.start.character >= range.start.character);
+
+    // End of selection must be <= end of range
+    let end_ok = sel_range.end.line < range.end.line
+        || (sel_range.end.line == range.end.line && sel_range.end.character <= range.end.character);
+
+    if !start_ok || !end_ok {
+        return Err(format!(
+            "Symbol '{}': selectionRange {:?} is not contained in range {:?}",
+            symbol.name, sel_range, range
+        ));
+    }
+
+    // Recursively check children
+    if let Some(children) = &symbol.children {
+        for child in children {
+            validate_symbol_ranges(child)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_document_symbols_range_containment() {
+    let uri = test_uri();
+    // Use circuit.mo style content that was causing the bug
+    let text = r#"class SimpleCircuit
+  Resistor R1(R=10);
+  Capacitor C(C=0.01);
+  Resistor R2(R=100);
+  Inductor L1(L=0.1);
+  VsourceAC AC;
+  Ground G;
+equation
+  connect(AC.p, R1.p);
+  connect(R1.n, C.p);
+  connect(C.n, AC.n);
+  connect(R1.p, R2.p);
+  connect(R2.n, L1.p);
+  connect(L1.n, C.n);
+  connect(AC.n, G.p);
+end SimpleCircuit;"#;
+
+    let documents = create_test_documents(&uri, text);
+    let params = DocumentSymbolParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    };
+
+    let result = handle_document_symbols(&documents, params);
+    assert!(result.is_some(), "Expected document symbols");
+
+    if let Some(lsp_types::DocumentSymbolResponse::Nested(symbols)) = result {
+        for symbol in &symbols {
+            if let Err(e) = validate_symbol_ranges(symbol) {
+                panic!("Range validation failed: {}", e);
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Hover Tests
 // ============================================================================
@@ -189,6 +261,82 @@ end Test;"#;
 
     let result = handle_hover(&documents, params);
     assert!(result.is_some(), "Expected hover information for variable");
+}
+
+#[test]
+fn test_hover_on_inherited_variable() {
+    let uri = test_uri();
+    // Test hover on a variable inherited via extends
+    // TwoPin defines v and i, Capacitor extends TwoPin and uses v in an equation
+    // Lines (0-indexed):
+    // 0: partial class TwoPin
+    // 1:   Real v;
+    // 2:   Real i;
+    // 3: equation
+    // 4:   v = 1;
+    // 5: end TwoPin;
+    // 6: (empty)
+    // 7: class Capacitor
+    // 8:   extends TwoPin;
+    // 9:   parameter Real C = 1.0;
+    // 10: equation
+    // 11:   C * der(v) = i;
+    // 12: end Capacitor;
+    let text = r#"partial class TwoPin
+  Real v;
+  Real i;
+equation
+  v = 1;
+end TwoPin;
+
+class Capacitor
+  extends TwoPin;
+  parameter Real C = 1.0;
+equation
+  C * der(v) = i;
+end Capacitor;"#;
+
+    let documents = create_test_documents(&uri, text);
+
+    // Hover over 'v' in the equation "C * der(v) = i" (line 11, character 10 is inside der(v))
+    // Line 11 is:   C * der(v) = i;
+    // Chars:      0123456789...
+    // 'v' is at character 10
+    let params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 11,
+                character: 10,
+            }, // "v" inside der(v)
+        },
+        work_done_progress_params: Default::default(),
+    };
+
+    let result = handle_hover(&documents, params);
+    assert!(
+        result.is_some(),
+        "Expected hover information for inherited variable 'v'"
+    );
+
+    if let Some(hover) = result {
+        if let HoverContents::Markup(markup) = hover.contents {
+            // Should show the variable info with type Real
+            assert!(
+                markup.value.contains("v") && markup.value.contains("Real"),
+                "Hover should show 'v: Real', got: {}",
+                markup.value
+            );
+            // Should indicate it's inherited from TwoPin
+            assert!(
+                markup.value.contains("TwoPin"),
+                "Hover should indicate inheritance from TwoPin, got: {}",
+                markup.value
+            );
+        } else {
+            panic!("Expected Markup hover contents");
+        }
+    }
 }
 
 // ============================================================================

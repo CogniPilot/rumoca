@@ -106,6 +106,8 @@ pub struct StoredDefinition {
 #[allow(unused)]
 pub struct Component {
     pub name: String,
+    /// The token for the component name with exact source location
+    pub name_token: Token,
     pub type_name: Name,
     pub variability: Variability,
     pub causality: Causality,
@@ -116,6 +118,11 @@ pub struct Component {
     pub shape: Vec<usize>,
     /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)
     pub annotation: Vec<Expression>,
+    /// Component modifications (e.g., R=10 in `Resistor R1(R=10)`)
+    /// Maps parameter name to its modified value expression
+    pub modifications: IndexMap<String, Expression>,
+    /// Full source location for the component declaration
+    pub location: Location,
 }
 
 impl Debug for Component {
@@ -142,6 +149,9 @@ impl Debug for Component {
         if !self.annotation.is_empty() {
             builder.field("annotation", &self.annotation);
         }
+        if !self.modifications.is_empty() {
+            builder.field("modifications", &self.modifications);
+        }
         builder.finish()
     }
 }
@@ -167,6 +177,8 @@ pub struct ClassDefinition {
     pub name: Token,
     pub class_type: ClassType,
     pub encapsulated: bool,
+    /// Full source location spanning from class keyword to end statement
+    pub location: Location,
     pub extends: Vec<Extend>,
     pub imports: Vec<Import>,
     /// Nested class definitions (functions, models, packages, etc.)
@@ -176,12 +188,24 @@ pub struct ClassDefinition {
     pub initial_equations: Vec<Equation>,
     pub algorithms: Vec<Vec<Statement>>,
     pub initial_algorithms: Vec<Vec<Statement>>,
+    /// Token for "equation" keyword (if present)
+    pub equation_keyword: Option<Token>,
+    /// Token for "initial equation" keyword (if present)
+    pub initial_equation_keyword: Option<Token>,
+    /// Token for "algorithm" keyword (if present)
+    pub algorithm_keyword: Option<Token>,
+    /// Token for "initial algorithm" keyword (if present)
+    pub initial_algorithm_keyword: Option<Token>,
+    /// Token for the class name in "end ClassName;" (for rename support)
+    pub end_name_token: Option<Token>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct Extend {
     pub comp: Name,
+    /// Source location of the extends clause
+    pub location: Location,
 }
 
 /// Import clause for bringing names into scope
@@ -193,23 +217,41 @@ pub struct Extend {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Import {
     /// Qualified import: `import A.B.C;` - imports C, accessed as C
-    Qualified { path: Name },
+    Qualified { path: Name, location: Location },
     /// Renamed import: `import D = A.B.C;` - imports C, accessed as D
-    Renamed { alias: Token, path: Name },
+    Renamed {
+        alias: Token,
+        path: Name,
+        location: Location,
+    },
     /// Unqualified import: `import A.B.*;` - imports all from A.B
-    Unqualified { path: Name },
+    Unqualified { path: Name, location: Location },
     /// Selective import: `import A.B.{C, D};` - imports specific names
-    Selective { path: Name, names: Vec<Token> },
+    Selective {
+        path: Name,
+        names: Vec<Token>,
+        location: Location,
+    },
 }
 
 impl Import {
     /// Get the base path for this import
     pub fn base_path(&self) -> &Name {
         match self {
-            Import::Qualified { path } => path,
+            Import::Qualified { path, .. } => path,
             Import::Renamed { path, .. } => path,
-            Import::Unqualified { path } => path,
+            Import::Unqualified { path, .. } => path,
             Import::Selective { path, .. } => path,
+        }
+    }
+
+    /// Get the source location of this import
+    pub fn location(&self) -> &Location {
+        match self {
+            Import::Qualified { location, .. } => location,
+            Import::Renamed { location, .. } => location,
+            Import::Unqualified { location, .. } => location,
+            Import::Selective { location, .. } => location,
         }
     }
 }
@@ -530,6 +572,13 @@ pub enum Statement {
         equations: Vec<Statement>,
     },
     While(StatementBlock),
+    /// If statement: if cond then stmts elseif cond2 then stmts2 else stmts3
+    If {
+        cond_blocks: Vec<StatementBlock>,
+        else_block: Option<Vec<Statement>>,
+    },
+    /// When statement: when cond then stmts elsewhen cond2 then stmts2
+    When(Vec<StatementBlock>),
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,

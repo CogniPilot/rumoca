@@ -6,13 +6,11 @@
 
 use std::collections::HashMap;
 
-use lsp_types::{
-    GotoDefinitionResponse, Location, Position, Range, TextDocumentPositionParams, Uri,
-};
+use lsp_types::{GotoDefinitionResponse, Location, TextDocumentPositionParams, Uri};
 
-use crate::ir::ast::{ClassDefinition, StoredDefinition};
+use crate::ir::ast::{ClassDefinition, StoredDefinition, Token};
 
-use super::utils::{get_word_at_position, parse_document};
+use super::utils::{get_word_at_position, parse_document, token_to_range};
 
 /// Handle go to type definition request
 pub fn handle_type_definition(
@@ -31,37 +29,19 @@ pub fn handle_type_definition(
     // First, find if the word is a component name and get its type
     if let Some(type_name) = find_component_type(&ast, &word) {
         // Now find the type definition
-        if let Some(location) = find_type_definition(&ast, &type_name) {
+        if let Some(token) = find_type_definition(&ast, &type_name) {
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line: location.0.saturating_sub(1),
-                        character: location.1.saturating_sub(1),
-                    },
-                    end: Position {
-                        line: location.0.saturating_sub(1),
-                        character: location.1.saturating_sub(1) + type_name.len() as u32,
-                    },
-                },
+                range: token_to_range(token),
             }));
         }
     }
 
     // If the word itself is a type name, try to find its definition
-    if let Some(location) = find_type_definition(&ast, &word) {
+    if let Some(token) = find_type_definition(&ast, &word) {
         return Some(GotoDefinitionResponse::Scalar(Location {
             uri: uri.clone(),
-            range: Range {
-                start: Position {
-                    line: location.0.saturating_sub(1),
-                    character: location.1.saturating_sub(1),
-                },
-                end: Position {
-                    line: location.0.saturating_sub(1),
-                    character: location.1.saturating_sub(1) + word.len() as u32,
-                },
-            },
+            range: token_to_range(token),
         }));
     }
 
@@ -99,39 +79,33 @@ fn find_component_type_in_class(class: &ClassDefinition, component_name: &str) -
 }
 
 /// Find the definition location of a type in the AST
-fn find_type_definition(def: &StoredDefinition, type_name: &str) -> Option<(u32, u32)> {
+fn find_type_definition<'a>(def: &'a StoredDefinition, type_name: &str) -> Option<&'a Token> {
     // Handle qualified names (e.g., "Modelica.SIunits.Voltage")
     let base_type = type_name.rsplit('.').next().unwrap_or(type_name);
 
     for class in def.class_list.values() {
-        if let Some(loc) = find_type_in_class(class, base_type) {
-            return Some(loc);
+        if let Some(token) = find_type_in_class(class, base_type) {
+            return Some(token);
         }
     }
     None
 }
 
 /// Recursively search for a type definition in a class
-fn find_type_in_class(class: &ClassDefinition, type_name: &str) -> Option<(u32, u32)> {
+fn find_type_in_class<'a>(class: &'a ClassDefinition, type_name: &str) -> Option<&'a Token> {
     // Check if this class matches the type name
     if class.name.text == type_name {
-        return Some((
-            class.name.location.start_line,
-            class.name.location.start_column,
-        ));
+        return Some(&class.name);
     }
 
     // Check nested classes (including type definitions, records, etc.)
     for (nested_name, nested_class) in &class.classes {
         if nested_name == type_name {
-            return Some((
-                nested_class.name.location.start_line,
-                nested_class.name.location.start_column,
-            ));
+            return Some(&nested_class.name);
         }
         // Recursively search in nested classes
-        if let Some(loc) = find_type_in_class(nested_class, type_name) {
-            return Some(loc);
+        if let Some(token) = find_type_in_class(nested_class, type_name) {
+            return Some(token);
         }
     }
 

@@ -55,10 +55,10 @@ use crate::ir::ast::StoredDefinition;
 use crate::ir::balance_check::{BalanceCheckResult, check_dae_balance};
 use crate::ir::create_dae::create_dae;
 use crate::ir::flatten::flatten;
-use crate::ir::visitor::Visitable;
+use crate::ir::tuple_expander::expand_tuple_equations;
+use crate::ir::visitor::MutVisitable;
 use crate::ir::visitors::function_inliner::FunctionInliner;
 use crate::ir::visitors::import_resolver::ImportResolver;
-use crate::ir::visitors::tuple_expander::expand_tuple_equations;
 use crate::ir::visitors::var_validator::VarValidator;
 use crate::modelica_grammar::ModelicaGrammar;
 use crate::modelica_parser::parse;
@@ -628,14 +628,14 @@ impl Compiler {
         // Resolve imports - rewrite short function names to fully qualified names
         // This must happen before validation so imported names are recognized
         let mut import_resolver = ImportResolver::new(&fclass, &def);
-        fclass.accept(&mut import_resolver);
+        fclass.accept_mut(&mut import_resolver);
 
         // Collect all function names from the stored definition (including nested)
         let function_names = collect_all_functions(&def);
 
         // Validate variable references (passing function names so they're recognized)
         let mut validator = VarValidator::with_functions(&fclass, &function_names);
-        fclass.accept(&mut validator);
+        fclass.accept_mut(&mut validator);
 
         if !validator.undefined_vars.is_empty() {
             // Just report the first undefined variable with miette for now
@@ -671,7 +671,7 @@ impl Compiler {
 
         // Inline user-defined function calls
         let mut inliner = FunctionInliner::from_class_list(&def.class_list);
-        fclass.accept(&mut inliner);
+        fclass.accept_mut(&mut inliner);
 
         // Expand tuple equations like (a, b) = (expr1, expr2) into separate equations
         expand_tuple_equations(&mut fclass);

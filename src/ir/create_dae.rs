@@ -9,7 +9,7 @@ use crate::ir::ast::{
 };
 use crate::ir::constants::BUILTIN_REINIT;
 use crate::ir::error::IrError;
-use crate::ir::visitor::Visitable;
+use crate::ir::visitor::MutVisitable;
 use crate::ir::visitors::condition_finder::ConditionFinder;
 use crate::ir::visitors::state_finder::StateFinder;
 use git_version::git_version;
@@ -67,11 +67,11 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // run statefinder to find states and replace
     // derivative references
     let mut state_finder = StateFinder::default();
-    fclass.accept(&mut state_finder);
+    fclass.accept_mut(&mut state_finder);
 
     // find conditions
     let mut condition_finder = ConditionFinder::default();
-    fclass.accept(&mut condition_finder);
+    fclass.accept_mut(&mut condition_finder);
 
     // handle components
     for (_, comp) in &fclass.components {

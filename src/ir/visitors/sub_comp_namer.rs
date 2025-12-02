@@ -22,14 +22,14 @@
 //! - `exit_component_reference`: Modifies the `ComponentReference` node by
 //!   renaming its parts based on the specified component name.
 use crate::ir;
-use crate::ir::visitor::Visitor;
+use crate::ir::visitor::MutVisitor;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubCompNamer {
     pub comp: String,
 }
 
-impl Visitor for SubCompNamer {
+impl MutVisitor for SubCompNamer {
     fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
         // Only transform if there are at least 2 parts (e.g., comp.subcomp)
         // A single-part reference doesn't need transformation

@@ -5,7 +5,8 @@
 //! and check model balance.
 
 use crate::dae::ast::Dae;
-use crate::ir::ast::{ClassDefinition, Equation, Variability};
+use crate::ir::ast::{ClassDefinition, Equation, Expression, Variability};
+use crate::ir::visitor::{Visitable, Visitor};
 
 /// Result of a balance check
 #[derive(Debug, Clone, PartialEq)]
@@ -213,98 +214,40 @@ fn count_single_equation(eq: &Equation) -> usize {
     }
 }
 
+/// Visitor that finds variables that appear in der() calls
+struct DerFinder {
+    /// Found state variables
+    states: Vec<String>,
+}
+
+impl DerFinder {
+    fn new() -> Self {
+        Self { states: Vec::new() }
+    }
+}
+
+impl Visitor for DerFinder {
+    fn enter_expression(&mut self, node: &Expression) {
+        if let Expression::FunctionCall { comp, args } = node {
+            if comp.to_string() == "der" && !args.is_empty() {
+                if let Expression::ComponentReference(cref) = &args[0] {
+                    let var_name = cref.to_string();
+                    if !self.states.contains(&var_name) {
+                        self.states.push(var_name);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Find variables that appear in der() calls
 fn find_state_variables(equations: &[Equation]) -> Vec<String> {
-    use crate::ir::ast::Expression;
-
-    let mut states = Vec::new();
-
-    fn find_der_in_expr(expr: &Expression, states: &mut Vec<String>) {
-        match expr {
-            Expression::FunctionCall { comp, args } => {
-                if comp.to_string() == "der" && !args.is_empty() {
-                    if let Expression::ComponentReference(cref) = &args[0] {
-                        let var_name = cref.to_string();
-                        if !states.contains(&var_name) {
-                            states.push(var_name);
-                        }
-                    }
-                }
-                // Also check args for nested der calls
-                for arg in args {
-                    find_der_in_expr(arg, states);
-                }
-            }
-            Expression::Binary { lhs, rhs, .. } => {
-                find_der_in_expr(lhs, states);
-                find_der_in_expr(rhs, states);
-            }
-            Expression::Unary { rhs, .. } => {
-                find_der_in_expr(rhs, states);
-            }
-            Expression::If {
-                branches,
-                else_branch,
-            } => {
-                for (cond, then_expr) in branches {
-                    find_der_in_expr(cond, states);
-                    find_der_in_expr(then_expr, states);
-                }
-                find_der_in_expr(else_branch, states);
-            }
-            Expression::Array { elements } | Expression::Tuple { elements } => {
-                for e in elements {
-                    find_der_in_expr(e, states);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn find_der_in_equation(eq: &Equation, states: &mut Vec<String>) {
-        match eq {
-            Equation::Simple { lhs, rhs } => {
-                find_der_in_expr(lhs, states);
-                find_der_in_expr(rhs, states);
-            }
-            Equation::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for block in cond_blocks {
-                    for eq in &block.eqs {
-                        find_der_in_equation(eq, states);
-                    }
-                }
-                if let Some(else_eqs) = else_block {
-                    for eq in else_eqs {
-                        find_der_in_equation(eq, states);
-                    }
-                }
-            }
-            Equation::For { equations, .. } => {
-                for eq in equations {
-                    find_der_in_equation(eq, states);
-                }
-            }
-            Equation::When(branches) => {
-                for branch in branches {
-                    for eq in &branch.eqs {
-                        find_der_in_equation(eq, states);
-                    }
-                }
-            }
-            Equation::Connect { .. } => {}
-            Equation::FunctionCall { .. } => {}
-            Equation::Empty => {}
-        }
-    }
-
+    let mut finder = DerFinder::new();
     for eq in equations {
-        find_der_in_equation(eq, &mut states);
+        eq.accept(&mut finder);
     }
-
-    states
+    finder.states
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 //! the function body with actual arguments.
 
 use crate::ir::ast::{Causality, ClassDefinition, ClassType, Expression, Statement};
-use crate::ir::visitor::Visitor;
+use crate::ir::visitor::MutVisitor;
 use indexmap::IndexMap;
 
 /// Visitor that inlines user-defined function calls
@@ -197,7 +197,7 @@ fn substitute_vars(expr: &Expression, substitutions: &IndexMap<String, Expressio
     }
 }
 
-impl Visitor for FunctionInliner {
+impl MutVisitor for FunctionInliner {
     fn exit_expression(&mut self, expr: &mut Expression) {
         if let Expression::FunctionCall { comp, args } = expr {
             let func_name = comp.to_string();

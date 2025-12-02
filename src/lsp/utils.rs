@@ -1,7 +1,7 @@
 //! Utility functions for LSP handlers.
 
-use crate::ir::ast::StoredDefinition;
-use lsp_types::Position;
+use crate::ir::ast::{Location, StoredDefinition, Token};
+use lsp_types::{Position, Range};
 
 /// Parse the document and return the AST if successful
 pub fn parse_document(text: &str, path: &str) -> Option<StoredDefinition> {
@@ -96,4 +96,66 @@ pub fn find_function_at_cursor(text: &str, position: Position) -> Option<(String
     } else {
         Some((func_name, current_arg))
     }
+}
+
+/// Convert a Token to an LSP Range (0-indexed).
+///
+/// LSP uses 0-indexed positions, while our AST uses 1-indexed.
+pub fn token_to_range(token: &Token) -> Range {
+    Range {
+        start: Position {
+            line: token.location.start_line.saturating_sub(1),
+            character: token.location.start_column.saturating_sub(1),
+        },
+        end: Position {
+            line: token.location.end_line.saturating_sub(1),
+            character: token.location.end_column.saturating_sub(1),
+        },
+    }
+}
+
+/// Convert a Location to an LSP Range (0-indexed).
+///
+/// LSP uses 0-indexed positions, while our AST uses 1-indexed.
+pub fn location_to_range(loc: &Location) -> Range {
+    Range {
+        start: Position {
+            line: loc.start_line.saturating_sub(1),
+            character: loc.start_column.saturating_sub(1),
+        },
+        end: Position {
+            line: loc.end_line.saturating_sub(1),
+            character: loc.end_column.saturating_sub(1),
+        },
+    }
+}
+
+/// Ensure a range is valid (end >= start).
+///
+/// Some edge cases can produce invalid ranges. This normalizes them.
+pub fn validate_range(range: Range) -> Range {
+    if range.end.line < range.start.line
+        || (range.end.line == range.start.line && range.end.character < range.start.character)
+    {
+        Range {
+            start: range.start,
+            end: range.start,
+        }
+    } else {
+        range
+    }
+}
+
+/// Check if a position (0-indexed) is within an LSP Range.
+pub fn position_in_range(pos: Position, range: &Range) -> bool {
+    if pos.line < range.start.line || pos.line > range.end.line {
+        return false;
+    }
+    if pos.line == range.start.line && pos.character < range.start.character {
+        return false;
+    }
+    if pos.line == range.end.line && pos.character > range.end.character {
+        return false;
+    }
+    true
 }

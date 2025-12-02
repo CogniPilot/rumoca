@@ -3,9 +3,9 @@
 //! This visitor validates that all variable references in expressions
 //! correspond to declared components using a SymbolTable.
 
-use super::symbol_table::SymbolTable;
 use crate::ir::ast::{ClassDefinition, ComponentReference, Expression, Variability};
-use crate::ir::visitor::Visitor;
+use crate::ir::symbol_table::SymbolTable;
+use crate::ir::visitor::MutVisitor;
 
 /// Visitor that validates all variable references exist
 pub struct VarValidator {
@@ -54,7 +54,7 @@ impl VarValidator {
     }
 }
 
-impl Visitor for VarValidator {
+impl MutVisitor for VarValidator {
     fn enter_expression(&mut self, expr: &mut Expression) {
         match expr {
             Expression::ComponentReference(comp_ref) => {
