@@ -64,126 +64,199 @@ use crate::modelica_grammar::ModelicaGrammar;
 use crate::modelica_parser::parse;
 use anyhow::{Context, Result};
 use miette::SourceSpan;
-use parol_runtime::ParolError;
+use parol_runtime::{ParolError, ParserError};
 use std::fs;
 use std::time::Instant;
 
-/// Create a syntax error diagnostic from a parse error
+/// Create a syntax error diagnostic from a parse error using structured error data
 fn create_syntax_error(error: &ParolError, source: &str) -> SyntaxError {
-    let error_debug = format!("{:?}", error);
-    let error_display = format!("{}", error);
+    // Try to extract structured error information from ParolError
+    if let ParolError::ParserError(parser_error) = error {
+        if let Some((line, col, message)) = extract_from_parser_error(parser_error, source) {
+            let byte_offset = line_col_to_byte_offset(source, line, col);
+            let remaining = source.len().saturating_sub(byte_offset);
+            let span_len = remaining.min(10);
 
-    // Try to extract location from ParolError debug format first
-    let location = extract_location_from_debug(&error_debug)
-        // Then try from "at line X, column Y" format in error message
-        .or_else(|| extract_line_col_from_error(&error_display))
-        .or_else(|| extract_line_col_from_error(&error_debug));
-
-    // Extract location and message
-    let (span, message) = if let Some((line_num, col_num)) = location {
-        // Calculate byte offset for the error location
-        let mut byte_offset = 0;
-        for (i, line) in source.lines().enumerate() {
-            if i + 1 == line_num {
-                byte_offset += col_num.saturating_sub(1);
-                break;
-            }
-            byte_offset += line.len() + 1; // +1 for newline
+            return SyntaxError {
+                src: source.to_string(),
+                span: SourceSpan::new(byte_offset.into(), span_len),
+                message,
+            };
         }
+    }
 
-        // Extract the message - try cause first, then fall back to display
-        let msg = extract_error_cause(&error_debug).unwrap_or_else(|| error_display.clone());
-
-        // Create a span of reasonable length (10 chars or to end of line)
-        let remaining = source.len().saturating_sub(byte_offset);
-        let span_len = remaining.min(10);
-
-        (SourceSpan::new(byte_offset.into(), span_len), msg)
-    } else {
-        // Fallback: highlight the start of the file
-        (SourceSpan::new(0.into(), 1_usize), error_display)
-    };
-
+    // Fallback for other error types
     SyntaxError {
         src: source.to_string(),
-        span,
-        message,
+        span: SourceSpan::new(0.into(), 1_usize),
+        message: "Syntax error".to_string(),
     }
 }
 
-/// Extract location from ParolError debug output
-/// Looks for pattern like "error_location: Location { start_line: 2, start_column: 21, ..."
-fn extract_location_from_debug(debug_str: &str) -> Option<(usize, usize)> {
-    // Find the first occurrence of "error_location: Location {"
-    if let Some(pos) = debug_str.find("error_location: Location {") {
-        let after_location = &debug_str[pos..];
+/// Extract location and message from a ParserError
+fn extract_from_parser_error(error: &ParserError, source: &str) -> Option<(usize, usize, String)> {
+    match error {
+        ParserError::SyntaxErrors { entries } => {
+            if let Some(first) = entries.first() {
+                let line = first.error_location.start_line as usize;
+                let col = first.error_location.start_column as usize;
 
-        // Extract start_line
-        let line_num = if let Some(line_pos) = after_location.find("start_line:") {
-            let after_line = &after_location[line_pos + 11..];
-            // Find the number (digits before the next comma)
-            after_line
-                .split(',')
-                .next()
-                .and_then(|s| s.trim().parse::<usize>().ok())
-        } else {
-            None
-        };
-
-        // Extract start_column
-        let col_num = if let Some(col_pos) = after_location.find("start_column:") {
-            let after_col = &after_location[col_pos + 13..];
-            // Find the number (digits before the next comma)
-            after_col
-                .split(',')
-                .next()
-                .and_then(|s| s.trim().parse::<usize>().ok())
-        } else {
-            None
-        };
-
-        match (line_num, col_num) {
-            (Some(line), Some(col)) => Some((line, col)),
-            _ => None,
+                // Build a clean message from expected/unexpected tokens
+                let message = build_clean_message(first, source);
+                return Some((line, col, message));
+            }
         }
-    } else {
-        None
+        ParserError::UnprocessedInput { last_token, .. } => {
+            let line = last_token.start_line as usize;
+            let col = last_token.start_column as usize;
+            return Some((line, col, "Unexpected input after valid syntax".to_string()));
+        }
+        ParserError::PredictionError { cause } => {
+            // The cause contains the ugly message, but we can try to extract location
+            if let Some((line, col)) = extract_location_from_cause(cause) {
+                return Some((line, col, "Unexpected token".to_string()));
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+/// Build a clean error message from a SyntaxError, using source to extract actual token text
+fn build_clean_message(err: &parol_runtime::SyntaxError, source: &str) -> String {
+    // If there are unexpected tokens, describe what was found
+    if !err.unexpected_tokens.is_empty() {
+        let unexpected = &err.unexpected_tokens[0];
+        // Extract actual token text from source using byte offsets
+        let start = unexpected.token.start as usize;
+        let end = unexpected.token.end as usize;
+        let token_text = if start < source.len() && end <= source.len() && start < end {
+            &source[start..end]
+        } else {
+            // Fallback to cleaned token_type if extraction fails
+            return build_fallback_message(err);
+        };
+
+        // Build expected tokens list (limit to first few), cleaning up internal names
+        let expected: Vec<String> = err
+            .expected_tokens
+            .iter()
+            .take(5)
+            .map(|s| clean_token_name(s))
+            .collect();
+
+        if expected.is_empty() {
+            return format!("Unexpected '{}'", token_text);
+        } else if expected.len() == 1 {
+            return format!("Unexpected '{}', expected {}", token_text, expected[0]);
+        } else {
+            return format!(
+                "Unexpected '{}', expected one of: {}",
+                token_text,
+                expected.join(", ")
+            );
+        }
+    }
+
+    // Fall back to a generic message
+    "Syntax error".to_string()
+}
+
+/// Fallback message builder when source extraction fails
+fn build_fallback_message(err: &parol_runtime::SyntaxError) -> String {
+    if !err.unexpected_tokens.is_empty() {
+        let token_name = clean_token_name(&err.unexpected_tokens[0].token_type);
+        let expected: Vec<String> = err
+            .expected_tokens
+            .iter()
+            .take(5)
+            .map(|s| clean_token_name(s))
+            .collect();
+
+        if expected.is_empty() {
+            return format!("Unexpected {}", token_name);
+        } else {
+            return format!(
+                "Unexpected {}, expected one of: {}",
+                token_name,
+                expected.join(", ")
+            );
+        }
+    }
+    "Syntax error".to_string()
+}
+
+/// Clean up internal token names to be more user-friendly
+fn clean_token_name(name: &str) -> String {
+    // Map common punctuation and keywords
+    match name {
+        // Punctuation
+        "Semicolon" => "';'".to_string(),
+        "Comma" => "','".to_string(),
+        "LParen" => "'('".to_string(),
+        "RParen" => "')'".to_string(),
+        "LBrace" => "'{'".to_string(),
+        "RBrace" => "'}'".to_string(),
+        "LBracket" => "'['".to_string(),
+        "RBracket" => "']'".to_string(),
+        "Assign" => "':='".to_string(),
+        "Equals" => "'='".to_string(),
+        "Colon" => "':'".to_string(),
+        "Dot" => "'.'".to_string(),
+        "Plus" => "'+'".to_string(),
+        "Minus" => "'-'".to_string(),
+        "Star" => "'*'".to_string(),
+        "Slash" => "'/'".to_string(),
+        "Caret" => "'^'".to_string(),
+        "Less" => "'<'".to_string(),
+        "Greater" => "'>'".to_string(),
+        "LessEqual" => "'<='".to_string(),
+        "GreaterEqual" => "'>='".to_string(),
+        "NotEqual" => "'<>'".to_string(),
+
+        // Regex-based identifier patterns (parol internal names)
+        s if s.starts_with("LBracketUnderscore") && s.contains("AMinusZ") => {
+            "identifier".to_string()
+        }
+        s if s.contains("AMinusZ") && s.contains("0Minus9") => "identifier".to_string(),
+
+        // Number patterns
+        s if s.contains("0Minus9") => "number".to_string(),
+
+        // String patterns
+        s if s.contains("QuotationMark") || s.contains("DoubleQuote") => "string".to_string(),
+
+        // Clean up CamelCase keywords to lowercase
+        s => s.to_lowercase(),
     }
 }
 
-/// Extract the error cause from ParolError debug output
-/// Looks for pattern like 'cause: "..."'
-fn extract_error_cause(debug_str: &str) -> Option<String> {
-    // Find the first occurrence of 'cause: "'
-    if let Some(pos) = debug_str.find("cause: \"") {
-        let after_cause = &debug_str[pos + 8..];
-        // Find the closing quote (but handle escaped quotes)
-        let mut in_escape = false;
-        let mut cause_end = 0;
-
-        for (i, ch) in after_cause.chars().enumerate() {
-            if in_escape {
-                in_escape = false;
-                continue;
+/// Extract location from a prediction error cause string
+fn extract_location_from_cause(cause: &str) -> Option<(usize, usize)> {
+    // Look for pattern like "filename.mo:4:1"
+    if let Some(mo_pos) = cause.find(".mo:") {
+        let after = &cause[mo_pos + 4..];
+        let parts: Vec<&str> = after.split(':').take(2).collect();
+        if parts.len() >= 2 {
+            if let (Ok(line), Ok(col)) = (parts[0].parse(), parts[1].split('-').next()?.parse()) {
+                return Some((line, col));
             }
-            if ch == '\\' {
-                in_escape = true;
-                continue;
-            }
-            if ch == '"' {
-                cause_end = i;
-                break;
-            }
-        }
-
-        if cause_end > 0 {
-            let cause = &after_cause[..cause_end];
-            // Clean up the cause message - extract just the first line
-            let first_line = cause.lines().next().unwrap_or(cause);
-            return Some(first_line.to_string());
         }
     }
     None
+}
+
+/// Convert line/column (1-indexed) to byte offset
+fn line_col_to_byte_offset(source: &str, line: usize, col: usize) -> usize {
+    let mut byte_offset = 0;
+    for (i, line_content) in source.lines().enumerate() {
+        if i + 1 == line {
+            byte_offset += col.saturating_sub(1);
+            break;
+        }
+        byte_offset += line_content.len() + 1; // +1 for newline
+    }
+    byte_offset
 }
 
 /// Extract line and column numbers from error messages like "at line X, column Y"

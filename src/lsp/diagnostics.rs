@@ -12,6 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
+use parol_runtime::{ParolError, ParserError};
 
 use crate::ir::ast::{
     ClassDefinition, ComponentReference, Equation, Expression, OpBinary, Statement, TerminalType,
@@ -45,8 +46,7 @@ pub fn compute_diagnostics(uri: &Uri, text: &str) -> Vec<Diagnostic> {
                             }
                             Err(e) => {
                                 let error_msg = format!("{}", e);
-                                let (line, col) =
-                                    extract_error_location(&error_msg).unwrap_or((1, 1));
+                                let (line, col) = extract_location_from_error_msg(&error_msg);
                                 diagnostics.push(create_diagnostic(
                                     line,
                                     col,
@@ -64,12 +64,8 @@ pub fn compute_diagnostics(uri: &Uri, text: &str) -> Vec<Diagnostic> {
                 }
             }
             Err(e) => {
-                let error_debug = format!("{:?}", e);
-                let error_msg = format!("{}", e);
-                let (line, col) = extract_location_from_debug(&error_debug)
-                    .or_else(|| extract_error_location(&error_msg))
-                    .unwrap_or((1, 1));
-                let message = extract_error_cause(&error_debug).unwrap_or(error_msg);
+                // Use structured error extraction when possible
+                let (line, col, message) = extract_structured_error(&e, text);
                 diagnostics.push(create_diagnostic(
                     line,
                     col,
@@ -823,133 +819,158 @@ fn create_diagnostic(
     }
 }
 
-/// Extract location from ParolError debug output
-fn extract_location_from_debug(debug_str: &str) -> Option<(u32, u32)> {
-    if let Some(pos) = debug_str.find("error_location: Location {") {
-        let after_location = &debug_str[pos..];
-
-        let line_num = if let Some(line_pos) = after_location.find("start_line:") {
-            let after_line = &after_location[line_pos + 11..];
-            after_line
-                .split(',')
-                .next()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-        } else {
-            None
-        };
-
-        let col_num = if let Some(col_pos) = after_location.find("start_column:") {
-            let after_col = &after_location[col_pos + 13..];
-            after_col
-                .split(',')
-                .next()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-        } else {
-            None
-        };
-
-        match (line_num, col_num) {
-            (Some(line), Some(col)) => Some((line, col)),
-            _ => None,
+/// Extract structured error information from ParolError
+fn extract_structured_error(error: &ParolError, source: &str) -> (u32, u32, String) {
+    if let ParolError::ParserError(parser_error) = error {
+        if let Some((line, col, message)) = extract_from_parser_error(parser_error, source) {
+            return (line, col, message);
         }
-    } else {
-        None
     }
+    // Fallback
+    (1, 1, "Syntax error".to_string())
 }
 
-/// Extract the error cause from ParolError debug output
-fn extract_error_cause(debug_str: &str) -> Option<String> {
-    if let Some(pos) = debug_str.find("cause: \"") {
-        let after_cause = &debug_str[pos + 8..];
-        let mut in_escape = false;
-        let mut cause_end = 0;
-
-        for (i, ch) in after_cause.chars().enumerate() {
-            if in_escape {
-                in_escape = false;
-                continue;
-            }
-            if ch == '\\' {
-                in_escape = true;
-                continue;
-            }
-            if ch == '"' {
-                cause_end = i;
-                break;
+/// Extract location and message from a ParserError
+fn extract_from_parser_error(error: &ParserError, source: &str) -> Option<(u32, u32, String)> {
+    match error {
+        ParserError::SyntaxErrors { entries } => {
+            if let Some(first) = entries.first() {
+                let line = first.error_location.start_line;
+                let col = first.error_location.start_column;
+                let message = build_clean_message(first, source);
+                return Some((line, col, message));
             }
         }
-
-        if cause_end > 0 {
-            let cause = &after_cause[..cause_end];
-            let first_line = cause.lines().next().unwrap_or(cause);
-            return Some(first_line.to_string());
+        ParserError::UnprocessedInput { last_token, .. } => {
+            let line = last_token.start_line;
+            let col = last_token.start_column;
+            return Some((line, col, "Unexpected input after valid syntax".to_string()));
         }
+        ParserError::PredictionError { .. } => {
+            return Some((1, 1, "Unexpected token".to_string()));
+        }
+        _ => {}
     }
     None
 }
 
-/// Extract line and column from error message patterns
-fn extract_error_location(error_msg: &str) -> Option<(u32, u32)> {
+/// Build a clean error message from a SyntaxError, using source to extract actual token text
+fn build_clean_message(err: &parol_runtime::SyntaxError, source: &str) -> String {
+    if !err.unexpected_tokens.is_empty() {
+        let unexpected = &err.unexpected_tokens[0];
+        // Extract actual token text from source using byte offsets
+        let start = unexpected.token.start as usize;
+        let end = unexpected.token.end as usize;
+        let token_text = if start < source.len() && end <= source.len() && start < end {
+            &source[start..end]
+        } else {
+            // Fallback to cleaned token_type if extraction fails
+            return build_fallback_message(err);
+        };
+
+        let expected: Vec<String> = err
+            .expected_tokens
+            .iter()
+            .take(5)
+            .map(|s| clean_token_name(s))
+            .collect();
+
+        if expected.is_empty() {
+            return format!("Unexpected '{}'", token_text);
+        } else if expected.len() == 1 {
+            return format!("Unexpected '{}', expected {}", token_text, expected[0]);
+        } else {
+            return format!(
+                "Unexpected '{}', expected one of: {}",
+                token_text,
+                expected.join(", ")
+            );
+        }
+    }
+    "Syntax error".to_string()
+}
+
+/// Fallback message builder when source extraction fails
+fn build_fallback_message(err: &parol_runtime::SyntaxError) -> String {
+    if !err.unexpected_tokens.is_empty() {
+        let token_name = clean_token_name(&err.unexpected_tokens[0].token_type);
+        let expected: Vec<String> = err
+            .expected_tokens
+            .iter()
+            .take(5)
+            .map(|s| clean_token_name(s))
+            .collect();
+
+        if expected.is_empty() {
+            return format!("Unexpected {}", token_name);
+        } else {
+            return format!(
+                "Unexpected {}, expected one of: {}",
+                token_name,
+                expected.join(", ")
+            );
+        }
+    }
+    "Syntax error".to_string()
+}
+
+/// Clean up internal token names to be more user-friendly
+fn clean_token_name(name: &str) -> String {
+    match name {
+        // Punctuation
+        "Semicolon" => "';'".to_string(),
+        "Comma" => "','".to_string(),
+        "LParen" => "'('".to_string(),
+        "RParen" => "')'".to_string(),
+        "LBrace" => "'{'".to_string(),
+        "RBrace" => "'}'".to_string(),
+        "LBracket" => "'['".to_string(),
+        "RBracket" => "']'".to_string(),
+        "Assign" => "':='".to_string(),
+        "Equals" => "'='".to_string(),
+        "Colon" => "':'".to_string(),
+        "Dot" => "'.'".to_string(),
+        "Plus" => "'+'".to_string(),
+        "Minus" => "'-'".to_string(),
+        "Star" => "'*'".to_string(),
+        "Slash" => "'/'".to_string(),
+        "Caret" => "'^'".to_string(),
+        "Less" => "'<'".to_string(),
+        "Greater" => "'>'".to_string(),
+        "LessEqual" => "'<='".to_string(),
+        "GreaterEqual" => "'>='".to_string(),
+        "NotEqual" => "'<>'".to_string(),
+
+        // Regex-based identifier patterns (parol internal names)
+        s if s.starts_with("LBracketUnderscore") && s.contains("AMinusZ") => {
+            "identifier".to_string()
+        }
+        s if s.contains("AMinusZ") && s.contains("0Minus9") => "identifier".to_string(),
+
+        // Number patterns
+        s if s.contains("0Minus9") => "number".to_string(),
+
+        // String patterns
+        s if s.contains("QuotationMark") || s.contains("DoubleQuote") => "string".to_string(),
+
+        // Clean up CamelCase keywords to lowercase
+        s => s.to_lowercase(),
+    }
+}
+
+/// Extract line and column from an error message string (fallback for non-ParolError)
+fn extract_location_from_error_msg(error_msg: &str) -> (u32, u32) {
     // Try pattern like "filename.mo:14:9"
     if let Some(mo_pos) = error_msg.find(".mo:") {
-        let after_mo = &error_msg[mo_pos + 4..];
-        let line_end = after_mo
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(after_mo.len());
-        if line_end > 0 {
-            if let Ok(line) = after_mo[..line_end].parse::<u32>() {
-                if after_mo.len() > line_end && after_mo.as_bytes()[line_end] == b':' {
-                    let after_colon = &after_mo[line_end + 1..];
-                    let col_end = after_colon
-                        .find(|c: char| !c.is_ascii_digit())
-                        .unwrap_or(after_colon.len());
-                    if col_end > 0 {
-                        if let Ok(col) = after_colon[..col_end].parse::<u32>() {
-                            return Some((line, col));
-                        }
-                    }
-                }
-                return Some((line, 1));
-            }
-        }
+        let after = &error_msg[mo_pos + 4..];
+        let parts: Vec<&str> = after.split(':').take(2).collect();
+        let line = parts.first().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let col = parts
+            .get(1)
+            .and_then(|s| s.split('-').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        return (line, col);
     }
-
-    // Try pattern like "[1:5]"
-    if let Some(bracket_pos) = error_msg.find('[') {
-        let after_bracket = &error_msg[bracket_pos + 1..];
-        if let Some(colon_pos) = after_bracket.find(':') {
-            let line_str = &after_bracket[..colon_pos];
-            if let Ok(line) = line_str.trim().parse::<u32>() {
-                let after_colon = &after_bracket[colon_pos + 1..];
-                if let Some(end_pos) = after_colon.find(']') {
-                    let col_str = &after_colon[..end_pos];
-                    if let Ok(col) = col_str.trim().parse::<u32>() {
-                        return Some((line, col));
-                    }
-                }
-            }
-        }
-    }
-
-    // Try pattern like "line X, column Y"
-    if let Some(line_pos) = error_msg.find("line ") {
-        let after_line = &error_msg[line_pos + 5..];
-        let line_end = after_line
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(after_line.len());
-        if let Ok(line) = after_line[..line_end].parse::<u32>() {
-            if let Some(col_pos) = after_line.find("column ") {
-                let after_col = &after_line[col_pos + 7..];
-                let col_end = after_col
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(after_col.len());
-                if let Ok(col) = after_col[..col_end].parse::<u32>() {
-                    return Some((line, col));
-                }
-            }
-            return Some((line, 1));
-        }
-    }
-
-    None
+    (1, 1)
 }
