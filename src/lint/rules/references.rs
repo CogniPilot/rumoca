@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ir::ast::{ClassDefinition, Expression};
 use crate::lint::{
-    DefinedSymbol, LintLevel, LintMessage, LintResult, collect_defined_symbols, collect_used_symbols,
-    is_class_instance_type,
+    DefinedSymbol, LintLevel, LintMessage, LintResult, collect_defined_symbols,
+    collect_used_symbols, is_class_instance_type,
 };
 
 /// Check for unused variables

@@ -16,8 +16,7 @@ mod workspace;
 use std::collections::HashMap;
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, InsertTextFormat,
-    Uri,
+    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, InsertTextFormat, Uri,
 };
 
 use crate::lsp::data::builtin_functions::get_builtin_functions;
@@ -28,7 +27,9 @@ use crate::lsp::workspace::WorkspaceState;
 use members::get_member_completions;
 use modifiers::get_modifier_completions;
 use scope::get_scoped_completions;
-use workspace::{get_workspace_completions, get_workspace_member_completions, is_in_import_context};
+use workspace::{
+    get_workspace_completions, get_workspace_member_completions, is_in_import_context,
+};
 
 /// Handle completion request with workspace support
 ///

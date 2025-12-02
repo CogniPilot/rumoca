@@ -3,15 +3,15 @@
 //! Differential-Algebraic Equation (DAE) domain. It is used to model and
 //! manipulate DAE-related constructs within the application.
 use crate::dae::ast::Dae;
+use crate::ir::analysis::condition_finder::ConditionFinder;
+use crate::ir::analysis::state_finder::StateFinder;
 use crate::ir::ast::{
     Causality, ClassDefinition, Component, Equation, Expression, Name, Statement, Token,
     Variability,
 };
-use crate::ir::transform::constants::BUILTIN_REINIT;
 use crate::ir::error::IrError;
+use crate::ir::transform::constants::BUILTIN_REINIT;
 use crate::ir::visitor::MutVisitable;
-use crate::ir::analysis::condition_finder::ConditionFinder;
-use crate::ir::analysis::state_finder::StateFinder;
 use git_version::git_version;
 use std::collections::HashSet;
 

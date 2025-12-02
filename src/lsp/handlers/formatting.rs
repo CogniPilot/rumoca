@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use lsp_types::{DocumentFormattingParams, Position, Range, TextEdit, Uri};
 
-use crate::fmt::{format_modelica, FormatOptions};
+use crate::fmt::{FormatOptions, format_modelica};
 
 /// Handle document formatting request
 pub fn handle_formatting(

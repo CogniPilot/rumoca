@@ -36,7 +36,7 @@ fn main() {
 
     if let Err(err) = Builder::with_explicit_output_dir("src/modelica_grammar/generated")
         .grammar_file("src/modelica_grammar/modelica.par")
-        .expanded_grammar_output_file("../modelica-exp.par")
+        .expanded_grammar_output_file("modelica-exp.par")
         .parser_output_file("modelica_parser.rs")
         .actions_output_file("modelica_grammar_trait.rs")
         .user_type_name("ModelicaGrammar")

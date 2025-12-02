@@ -28,11 +28,11 @@ pub mod utils;
 pub mod workspace;
 
 // Re-export public API
-pub use analyze::{analyze_class, AnalyzeResult};
+pub use analyze::{AnalyzeResult, analyze_class};
 pub use data::get_builtin_functions;
 pub use features::{
-    compute_diagnostics, handle_code_action, handle_code_lens, handle_document_links,
-    handle_folding_range, handle_inlay_hints, ANALYZE_CLASS_COMMAND,
+    ANALYZE_CLASS_COMMAND, compute_diagnostics, handle_code_action, handle_code_lens,
+    handle_document_links, handle_folding_range, handle_inlay_hints,
 };
 pub use handlers::{
     get_semantic_token_legend, handle_completion, handle_completion_workspace,

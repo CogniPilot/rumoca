@@ -9,7 +9,7 @@ use lsp_types::{Diagnostic, DiagnosticSeverity};
 use crate::ir::ast::{ComponentReference, Equation, Expression, Statement};
 
 use super::helpers::create_diagnostic;
-use super::types::{infer_expression_type, DefinedSymbol, InferredType};
+use super::types::{DefinedSymbol, InferredType, infer_expression_type};
 
 /// Collect symbols used in an equation and check for undefined references
 pub fn collect_equation_symbols(

@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use lsp_types::{FoldingRange, FoldingRangeKind, FoldingRangeParams, Uri};
 
-use crate::lsp::utils::parse_document;
 use crate::ir::ast::{ClassDefinition, Equation, Statement};
+use crate::lsp::utils::parse_document;
 
 /// Handle folding range request
 pub fn handle_folding_range(

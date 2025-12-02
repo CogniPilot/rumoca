@@ -361,7 +361,10 @@ mod tests {
         // Result should be der(der(x))
         if let Expression::FunctionCall { comp, args } = diff {
             assert_eq!(comp.to_string(), "der");
-            if let Expression::FunctionCall { comp: inner_comp, .. } = &args[0] {
+            if let Expression::FunctionCall {
+                comp: inner_comp, ..
+            } = &args[0]
+            {
                 assert_eq!(inner_comp.to_string(), "der");
             } else {
                 panic!("Expected nested der()");

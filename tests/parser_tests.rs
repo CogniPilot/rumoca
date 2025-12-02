@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{parse_test_file, STANDARD_FIXTURES};
+use common::{STANDARD_FIXTURES, parse_test_file};
 
 #[test]
 fn test_parse_integrator() {

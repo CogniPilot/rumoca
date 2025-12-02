@@ -25,7 +25,7 @@ mod operators;
 mod options;
 mod visitor;
 
-pub use options::{FormatOptions, CONFIG_FILE_NAMES};
+pub use options::{CONFIG_FILE_NAMES, FormatOptions};
 
 use crate::ir::ast::StoredDefinition;
 use class_formatter::format_class_with_comments;

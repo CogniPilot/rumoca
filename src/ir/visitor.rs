@@ -339,7 +339,6 @@ impl Visitable for ir::ast::ComponentReference {
 // Mutable Visitable Implementations
 // =============================================================================
 
-
 impl MutVisitable for ir::ast::StoredDefinition {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_stored_definition(self);
@@ -349,7 +348,6 @@ impl MutVisitable for ir::ast::StoredDefinition {
         visitor.exit_stored_definition(self);
     }
 }
-
 
 impl MutVisitable for ir::ast::ClassDefinition {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
@@ -388,7 +386,6 @@ impl MutVisitable for ir::ast::ClassDefinition {
         visitor.exit_class_definition(self);
     }
 }
-
 
 impl MutVisitable for ir::ast::Equation {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
@@ -445,7 +442,6 @@ impl MutVisitable for ir::ast::Equation {
         visitor.exit_equation(self);
     }
 }
-
 
 impl MutVisitable for ir::ast::Statement {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
@@ -506,7 +502,6 @@ impl MutVisitable for ir::ast::Statement {
     }
 }
 
-
 impl MutVisitable for ir::ast::Expression {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_expression(self);
@@ -564,7 +559,6 @@ impl MutVisitable for ir::ast::Expression {
     }
 }
 
-
 impl MutVisitable for ir::ast::Component {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {
         visitor.enter_component(self);
@@ -572,7 +566,6 @@ impl MutVisitable for ir::ast::Component {
         visitor.exit_component(self);
     }
 }
-
 
 impl MutVisitable for ir::ast::ComponentReference {
     fn accept_mut<V: MutVisitor>(&mut self, visitor: &mut V) {

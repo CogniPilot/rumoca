@@ -20,15 +20,15 @@
 //!
 
 use crate::ir;
+use crate::ir::analysis::symbol_table::SymbolTable;
 use crate::ir::ast::{
     ComponentRefPart, ComponentReference, Connection, Equation, Expression, OpBinary, TerminalType,
     Token,
 };
-use crate::ir::transform::constants::is_primitive_type;
 use crate::ir::error::IrError;
-use crate::ir::analysis::symbol_table::SymbolTable;
-use crate::ir::visitor::{MutVisitable, MutVisitor};
+use crate::ir::transform::constants::is_primitive_type;
 use crate::ir::transform::sub_comp_namer::SubCompNamer;
+use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 

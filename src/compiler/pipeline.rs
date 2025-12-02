@@ -3,18 +3,18 @@
 //! This module contains the main compilation pipeline that transforms
 //! a Modelica AST into a DAE representation.
 
-use super::error_handling::{extract_line_col_from_error, SyntaxError, UndefinedVariableError};
+use super::error_handling::{SyntaxError, UndefinedVariableError, extract_line_col_from_error};
 use super::function_collector::collect_all_functions;
 use super::result::CompilationResult;
-use crate::ir::ast::StoredDefinition;
 use crate::ir::analysis::balance_check::check_dae_balance;
+use crate::ir::analysis::var_validator::VarValidator;
+use crate::ir::ast::StoredDefinition;
 use crate::ir::structural::create_dae::create_dae;
 use crate::ir::transform::flatten::flatten;
-use crate::ir::transform::tuple_expander::expand_tuple_equations;
-use crate::ir::visitor::MutVisitable;
 use crate::ir::transform::function_inliner::FunctionInliner;
 use crate::ir::transform::import_resolver::ImportResolver;
-use crate::ir::analysis::var_validator::VarValidator;
+use crate::ir::transform::tuple_expander::expand_tuple_equations;
+use crate::ir::visitor::MutVisitable;
 use anyhow::Result;
 use miette::SourceSpan;
 use std::time::Instant;

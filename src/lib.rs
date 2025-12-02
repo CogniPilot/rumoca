@@ -21,7 +21,7 @@ pub use modelica_grammar::generated::modelica_parser;
 
 // Re-export the main API types for convenience
 pub use compiler::{CompilationResult, Compiler};
-pub use fmt::{format_modelica, FormatOptions, CONFIG_FILE_NAMES};
+pub use fmt::{CONFIG_FILE_NAMES, FormatOptions, format_modelica};
 pub use lint::{
     LINT_CONFIG_FILE_NAMES, LintConfig, LintLevel, LintMessage, LintResult, lint_file, lint_str,
 };

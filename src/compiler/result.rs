@@ -5,8 +5,8 @@
 //! and timing information.
 
 use crate::dae::ast::Dae;
-use crate::ir::ast::StoredDefinition;
 use crate::ir::analysis::balance_check::BalanceCheckResult;
+use crate::ir::ast::StoredDefinition;
 use anyhow::{Context, Result};
 use std::fs;
 
@@ -124,7 +124,7 @@ impl CompilationResult {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn render_template_to_string(&mut self, template_path: &str) -> Result<String> {
-        use minijinja::{context, Environment};
+        use minijinja::{Environment, context};
 
         let template_content = fs::read_to_string(template_path)
             .with_context(|| format!("Failed to read template file: {}", template_path))?;

@@ -3,8 +3,8 @@
 //! This visitor validates that all variable references in expressions
 //! correspond to declared components using a SymbolTable.
 
-use crate::ir::ast::{ClassDefinition, ComponentReference, Expression, Variability};
 use crate::ir::analysis::symbol_table::SymbolTable;
+use crate::ir::ast::{ClassDefinition, ComponentReference, Expression, Variability};
 use crate::ir::visitor::MutVisitor;
 
 /// Visitor that validates all variable references exist

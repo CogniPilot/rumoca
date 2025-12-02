@@ -27,7 +27,7 @@ use crate::lsp::WorkspaceState;
 use errors::extract_structured_error;
 use helpers::create_diagnostic;
 use symbols::{collect_equation_symbols, collect_statement_symbols, collect_used_symbols};
-use types::{is_class_instance_type, DefinedSymbol};
+use types::{DefinedSymbol, is_class_instance_type};
 
 /// Compute diagnostics for a document
 pub fn compute_diagnostics(

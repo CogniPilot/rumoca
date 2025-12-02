@@ -281,7 +281,10 @@ pub fn pantelides_index_reduction(
                     if unknown_variables.contains(var) {
                         // This variable is an unknown. Find which equation is currently matched to it.
                         for (&eq_idx, matched_var) in &matching {
-                            if matched_var == var && !eqs_to_diff.contains(&eq_idx) && !additional_eqs.contains(&eq_idx) {
+                            if matched_var == var
+                                && !eqs_to_diff.contains(&eq_idx)
+                                && !additional_eqs.contains(&eq_idx)
+                            {
                                 // This equation is matched to a variable we want
                                 // Differentiate it too to free up the variable
                                 additional_eqs.push(eq_idx);
