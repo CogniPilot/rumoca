@@ -301,10 +301,10 @@ fn load_format_options(
         if verbose {
             // Find which config file was used
             let mut current = start_dir.to_path_buf();
-            if current.is_file()
-                && let Some(parent) = current.parent()
-            {
-                current = parent.to_path_buf();
+            if current.is_file() {
+                if let Some(parent) = current.parent() {
+                    current = parent.to_path_buf();
+                }
             }
             'outer: loop {
                 for config_name in CONFIG_FILE_NAMES {
