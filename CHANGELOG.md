@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.14] - 2025-12-03
+
 ### Added
 - **VS Code Extension: Bundled Language Server**
   - Platform-specific extensions now include bundled `rumoca-lsp` binary
