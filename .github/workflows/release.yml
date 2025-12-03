@@ -7,15 +7,28 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_VERSION: "stable"
+  RUST_VERSION: "nightly-2025-04-13"
+
+permissions:
+  contents: write
 
 jobs:
+  # ============================================================================
+  # Create GitHub Release
+  # ============================================================================
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -27,8 +40,11 @@ jobs:
           draft: false
           prerelease: false
 
-  build-release:
-    name: Build Release
+  # ============================================================================
+  # Build Rust Binaries
+  # ============================================================================
+  build-rust-binaries:
+    name: Build Rust Binaries
     needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
@@ -40,6 +56,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             asset_name: rumoca-linux-aarch64
+            cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
             asset_name: rumoca-macos-x86_64
@@ -63,13 +80,13 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.cross
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Configure cross-compilation (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.cross
         run: |
           mkdir -p .cargo
           echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
@@ -78,8 +95,16 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Strip binary (Linux and macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Strip binary (Linux)
+        if: runner.os == 'Linux' && !matrix.cross
+        run: strip target/${{ matrix.target }}/release/rumoca
+
+      - name: Strip binary (Linux ARM64 cross)
+        if: matrix.cross
+        run: aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca
+
+      - name: Strip binary (macOS)
+        if: runner.os == 'macOS'
         run: strip target/${{ matrix.target }}/release/rumoca
 
       - name: Upload Release Asset
@@ -92,9 +117,12 @@ jobs:
           asset_name: ${{ matrix.asset_name }}
           asset_content_type: application/octet-stream
 
+  # ============================================================================
+  # Publish to crates.io
+  # ============================================================================
   publish-crate:
     name: Publish to crates.io
-    needs: build-release
+    needs: build-rust-binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -106,3 +134,73 @@ jobs:
 
       - name: Publish to crates.io
         run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true  # Don't fail if version already published
+
+  # ============================================================================
+  # Build and Publish VS Code Extension
+  # ============================================================================
+  build-vscode-extension:
+    name: Build VS Code Extension
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd editors/vscode
+          npm ci
+
+      - name: Compile extension
+        run: |
+          cd editors/vscode
+          npm run compile
+
+      - name: Package extension
+        run: |
+          cd editors/vscode
+          npx @vscode/vsce package --no-dependencies
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumoca-modelica-vsix
+          path: editors/vscode/*.vsix
+
+      - name: Upload VSIX to Release
+        run: |
+          cd editors/vscode
+          VSIX_FILE=$(ls *.vsix | head -1)
+          gh release upload ${{ github.ref_name }} "$VSIX_FILE" --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-vscode-extension:
+    name: Publish to VS Code Marketplace
+    needs: build-vscode-extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: rumoca-modelica-vsix
+          path: .
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --packagePath *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX Registry
+        run: npx ovsx publish *.vsix -p ${{ secrets.OVSX_TOKEN }}
+        continue-on-error: true  # Optional: Open VSX is a bonus
