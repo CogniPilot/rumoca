@@ -12,37 +12,40 @@ env:
   RUST_VERSION: "nightly-2025-04-13"
 
 permissions:
-  contents: write  # Needed for uploading to GitHub releases
-  id-token: write  # Needed for PyPI trusted publishing
+  contents: write
+  id-token: write
 
 jobs:
-  # Build wheels for Linux
+  # Build wheels for Linux (using container for manylinux compatibility)
   build-linux:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [x86_64, aarch64]
+        target: [x86_64-unknown-linux-gnu]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install maturin
+        run: pip install maturin
 
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
-          sccache: 'true'
-          manylinux: auto
-          working-directory: python
-          rust-toolchain: ${{ env.RUST_VERSION }}
+        run: |
+          cd python
+          maturin build --release --out dist
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.target }}
+          name: wheels-linux-x86_64
           path: python/dist
 
   # Build wheels for macOS
@@ -52,24 +55,31 @@ jobs:
       matrix:
         platform:
           - runner: macos-13
-            target: x86_64
+            target: x86_64-apple-darwin
           - runner: macos-14
-            target: aarch64
+            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Add target
+        run: rustup target add ${{ matrix.platform.target }}
+
+      - name: Install maturin
+        run: pip install maturin
 
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
-          sccache: 'true'
-          working-directory: python
-          rust-toolchain: ${{ env.RUST_VERSION }}
+        run: |
+          cd python
+          maturin build --release --out dist --target ${{ matrix.platform.target }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -85,16 +95,21 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Install maturin
+        run: pip install maturin
 
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64
-          args: --release --out dist --find-interpreter
-          sccache: 'true'
-          working-directory: python
-          rust-toolchain: ${{ env.RUST_VERSION }}
+        run: |
+          cd python
+          maturin build --release --out dist
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -110,7 +125,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12']
+        python-version: ['3.10', '3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
 
@@ -139,7 +154,7 @@ jobs:
         run: |
           cd python
           python -m pytest tests/ -v
-        continue-on-error: true  # Some tests may need additional setup
+        continue-on-error: true
 
   # Build source distribution (only on tags)
   build-sdist:
@@ -148,13 +163,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
+      - uses: actions/setup-python@v5
         with:
-          command: sdist
-          args: --out dist
-          working-directory: python
-          rust-toolchain: ${{ env.RUST_VERSION }}
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build sdist
+        run: |
+          cd python
+          maturin sdist --out dist
 
       - name: Upload sdist
         uses: actions/upload-artifact@v4
@@ -189,7 +213,6 @@ jobs:
 
       - name: Upload wheels to GitHub Release
         run: |
-          # Upload all wheel files to the release
           for file in dist/*.whl dist/*.tar.gz; do
             if [ -f "$file" ]; then
               echo "Uploading $file"
@@ -199,8 +222,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/setup-python@v5
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          skip-existing: true
+          python-version: '3.12'
+
+      - name: Publish to PyPI
+        run: |
+          pip install twine
+          twine upload dist/* --skip-existing
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
