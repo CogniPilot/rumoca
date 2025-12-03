@@ -504,4 +504,3 @@ jobs:
         run: |
           cd vscode-ext
           npx ovsx publish *.vsix -p ${{ secrets.OVSX_TOKEN }}
-        continue-on-error: true
