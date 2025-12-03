@@ -3,24 +3,10 @@ name: CI
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'examples/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'build.rs'
-      - '.github/workflows/ci.yml'
+    tags:
+      - 'v*'
   pull_request:
     branches: [main, develop]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'examples/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'build.rs'
-      - '.github/workflows/ci.yml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,7 +14,9 @@ env:
   RUST_VERSION: "nightly-2025-04-13"
 
 jobs:
-  # Fast checks that don't need caching
+  # ============================================================================
+  # Rust Testing
+  # ============================================================================
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
@@ -46,7 +34,6 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  # Main test job with caching
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -77,7 +64,6 @@ jobs:
       - name: Build examples
         run: cargo build --examples --verbose
 
-  # Modelica format check (needs build, so separate)
   modelica-fmt:
     name: Modelica Format
     runs-on: ubuntu-latest
@@ -103,7 +89,50 @@ jobs:
           cargo build --release --bin rumoca-fmt
           ./target/release/rumoca-fmt --check
 
+  # ============================================================================
+  # Python Testing
+  # ============================================================================
+  python-test:
+    name: Python Test (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install maturin and build
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install maturin pytest
+          cd python
+          maturin develop --release
+
+      - name: Test import and native bindings
+        run: |
+          source .venv/bin/activate
+          python -c "import rumoca; print(f'Version: {rumoca.__version__}'); print(f'Native: {rumoca.NATIVE_AVAILABLE}')"
+          python -c "import rumoca; assert rumoca.NATIVE_AVAILABLE, 'Native bindings not available!'"
+
+      - name: Run Python tests
+        run: |
+          source .venv/bin/activate
+          cd python
+          python -m pytest tests/ -v
+
+  # ============================================================================
   # Documentation
+  # ============================================================================
   docs:
     name: Documentation
     runs-on: ubuntu-latest
@@ -126,41 +155,192 @@ jobs:
           name: documentation
           path: target/doc/
 
-  # Coverage (expensive, runs separately)
-  coverage:
-    name: Code Coverage
-    runs-on: ubuntu-latest
+  # ============================================================================
+  # Release Builds (only on tags)
+  # ============================================================================
+  build-rust-binaries:
+    name: Build Rust (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, modelica-fmt]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: rumoca-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_name: rumoca-linux-aarch64
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: rumoca-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: rumoca-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: rumoca-windows-x86_64.exe
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }} --component llvm-tools-preview
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
 
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
-
-      - name: Generate coverage
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.cross
         run: |
-          cargo llvm-cov --workspace --html
-          cargo llvm-cov report --summary-only | tee coverage-summary.txt
-          echo "## Code Coverage" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Upload coverage report
+      - name: Configure cross-compilation (Linux ARM64)
+        if: matrix.cross
+        run: |
+          mkdir -p .cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Strip binary (Linux)
+        if: runner.os == 'Linux' && !matrix.cross
+        run: strip target/${{ matrix.target }}/release/rumoca
+
+      - name: Strip binary (Linux ARM64 cross)
+        if: matrix.cross
+        run: aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca
+
+      - name: Strip binary (macOS)
+        if: runner.os == 'macOS'
+        run: strip target/${{ matrix.target }}/release/rumoca
+
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: target/llvm-cov/html/
+          name: ${{ matrix.asset_name }}
+          path: ./target/${{ matrix.target }}/release/rumoca${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+  build-python-wheels:
+    name: Build Python (${{ matrix.name }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, python-test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Add target
+        if: matrix.target != 'x86_64-pc-windows-msvc'
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build wheels
+        run: |
+          cd python
+          maturin build --release --out dist ${{ matrix.target != 'x86_64-pc-windows-msvc' && format('--target {0}', matrix.target) || '' }}
+        shell: bash
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.name }}
+          path: python/dist
+
+  build-python-sdist:
+    name: Build Python sdist
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, python-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build sdist
+        run: |
+          cd python
+          maturin sdist --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: python/dist
+
+  build-vscode-extension:
+    name: Build VS Code Extension
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd editors/vscode
+          npm ci
+
+      - name: Compile extension
+        run: |
+          cd editors/vscode
+          npm run compile
+
+      - name: Package extension
+        run: |
+          cd editors/vscode
+          npx @vscode/vsce package --no-dependencies
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: editors/vscode/*.vsix

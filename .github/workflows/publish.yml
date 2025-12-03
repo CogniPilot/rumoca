@@ -1,0 +1,218 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  RUST_VERSION: "nightly-2025-04-13"
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+
+jobs:
+  # Wait for CI to complete successfully
+  wait-for-ci:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.wait.outputs.run_id }}
+    steps:
+      - name: Wait for CI workflow to complete
+        id: wait
+        run: |
+          echo "Waiting for CI workflow to complete for commit ${{ github.sha }}..."
+          MAX_ATTEMPTS=60  # 30 minutes max (60 * 30s)
+          ATTEMPT=0
+
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS..."
+
+            # Get the CI workflow run for this commit
+            RESULT=$(gh run list \
+              --workflow=ci.yml \
+              --commit=${{ github.sha }} \
+              --json databaseId,status,conclusion \
+              --jq '.[0] // empty')
+
+            if [ -z "$RESULT" ]; then
+              echo "No CI run found yet, waiting..."
+              sleep 30
+              continue
+            fi
+
+            STATUS=$(echo "$RESULT" | jq -r '.status')
+            CONCLUSION=$(echo "$RESULT" | jq -r '.conclusion // empty')
+            RUN_ID=$(echo "$RESULT" | jq -r '.databaseId')
+
+            echo "CI run $RUN_ID: status=$STATUS, conclusion=$CONCLUSION"
+
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "CI completed successfully!"
+                echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+                exit 0
+              else
+                echo "CI failed with conclusion: $CONCLUSION"
+                exit 1
+              fi
+            fi
+
+            echo "CI still running, waiting 30s..."
+            sleep 30
+          done
+
+          echo "Timeout waiting for CI to complete"
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+
+  # Publish everything
+  publish:
+    name: Publish Release
+    needs: wait-for-ci
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rumoca
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      # Download all artifacts from CI workflow using gh CLI
+      - name: Download artifacts from CI
+        run: |
+          mkdir -p rust-binaries python-dist vscode-ext
+
+          echo "Downloading artifacts from CI run ${{ needs.wait-for-ci.outputs.run_id }}..."
+
+          # Download all artifacts
+          gh run download ${{ needs.wait-for-ci.outputs.run_id }} --dir artifacts
+
+          # Move Rust binaries
+          for dir in artifacts/rumoca-*; do
+            if [ -d "$dir" ]; then
+              cp -r "$dir"/* rust-binaries/ 2>/dev/null || true
+            fi
+          done
+
+          # Move Python wheels
+          for dir in artifacts/wheels-*; do
+            if [ -d "$dir" ]; then
+              cp -r "$dir"/* python-dist/ 2>/dev/null || true
+            fi
+          done
+
+          # Move VS Code extension
+          if [ -d "artifacts/vscode-extension" ]; then
+            cp -r artifacts/vscode-extension/* vscode-ext/ 2>/dev/null || true
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List downloaded artifacts
+        run: |
+          echo "=== Rust binaries ==="
+          ls -laR rust-binaries/ || echo "No rust binaries"
+          echo "=== Python wheels ==="
+          ls -laR python-dist/ || echo "No python wheels"
+          echo "=== VS Code extension ==="
+          ls -laR vscode-ext/ || echo "No vscode extension"
+
+      # Create GitHub Release
+      - name: Create GitHub Release
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload Rust binaries to release
+      - name: Upload Rust binaries to release
+        run: |
+          cd rust-binaries
+          for file in *; do
+            if [ -f "$file" ]; then
+              echo "Uploading $file"
+              gh release upload ${{ github.ref_name }} "$file" --clobber
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload Python wheels to release
+      - name: Upload Python wheels to release
+        run: |
+          cd python-dist
+          for file in *.whl *.tar.gz; do
+            if [ -f "$file" ]; then
+              echo "Uploading $file"
+              gh release upload ${{ github.ref_name }} "$file" --clobber
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload VS Code extension to release
+      - name: Upload VS Code extension to release
+        run: |
+          cd vscode-ext
+          for file in *.vsix; do
+            if [ -f "$file" ]; then
+              echo "Uploading $file"
+              gh release upload ${{ github.ref_name }} "$file" --clobber
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publish to crates.io
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
+
+      # Publish to PyPI
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Publish to PyPI
+        run: |
+          pip install twine
+          twine upload python-dist/*.whl python-dist/*.tar.gz --skip-existing
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+      # Publish VS Code extension
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Publish to VS Code Marketplace
+        run: |
+          cd vscode-ext
+          npx @vscode/vsce publish --packagePath *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX Registry
+        run: |
+          cd vscode-ext
+          npx ovsx publish *.vsix -p ${{ secrets.OVSX_TOKEN }}
+        continue-on-error: true

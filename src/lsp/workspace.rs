@@ -193,20 +193,34 @@ impl WorkspaceState {
 
     /// Initialize workspace with root folders
     pub fn initialize(&mut self, workspace_folders: Vec<PathBuf>) {
-        self.debug_log(&format!("[workspace] initialize() called with {} folders", workspace_folders.len()));
+        self.debug_log(&format!(
+            "[workspace] initialize() called with {} folders",
+            workspace_folders.len()
+        ));
         self.workspace_roots = workspace_folders.clone();
 
         // Add MODELICAPATH directories
         let modelica_path = get_modelica_path();
-        self.debug_log(&format!("[workspace] MODELICAPATH has {} directories: {:?}", modelica_path.len(), modelica_path));
+        self.debug_log(&format!(
+            "[workspace] MODELICAPATH has {} directories: {:?}",
+            modelica_path.len(),
+            modelica_path
+        ));
         self.package_roots.extend(modelica_path);
 
         // Discover packages in workspace folders
         for folder in &workspace_folders {
-            self.debug_log(&format!("[workspace] Discovering packages in: {:?}", folder));
+            self.debug_log(&format!(
+                "[workspace] Discovering packages in: {:?}",
+                folder
+            ));
             let start = std::time::Instant::now();
             self.discover_packages_in_folder(folder);
-            self.debug_log(&format!("[workspace] Finished {:?} in {:?}", folder, start.elapsed()));
+            self.debug_log(&format!(
+                "[workspace] Finished {:?} in {:?}",
+                folder,
+                start.elapsed()
+            ));
         }
         self.debug_log("[workspace] initialize() complete");
     }
@@ -230,7 +244,10 @@ impl WorkspaceState {
     fn discover_packages_in_folder(&mut self, folder: &Path) {
         // Skip ignored directories
         if Self::should_ignore_directory(folder) {
-            self.debug_log(&format!("[workspace] Skipping ignored directory: {:?}", folder));
+            self.debug_log(&format!(
+                "[workspace] Skipping ignored directory: {:?}",
+                folder
+            ));
             return;
         }
 
@@ -239,7 +256,11 @@ impl WorkspaceState {
             self.package_roots.push(folder.to_path_buf());
             // Discover all files in this package
             if let Ok(files) = discover_modelica_files(folder) {
-                self.debug_log(&format!("[workspace] Package {:?} contains {} files", folder, files.len()));
+                self.debug_log(&format!(
+                    "[workspace] Package {:?} contains {} files",
+                    folder,
+                    files.len()
+                ));
                 for file in files {
                     self.discovered_files.insert(file);
                 }
@@ -248,7 +269,11 @@ impl WorkspaceState {
             // Look for packages in subdirectories
             if let Ok(entries) = std::fs::read_dir(folder) {
                 let entries: Vec<_> = entries.flatten().collect();
-                self.debug_log(&format!("[workspace] Scanning directory {:?} ({} entries)", folder, entries.len()));
+                self.debug_log(&format!(
+                    "[workspace] Scanning directory {:?} ({} entries)",
+                    folder,
+                    entries.len()
+                ));
                 for entry in entries {
                     let path = entry.path();
                     if path.is_dir() {
