@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/cognipilot/rumoca/actions)
 [![Crates.io](https://img.shields.io/crates/v/rumoca)](https://crates.io/crates/rumoca)
+[![PyPI](https://img.shields.io/pypi/v/rumoca)](https://pypi.org/project/rumoca/)
 [![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
 [![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
 
@@ -31,6 +32,34 @@ Future targets include:
 
 ```bash
 cargo install rumoca
+```
+
+### Python Package
+
+The Python package bundles the Rust compiler, so no separate Rust installation is needed:
+
+```bash
+pip install rumoca
+```
+
+```python
+import rumoca
+
+# Compile a Modelica file
+result = rumoca.compile("model.mo")
+
+# Get as JSON string or Python dict
+json_str = result.to_base_modelica_json()
+model_dict = result.to_base_modelica_dict()
+
+# Compile from string (requires native bindings)
+result = rumoca.compile_source("""
+    model Test
+        Real x(start=0);
+    equation
+        der(x) = 1;
+    end Test;
+""", "Test")
 ```
 
 ### VSCode Extension

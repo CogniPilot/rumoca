@@ -198,5 +198,51 @@ def test_integration_with_cyecca(tmp_path):
     assert len(variables) > 0
 
 
+def test_native_bindings_available():
+    """Test that native bindings are available when built with maturin."""
+    # This test checks if native bindings are available
+    # When installed via pip from source or wheels, this should be True
+    # When running without the native extension, it may be False
+    print(f"Native bindings available: {rumoca.NATIVE_AVAILABLE}")
+    if rumoca.NATIVE_AVAILABLE:
+        assert rumoca.compile_str is not None
+        assert rumoca.compile_file is not None
+
+
+def test_compile_source_native():
+    """Test compiling Modelica source from string (native bindings only)."""
+    if not rumoca.NATIVE_AVAILABLE:
+        pytest.skip("Native bindings not available")
+
+    from rumoca import compile_source
+
+    source = """
+    model TestModel
+        Real x(start=0);
+    equation
+        der(x) = 1;
+    end TestModel;
+    """
+
+    result = compile_source(source, "TestModel")
+    assert result is not None
+    assert result.is_native
+
+    json_str = result.to_base_modelica_json()
+    data = json.loads(json_str)
+    assert data["model_name"] == "TestModel"
+
+
+def test_is_native_property():
+    """Test the is_native property on CompilationResult."""
+    model_path = get_test_model_path("bouncing_ball.mo")
+    result = rumoca.compile(model_path)
+
+    # is_native should be True if native bindings are used, False otherwise
+    assert isinstance(result.is_native, bool)
+    if rumoca.NATIVE_AVAILABLE:
+        assert result.is_native is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

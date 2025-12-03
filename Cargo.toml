@@ -34,10 +34,19 @@ thiserror = "1.0"
 lsp-server = { version = "0.7", optional = true }
 lsp-types = { version = "0.97", optional = true }
 
+# Python bindings
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+
 [features]
 regen-parser = []
 default = ["lsp"]
 lsp = ["lsp-server", "lsp-types"]
+python = ["pyo3"]
+
+[lib]
+name = "rumoca"
+# cdylib for Python extension, rlib for Rust library
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "rumoca-lsp"

@@ -6,6 +6,8 @@ pub mod lint;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod modelica_grammar;
+#[cfg(feature = "python")]
+mod python;
 
 // Re-export generated modules from modelica_grammar::generated for backward compatibility
 pub use modelica_grammar::generated::modelica_grammar_trait;

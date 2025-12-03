@@ -3,13 +3,62 @@ Rumoca compiler interface for Python.
 
 This module provides a Python wrapper around the Rumoca Modelica compiler,
 enabling compilation of Modelica models and export to Base Modelica JSON format.
+
+When installed with native bindings (pip install rumoca), compilation is done
+directly in-process. Otherwise, it falls back to calling the rumoca binary.
+
+To prefer using the system rumoca binary instead of bundled native bindings:
+    import rumoca
+    rumoca.set_prefer_system_binary(True)
+
+Or per-call:
+    result = rumoca.compile("model.mo", prefer_system=True)
 """
 
 import json
 import subprocess
-import tempfile
+import warnings
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
+
+# Global setting to prefer system binary over native bindings
+_prefer_system_binary: bool = False
+
+
+def get_prefer_system_binary() -> bool:
+    """Get the global setting for preferring system binary."""
+    return _prefer_system_binary
+
+
+def set_prefer_system_binary(value: bool) -> None:
+    """
+    Set whether to prefer the system rumoca binary over bundled native bindings.
+
+    When True, compile() will first try to find 'rumoca' in PATH.
+    If not found, falls back to native bindings with a warning.
+
+    Args:
+        value: True to prefer system binary, False to prefer native bindings (default)
+
+    Example:
+        >>> import rumoca
+        >>> rumoca.set_prefer_system_binary(True)
+        >>> result = rumoca.compile("model.mo")  # Uses system binary if available
+    """
+    global _prefer_system_binary
+    _prefer_system_binary = value
+
+# Try to import native bindings
+try:
+    from ._native import compile_str as _native_compile_str
+    from ._native import compile_file as _native_compile_file
+    from ._native import PyCompilationResult as _NativeResult
+    _NATIVE_AVAILABLE = True
+except ImportError:
+    _NATIVE_AVAILABLE = False
+    _native_compile_str = None
+    _native_compile_file = None
+    _NativeResult = None
 
 
 class CompilationError(Exception):
@@ -21,38 +70,57 @@ class CompilationResult:
     """
     Result of compiling a Modelica model with Rumoca.
 
-    Attributes:
-        model_name: Name of the compiled model
-        dae: DAE representation (internal)
-        _rumoca_bin: Path to rumoca binary
-        _model_file: Path to original Modelica file
+    This class wraps either a native compilation result (when native bindings
+    are available) or provides subprocess-based compilation as a fallback.
     """
 
-    def __init__(self, model_file: Path, rumoca_bin: Optional[Path] = None):
+    def __init__(
+        self,
+        model_file: Optional[Path] = None,
+        rumoca_bin: Optional[Path] = None,
+        *,
+        _native_result: Optional[Any] = None,
+        _cached_json: Optional[str] = None,
+    ):
         """
         Initialize compilation result.
 
         Args:
-            model_file: Path to the Modelica source file
-            rumoca_bin: Path to rumoca binary (auto-detected if None)
+            model_file: Path to the Modelica source file (for subprocess mode)
+            rumoca_bin: Path to rumoca binary (for subprocess mode)
+            _native_result: Native compilation result (internal use)
+            _cached_json: Pre-cached JSON string (internal use)
         """
-        self._model_file = Path(model_file)
-        self._rumoca_bin = rumoca_bin or _find_rumoca_binary()
+        self._native_result = _native_result
+        self._model_file = Path(model_file) if model_file else None
+        self._rumoca_bin = rumoca_bin
         self._cached_dict: Optional[Dict[str, Any]] = None
+        self._cached_json = _cached_json
 
-        if not self._model_file.exists():
-            raise FileNotFoundError(f"Model file not found: {model_file}")
+        # Validate for subprocess mode
+        if self._native_result is None and self._model_file is not None:
+            if not self._model_file.exists():
+                raise FileNotFoundError(f"Model file not found: {model_file}")
+            if self._rumoca_bin is None:
+                self._rumoca_bin = _find_rumoca_binary()
+            if self._rumoca_bin is None:
+                raise RuntimeError(
+                    "Rumoca binary not found. Please ensure 'rumoca' is in PATH or "
+                    "build it with: cd /path/to/rumoca && cargo build --release"
+                )
 
-        if not self._rumoca_bin:
-            raise RuntimeError(
-                "Rumoca binary not found. Please ensure 'rumoca' is in PATH or "
-                "build it with: cd /path/to/rumoca && cargo build --release"
-            )
+    @property
+    def is_native(self) -> bool:
+        """Returns True if using native bindings."""
+        return self._native_result is not None
 
     def __repr__(self) -> str:
         """Return a detailed string representation of the compiled model."""
         try:
-            # Get model data (cache it to avoid recompiling)
+            if self._native_result is not None:
+                return repr(self._native_result)
+
+            # Subprocess mode - get model data
             if self._cached_dict is None:
                 self._cached_dict = self.to_base_modelica_dict()
 
@@ -62,13 +130,11 @@ class CompilationResult:
             n_vars = len(data.get("variables", []))
             n_eqs = len(data.get("equations", []))
 
-            # Get parameter names
             params = data.get("parameters", [])
             param_names = [p["name"] for p in params[:5]]
             if len(params) > 5:
                 param_names.append("...")
 
-            # Get variable names
             variables = data.get("variables", [])
             var_names = [v["name"] for v in variables[:5]]
             if len(variables) > 5:
@@ -77,74 +143,34 @@ class CompilationResult:
             return (
                 f"CompilationResult(\n"
                 f"  model='{model_name}',\n"
-                f"  source={self._model_file.name},\n"
+                f"  source={self._model_file.name if self._model_file else 'string'},\n"
                 f"  parameters={n_params}: {param_names},\n"
                 f"  variables={n_vars}: {var_names},\n"
                 f"  equations={n_eqs}\n"
                 f")"
             )
         except Exception as e:
-            return f"CompilationResult(model_file={self._model_file}, error={e})"
-
-    def export(self, template: Union[str, Path]) -> str:
-        """
-        Export model using a template.
-
-        Args:
-            template: Template to use for export. Can be either:
-                - Name of built-in template (e.g., "base_modelica.jinja")
-                - Full path to custom template file
-
-        Returns:
-            Generated code as string
-
-        Raises:
-            CompilationError: If export fails
-            FileNotFoundError: If template not found
-
-        Example:
-            >>> result = rumoca.compile("model.mo")
-            >>> # Use built-in template
-            >>> json_str = result.export("base_modelica.jinja")
-            >>> # Use custom template
-            >>> code = result.export("/path/to/my_template.jinja")
-        """
-        template_path = _resolve_template_path(template)
-        model_name = _extract_model_name(self._model_file)
-
-        try:
-            proc_result = subprocess.run(
-                [
-                    str(self._rumoca_bin),
-                    "-m", model_name,
-                    "--template-file",
-                    str(template_path),
-                    str(self._model_file),
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            return proc_result.stdout
-        except subprocess.CalledProcessError as e:
-            error_msg = _format_compilation_error(self._model_file, e.stdout, e.stderr)
-            raise CompilationError(error_msg) from e
+            return f"CompilationResult(error={e})"
 
     def to_base_modelica_json(self) -> str:
         """
         Export model to Base Modelica JSON format as a string.
 
-        Uses native Rust serde_json serialization for fast, type-safe export.
-        This is the recommended way to export Base Modelica IR.
-
         Returns:
             JSON string containing Base Modelica representation
 
         Raises:
-            CompilationError: If export fails (requires Rumoca v0.6.0+)
+            CompilationError: If export fails
         """
+        if self._cached_json is not None:
+            return self._cached_json
+
+        if self._native_result is not None:
+            self._cached_json = self._native_result.json
+            return self._cached_json
+
+        # Subprocess mode
         try:
-            # Extract model name from file
             model_name = _extract_model_name(self._model_file)
             proc_result = subprocess.run(
                 [str(self._rumoca_bin), "--json", "-m", model_name, str(self._model_file)],
@@ -152,12 +178,11 @@ class CompilationResult:
                 text=True,
                 check=True,
             )
-            return proc_result.stdout
+            self._cached_json = proc_result.stdout
+            return self._cached_json
         except subprocess.CalledProcessError as e:
             error_msg = _format_compilation_error(self._model_file, e.stdout, e.stderr)
-            raise CompilationError(
-                f"Native JSON export failed. Please upgrade Rumoca to v0.6.0+.\n\n{error_msg}"
-            ) from e
+            raise CompilationError(error_msg) from e
 
     def export_base_modelica_json(self, output_file: Union[str, Path]) -> None:
         """
@@ -170,10 +195,8 @@ class CompilationResult:
             CompilationError: If export fails
         """
         json_str = self.to_base_modelica_json()
-
         output_path = Path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
         with open(output_path, "w") as f:
             f.write(json_str)
 
@@ -192,142 +215,271 @@ class CompilationResult:
             self._cached_dict = json.loads(json_str)
         return self._cached_dict
 
+    def export(self, template: Union[str, Path]) -> str:
+        """
+        Export model using a Jinja2 template.
+
+        Note: This requires the rumoca binary for template rendering.
+
+        Args:
+            template: Full path to a Jinja2 template file
+
+        Returns:
+            Generated code as string
+
+        Raises:
+            CompilationError: If export fails
+            FileNotFoundError: If template not found
+        """
+        template_path = _resolve_template_path(template)
+
+        if self._model_file is None:
+            raise CompilationError(
+                "Template export requires a file path. "
+                "Use to_base_modelica_json() for string-based compilation."
+            )
+
+        rumoca_bin = self._rumoca_bin or _find_rumoca_binary()
+        if rumoca_bin is None:
+            raise RuntimeError("Rumoca binary required for template export")
+
+        model_name = _extract_model_name(self._model_file)
+        try:
+            proc_result = subprocess.run(
+                [
+                    str(rumoca_bin),
+                    "-m", model_name,
+                    "--template-file", str(template_path),
+                    str(self._model_file),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return proc_result.stdout
+        except subprocess.CalledProcessError as e:
+            error_msg = _format_compilation_error(self._model_file, e.stdout, e.stderr)
+            raise CompilationError(error_msg) from e
 
 
 def compile(
     model_file: Union[str, Path],
     rumoca_bin: Optional[Union[str, Path]] = None,
+    *,
+    prefer_system: Optional[bool] = None,
 ) -> CompilationResult:
     """
     Compile a Modelica model file using Rumoca.
 
+    When native bindings are available, compilation is done directly in-process
+    for better performance. Otherwise, falls back to calling the rumoca binary.
+
     Args:
         model_file: Path to the Modelica (.mo) file to compile
-        rumoca_bin: Optional path to rumoca binary (auto-detected if None)
+        rumoca_bin: Optional path to rumoca binary (forces subprocess mode)
+        prefer_system: If True, prefer system rumoca binary over native bindings.
+            Falls back to native bindings with a warning if system binary not found.
+            Defaults to the global `rumoca.prefer_system_binary` setting.
 
     Returns:
         CompilationResult object containing the compiled model
 
     Raises:
         FileNotFoundError: If model file doesn't exist
-        RuntimeError: If rumoca binary not found
+        RuntimeError: If rumoca binary not found (subprocess mode only)
         CompilationError: If compilation fails
 
     Example:
         >>> import rumoca
         >>> result = rumoca.compile("bouncing_ball.mo")
         >>> result.export_base_modelica_json("output.json")
-    """
-    rumoca_path = Path(rumoca_bin) if rumoca_bin else _find_rumoca_binary()
 
+        >>> # Use system binary instead of bundled
+        >>> result = rumoca.compile("model.mo", prefer_system=True)
+    """
+    model_path = Path(model_file)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_file}")
+
+    # Determine whether to prefer system binary
+    use_system = prefer_system if prefer_system is not None else _prefer_system_binary
+
+    # If rumoca_bin is explicitly provided, always use subprocess mode
+    if rumoca_bin is not None:
+        return _compile_with_subprocess(model_path, Path(rumoca_bin))
+
+    # If prefer_system is set, try system binary first
+    if use_system:
+        system_bin = _find_rumoca_binary()
+        if system_bin is not None:
+            return _compile_with_subprocess(model_path, system_bin)
+        else:
+            # Fall back to native bindings with a warning
+            if _NATIVE_AVAILABLE and _native_compile_file is not None:
+                warnings.warn(
+                    "System rumoca binary not found in PATH. "
+                    "Falling back to bundled native bindings.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return _compile_with_native(model_path)
+            else:
+                raise RuntimeError(
+                    "System rumoca binary not found and native bindings not available.\n"
+                    "Install rumoca with: cargo install rumoca\n"
+                    "Or reinstall the Python package: pip install --force-reinstall rumoca"
+                )
+
+    # Default behavior: try native bindings first
+    if _NATIVE_AVAILABLE and _native_compile_file is not None:
+        return _compile_with_native(model_path)
+
+    # Fall back to subprocess
+    rumoca_path = _find_rumoca_binary()
     if not rumoca_path:
         raise RuntimeError(
             "Rumoca binary not found in PATH. Please build it with:\n"
             "  cd /path/to/rumoca\n"
             "  cargo build --release\n"
-            "  export PATH=$PATH:$(pwd)/target/release"
+            "  export PATH=$PATH:$(pwd)/target/release\n\n"
+            "Or install with native bindings: pip install rumoca"
         )
 
-    # Test compilation by running rumoca (this validates the model)
-    model_path = Path(model_file)
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model file not found: {model_file}")
+    return _compile_with_subprocess(model_path, rumoca_path)
 
-    # Extract model name and quick validation
+
+def _compile_with_native(model_path: Path) -> CompilationResult:
+    """Compile using native bindings."""
+    try:
+        model_name = _extract_model_name(model_path)
+        native_result = _native_compile_file(str(model_path), model_name)
+        return CompilationResult(
+            model_file=model_path,
+            _native_result=native_result,
+            _cached_json=native_result.json,
+        )
+    except Exception as e:
+        raise CompilationError(str(e)) from e
+
+
+def _compile_with_subprocess(model_path: Path, rumoca_bin: Path) -> CompilationResult:
+    """Compile using subprocess call to rumoca binary."""
     model_name = _extract_model_name(model_path)
     try:
         subprocess.run(
-            [str(rumoca_path), "-m", model_name, str(model_path)],
+            [str(rumoca_bin), "-m", model_name, str(model_path)],
             capture_output=True,
             text=True,
             check=True,
         )
     except subprocess.CalledProcessError as e:
-        # Format the error message more nicely
         error_msg = _format_compilation_error(model_path, e.stdout, e.stderr)
         raise CompilationError(error_msg) from e
 
-    return CompilationResult(model_path, rumoca_path)
+    return CompilationResult(model_path, rumoca_bin)
 
+
+def compile_source(
+    source: str,
+    model_name: str,
+    filename: str = "<string>",
+) -> CompilationResult:
+    """
+    Compile Modelica source code from a string.
+
+    This function requires native bindings to be available.
+
+    Args:
+        source: Modelica source code as a string
+        model_name: Name of the model to compile
+        filename: Optional filename for error messages
+
+    Returns:
+        CompilationResult object containing the compiled model
+
+    Raises:
+        RuntimeError: If native bindings are not available
+        CompilationError: If compilation fails
+
+    Example:
+        >>> import rumoca
+        >>> result = rumoca.compile_source('''
+        ...     model Test
+        ...         Real x;
+        ...     equation
+        ...         der(x) = 1;
+        ...     end Test;
+        ... ''', "Test")
+        >>> print(result.to_base_modelica_json())
+    """
+    if not _NATIVE_AVAILABLE or _native_compile_str is None:
+        raise RuntimeError(
+            "compile_source() requires native bindings. "
+            "Install with: pip install rumoca\n"
+            "Or write source to a file and use compile() instead."
+        )
+
+    try:
+        native_result = _native_compile_str(source, model_name, filename)
+        return CompilationResult(
+            _native_result=native_result,
+            _cached_json=native_result.json,
+        )
+    except Exception as e:
+        raise CompilationError(str(e)) from e
+
+
+# Helper functions
 
 def _format_compilation_error(model_path: Path, stdout: str, stderr: str) -> str:
-    """
-    Format a compilation error message from Rumoca output.
-
-    Extracts useful information from panics and error messages, and shows
-    the relevant source code context when possible.
-    """
-    # Read the model source for context
+    """Format a compilation error message from Rumoca output."""
     try:
         with open(model_path, 'r') as f:
             source = f.read()
     except:
         source = None
 
-    # Check if this is a panic
     if "panicked at" in stderr:
-        # Extract panic location and message
         panic_msg = _extract_panic_info(stderr)
-
-        # Try to extract file location from panic (e.g., "at src/modelica_grammar.rs:960:21")
-        # This doesn't help user much, but we can look for context in the error
-
         if "not yet implemented" in stderr:
-            # This is an unimplemented feature
             feature = _extract_unimplemented_feature(stderr)
             msg = f"Failed to compile {model_path.name}:\n\n"
             msg += f"Rumoca encountered an unimplemented feature: {feature}\n\n"
-
             if source:
-                # Show the whole file with line numbers so user can investigate
                 lines = source.split('\n')
                 msg += "Model source:\n"
                 for i, line in enumerate(lines, 1):
                     msg += f"  {i:3d} | {line}\n"
                 msg += "\n"
-
             msg += "This syntax or feature is not yet supported by the Rumoca parser.\n"
-            msg += "Please check your Modelica code for unusual syntax or advanced features.\n"
-
             if panic_msg:
                 msg += f"\nTechnical details: {panic_msg}"
-
             return msg
         else:
-            # Generic panic
             msg = f"Failed to compile {model_path.name}:\n\n"
             msg += "The compiler encountered an internal error (panic).\n\n"
-
             if panic_msg:
                 msg += f"Error: {panic_msg}\n\n"
-
             if source:
                 lines = source.split('\n')
                 msg += "Model source:\n"
                 for i, line in enumerate(lines, 1):
                     msg += f"  {i:3d} | {line}\n"
                 msg += "\n"
-
             msg += "Full error output:\n"
             if stdout:
                 msg += f"stdout: {stdout}\n"
             msg += f"stderr: {stderr}\n"
-
             return msg
 
-    # Not a panic - check if stderr contains miette diagnostic
     if stderr and ("Error: rumoca::" in stderr or "×" in stderr):
-        # This is a miette diagnostic - it's already beautifully formatted
-        # Just pass it through without adding extra prefixes
         return stderr.strip()
 
-    # Otherwise, return formatted output
     msg = f"Failed to compile {model_path.name}:\n"
     if stdout:
         msg += f"  stdout: {stdout}\n"
     if stderr:
         msg += f"  stderr: {stderr}"
-
     return msg
 
 
@@ -335,7 +487,6 @@ def _extract_panic_info(stderr: str) -> Optional[str]:
     """Extract panic message from stderr."""
     for line in stderr.split('\n'):
         if 'panicked at' in line:
-            # Extract the part after "panicked at"
             parts = line.split('panicked at', 1)
             if len(parts) == 2:
                 return parts[1].strip()
@@ -346,7 +497,6 @@ def _extract_unimplemented_feature(stderr: str) -> str:
     """Extract the unimplemented feature name from panic message."""
     for line in stderr.split('\n'):
         if 'not yet implemented:' in line:
-            # Extract feature name
             parts = line.split('not yet implemented:', 1)
             if len(parts) == 2:
                 return parts[1].strip()
@@ -354,31 +504,14 @@ def _extract_unimplemented_feature(stderr: str) -> str:
 
 
 def _extract_model_name(model_file: Path) -> str:
-    """
-    Extract the model name from a Modelica file.
-
-    Searches for 'model <name>' or 'class <name>' declaration.
-
-    Args:
-        model_file: Path to the Modelica file
-
-    Returns:
-        Model name extracted from file
-
-    Raises:
-        CompilationError: If no model declaration found
-    """
+    """Extract the model name from a Modelica file."""
     import re
-
     try:
         with open(model_file, 'r') as f:
             content = f.read()
-
-        # Look for model or class declaration
         match = re.search(r'\b(model|class)\s+(\w+)', content)
         if match:
             return match.group(2)
-
         raise CompilationError(
             f"Could not find model or class declaration in {model_file}"
         )
@@ -387,69 +520,32 @@ def _extract_model_name(model_file: Path) -> str:
 
 
 def _find_rumoca_binary() -> Optional[Path]:
-    """
-    Find the rumoca binary in PATH or common build locations.
-
-    Returns:
-        Path to rumoca binary, or None if not found
-    """
+    """Find the rumoca binary in PATH or common build locations."""
     import shutil
-
-    # Check PATH first
     rumoca_in_path = shutil.which("rumoca")
     if rumoca_in_path:
         return Path(rumoca_in_path)
 
-    # Check common build locations relative to this file
     package_dir = Path(__file__).parent.parent.parent
     common_locations = [
         package_dir / "target" / "release" / "rumoca",
         package_dir / "target" / "debug" / "rumoca",
         package_dir.parent / "rumoca" / "target" / "release" / "rumoca",
-        Path.home() / "ws_fixedwing" / "src" / "rumoca" / "target" / "release" / "rumoca",
     ]
-
     for location in common_locations:
         if location.exists() and location.is_file():
             return location
-
     return None
 
 
 def _resolve_template_path(template: Union[str, Path]) -> Path:
-    """
-    Resolve a template path.
-
-    Note: Built-in templates are NOT installed with the Python package.
-    They exist only in the source repository as examples. For production use,
-    export to Base Modelica JSON using to_base_modelica_json() instead.
-
-    Args:
-        template: Full path to a custom template file
-
-    Returns:
-        Path to the template file
-
-    Raises:
-        FileNotFoundError: If template file not found
-
-    Examples:
-        >>> _resolve_template_path("/path/to/my_template.jinja")
-        Path("/path/to/my_template.jinja")
-        >>> _resolve_template_path("./templates/custom.jinja")
-        Path("./templates/custom.jinja")
-    """
+    """Resolve a template path."""
     template_path = Path(template)
-
     if not template_path.exists():
         raise FileNotFoundError(
             f"Template file not found: {template}\n\n"
-            f"Note: Built-in templates are NOT installed with Rumoca.\n"
-            f"They exist only in the source repository as educational examples.\n\n"
             f"For production use, please use native JSON export instead:\n"
             f"  result.to_base_modelica_json()  # Python API\n"
-            f"  rumoca model.mo --json          # Command line\n\n"
-            f"If you need a custom template, provide the full path to your template file."
+            f"  rumoca model.mo --json          # Command line"
         )
-
     return template_path

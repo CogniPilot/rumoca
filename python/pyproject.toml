@@ -1,10 +1,13 @@
-[tool.poetry]
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
 name = "rumoca"
 version = "0.7.3"
 description = "Python interface for the Rumoca Modelica compiler"
-readme = "README.md"
-license = "Apache-2.0"
-authors = ["Rumoca Contributors"]
+license = {text = "Apache-2.0"}
+authors = [{name = "Rumoca Contributors"}]
 keywords = ["modelica", "compiler", "simulation", "dae", "code-generation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -21,30 +24,28 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Compilers",
 ]
-packages = [{include = "rumoca"}]
+requires-python = ">=3.8"
 
-[tool.poetry.urls]
+[project.urls]
 Homepage = "https://github.com/jgoppert/rumoca"
-Documentation = "https://github.com/jgoppert/rumoca/blob/main/python/README.md"
+Documentation = "https://github.com/jgoppert/rumoca/blob/main/README.md"
 Repository = "https://github.com/jgoppert/rumoca"
 Issues = "https://github.com/jgoppert/rumoca/issues"
 
-[tool.poetry.dependencies]
-python = ">=3.8"
-
-[tool.poetry.group.dev.dependencies]
-pytest = ">=7.0"
-pytest-cov = ">=4.0"
-black = ">=23.0"
-mypy = ">=1.0"
-
-[tool.poetry.extras]
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "black>=23.0", "mypy>=1.0"]
 cyecca = ["cyecca"]
 notebook = ["jupyter", "matplotlib", "numpy"]
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[tool.maturin]
+# Path to Cargo.toml relative to this pyproject.toml
+manifest-path = "../Cargo.toml"
+# Build with the python feature enabled
+features = ["python"]
+# Python source directory (for mixed Rust/Python packages)
+python-source = "."
+# Module name must match the #[pymodule] name in src/python.rs
+module-name = "rumoca._native"
 
 [tool.black]
 line-length = 100

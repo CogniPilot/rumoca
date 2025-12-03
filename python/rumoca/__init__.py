@@ -19,7 +19,35 @@ Example:
     >>> backend = CasadiBackend(model)
 """
 
-from .compiler import compile, CompilationResult, CompilationError
+from .compiler import (
+    compile,
+    compile_source,
+    CompilationResult,
+    CompilationError,
+    get_prefer_system_binary,
+    set_prefer_system_binary,
+)
 from .version import __version__
 
-__all__ = ["compile", "CompilationResult", "CompilationError", "__version__"]
+# Try to import native bindings for direct access
+try:
+    from ._native import compile_str, compile_file, version as native_version
+    NATIVE_AVAILABLE = True
+except ImportError:
+    NATIVE_AVAILABLE = False
+    compile_str = None
+    compile_file = None
+    native_version = None
+
+__all__ = [
+    "compile",
+    "compile_source",
+    "CompilationResult",
+    "CompilationError",
+    "get_prefer_system_binary",
+    "set_prefer_system_binary",
+    "__version__",
+    "NATIVE_AVAILABLE",
+    "compile_str",
+    "compile_file",
+]
