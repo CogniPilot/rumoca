@@ -36,10 +36,8 @@ lsp-types = { version = "0.97", optional = true }
 
 [features]
 regen-parser = []
-default = ["lsp", "fmt", "lint"]
+default = ["lsp"]
 lsp = ["lsp-server", "lsp-types"]
-fmt = []
-lint = []
 
 [[bin]]
 name = "rumoca-lsp"
@@ -49,12 +47,10 @@ required-features = ["lsp"]
 [[bin]]
 name = "rumoca-fmt"
 path = "src/bin/rumoca_fmt.rs"
-required-features = ["fmt"]
 
 [[bin]]
 name = "rumoca-lint"
 path = "src/bin/rumoca_lint.rs"
-required-features = ["lint"]
 
 [build-dependencies]
 parol = "3.0.1"

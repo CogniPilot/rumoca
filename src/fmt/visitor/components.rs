@@ -31,10 +31,10 @@ impl FormatVisitor {
                 if token.location.start_line > 0 {
                     return true;
                 }
-            } else if !matches!(comp.start, Expression::Empty) {
-                if comp.start.get_location().is_some_and(|l| l.start_line > 0) {
-                    return true;
-                }
+            } else if !matches!(comp.start, Expression::Empty)
+                && comp.start.get_location().is_some_and(|l| l.start_line > 0)
+            {
+                return true;
             }
         }
         false

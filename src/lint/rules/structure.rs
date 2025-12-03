@@ -58,28 +58,27 @@ pub fn lint_empty_sections(class: &ClassDefinition, file_path: &str, result: &mu
     let line = class.name.location.start_line;
 
     // Check for models/blocks without equations (might be intentional for partial classes)
-    if matches!(class.class_type, ClassType::Model | ClassType::Block) {
-        if class.equations.is_empty()
-            && class.initial_equations.is_empty()
-            && class.algorithms.is_empty()
-            && class.initial_algorithms.is_empty()
-            && class.extends.is_empty()  // Not inherited
-            && !class.components.is_empty()
-        // Has components but no equations
-        {
-            result.messages.push(LintMessage::new(
-                "empty-section",
-                LintLevel::Note,
-                format!(
-                    "{} '{}' has components but no equations or algorithms",
-                    format_class_type(&class.class_type),
-                    class.name.text
-                ),
-                file_path,
-                line,
-                1,
-            ));
-        }
+    if matches!(class.class_type, ClassType::Model | ClassType::Block)
+        && class.equations.is_empty()
+        && class.initial_equations.is_empty()
+        && class.algorithms.is_empty()
+        && class.initial_algorithms.is_empty()
+        && class.extends.is_empty() // Not inherited
+        && !class.components.is_empty()
+    // Has components but no equations
+    {
+        result.messages.push(LintMessage::new(
+            "empty-section",
+            LintLevel::Note,
+            format!(
+                "{} '{}' has components but no equations or algorithms",
+                format_class_type(&class.class_type),
+                class.name.text
+            ),
+            file_path,
+            line,
+            1,
+        ));
     }
 }
 

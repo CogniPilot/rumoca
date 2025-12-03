@@ -1,3 +1,7 @@
+// Allow mutable_key_type for HashMap<Uri, _> - Uri's hash is based on its immutable string
+// representation, making it safe to use as a key despite interior mutability in auth data.
+#![allow(clippy::mutable_key_type)]
+
 //! Language Server Protocol implementation for Rumoca Modelica compiler.
 //!
 //! This module provides LSP support for Modelica files, including:
