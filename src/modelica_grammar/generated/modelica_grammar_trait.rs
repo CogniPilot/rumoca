@@ -9,7 +9,6 @@
 #![allow(clippy::large_enum_variant)]
 #![allow(clippy::upper_case_acronyms)]
 
-use parol_runtime::derive_builder::Builder;
 use parol_runtime::log::trace;
 #[allow(unused_imports)]
 use parol_runtime::parol_macros::{pop_and_reverse_item, pop_item};
@@ -903,8 +902,7 @@ pub trait ModelicaGrammarTrait {
 /// `ident: /[_a-zA-Z][_a-zA-Z0-9]*/@basic_ident;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IdentBasicIdent {
     pub basic_ident: crate::ir::ast::Token, /* [_a-zA-Z][_a-zA-Z0-9]* */
 }
@@ -915,8 +913,7 @@ pub struct IdentBasicIdent {
 /// `ident: /\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'/@q_ident;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IdentQIdent {
     pub q_ident: crate::ir::ast::Token, /* \'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\' */
 }
@@ -927,8 +924,7 @@ pub struct IdentQIdent {
 /// `unsigned_real: /[0-9]+\.[0-9]+/@decimal;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct UnsignedRealDecimal {
     pub decimal: crate::ir::ast::Token, /* [0-9]+\.[0-9]+ */
 }
@@ -939,8 +935,7 @@ pub struct UnsignedRealDecimal {
 /// `unsigned_real: /[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?/@scientific;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct UnsignedRealScientific {
     pub scientific: crate::ir::ast::Token, /* [0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)? */
 }
@@ -951,8 +946,7 @@ pub struct UnsignedRealScientific {
 /// `unsigned_real: /\.[0-9]+([eE][+-]?[0-9]+)?/@scientific2;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct UnsignedRealScientific2 {
     pub scientific2: crate::ir::ast::Token, /* \.[0-9]+([eE][+-]?[0-9]+)? */
 }
@@ -963,8 +957,7 @@ pub struct UnsignedRealScientific2 {
 /// `class_type: class;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeClass {
     pub class: Class,
 }
@@ -975,8 +968,7 @@ pub struct ClassTypeClass {
 /// `class_type: model;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeModel {
     pub model: Model,
 }
@@ -987,8 +979,7 @@ pub struct ClassTypeModel {
 /// `class_type: class_typeOpt /* Option */ record;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeClassTypeOptRecord {
     pub class_type_opt: Option<ClassTypeOpt>,
     pub record: Record,
@@ -1000,8 +991,7 @@ pub struct ClassTypeClassTypeOptRecord {
 /// `class_type: block;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeBlock {
     pub block: Block,
 }
@@ -1012,8 +1002,7 @@ pub struct ClassTypeBlock {
 /// `class_type: class_typeOpt0 /* Option */ connector;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeClassTypeOpt0Connector {
     pub class_type_opt0: Option<ClassTypeOpt0>,
     pub connector: Connector,
@@ -1025,8 +1014,7 @@ pub struct ClassTypeClassTypeOpt0Connector {
 /// `class_type: type;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeType {
     pub r#type: Type,
 }
@@ -1037,8 +1025,7 @@ pub struct ClassTypeType {
 /// `class_type: package;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypePackage {
     pub package: Package,
 }
@@ -1049,8 +1036,7 @@ pub struct ClassTypePackage {
 /// `class_type: class_typeOpt1 /* Option */ class_typeOpt2 /* Option */ function;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeClassTypeOpt1ClassTypeOpt2Function {
     pub class_type_opt1: Option<ClassTypeOpt1>,
     pub class_type_opt2: Option<ClassTypeOpt2>,
@@ -1063,8 +1049,7 @@ pub struct ClassTypeClassTypeOpt1ClassTypeOpt2Function {
 /// `class_type: operator;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeOperator {
     pub operator: Operator,
 }
@@ -1075,8 +1060,7 @@ pub struct ClassTypeOperator {
 /// `class_typeOpt1Group: pure;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeOpt1GroupPure {
     pub pure: Pure,
 }
@@ -1087,8 +1071,7 @@ pub struct ClassTypeOpt1GroupPure {
 /// `class_typeOpt1Group: impure;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeOpt1GroupImpure {
     pub impure: Impure,
 }
@@ -1099,8 +1082,7 @@ pub struct ClassTypeOpt1GroupImpure {
 /// `class_specifier: long_class_specifier;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassSpecifierLongClassSpecifier {
     pub long_class_specifier: LongClassSpecifier,
 }
@@ -1111,8 +1093,7 @@ pub struct ClassSpecifierLongClassSpecifier {
 /// `class_specifier: short_class_specifier;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassSpecifierShortClassSpecifier {
     pub short_class_specifier: ShortClassSpecifier,
 }
@@ -1123,8 +1104,7 @@ pub struct ClassSpecifierShortClassSpecifier {
 /// `class_specifier: der_class_specifier;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassSpecifierDerClassSpecifier {
     pub der_class_specifier: DerClassSpecifier,
 }
@@ -1135,8 +1115,7 @@ pub struct ClassSpecifierDerClassSpecifier {
 /// `long_class_specifier: standard_class_specifier;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LongClassSpecifierStandardClassSpecifier {
     pub standard_class_specifier: StandardClassSpecifier,
 }
@@ -1147,8 +1126,7 @@ pub struct LongClassSpecifierStandardClassSpecifier {
 /// `long_class_specifier: extends_class_specifier;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LongClassSpecifierExtendsClassSpecifier {
     pub extends_class_specifier: ExtendsClassSpecifier,
 }
@@ -1159,8 +1137,7 @@ pub struct LongClassSpecifierExtendsClassSpecifier {
 /// `short_class_specifier: type_class_specifier;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ShortClassSpecifierTypeClassSpecifier {
     pub type_class_specifier: Box<TypeClassSpecifier>,
 }
@@ -1171,8 +1148,7 @@ pub struct ShortClassSpecifierTypeClassSpecifier {
 /// `short_class_specifier: enum_class_specifier;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ShortClassSpecifierEnumClassSpecifier {
     pub enum_class_specifier: Box<EnumClassSpecifier>,
 }
@@ -1183,10 +1159,9 @@ pub struct ShortClassSpecifierEnumClassSpecifier {
 /// `enum_class_specifierGroup: enum_class_specifierOpt /* Option */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EnumClassSpecifierGroupEnumClassSpecifierOpt {
-    pub enum_class_specifier_opt: Option<Box<EnumClassSpecifierOpt>>,
+    pub enum_class_specifier_opt: Option<EnumClassSpecifierOpt>,
 }
 
 ///
@@ -1195,8 +1170,7 @@ pub struct EnumClassSpecifierGroupEnumClassSpecifierOpt {
 /// `enum_class_specifierGroup: ':'^ /* Clipped */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EnumClassSpecifierGroupColon {}
 
 ///
@@ -1205,8 +1179,7 @@ pub struct EnumClassSpecifierGroupColon {}
 /// `base_prefixOptGroup: input;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct BasePrefixOptGroupInput {
     pub input: Input,
 }
@@ -1217,8 +1190,7 @@ pub struct BasePrefixOptGroupInput {
 /// `base_prefixOptGroup: output;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct BasePrefixOptGroupOutput {
     pub output: Output,
 }
@@ -1229,8 +1201,7 @@ pub struct BasePrefixOptGroupOutput {
 /// `compositionListGroup: public element_list;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionListGroupPublicElementList {
     pub public: Public,
     pub element_list: crate::modelica_grammar::ElementList,
@@ -1242,8 +1213,7 @@ pub struct CompositionListGroupPublicElementList {
 /// `compositionListGroup: protected element_list;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionListGroupProtectedElementList {
     pub protected: Protected,
     pub element_list: crate::modelica_grammar::ElementList,
@@ -1255,8 +1225,7 @@ pub struct CompositionListGroupProtectedElementList {
 /// `compositionListGroup: equation_section;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionListGroupEquationSection {
     pub equation_section: crate::modelica_grammar::EquationSection,
 }
@@ -1267,8 +1236,7 @@ pub struct CompositionListGroupEquationSection {
 /// `compositionListGroup: algorithm_section;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionListGroupAlgorithmSection {
     pub algorithm_section: crate::modelica_grammar::AlgorithmSection,
 }
@@ -1279,8 +1247,7 @@ pub struct CompositionListGroupAlgorithmSection {
 /// `element: import_clause;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementImportClause {
     pub import_clause: ImportClause,
 }
@@ -1291,8 +1258,7 @@ pub struct ElementImportClause {
 /// `element: extends_clause;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementExtendsClause {
     pub extends_clause: ExtendsClause,
 }
@@ -1303,8 +1269,7 @@ pub struct ElementExtendsClause {
 /// `element: element_definition;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementElementDefinition {
     pub element_definition: ElementDefinition,
 }
@@ -1315,8 +1280,7 @@ pub struct ElementElementDefinition {
 /// `element: element_replaceable_definition;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementElementReplaceableDefinition {
     pub element_replaceable_definition: ElementReplaceableDefinition,
 }
@@ -1327,8 +1291,7 @@ pub struct ElementElementReplaceableDefinition {
 /// `element_definitionGroup: class_definition;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementDefinitionGroupClassDefinition {
     pub class_definition: crate::ir::ast::ClassDefinition,
 }
@@ -1339,8 +1302,7 @@ pub struct ElementDefinitionGroupClassDefinition {
 /// `element_definitionGroup: component_clause;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementDefinitionGroupComponentClause {
     pub component_clause: ComponentClause,
 }
@@ -1351,8 +1313,7 @@ pub struct ElementDefinitionGroupComponentClause {
 /// `element_replaceable_definitionGroup: class_definition;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceableDefinitionGroupClassDefinition {
     pub class_definition: crate::ir::ast::ClassDefinition,
 }
@@ -1363,8 +1324,7 @@ pub struct ElementReplaceableDefinitionGroupClassDefinition {
 /// `element_replaceable_definitionGroup: component_clause;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceableDefinitionGroupComponentClause {
     pub component_clause: ComponentClause,
 }
@@ -1375,8 +1335,7 @@ pub struct ElementReplaceableDefinitionGroupComponentClause {
 /// `import_clauseGroup: ident '='^ /* Clipped */ name;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClauseGroupIdentEquName {
     pub ident: crate::ir::ast::Token,
     pub name: crate::ir::ast::Name,
@@ -1388,8 +1347,7 @@ pub struct ImportClauseGroupIdentEquName {
 /// `import_clauseGroup: name import_clauseOpt /* Option */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClauseGroupNameImportClauseOpt {
     pub name: crate::ir::ast::Name,
     pub import_clause_opt: Option<ImportClauseOpt>,
@@ -1401,8 +1359,7 @@ pub struct ImportClauseGroupNameImportClauseOpt {
 /// `import_clauseOptGroup: '.*';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClauseOptGroupDotStar {
     pub dot_star: crate::ir::ast::Token, /* .* */
 }
@@ -1413,8 +1370,7 @@ pub struct ImportClauseOptGroupDotStar {
 /// `import_clauseOptGroup: '.' import_clauseOptGroupGroup;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClauseOptGroupDotImportClauseOptGroupGroup {
     pub dot: crate::ir::ast::Token, /* . */
     pub import_clause_opt_group_group: ImportClauseOptGroupGroup,
@@ -1426,8 +1382,7 @@ pub struct ImportClauseOptGroupDotImportClauseOptGroupGroup {
 /// `import_clauseOptGroupGroup: '*';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClauseOptGroupGroupStar {
     pub star: crate::ir::ast::Token, /* * */
 }
@@ -1438,8 +1393,7 @@ pub struct ImportClauseOptGroupGroupStar {
 /// `import_clauseOptGroupGroup: '{'^ /* Clipped */ import_list '}'^ /* Clipped */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClauseOptGroupGroupLBraceImportListRBrace {
     pub import_list: ImportList,
 }
@@ -1450,8 +1404,7 @@ pub struct ImportClauseOptGroupGroupLBraceImportListRBrace {
 /// `argument_or_inheritance_modification_listGroup: argument;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListGroupArgument {
     pub argument: crate::ir::ast::Expression,
 }
@@ -1462,8 +1415,7 @@ pub struct ArgumentOrInheritanceModificationListGroupArgument {
 /// `argument_or_inheritance_modification_listGroup: inheritance_modification;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListGroupInheritanceModification {
     pub inheritance_modification: InheritanceModification,
 }
@@ -1474,8 +1426,7 @@ pub struct ArgumentOrInheritanceModificationListGroupInheritanceModification {
 /// `argument_or_inheritance_modification_listListGroup: argument;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListListGroupArgument {
     pub argument: crate::ir::ast::Expression,
 }
@@ -1486,8 +1437,7 @@ pub struct ArgumentOrInheritanceModificationListListGroupArgument {
 /// `argument_or_inheritance_modification_listListGroup: inheritance_modification;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListListGroupInheritanceModification {
     pub inheritance_modification: InheritanceModification,
 }
@@ -1498,8 +1448,7 @@ pub struct ArgumentOrInheritanceModificationListListGroupInheritanceModification
 /// `inheritance_modificationGroup: connect_equation;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct InheritanceModificationGroupConnectEquation {
     pub connect_equation: ConnectEquation,
 }
@@ -1510,8 +1459,7 @@ pub struct InheritanceModificationGroupConnectEquation {
 /// `inheritance_modificationGroup: ident;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct InheritanceModificationGroupIdent {
     pub ident: crate::ir::ast::Token,
 }
@@ -1522,8 +1470,7 @@ pub struct InheritanceModificationGroupIdent {
 /// `type_prefixOpt1Group: input;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt1GroupInput {
     pub input: Input,
 }
@@ -1534,8 +1481,7 @@ pub struct TypePrefixOpt1GroupInput {
 /// `type_prefixOpt1Group: output;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt1GroupOutput {
     pub output: Output,
 }
@@ -1546,8 +1492,7 @@ pub struct TypePrefixOpt1GroupOutput {
 /// `type_prefixOpt0Group: discrete;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt0GroupDiscrete {
     pub discrete: Discrete,
 }
@@ -1558,8 +1503,7 @@ pub struct TypePrefixOpt0GroupDiscrete {
 /// `type_prefixOpt0Group: parameter;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt0GroupParameter {
     pub parameter: Parameter,
 }
@@ -1570,8 +1514,7 @@ pub struct TypePrefixOpt0GroupParameter {
 /// `type_prefixOpt0Group: constant;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt0GroupConstant {
     pub constant: Constant,
 }
@@ -1582,8 +1525,7 @@ pub struct TypePrefixOpt0GroupConstant {
 /// `type_prefixOptGroup: flow;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOptGroupFlow {
     pub flow: Flow,
 }
@@ -1594,8 +1536,7 @@ pub struct TypePrefixOptGroupFlow {
 /// `type_prefixOptGroup: stream;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOptGroupStream {
     pub stream: Stream,
 }
@@ -1606,8 +1547,7 @@ pub struct TypePrefixOptGroupStream {
 /// `modification: class_modification modificationOpt /* Option */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ModificationClassModificationModificationOpt {
     pub class_modification: Box<ClassModification>,
     pub modification_opt: Option<ModificationOpt>,
@@ -1619,8 +1559,7 @@ pub struct ModificationClassModificationModificationOpt {
 /// `modification: '='^ /* Clipped */ modification_expression;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ModificationEquModificationExpression {
     pub modification_expression: ModificationExpression,
 }
@@ -1631,8 +1570,7 @@ pub struct ModificationEquModificationExpression {
 /// `modification_expression: expression;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ModificationExpressionExpression {
     pub expression: crate::ir::ast::Expression,
 }
@@ -1643,8 +1581,7 @@ pub struct ModificationExpressionExpression {
 /// `modification_expression: break;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ModificationExpressionBreak {
     pub r#break: Break,
 }
@@ -1655,8 +1592,7 @@ pub struct ModificationExpressionBreak {
 /// `argument: element_modification_or_replaceable;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentElementModificationOrReplaceable {
     pub element_modification_or_replaceable: Box<ElementModificationOrReplaceable>,
 }
@@ -1667,8 +1603,7 @@ pub struct ArgumentElementModificationOrReplaceable {
 /// `argument: element_redeclaration;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentElementRedeclaration {
     pub element_redeclaration: Box<ElementRedeclaration>,
 }
@@ -1679,10 +1614,9 @@ pub struct ArgumentElementRedeclaration {
 /// `element_modification_or_replaceableGroup: element_modification;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableGroupElementModification {
-    pub element_modification: Box<ElementModification>,
+    pub element_modification: ElementModification,
 }
 
 ///
@@ -1691,10 +1625,9 @@ pub struct ElementModificationOrReplaceableGroupElementModification {
 /// `element_modification_or_replaceableGroup: element_replaceable;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableGroupElementReplaceable {
-    pub element_replaceable: Box<ElementReplaceable>,
+    pub element_replaceable: ElementReplaceable,
 }
 
 ///
@@ -1703,10 +1636,9 @@ pub struct ElementModificationOrReplaceableGroupElementReplaceable {
 /// `element_redeclarationGroup: short_class_definition;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementRedeclarationGroupShortClassDefinition {
-    pub short_class_definition: Box<ShortClassDefinition>,
+    pub short_class_definition: ShortClassDefinition,
 }
 
 ///
@@ -1715,10 +1647,9 @@ pub struct ElementRedeclarationGroupShortClassDefinition {
 /// `element_redeclarationGroup: component_clause1;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementRedeclarationGroupComponentClause1 {
-    pub component_clause1: Box<ComponentClause1>,
+    pub component_clause1: ComponentClause1,
 }
 
 ///
@@ -1727,10 +1658,9 @@ pub struct ElementRedeclarationGroupComponentClause1 {
 /// `element_redeclarationGroup: element_replaceable;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementRedeclarationGroupElementReplaceable {
-    pub element_replaceable: Box<ElementReplaceable>,
+    pub element_replaceable: ElementReplaceable,
 }
 
 ///
@@ -1739,10 +1669,9 @@ pub struct ElementRedeclarationGroupElementReplaceable {
 /// `element_replaceableGroup: short_class_definition;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceableGroupShortClassDefinition {
-    pub short_class_definition: Box<ShortClassDefinition>,
+    pub short_class_definition: ShortClassDefinition,
 }
 
 ///
@@ -1751,10 +1680,9 @@ pub struct ElementReplaceableGroupShortClassDefinition {
 /// `element_replaceableGroup: component_clause1;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceableGroupComponentClause1 {
-    pub component_clause1: Box<ComponentClause1>,
+    pub component_clause1: ComponentClause1,
 }
 
 ///
@@ -1763,8 +1691,7 @@ pub struct ElementReplaceableGroupComponentClause1 {
 /// `some_equation_option: simple_equation;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SomeEquationOptionSimpleEquation {
     pub simple_equation: SimpleEquation,
 }
@@ -1775,8 +1702,7 @@ pub struct SomeEquationOptionSimpleEquation {
 /// `some_equation_option: if_equation;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SomeEquationOptionIfEquation {
     pub if_equation: IfEquation,
 }
@@ -1787,8 +1713,7 @@ pub struct SomeEquationOptionIfEquation {
 /// `some_equation_option: for_equation;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SomeEquationOptionForEquation {
     pub for_equation: ForEquation,
 }
@@ -1799,8 +1724,7 @@ pub struct SomeEquationOptionForEquation {
 /// `some_equation_option: connect_equation;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SomeEquationOptionConnectEquation {
     pub connect_equation: ConnectEquation,
 }
@@ -1811,8 +1735,7 @@ pub struct SomeEquationOptionConnectEquation {
 /// `some_equation_option: when_equation;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SomeEquationOptionWhenEquation {
     pub when_equation: WhenEquation,
 }
@@ -1823,8 +1746,7 @@ pub struct SomeEquationOptionWhenEquation {
 /// `statement_option: component_statement;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionComponentStatement {
     pub component_statement: ComponentStatement,
 }
@@ -1835,8 +1757,7 @@ pub struct StatementOptionComponentStatement {
 /// `statement_option: function_call_output_statement;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionFunctionCallOutputStatement {
     pub function_call_output_statement: FunctionCallOutputStatement,
 }
@@ -1847,8 +1768,7 @@ pub struct StatementOptionFunctionCallOutputStatement {
 /// `statement_option: break;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionBreak {
     pub r#break: Break,
 }
@@ -1859,8 +1779,7 @@ pub struct StatementOptionBreak {
 /// `statement_option: return;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionReturn {
     pub r#return: Return,
 }
@@ -1871,8 +1790,7 @@ pub struct StatementOptionReturn {
 /// `statement_option: if_statement;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionIfStatement {
     pub if_statement: IfStatement,
 }
@@ -1883,8 +1801,7 @@ pub struct StatementOptionIfStatement {
 /// `statement_option: for_statement;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionForStatement {
     pub for_statement: ForStatement,
 }
@@ -1895,8 +1812,7 @@ pub struct StatementOptionForStatement {
 /// `statement_option: while_statement;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionWhileStatement {
     pub while_statement: WhileStatement,
 }
@@ -1907,8 +1823,7 @@ pub struct StatementOptionWhileStatement {
 /// `statement_option: when_statement;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementOptionWhenStatement {
     pub when_statement: WhenStatement,
 }
@@ -1919,8 +1834,7 @@ pub struct StatementOptionWhenStatement {
 /// `component_statementGroup: ':='^ /* Clipped */ expression;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentStatementGroupColonEquExpression {
     pub expression: crate::ir::ast::Expression,
 }
@@ -1931,8 +1845,7 @@ pub struct ComponentStatementGroupColonEquExpression {
 /// `component_statementGroup: function_call_args;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentStatementGroupFunctionCallArgs {
     pub function_call_args: crate::modelica_grammar::ExpressionList,
 }
@@ -1943,8 +1856,7 @@ pub struct ComponentStatementGroupFunctionCallArgs {
 /// `expression: simple_expression;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExpressionSimpleExpression {
     pub simple_expression: Box<crate::ir::ast::Expression>,
 }
@@ -1955,8 +1867,7 @@ pub struct ExpressionSimpleExpression {
 /// `expression: if_expression;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExpressionIfExpression {
     pub if_expression: Box<IfExpression>,
 }
@@ -1967,8 +1878,7 @@ pub struct ExpressionIfExpression {
 /// `relational_operator: '<';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RelationalOperatorLT {
     pub l_t: crate::ir::ast::Token, /* < */
 }
@@ -1979,8 +1889,7 @@ pub struct RelationalOperatorLT {
 /// `relational_operator: '<=';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RelationalOperatorLTEqu {
     pub l_t_equ: crate::ir::ast::Token, /* <= */
 }
@@ -1991,8 +1900,7 @@ pub struct RelationalOperatorLTEqu {
 /// `relational_operator: '>';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RelationalOperatorGT {
     pub g_t: crate::ir::ast::Token, /* > */
 }
@@ -2003,8 +1911,7 @@ pub struct RelationalOperatorGT {
 /// `relational_operator: '>=';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RelationalOperatorGTEqu {
     pub g_t_equ: crate::ir::ast::Token, /* >= */
 }
@@ -2015,8 +1922,7 @@ pub struct RelationalOperatorGTEqu {
 /// `relational_operator: '==';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RelationalOperatorEquEqu {
     pub equ_equ: crate::ir::ast::Token, /* == */
 }
@@ -2027,8 +1933,7 @@ pub struct RelationalOperatorEquEqu {
 /// `relational_operator: '<>';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RelationalOperatorLTGT {
     pub l_t_g_t: crate::ir::ast::Token, /* <> */
 }
@@ -2039,8 +1944,7 @@ pub struct RelationalOperatorLTGT {
 /// `add_operator: '+';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AddOperatorPlus {
     pub plus: crate::ir::ast::Token, /* + */
 }
@@ -2051,8 +1955,7 @@ pub struct AddOperatorPlus {
 /// `add_operator: '-';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AddOperatorMinus {
     pub minus: crate::ir::ast::Token, /* - */
 }
@@ -2063,8 +1966,7 @@ pub struct AddOperatorMinus {
 /// `add_operator: '.+';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AddOperatorDotPlus {
     pub dot_plus: crate::ir::ast::Token, /* .+ */
 }
@@ -2075,8 +1977,7 @@ pub struct AddOperatorDotPlus {
 /// `add_operator: '.-';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AddOperatorDotMinus {
     pub dot_minus: crate::ir::ast::Token, /* .- */
 }
@@ -2087,8 +1988,7 @@ pub struct AddOperatorDotMinus {
 /// `mul_operator: '*';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct MulOperatorStar {
     pub star: crate::ir::ast::Token, /* * */
 }
@@ -2099,8 +1999,7 @@ pub struct MulOperatorStar {
 /// `mul_operator: '/';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct MulOperatorSlash {
     pub slash: crate::ir::ast::Token, /* / */
 }
@@ -2111,8 +2010,7 @@ pub struct MulOperatorSlash {
 /// `mul_operator: '.*';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct MulOperatorDotStar {
     pub dot_star: crate::ir::ast::Token, /* .* */
 }
@@ -2123,8 +2021,7 @@ pub struct MulOperatorDotStar {
 /// `mul_operator: './';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct MulOperatorDotSlash {
     pub dot_slash: crate::ir::ast::Token, /* ./ */
 }
@@ -2135,8 +2032,7 @@ pub struct MulOperatorDotSlash {
 /// `factorListGroup: '^';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FactorListGroupCircumflex {
     pub circumflex: crate::ir::ast::Token, /* ^ */
 }
@@ -2147,8 +2043,7 @@ pub struct FactorListGroupCircumflex {
 /// `factorListGroup: '.^';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FactorListGroupDotCircumflex {
     pub dot_circumflex: crate::ir::ast::Token, /* .^ */
 }
@@ -2159,8 +2054,7 @@ pub struct FactorListGroupDotCircumflex {
 /// `primary: unsigned_number;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryUnsignedNumber {
     pub unsigned_number: UnsignedNumber,
 }
@@ -2171,8 +2065,7 @@ pub struct PrimaryUnsignedNumber {
 /// `primary: string;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryString {
     pub string: crate::ir::ast::Token,
 }
@@ -2183,8 +2076,7 @@ pub struct PrimaryString {
 /// `primary: false;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryFalse {
     pub r#false: False,
 }
@@ -2195,8 +2087,7 @@ pub struct PrimaryFalse {
 /// `primary: true;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryTrue {
     pub r#true: True,
 }
@@ -2207,10 +2098,9 @@ pub struct PrimaryTrue {
 /// `primary: global_function_call;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryGlobalFunctionCall {
-    pub global_function_call: Box<GlobalFunctionCall>,
+    pub global_function_call: GlobalFunctionCall,
 }
 
 ///
@@ -2219,10 +2109,9 @@ pub struct PrimaryGlobalFunctionCall {
 /// `primary: component_primary;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryComponentPrimary {
-    pub component_primary: Box<ComponentPrimary>,
+    pub component_primary: ComponentPrimary,
 }
 
 ///
@@ -2231,10 +2120,9 @@ pub struct PrimaryComponentPrimary {
 /// `primary: output_primary;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryOutputPrimary {
-    pub output_primary: Box<OutputPrimary>,
+    pub output_primary: OutputPrimary,
 }
 
 ///
@@ -2243,10 +2131,9 @@ pub struct PrimaryOutputPrimary {
 /// `primary: range_primary;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryRangePrimary {
-    pub range_primary: Box<RangePrimary>,
+    pub range_primary: RangePrimary,
 }
 
 ///
@@ -2255,10 +2142,9 @@ pub struct PrimaryRangePrimary {
 /// `primary: array_primary;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryArrayPrimary {
-    pub array_primary: Box<ArrayPrimary>,
+    pub array_primary: ArrayPrimary,
 }
 
 ///
@@ -2267,8 +2153,7 @@ pub struct PrimaryArrayPrimary {
 /// `primary: end;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct PrimaryEnd {
     pub end: End,
 }
@@ -2279,10 +2164,9 @@ pub struct PrimaryEnd {
 /// `output_primaryOptGroup: array_subscripts;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputPrimaryOptGroupArraySubscripts {
-    pub array_subscripts: Box<crate::modelica_grammar::ArraySubscripts>,
+    pub array_subscripts: crate::modelica_grammar::ArraySubscripts,
 }
 
 ///
@@ -2291,8 +2175,7 @@ pub struct OutputPrimaryOptGroupArraySubscripts {
 /// `output_primaryOptGroup: '.'^ /* Clipped */ ident;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputPrimaryOptGroupDotIdent {
     pub ident: crate::ir::ast::Token,
 }
@@ -2303,8 +2186,7 @@ pub struct OutputPrimaryOptGroupDotIdent {
 /// `global_function_callGroup: der;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct GlobalFunctionCallGroupDer {
     pub der: Der,
 }
@@ -2315,8 +2197,7 @@ pub struct GlobalFunctionCallGroupDer {
 /// `global_function_callGroup: initial;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct GlobalFunctionCallGroupInitial {
     pub initial: Initial,
 }
@@ -2327,8 +2208,7 @@ pub struct GlobalFunctionCallGroupInitial {
 /// `global_function_callGroup: pure;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct GlobalFunctionCallGroupPure {
     pub pure: Pure,
 }
@@ -2339,8 +2219,7 @@ pub struct GlobalFunctionCallGroupPure {
 /// `unsigned_number: unsigned_integer;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct UnsignedNumberUnsignedInteger {
     pub unsigned_integer: crate::ir::ast::Token,
 }
@@ -2351,8 +2230,7 @@ pub struct UnsignedNumberUnsignedInteger {
 /// `unsigned_number: unsigned_real;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct UnsignedNumberUnsignedReal {
     pub unsigned_real: crate::ir::ast::Token,
 }
@@ -2363,11 +2241,10 @@ pub struct UnsignedNumberUnsignedReal {
 /// `function_arguments: expression function_argumentsOpt /* Option */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsExpressionFunctionArgumentsOpt {
-    pub expression: Box<crate::ir::ast::Expression>,
-    pub function_arguments_opt: Option<Box<FunctionArgumentsOpt>>,
+    pub expression: crate::ir::ast::Expression,
+    pub function_arguments_opt: Option<FunctionArgumentsOpt>,
 }
 
 ///
@@ -2376,11 +2253,10 @@ pub struct FunctionArgumentsExpressionFunctionArgumentsOpt {
 /// `function_arguments: function_partial_application function_argumentsOpt0 /* Option */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0 {
-    pub function_partial_application: Box<FunctionPartialApplication>,
-    pub function_arguments_opt0: Option<Box<FunctionArgumentsOpt0>>,
+    pub function_partial_application: FunctionPartialApplication,
+    pub function_arguments_opt0: Option<FunctionArgumentsOpt0>,
 }
 
 ///
@@ -2389,10 +2265,9 @@ pub struct FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0 {
 /// `function_arguments: named_arguments;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsNamedArguments {
-    pub named_arguments: Box<NamedArguments>,
+    pub named_arguments: NamedArguments,
 }
 
 ///
@@ -2401,8 +2276,7 @@ pub struct FunctionArgumentsNamedArguments {
 /// `function_argumentsOptGroup: ','^ /* Clipped */ function_arguments_non_first;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsOptGroupCommaFunctionArgumentsNonFirst {
     pub function_arguments_non_first: crate::modelica_grammar::ExpressionList,
 }
@@ -2413,8 +2287,7 @@ pub struct FunctionArgumentsOptGroupCommaFunctionArgumentsNonFirst {
 /// `function_argumentsOptGroup: for for_indices;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsOptGroupForForIndices {
     pub r#for: For,
     pub for_indices: ForIndices,
@@ -2426,8 +2299,7 @@ pub struct FunctionArgumentsOptGroupForForIndices {
 /// `function_arguments_non_first: function_argument function_arguments_non_firstOpt /* Option */;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsNonFirstFunctionArgumentFunctionArgumentsNonFirstOpt {
     pub function_argument: crate::ir::ast::Expression,
     pub function_arguments_non_first_opt: Option<Box<FunctionArgumentsNonFirstOpt>>,
@@ -2439,8 +2311,7 @@ pub struct FunctionArgumentsNonFirstFunctionArgumentFunctionArgumentsNonFirstOpt
 /// `function_arguments_non_first: named_arguments;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsNonFirstNamedArguments {
     pub named_arguments: NamedArguments,
 }
@@ -2451,10 +2322,9 @@ pub struct FunctionArgumentsNonFirstNamedArguments {
 /// `array_argumentsOptGroup: ','^ /* Clipped */ array_arguments_non_first;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArrayArgumentsOptGroupCommaArrayArgumentsNonFirst {
-    pub array_arguments_non_first: Box<ArrayArgumentsNonFirst>,
+    pub array_arguments_non_first: ArrayArgumentsNonFirst,
 }
 
 ///
@@ -2463,11 +2333,10 @@ pub struct ArrayArgumentsOptGroupCommaArrayArgumentsNonFirst {
 /// `array_argumentsOptGroup: for for_indices;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArrayArgumentsOptGroupForForIndices {
     pub r#for: For,
-    pub for_indices: Box<ForIndices>,
+    pub for_indices: ForIndices,
 }
 
 ///
@@ -2476,8 +2345,7 @@ pub struct ArrayArgumentsOptGroupForForIndices {
 /// `function_argument: function_partial_application;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentFunctionPartialApplication {
     pub function_partial_application: Box<FunctionPartialApplication>,
 }
@@ -2488,10 +2356,9 @@ pub struct FunctionArgumentFunctionPartialApplication {
 /// `function_argument: expression;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentExpression {
-    pub expression: Box<crate::ir::ast::Expression>,
+    pub expression: crate::ir::ast::Expression,
 }
 
 ///
@@ -2500,8 +2367,7 @@ pub struct FunctionArgumentExpression {
 /// `subscript: ':';`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SubscriptColon {
     pub colon: crate::ir::ast::Token, /* : */
 }
@@ -2512,10 +2378,9 @@ pub struct SubscriptColon {
 /// `subscript: expression;`
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SubscriptExpression {
-    pub expression: Box<crate::ir::ast::Expression>,
+    pub expression: crate::ir::ast::Expression,
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -2539,8 +2404,7 @@ pub enum AddOperator {
 /// Type derived for non-terminal algorithm
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Algorithm {
     pub algorithm: crate::ir::ast::Token, /* algorithm */
 }
@@ -2549,8 +2413,7 @@ pub struct Algorithm {
 /// Type derived for non-terminal algorithm_section
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AlgorithmSection {
     pub algorithm_section_opt: Option<AlgorithmSectionOpt>,
     pub algorithm: Algorithm,
@@ -2561,8 +2424,7 @@ pub struct AlgorithmSection {
 /// Type derived for non-terminal algorithm_sectionList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AlgorithmSectionList {
     pub statement: crate::ir::ast::Statement,
 }
@@ -2571,8 +2433,7 @@ pub struct AlgorithmSectionList {
 /// Type derived for non-terminal algorithm_sectionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AlgorithmSectionOpt {
     pub initial: Initial,
 }
@@ -2581,8 +2442,7 @@ pub struct AlgorithmSectionOpt {
 /// Type derived for non-terminal and
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct And {
     pub and: crate::ir::ast::Token, /* and */
 }
@@ -2591,8 +2451,7 @@ pub struct And {
 /// Type derived for non-terminal annotation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Annotation {
     pub annotation: crate::ir::ast::Token, /* annotation */
 }
@@ -2601,11 +2460,10 @@ pub struct Annotation {
 /// Type derived for non-terminal annotation_clause
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct AnnotationClause {
     pub annotation: Annotation,
-    pub class_modification: Box<ClassModification>,
+    pub class_modification: ClassModification,
 }
 
 ///
@@ -2614,18 +2472,17 @@ pub struct AnnotationClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Argument {
-    ElementModificationOrReplaceable(Box<ArgumentElementModificationOrReplaceable>),
-    ElementRedeclaration(Box<ArgumentElementRedeclaration>),
+    ElementModificationOrReplaceable(ArgumentElementModificationOrReplaceable),
+    ElementRedeclaration(ArgumentElementRedeclaration),
 }
 
 ///
 /// Type derived for non-terminal argument_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentList {
-    pub argument: Box<crate::ir::ast::Expression>,
+    pub argument: crate::ir::ast::Expression,
     pub argument_list_list: Vec<ArgumentListList>,
 }
 
@@ -2633,8 +2490,7 @@ pub struct ArgumentList {
 /// Type derived for non-terminal argument_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentListList {
     pub argument: crate::ir::ast::Expression,
 }
@@ -2643,8 +2499,7 @@ pub struct ArgumentListList {
 /// Type derived for non-terminal argument_or_inheritance_modification_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationList {
     pub argument_or_inheritance_modification_list_group: ArgumentOrInheritanceModificationListGroup,
     pub argument_or_inheritance_modification_list_list:
@@ -2665,8 +2520,7 @@ pub enum ArgumentOrInheritanceModificationListGroup {
 /// Type derived for non-terminal argument_or_inheritance_modification_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListList {
     pub argument_or_inheritance_modification_list_list_group:
         ArgumentOrInheritanceModificationListListGroup,
@@ -2686,11 +2540,10 @@ pub enum ArgumentOrInheritanceModificationListListGroup {
 /// Type derived for non-terminal arithmetic_expression
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArithmeticExpression {
     pub arithmetic_expression_opt: Option<ArithmeticExpressionOpt>,
-    pub term: Box<crate::ir::ast::Expression>,
+    pub term: crate::ir::ast::Expression,
     pub arithmetic_expression_list: Vec<ArithmeticExpressionList>,
 }
 
@@ -2698,8 +2551,7 @@ pub struct ArithmeticExpression {
 /// Type derived for non-terminal arithmetic_expressionList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArithmeticExpressionList {
     pub add_operator: AddOperator,
     pub term: crate::ir::ast::Expression,
@@ -2709,8 +2561,7 @@ pub struct ArithmeticExpressionList {
 /// Type derived for non-terminal arithmetic_expressionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArithmeticExpressionOpt {
     pub add_operator: AddOperator,
 }
@@ -2719,19 +2570,17 @@ pub struct ArithmeticExpressionOpt {
 /// Type derived for non-terminal array_arguments
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArrayArguments {
-    pub expression: Box<crate::ir::ast::Expression>,
-    pub array_arguments_opt: Option<Box<ArrayArgumentsOpt>>,
+    pub expression: crate::ir::ast::Expression,
+    pub array_arguments_opt: Option<ArrayArgumentsOpt>,
 }
 
 ///
 /// Type derived for non-terminal array_argumentsOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArrayArgumentsOpt {
     pub array_arguments_opt_group: ArrayArgumentsOptGroup,
 }
@@ -2750,8 +2599,7 @@ pub enum ArrayArgumentsOptGroup {
 /// Type derived for non-terminal array_arguments_non_first
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArrayArgumentsNonFirst {
     pub expression: crate::ir::ast::Expression,
     pub array_arguments_non_first_opt: Option<Box<ArrayArgumentsNonFirstOpt>>,
@@ -2761,8 +2609,7 @@ pub struct ArrayArgumentsNonFirst {
 /// Type derived for non-terminal array_arguments_non_firstOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArrayArgumentsNonFirstOpt {
     pub array_arguments_non_first: ArrayArgumentsNonFirst,
 }
@@ -2771,20 +2618,18 @@ pub struct ArrayArgumentsNonFirstOpt {
 /// Type derived for non-terminal array_primary
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArrayPrimary {
-    pub array_arguments: Box<ArrayArguments>,
+    pub array_arguments: ArrayArguments,
 }
 
 ///
 /// Type derived for non-terminal array_subscripts
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArraySubscripts {
-    pub subscript: Box<crate::ir::ast::Subscript>,
+    pub subscript: crate::ir::ast::Subscript,
     pub array_subscripts_list: Vec<ArraySubscriptsList>,
 }
 
@@ -2792,8 +2637,7 @@ pub struct ArraySubscripts {
 /// Type derived for non-terminal array_subscriptsList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ArraySubscriptsList {
     pub subscript: crate::ir::ast::Subscript,
 }
@@ -2802,8 +2646,7 @@ pub struct ArraySubscriptsList {
 /// Type derived for non-terminal base_prefix
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct BasePrefix {
     pub base_prefix_opt: Option<BasePrefixOpt>,
 }
@@ -2812,8 +2655,7 @@ pub struct BasePrefix {
 /// Type derived for non-terminal base_prefixOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct BasePrefixOpt {
     pub base_prefix_opt_group: BasePrefixOptGroup,
 }
@@ -2832,8 +2674,7 @@ pub enum BasePrefixOptGroup {
 /// Type derived for non-terminal block
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub block: crate::ir::ast::Token, /* block */
 }
@@ -2842,8 +2683,7 @@ pub struct Block {
 /// Type derived for non-terminal break
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Break {
     pub r#break: crate::ir::ast::Token, /* break */
 }
@@ -2852,8 +2692,7 @@ pub struct Break {
 /// Type derived for non-terminal class
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Class {
     pub class: crate::ir::ast::Token, /* class */
 }
@@ -2862,8 +2701,7 @@ pub struct Class {
 /// Type derived for non-terminal class_definition
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassDefinition {
     pub class_definition_opt: Option<ClassDefinitionOpt>,
     pub class_prefixes: ClassPrefixes,
@@ -2874,8 +2712,7 @@ pub struct ClassDefinition {
 /// Type derived for non-terminal class_definitionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassDefinitionOpt {
     pub encapsulated: Encapsulated,
 }
@@ -2884,18 +2721,16 @@ pub struct ClassDefinitionOpt {
 /// Type derived for non-terminal class_modification
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassModification {
-    pub class_modification_opt: Option<Box<ClassModificationOpt>>,
+    pub class_modification_opt: Option<ClassModificationOpt>,
 }
 
 ///
 /// Type derived for non-terminal class_modificationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassModificationOpt {
     pub argument_list: crate::modelica_grammar::ExpressionList,
 }
@@ -2904,8 +2739,7 @@ pub struct ClassModificationOpt {
 /// Type derived for non-terminal class_or_inheritance_modification
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassOrInheritanceModification {
     pub class_or_inheritance_modification_opt: Option<ClassOrInheritanceModificationOpt>,
 }
@@ -2914,8 +2748,7 @@ pub struct ClassOrInheritanceModification {
 /// Type derived for non-terminal class_or_inheritance_modificationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassOrInheritanceModificationOpt {
     pub argument_or_inheritance_modification_list: ArgumentOrInheritanceModificationList,
 }
@@ -2924,8 +2757,7 @@ pub struct ClassOrInheritanceModificationOpt {
 /// Type derived for non-terminal class_prefixes
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassPrefixes {
     pub class_prefixes_opt: Option<ClassPrefixesOpt>,
     pub class_type: ClassType,
@@ -2935,8 +2767,7 @@ pub struct ClassPrefixes {
 /// Type derived for non-terminal class_prefixesOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassPrefixesOpt {
     pub partial: Partial,
 }
@@ -2973,8 +2804,7 @@ pub enum ClassType {
 /// Type derived for non-terminal class_typeOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeOpt {
     pub operator: Operator,
 }
@@ -2983,8 +2813,7 @@ pub struct ClassTypeOpt {
 /// Type derived for non-terminal class_typeOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeOpt0 {
     pub expandable: Expandable,
 }
@@ -2993,8 +2822,7 @@ pub struct ClassTypeOpt0 {
 /// Type derived for non-terminal class_typeOpt1
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeOpt1 {
     pub class_type_opt1_group: ClassTypeOpt1Group,
 }
@@ -3013,8 +2841,7 @@ pub enum ClassTypeOpt1Group {
 /// Type derived for non-terminal class_typeOpt2
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ClassTypeOpt2 {
     pub operator: Operator,
 }
@@ -3023,8 +2850,7 @@ pub struct ClassTypeOpt2 {
 /// Type derived for non-terminal component_clause
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentClause {
     pub type_prefix: TypePrefix,
     pub type_specifier: TypeSpecifier,
@@ -3036,8 +2862,7 @@ pub struct ComponentClause {
 /// Type derived for non-terminal component_clause1
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentClause1 {
     pub type_prefix: TypePrefix,
     pub type_specifier: TypeSpecifier,
@@ -3048,8 +2873,7 @@ pub struct ComponentClause1 {
 /// Type derived for non-terminal component_clauseOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentClauseOpt {
     pub array_subscripts: crate::modelica_grammar::ArraySubscripts,
 }
@@ -3058,8 +2882,7 @@ pub struct ComponentClauseOpt {
 /// Type derived for non-terminal component_declaration
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentDeclaration {
     pub declaration: Declaration,
     pub component_declaration_opt: Option<ComponentDeclarationOpt>,
@@ -3070,8 +2893,7 @@ pub struct ComponentDeclaration {
 /// Type derived for non-terminal component_declaration1
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentDeclaration1 {
     pub declaration: Declaration,
     pub description: Description,
@@ -3081,8 +2903,7 @@ pub struct ComponentDeclaration1 {
 /// Type derived for non-terminal component_declarationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentDeclarationOpt {
     pub condition_attribute: ConditionAttribute,
 }
@@ -3091,8 +2912,7 @@ pub struct ComponentDeclarationOpt {
 /// Type derived for non-terminal component_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentList {
     pub component_declaration: ComponentDeclaration,
     pub component_list_list: Vec<ComponentListList>,
@@ -3102,8 +2922,7 @@ pub struct ComponentList {
 /// Type derived for non-terminal component_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentListList {
     pub component_declaration: ComponentDeclaration,
 }
@@ -3112,19 +2931,17 @@ pub struct ComponentListList {
 /// Type derived for non-terminal component_primary
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentPrimary {
-    pub component_reference: Box<crate::ir::ast::ComponentReference>,
-    pub component_primary_opt: Option<Box<ComponentPrimaryOpt>>,
+    pub component_reference: crate::ir::ast::ComponentReference,
+    pub component_primary_opt: Option<ComponentPrimaryOpt>,
 }
 
 ///
 /// Type derived for non-terminal component_primaryOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentPrimaryOpt {
     pub function_call_args: crate::modelica_grammar::ExpressionList,
 }
@@ -3133,8 +2950,7 @@ pub struct ComponentPrimaryOpt {
 /// Type derived for non-terminal component_ref_part
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentRefPart {
     pub ident: crate::ir::ast::Token,
     pub component_ref_part_opt: Option<ComponentRefPartOpt>,
@@ -3144,8 +2960,7 @@ pub struct ComponentRefPart {
 /// Type derived for non-terminal component_ref_partOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentRefPartOpt {
     pub array_subscripts: crate::modelica_grammar::ArraySubscripts,
 }
@@ -3154,12 +2969,11 @@ pub struct ComponentRefPartOpt {
 /// Type derived for non-terminal component_reference
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentReference {
     pub component_reference_opt: Option<ComponentReferenceOpt>,
     pub ident: crate::ir::ast::Token,
-    pub component_reference_opt0: Option<Box<ComponentReferenceOpt0>>,
+    pub component_reference_opt0: Option<ComponentReferenceOpt0>,
     pub component_reference_list: Vec<ComponentReferenceList>,
 }
 
@@ -3167,8 +2981,7 @@ pub struct ComponentReference {
 /// Type derived for non-terminal component_referenceList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentReferenceList {
     pub component_ref_part: crate::ir::ast::ComponentRefPart,
 }
@@ -3177,16 +2990,14 @@ pub struct ComponentReferenceList {
 /// Type derived for non-terminal component_referenceOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentReferenceOpt {}
 
 ///
 /// Type derived for non-terminal component_referenceOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentReferenceOpt0 {
     pub array_subscripts: crate::modelica_grammar::ArraySubscripts,
 }
@@ -3195,8 +3006,7 @@ pub struct ComponentReferenceOpt0 {
 /// Type derived for non-terminal component_statement
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ComponentStatement {
     pub component_reference: crate::ir::ast::ComponentReference,
     pub component_statement_group: ComponentStatementGroup,
@@ -3216,8 +3026,7 @@ pub enum ComponentStatementGroup {
 /// Type derived for non-terminal composition
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Composition {
     pub element_list: crate::modelica_grammar::ElementList,
     pub composition_list: Vec<CompositionList>,
@@ -3229,8 +3038,7 @@ pub struct Composition {
 /// Type derived for non-terminal compositionList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionList {
     pub composition_list_group: CompositionListGroup,
 }
@@ -3251,8 +3059,7 @@ pub enum CompositionListGroup {
 /// Type derived for non-terminal compositionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionOpt {
     pub composition_opt1: Option<CompositionOpt1>,
     pub composition_opt2: Option<CompositionOpt2>,
@@ -3263,8 +3070,7 @@ pub struct CompositionOpt {
 /// Type derived for non-terminal compositionOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionOpt0 {
     pub annotation_clause: AnnotationClause,
 }
@@ -3273,8 +3079,7 @@ pub struct CompositionOpt0 {
 /// Type derived for non-terminal compositionOpt1
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionOpt1 {
     pub language_specification: LanguageSpecification,
 }
@@ -3283,8 +3088,7 @@ pub struct CompositionOpt1 {
 /// Type derived for non-terminal compositionOpt2
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionOpt2 {
     pub external_function_call: ExternalFunctionCall,
 }
@@ -3293,8 +3097,7 @@ pub struct CompositionOpt2 {
 /// Type derived for non-terminal compositionOpt3
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct CompositionOpt3 {
     pub annotation_clause: AnnotationClause,
 }
@@ -3303,8 +3106,7 @@ pub struct CompositionOpt3 {
 /// Type derived for non-terminal condition_attribute
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ConditionAttribute {
     pub expression: crate::ir::ast::Expression,
 }
@@ -3313,8 +3115,7 @@ pub struct ConditionAttribute {
 /// Type derived for non-terminal connect
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Connect {
     pub connect: crate::ir::ast::Token, /* connect */
 }
@@ -3323,8 +3124,7 @@ pub struct Connect {
 /// Type derived for non-terminal connect_equation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ConnectEquation {
     pub component_reference: crate::ir::ast::ComponentReference,
     pub component_reference0: crate::ir::ast::ComponentReference,
@@ -3334,8 +3134,7 @@ pub struct ConnectEquation {
 /// Type derived for non-terminal connector
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Connector {
     pub connector: crate::ir::ast::Token, /* connector */
 }
@@ -3344,8 +3143,7 @@ pub struct Connector {
 /// Type derived for non-terminal constant
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Constant {
     pub constant: crate::ir::ast::Token, /* constant */
 }
@@ -3354,8 +3152,7 @@ pub struct Constant {
 /// Type derived for non-terminal constrainedby
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Constrainedby {
     pub constrainedby: crate::ir::ast::Token, /* constrainedby */
 }
@@ -3364,8 +3161,7 @@ pub struct Constrainedby {
 /// Type derived for non-terminal constraining_clause
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ConstrainingClause {
     pub type_specifier: TypeSpecifier,
     pub constraining_clause_opt: Option<ConstrainingClauseOpt>,
@@ -3375,8 +3171,7 @@ pub struct ConstrainingClause {
 /// Type derived for non-terminal constraining_clauseOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ConstrainingClauseOpt {
     pub class_modification: ClassModification,
 }
@@ -3385,8 +3180,7 @@ pub struct ConstrainingClauseOpt {
 /// Type derived for non-terminal declaration
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Declaration {
     pub ident: crate::ir::ast::Token,
     pub declaration_opt: Option<DeclarationOpt>,
@@ -3397,8 +3191,7 @@ pub struct Declaration {
 /// Type derived for non-terminal declarationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DeclarationOpt {
     pub array_subscripts: crate::modelica_grammar::ArraySubscripts,
 }
@@ -3407,8 +3200,7 @@ pub struct DeclarationOpt {
 /// Type derived for non-terminal declarationOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DeclarationOpt0 {
     pub modification: Modification,
 }
@@ -3417,8 +3209,7 @@ pub struct DeclarationOpt0 {
 /// Type derived for non-terminal der
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Der {
     pub der: crate::ir::ast::Token, /* der */
 }
@@ -3427,8 +3218,7 @@ pub struct Der {
 /// Type derived for non-terminal der_class_specifier
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DerClassSpecifier {
     pub ident: crate::ir::ast::Token,
     pub der: Der,
@@ -3442,8 +3232,7 @@ pub struct DerClassSpecifier {
 /// Type derived for non-terminal der_class_specifierList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DerClassSpecifierList {
     pub ident: crate::ir::ast::Token,
 }
@@ -3452,8 +3241,7 @@ pub struct DerClassSpecifierList {
 /// Type derived for non-terminal description
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Description {
     pub description_string: crate::modelica_grammar::TokenList,
     pub description_opt: Option<DescriptionOpt>,
@@ -3463,8 +3251,7 @@ pub struct Description {
 /// Type derived for non-terminal descriptionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DescriptionOpt {
     pub annotation_clause: AnnotationClause,
 }
@@ -3473,8 +3260,7 @@ pub struct DescriptionOpt {
 /// Type derived for non-terminal description_string
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DescriptionString {
     pub description_string_opt: Option<DescriptionStringOpt>,
 }
@@ -3483,8 +3269,7 @@ pub struct DescriptionString {
 /// Type derived for non-terminal description_stringOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DescriptionStringOpt {
     pub string: crate::ir::ast::Token,
     pub description_string_opt_list: Vec<DescriptionStringOptList>,
@@ -3494,8 +3279,7 @@ pub struct DescriptionStringOpt {
 /// Type derived for non-terminal description_stringOptList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct DescriptionStringOptList {
     pub string: crate::ir::ast::Token,
 }
@@ -3504,8 +3288,7 @@ pub struct DescriptionStringOptList {
 /// Type derived for non-terminal discrete
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Discrete {
     pub discrete: crate::ir::ast::Token, /* discrete */
 }
@@ -3514,8 +3297,7 @@ pub struct Discrete {
 /// Type derived for non-terminal each
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Each {
     pub each: crate::ir::ast::Token, /* each */
 }
@@ -3536,8 +3318,7 @@ pub enum Element {
 /// Type derived for non-terminal element_definition
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementDefinition {
     pub element_definition_opt: Option<ElementDefinitionOpt>,
     pub element_definition_opt0: Option<ElementDefinitionOpt0>,
@@ -3560,8 +3341,7 @@ pub enum ElementDefinitionGroup {
 /// Type derived for non-terminal element_definitionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt {
     pub redeclare: Redeclare,
 }
@@ -3570,8 +3350,7 @@ pub struct ElementDefinitionOpt {
 /// Type derived for non-terminal element_definitionOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt0 {
     pub r#final: Final,
 }
@@ -3580,8 +3359,7 @@ pub struct ElementDefinitionOpt0 {
 /// Type derived for non-terminal element_definitionOpt1
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt1 {
     pub inner: Inner,
 }
@@ -3590,8 +3368,7 @@ pub struct ElementDefinitionOpt1 {
 /// Type derived for non-terminal element_definitionOpt2
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt2 {
     pub outer: Outer,
 }
@@ -3600,8 +3377,7 @@ pub struct ElementDefinitionOpt2 {
 /// Type derived for non-terminal element_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementList {
     pub element_list_list: Vec<ElementListList>,
 }
@@ -3610,8 +3386,7 @@ pub struct ElementList {
 /// Type derived for non-terminal element_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementListList {
     pub element: Element,
 }
@@ -3620,8 +3395,7 @@ pub struct ElementListList {
 /// Type derived for non-terminal element_modification
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementModification {
     pub name: crate::ir::ast::Name,
     pub element_modification_opt: Option<ElementModificationOpt>,
@@ -3632,8 +3406,7 @@ pub struct ElementModification {
 /// Type derived for non-terminal element_modificationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementModificationOpt {
     pub modification: Modification,
 }
@@ -3642,8 +3415,7 @@ pub struct ElementModificationOpt {
 /// Type derived for non-terminal element_modification_or_replaceable
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceable {
     pub element_modification_or_replaceable_opt: Option<ElementModificationOrReplaceableOpt>,
     pub element_modification_or_replaceable_opt0: Option<ElementModificationOrReplaceableOpt0>,
@@ -3664,8 +3436,7 @@ pub enum ElementModificationOrReplaceableGroup {
 /// Type derived for non-terminal element_modification_or_replaceableOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableOpt {
     pub each: Each,
 }
@@ -3674,8 +3445,7 @@ pub struct ElementModificationOrReplaceableOpt {
 /// Type derived for non-terminal element_modification_or_replaceableOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableOpt0 {
     pub r#final: Final,
 }
@@ -3684,8 +3454,7 @@ pub struct ElementModificationOrReplaceableOpt0 {
 /// Type derived for non-terminal element_redeclaration
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementRedeclaration {
     pub redeclare: Redeclare,
     pub element_redeclaration_opt: Option<ElementRedeclarationOpt>,
@@ -3708,8 +3477,7 @@ pub enum ElementRedeclarationGroup {
 /// Type derived for non-terminal element_redeclarationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementRedeclarationOpt {
     pub each: Each,
 }
@@ -3718,8 +3486,7 @@ pub struct ElementRedeclarationOpt {
 /// Type derived for non-terminal element_redeclarationOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementRedeclarationOpt0 {
     pub r#final: Final,
 }
@@ -3728,8 +3495,7 @@ pub struct ElementRedeclarationOpt0 {
 /// Type derived for non-terminal element_replaceable
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceable {
     pub replaceable: Replaceable,
     pub element_replaceable_group: ElementReplaceableGroup,
@@ -3750,8 +3516,7 @@ pub enum ElementReplaceableGroup {
 /// Type derived for non-terminal element_replaceableOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceableOpt {
     pub constraining_clause: ConstrainingClause,
 }
@@ -3760,8 +3525,7 @@ pub struct ElementReplaceableOpt {
 /// Type derived for non-terminal element_replaceable_definition
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceableDefinition {
     pub replaceable: Replaceable,
     pub element_replaceable_definition_group: ElementReplaceableDefinitionGroup,
@@ -3782,8 +3546,7 @@ pub enum ElementReplaceableDefinitionGroup {
 /// Type derived for non-terminal element_replaceable_definitionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ElementReplaceableDefinitionOpt {
     pub constraining_clause: ConstrainingClause,
     pub description: Description,
@@ -3793,8 +3556,7 @@ pub struct ElementReplaceableDefinitionOpt {
 /// Type derived for non-terminal else
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Else {
     pub r#else: crate::ir::ast::Token, /* else */
 }
@@ -3803,8 +3565,7 @@ pub struct Else {
 /// Type derived for non-terminal elseif
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Elseif {
     pub elseif: crate::ir::ast::Token, /* elseif */
 }
@@ -3813,8 +3574,7 @@ pub struct Elseif {
 /// Type derived for non-terminal elsewhen
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Elsewhen {
     pub elsewhen: crate::ir::ast::Token, /* elsewhen */
 }
@@ -3823,8 +3583,7 @@ pub struct Elsewhen {
 /// Type derived for non-terminal encapsulated
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Encapsulated {
     pub encapsulated: crate::ir::ast::Token, /* encapsulated */
 }
@@ -3833,8 +3592,7 @@ pub struct Encapsulated {
 /// Type derived for non-terminal end
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct End {
     pub end: crate::ir::ast::Token, /* end */
 }
@@ -3843,8 +3601,7 @@ pub struct End {
 /// Type derived for non-terminal enum_class_specifier
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EnumClassSpecifier {
     pub ident: crate::ir::ast::Token,
     pub enumeration: Enumeration,
@@ -3866,8 +3623,7 @@ pub enum EnumClassSpecifierGroup {
 /// Type derived for non-terminal enum_class_specifierOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EnumClassSpecifierOpt {
     pub enum_list: EnumList,
 }
@@ -3876,8 +3632,7 @@ pub struct EnumClassSpecifierOpt {
 /// Type derived for non-terminal enum_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EnumList {
     pub enumeration_literal: EnumerationLiteral,
     pub enum_list_list: Vec<EnumListList>,
@@ -3887,8 +3642,7 @@ pub struct EnumList {
 /// Type derived for non-terminal enum_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EnumListList {
     pub enumeration_literal: EnumerationLiteral,
 }
@@ -3897,8 +3651,7 @@ pub struct EnumListList {
 /// Type derived for non-terminal enumeration
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Enumeration {
     pub enumeration: crate::ir::ast::Token, /* enumeration */
 }
@@ -3907,8 +3660,7 @@ pub struct Enumeration {
 /// Type derived for non-terminal enumeration_literal
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EnumerationLiteral {
     pub ident: crate::ir::ast::Token,
     pub description: Description,
@@ -3918,8 +3670,7 @@ pub struct EnumerationLiteral {
 /// Type derived for non-terminal equation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Equation {
     pub equation: crate::ir::ast::Token, /* equation */
 }
@@ -3928,8 +3679,7 @@ pub struct Equation {
 /// Type derived for non-terminal equation_block
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EquationBlock {
     pub expression: crate::ir::ast::Expression,
     pub equation_block_list: Vec<EquationBlockList>,
@@ -3939,8 +3689,7 @@ pub struct EquationBlock {
 /// Type derived for non-terminal equation_blockList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EquationBlockList {
     pub some_equation: crate::ir::ast::Equation,
 }
@@ -3949,8 +3698,7 @@ pub struct EquationBlockList {
 /// Type derived for non-terminal equation_section
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EquationSection {
     pub equation_section_opt: Option<EquationSectionOpt>,
     pub equation: Equation,
@@ -3961,8 +3709,7 @@ pub struct EquationSection {
 /// Type derived for non-terminal equation_sectionList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EquationSectionList {
     pub some_equation: crate::ir::ast::Equation,
 }
@@ -3971,8 +3718,7 @@ pub struct EquationSectionList {
 /// Type derived for non-terminal equation_sectionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct EquationSectionOpt {
     pub initial: Initial,
 }
@@ -3981,8 +3727,7 @@ pub struct EquationSectionOpt {
 /// Type derived for non-terminal expandable
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Expandable {
     pub expandable: crate::ir::ast::Token, /* expandable */
 }
@@ -3993,18 +3738,17 @@ pub struct Expandable {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Expression {
-    SimpleExpression(Box<ExpressionSimpleExpression>),
-    IfExpression(Box<ExpressionIfExpression>),
+    SimpleExpression(ExpressionSimpleExpression),
+    IfExpression(ExpressionIfExpression),
 }
 
 ///
 /// Type derived for non-terminal expression_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExpressionList {
-    pub expression: Box<crate::ir::ast::Expression>,
+    pub expression: crate::ir::ast::Expression,
     pub expression_list_list: Vec<ExpressionListList>,
 }
 
@@ -4012,8 +3756,7 @@ pub struct ExpressionList {
 /// Type derived for non-terminal expression_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExpressionListList {
     pub expression: crate::ir::ast::Expression,
 }
@@ -4022,8 +3765,7 @@ pub struct ExpressionListList {
 /// Type derived for non-terminal extends
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Extends {
     pub extends: crate::ir::ast::Token, /* extends */
 }
@@ -4032,8 +3774,7 @@ pub struct Extends {
 /// Type derived for non-terminal extends_class_specifier
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExtendsClassSpecifier {
     pub ident: crate::ir::ast::Token,
     pub extends_class_specifier_opt: Option<ExtendsClassSpecifierOpt>,
@@ -4046,8 +3787,7 @@ pub struct ExtendsClassSpecifier {
 /// Type derived for non-terminal extends_class_specifierOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExtendsClassSpecifierOpt {
     pub class_modification: ClassModification,
 }
@@ -4056,8 +3796,7 @@ pub struct ExtendsClassSpecifierOpt {
 /// Type derived for non-terminal extends_clause
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExtendsClause {
     pub extends: Extends,
     pub type_specifier: TypeSpecifier,
@@ -4069,8 +3808,7 @@ pub struct ExtendsClause {
 /// Type derived for non-terminal extends_clauseOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExtendsClauseOpt {
     pub class_or_inheritance_modification: ClassOrInheritanceModification,
 }
@@ -4079,8 +3817,7 @@ pub struct ExtendsClauseOpt {
 /// Type derived for non-terminal extends_clauseOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExtendsClauseOpt0 {
     pub annotation_clause: AnnotationClause,
 }
@@ -4089,8 +3826,7 @@ pub struct ExtendsClauseOpt0 {
 /// Type derived for non-terminal external
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct External {
     pub external: crate::ir::ast::Token, /* external */
 }
@@ -4099,8 +3835,7 @@ pub struct External {
 /// Type derived for non-terminal external_function_call
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExternalFunctionCall {
     pub external_function_call_opt: Option<ExternalFunctionCallOpt>,
     pub ident: crate::ir::ast::Token,
@@ -4111,8 +3846,7 @@ pub struct ExternalFunctionCall {
 /// Type derived for non-terminal external_function_callOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExternalFunctionCallOpt {
     pub component_reference: crate::ir::ast::ComponentReference,
 }
@@ -4121,8 +3855,7 @@ pub struct ExternalFunctionCallOpt {
 /// Type derived for non-terminal external_function_callOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ExternalFunctionCallOpt0 {
     pub expression_list: ExpressionList,
 }
@@ -4131,10 +3864,9 @@ pub struct ExternalFunctionCallOpt0 {
 /// Type derived for non-terminal factor
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Factor {
-    pub primary: Box<crate::ir::ast::Expression>,
+    pub primary: crate::ir::ast::Expression,
     pub factor_list: Vec<FactorList>,
 }
 
@@ -4142,8 +3874,7 @@ pub struct Factor {
 /// Type derived for non-terminal factorList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FactorList {
     pub factor_list_group: FactorListGroup,
     pub primary: crate::ir::ast::Expression,
@@ -4163,8 +3894,7 @@ pub enum FactorListGroup {
 /// Type derived for non-terminal false
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct False {
     pub r#false: crate::ir::ast::Token, /* false */
 }
@@ -4173,8 +3903,7 @@ pub struct False {
 /// Type derived for non-terminal final
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Final {
     pub r#final: crate::ir::ast::Token, /* final */
 }
@@ -4183,8 +3912,7 @@ pub struct Final {
 /// Type derived for non-terminal flow
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Flow {
     pub flow: crate::ir::ast::Token, /* flow */
 }
@@ -4193,8 +3921,7 @@ pub struct Flow {
 /// Type derived for non-terminal for
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct For {
     pub r#for: crate::ir::ast::Token, /* for */
 }
@@ -4203,8 +3930,7 @@ pub struct For {
 /// Type derived for non-terminal for_equation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForEquation {
     pub for_indices: ForIndices,
     pub for_equation_list: Vec<ForEquationList>,
@@ -4214,8 +3940,7 @@ pub struct ForEquation {
 /// Type derived for non-terminal for_equationList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForEquationList {
     pub some_equation: crate::ir::ast::Equation,
 }
@@ -4224,8 +3949,7 @@ pub struct ForEquationList {
 /// Type derived for non-terminal for_index
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForIndex {
     pub ident: crate::ir::ast::Token,
     pub for_index_opt: Option<ForIndexOpt>,
@@ -4235,8 +3959,7 @@ pub struct ForIndex {
 /// Type derived for non-terminal for_indexOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForIndexOpt {
     pub expression: crate::ir::ast::Expression,
 }
@@ -4245,8 +3968,7 @@ pub struct ForIndexOpt {
 /// Type derived for non-terminal for_indices
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForIndices {
     pub for_index: ForIndex,
     pub for_indices_list: Vec<ForIndicesList>,
@@ -4256,8 +3978,7 @@ pub struct ForIndices {
 /// Type derived for non-terminal for_indicesList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForIndicesList {
     pub for_index: ForIndex,
 }
@@ -4266,8 +3987,7 @@ pub struct ForIndicesList {
 /// Type derived for non-terminal for_statement
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForStatement {
     pub for_indices: ForIndices,
     pub for_statement_list: Vec<ForStatementList>,
@@ -4277,8 +3997,7 @@ pub struct ForStatement {
 /// Type derived for non-terminal for_statementList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ForStatementList {
     pub statement: crate::ir::ast::Statement,
 }
@@ -4287,8 +4006,7 @@ pub struct ForStatementList {
 /// Type derived for non-terminal function
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Function {
     pub function: crate::ir::ast::Token, /* function */
 }
@@ -4300,7 +4018,7 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub enum FunctionArgument {
     FunctionPartialApplication(FunctionArgumentFunctionPartialApplication),
-    Expression(Box<FunctionArgumentExpression>),
+    Expression(FunctionArgumentExpression),
 }
 
 ///
@@ -4309,19 +4027,18 @@ pub enum FunctionArgument {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum FunctionArguments {
-    ExpressionFunctionArgumentsOpt(Box<FunctionArgumentsExpressionFunctionArgumentsOpt>),
+    ExpressionFunctionArgumentsOpt(FunctionArgumentsExpressionFunctionArgumentsOpt),
     FunctionPartialApplicationFunctionArgumentsOpt0(
-        Box<FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0>,
+        FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0,
     ),
-    NamedArguments(Box<FunctionArgumentsNamedArguments>),
+    NamedArguments(FunctionArgumentsNamedArguments),
 }
 
 ///
 /// Type derived for non-terminal function_argumentsOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsOpt {
     pub function_arguments_opt_group: FunctionArgumentsOptGroup,
 }
@@ -4330,8 +4047,7 @@ pub struct FunctionArgumentsOpt {
 /// Type derived for non-terminal function_argumentsOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsOpt0 {
     pub function_arguments_non_first: crate::modelica_grammar::ExpressionList,
 }
@@ -4362,8 +4078,7 @@ pub enum FunctionArgumentsNonFirst {
 /// Type derived for non-terminal function_arguments_non_firstOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionArgumentsNonFirstOpt {
     pub function_arguments_non_first: crate::modelica_grammar::ExpressionList,
 }
@@ -4372,18 +4087,16 @@ pub struct FunctionArgumentsNonFirstOpt {
 /// Type derived for non-terminal function_call_args
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionCallArgs {
-    pub function_call_args_opt: Option<Box<FunctionCallArgsOpt>>,
+    pub function_call_args_opt: Option<FunctionCallArgsOpt>,
 }
 
 ///
 /// Type derived for non-terminal function_call_argsOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionCallArgsOpt {
     pub function_arguments: crate::modelica_grammar::ExpressionList,
 }
@@ -4392,8 +4105,7 @@ pub struct FunctionCallArgsOpt {
 /// Type derived for non-terminal function_call_output_statement
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionCallOutputStatement {
     pub output_expression_list: crate::modelica_grammar::ExpressionList,
     pub component_reference: crate::ir::ast::ComponentReference,
@@ -4404,8 +4116,7 @@ pub struct FunctionCallOutputStatement {
 /// Type derived for non-terminal function_partial_application
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionPartialApplication {
     pub function: Function,
     pub type_specifier: TypeSpecifier,
@@ -4416,8 +4127,7 @@ pub struct FunctionPartialApplication {
 /// Type derived for non-terminal function_partial_applicationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct FunctionPartialApplicationOpt {
     pub named_arguments: NamedArguments,
 }
@@ -4426,8 +4136,7 @@ pub struct FunctionPartialApplicationOpt {
 /// Type derived for non-terminal global_function_call
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct GlobalFunctionCall {
     pub global_function_call_group: GlobalFunctionCallGroup,
     pub function_call_args: crate::modelica_grammar::ExpressionList,
@@ -4458,8 +4167,7 @@ pub enum Ident {
 /// Type derived for non-terminal if
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct If {
     pub r#if: crate::ir::ast::Token, /* if */
 }
@@ -4468,8 +4176,7 @@ pub struct If {
 /// Type derived for non-terminal if_equation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfEquation {
     pub r#if0: crate::ir::ast::EquationBlock,
     pub if_equation_list: Vec<IfEquationList>,
@@ -4480,8 +4187,7 @@ pub struct IfEquation {
 /// Type derived for non-terminal if_equationList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfEquationList {
     pub elseif0: crate::ir::ast::EquationBlock,
 }
@@ -4490,8 +4196,7 @@ pub struct IfEquationList {
 /// Type derived for non-terminal if_equationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfEquationOpt {
     pub if_equation_opt_list: Vec<IfEquationOptList>,
 }
@@ -4500,8 +4205,7 @@ pub struct IfEquationOpt {
 /// Type derived for non-terminal if_equationOptList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfEquationOptList {
     pub some_equation: crate::ir::ast::Equation,
 }
@@ -4510,10 +4214,9 @@ pub struct IfEquationOptList {
 /// Type derived for non-terminal if_expression
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfExpression {
-    pub expression: Box<crate::ir::ast::Expression>,
+    pub expression: crate::ir::ast::Expression,
     pub expression0: crate::ir::ast::Expression,
     pub if_expression_list: Vec<IfExpressionList>,
     pub expression1: crate::ir::ast::Expression,
@@ -4523,8 +4226,7 @@ pub struct IfExpression {
 /// Type derived for non-terminal if_expressionList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfExpressionList {
     pub expression: crate::ir::ast::Expression,
     pub expression0: crate::ir::ast::Expression,
@@ -4534,8 +4236,7 @@ pub struct IfExpressionList {
 /// Type derived for non-terminal if_statement
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfStatement {
     pub r#if0: crate::ir::ast::StatementBlock,
     pub if_statement_list: Vec<IfStatementList>,
@@ -4546,8 +4247,7 @@ pub struct IfStatement {
 /// Type derived for non-terminal if_statementList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfStatementList {
     pub elseif0: crate::ir::ast::StatementBlock,
 }
@@ -4556,8 +4256,7 @@ pub struct IfStatementList {
 /// Type derived for non-terminal if_statementOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfStatementOpt {
     pub if_statement_opt_list: Vec<IfStatementOptList>,
 }
@@ -4566,8 +4265,7 @@ pub struct IfStatementOpt {
 /// Type derived for non-terminal if_statementOptList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct IfStatementOptList {
     pub r#else: crate::ir::ast::Statement,
 }
@@ -4576,8 +4274,7 @@ pub struct IfStatementOptList {
 /// Type derived for non-terminal import
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Import {
     pub import: crate::ir::ast::Token, /* import */
 }
@@ -4586,8 +4283,7 @@ pub struct Import {
 /// Type derived for non-terminal import_clause
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClause {
     pub import: Import,
     pub import_clause_group: ImportClauseGroup,
@@ -4608,8 +4304,7 @@ pub enum ImportClauseGroup {
 /// Type derived for non-terminal import_clauseOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportClauseOpt {
     pub import_clause_opt_group: ImportClauseOptGroup,
 }
@@ -4638,8 +4333,7 @@ pub enum ImportClauseOptGroupGroup {
 /// Type derived for non-terminal import_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportList {
     pub ident: crate::ir::ast::Token,
     pub import_list_list: Vec<ImportListList>,
@@ -4649,8 +4343,7 @@ pub struct ImportList {
 /// Type derived for non-terminal import_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ImportListList {
     pub ident: crate::ir::ast::Token,
 }
@@ -4659,8 +4352,7 @@ pub struct ImportListList {
 /// Type derived for non-terminal impure
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Impure {
     pub impure: crate::ir::ast::Token, /* impure */
 }
@@ -4669,8 +4361,7 @@ pub struct Impure {
 /// Type derived for non-terminal in
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct In {
     pub r#in: crate::ir::ast::Token, /* in */
 }
@@ -4679,8 +4370,7 @@ pub struct In {
 /// Type derived for non-terminal inheritance_modification
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct InheritanceModification {
     pub inheritance_modification_group: InheritanceModificationGroup,
 }
@@ -4699,8 +4389,7 @@ pub enum InheritanceModificationGroup {
 /// Type derived for non-terminal initial
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Initial {
     pub initial: crate::ir::ast::Token, /* initial */
 }
@@ -4709,8 +4398,7 @@ pub struct Initial {
 /// Type derived for non-terminal inner
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Inner {
     pub inner: crate::ir::ast::Token, /* inner */
 }
@@ -4719,8 +4407,7 @@ pub struct Inner {
 /// Type derived for non-terminal input
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Input {
     pub input: crate::ir::ast::Token, /* input */
 }
@@ -4729,8 +4416,7 @@ pub struct Input {
 /// Type derived for non-terminal language_specification
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LanguageSpecification {
     pub string: crate::ir::ast::Token,
 }
@@ -4739,10 +4425,9 @@ pub struct LanguageSpecification {
 /// Type derived for non-terminal logical_expression
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LogicalExpression {
-    pub logical_term: Box<crate::ir::ast::Expression>,
+    pub logical_term: crate::ir::ast::Expression,
     pub logical_expression_list: Vec<LogicalExpressionList>,
 }
 
@@ -4750,8 +4435,7 @@ pub struct LogicalExpression {
 /// Type derived for non-terminal logical_expressionList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LogicalExpressionList {
     pub logical_term: crate::ir::ast::Expression,
 }
@@ -4760,19 +4444,17 @@ pub struct LogicalExpressionList {
 /// Type derived for non-terminal logical_factor
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LogicalFactor {
     pub logical_factor_opt: Option<LogicalFactorOpt>,
-    pub relation: Box<crate::ir::ast::Expression>,
+    pub relation: crate::ir::ast::Expression,
 }
 
 ///
 /// Type derived for non-terminal logical_factorOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LogicalFactorOpt {
     pub not: Not,
 }
@@ -4781,10 +4463,9 @@ pub struct LogicalFactorOpt {
 /// Type derived for non-terminal logical_term
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LogicalTerm {
-    pub logical_factor: Box<crate::ir::ast::Expression>,
+    pub logical_factor: crate::ir::ast::Expression,
     pub logical_term_list: Vec<LogicalTermList>,
 }
 
@@ -4792,8 +4473,7 @@ pub struct LogicalTerm {
 /// Type derived for non-terminal logical_termList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct LogicalTermList {
     pub logical_factor: crate::ir::ast::Expression,
 }
@@ -4812,8 +4492,7 @@ pub enum LongClassSpecifier {
 /// Type derived for non-terminal loop
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Loop {
     pub r#loop: crate::ir::ast::Token, /* loop */
 }
@@ -4822,8 +4501,7 @@ pub struct Loop {
 /// Type derived for non-terminal model
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Model {
     pub model: crate::ir::ast::Token, /* model */
 }
@@ -4842,8 +4520,7 @@ pub enum Modification {
 /// Type derived for non-terminal modificationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ModificationOpt {
     pub modification_expression: ModificationExpression,
 }
@@ -4874,8 +4551,7 @@ pub enum MulOperator {
 /// Type derived for non-terminal name
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Name {
     pub ident: crate::ir::ast::Token,
     pub name_list: Vec<NameList>,
@@ -4885,8 +4561,7 @@ pub struct Name {
 /// Type derived for non-terminal nameList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct NameList {
     pub ident: crate::ir::ast::Token,
 }
@@ -4895,8 +4570,7 @@ pub struct NameList {
 /// Type derived for non-terminal named_argument
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct NamedArgument {
     pub ident: crate::ir::ast::Token,
     pub function_argument: crate::ir::ast::Expression,
@@ -4906,8 +4580,7 @@ pub struct NamedArgument {
 /// Type derived for non-terminal named_arguments
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct NamedArguments {
     pub named_argument: NamedArgument,
     pub named_arguments_opt: Option<Box<NamedArgumentsOpt>>,
@@ -4917,8 +4590,7 @@ pub struct NamedArguments {
 /// Type derived for non-terminal named_argumentsOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct NamedArgumentsOpt {
     pub named_arguments: NamedArguments,
 }
@@ -4927,8 +4599,7 @@ pub struct NamedArgumentsOpt {
 /// Type derived for non-terminal not
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Not {
     pub not: crate::ir::ast::Token, /* not */
 }
@@ -4937,8 +4608,7 @@ pub struct Not {
 /// Type derived for non-terminal operator
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Operator {
     pub operator: crate::ir::ast::Token, /* operator */
 }
@@ -4947,8 +4617,7 @@ pub struct Operator {
 /// Type derived for non-terminal or
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Or {
     pub or: crate::ir::ast::Token, /* or */
 }
@@ -4957,8 +4626,7 @@ pub struct Or {
 /// Type derived for non-terminal outer
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Outer {
     pub outer: crate::ir::ast::Token, /* outer */
 }
@@ -4967,8 +4635,7 @@ pub struct Outer {
 /// Type derived for non-terminal output
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Output {
     pub output: crate::ir::ast::Token, /* output */
 }
@@ -4977,10 +4644,9 @@ pub struct Output {
 /// Type derived for non-terminal output_expression_list
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputExpressionList {
-    pub output_expression_list_opt: Option<Box<OutputExpressionListOpt>>,
+    pub output_expression_list_opt: Option<OutputExpressionListOpt>,
     pub output_expression_list_list: Vec<OutputExpressionListList>,
 }
 
@@ -4988,8 +4654,7 @@ pub struct OutputExpressionList {
 /// Type derived for non-terminal output_expression_listList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputExpressionListList {
     pub output_expression_list_opt0: Option<OutputExpressionListOpt0>,
 }
@@ -4998,8 +4663,7 @@ pub struct OutputExpressionListList {
 /// Type derived for non-terminal output_expression_listOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputExpressionListOpt {
     pub expression: crate::ir::ast::Expression,
 }
@@ -5008,8 +4672,7 @@ pub struct OutputExpressionListOpt {
 /// Type derived for non-terminal output_expression_listOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputExpressionListOpt0 {
     pub expression: crate::ir::ast::Expression,
 }
@@ -5018,19 +4681,17 @@ pub struct OutputExpressionListOpt0 {
 /// Type derived for non-terminal output_primary
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputPrimary {
     pub output_expression_list: crate::modelica_grammar::ExpressionList,
-    pub output_primary_opt: Option<Box<OutputPrimaryOpt>>,
+    pub output_primary_opt: Option<OutputPrimaryOpt>,
 }
 
 ///
 /// Type derived for non-terminal output_primaryOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct OutputPrimaryOpt {
     pub output_primary_opt_group: OutputPrimaryOptGroup,
 }
@@ -5049,8 +4710,7 @@ pub enum OutputPrimaryOptGroup {
 /// Type derived for non-terminal package
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Package {
     pub package: crate::ir::ast::Token, /* package */
 }
@@ -5059,8 +4719,7 @@ pub struct Package {
 /// Type derived for non-terminal parameter
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Parameter {
     pub parameter: crate::ir::ast::Token, /* parameter */
 }
@@ -5069,8 +4728,7 @@ pub struct Parameter {
 /// Type derived for non-terminal partial
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Partial {
     pub partial: crate::ir::ast::Token, /* partial */
 }
@@ -5088,7 +4746,7 @@ pub enum Primary {
     GlobalFunctionCall(PrimaryGlobalFunctionCall),
     ComponentPrimary(PrimaryComponentPrimary),
     OutputPrimary(PrimaryOutputPrimary),
-    RangePrimary(Box<PrimaryRangePrimary>),
+    RangePrimary(PrimaryRangePrimary),
     ArrayPrimary(PrimaryArrayPrimary),
     End(PrimaryEnd),
 }
@@ -5097,8 +4755,7 @@ pub enum Primary {
 /// Type derived for non-terminal protected
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Protected {
     pub protected: crate::ir::ast::Token, /* protected */
 }
@@ -5107,8 +4764,7 @@ pub struct Protected {
 /// Type derived for non-terminal public
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Public {
     pub public: crate::ir::ast::Token, /* public */
 }
@@ -5117,8 +4773,7 @@ pub struct Public {
 /// Type derived for non-terminal pure
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Pure {
     pub pure: crate::ir::ast::Token, /* pure */
 }
@@ -5127,10 +4782,9 @@ pub struct Pure {
 /// Type derived for non-terminal range_primary
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RangePrimary {
-    pub expression_list: Box<ExpressionList>,
+    pub expression_list: ExpressionList,
     pub range_primary_list: Vec<RangePrimaryList>,
 }
 
@@ -5138,8 +4792,7 @@ pub struct RangePrimary {
 /// Type derived for non-terminal range_primaryList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RangePrimaryList {
     pub expression_list: ExpressionList,
 }
@@ -5148,8 +4801,7 @@ pub struct RangePrimaryList {
 /// Type derived for non-terminal record
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Record {
     pub record: crate::ir::ast::Token, /* record */
 }
@@ -5158,8 +4810,7 @@ pub struct Record {
 /// Type derived for non-terminal redeclare
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Redeclare {
     pub redeclare: crate::ir::ast::Token, /* redeclare */
 }
@@ -5168,10 +4819,9 @@ pub struct Redeclare {
 /// Type derived for non-terminal relation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Relation {
-    pub arithmetic_expression: Box<crate::ir::ast::Expression>,
+    pub arithmetic_expression: crate::ir::ast::Expression,
     pub relation_opt: Option<RelationOpt>,
 }
 
@@ -5179,8 +4829,7 @@ pub struct Relation {
 /// Type derived for non-terminal relationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct RelationOpt {
     pub relational_operator: RelationalOperator,
     pub arithmetic_expression: crate::ir::ast::Expression,
@@ -5204,8 +4853,7 @@ pub enum RelationalOperator {
 /// Type derived for non-terminal replaceable
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Replaceable {
     pub replaceable: crate::ir::ast::Token, /* replaceable */
 }
@@ -5214,8 +4862,7 @@ pub struct Replaceable {
 /// Type derived for non-terminal return
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Return {
     pub r#return: crate::ir::ast::Token, /* return */
 }
@@ -5224,8 +4871,7 @@ pub struct Return {
 /// Type derived for non-terminal short_class_definition
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct ShortClassDefinition {
     pub class_prefixes: ClassPrefixes,
     pub short_class_specifier: ShortClassSpecifier,
@@ -5245,8 +4891,7 @@ pub enum ShortClassSpecifier {
 /// Type derived for non-terminal simple_equation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SimpleEquation {
     pub simple_expression: crate::ir::ast::Expression,
     pub simple_equation_opt: Option<SimpleEquationOpt>,
@@ -5256,8 +4901,7 @@ pub struct SimpleEquation {
 /// Type derived for non-terminal simple_equationOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SimpleEquationOpt {
     pub expression: crate::ir::ast::Expression,
 }
@@ -5266,8 +4910,7 @@ pub struct SimpleEquationOpt {
 /// Type derived for non-terminal simple_expression
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SimpleExpression {
     pub logical_expression: crate::ir::ast::Expression,
     pub simple_expression_opt: Option<SimpleExpressionOpt>,
@@ -5277,8 +4920,7 @@ pub struct SimpleExpression {
 /// Type derived for non-terminal simple_expressionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SimpleExpressionOpt {
     pub logical_expression: crate::ir::ast::Expression,
     pub simple_expression_opt0: Option<SimpleExpressionOpt0>,
@@ -5288,8 +4930,7 @@ pub struct SimpleExpressionOpt {
 /// Type derived for non-terminal simple_expressionOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SimpleExpressionOpt0 {
     pub logical_expression: crate::ir::ast::Expression,
 }
@@ -5298,8 +4939,7 @@ pub struct SimpleExpressionOpt0 {
 /// Type derived for non-terminal some_equation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct SomeEquation {
     pub some_equation_option: SomeEquationOption,
     pub description: Description,
@@ -5322,8 +4962,7 @@ pub enum SomeEquationOption {
 /// Type derived for non-terminal standard_class_specifier
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StandardClassSpecifier {
     pub name: crate::ir::ast::Token,
     pub description_string: crate::modelica_grammar::TokenList,
@@ -5335,8 +4974,7 @@ pub struct StandardClassSpecifier {
 /// Type derived for non-terminal statement
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Statement {
     pub statement_option: StatementOption,
     pub description: Description,
@@ -5346,8 +4984,7 @@ pub struct Statement {
 /// Type derived for non-terminal statement_block
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementBlock {
     pub expression: crate::ir::ast::Expression,
     pub statement_block_list: Vec<StatementBlockList>,
@@ -5357,8 +4994,7 @@ pub struct StatementBlock {
 /// Type derived for non-terminal statement_blockList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StatementBlockList {
     pub statement: crate::ir::ast::Statement,
 }
@@ -5383,8 +5019,7 @@ pub enum StatementOption {
 /// Type derived for non-terminal stored_definition
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StoredDefinition {
     pub stored_definition_opt: Option<StoredDefinitionOpt>,
     pub stored_definition_list: Vec<StoredDefinitionList>,
@@ -5394,8 +5029,7 @@ pub struct StoredDefinition {
 /// Type derived for non-terminal stored_definitionList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StoredDefinitionList {
     pub stored_definition_opt0: Option<StoredDefinitionOpt0>,
     pub class_definition: crate::ir::ast::ClassDefinition,
@@ -5405,8 +5039,7 @@ pub struct StoredDefinitionList {
 /// Type derived for non-terminal stored_definitionOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StoredDefinitionOpt {
     pub stored_definition_opt1: Option<StoredDefinitionOpt1>,
 }
@@ -5415,8 +5048,7 @@ pub struct StoredDefinitionOpt {
 /// Type derived for non-terminal stored_definitionOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StoredDefinitionOpt0 {
     pub r#final: Final,
 }
@@ -5425,8 +5057,7 @@ pub struct StoredDefinitionOpt0 {
 /// Type derived for non-terminal stored_definitionOpt1
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct StoredDefinitionOpt1 {
     pub name: crate::ir::ast::Name,
 }
@@ -5435,8 +5066,7 @@ pub struct StoredDefinitionOpt1 {
 /// Type derived for non-terminal stream
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Stream {
     pub stream: crate::ir::ast::Token, /* stream */
 }
@@ -5445,8 +5075,7 @@ pub struct Stream {
 /// Type derived for non-terminal string
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct String {
     pub string: crate::ir::ast::Token, /* "([^"\\]|\\.)*" */
 }
@@ -5465,8 +5094,7 @@ pub enum Subscript {
 /// Type derived for non-terminal term
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Term {
     pub factor: crate::ir::ast::Expression,
     pub term_list: Vec<TermList>,
@@ -5476,8 +5104,7 @@ pub struct Term {
 /// Type derived for non-terminal termList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TermList {
     pub mul_operator: MulOperator,
     pub factor: crate::ir::ast::Expression,
@@ -5487,8 +5114,7 @@ pub struct TermList {
 /// Type derived for non-terminal then
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Then {
     pub then: crate::ir::ast::Token, /* then */
 }
@@ -5497,8 +5123,7 @@ pub struct Then {
 /// Type derived for non-terminal true
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct True {
     pub r#true: crate::ir::ast::Token, /* true */
 }
@@ -5507,8 +5132,7 @@ pub struct True {
 /// Type derived for non-terminal type
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Type {
     pub r#type: crate::ir::ast::Token, /* type */
 }
@@ -5517,8 +5141,7 @@ pub struct Type {
 /// Type derived for non-terminal type_class_specifier
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypeClassSpecifier {
     pub ident: crate::ir::ast::Token,
     pub base_prefix: BasePrefix,
@@ -5532,8 +5155,7 @@ pub struct TypeClassSpecifier {
 /// Type derived for non-terminal type_class_specifierOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypeClassSpecifierOpt {
     pub array_subscripts: crate::modelica_grammar::ArraySubscripts,
 }
@@ -5542,8 +5164,7 @@ pub struct TypeClassSpecifierOpt {
 /// Type derived for non-terminal type_class_specifierOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypeClassSpecifierOpt0 {
     pub class_modification: ClassModification,
 }
@@ -5552,8 +5173,7 @@ pub struct TypeClassSpecifierOpt0 {
 /// Type derived for non-terminal type_prefix
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefix {
     pub type_prefix_opt: Option<TypePrefixOpt>,
     pub type_prefix_opt0: Option<TypePrefixOpt0>,
@@ -5564,8 +5184,7 @@ pub struct TypePrefix {
 /// Type derived for non-terminal type_prefixOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt {
     pub type_prefix_opt_group: TypePrefixOptGroup,
 }
@@ -5574,8 +5193,7 @@ pub struct TypePrefixOpt {
 /// Type derived for non-terminal type_prefixOpt0
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt0 {
     pub type_prefix_opt0_group: TypePrefixOpt0Group,
 }
@@ -5595,8 +5213,7 @@ pub enum TypePrefixOpt0Group {
 /// Type derived for non-terminal type_prefixOpt1
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypePrefixOpt1 {
     pub type_prefix_opt1_group: TypePrefixOpt1Group,
 }
@@ -5625,8 +5242,7 @@ pub enum TypePrefixOptGroup {
 /// Type derived for non-terminal type_specifier
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypeSpecifier {
     pub type_specifier_opt: Option<TypeSpecifierOpt>,
     pub name: crate::ir::ast::Name,
@@ -5636,16 +5252,14 @@ pub struct TypeSpecifier {
 /// Type derived for non-terminal type_specifierOpt
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct TypeSpecifierOpt {}
 
 ///
 /// Type derived for non-terminal unsigned_integer
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct UnsignedInteger {
     pub unsigned_integer: crate::ir::ast::Token, /* [0-9]+ */
 }
@@ -5675,8 +5289,7 @@ pub enum UnsignedReal {
 /// Type derived for non-terminal when
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct When {
     pub when: crate::ir::ast::Token, /* when */
 }
@@ -5685,8 +5298,7 @@ pub struct When {
 /// Type derived for non-terminal when_equation
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct WhenEquation {
     pub when0: crate::ir::ast::EquationBlock,
     pub when_equation_list: Vec<WhenEquationList>,
@@ -5696,8 +5308,7 @@ pub struct WhenEquation {
 /// Type derived for non-terminal when_equationList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct WhenEquationList {
     pub elsewhen0: crate::ir::ast::EquationBlock,
 }
@@ -5706,8 +5317,7 @@ pub struct WhenEquationList {
 /// Type derived for non-terminal when_statement
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct WhenStatement {
     pub when0: crate::ir::ast::StatementBlock,
     pub when_statement_list: Vec<WhenStatementList>,
@@ -5717,8 +5327,7 @@ pub struct WhenStatement {
 /// Type derived for non-terminal when_statementList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct WhenStatementList {
     pub elsewhen0: crate::ir::ast::StatementBlock,
 }
@@ -5727,8 +5336,7 @@ pub struct WhenStatementList {
 /// Type derived for non-terminal while
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct While {
     pub r#while: crate::ir::ast::Token, /* while */
 }
@@ -5737,8 +5345,7 @@ pub struct While {
 /// Type derived for non-terminal while_statement
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct WhileStatement {
     pub expression: crate::ir::ast::Expression,
     pub while_statement_list: Vec<WhileStatementList>,
@@ -5748,8 +5355,7 @@ pub struct WhileStatement {
 /// Type derived for non-terminal while_statementList
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct WhileStatementList {
     pub statement: crate::ir::ast::Statement,
 }
@@ -5758,8 +5364,7 @@ pub struct WhileStatementList {
 /// Type derived for non-terminal within
 ///
 #[allow(dead_code)]
-#[derive(Builder, Debug, Clone)]
-#[builder(crate = "parol_runtime::derive_builder")]
+#[derive(Debug, Clone)]
 pub struct Within {
     pub within: crate::ir::ast::Token, /* within */
 }
@@ -6079,6 +5684,8 @@ pub enum ASTType {
     WhileStatementList(Vec<WhileStatementList>),
     Within(Within),
 }
+
+// -------------------------------------------------------------------------------------------------
 
 /// Auto-implemented adapter grammar
 ///
@@ -8509,7 +8116,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let enum_class_specifier_group_0_built = EnumClassSpecifierGroupEnumClassSpecifierOpt {
-            enum_class_specifier_opt: enum_class_specifier_opt.map(Box::new),
+            enum_class_specifier_opt,
         };
         let enum_class_specifier_group_0_built =
             EnumClassSpecifierGroup::EnumClassSpecifierOpt(enum_class_specifier_group_0_built);
@@ -11385,7 +10992,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let class_modification_opt =
             pop_item!(self, class_modification_opt, ClassModificationOpt, context);
         let class_modification_built = ClassModification {
-            class_modification_opt: class_modification_opt.map(Box::new),
+            class_modification_opt,
         };
         // Calling user action here
         self.user_grammar
@@ -11446,11 +11053,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, argument_list_list, ArgumentListList, context);
         let argument = pop_item!(self, argument, Argument, context);
         let argument_list_built = ArgumentList {
-            argument: Box::new(
-                (&argument)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            argument: (&argument)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             argument_list_list,
         };
         // Calling user action here
@@ -11521,8 +11126,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let argument_0_built = ArgumentElementModificationOrReplaceable {
             element_modification_or_replaceable: Box::new(element_modification_or_replaceable),
         };
-        let argument_0_built =
-            Argument::ElementModificationOrReplaceable(Box::new(argument_0_built));
+        let argument_0_built = Argument::ElementModificationOrReplaceable(argument_0_built);
         // Calling user action here
         self.user_grammar.argument(&argument_0_built)?;
         self.push(ASTType::Argument(argument_0_built), context);
@@ -11542,7 +11146,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let argument_1_built = ArgumentElementRedeclaration {
             element_redeclaration: Box::new(element_redeclaration),
         };
-        let argument_1_built = Argument::ElementRedeclaration(Box::new(argument_1_built));
+        let argument_1_built = Argument::ElementRedeclaration(argument_1_built);
         // Calling user action here
         self.user_grammar.argument(&argument_1_built)?;
         self.push(ASTType::Argument(argument_1_built), context);
@@ -11610,7 +11214,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, element_modification, ElementModification, context);
         let element_modification_or_replaceable_group_0_built =
             ElementModificationOrReplaceableGroupElementModification {
-                element_modification: Box::new(element_modification),
+                element_modification,
             };
         let element_modification_or_replaceable_group_0_built =
             ElementModificationOrReplaceableGroup::ElementModification(
@@ -11639,7 +11243,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let element_replaceable = pop_item!(self, element_replaceable, ElementReplaceable, context);
         let element_modification_or_replaceable_group_1_built =
             ElementModificationOrReplaceableGroupElementReplaceable {
-                element_replaceable: Box::new(element_replaceable),
+                element_replaceable,
             };
         let element_modification_or_replaceable_group_1_built =
             ElementModificationOrReplaceableGroup::ElementReplaceable(
@@ -11856,7 +11460,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let short_class_definition =
             pop_item!(self, short_class_definition, ShortClassDefinition, context);
         let element_redeclaration_group_0_built = ElementRedeclarationGroupShortClassDefinition {
-            short_class_definition: Box::new(short_class_definition),
+            short_class_definition,
         };
         let element_redeclaration_group_0_built =
             ElementRedeclarationGroup::ShortClassDefinition(element_redeclaration_group_0_built);
@@ -11879,9 +11483,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_clause1 = pop_item!(self, component_clause1, ComponentClause1, context);
-        let element_redeclaration_group_1_built = ElementRedeclarationGroupComponentClause1 {
-            component_clause1: Box::new(component_clause1),
-        };
+        let element_redeclaration_group_1_built =
+            ElementRedeclarationGroupComponentClause1 { component_clause1 };
         let element_redeclaration_group_1_built =
             ElementRedeclarationGroup::ComponentClause1(element_redeclaration_group_1_built);
         self.push(
@@ -11904,7 +11507,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let element_replaceable = pop_item!(self, element_replaceable, ElementReplaceable, context);
         let element_redeclaration_group_2_built = ElementRedeclarationGroupElementReplaceable {
-            element_replaceable: Box::new(element_replaceable),
+            element_replaceable,
         };
         let element_redeclaration_group_2_built =
             ElementRedeclarationGroup::ElementReplaceable(element_redeclaration_group_2_built);
@@ -12028,7 +11631,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let short_class_definition =
             pop_item!(self, short_class_definition, ShortClassDefinition, context);
         let element_replaceable_group_0_built = ElementReplaceableGroupShortClassDefinition {
-            short_class_definition: Box::new(short_class_definition),
+            short_class_definition,
         };
         let element_replaceable_group_0_built =
             ElementReplaceableGroup::ShortClassDefinition(element_replaceable_group_0_built);
@@ -12051,9 +11654,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_clause1 = pop_item!(self, component_clause1, ComponentClause1, context);
-        let element_replaceable_group_1_built = ElementReplaceableGroupComponentClause1 {
-            component_clause1: Box::new(component_clause1),
-        };
+        let element_replaceable_group_1_built =
+            ElementReplaceableGroupComponentClause1 { component_clause1 };
         let element_replaceable_group_1_built =
             ElementReplaceableGroup::ComponentClause1(element_replaceable_group_1_built);
         self.push(
@@ -13905,7 +13507,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
                     .map_err(parol_runtime::ParolError::UserError)?,
             ),
         };
-        let expression_0_built = Expression::SimpleExpression(Box::new(expression_0_built));
+        let expression_0_built = Expression::SimpleExpression(expression_0_built);
         // Calling user action here
         self.user_grammar.expression(&expression_0_built)?;
         self.push(ASTType::Expression(expression_0_built), context);
@@ -13924,7 +13526,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let expression_1_built = ExpressionIfExpression {
             if_expression: Box::new(if_expression),
         };
-        let expression_1_built = Expression::IfExpression(Box::new(expression_1_built));
+        let expression_1_built = Expression::IfExpression(expression_1_built);
         // Calling user action here
         self.user_grammar.expression(&expression_1_built)?;
         self.push(ASTType::Expression(expression_1_built), context);
@@ -13957,11 +13559,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let expression = pop_item!(self, expression, Expression, context);
         self.pop(context);
         let if_expression_built = IfExpression {
-            expression: Box::new(
-                (&expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            expression: (&expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             expression0: (&expression0)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
@@ -14152,11 +13752,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let logical_term = pop_item!(self, logical_term, LogicalTerm, context);
         let logical_expression_built = LogicalExpression {
-            logical_term: Box::new(
-                (&logical_term)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            logical_term: (&logical_term)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             logical_expression_list,
         };
         // Calling user action here
@@ -14236,11 +13834,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, logical_term_list, LogicalTermList, context);
         let logical_factor = pop_item!(self, logical_factor, LogicalFactor, context);
         let logical_term_built = LogicalTerm {
-            logical_factor: Box::new(
-                (&logical_factor)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            logical_factor: (&logical_factor)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             logical_term_list,
         };
         // Calling user action here
@@ -14305,11 +13901,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let logical_factor_opt = pop_item!(self, logical_factor_opt, LogicalFactorOpt, context);
         let logical_factor_built = LogicalFactor {
             logical_factor_opt,
-            relation: Box::new(
-                (&relation)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            relation: (&relation)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
         };
         // Calling user action here
         self.user_grammar.logical_factor(&logical_factor_built)?;
@@ -14362,11 +13956,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let arithmetic_expression =
             pop_item!(self, arithmetic_expression, ArithmeticExpression, context);
         let relation_built = Relation {
-            arithmetic_expression: Box::new(
-                (&arithmetic_expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            arithmetic_expression: (&arithmetic_expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             relation_opt,
         };
         // Calling user action here
@@ -14584,11 +14176,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let arithmetic_expression_built = ArithmeticExpression {
             arithmetic_expression_opt,
-            term: Box::new(
-                (&term)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            term: (&term)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             arithmetic_expression_list,
         };
         // Calling user action here
@@ -14920,11 +14510,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let factor_list = pop_and_reverse_item!(self, factor_list, FactorList, context);
         let primary = pop_item!(self, primary, Primary, context);
         let factor_built = Factor {
-            primary: Box::new(
-                (&primary)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            primary: (&primary)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             factor_list,
         };
         // Calling user action here
@@ -15093,7 +14681,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let global_function_call =
             pop_item!(self, global_function_call, GlobalFunctionCall, context);
         let primary_4_built = PrimaryGlobalFunctionCall {
-            global_function_call: Box::new(global_function_call),
+            global_function_call,
         };
         let primary_4_built = Primary::GlobalFunctionCall(primary_4_built);
         // Calling user action here
@@ -15111,9 +14699,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_primary = pop_item!(self, component_primary, ComponentPrimary, context);
-        let primary_5_built = PrimaryComponentPrimary {
-            component_primary: Box::new(component_primary),
-        };
+        let primary_5_built = PrimaryComponentPrimary { component_primary };
         let primary_5_built = Primary::ComponentPrimary(primary_5_built);
         // Calling user action here
         self.user_grammar.primary(&primary_5_built)?;
@@ -15130,9 +14716,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let output_primary = pop_item!(self, output_primary, OutputPrimary, context);
-        let primary_6_built = PrimaryOutputPrimary {
-            output_primary: Box::new(output_primary),
-        };
+        let primary_6_built = PrimaryOutputPrimary { output_primary };
         let primary_6_built = Primary::OutputPrimary(primary_6_built);
         // Calling user action here
         self.user_grammar.primary(&primary_6_built)?;
@@ -15149,10 +14733,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let range_primary = pop_item!(self, range_primary, RangePrimary, context);
-        let primary_7_built = PrimaryRangePrimary {
-            range_primary: Box::new(range_primary),
-        };
-        let primary_7_built = Primary::RangePrimary(Box::new(primary_7_built));
+        let primary_7_built = PrimaryRangePrimary { range_primary };
+        let primary_7_built = Primary::RangePrimary(primary_7_built);
         // Calling user action here
         self.user_grammar.primary(&primary_7_built)?;
         self.push(ASTType::Primary(primary_7_built), context);
@@ -15168,9 +14750,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let array_primary = pop_item!(self, array_primary, ArrayPrimary, context);
-        let primary_8_built = PrimaryArrayPrimary {
-            array_primary: Box::new(array_primary),
-        };
+        let primary_8_built = PrimaryArrayPrimary { array_primary };
         let primary_8_built = Primary::ArrayPrimary(primary_8_built);
         // Calling user action here
         self.user_grammar.primary(&primary_8_built)?;
@@ -15211,12 +14791,10 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, component_primary_opt, ComponentPrimaryOpt, context);
         let component_reference = pop_item!(self, component_reference, ComponentReference, context);
         let component_primary_built = ComponentPrimary {
-            component_reference: Box::new(
-                (&component_reference)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
-            component_primary_opt: component_primary_opt.map(Box::new),
+            component_reference: (&component_reference)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
+            component_primary_opt,
         };
         // Calling user action here
         self.user_grammar
@@ -15279,7 +14857,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             output_expression_list: (&output_expression_list)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            output_primary_opt: output_primary_opt.map(Box::new),
+            output_primary_opt,
         };
         // Calling user action here
         self.user_grammar.output_primary(&output_primary_built)?;
@@ -15324,11 +14902,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let array_subscripts = pop_item!(self, array_subscripts, ArraySubscripts, context);
         let output_primary_opt_group_0_built = OutputPrimaryOptGroupArraySubscripts {
-            array_subscripts: Box::new(
-                (&array_subscripts)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            array_subscripts: (&array_subscripts)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
         };
         let output_primary_opt_group_0_built =
             OutputPrimaryOptGroup::ArraySubscripts(output_primary_opt_group_0_built);
@@ -15396,7 +14972,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, range_primary_list, RangePrimaryList, context);
         let expression_list = pop_item!(self, expression_list, ExpressionList, context);
         let range_primary_built = RangePrimary {
-            expression_list: Box::new(expression_list),
+            expression_list,
             range_primary_list,
         };
         // Calling user action here
@@ -15457,9 +15033,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let array_arguments = pop_item!(self, array_arguments, ArrayArguments, context);
-        let array_primary_built = ArrayPrimary {
-            array_arguments: Box::new(array_arguments),
-        };
+        let array_primary_built = ArrayPrimary { array_arguments };
         // Calling user action here
         self.user_grammar.array_primary(&array_primary_built)?;
         self.push(ASTType::ArrayPrimary(array_primary_built), context);
@@ -15755,7 +15329,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             ident: (&ident)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            component_reference_opt0: component_reference_opt0.map(Box::new),
+            component_reference_opt0,
             component_reference_list,
         };
         // Calling user action here
@@ -15956,7 +15530,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let function_call_args_opt =
             pop_item!(self, function_call_args_opt, FunctionCallArgsOpt, context);
         let function_call_args_built = FunctionCallArgs {
-            function_call_args_opt: function_call_args_opt.map(Box::new),
+            function_call_args_opt,
         };
         // Calling user action here
         self.user_grammar
@@ -16014,15 +15588,13 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, function_arguments_opt, FunctionArgumentsOpt, context);
         let expression = pop_item!(self, expression, Expression, context);
         let function_arguments_0_built = FunctionArgumentsExpressionFunctionArgumentsOpt {
-            expression: Box::new(
-                (&expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
-            function_arguments_opt: function_arguments_opt.map(Box::new),
+            expression: (&expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
+            function_arguments_opt,
         };
         let function_arguments_0_built =
-            FunctionArguments::ExpressionFunctionArgumentsOpt(Box::new(function_arguments_0_built));
+            FunctionArguments::ExpressionFunctionArgumentsOpt(function_arguments_0_built);
         // Calling user action here
         self.user_grammar
             .function_arguments(&function_arguments_0_built)?;
@@ -16059,13 +15631,13 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let function_arguments_1_built =
             FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0 {
-                function_partial_application: Box::new(function_partial_application),
-                function_arguments_opt0: function_arguments_opt0.map(Box::new),
+                function_partial_application,
+                function_arguments_opt0,
             };
         let function_arguments_1_built =
-            FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(Box::new(
+            FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(
                 function_arguments_1_built,
-            ));
+            );
         // Calling user action here
         self.user_grammar
             .function_arguments(&function_arguments_1_built)?;
@@ -16085,11 +15657,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let named_arguments = pop_item!(self, named_arguments, NamedArguments, context);
-        let function_arguments_2_built = FunctionArgumentsNamedArguments {
-            named_arguments: Box::new(named_arguments),
-        };
+        let function_arguments_2_built = FunctionArgumentsNamedArguments { named_arguments };
         let function_arguments_2_built =
-            FunctionArguments::NamedArguments(Box::new(function_arguments_2_built));
+            FunctionArguments::NamedArguments(function_arguments_2_built);
         // Calling user action here
         self.user_grammar
             .function_arguments(&function_arguments_2_built)?;
@@ -16364,12 +15934,10 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let array_arguments_opt = pop_item!(self, array_arguments_opt, ArrayArgumentsOpt, context);
         let expression = pop_item!(self, expression, Expression, context);
         let array_arguments_built = ArrayArguments {
-            expression: Box::new(
-                (&expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
-            array_arguments_opt: array_arguments_opt.map(Box::new),
+            expression: (&expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
+            array_arguments_opt,
         };
         // Calling user action here
         self.user_grammar.array_arguments(&array_arguments_built)?;
@@ -16423,7 +15991,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let array_arguments_opt_group_0_built = ArrayArgumentsOptGroupCommaArrayArgumentsNonFirst {
-            array_arguments_non_first: Box::new(array_arguments_non_first),
+            array_arguments_non_first,
         };
         let array_arguments_opt_group_0_built =
             ArrayArgumentsOptGroup::CommaArrayArgumentsNonFirst(array_arguments_opt_group_0_built);
@@ -16448,10 +16016,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let for_indices = pop_item!(self, for_indices, ForIndices, context);
         let r#for = pop_item!(self, r#for, For, context);
-        let array_arguments_opt_group_1_built = ArrayArgumentsOptGroupForForIndices {
-            r#for,
-            for_indices: Box::new(for_indices),
-        };
+        let array_arguments_opt_group_1_built =
+            ArrayArgumentsOptGroupForForIndices { r#for, for_indices };
         let array_arguments_opt_group_1_built =
             ArrayArgumentsOptGroup::ForForIndices(array_arguments_opt_group_1_built);
         self.push(
@@ -16676,14 +16242,11 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let expression = pop_item!(self, expression, Expression, context);
         let function_argument_1_built = FunctionArgumentExpression {
-            expression: Box::new(
-                (&expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            expression: (&expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
         };
-        let function_argument_1_built =
-            FunctionArgument::Expression(Box::new(function_argument_1_built));
+        let function_argument_1_built = FunctionArgument::Expression(function_argument_1_built);
         // Calling user action here
         self.user_grammar
             .function_argument(&function_argument_1_built)?;
@@ -16790,7 +16353,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let output_expression_list_built = OutputExpressionList {
-            output_expression_list_opt: output_expression_list_opt.map(Box::new),
+            output_expression_list_opt,
             output_expression_list_list,
         };
         // Calling user action here
@@ -16938,11 +16501,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, expression_list_list, ExpressionListList, context);
         let expression = pop_item!(self, expression, Expression, context);
         let expression_list_built = ExpressionList {
-            expression: Box::new(
-                (&expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            expression: (&expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             expression_list_list,
         };
         // Calling user action here
@@ -17012,11 +16573,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, array_subscripts_list, ArraySubscriptsList, context);
         let subscript = pop_item!(self, subscript, Subscript, context);
         let array_subscripts_built = ArraySubscripts {
-            subscript: Box::new(
-                (&subscript)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            subscript: (&subscript)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
             array_subscripts_list,
         };
         // Calling user action here
@@ -17099,11 +16658,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let expression = pop_item!(self, expression, Expression, context);
         let subscript_1_built = SubscriptExpression {
-            expression: Box::new(
-                (&expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            expression: (&expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
         };
         let subscript_1_built = Subscript::Expression(subscript_1_built);
         // Calling user action here
@@ -17300,7 +16857,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let annotation = pop_item!(self, annotation, Annotation, context);
         let annotation_clause_built = AnnotationClause {
             annotation,
-            class_modification: Box::new(class_modification),
+            class_modification,
         };
         // Calling user action here
         self.user_grammar

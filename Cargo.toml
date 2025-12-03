@@ -22,24 +22,22 @@ indexmap = { version = "2.7.1", features = ["serde"] }
 miette = { version = "7.4.0", features = ["fancy"] }
 minijinja = { version = "2.8.0", features = ["json"] }
 owo-colors = "4.0"
-parol = "3.0.1"
-parol_runtime = "3.0.0"
+parol = "3.1.0"
+parol_runtime = "3.1.0"
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 thiserror = "2.0"
 
-# LSP dependencies
-lsp-server = { version = "0.7", optional = true }
-lsp-types = { version = "0.97", optional = true }
+# LSP dependencies (always included)
+lsp-server = "0.7"
+lsp-types = "0.97"
 
 # Python bindings
 pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 
 [features]
 regen-parser = []
-default = ["lsp"]
-lsp = ["lsp-server", "lsp-types"]
 python = ["pyo3"]
 
 [lib]
@@ -50,7 +48,6 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "rumoca-lsp"
 path = "src/bin/rumoca_lsp.rs"
-required-features = ["lsp"]
 
 [[bin]]
 name = "rumoca-fmt"

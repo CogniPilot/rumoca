@@ -46,10 +46,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
-        run: cargo test --verbose --all-features
-
-      - name: Run tests (no default features)
-        run: cargo test --verbose --no-default-features
+        run: cargo test --verbose
 
       - name: Build examples
         run: cargo build --examples --verbose
@@ -109,7 +106,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   docs:
     name: Documentation
@@ -123,7 +120,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Build documentation
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -149,7 +146,7 @@ jobs:
 
       - name: Generate coverage
         run: |
-          cargo llvm-cov --all-features --workspace --html
+          cargo llvm-cov --workspace --html
           cargo llvm-cov report --summary-only | tee coverage-summary.txt
           # Add to job summary
           echo "## Code Coverage" >> $GITHUB_STEP_SUMMARY

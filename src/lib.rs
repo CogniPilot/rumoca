@@ -3,7 +3,7 @@ pub mod dae;
 pub mod fmt;
 pub mod ir;
 pub mod lint;
-#[cfg(feature = "lsp")]
+
 pub mod lsp;
 pub mod modelica_grammar;
 #[cfg(feature = "python")]

@@ -45,7 +45,7 @@ pub fn collect_array_elements(
     let mut elements = Vec::new();
 
     // First element
-    elements.push((*args.expression).clone());
+    elements.push(args.expression.clone());
 
     // Collect remaining elements from the optional chain
     if let Some(opt) = &args.array_arguments_opt {

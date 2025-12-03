@@ -21,7 +21,7 @@
 //! - Call hierarchy
 //! - Document links
 
-#![cfg(feature = "lsp")]
+
 
 mod common;
 
