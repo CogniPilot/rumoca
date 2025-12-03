@@ -22,7 +22,7 @@ fn test_bouncing_ball_dae_ir_json() {
     // Validate basic structure
     assert_eq!(json_value["ir_version"], "dae-0.1.0");
     assert_eq!(json_value["base_modelica_version"], "0.1");
-    assert_eq!(json_value["model_name"], "GeneratedModel");
+    assert_eq!(json_value["model_name"], "BouncingBall");
 
     // Validate variables is an object with classified arrays
     let vars = &json_value["variables"];
@@ -143,7 +143,7 @@ fn test_integrator_dae_ir_json() {
 
     // Basic validation
     assert_eq!(json_value["ir_version"], "dae-0.1.0");
-    assert_eq!(json_value["model_name"], "GeneratedModel");
+    assert_eq!(json_value["model_name"], "Integrator");
 
     // Should have classified variables
     let vars = &json_value["variables"];

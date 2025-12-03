@@ -49,6 +49,7 @@ const GIT_VERSION: &str = git_version!(fallback = "unknown");
 pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // create default Dae struct
     let mut dae = Dae {
+        model_name: fclass.name.text.clone(),
         rumoca_version: env!("CARGO_PKG_VERSION").to_string(),
         git_version: GIT_VERSION.to_string(),
         t: Component {

@@ -186,7 +186,7 @@ def test_integration_with_cyecca(tmp_path):
     model = import_base_modelica(json_path)
 
     assert model is not None
-    assert model.name == "GeneratedModel"
+    assert model.name == "BouncingBall"
     assert len(model.variables) > 0
     assert len(model.equations) > 0
 

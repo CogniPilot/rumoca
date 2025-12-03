@@ -42,7 +42,7 @@ impl<'a> Serialize for DaeIR<'a> {
 
         map.serialize_entry("ir_version", "dae-0.1.0")?;
         map.serialize_entry("base_modelica_version", "0.1")?;
-        map.serialize_entry("model_name", "GeneratedModel")?;
+        map.serialize_entry("model_name", &self.dae.model_name)?;
 
         // Variables - classified according to DAE formalism
         map.serialize_entry("variables", &ClassifiedVariables { dae: self.dae })?;

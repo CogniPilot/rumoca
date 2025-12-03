@@ -51,14 +51,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dae {
-    pub rumoca_version: String, // version of rumoca used to generate this DAE
-    pub git_version: String,    // git hash of rumoca used to generate this DAE
-    pub model_hash: String,     // md5 hash of the model used to generate this DAE
-    pub template_hash: String,  // md5 hash of the template used to generate this
-    pub t: Component,           // time
-    pub p: IndexMap<String, Component>, // parameters
+    pub model_name: String,              // name of the compiled model
+    pub rumoca_version: String,          // version of rumoca used to generate this DAE
+    pub git_version: String,             // git hash of rumoca used to generate this DAE
+    pub model_hash: String,              // md5 hash of the model used to generate this DAE
+    pub template_hash: String,           // md5 hash of the template used to generate this
+    pub t: Component,                    // time
+    pub p: IndexMap<String, Component>,  // parameters
     pub cp: IndexMap<String, Component>, // constant parameters (ADDED)
-    pub x: IndexMap<String, Component>, // continuous states
+    pub x: IndexMap<String, Component>,  // continuous states
     // NOTE: x_dot removed - derivatives remain as der(x) function calls in equations
     // for Base Modelica compliance. Templates extract derivatives as needed.
     pub y: IndexMap<String, Component>,     // alg. variables
