@@ -27,15 +27,14 @@ parol_runtime = "3.0.0"
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-# parol_runtime = "2.2.1"
-thiserror = "1.0"
+thiserror = "2.0"
 
 # LSP dependencies
 lsp-server = { version = "0.7", optional = true }
 lsp-types = { version = "0.97", optional = true }
 
 # Python bindings
-pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 
 [features]
 regen-parser = []
