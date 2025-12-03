@@ -379,6 +379,15 @@ jobs:
         id: tag
         run: echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+      # Publish to crates.io FIRST (before downloading artifacts that would pollute the working dir)
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -464,16 +473,6 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Publish to crates.io
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        continue-on-error: true
 
       # Publish to PyPI
       - uses: actions/setup-python@v5
