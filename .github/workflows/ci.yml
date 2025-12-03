@@ -224,21 +224,33 @@ jobs:
 
       - name: Strip binary (Linux)
         if: runner.os == 'Linux' && !matrix.cross
-        run: strip target/${{ matrix.target }}/release/rumoca
+        run: |
+          strip target/${{ matrix.target }}/release/rumoca
+          strip target/${{ matrix.target }}/release/rumoca-lsp
 
       - name: Strip binary (Linux ARM64 cross)
         if: matrix.cross
-        run: aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca
+        run: |
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca-lsp
 
       - name: Strip binary (macOS)
         if: runner.os == 'macOS'
-        run: strip target/${{ matrix.target }}/release/rumoca
+        run: |
+          strip target/${{ matrix.target }}/release/rumoca
+          strip target/${{ matrix.target }}/release/rumoca-lsp
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
           path: ./target/${{ matrix.target }}/release/rumoca${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+      - name: Upload LSP binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}-lsp
+          path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ matrix.os == 'windows-latest' && '.exe' || '' }}
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
@@ -328,10 +340,28 @@ jobs:
           path: python/dist
 
   build-vscode-extension:
-    name: Build VS Code Extension
+    name: Build VS Code Extension (${{ matrix.target }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test]
+    needs: [lint, test, build-rust-binaries]
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: win32-x64
+            rust_artifact: rumoca-windows-x86_64.exe-lsp
+            binary_name: rumoca-lsp.exe
+          - target: darwin-x64
+            rust_artifact: rumoca-macos-x86_64-lsp
+            binary_name: rumoca-lsp
+          - target: darwin-arm64
+            rust_artifact: rumoca-macos-aarch64-lsp
+            binary_name: rumoca-lsp
+          - target: linux-x64
+            rust_artifact: rumoca-linux-x86_64-lsp
+            binary_name: rumoca-lsp
+          - target: linux-arm64
+            rust_artifact: rumoca-linux-aarch64-lsp
+            binary_name: rumoca-lsp
     steps:
       - uses: actions/checkout@v4
 
@@ -340,25 +370,39 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Download LSP binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.rust_artifact }}
+          path: editors/vscode/bin
+
+      - name: Prepare binary
+        run: |
+          cd editors/vscode/bin
+          ls -la
+          # Rename to expected name if needed
+          if [ -f "rumoca-lsp" ] && [ "${{ matrix.binary_name }}" != "rumoca-lsp" ]; then
+            mv rumoca-lsp ${{ matrix.binary_name }}
+          elif [ -f "rumoca-lsp.exe" ] && [ "${{ matrix.binary_name }}" != "rumoca-lsp.exe" ]; then
+            mv rumoca-lsp.exe ${{ matrix.binary_name }}
+          fi
+          chmod +x ${{ matrix.binary_name }} 2>/dev/null || true
+          ls -la
+
       - name: Install dependencies
         run: |
           cd editors/vscode
           npm ci
 
-      - name: Compile extension
-        run: |
-          cd editors/vscode
-          npm run compile
-
       - name: Package extension
         run: |
           cd editors/vscode
-          npx @vscode/vsce package --no-dependencies
+          npx @vscode/vsce package --target ${{ matrix.target }} --no-dependencies
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vscode-extension
+          name: vscode-extension-${{ matrix.target }}
           path: editors/vscode/*.vsix
 
   # ============================================================================
@@ -416,11 +460,13 @@ jobs:
             fi
           done
 
-          # Move VS Code extension
-          if [ -d "artifacts/vscode-extension" ]; then
-            echo "Processing VS Code artifact"
-            find "artifacts/vscode-extension" -type f -name "*.vsix" -exec cp {} vscode-ext/ \;
-          fi
+          # Move VS Code extensions (platform-specific)
+          for dir in artifacts/vscode-extension-*; do
+            if [ -d "$dir" ]; then
+              echo "Processing VS Code artifact: $dir"
+              find "$dir" -type f -name "*.vsix" -exec cp {} vscode-ext/ \;
+            fi
+          done
 
           echo "=== Rust binaries ==="
           ls -la rust-binaries/
@@ -496,11 +542,21 @@ jobs:
       - name: Publish to VS Code Marketplace
         run: |
           cd vscode-ext
-          npx @vscode/vsce publish --packagePath *.vsix
+          echo "Publishing platform-specific extensions:"
+          ls -la *.vsix
+          for vsix in *.vsix; do
+            echo "Publishing $vsix to VS Code Marketplace..."
+            npx @vscode/vsce publish --packagePath "$vsix"
+          done
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX Registry
         run: |
           cd vscode-ext
-          npx ovsx publish *.vsix -p ${{ secrets.OVSX_TOKEN }}
+          echo "Publishing platform-specific extensions:"
+          ls -la *.vsix
+          for vsix in *.vsix; do
+            echo "Publishing $vsix to Open VSX..."
+            npx ovsx publish "$vsix" -p ${{ secrets.OVSX_TOKEN }}
+          done

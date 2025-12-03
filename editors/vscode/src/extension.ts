@@ -29,12 +29,13 @@ function findInPath(command: string): string | undefined {
     return undefined;
 }
 
-export async function activate(_context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     const startTime = Date.now();
     outputChannel = vscode.window.createOutputChannel('Rumoca Modelica');
 
     const config = vscode.workspace.getConfiguration('rumoca');
     const debug = config.get<boolean>('debug') ?? false;
+    const useSystemServer = config.get<boolean>('useSystemServer') ?? false;
 
     const log = (msg: string) => {
         outputChannel.appendLine(msg);
@@ -57,34 +58,61 @@ export async function activate(_context: vscode.ExtensionContext) {
 
     // Find the server executable
     let serverPath = config.get<string>('serverPath');
+    let usingSystemFallback = false;
 
     const elapsed = () => `${Date.now() - startTime}ms`;
 
-    if (serverPath) {
-        debugLog(`[${elapsed()}] Using configured serverPath: ${serverPath}`);
-    } else {
-        debugLog(`[${elapsed()}] No serverPath configured, searching for rumoca-lsp...`);
-
-        // Try to find rumoca-lsp in PATH
-        debugLog(`[${elapsed()}] Searching PATH for rumoca-lsp...`);
+    // Helper to find system-installed rumoca-lsp
+    const findSystemServer = (): string | undefined => {
+        // Try PATH first
         const pathResult = findInPath('rumoca-lsp');
         if (pathResult) {
-            serverPath = pathResult;
-            debugLog(`[${elapsed()}] Found rumoca-lsp in PATH: ${serverPath}`);
+            debugLog(`[${elapsed()}] Found rumoca-lsp in PATH: ${pathResult}`);
+            return pathResult;
+        }
+        // Try cargo installation location
+        const cargoPath = path.join(process.env.HOME || '', '.cargo', 'bin', 'rumoca-lsp');
+        if (fs.existsSync(cargoPath)) {
+            debugLog(`[${elapsed()}] Found rumoca-lsp at cargo location: ${cargoPath}`);
+            return cargoPath;
+        }
+        return undefined;
+    };
+
+    if (serverPath) {
+        // Explicit path configured - use it directly
+        debugLog(`[${elapsed()}] Using configured serverPath: ${serverPath}`);
+    } else if (useSystemServer) {
+        // User explicitly wants system server
+        debugLog(`[${elapsed()}] useSystemServer is enabled, searching for system rumoca-lsp...`);
+        serverPath = findSystemServer();
+        if (serverPath) {
+            log(`Using system-installed rumoca-lsp: ${serverPath}`);
+        }
+    } else {
+        debugLog(`[${elapsed()}] Searching for rumoca-lsp...`);
+
+        // 1. Check for bundled binary (platform-specific extension)
+        const binaryName = process.platform === 'win32' ? 'rumoca-lsp.exe' : 'rumoca-lsp';
+        const bundledPath = path.join(context.extensionPath, 'bin', binaryName);
+        debugLog(`[${elapsed()}] Checking for bundled binary: ${bundledPath}`);
+        if (fs.existsSync(bundledPath)) {
+            serverPath = bundledPath;
+            log(`Using bundled rumoca-lsp`);
+            debugLog(`[${elapsed()}] Found bundled rumoca-lsp: ${serverPath}`);
         } else {
-            debugLog(`[${elapsed()}] Not found in PATH, checking cargo location...`);
-            // Try common cargo installation location
-            const cargoPath = path.join(process.env.HOME || '', '.cargo', 'bin', 'rumoca-lsp');
-            if (fs.existsSync(cargoPath)) {
-                serverPath = cargoPath;
-                debugLog(`[${elapsed()}] Found rumoca-lsp at: ${serverPath}`);
+            // 2. Fall back to system-installed version
+            debugLog(`[${elapsed()}] No bundled binary, searching for system rumoca-lsp...`);
+            serverPath = findSystemServer();
+            if (serverPath) {
+                usingSystemFallback = true;
             }
         }
     }
 
     if (!serverPath) {
         const installAction = 'Install with cargo';
-        const msg = 'rumoca-lsp not found. Install it with: cargo install rumoca --features lsp';
+        const msg = 'rumoca-lsp not found. Install it with: cargo install rumoca';
         log(`ERROR: ${msg}`);
 
         const selection = await vscode.window.showErrorMessage(msg, installAction, 'Configure Path');
@@ -92,11 +120,25 @@ export async function activate(_context: vscode.ExtensionContext) {
             // Open terminal with install command
             const terminal = vscode.window.createTerminal('Rumoca Install');
             terminal.show();
-            terminal.sendText('cargo install rumoca --features lsp');
+            terminal.sendText('cargo install rumoca');
         } else if (selection === 'Configure Path') {
             vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.serverPath');
         }
         return;
+    }
+
+    // Show warning if using system fallback (bundled binary not found)
+    if (usingSystemFallback) {
+        log(`Warning: Using system-installed rumoca-lsp: ${serverPath}`);
+        log('The bundled binary was not found. This may indicate a platform mismatch.');
+        vscode.window.showWarningMessage(
+            `Using system-installed rumoca-lsp. Set "rumoca.useSystemServer": true to suppress this warning.`,
+            'Open Settings'
+        ).then(selection => {
+            if (selection === 'Open Settings') {
+                vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.useSystemServer');
+            }
+        });
     }
 
     // Verify the binary exists and is executable

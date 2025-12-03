@@ -74,6 +74,11 @@
           "type": "boolean",
           "default": false,
           "description": "Enable debug logging for the extension and language server."
+        },
+        "rumoca.useSystemServer": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use system-installed rumoca-lsp instead of the bundled binary. Enable this if you want to use a custom build or a different version."
         }
       }
     }

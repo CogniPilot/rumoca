@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **VS Code Extension: Bundled Language Server**
+  - Platform-specific extensions now include bundled `rumoca-lsp` binary
+  - No separate installation required for most users
+  - Automatic fallback to system-installed server with warning
+  - New `rumoca.useSystemServer` setting to prefer system server
+  - New `rumoca.debug` setting for verbose logging
+
+### Changed
+- VS Code extension installation simplified - works out of the box
+- CI workflow builds platform-specific `.vsix` files (win32-x64, darwin-x64, darwin-arm64, linux-x64, linux-arm64)
+
 ## [0.7.0] - 2025-11-30
 
 ### Added

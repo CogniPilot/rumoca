@@ -64,26 +64,11 @@ result = rumoca.compile_source("""
 
 ### VSCode Extension
 
-**Prerequisites:**
-
-1. Install [Rust](https://rustup.rs/) if you haven't already (Windows users: see [rustup.rs](https://rustup.rs/) for installer):
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-
-2. Ensure `~/.cargo/bin` is in your PATH (the rustup installer typically adds this automatically). You may need to restart your terminal or run:
-   ```bash
-   source ~/.cargo/env
-   ```
-
-3. Install the language server:
-   ```bash
-   cargo install rumoca
-   ```
-
-**Install the Extension:**
-
 Search for "Rumoca Modelica" in the VSCode Extensions marketplace, or install from the [marketplace page](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica).
+
+The extension includes a bundled `rumoca-lsp` language server, so **no additional installation is required**.
+
+To use a custom or development version of `rumoca-lsp`, see the [extension documentation](editors/vscode/README.md).
 
 **Features:**
 - Syntax highlighting (semantic tokens)
