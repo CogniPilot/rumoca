@@ -40,17 +40,21 @@ jobs:
 
       - name: Install maturin and build
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           pip install maturin pytest
           cd python
           maturin develop --release
 
       - name: Test import and native bindings
         run: |
+          source .venv/bin/activate
           python -c "import rumoca; print(f'Version: {rumoca.__version__}'); print(f'Native: {rumoca.NATIVE_AVAILABLE}')"
           python -c "import rumoca; assert rumoca.NATIVE_AVAILABLE, 'Native bindings not available!'"
 
       - name: Run Python tests
         run: |
+          source .venv/bin/activate
           cd python
           python -m pytest tests/ -v
 
