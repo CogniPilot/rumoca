@@ -8,3 +8,4 @@ build/
 __pycache__/
 dist/
 *.egg-info/
+_native.cpython*
