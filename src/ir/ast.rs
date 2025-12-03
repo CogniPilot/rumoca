@@ -118,7 +118,7 @@ pub struct Component {
     pub start_is_modification: bool,
     /// Array dimensions - empty for scalars, e.g., [2, 3] for a 2x3 matrix
     pub shape: Vec<usize>,
-    /// True if shape is from a modification (shape=x), false if from subscript [x]
+    /// True if shape is from a modification (shape=x), false if from subscript \[x\]
     pub shape_is_modification: bool,
     /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)
     pub annotation: Vec<Expression>,
