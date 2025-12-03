@@ -3,9 +3,6 @@
 //! Provides LSP integration for code formatting.
 //! The actual formatting logic is in the `fmt` module.
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use std::collections::HashMap;
 
 use lsp_types::{DocumentFormattingParams, Position, Range, TextEdit, Uri};

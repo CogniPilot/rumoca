@@ -25,8 +25,6 @@
 
 mod common;
 
-use std::collections::HashMap;
-
 use lsp_types::{
     CallHierarchyPrepareParams, CodeActionContext, CodeActionParams, CodeLensParams,
     CompletionParams, CompletionTriggerKind, DocumentFormattingParams, DocumentLinkParams,
@@ -37,20 +35,15 @@ use lsp_types::{
 };
 
 use rumoca::lsp::{
-    WorkspaceState, compute_diagnostics, get_semantic_token_legend, handle_code_action,
-    handle_code_lens, handle_completion, handle_document_links, handle_document_symbols,
-    handle_folding_range, handle_formatting, handle_goto_definition, handle_hover,
-    handle_inlay_hints, handle_prepare_call_hierarchy, handle_references, handle_semantic_tokens,
-    handle_signature_help, handle_workspace_symbol,
+    WorkspaceState, compute_diagnostics, create_documents, get_semantic_token_legend,
+    handle_code_action, handle_code_lens, handle_completion, handle_document_links,
+    handle_document_symbols, handle_folding_range, handle_formatting, handle_goto_definition,
+    handle_hover, handle_inlay_hints, handle_prepare_call_hierarchy, handle_references,
+    handle_semantic_tokens, handle_signature_help, handle_workspace_symbol,
 };
 
 // Use common LSP test utilities
-use common::lsp::{create_documents, test_uri};
-
-// Backwards compatible alias
-fn create_test_documents(uri: &Uri, content: &str) -> HashMap<Uri, String> {
-    create_documents(uri, content)
-}
+use common::lsp::test_uri;
 
 // ============================================================================
 // Diagnostics Tests
@@ -101,7 +94,7 @@ equation
   der(x) = k * x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentSymbolParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -130,7 +123,7 @@ fn test_document_symbols_nested_classes() {
   end Inner;
 end MyPackage;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentSymbolParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -194,7 +187,7 @@ equation
   connect(AC.n, G.p);
 end SimpleCircuit;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentSymbolParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -224,7 +217,7 @@ fn test_hover_on_type() {
   Real x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = HoverParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -247,7 +240,7 @@ fn test_hover_on_variable() {
   Real x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = HoverParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -296,7 +289,7 @@ equation
   C * der(v) = i;
 end Capacitor;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
 
     // Hover over 'v' in the equation "C * der(v) = i" (line 11, character 10 is inside der(v))
     // Line 11 is:   C * der(v) = i;
@@ -352,7 +345,7 @@ equation
   der(x) = 1;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
 
     // Test going to definition from the declaration position
     let params = GotoDefinitionParams {
@@ -381,7 +374,7 @@ fn test_goto_definition_class() {
   Real x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -410,7 +403,7 @@ fn test_completion_keywords() {
     let uri = test_uri();
     let text = "mod"; // Partial keyword
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -448,7 +441,7 @@ equation
   x = sin
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -482,7 +475,7 @@ fn test_completion_modifiers() {
   Real h(
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -550,7 +543,7 @@ fn test_completion_modifiers_after_comma() {
   Real h(start=10.0,
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -603,7 +596,7 @@ equation
   ball.h = 1;
 end B;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     // Position cursor after "ball." on line "  ball.h = 1;"
     let params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
@@ -658,7 +651,7 @@ equation
   x = sin(
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = SignatureHelpParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -697,7 +690,7 @@ equation
   y = x + 1;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = ReferenceParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -737,7 +730,7 @@ equation
   y = x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = FoldingRangeParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -761,7 +754,7 @@ fn test_folding_range_comments() {
 model Test
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = FoldingRangeParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -783,7 +776,7 @@ fn test_code_action_on_diagnostic() {
   Real x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = CodeActionParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         range: Range {
@@ -823,7 +816,7 @@ equation
   x = sin(3.14);
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = InlayHintParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         range: Range {
@@ -866,7 +859,7 @@ equation
   der(x) = k * x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = SemanticTokensParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -899,7 +892,7 @@ algorithm
   y := x * 2;
 end TestFunction;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = WorkspaceSymbolParams {
         query: "Test".to_string(),
         work_done_progress_params: Default::default(),
@@ -923,7 +916,7 @@ fn test_workspace_symbols_empty_query() {
     let text = r#"model MyModel
 end MyModel;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = WorkspaceSymbolParams {
         query: "".to_string(),
         work_done_progress_params: Default::default(),
@@ -943,7 +936,7 @@ fn test_formatting_indentation() {
     let uri = test_uri();
     let text = "model Test\nReal x;\nend Test;";
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentFormattingParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         options: FormattingOptions {
@@ -978,7 +971,7 @@ equation
   x=1+2*3;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentFormattingParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         options: FormattingOptions {
@@ -1086,7 +1079,7 @@ equation
   z = myFunc(1.0);
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = CallHierarchyPrepareParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -1115,7 +1108,7 @@ fn test_document_links_imports() {
   annotation(Icon(graphics={Bitmap(fileName="resources/icon.svg")}));
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentLinkParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -1143,7 +1136,7 @@ model Test
   Real x;
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentLinkParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -1164,7 +1157,7 @@ fn test_document_links_urls() {
   </html>"));
 end Test;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     let params = DocumentLinkParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         work_done_progress_params: Default::default(),
@@ -1234,7 +1227,7 @@ fn test_empty_document() {
     let uri = test_uri();
     let text = "";
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
 
     // Document symbols on empty doc
     let params = DocumentSymbolParams {
@@ -1254,7 +1247,7 @@ fn test_empty_document() {
 fn test_nonexistent_document() {
     let uri: Uri = "file:///nonexistent.mo".parse().unwrap();
     let other_uri: Uri = "file:///other.mo".parse().unwrap();
-    let documents = create_test_documents(&other_uri, "model Test end Test;");
+    let documents = create_documents(&other_uri, "model Test end Test;");
 
     // Try to get symbols for non-existent document
     let params = DocumentSymbolParams {
@@ -1270,7 +1263,7 @@ fn test_nonexistent_document() {
 fn test_position_out_of_bounds() {
     let uri = test_uri();
     let text = "model Test end Test;";
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
 
     // Position way beyond document
     let params = HoverParams {
@@ -1412,7 +1405,7 @@ model B
   BouncingBall ball(g = 1);
 end B;"#;
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
     // Position cursor right after "ball(" - character 20 is after the opening paren
     let params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
@@ -1478,7 +1471,7 @@ fn test_malformed_modelica() {
     let uri = test_uri();
     let text = "this is not valid modelica {{{{";
 
-    let documents = create_test_documents(&uri, text);
+    let documents = create_documents(&uri, text);
 
     // Should handle gracefully
     let params = DocumentSymbolParams {

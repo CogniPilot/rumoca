@@ -4,9 +4,6 @@
 //! The module includes various `TryFrom` implementations for converting between
 //! the `modelica_grammar_trait` types and the internal `ir::ast` types.
 
-// Disable clippy warnings that can result from auto-generated Display implementations
-#![allow(clippy::extra_unused_lifetimes)]
-
 mod components;
 mod definitions;
 mod equations;
@@ -54,7 +51,7 @@ impl ModelicaGrammar<'_> {
     }
 }
 
-impl<'t> Display for modelica_grammar_trait::StoredDefinition {
+impl Display for modelica_grammar_trait::StoredDefinition {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), Error> {
         write!(f, "{:?}", self)
     }

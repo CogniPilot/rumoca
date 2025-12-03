@@ -6,9 +6,6 @@
 //! - Updates all references in the document
 //! - Workspace-wide rename across multiple files
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use std::collections::HashMap;
 
 use lsp_types::{

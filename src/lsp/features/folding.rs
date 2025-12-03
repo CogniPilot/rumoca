@@ -7,11 +7,6 @@
 //! - If/when/for blocks
 //! - Comments
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-// Allow needless_range_loop - we need both index j and lines[j], and modify loop control
-#![allow(clippy::needless_range_loop)]
-
 use std::collections::HashMap;
 
 use lsp_types::{FoldingRange, FoldingRangeKind, FoldingRangeParams, Uri};
@@ -57,8 +52,8 @@ fn collect_comment_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
             let mut end_line = start_line;
 
             // Find the closing */
-            for j in i + 1..lines.len() {
-                if lines[j].contains("*/") {
+            for (j, line) in lines.iter().enumerate().skip(i + 1) {
+                if line.contains("*/") {
                     end_line = j as u32;
                     break;
                 }
@@ -84,8 +79,8 @@ fn collect_comment_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
             let mut end_line = start_line;
 
             // Count consecutive comment lines
-            for j in i + 1..lines.len() {
-                if lines[j].trim().starts_with("//") {
+            for (j, line) in lines.iter().enumerate().skip(i + 1) {
+                if line.trim().starts_with("//") {
                     end_line = j as u32;
                 } else {
                     break;

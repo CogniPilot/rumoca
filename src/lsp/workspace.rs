@@ -6,9 +6,6 @@
 //! - Cross-file symbol lookup
 //! - Dependency tracking between files
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

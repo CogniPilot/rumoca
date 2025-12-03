@@ -5,9 +5,6 @@
 //! - Import statements (link to imported packages)
 //! - Within statements (link to parent package)
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use std::collections::HashMap;
 
 use lsp_types::{DocumentLink, DocumentLinkParams, Position, Range, Uri};

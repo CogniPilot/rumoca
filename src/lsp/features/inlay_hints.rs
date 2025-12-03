@@ -3,9 +3,6 @@
 //! Provides inline hints for:
 //! - Parameter names in function calls
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use std::collections::HashMap;
 
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Position, Uri};

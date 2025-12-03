@@ -220,8 +220,10 @@ end C;"#;
         );
 
         // Test with 0 blank lines (no spacing)
-        let mut options = FormatOptions::default();
-        options.blank_lines_between_classes = 0;
+        let options = FormatOptions {
+            blank_lines_between_classes: 0,
+            ..Default::default()
+        };
         let result = format_modelica(input, &options);
         assert!(
             result.contains("end A;\nmodel B"),
@@ -230,7 +232,10 @@ end C;"#;
         );
 
         // Test with 2 blank lines
-        options.blank_lines_between_classes = 2;
+        let options = FormatOptions {
+            blank_lines_between_classes: 2,
+            ..Default::default()
+        };
         let result = format_modelica(input, &options);
         assert!(
             result.contains("end A;\n\n\nmodel B"),

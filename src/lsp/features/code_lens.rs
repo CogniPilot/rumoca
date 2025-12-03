@@ -5,9 +5,6 @@
 //! - "Extends" information for models
 //! - Clickable "Analyze" lens to compile and show balance status for models
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use lsp_types::{CodeLens, CodeLensParams, Command, Position, Range, Uri};
 
 use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition};

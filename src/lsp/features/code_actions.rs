@@ -5,9 +5,6 @@
 //! - Remove unused variable
 //! - Add missing semicolon (future)
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use std::collections::HashMap;
 
 use lsp_types::{

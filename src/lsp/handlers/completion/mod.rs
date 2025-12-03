@@ -5,9 +5,6 @@
 //! - Workspace-wide completions (symbols from all open files)
 //! - Package/import completions
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 mod members;
 mod modifiers;
 mod scope;

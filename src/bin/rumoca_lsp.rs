@@ -21,9 +21,6 @@
 //! - Call hierarchy
 //! - Document links
 
-// Allow mutable key type warning - Uri has interior mutability but we use it correctly
-#![allow(clippy::mutable_key_type)]
-
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as NotificationTrait;
 use lsp_types::{

@@ -6,6 +6,9 @@
 //! - Setting up LSP test environments
 //! - Common assertions and test data
 
+// Allow dead_code - this is a shared utility module where different tests use different subsets
+#![allow(dead_code)]
+
 use anyhow::Result;
 use rumoca::ir::ast::StoredDefinition;
 use rumoca::modelica_grammar::ModelicaGrammar;
@@ -17,13 +20,11 @@ use std::fs;
 // =============================================================================
 
 /// Get the path to a fixture file
-#[allow(dead_code)]
 pub fn fixture_path(name: &str) -> String {
     format!("tests/fixtures/{}.mo", name)
 }
 
 /// Get the path to a fixture file with custom extension
-#[allow(dead_code)]
 pub fn fixture_path_ext(name: &str, ext: &str) -> String {
     format!("tests/fixtures/{}.{}", name, ext)
 }
@@ -33,7 +34,6 @@ pub fn fixture_path_ext(name: &str, ext: &str) -> String {
 // =============================================================================
 
 /// Parse a test file from the fixtures directory
-#[allow(dead_code)]
 pub fn parse_test_file(name: &str) -> Result<StoredDefinition> {
     let path = fixture_path(name);
     let input = fs::read_to_string(&path)
@@ -48,7 +48,6 @@ pub fn parse_test_file(name: &str) -> Result<StoredDefinition> {
 }
 
 /// Parse Modelica source code directly (for inline test models)
-#[allow(dead_code)]
 pub fn parse_source(source: &str) -> Result<StoredDefinition> {
     let mut grammar = ModelicaGrammar::new();
     parse(source, "<test>", &mut grammar)?;
@@ -63,7 +62,6 @@ pub fn parse_source(source: &str) -> Result<StoredDefinition> {
 // =============================================================================
 
 /// Compile a fixture file with the given model name
-#[allow(dead_code)]
 pub fn compile_fixture(
     fixture_name: &str,
     model_name: &str,
@@ -76,7 +74,6 @@ pub fn compile_fixture(
 }
 
 /// Compile inline source code with the given model name
-#[allow(dead_code)]
 pub fn compile_source(
     source: &str,
     model_name: &str,
@@ -92,7 +89,6 @@ pub fn compile_source(
 // =============================================================================
 
 /// Create a DAE from a fixture file
-#[allow(dead_code)]
 pub fn create_dae_from_fixture(
     fixture_name: &str,
     model_name: &str,
@@ -112,30 +108,18 @@ pub fn create_dae_from_fixture(
 #[cfg(feature = "lsp")]
 pub mod lsp {
     use lsp_types::Uri;
-    use std::collections::HashMap;
 
     /// Create a test URI for LSP tests
-    #[allow(dead_code)]
     pub fn test_uri() -> Uri {
         "file:///tmp/test.mo".parse().unwrap()
     }
 
     /// Create a test URI with a custom filename
-    #[allow(dead_code)]
     pub fn test_uri_named(name: &str) -> Uri {
         format!("file:///tmp/{}.mo", name).parse().unwrap()
     }
 
-    /// Create a document map for LSP tests
-    #[allow(dead_code)]
-    pub fn create_documents(uri: &Uri, content: &str) -> HashMap<Uri, String> {
-        let mut docs = HashMap::new();
-        docs.insert(uri.clone(), content.to_string());
-        docs
-    }
-
     /// Create a workspace state with a single document
-    #[allow(dead_code)]
     pub fn create_workspace_with_doc(
         uri: &Uri,
         content: &str,
@@ -146,13 +130,11 @@ pub mod lsp {
     }
 
     /// Helper to create TextDocumentIdentifier
-    #[allow(dead_code)]
     pub fn text_document_id(uri: &Uri) -> lsp_types::TextDocumentIdentifier {
         lsp_types::TextDocumentIdentifier { uri: uri.clone() }
     }
 
     /// Helper to create TextDocumentPositionParams
-    #[allow(dead_code)]
     pub fn position_params(
         uri: &Uri,
         line: u32,
@@ -170,21 +152,18 @@ pub mod lsp {
 // =============================================================================
 
 /// Assert that a model parses successfully
-#[allow(dead_code)]
 pub fn assert_parses(fixture_name: &str) {
     parse_test_file(fixture_name)
         .unwrap_or_else(|e| panic!("Failed to parse {}: {}", fixture_name, e));
 }
 
 /// Assert that a model compiles successfully
-#[allow(dead_code)]
 pub fn assert_compiles(fixture_name: &str, model_name: &str) {
     compile_fixture(fixture_name, model_name)
         .unwrap_or_else(|e| panic!("Failed to compile {}/{}: {}", fixture_name, model_name, e));
 }
 
 /// Assert that a model is balanced
-#[allow(dead_code)]
 pub fn assert_balanced(fixture_name: &str, model_name: &str) {
     let result = compile_fixture(fixture_name, model_name)
         .unwrap_or_else(|e| panic!("Failed to compile {}/{}: {}", fixture_name, model_name, e));
@@ -202,7 +181,6 @@ pub fn assert_balanced(fixture_name: &str, model_name: &str) {
 // =============================================================================
 
 /// A minimal valid model for quick tests
-#[allow(dead_code)]
 pub const MINIMAL_MODEL: &str = r#"model Test
   Real x;
 equation
@@ -210,7 +188,6 @@ equation
 end Test;"#;
 
 /// A model with parameters
-#[allow(dead_code)]
 pub const MODEL_WITH_PARAMS: &str = r#"model TestParams
   parameter Real k = 1.0;
   Real x;
@@ -219,7 +196,6 @@ equation
 end TestParams;"#;
 
 /// A model with a when clause
-#[allow(dead_code)]
 pub const MODEL_WITH_WHEN: &str = r#"model TestWhen
   Real x(start = 0);
   discrete Real y;
@@ -231,7 +207,6 @@ equation
 end TestWhen;"#;
 
 /// A model with nested classes
-#[allow(dead_code)]
 pub const MODEL_WITH_NESTED: &str = r#"package TestPackage
   model Inner
     Real x;
@@ -249,7 +224,6 @@ end TestPackage;"#;
 // =============================================================================
 
 /// List of all standard test fixture names (without .mo extension)
-#[allow(dead_code)]
 pub const STANDARD_FIXTURES: &[&str] = &[
     "integrator",
     "bouncing_ball",
@@ -260,7 +234,6 @@ pub const STANDARD_FIXTURES: &[&str] = &[
 ];
 
 /// List of fixtures that should parse successfully
-#[allow(dead_code)]
 pub const PARSEABLE_FIXTURES: &[&str] = &[
     "integrator",
     "bouncing_ball",

@@ -48,3 +48,13 @@ pub use handlers::{
 };
 pub use utils::parse_document;
 pub use workspace::WorkspaceState;
+
+use lsp_types::Uri;
+use std::collections::HashMap;
+
+/// Create a document map for LSP tests (helper to keep mutable_key_type allow in lsp module)
+pub fn create_documents(uri: &Uri, content: &str) -> HashMap<Uri, String> {
+    let mut docs = HashMap::new();
+    docs.insert(uri.clone(), content.to_string());
+    docs
+}

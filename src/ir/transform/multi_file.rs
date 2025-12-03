@@ -581,13 +581,15 @@ mod tests {
 
     #[test]
     fn test_merge_with_within_clause() {
-        let mut def = StoredDefinition::default();
-        def.within = Some(crate::ir::ast::Name {
-            name: vec![crate::ir::ast::Token {
-                text: "MyPackage".to_string(),
-                ..Default::default()
-            }],
-        });
+        let mut def = StoredDefinition {
+            within: Some(crate::ir::ast::Name {
+                name: vec![crate::ir::ast::Token {
+                    text: "MyPackage".to_string(),
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        };
         let class = ClassDefinition {
             name: crate::ir::ast::Token {
                 text: "TestModel".to_string(),
@@ -647,7 +649,7 @@ mod tests {
         let mut file = std::fs::File::create(&order_path).unwrap();
         writeln!(file, "// This is a comment").unwrap();
         writeln!(file, "Types").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "Functions").unwrap();
         writeln!(file, "  Examples  ").unwrap(); // with whitespace
         drop(file);
