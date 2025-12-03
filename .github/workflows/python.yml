@@ -16,8 +16,49 @@ permissions:
   id-token: write
 
 jobs:
-  # Build wheels for Linux (using container for manylinux compatibility)
+  # ==========================================================================
+  # Quick test job for PRs and pushes (no multi-platform wheel builds)
+  # ==========================================================================
+  test:
+    name: Test Python Bindings
+    if: "!startsWith(github.ref, 'refs/tags/v')"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install maturin and build
+        run: |
+          pip install maturin pytest
+          cd python
+          maturin develop --release
+
+      - name: Test import and native bindings
+        run: |
+          python -c "import rumoca; print(f'Version: {rumoca.__version__}'); print(f'Native: {rumoca.NATIVE_AVAILABLE}')"
+          python -c "import rumoca; assert rumoca.NATIVE_AVAILABLE, 'Native bindings not available!'"
+
+      - name: Run Python tests
+        run: |
+          cd python
+          python -m pytest tests/ -v
+
+  # ==========================================================================
+  # Release builds - only on tags
+  # ==========================================================================
   build-linux:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -48,8 +89,8 @@ jobs:
           name: wheels-linux-x86_64
           path: python/dist
 
-  # Build wheels for macOS
   build-macos:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -87,8 +128,8 @@ jobs:
           name: wheels-macos-${{ matrix.platform.target }}
           path: python/dist
 
-  # Build wheels for Windows
   build-windows:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,46 +158,6 @@ jobs:
           name: wheels-windows-x64
           path: python/dist
 
-  # Test wheels on all platforms
-  test:
-    needs: [build-linux, build-macos, build-windows]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.10', '3.11', '3.12']
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Download wheels
-        uses: actions/download-artifact@v4
-        with:
-          pattern: wheels-*
-          merge-multiple: true
-          path: dist
-
-      - name: Install wheel
-        run: |
-          pip install --find-links dist rumoca
-          pip install pytest
-
-      - name: Test import and native bindings
-        run: |
-          python -c "import rumoca; print(f'Version: {rumoca.__version__}'); print(f'Native: {rumoca.NATIVE_AVAILABLE}')"
-          python -c "import rumoca; assert rumoca.NATIVE_AVAILABLE, 'Native bindings not available!'"
-
-      - name: Run Python tests
-        run: |
-          cd python
-          python -m pytest tests/ -v
-        continue-on-error: true
-
-  # Build source distribution (only on tags)
   build-sdist:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -186,10 +187,10 @@ jobs:
           name: wheels-sdist
           path: python/dist
 
-  # Publish to PyPI and GitHub Release (only on tags, after all tests pass)
+  # Publish to PyPI (only on tags, after all builds complete)
   publish:
     name: Publish to PyPI
-    needs: [build-linux, build-macos, build-windows, build-sdist, test]
+    needs: [build-linux, build-macos, build-windows, build-sdist]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment:
