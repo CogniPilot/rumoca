@@ -69,16 +69,24 @@
           ],
           "default": "off",
           "description": "Traces the communication between VS Code and the language server."
+        },
+        "rumoca.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug logging for the extension and language server."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run esbuild-base -- --minify",
+    "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "package": "npx @vscode/vsce package"
+    "package": "npm run esbuild-base -- --minify && npx @vscode/vsce package"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
@@ -89,6 +97,7 @@
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "@vscode/vsce": "^2.15.0",
+    "esbuild": "^0.27.0",
     "eslint": "^8.57.0",
     "typescript": "^5.0.0"
   }

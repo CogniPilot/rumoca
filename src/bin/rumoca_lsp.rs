@@ -51,6 +51,24 @@ use rumoca::lsp::{
 };
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global debug flag, set from initialization options
+static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Check if debug mode is enabled
+fn is_debug() -> bool {
+    DEBUG_MODE.load(Ordering::Relaxed)
+}
+
+/// Log a debug message (only if debug mode is enabled)
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if is_debug() {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     eprintln!("Starting rumoca-lsp server");
@@ -122,9 +140,18 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     };
 
     let init_params: InitializeParams = serde_json::from_value(init_params)?;
-    eprintln!("Server initialized");
+
+    // Check for debug flag in initialization options
+    if let Some(options) = &init_params.initialization_options {
+        if let Some(debug) = options.get("debug").and_then(|v| v.as_bool()) {
+            DEBUG_MODE.store(debug, Ordering::Relaxed);
+        }
+    }
+
+    debug_log!("[rumoca-lsp] Server initialized (debug mode enabled)");
 
     // Extract workspace folders for multi-file support
+    debug_log!("[rumoca-lsp] Extracting workspace folders...");
     let workspace_folders: Vec<PathBuf> = init_params
         .workspace_folders
         .unwrap_or_default()
@@ -133,6 +160,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             // Uri in lsp_types uses fluent_uri
             // Extract the file path from the URI
             let uri_str = folder.uri.as_str();
+            debug_log!("[rumoca-lsp] Processing workspace folder: {}", uri_str);
             if uri_str.starts_with("file://") {
                 Some(PathBuf::from(folder.uri.path().as_str()))
             } else {
@@ -141,7 +169,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         })
         .collect();
 
-    eprintln!("Workspace folders: {:?}", workspace_folders);
+    debug_log!("[rumoca-lsp] Workspace folders: {:?}", workspace_folders);
+    debug_log!("[rumoca-lsp] Starting main_loop (will initialize workspace)...");
 
     main_loop(connection, workspace_folders)?;
     io_threads.join()?;
@@ -155,8 +184,22 @@ fn main_loop(
     workspace_folders: Vec<PathBuf>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     // Create workspace state for multi-file support
+    debug_log!("[rumoca-lsp] Creating WorkspaceState...");
     let mut workspace = WorkspaceState::new();
+    workspace.set_debug(is_debug());
+    debug_log!("[rumoca-lsp] Calling workspace.initialize() - this scans for Modelica packages...");
+    let init_start = std::time::Instant::now();
     workspace.initialize(workspace_folders);
+    debug_log!(
+        "[rumoca-lsp] workspace.initialize() completed in {:?}",
+        init_start.elapsed()
+    );
+    debug_log!(
+        "[rumoca-lsp] Discovered {} files, {} package roots",
+        workspace.discovered_files().len(),
+        workspace.package_roots().len()
+    );
+    debug_log!("[rumoca-lsp] Ready to process messages");
 
     for msg in &connection.receiver {
         match msg {

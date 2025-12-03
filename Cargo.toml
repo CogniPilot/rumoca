@@ -11,6 +11,14 @@ keywords = ["modelica", "compiler", "dae", "simulation"]
 categories = ["compilers", "science", "simulation"]
 readme = "README.md"
 default-run = "rumoca"
+exclude = [
+    "editors/",
+    "python/",
+    ".github/",
+    "docs/",
+    "tools/",
+    "*.swp",
+]
 
 [dependencies]
 anyhow = "1.0"

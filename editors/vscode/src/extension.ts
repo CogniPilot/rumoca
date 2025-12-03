@@ -30,30 +30,54 @@ function findInPath(command: string): string | undefined {
 }
 
 export async function activate(_context: vscode.ExtensionContext) {
+    const startTime = Date.now();
     outputChannel = vscode.window.createOutputChannel('Rumoca Modelica');
-    outputChannel.appendLine('Activating Rumoca Modelica extension...');
 
     const config = vscode.workspace.getConfiguration('rumoca');
+    const debug = config.get<boolean>('debug') ?? false;
+
+    const log = (msg: string) => {
+        outputChannel.appendLine(msg);
+        if (debug) console.log('[Rumoca]', msg);
+    };
+    const debugLog = (msg: string) => {
+        if (debug) {
+            outputChannel.appendLine(msg);
+            console.log('[Rumoca]', msg);
+        }
+    };
+
+    if (debug) {
+        outputChannel.show(true); // Show output channel immediately when debugging
+    }
+
+    log('Activating Rumoca Modelica extension...');
+    console.log('[Rumoca] Debug mode:', debug);
+    debugLog(`[DEBUG] Workspace folders: ${vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath).join(', ') || 'none'}`);
 
     // Find the server executable
     let serverPath = config.get<string>('serverPath');
 
+    const elapsed = () => `${Date.now() - startTime}ms`;
+
     if (serverPath) {
-        outputChannel.appendLine(`Using configured serverPath: ${serverPath}`);
+        debugLog(`[${elapsed()}] Using configured serverPath: ${serverPath}`);
     } else {
-        outputChannel.appendLine('No serverPath configured, searching for rumoca-lsp...');
+        debugLog(`[${elapsed()}] No serverPath configured, searching for rumoca-lsp...`);
 
         // Try to find rumoca-lsp in PATH
+        debugLog(`[${elapsed()}] Searching PATH for rumoca-lsp...`);
         const pathResult = findInPath('rumoca-lsp');
         if (pathResult) {
             serverPath = pathResult;
-            outputChannel.appendLine(`Found rumoca-lsp in PATH: ${serverPath}`);
+            debugLog(`[${elapsed()}] Found rumoca-lsp in PATH: ${serverPath}`);
         } else {
+            debugLog(`[${elapsed()}] Not found in PATH, checking cargo location...`);
             // Try common cargo installation location
             const cargoPath = path.join(process.env.HOME || '', '.cargo', 'bin', 'rumoca-lsp');
             if (fs.existsSync(cargoPath)) {
                 serverPath = cargoPath;
-                outputChannel.appendLine(`Found rumoca-lsp at: ${serverPath}`);
+                debugLog(`[${elapsed()}] Found rumoca-lsp at: ${serverPath}`);
             }
         }
     }
@@ -61,7 +85,7 @@ export async function activate(_context: vscode.ExtensionContext) {
     if (!serverPath) {
         const installAction = 'Install with cargo';
         const msg = 'rumoca-lsp not found. Install it with: cargo install rumoca --features lsp';
-        outputChannel.appendLine(`ERROR: ${msg}`);
+        log(`ERROR: ${msg}`);
 
         const selection = await vscode.window.showErrorMessage(msg, installAction, 'Configure Path');
         if (selection === installAction) {
@@ -76,14 +100,15 @@ export async function activate(_context: vscode.ExtensionContext) {
     }
 
     // Verify the binary exists and is executable
+    debugLog(`[${elapsed()}] Verifying server binary exists...`);
     if (!fs.existsSync(serverPath)) {
         const msg = `rumoca-lsp not found at: ${serverPath}`;
-        outputChannel.appendLine(`ERROR: ${msg}`);
+        log(`ERROR: ${msg}`);
         vscode.window.showErrorMessage(msg);
         return;
     }
 
-    outputChannel.appendLine(`Starting language server: ${serverPath}`);
+    debugLog(`[${elapsed()}] Starting language server: ${serverPath}`);
 
     const serverOptions: ServerOptions = {
         run: {
@@ -98,29 +123,36 @@ export async function activate(_context: vscode.ExtensionContext) {
 
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'modelica' }],
-        outputChannelName: 'Rumoca Modelica'
+        outputChannelName: 'Rumoca Modelica',
+        initializationOptions: {
+            debug: debug
+        }
     };
 
+    debugLog(`[${elapsed()}] Creating LanguageClient...`);
     client = new LanguageClient(
         'rumoca',
         'Rumoca Modelica',
         serverOptions,
         clientOptions
     );
+    debugLog(`[${elapsed()}] LanguageClient created`);
 
     // Start the client. This will also launch the server
     try {
+        debugLog(`[${elapsed()}] Calling client.start() - this launches the server and waits for initialization...`);
+        debugLog(`[${elapsed()}] If stuck here, the language server may be scanning workspace files...`);
         await client.start();
-        outputChannel.appendLine('Language server started successfully');
+        debugLog(`[${elapsed()}] Language server started successfully`);
     } catch (error) {
         const msg = `Failed to start language server: ${error}`;
-        outputChannel.appendLine(`ERROR: ${msg}`);
+        log(`ERROR: ${msg}`);
         outputChannel.show();
         vscode.window.showErrorMessage(msg);
         return;
     }
 
-    outputChannel.appendLine('Rumoca Modelica extension activated');
+    log('Rumoca Modelica extension activated');
 }
 
 export async function deactivate(): Promise<void> {
