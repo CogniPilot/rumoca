@@ -12,8 +12,27 @@ env:
   RUST_VERSION: "nightly-2025-04-13"
 
 jobs:
+  # Fast checks that don't need caching
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }} --component rustfmt,clippy
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Main test job with caching
   test:
-    name: Test
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -27,23 +46,14 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
         run: cargo test --verbose
@@ -51,20 +61,7 @@ jobs:
       - name: Build examples
         run: cargo build --examples --verbose
 
-  fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }} --component rustfmt
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
+  # Modelica format check (needs build, so separate)
   modelica-fmt:
     name: Modelica Format
     runs-on: ubuntu-latest
@@ -76,38 +73,21 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build rumoca-fmt
-        run: cargo build --release --bin rumoca-fmt
-
-      - name: Check Modelica formatting
-        run: ./target/release/rumoca-fmt --check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
+      - name: Build and check Modelica formatting
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }} --component clippy
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          cargo build --release --bin rumoca-fmt
+          ./target/release/rumoca-fmt --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
-
+  # Documentation
   docs:
     name: Documentation
     runs-on: ubuntu-latest
@@ -130,16 +110,26 @@ jobs:
           name: documentation
           path: target/doc/
 
+  # Coverage (expensive, runs separately)
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust with llvm-tools
+      - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }} --component llvm-tools-preview
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
@@ -148,7 +138,6 @@ jobs:
         run: |
           cargo llvm-cov --workspace --html
           cargo llvm-cov report --summary-only | tee coverage-summary.txt
-          # Add to job summary
           echo "## Code Coverage" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY

@@ -21,8 +21,6 @@
 //! - Call hierarchy
 //! - Document links
 
-
-
 mod common;
 
 use lsp_types::{

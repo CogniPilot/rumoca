@@ -105,7 +105,6 @@ pub fn create_dae_from_fixture(
 // LSP Test Helpers
 // =============================================================================
 
-
 pub mod lsp {
     use lsp_types::Uri;
 
