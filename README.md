@@ -66,6 +66,8 @@ result = rumoca.compile_source("""
 
 Search for "Rumoca Modelica" in the VSCode Extensions marketplace, or install from the [marketplace page](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica).
 
+![Rumoca VSCode Extension Demo](docs/rumoca-demo.gif)
+
 The extension includes a bundled `rumoca-lsp` language server, so **no additional installation is required**.
 
 To use a custom or development version of `rumoca-lsp`, see the [extension documentation](editors/vscode/README.md).
