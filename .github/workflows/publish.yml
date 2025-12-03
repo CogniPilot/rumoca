@@ -1,9 +1,9 @@
 name: Publish
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
 env:
   RUST_VERSION: "nightly-2025-04-13"
@@ -14,106 +14,63 @@ permissions:
   id-token: write
 
 jobs:
-  # Wait for CI to complete successfully
-  wait-for-ci:
-    name: Wait for CI
-    runs-on: ubuntu-latest
-    outputs:
-      run_id: ${{ steps.wait.outputs.run_id }}
-    steps:
-      - name: Wait for CI workflow to complete
-        id: wait
-        run: |
-          echo "Waiting for CI workflow to complete for commit ${{ github.sha }}..."
-          MAX_ATTEMPTS=60  # 30 minutes max (60 * 30s)
-          ATTEMPT=0
-
-          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-            ATTEMPT=$((ATTEMPT + 1))
-            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS..."
-
-            # Get the CI workflow run for this commit
-            RESULT=$(gh run list \
-              --workflow=ci.yml \
-              --commit=${{ github.sha }} \
-              --json databaseId,status,conclusion \
-              --jq '.[0] // empty')
-
-            if [ -z "$RESULT" ]; then
-              echo "No CI run found yet, waiting..."
-              sleep 30
-              continue
-            fi
-
-            STATUS=$(echo "$RESULT" | jq -r '.status')
-            CONCLUSION=$(echo "$RESULT" | jq -r '.conclusion // empty')
-            RUN_ID=$(echo "$RESULT" | jq -r '.databaseId')
-
-            echo "CI run $RUN_ID: status=$STATUS, conclusion=$CONCLUSION"
-
-            if [ "$STATUS" = "completed" ]; then
-              if [ "$CONCLUSION" = "success" ]; then
-                echo "CI completed successfully!"
-                echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-                exit 0
-              else
-                echo "CI failed with conclusion: $CONCLUSION"
-                exit 1
-              fi
-            fi
-
-            echo "CI still running, waiting 30s..."
-            sleep 30
-          done
-
-          echo "Timeout waiting for CI to complete"
-          exit 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-
-  # Publish everything
   publish:
     name: Publish Release
-    needs: wait-for-ci
+    # Only run if CI succeeded AND this is a tag (v*)
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/rumoca
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
 
-      - name: Get version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      - name: Get tag name
+        id: tag
+        run: echo "name=${{ github.event.workflow_run.head_branch }}" >> $GITHUB_OUTPUT
 
       # Download all artifacts from CI workflow using gh CLI
       - name: Download artifacts from CI
         run: |
           mkdir -p rust-binaries python-dist vscode-ext
 
-          echo "Downloading artifacts from CI run ${{ needs.wait-for-ci.outputs.run_id }}..."
+          RUN_ID=${{ github.event.workflow_run.id }}
+          echo "Downloading artifacts from CI run $RUN_ID..."
+
+          # List available artifacts first
+          echo "Available artifacts:"
+          gh run view $RUN_ID --json artifacts --jq '.artifacts[].name'
 
           # Download all artifacts
-          gh run download ${{ needs.wait-for-ci.outputs.run_id }} --dir artifacts
+          gh run download $RUN_ID --dir artifacts
+
+          echo "=== Downloaded structure ==="
+          find artifacts -type f | head -50
 
           # Move Rust binaries
           for dir in artifacts/rumoca-*; do
             if [ -d "$dir" ]; then
-              cp -r "$dir"/* rust-binaries/ 2>/dev/null || true
+              echo "Processing Rust artifact: $dir"
+              find "$dir" -type f -exec cp {} rust-binaries/ \;
             fi
           done
 
           # Move Python wheels
           for dir in artifacts/wheels-*; do
             if [ -d "$dir" ]; then
-              cp -r "$dir"/* python-dist/ 2>/dev/null || true
+              echo "Processing Python artifact: $dir"
+              find "$dir" -type f \( -name "*.whl" -o -name "*.tar.gz" \) -exec cp {} python-dist/ \;
             fi
           done
 
           # Move VS Code extension
           if [ -d "artifacts/vscode-extension" ]; then
-            cp -r artifacts/vscode-extension/* vscode-ext/ 2>/dev/null || true
+            echo "Processing VS Code artifact"
+            find "artifacts/vscode-extension" -type f -name "*.vsix" -exec cp {} vscode-ext/ \;
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,17 +78,17 @@ jobs:
       - name: List downloaded artifacts
         run: |
           echo "=== Rust binaries ==="
-          ls -laR rust-binaries/ || echo "No rust binaries"
+          ls -la rust-binaries/ || echo "No rust binaries"
           echo "=== Python wheels ==="
-          ls -laR python-dist/ || echo "No python wheels"
+          ls -la python-dist/ || echo "No python wheels"
           echo "=== VS Code extension ==="
-          ls -laR vscode-ext/ || echo "No vscode extension"
+          ls -la vscode-ext/ || echo "No vscode extension"
 
       # Create GitHub Release
       - name: Create GitHub Release
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "Release ${{ github.ref_name }}" \
+          gh release create ${{ steps.tag.outputs.name }} \
+            --title "Release ${{ steps.tag.outputs.name }}" \
             --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,7 +100,7 @@ jobs:
           for file in *; do
             if [ -f "$file" ]; then
               echo "Uploading $file"
-              gh release upload ${{ github.ref_name }} "$file" --clobber
+              gh release upload ${{ steps.tag.outputs.name }} "$file" --clobber
             fi
           done
         env:
@@ -156,7 +113,7 @@ jobs:
           for file in *.whl *.tar.gz; do
             if [ -f "$file" ]; then
               echo "Uploading $file"
-              gh release upload ${{ github.ref_name }} "$file" --clobber
+              gh release upload ${{ steps.tag.outputs.name }} "$file" --clobber
             fi
           done
         env:
@@ -169,7 +126,7 @@ jobs:
           for file in *.vsix; do
             if [ -f "$file" ]; then
               echo "Uploading $file"
-              gh release upload ${{ github.ref_name }} "$file" --clobber
+              gh release upload ${{ steps.tag.outputs.name }} "$file" --clobber
             fi
           done
         env:
