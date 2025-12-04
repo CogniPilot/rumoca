@@ -565,6 +565,12 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     .map(|start_tok| span_location(start_tok, &c.declaration.ident))
                                     .unwrap_or_else(|| c.declaration.ident.location.clone());
 
+                                // Extract condition attribute (e.g., `if use_reset`)
+                                let condition = c
+                                    .component_declaration_opt
+                                    .as_ref()
+                                    .map(|opt| opt.condition_attribute.expression.clone());
+
                                 let mut value = ir::ast::Component {
                                     name: c.declaration.ident.text.clone(),
                                     name_token: c.declaration.ident.clone(),
@@ -582,10 +588,12 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     },
                                     start_is_modification: false,
                                     shape: type_level_shape.clone(), // Start with type-level subscripts (Real[3] z)
+                                    shape_expr: Vec::new(), // Raw dimension expressions for parameter-dependent sizes
                                     shape_is_modification: false,
                                     annotation,
                                     modifications: indexmap::IndexMap::new(),
                                     location: comp_location,
+                                    condition,
                                 };
 
                                 // set default start value
@@ -614,20 +622,21 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     _ => ir::ast::Expression::Empty {},
                                 };
 
-                                // Append declaration-level subscripts (e.g., Real z[2]) to type-level shape
+                                // Append declaration-level subscripts (e.g., Real z[2] or Real z[n]) to type-level shape
                                 if let Some(decl_opt) = &c.declaration.declaration_opt {
                                     for subscript in &decl_opt.array_subscripts.subscripts {
-                                        // Extract integer dimension from subscript expression
-                                        if let ir::ast::Subscript::Expression(
-                                            ir::ast::Expression::Terminal {
+                                        if let ir::ast::Subscript::Expression(expr) = subscript {
+                                            // Store the raw expression for parameter-dependent evaluation
+                                            value.shape_expr.push(expr.clone());
+                                            // Also try to extract integer dimension if it's a literal
+                                            if let ir::ast::Expression::Terminal {
                                                 token,
-                                                terminal_type:
-                                                    ir::ast::TerminalType::UnsignedInteger,
-                                            },
-                                        ) = subscript
-                                        {
-                                            if let Ok(dim) = token.text.parse::<usize>() {
-                                                value.shape.push(dim);
+                                                terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                            } = expr
+                                            {
+                                                if let Ok(dim) = token.text.parse::<usize>() {
+                                                    value.shape.push(dim);
+                                                }
                                             }
                                         }
                                     }
@@ -813,6 +822,12 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             .map(|start_tok| span_location(start_tok, &c.declaration.ident))
                                             .unwrap_or_else(|| c.declaration.ident.location.clone());
 
+                                        // Extract condition attribute for replaceable components
+                                        let condition = c
+                                            .component_declaration_opt
+                                            .as_ref()
+                                            .map(|opt| opt.condition_attribute.expression.clone());
+
                                         let value = ir::ast::Component {
                                             name: c.declaration.ident.text.clone(),
                                             name_token: c.declaration.ident.clone(),
@@ -824,10 +839,12 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             start: ir::ast::Expression::Empty,
                                             start_is_modification: false,
                                             shape: Vec::new(),
+                                            shape_expr: Vec::new(),
                                             shape_is_modification: false,
                                             annotation: Vec::new(),
                                             modifications: indexmap::IndexMap::new(),
                                             location: comp_location,
+                                            condition,
                                         };
 
                                         def.components.insert(c.declaration.ident.text.clone(), value);

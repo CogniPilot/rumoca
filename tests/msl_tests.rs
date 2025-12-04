@@ -17,6 +17,7 @@
 //! ```
 
 use anyhow::{Context, Result};
+use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use rumoca::Compiler;
 use rumoca::ir::ast::StoredDefinition;
@@ -301,6 +302,13 @@ fn collect_models_recursive(
 /// Run combined MSL test: parse all files, then balance check all models
 /// Returns results with both parse and balance statistics
 fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> CombinedTestResults {
+    // Configure rayon to use num_cpus - 1 threads, leaving one core for the user
+    let num_threads = std::cmp::max(1, num_cpus::get().saturating_sub(1));
+    ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global()
+        .ok(); // Ignore error if already initialized
+
     let modelica_dir = msl_path.join("Modelica");
 
     // =========================================================================
@@ -808,4 +816,270 @@ fn test_msl_balance_all() {
         results.compile_success_rate(),
         MIN_COMPILE_RATE
     );
+}
+
+/// MSL test with JSON export for every compiled model
+/// Exports DAE JSON to /tmp/msl_json/ for analysis
+#[test]
+fn test_msl_balance_with_json_export() {
+    let msl_path = get_msl_path().expect("Failed to download MSL");
+
+    // Create output directory
+    let output_dir = PathBuf::from("/tmp/msl_json");
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir).ok();
+    }
+    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
+
+    let modelica_dir = msl_path.join("Modelica");
+
+    // =========================================================================
+    // PHASE 1: Parse all files
+    // =========================================================================
+    println!("============================================================");
+    println!("           PHASE 1: PARSING (with JSON export)");
+    println!("============================================================");
+
+    let mo_files = find_mo_files(&modelica_dir);
+    let total_files = mo_files.len();
+    println!("Found {} .mo files", total_files);
+
+    let parse_start = Instant::now();
+
+    // Parse all files in parallel
+    let parse_results: Vec<ParseResult> = mo_files
+        .par_iter()
+        .map(|file_path| {
+            let content = match fs::read_to_string(file_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    return ParseResult {
+                        file_path: file_path.clone(),
+                        success: false,
+                        error: Some(format!("Read error: {}", e)),
+                        definition: None,
+                    };
+                }
+            };
+
+            let mut grammar = ModelicaGrammar::new();
+            match parse(&content, file_path.to_string_lossy().as_ref(), &mut grammar) {
+                Ok(_) => ParseResult {
+                    file_path: file_path.clone(),
+                    success: true,
+                    error: None,
+                    definition: grammar.modelica,
+                },
+                Err(e) => ParseResult {
+                    file_path: file_path.clone(),
+                    success: false,
+                    error: Some(format!("{:?}", e)),
+                    definition: None,
+                },
+            }
+        })
+        .collect();
+
+    let parse_time = parse_start.elapsed();
+    let parse_passed = parse_results.iter().filter(|r| r.success).count();
+    println!(
+        "\nParse Results: {}/{} passed ({:.1}%) in {:.2}s",
+        parse_passed,
+        total_files,
+        if total_files > 0 {
+            parse_passed as f64 / total_files as f64 * 100.0
+        } else {
+            0.0
+        },
+        parse_time.as_secs_f64()
+    );
+
+    // =========================================================================
+    // PHASE 2: Merge definitions
+    // =========================================================================
+    println!("\n============================================================");
+    println!("                    PHASE 2: MERGING");
+    println!("============================================================");
+
+    let definitions: Vec<(String, StoredDefinition)> = parse_results
+        .into_iter()
+        .filter_map(|r| {
+            r.definition
+                .map(|def| (r.file_path.to_string_lossy().to_string(), def))
+        })
+        .collect();
+
+    println!("Merging {} parsed definitions...", definitions.len());
+    let merged_def = match merge_stored_definitions(definitions) {
+        Ok(def) => def,
+        Err(e) => {
+            eprintln!("Failed to merge definitions: {:?}", e);
+            return;
+        }
+    };
+
+    // Collect all model/block names
+    let mut model_names = Vec::new();
+    for (name, class) in &merged_def.class_list {
+        collect_models_recursive(class, name, &mut model_names);
+    }
+    model_names.sort();
+
+    // Limit to 500 models for the sample test
+    model_names.truncate(500);
+    println!(
+        "Found {} simulatable models/blocks (limited to 500)",
+        model_names.len()
+    );
+
+    // =========================================================================
+    // PHASE 3: Full compile with JSON export
+    // =========================================================================
+    println!("\n============================================================");
+    println!("       PHASE 3: FULL COMPILE WITH JSON EXPORT");
+    println!("============================================================");
+
+    let total_models = model_names.len();
+    let checked_count = AtomicUsize::new(0);
+    let compile_start = Instant::now();
+
+    println!(
+        "Compiling {} models and exporting JSON to {:?}...",
+        total_models, output_dir
+    );
+
+    let merged_def = Arc::new(merged_def);
+
+    // Compile all models and export JSON
+    let results: Vec<(String, bool, usize, usize, Option<String>)> = model_names
+        .par_iter()
+        .map(|model_name| {
+            let count = checked_count.fetch_add(1, Ordering::Relaxed);
+            let pct = (count + 1) as f64 / total_models as f64 * 100.0;
+            eprintln!(
+                "[{:4}/{} {:5.1}%] {}",
+                count + 1,
+                total_models,
+                pct,
+                model_name
+            );
+
+            // Full compile
+            let compile_result = Compiler::new()
+                .model(model_name)
+                .compile_parsed_ref(&merged_def, "");
+
+            match compile_result {
+                Ok(result) => {
+                    // Check balance using DAE
+                    let balance =
+                        rumoca::ir::analysis::balance_check::check_dae_balance(&result.dae);
+
+                    // Export DAE to JSON
+                    let safe_name = model_name.replace(".", "_").replace("/", "_");
+                    let json_path = output_dir.join(format!("{}.json", safe_name));
+
+                    if let Ok(json) = result.dae.to_dae_ir_json() {
+                        if let Err(e) = fs::write(&json_path, &json) {
+                            eprintln!("  Warning: Failed to write JSON for {}: {}", model_name, e);
+                        }
+                    }
+
+                    (
+                        model_name.clone(),
+                        balance.is_balanced,
+                        balance.num_equations,
+                        balance.num_unknowns,
+                        None,
+                    )
+                }
+                Err(e) => (model_name.clone(), false, 0, 0, Some(format!("{:?}", e))),
+            }
+        })
+        .collect();
+
+    let compile_time = compile_start.elapsed();
+
+    // =========================================================================
+    // SUMMARY
+    // =========================================================================
+    println!("\n============================================================");
+    println!("                    SUMMARY");
+    println!("============================================================");
+
+    let balanced = results
+        .iter()
+        .filter(|(_, is_bal, _, _, err)| *is_bal && err.is_none())
+        .count();
+    let unbalanced: Vec<_> = results
+        .iter()
+        .filter(|(_, is_bal, _, _, err)| !*is_bal && err.is_none())
+        .collect();
+    let compile_errors: Vec<_> = results
+        .iter()
+        .filter(|(_, _, _, _, err)| err.is_some())
+        .collect();
+
+    println!("BALANCE CHECK:");
+    println!("  Total Models:     {}", total_models);
+    println!(
+        "  Compile Success:  {} ({:.1}%)",
+        total_models - compile_errors.len(),
+        (total_models - compile_errors.len()) as f64 / total_models as f64 * 100.0
+    );
+    println!(
+        "  Balanced:         {} ({:.1}%)",
+        balanced,
+        balanced as f64 / total_models as f64 * 100.0
+    );
+    println!("  Unbalanced:       {}", unbalanced.len());
+    println!("  Compile Errors:   {}", compile_errors.len());
+    println!("  Time:             {:.2}s", compile_time.as_secs_f64());
+    println!();
+    println!("JSON files exported to: {:?}", output_dir);
+
+    // Print first 20 unbalanced models
+    println!("\nFirst 20 Unbalanced Models:");
+    println!("------------------------------------------------------------");
+    for (name, _, num_eq, num_unk, _) in unbalanced.iter().take(20) {
+        let diff = *num_eq as i64 - *num_unk as i64;
+        let status = if diff > 0 {
+            format!("over by {}", diff)
+        } else {
+            format!("under by {}", -diff)
+        };
+        println!("  {} ({} eq, {} unk) - {}", name, num_eq, num_unk, status);
+    }
+    if unbalanced.len() > 20 {
+        println!("  ... and {} more", unbalanced.len() - 20);
+    }
+
+    // Save summary to JSON
+    let summary_path = output_dir.join("_summary.json");
+    let summary = serde_json::json!({
+        "total_models": total_models,
+        "balanced": balanced,
+        "unbalanced": unbalanced.len(),
+        "compile_errors": compile_errors.len(),
+        "compile_time_secs": compile_time.as_secs_f64(),
+        "unbalanced_models": unbalanced.iter().map(|(name, _, eq, unk, _)| {
+            serde_json::json!({
+                "name": name,
+                "equations": eq,
+                "unknowns": unk,
+                "diff": *eq as i64 - *unk as i64
+            })
+        }).collect::<Vec<_>>(),
+        "compile_error_models": compile_errors.iter().map(|(name, _, _, _, err)| {
+            serde_json::json!({
+                "name": name,
+                "error": err
+            })
+        }).collect::<Vec<_>>()
+    });
+
+    if let Ok(summary_json) = serde_json::to_string_pretty(&summary) {
+        fs::write(&summary_path, summary_json).ok();
+        println!("\nSummary saved to: {:?}", summary_path);
+    }
 }

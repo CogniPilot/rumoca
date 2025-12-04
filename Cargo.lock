@@ -1128,6 +1128,7 @@ dependencies = [
  "lsp-types",
  "miette",
  "minijinja",
+ "num_cpus",
  "owo-colors",
  "parol",
  "parol_runtime",

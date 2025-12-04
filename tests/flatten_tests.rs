@@ -1,6 +1,7 @@
 mod common;
 
 use common::parse_test_file;
+use rumoca::ir::ast::Causality;
 use rumoca::ir::transform::flatten::flatten;
 
 #[test]
@@ -180,5 +181,62 @@ fn test_flatten_scoping_with_nested_extends() {
         fclass.equations.len() >= 5,
         "Should have at least 5 equations, got {}",
         fclass.equations.len()
+    );
+}
+
+#[test]
+fn test_type_causality_debug() {
+    use rumoca::ir::structural::create_dae::create_dae;
+
+    // Debug test to see what's happening with type causality
+    let def = parse_test_file("type_causality").unwrap();
+
+    // Print class list to see what's available
+    println!("\n=== Class List ===");
+    for (name, class) in &def.class_list {
+        println!(
+            "  {} (type: {:?}, causality: {:?})",
+            name, class.class_type, class.causality
+        );
+        for (nested_name, nested_class) in &class.classes {
+            println!(
+                "    -> {} (type: {:?}, causality: {:?})",
+                nested_name, nested_class.class_type, nested_class.causality
+            );
+        }
+    }
+
+    // Flatten Der and check component causality
+    let mut fclass = flatten(&def, Some("Der")).unwrap();
+
+    println!("\n=== Flattened Der components ===");
+    for (name, comp) in &fclass.components {
+        println!(
+            "  {} : {} (causality: {:?})",
+            name, comp.type_name, comp.causality
+        );
+    }
+
+    // Create DAE and check what ends up where
+    let dae = create_dae(&mut fclass).unwrap();
+    println!("\n=== DAE Structure ===");
+    println!("  Inputs (u): {:?}", dae.u.keys().collect::<Vec<_>>());
+    println!("  Outputs (y): {:?}", dae.y.keys().collect::<Vec<_>>());
+    println!("  States (x): {:?}", dae.x.keys().collect::<Vec<_>>());
+    println!("  Equations: {}", dae.fx.len());
+
+    // Check causality
+    let u = fclass.components.get("u").expect("Should have component u");
+    let y = fclass.components.get("y").expect("Should have component y");
+
+    assert!(
+        matches!(u.causality, Causality::Input(_)),
+        "u should have Input causality, got {:?}",
+        u.causality
+    );
+    assert!(
+        matches!(y.causality, Causality::Output(_)),
+        "y should have Output causality, got {:?}",
+        y.causality
     );
 }

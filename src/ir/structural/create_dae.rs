@@ -87,18 +87,18 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                 dae.m.insert(comp.name.clone(), comp.clone());
             }
             Variability::Empty => {
-                if state_finder.states.contains(&comp.name) {
-                    // Add state variable only - derivatives remain as der() calls in equations
-                    dae.x.insert(comp.name.clone(), comp.clone());
-                } else {
-                    match comp.causality {
-                        Causality::Input(..) => {
-                            dae.u.insert(comp.name.clone(), comp.clone());
-                        }
-                        Causality::Output(..) => {
-                            dae.y.insert(comp.name.clone(), comp.clone());
-                        }
-                        Causality::Empty => {
+                // Check causality FIRST - inputs are always inputs even if they appear in der()
+                match comp.causality {
+                    Causality::Input(..) => {
+                        // Inputs are provided externally, never states or unknowns
+                        dae.u.insert(comp.name.clone(), comp.clone());
+                    }
+                    Causality::Output(..) | Causality::Empty => {
+                        // For outputs and regular variables, check if it's a state
+                        if state_finder.states.contains(&comp.name) {
+                            // Add state variable only - derivatives remain as der() calls in equations
+                            dae.x.insert(comp.name.clone(), comp.clone());
+                        } else {
                             dae.y.insert(comp.name.clone(), comp.clone());
                         }
                     }

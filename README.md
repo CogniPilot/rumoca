@@ -268,6 +268,39 @@ See [`templates/examples/`](templates/examples/) for complete template examples 
 | Expandable connectors | Dynamic connector sizing |
 | Overconstrained connectors | `Connections.root`, `branch`, etc. |
 
+## Modelica Standard Library (MSL) Compatibility
+
+Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.com/modelica/ModelicaStandardLibrary).
+
+### Current Status
+
+| Metric | Result | Notes |
+|--------|--------|-------|
+| **Parse Rate** | 100% (2551/2551 files) | All MSL files parse successfully |
+| **Compile Rate** | 53% (267/500 models) | Limited by missing built-in features |
+| **Balance Rate** | 75% (199/267 compiled) | Of models that compile, most are balanced |
+
+### What Works Well
+
+- **Modelica.Blocks** - Basic continuous and discrete blocks (Integrator, Der, Gain, etc.)
+- **Modelica.Electrical.Analog.Basic** - Basic electrical components
+- **Array handling** - `size()` function, parameter-dependent dimensions
+- **Conditional equations** - `if nx == 0 then...` with parameter evaluation
+- **When equations** - Discrete event handling and `reinit`
+
+### Known Limitations
+
+Most compile errors are due to missing Modelica features:
+
+| Feature | Impact | Examples |
+|---------|--------|----------|
+| Clocked Modelica | 15% of models | `Clock`, `previous`, `interval` |
+| SI Unit Conversions | 7% of models | `conversionTable` |
+| Complex Numbers | 2% of models | `Complex` type |
+| Table Interpolation | 3% of models | `CombiTable1D`, external tables |
+
+See [docs/MSL_BALANCE_ROADMAP.md](docs/MSL_BALANCE_ROADMAP.md) for detailed analysis and improvement plans.
+
 ## Architecture
 
 ```

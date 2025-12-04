@@ -117,7 +117,11 @@ pub struct Component {
     /// True if start value is from a modification (start=x), false if from binding (= x)
     pub start_is_modification: bool,
     /// Array dimensions - empty for scalars, e.g., [2, 3] for a 2x3 matrix
+    /// Only populated when dimensions are known literal integers
     pub shape: Vec<usize>,
+    /// Raw array dimension expressions (e.g., `n` in `Real x[n]`)
+    /// Used for parameter-dependent dimensions that need runtime evaluation
+    pub shape_expr: Vec<Expression>,
     /// True if shape is from a modification (shape=x), false if from subscript \[x\]
     pub shape_is_modification: bool,
     /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)
@@ -127,6 +131,9 @@ pub struct Component {
     pub modifications: IndexMap<String, Expression>,
     /// Full source location for the component declaration
     pub location: Location,
+    /// Conditional component expression (e.g., `if use_reset` in `BooleanInput reset if use_reset`)
+    /// None means the component is unconditional (always present)
+    pub condition: Option<Expression>,
 }
 
 impl Debug for Component {
@@ -150,11 +157,17 @@ impl Debug for Component {
         if !self.shape.is_empty() {
             builder.field("shape", &self.shape);
         }
+        if !self.shape_expr.is_empty() {
+            builder.field("shape_expr", &self.shape_expr);
+        }
         if !self.annotation.is_empty() {
             builder.field("annotation", &self.annotation);
         }
         if !self.modifications.is_empty() {
             builder.field("modifications", &self.modifications);
+        }
+        if self.condition.is_some() {
+            builder.field("condition", &self.condition);
         }
         builder.finish()
     }
