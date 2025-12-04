@@ -191,15 +191,33 @@ impl WorkspaceState {
         self.balance_cache.retain(|(u, _), _| u != uri);
     }
 
-    /// Initialize workspace with root folders
-    pub fn initialize(&mut self, workspace_folders: Vec<PathBuf>) {
+    /// Initialize workspace with root folders and optional additional library paths
+    ///
+    /// # Arguments
+    /// * `workspace_folders` - Folders opened in the editor
+    /// * `extra_library_paths` - Additional library paths (from settings, added to MODELICAPATH)
+    pub fn initialize(
+        &mut self,
+        workspace_folders: Vec<PathBuf>,
+        extra_library_paths: Vec<PathBuf>,
+    ) {
         self.debug_log(&format!(
-            "[workspace] initialize() called with {} folders",
-            workspace_folders.len()
+            "[workspace] initialize() called with {} folders, {} extra library paths",
+            workspace_folders.len(),
+            extra_library_paths.len()
         ));
         self.workspace_roots = workspace_folders.clone();
 
-        // Add MODELICAPATH directories
+        // Add extra library paths from settings (these take priority)
+        if !extra_library_paths.is_empty() {
+            self.debug_log(&format!(
+                "[workspace] Extra library paths from settings: {:?}",
+                extra_library_paths
+            ));
+            self.package_roots.extend(extra_library_paths);
+        }
+
+        // Add MODELICAPATH directories from environment
         let modelica_path = get_modelica_path();
         self.debug_log(&format!(
             "[workspace] MODELICAPATH has {} directories: {:?}",

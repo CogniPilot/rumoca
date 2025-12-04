@@ -78,8 +78,36 @@ cargo install --path .
 |---------|-------------|---------|
 | `rumoca.serverPath` | Path to a custom `rumoca-lsp` executable | `""` (auto-detect) |
 | `rumoca.useSystemServer` | Use system-installed `rumoca-lsp` instead of bundled binary | `false` |
+| `rumoca.modelicaPath` | List of directories containing Modelica libraries (e.g., MSL) | `[]` |
 | `rumoca.trace.server` | Traces communication with the language server | `"off"` |
 | `rumoca.debug` | Enable debug logging for the extension and language server | `false` |
+
+## Configuring Library Paths
+
+To use external Modelica libraries (like the Modelica Standard Library), configure the `rumoca.modelicaPath` setting with the directories containing your libraries:
+
+```json
+{
+  "rumoca.modelicaPath": [
+    "/path/to/ModelicaStandardLibrary",
+    "/path/to/other/library"
+  ]
+}
+```
+
+These paths are added to the `MODELICAPATH` used for import resolution. Paths configured here take priority over the `MODELICAPATH` environment variable.
+
+**Example workspace configuration** (`.vscode/settings.json`):
+
+```json
+{
+  "rumoca.modelicaPath": [
+    "${workspaceFolder}/../ModelicaStandardLibrary"
+  ]
+}
+```
+
+**Note:** The `MODELICAPATH` environment variable is also supported. If set before starting VS Code, those directories will be searched in addition to paths configured in settings.
 
 ## Troubleshooting
 

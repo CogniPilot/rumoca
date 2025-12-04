@@ -18,6 +18,9 @@ pub struct DefinedSymbol {
     pub type_name: String,
     /// Array dimensions (empty for scalars)
     pub shape: Vec<usize>,
+    /// For functions: the return type (output variable type and shape)
+    /// None for non-functions
+    pub function_return: Option<(String, Vec<usize>)>,
 }
 
 /// Inferred type for an expression
@@ -152,19 +155,63 @@ pub fn infer_expression_type(
                         InferredType::Real
                     }
                     // der returns the same type as its argument (preserves array dimensions)
-                    "der" => {
+                    "der" | "pre" | "delay" => {
                         if let Some(arg) = args.first() {
                             infer_expression_type(arg, defined)
                         } else {
                             InferredType::Real
                         }
                     }
+                    // cross(a, b) returns a 3-vector
+                    "cross" => InferredType::Array(Box::new(InferredType::Real), Some(3)),
+                    // transpose, symmetric, skew return matrices (preserve first arg type)
+                    "transpose" | "symmetric" | "skew" => {
+                        if let Some(arg) = args.first() {
+                            infer_expression_type(arg, defined)
+                        } else {
+                            InferredType::Unknown
+                        }
+                    }
+                    // identity, zeros, ones, fill, diagonal return arrays
+                    "identity" | "diagonal" => {
+                        // identity(n) returns Real[n,n], diagonal(v) returns Real[n,n]
+                        // We don't know n statically
+                        InferredType::Array(
+                            Box::new(InferredType::Array(Box::new(InferredType::Real), None)),
+                            None,
+                        )
+                    }
+                    "zeros" | "ones" | "fill" => {
+                        // These return arrays, but we don't know the dimensions statically
+                        InferredType::Array(Box::new(InferredType::Real), None)
+                    }
                     // Boolean functions
                     "initial" | "terminal" | "edge" | "change" | "sample" => InferredType::Boolean,
                     // Size returns Integer
                     "size" | "ndims" => InferredType::Integer,
-                    // pre maintains type (simplified to Unknown here)
-                    _ => InferredType::Unknown,
+                    // User-defined functions - look up in defined symbols
+                    name => {
+                        if let Some(sym) = defined.get(name) {
+                            if let Some((ret_type, ret_shape)) = &sym.function_return {
+                                // Build the return type from the function's output
+                                let base = type_from_name(ret_type);
+                                if ret_shape.is_empty() {
+                                    base
+                                } else {
+                                    // Build array type from innermost to outermost
+                                    let mut result = base;
+                                    for &dim in ret_shape.iter().rev() {
+                                        result = InferredType::Array(Box::new(result), Some(dim));
+                                    }
+                                    result
+                                }
+                            } else {
+                                InferredType::Unknown
+                            }
+                        } else {
+                            InferredType::Unknown
+                        }
+                    }
                 }
             } else {
                 InferredType::Unknown
@@ -184,22 +231,116 @@ pub fn infer_expression_type(
                 | OpBinary::Neq(_) => InferredType::Boolean,
                 // Logical operators return Boolean
                 OpBinary::And(_) | OpBinary::Or(_) => InferredType::Boolean,
-                // Arithmetic operators: promote to Real if either side is Real
-                OpBinary::Add(_)
-                | OpBinary::Sub(_)
-                | OpBinary::Mul(_)
-                | OpBinary::Div(_)
-                | OpBinary::Exp(_) => {
-                    if matches!(lhs_type.base_type(), InferredType::Real)
-                        || matches!(rhs_type.base_type(), InferredType::Real)
-                    {
-                        InferredType::Real
-                    } else if matches!(lhs_type.base_type(), InferredType::Integer)
-                        && matches!(rhs_type.base_type(), InferredType::Integer)
-                    {
-                        InferredType::Integer
-                    } else {
-                        InferredType::Unknown
+                // Arithmetic operators: handle array dimensions properly
+                OpBinary::Add(_) | OpBinary::Sub(_) => {
+                    // Element-wise operations: result has same shape as operands
+                    // (operands should have compatible shapes)
+                    match (&lhs_type, &rhs_type) {
+                        (InferredType::Array(_, _), _) => lhs_type.clone(),
+                        (_, InferredType::Array(_, _)) => rhs_type.clone(),
+                        _ => {
+                            // Both scalars
+                            if matches!(lhs_type.base_type(), InferredType::Real)
+                                || matches!(rhs_type.base_type(), InferredType::Real)
+                            {
+                                InferredType::Real
+                            } else if matches!(lhs_type.base_type(), InferredType::Integer)
+                                && matches!(rhs_type.base_type(), InferredType::Integer)
+                            {
+                                InferredType::Integer
+                            } else {
+                                InferredType::Unknown
+                            }
+                        }
+                    }
+                }
+                OpBinary::Mul(_) => {
+                    // Multiplication: scalar*array, array*scalar, or matrix*vector
+                    match (&lhs_type, &rhs_type) {
+                        // Scalar * Array -> Array
+                        (InferredType::Real | InferredType::Integer, InferredType::Array(_, _)) => {
+                            rhs_type.clone()
+                        }
+                        // Array * Scalar -> Array
+                        (InferredType::Array(_, _), InferredType::Real | InferredType::Integer) => {
+                            lhs_type.clone()
+                        }
+                        // Matrix[m,n] * Vector[n] -> Vector[m]
+                        (
+                            InferredType::Array(inner_lhs, Some(m)),
+                            InferredType::Array(inner_rhs, _),
+                        ) => {
+                            // Check if lhs is a matrix (array of arrays)
+                            if let InferredType::Array(_, _) = inner_lhs.as_ref() {
+                                // Matrix * Vector -> Vector with first dimension of matrix
+                                InferredType::Array(
+                                    Box::new(inner_rhs.base_type().clone()),
+                                    Some(*m),
+                                )
+                            } else {
+                                // Both are 1D arrays - element-wise or dot product
+                                // For now, return Unknown for complex cases
+                                InferredType::Unknown
+                            }
+                        }
+                        // Both scalars
+                        _ => {
+                            if matches!(lhs_type.base_type(), InferredType::Real)
+                                || matches!(rhs_type.base_type(), InferredType::Real)
+                            {
+                                InferredType::Real
+                            } else if matches!(lhs_type.base_type(), InferredType::Integer)
+                                && matches!(rhs_type.base_type(), InferredType::Integer)
+                            {
+                                InferredType::Integer
+                            } else {
+                                InferredType::Unknown
+                            }
+                        }
+                    }
+                }
+                OpBinary::Div(_) => {
+                    // Division: array/scalar is common, scalar/array less so
+                    match (&lhs_type, &rhs_type) {
+                        // Array / Scalar -> Array
+                        (InferredType::Array(_, _), InferredType::Real | InferredType::Integer) => {
+                            lhs_type.clone()
+                        }
+                        // Scalar / Array -> Array (element-wise)
+                        (InferredType::Real | InferredType::Integer, InferredType::Array(_, _)) => {
+                            rhs_type.clone()
+                        }
+                        // Both scalars
+                        _ => {
+                            if matches!(lhs_type.base_type(), InferredType::Real)
+                                || matches!(rhs_type.base_type(), InferredType::Real)
+                            {
+                                InferredType::Real
+                            } else {
+                                InferredType::Unknown
+                            }
+                        }
+                    }
+                }
+                OpBinary::Exp(_) => {
+                    // Exponentiation: typically scalar result, but array^scalar is element-wise
+                    match (&lhs_type, &rhs_type) {
+                        (InferredType::Array(_, _), InferredType::Real | InferredType::Integer) => {
+                            lhs_type.clone()
+                        }
+                        _ => {
+                            if matches!(lhs_type.base_type(), InferredType::Real)
+                                || matches!(rhs_type.base_type(), InferredType::Real)
+                            {
+                                InferredType::Real
+                            } else if matches!(lhs_type.base_type(), InferredType::Integer)
+                                && matches!(rhs_type.base_type(), InferredType::Integer)
+                            {
+                                InferredType::Integer
+                            } else {
+                                InferredType::Unknown
+                            }
+                        }
                     }
                 }
                 _ => InferredType::Unknown,

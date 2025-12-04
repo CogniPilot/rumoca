@@ -74,7 +74,7 @@ To use a custom or development version of `rumoca-lsp`, see the [extension docum
 
 **Features:**
 - Syntax highlighting (semantic tokens)
-- Real-time diagnostics
+- Real-time diagnostics with type checking
 - Autocomplete for keywords, built-in functions, and class members
 - Go to definition / Find references
 - Document symbols and outline
@@ -87,6 +87,21 @@ To use a custom or development version of `rumoca-lsp`, see the [extension docum
 - Rename symbol
 - Call hierarchy
 - Document links
+
+**Configuring Library Paths:**
+
+To use external Modelica libraries (like the Modelica Standard Library), configure the `rumoca.modelicaPath` setting in your VS Code settings:
+
+```json
+{
+  "rumoca.modelicaPath": [
+    "/path/to/ModelicaStandardLibrary",
+    "/path/to/other/library"
+  ]
+}
+```
+
+Alternatively, set the `MODELICAPATH` environment variable before starting VS Code. See the [extension documentation](editors/vscode/README.md) for more details.
 
 ## Quick Start
 

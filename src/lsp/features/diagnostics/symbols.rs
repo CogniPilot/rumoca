@@ -76,6 +76,7 @@ pub fn collect_equation_symbols(
                         has_default: true,
                         type_name: "Integer".to_string(), // loop indices are integers
                         shape: vec![],
+                        function_return: None,
                     },
                 );
                 collect_and_check_expression(
@@ -156,6 +157,7 @@ pub fn collect_statement_symbols(
                         has_default: true,
                         type_name: "Integer".to_string(), // loop indices are integers
                         shape: vec![],
+                        function_return: None,
                     },
                 );
                 collect_and_check_expression(

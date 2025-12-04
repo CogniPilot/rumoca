@@ -79,6 +79,14 @@
           "type": "boolean",
           "default": false,
           "description": "Use system-installed rumoca-lsp instead of the bundled binary. Enable this if you want to use a custom build or a different version."
+        },
+        "rumoca.modelicaPath": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of directories containing Modelica libraries (e.g., path to ModelicaStandardLibrary). These are added to MODELICAPATH for import resolution."
         }
       }
     }

@@ -142,13 +142,28 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let init_params: InitializeParams = serde_json::from_value(init_params)?;
 
     // Check for debug flag in initialization options
+    let mut extra_library_paths: Vec<PathBuf> = Vec::new();
     if let Some(options) = &init_params.initialization_options {
         if let Some(debug) = options.get("debug").and_then(|v| v.as_bool()) {
             DEBUG_MODE.store(debug, Ordering::Relaxed);
         }
+        // Extract modelicaPath from initialization options
+        if let Some(paths) = options.get("modelicaPath").and_then(|v| v.as_array()) {
+            for path in paths {
+                if let Some(path_str) = path.as_str() {
+                    extra_library_paths.push(PathBuf::from(path_str));
+                }
+            }
+        }
     }
 
     debug_log!("[rumoca-lsp] Server initialized (debug mode enabled)");
+    if !extra_library_paths.is_empty() {
+        debug_log!(
+            "[rumoca-lsp] Extra library paths from settings: {:?}",
+            extra_library_paths
+        );
+    }
 
     // Extract workspace folders for multi-file support
     debug_log!("[rumoca-lsp] Extracting workspace folders...");
@@ -172,7 +187,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     debug_log!("[rumoca-lsp] Workspace folders: {:?}", workspace_folders);
     debug_log!("[rumoca-lsp] Starting main_loop (will initialize workspace)...");
 
-    main_loop(connection, workspace_folders)?;
+    main_loop(connection, workspace_folders, extra_library_paths)?;
     io_threads.join()?;
 
     eprintln!("Shutting down rumoca-lsp server");
@@ -182,6 +197,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 fn main_loop(
     connection: Connection,
     workspace_folders: Vec<PathBuf>,
+    extra_library_paths: Vec<PathBuf>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     // Create workspace state for multi-file support
     debug_log!("[rumoca-lsp] Creating WorkspaceState...");
@@ -189,7 +205,7 @@ fn main_loop(
     workspace.set_debug(is_debug());
     debug_log!("[rumoca-lsp] Calling workspace.initialize() - this scans for Modelica packages...");
     let init_start = std::time::Instant::now();
-    workspace.initialize(workspace_folders);
+    workspace.initialize(workspace_folders, extra_library_paths);
     debug_log!(
         "[rumoca-lsp] workspace.initialize() completed in {:?}",
         init_start.elapsed()

@@ -16,9 +16,10 @@ mod types;
 
 use std::collections::{HashMap, HashSet};
 
+use indexmap::IndexMap;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
-use crate::ir::ast::{ClassDefinition, ClassType, Expression, Variability};
+use crate::ir::ast::{Causality, ClassDefinition, ClassType, Expression, Variability};
 use crate::ir::transform::constants::global_builtins;
 use crate::ir::transform::flatten::flatten;
 
@@ -53,7 +54,7 @@ pub fn compute_diagnostics(
                 if let Some(ref ast) = grammar.modelica {
                     for class_name in ast.class_list.keys() {
                         if let Ok(fclass) = flatten(ast, Some(class_name)) {
-                            analyze_class(&fclass, &mut diagnostics);
+                            analyze_class(&fclass, &ast.class_list, &mut diagnostics);
                         }
                     }
                 }
@@ -77,13 +78,44 @@ pub fn compute_diagnostics(
 }
 
 /// Analyze a class for semantic issues
-fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
+/// `peer_classes` contains all top-level classes in the file (for looking up peer functions)
+fn analyze_class(
+    class: &ClassDefinition,
+    peer_classes: &IndexMap<String, ClassDefinition>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     // Build set of defined symbols
     let mut defined: HashMap<String, DefinedSymbol> = HashMap::new();
     let mut used: HashSet<String> = HashSet::new();
 
     // Add global builtins
     let globals: HashSet<String> = global_builtins().into_iter().collect();
+
+    // Add peer functions from the same file (top-level functions)
+    for (peer_name, peer_class) in peer_classes {
+        if matches!(peer_class.class_type, ClassType::Function) {
+            // Extract the return type from output components
+            let function_return = peer_class
+                .components
+                .values()
+                .find(|c| matches!(c.causality, Causality::Output(_)))
+                .map(|output| (output.type_name.to_string(), output.shape.clone()));
+
+            defined.insert(
+                peer_name.clone(),
+                DefinedSymbol {
+                    line: peer_class.name.location.start_line,
+                    col: peer_class.name.location.start_column,
+                    is_parameter: false,
+                    is_class: true,
+                    has_default: true,
+                    type_name: peer_name.clone(),
+                    shape: vec![],
+                    function_return,
+                },
+            );
+        }
+    }
 
     // Collect component declarations
     for (comp_name, comp) in &class.components {
@@ -114,6 +146,7 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
                 has_default: has_start,
                 type_name: type_name.clone(),
                 shape: comp.shape.clone(),
+                function_return: None,
             },
         );
 
@@ -122,17 +155,31 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
     }
 
     // Add nested class names as defined (these are types, not variables)
-    for nested_name in class.classes.keys() {
+    // For functions, extract the return type from output components
+    for (nested_name, nested_class) in &class.classes {
+        // Check if this is a function and extract its return type
+        let function_return = if matches!(nested_class.class_type, ClassType::Function) {
+            // Find the output component(s) - typically just one for the return value
+            nested_class
+                .components
+                .values()
+                .find(|c| matches!(c.causality, Causality::Output(_)))
+                .map(|output| (output.type_name.to_string(), output.shape.clone()))
+        } else {
+            None
+        };
+
         defined.insert(
             nested_name.clone(),
             DefinedSymbol {
-                line: 1,
-                col: 1,
+                line: nested_class.name.location.start_line,
+                col: nested_class.name.location.start_column,
                 is_parameter: false,
                 is_class: true,
                 has_default: true,
                 type_name: nested_name.clone(), // class type
                 shape: vec![],
+                function_return,
             },
         );
     }
@@ -197,6 +244,6 @@ fn analyze_class(class: &ClassDefinition, diagnostics: &mut Vec<Diagnostic>) {
 
     // Recursively analyze nested classes
     for nested_class in class.classes.values() {
-        analyze_class(nested_class, diagnostics);
+        analyze_class(nested_class, peer_classes, diagnostics);
     }
 }

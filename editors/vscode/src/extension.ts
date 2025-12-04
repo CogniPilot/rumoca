@@ -163,11 +163,18 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     };
 
+    // Get library paths configuration
+    const modelicaPath = config.get<string[]>('modelicaPath') ?? [];
+    if (modelicaPath.length > 0) {
+        debugLog(`[${elapsed()}] Configured modelicaPath: ${modelicaPath.join(', ')}`);
+    }
+
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'modelica' }],
         outputChannelName: 'Rumoca Modelica',
         initializationOptions: {
-            debug: debug
+            debug: debug,
+            modelicaPath: modelicaPath
         }
     };
 
