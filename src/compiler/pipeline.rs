@@ -15,6 +15,7 @@ use crate::ir::transform::enum_substitutor::EnumSubstitutor;
 use crate::ir::transform::flatten::flatten;
 use crate::ir::transform::function_inliner::FunctionInliner;
 use crate::ir::transform::import_resolver::ImportResolver;
+use crate::ir::transform::array_comprehension::expand_array_comprehensions;
 use crate::ir::transform::tuple_expander::expand_tuple_equations;
 use crate::ir::visitor::MutVisitable;
 use anyhow::Result;
@@ -167,9 +168,12 @@ pub fn compile_from_ast_ref(
     // Expand tuple equations like (a, b) = (expr1, expr2) into separate equations
     expand_tuple_equations(&mut fclass);
 
+    // Expand array comprehensions like {expr for i in 1:n} into explicit arrays
+    expand_array_comprehensions(&mut fclass);
+
     if verbose {
         println!(
-            "After function inlining and tuple expansion:\n{:#?}\n",
+            "After function inlining, tuple expansion, and array comprehension expansion:\n{:#?}\n",
             fclass
         );
     }
@@ -238,6 +242,9 @@ pub fn check_balance_only(
 
     // Expand tuple equations
     expand_tuple_equations(&mut fclass);
+
+    // Expand array comprehensions
+    expand_array_comprehensions(&mut fclass);
 
     // Create DAE
     let dae = create_dae(&mut fclass)?;

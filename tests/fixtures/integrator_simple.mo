@@ -2,9 +2,7 @@
 // Based on MSL Modelica.Blocks.Continuous.Integrator
 package Interfaces
   connector RealInput = input Real;
-
   connector RealOutput = output Real;
-
   connector BooleanOutput = output Boolean;
 
   block SISO "Single input single output"

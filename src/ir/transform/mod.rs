@@ -3,6 +3,7 @@
 //! This module contains passes that transform the IR during compilation,
 //! including flattening, import resolution, and function inlining.
 
+pub mod array_comprehension;
 pub mod constant_substitutor;
 pub mod constants;
 pub mod enum_substitutor;

@@ -2,7 +2,6 @@
 // Mimics MSL's Modelica.Blocks.Interfaces pattern
 package Interfaces
   connector RealInput = input Real;
-
   connector RealOutput = output Real;
 
   block SISO "Single input single output"

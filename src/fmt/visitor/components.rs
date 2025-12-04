@@ -81,7 +81,15 @@ impl FormatVisitor {
             .iter()
             .map(|comp| {
                 let mut name = comp.name.clone();
-                if !comp.shape.is_empty() {
+                // Prefer shape_expr (original expressions) over shape (evaluated integers)
+                if !comp.shape_expr.is_empty() {
+                    let dims: Vec<String> = comp
+                        .shape_expr
+                        .iter()
+                        .map(|e| self.format_expression(e))
+                        .collect();
+                    name.push_str(&format!("[{}]", dims.join(", ")));
+                } else if !comp.shape.is_empty() {
                     let dims: Vec<String> = comp.shape.iter().map(|d| d.to_string()).collect();
                     name.push_str(&format!("[{}]", dims.join(", ")));
                 }
@@ -125,8 +133,15 @@ impl FormatVisitor {
         // Component name
         result.push_str(&comp.name);
 
-        // Array dimensions
-        if !comp.shape.is_empty() {
+        // Array dimensions - prefer shape_expr (original expressions) over shape (evaluated integers)
+        if !comp.shape_expr.is_empty() {
+            let dims: Vec<String> = comp
+                .shape_expr
+                .iter()
+                .map(|e| self.format_expression(e))
+                .collect();
+            result.push_str(&format!("[{}]", dims.join(", ")));
+        } else if !comp.shape.is_empty() {
             let dims: Vec<String> = comp.shape.iter().map(|d| d.to_string()).collect();
             result.push_str(&format!("[{}]", dims.join(", ")));
         }

@@ -3,11 +3,8 @@
 package ConditionalComponents
   // Interfaces for testing
   connector RealInput = input Real;
-
   connector RealOutput = output Real;
-
   connector BooleanInput = input Boolean;
-
   connector BooleanOutput = output Boolean;
 
   // Simple model WITHOUT conditional components - should balance as 1 eq, 1 unk

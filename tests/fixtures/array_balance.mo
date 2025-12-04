@@ -18,21 +18,21 @@ package ArrayBalance
   model SimpleStateSpace
     parameter Integer n = 2 "Number of states";
     parameter Integer p = 1 "Number of outputs";
-    parameter Real A = {{-1, 0}, {0, -2}};
-    parameter Real B[1] = {{1}, {1}};
-    parameter Real C = {{1, 1}};
-    parameter Real D[1] = {{0}};
+    parameter Real A[2, 2] = {{-1, 0}, {0, -2}};
+    parameter Real B[2, 1] = {{1}, {1}};
+    parameter Real C[1, 2] = {{1, 1}};
+    parameter Real D[1, 1] = {{0}};
     input Real u;
-    Real x(start = 0);
-    output Real y;
+    Real x[n](each start = 0);
+    output Real y[p];
   equation
     // n equations for states
     for i in 1:n loop
-      der(x[i]) = sum({{{{{ A[i, j] * x[j] for j in 1:n }}}}}) + B[i, 1] * u;
+      der(x[i]) = sum({A[i, j] * x[j] for j in 1:n}) + B[i, 1] * u;
     end for;
     // p equations for outputs
     for i in 1:p loop
-      y[i] = sum({{{{{ C[i, j] * x[j] for j in 1:n }}}}}) + D[i, 1] * u;
+      y[i] = sum({C[i, j] * x[j] for j in 1:n}) + D[i, 1] * u;
     end for;
   end SimpleStateSpace;
 
