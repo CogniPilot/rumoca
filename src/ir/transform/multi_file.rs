@@ -379,6 +379,27 @@ pub fn is_modelica_package(dir: &Path) -> bool {
     dir.is_dir() && dir.join("package.mo").exists()
 }
 
+/// Parse a MODELICAPATH-style string into a vector of paths.
+///
+/// According to Modelica Spec 13.3, MODELICAPATH is an ordered list of library
+/// root directories, separated by `:` on Unix or `;` on Windows.
+///
+/// # Arguments
+///
+/// * `path_str` - The path string to parse
+/// * `separator` - The separator character (`:` on Unix, `;` on Windows)
+///
+/// # Returns
+///
+/// A vector of paths parsed from the string
+pub fn parse_modelica_path_string(path_str: &str, separator: char) -> Vec<PathBuf> {
+    path_str
+        .split(separator)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
 /// Get the MODELICAPATH directories from the environment variable.
 ///
 /// According to Modelica Spec 13.3, MODELICAPATH is an ordered list of library
@@ -388,15 +409,14 @@ pub fn is_modelica_package(dir: &Path) -> bool {
 ///
 /// A vector of paths from the MODELICAPATH environment variable
 pub fn get_modelica_path() -> Vec<PathBuf> {
-    std::env::var("MODELICAPATH")
-        .unwrap_or_default()
-        .split(if cfg!(windows) { ';' } else { ':' })
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect()
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    parse_modelica_path_string(
+        &std::env::var("MODELICAPATH").unwrap_or_default(),
+        separator,
+    )
 }
 
-/// Find a top-level package by name in the MODELICAPATH directories.
+/// Find a top-level package by name in the given search paths.
 ///
 /// Searches for either:
 /// - A directory named `package_name` containing `package.mo`
@@ -405,12 +425,13 @@ pub fn get_modelica_path() -> Vec<PathBuf> {
 /// # Arguments
 ///
 /// * `package_name` - The name of the top-level package to find
+/// * `search_paths` - Library directories to search
 ///
 /// # Returns
 ///
 /// The path to the package directory or file, if found
-pub fn find_package_in_modelica_path(package_name: &str) -> Option<PathBuf> {
-    for base_path in get_modelica_path() {
+pub fn find_package_in_paths(package_name: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
+    for base_path in search_paths {
         // Check for directory-based package
         let dir_path = base_path.join(package_name);
         if is_modelica_package(&dir_path) {
@@ -424,6 +445,22 @@ pub fn find_package_in_modelica_path(package_name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Find a top-level package by name in the MODELICAPATH directories.
+///
+/// This is a convenience wrapper around `find_package_in_paths` that uses
+/// the MODELICAPATH environment variable.
+///
+/// # Arguments
+///
+/// * `package_name` - The name of the top-level package to find
+///
+/// # Returns
+///
+/// The path to the package directory or file, if found
+pub fn find_package_in_modelica_path(package_name: &str) -> Option<PathBuf> {
+    find_package_in_paths(package_name, &get_modelica_path())
 }
 
 /// Discover all Modelica files in a directory-based package structure.
@@ -679,49 +716,45 @@ mod tests {
     }
 
     #[test]
-    fn test_get_modelica_path_empty() {
-        let original = std::env::var("MODELICAPATH").ok();
-
-        // SAFETY: Test is single-threaded
-        unsafe {
-            std::env::remove_var("MODELICAPATH");
-        }
-        let paths = get_modelica_path();
+    fn test_parse_modelica_path_empty() {
+        // Empty string should produce empty paths
+        let paths = parse_modelica_path_string("", ':');
         assert!(paths.is_empty());
 
-        // Restore
-        // SAFETY: Test is single-threaded
-        unsafe {
-            if let Some(val) = original {
-                std::env::set_var("MODELICAPATH", val);
-            }
-        }
+        // Also test with semicolon separator (Windows style)
+        let paths = parse_modelica_path_string("", ';');
+        assert!(paths.is_empty());
     }
 
     #[test]
-    fn test_get_modelica_path_multiple() {
-        let original = std::env::var("MODELICAPATH").ok();
+    fn test_parse_modelica_path_single() {
+        let paths = parse_modelica_path_string("/path/one", ':');
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], PathBuf::from("/path/one"));
+    }
 
-        let separator = if cfg!(windows) { ";" } else { ":" };
-        // SAFETY: Test is single-threaded
-        unsafe {
-            std::env::set_var("MODELICAPATH", format!("/path/one{}/path/two", separator));
-        }
-
-        let paths = get_modelica_path();
-        assert_eq!(paths.len(), 2);
+    #[test]
+    fn test_parse_modelica_path_multiple_unix() {
+        let paths = parse_modelica_path_string("/path/one:/path/two:/path/three", ':');
+        assert_eq!(paths.len(), 3);
         assert_eq!(paths[0], PathBuf::from("/path/one"));
         assert_eq!(paths[1], PathBuf::from("/path/two"));
+        assert_eq!(paths[2], PathBuf::from("/path/three"));
+    }
 
-        // Restore
-        // SAFETY: Test is single-threaded
-        unsafe {
-            if let Some(val) = original {
-                std::env::set_var("MODELICAPATH", val);
-            } else {
-                std::env::remove_var("MODELICAPATH");
-            }
-        }
+    #[test]
+    fn test_parse_modelica_path_multiple_windows() {
+        let paths = parse_modelica_path_string("C:\\path\\one;D:\\path\\two", ';');
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], PathBuf::from("C:\\path\\one"));
+        assert_eq!(paths[1], PathBuf::from("D:\\path\\two"));
+    }
+
+    #[test]
+    fn test_parse_modelica_path_trailing_separator() {
+        // Trailing separators should not create empty path entries
+        let paths = parse_modelica_path_string("/path/one:/path/two:", ':');
+        assert_eq!(paths.len(), 2);
     }
 
     #[test]

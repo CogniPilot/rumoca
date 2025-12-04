@@ -55,6 +55,11 @@ struct Args {
     #[arg(name = "MODELICA_FILE")]
     model_file: String,
 
+    /// Library search paths (alternative to MODELICAPATH env var)
+    /// Can be specified multiple times: -L /path1 -L /path2
+    #[arg(short = 'L', long = "lib-path")]
+    lib_paths: Vec<String>,
+
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
@@ -69,6 +74,12 @@ fn main() -> Result<()> {
 
     // Set main model (required)
     compiler = compiler.model(&args.model);
+
+    // Set library paths if provided (overrides MODELICAPATH env var)
+    if !args.lib_paths.is_empty() {
+        let paths: Vec<&str> = args.lib_paths.iter().map(|s| s.as_str()).collect();
+        compiler = compiler.modelica_path(&paths);
+    }
 
     let mut result = compiler.compile_file(&args.model_file)?;
 

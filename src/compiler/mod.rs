@@ -87,6 +87,8 @@ pub struct Compiler {
     model_name: Option<String>,
     /// Additional source files to include in compilation
     additional_files: Vec<String>,
+    /// Explicit library paths (overrides MODELICAPATH env var if set)
+    modelica_paths: Vec<std::path::PathBuf>,
 }
 
 impl Compiler {
@@ -134,6 +136,28 @@ impl Compiler {
     /// ```
     pub fn model(mut self, name: &str) -> Self {
         self.model_name = Some(name.to_string());
+        self
+    }
+
+    /// Sets explicit library search paths (overrides MODELICAPATH environment variable).
+    ///
+    /// This allows specifying library paths programmatically without relying on
+    /// environment variables, which is useful for testing and reproducible builds.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rumoca::Compiler;
+    ///
+    /// let result = Compiler::new()
+    ///     .model("Modelica.Blocks.Examples.PID_Controller")
+    ///     .modelica_path(&["/path/to/MSL", "/path/to/other/libs"])
+    ///     .include_from_modelica_path("Modelica")?
+    ///     .compile_file("model.mo")?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn modelica_path(mut self, paths: &[&str]) -> Self {
+        self.modelica_paths = paths.iter().map(std::path::PathBuf::from).collect();
         self
     }
 
@@ -214,8 +238,9 @@ impl Compiler {
 
     /// Includes a package from MODELICAPATH by name.
     ///
-    /// This method searches the MODELICAPATH environment variable for a package
-    /// with the given name and includes all its files.
+    /// This method searches the library paths for a package with the given name
+    /// and includes all its files. If explicit paths were set via `.modelica_path()`,
+    /// those are used; otherwise, the MODELICAPATH environment variable is used.
     ///
     /// According to Modelica Spec 13.3, MODELICAPATH is an ordered list of library
     /// root directories, separated by `:` on Unix or `;` on Windows.
@@ -225,7 +250,14 @@ impl Compiler {
     /// ```no_run
     /// use rumoca::Compiler;
     ///
-    /// // Set MODELICAPATH=/path/to/libs before running
+    /// // Using explicit paths (recommended for reproducible builds)
+    /// let result = Compiler::new()
+    ///     .model("Modelica.Mechanics.Rotational.Examples.First")
+    ///     .modelica_path(&["/path/to/MSL"])
+    ///     .include_from_modelica_path("Modelica")?
+    ///     .compile_file("model.mo")?;
+    ///
+    /// // Or using MODELICAPATH environment variable
     /// let result = Compiler::new()
     ///     .model("Modelica.Mechanics.Rotational.Examples.First")
     ///     .include_from_modelica_path("Modelica")?
@@ -233,13 +265,20 @@ impl Compiler {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn include_from_modelica_path(self, package_name: &str) -> Result<Self> {
-        use crate::ir::transform::multi_file::find_package_in_modelica_path;
+        use crate::ir::transform::multi_file::{find_package_in_paths, get_modelica_path};
 
-        let package_path = find_package_in_modelica_path(package_name).ok_or_else(|| {
+        // Use explicit paths if set, otherwise fall back to env var
+        let search_paths = if self.modelica_paths.is_empty() {
+            get_modelica_path()
+        } else {
+            self.modelica_paths.clone()
+        };
+
+        let package_path = find_package_in_paths(package_name, &search_paths).ok_or_else(|| {
             anyhow::anyhow!(
-                "Package '{}' not found in MODELICAPATH. Current MODELICAPATH: {:?}",
+                "Package '{}' not found in library paths: {:?}",
                 package_name,
-                std::env::var("MODELICAPATH").unwrap_or_default()
+                search_paths
             )
         })?;
 
