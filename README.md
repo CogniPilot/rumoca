@@ -278,7 +278,7 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 | Metric | Result | Notes |
 |--------|--------|-------|
 | **Parse Rate** | 100% (2551/2551 files) | 3.35 ms/file |
-| **Compile Rate** | 100% (2283/2283 models) | All models compile |
+| **Compile Rate** | 100% (2283/2283 models) | 173 ms/model |
 | **Balance Rate** | 32% (728/2283 models) | Equation-variable balance |
 
 ### What Works Well
