@@ -469,6 +469,10 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                             def.classes.insert(name, nested_class);
                         }
                         modelica_grammar_trait::ElementDefinitionGroup::ComponentClause(clause) => {
+                            // Extract inner/outer flags from element definition
+                            let is_inner = edef.element_definition.element_definition_opt1.is_some();
+                            let is_outer = edef.element_definition.element_definition_opt2.is_some();
+
                             let connection =
                                 match &clause.component_clause.type_prefix.type_prefix_opt {
                                     Some(opt) => match &opt.type_prefix_opt_group {
@@ -594,6 +598,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     modifications: indexmap::IndexMap::new(),
                                     location: comp_location,
                                     condition,
+                                    inner: is_inner,
+                                    outer: is_outer,
                                 };
 
                                 // set default start value
@@ -804,6 +810,10 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                         }
                         modelica_grammar_trait::ElementDefinitionGroup::ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(repl) => {
                             // Handle replaceable ( class_definition | component_clause )
+                            // Extract inner/outer flags from element definition
+                            let is_inner_repl = edef.element_definition.element_definition_opt1.is_some();
+                            let is_outer_repl = edef.element_definition.element_definition_opt2.is_some();
+
                             match &repl.element_definition_group_group {
                                 modelica_grammar_trait::ElementDefinitionGroupGroup::ClassDefinition(class) => {
                                     let nested_class = class.class_definition.clone();
@@ -845,6 +855,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             modifications: indexmap::IndexMap::new(),
                                             location: comp_location,
                                             condition,
+                                            inner: is_inner_repl,
+                                            outer: is_outer_repl,
                                         };
 
                                         def.components.insert(c.declaration.ident.text.clone(), value);

@@ -32,6 +32,29 @@ use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 
+/// Extract name=value pairs from extends clause modifications.
+///
+/// Extends modifications are stored as a Vec<Expression> containing Binary expressions
+/// like `L = 1e-3` which are `Binary { op: Eq, lhs: ComponentReference("L"), rhs: value }`.
+///
+/// This function extracts these into an IndexMap for easy lookup.
+fn extract_extends_modifications(modifications: &[Expression]) -> IndexMap<String, Expression> {
+    let mut result = IndexMap::new();
+
+    for expr in modifications {
+        if let Expression::Binary { op, lhs, rhs } = expr {
+            if matches!(op, OpBinary::Eq(_)) {
+                if let Expression::ComponentReference(comp_ref) = &**lhs {
+                    let param_name = comp_ref.to_string();
+                    result.insert(param_name, (**rhs).clone());
+                }
+            }
+        }
+    }
+
+    result
+}
+
 /// Resolves a class name by searching the enclosing scope hierarchy.
 ///
 /// This function implements Modelica's name lookup rules for extends clauses:
@@ -178,10 +201,21 @@ fn resolve_class_internal(
         let resolved_parent =
             resolve_class_internal(parent_class, &resolved_name, class_dict, visited)?;
 
+        // Extract modifications from the extends clause (e.g., extends Foo(L=1e-3))
+        let extends_mods = extract_extends_modifications(&extend.modifications);
+
         // Add parent's components (insert at the beginning to maintain proper order)
         for (comp_name, comp) in resolved_parent.components.iter().rev() {
             if !resolved.components.contains_key(comp_name) {
-                resolved.components.insert(comp_name.clone(), comp.clone());
+                let mut modified_comp = comp.clone();
+
+                // Apply extends modifications to inherited components
+                if let Some(mod_value) = extends_mods.get(comp_name) {
+                    modified_comp.start = mod_value.clone();
+                    modified_comp.start_is_modification = true;
+                }
+
+                resolved.components.insert(comp_name.clone(), modified_comp);
                 resolved
                     .components
                     .move_index(resolved.components.len() - 1, 0);
@@ -434,126 +468,228 @@ fn generate_connection_equations(
     }
 }
 
-/// Recursively expands a single component, adding its subcomponents and equations to the flat class.
-///
-/// This function handles:
-/// 1. Looking up the component's class definition
-/// 2. Adding equations with properly scoped variable references
-/// 3. Recursively expanding any nested components that are also class types
-/// 4. Recording connector types for later connect equation expansion
-///
-/// Type aliases (classes that extend primitives but have no components, like `Voltage extends Real`)
-/// are not expanded - the component is kept as-is since it acts like a primitive.
-fn expand_component(
-    fclass: &mut ir::ast::ClassDefinition,
-    comp_name: &str,
-    comp: &ir::ast::Component,
-    current_class_path: &str,
-    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
-    symbol_table: &SymbolTable,
-    pin_types: &mut IndexMap<String, String>,
-) -> Result<()> {
-    let type_name = comp.type_name.to_string();
+/// Track inner components for inner/outer resolution.
+/// Maps (type_name, component_name) -> flattened component name
+/// For example, ("World", "world") -> "world" means there's an inner World world at the top level
+type InnerMap = IndexMap<(String, String), String>;
 
-    // Resolve the type name using enclosing scope search
-    let resolved_type_name = match resolve_class_name(&type_name, current_class_path, class_dict) {
-        Some(name) => name,
-        None => return Ok(()), // Primitive type or not found, nothing to expand
-    };
+/// Visitor that renames outer component references to point to their inner counterparts.
+/// For example, if "child.world" is outer and maps to inner "world",
+/// then "child.world.g" gets renamed to "world.g".
+#[derive(Debug, Clone, Default)]
+struct OuterRenamer {
+    /// Maps outer component path prefix to inner component path
+    /// e.g., "child.world" -> "world"
+    outer_to_inner: IndexMap<String, String>,
+}
 
-    // Get the component class
-    let comp_class_raw = match class_dict.get(&resolved_type_name) {
-        Some(c) => c,
-        None => return Ok(()), // Should not happen after resolve_class_name succeeded
-    };
+impl OuterRenamer {
+    fn add_mapping(&mut self, outer_path: &str, inner_path: &str) {
+        self.outer_to_inner
+            .insert(outer_path.to_string(), inner_path.to_string());
+    }
+}
 
-    // Resolve the component class (handle its extends clauses)
-    let comp_class = resolve_class(comp_class_raw, &resolved_type_name, class_dict)?;
+impl MutVisitor for OuterRenamer {
+    fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
+        let ref_name = node.to_string();
 
-    // If the resolved class has no components, it's effectively a type alias (like Voltage = Real)
-    // Don't remove the component, just add any equations it might have
-    if comp_class.components.is_empty() {
-        // Still add any equations from the type alias (though rare)
-        let mut renamer = ScopeRenamer::new(symbol_table, comp_name);
+        // Check if this reference starts with an outer path that needs renaming
+        for (outer_path, inner_path) in &self.outer_to_inner {
+            if ref_name == *outer_path {
+                // Exact match - replace entire reference
+                node.parts = vec![ComponentRefPart {
+                    ident: Token {
+                        text: inner_path.clone(),
+                        ..Default::default()
+                    },
+                    subs: None,
+                }];
+                return;
+            } else if ref_name.starts_with(&format!("{}.", outer_path)) {
+                // Reference to subcomponent of outer - replace prefix
+                let suffix = &ref_name[outer_path.len()..]; // includes the leading "."
+                let new_ref = format!("{}{}", inner_path, suffix);
+                node.parts = vec![ComponentRefPart {
+                    ident: Token {
+                        text: new_ref,
+                        ..Default::default()
+                    },
+                    subs: None,
+                }];
+                return;
+            }
+        }
+    }
+}
+
+/// Context for component expansion during flattening.
+/// Groups all the mutable state needed during recursive expansion.
+struct ExpansionContext<'a> {
+    /// The flattened class being built
+    fclass: &'a mut ir::ast::ClassDefinition,
+    /// Dictionary of all available classes
+    class_dict: &'a IndexMap<String, ir::ast::ClassDefinition>,
+    /// Symbol table for scope tracking
+    symbol_table: &'a SymbolTable,
+    /// Maps flattened pin names to their connector types
+    pin_types: IndexMap<String, String>,
+    /// Maps (type_name, component_name) -> inner component's flattened name
+    inner_map: InnerMap,
+    /// Tracks outer->inner mappings for equation rewriting
+    outer_renamer: OuterRenamer,
+}
+
+impl<'a> ExpansionContext<'a> {
+    fn new(
+        fclass: &'a mut ir::ast::ClassDefinition,
+        class_dict: &'a IndexMap<String, ir::ast::ClassDefinition>,
+        symbol_table: &'a SymbolTable,
+    ) -> Self {
+        Self {
+            fclass,
+            class_dict,
+            symbol_table,
+            pin_types: IndexMap::new(),
+            inner_map: IndexMap::new(),
+            outer_renamer: OuterRenamer::default(),
+        }
+    }
+
+    /// Register top-level inner components
+    fn register_inner_components(&mut self, components: &IndexMap<String, ir::ast::Component>) {
+        for (comp_name, comp) in components {
+            if comp.inner {
+                let key = (comp.type_name.to_string(), comp_name.clone());
+                self.inner_map.insert(key, comp_name.clone());
+            }
+        }
+    }
+
+    /// Apply outer renaming to all equations
+    fn apply_outer_renaming(&mut self) {
+        self.fclass.accept_mut(&mut self.outer_renamer);
+    }
+
+    /// Expand a component recursively
+    fn expand_component(
+        &mut self,
+        comp_name: &str,
+        comp: &ir::ast::Component,
+        current_class_path: &str,
+    ) -> Result<()> {
+        let type_name = comp.type_name.to_string();
+
+        // Resolve the type name using enclosing scope search
+        let resolved_type_name =
+            match resolve_class_name(&type_name, current_class_path, self.class_dict) {
+                Some(name) => name,
+                None => return Ok(()), // Primitive type or not found, nothing to expand
+            };
+
+        // Get the component class
+        let comp_class_raw = match self.class_dict.get(&resolved_type_name) {
+            Some(c) => c,
+            None => return Ok(()), // Should not happen after resolve_class_name succeeded
+        };
+
+        // Resolve the component class (handle its extends clauses)
+        let comp_class = resolve_class(comp_class_raw, &resolved_type_name, self.class_dict)?;
+
+        // If the resolved class has no components, it's effectively a type alias (like Voltage = Real)
+        // Don't remove the component, just add any equations it might have
+        if comp_class.components.is_empty() {
+            // Still add any equations from the type alias (though rare)
+            let mut renamer = ScopeRenamer::new(self.symbol_table, comp_name);
+            for eq in &comp_class.equations {
+                let mut feq = eq.clone();
+                feq.accept_mut(&mut renamer);
+                self.fclass.equations.push(feq);
+            }
+            return Ok(());
+        }
+
+        // Record the connector type for this component (before it gets expanded)
+        // This is used later for connect equation expansion
+        self.pin_types
+            .insert(comp_name.to_string(), resolved_type_name.clone());
+
+        // Create a scope renamer for this component
+        let mut renamer = ScopeRenamer::new(self.symbol_table, comp_name);
+
+        // Add equations from component class, with scoped variable references
         for eq in &comp_class.equations {
             let mut feq = eq.clone();
             feq.accept_mut(&mut renamer);
-            fclass.equations.push(feq);
+            self.fclass.equations.push(feq);
         }
-        return Ok(());
-    }
 
-    // Record the connector type for this component (before it gets expanded)
-    // This is used later for connect equation expansion
-    pin_types.insert(comp_name.to_string(), resolved_type_name.clone());
+        // Expand comp.sub_comp names to use dots in existing equations
+        self.fclass.accept_mut(&mut SubCompNamer {
+            comp: comp_name.to_string(),
+        });
 
-    // Create a scope renamer for this component
-    let mut renamer = ScopeRenamer::new(symbol_table, comp_name);
+        // Collect subcomponents, handling inner/outer
+        let mut subcomponents: Vec<(String, ir::ast::Component)> = Vec::new();
+        for (subcomp_name, subcomp) in &comp_class.components {
+            // Handle outer components: they reference an inner component from enclosing scope
+            if subcomp.outer {
+                let subcomp_type = subcomp.type_name.to_string();
+                // Look for matching inner component
+                let key = (subcomp_type, subcomp_name.clone());
+                if let Some(inner_name) = self.inner_map.get(&key) {
+                    // Outer component resolves to inner - don't create a new variable
+                    // Record the mapping for equation rewriting
+                    let outer_path = format!("{}.{}", comp_name, subcomp_name);
+                    self.outer_renamer.add_mapping(&outer_path, inner_name);
+                    continue;
+                }
+                // No matching inner found - could be an error or external dependency
+                // For now, create the component anyway
+            }
 
-    // Add equations from component class, with scoped variable references
-    for eq in &comp_class.equations {
-        let mut feq = eq.clone();
-        feq.accept_mut(&mut renamer);
-        fclass.equations.push(feq);
-    }
-
-    // Expand comp.sub_comp names to use dots in existing equations
-    fclass.accept_mut(&mut SubCompNamer {
-        comp: comp_name.to_string(),
-    });
-
-    // Add subcomponents from component class to flat class
-    // We need to collect them first to avoid borrow issues during recursion
-    // Also apply any modifications from the parent component (e.g., R=10 in Resistor R1(R=10))
-    let subcomponents: Vec<(String, ir::ast::Component)> = comp_class
-        .components
-        .iter()
-        .map(|(subcomp_name, subcomp)| {
             let mut scomp = subcomp.clone();
             let name = format!("{}.{}", comp_name, subcomp_name);
             scomp.name = name.clone();
 
+            // If this is an inner component, register it
+            if subcomp.inner {
+                let key = (subcomp.type_name.to_string(), subcomp_name.clone());
+                self.inner_map.insert(key, name.clone());
+            }
+
             // Apply modifications from parent component
-            // e.g., if comp has modifications {R: 10} and subcomp_name is "R", set scomp.start = 10
             if let Some(mod_expr) = comp.modifications.get(subcomp_name) {
                 scomp.start = mod_expr.clone();
             }
 
-            (name, scomp)
-        })
-        .collect();
-
-    // Insert all subcomponents
-    for (name, scomp) in &subcomponents {
-        fclass.components.insert(name.clone(), scomp.clone());
-    }
-
-    // Remove the parent component from flat class (it's been expanded into subcomponents)
-    fclass.components.swap_remove(comp_name);
-
-    // Recursively expand any subcomponents that are also class types
-    for (subcomp_name, subcomp) in &subcomponents {
-        // Use resolved_type_name as context for resolving nested component types
-        if resolve_class_name(
-            &subcomp.type_name.to_string(),
-            &resolved_type_name,
-            class_dict,
-        )
-        .is_some()
-        {
-            expand_component(
-                fclass,
-                subcomp_name,
-                subcomp,
-                &resolved_type_name,
-                class_dict,
-                symbol_table,
-                pin_types,
-            )?;
+            subcomponents.push((name, scomp));
         }
-    }
 
-    Ok(())
+        // Insert all subcomponents
+        for (name, scomp) in &subcomponents {
+            self.fclass.components.insert(name.clone(), scomp.clone());
+        }
+
+        // Remove the parent component from flat class (it's been expanded into subcomponents)
+        self.fclass.components.swap_remove(comp_name);
+
+        // Recursively expand any subcomponents that are also class types
+        for (subcomp_name, subcomp) in &subcomponents {
+            // Use resolved_type_name as context for resolving nested component types
+            if resolve_class_name(
+                &subcomp.type_name.to_string(),
+                &resolved_type_name,
+                self.class_dict,
+            )
+            .is_some()
+            {
+                self.expand_component(subcomp_name, subcomp, &resolved_type_name)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Flattens a hierarchical Modelica class definition into a single flat class.
@@ -692,9 +828,11 @@ pub fn flatten(
     // Create symbol table for tracking variable scopes
     let symbol_table = SymbolTable::new();
 
-    // Track connector types for connect equation expansion
-    // Maps flattened pin names (e.g., "R1.p") to their connector type (e.g., "Pin")
-    let mut pin_types: IndexMap<String, String> = IndexMap::new();
+    // Create expansion context
+    let mut ctx = ExpansionContext::new(&mut fclass, &class_dict, &symbol_table);
+
+    // Register top-level inner components before expansion
+    ctx.register_inner_components(&resolved_main.components);
 
     // Collect component names that need expansion (to avoid borrow issues)
     // Use scope-aware class resolution to determine which components are class types
@@ -707,18 +845,16 @@ pub fn flatten(
         .map(|(name, comp)| (name.clone(), comp.clone()))
         .collect();
 
-    // Recursively expand each component that references a class
+    // Recursively expand each component that references a class (with inner/outer support)
     for (comp_name, comp) in &components_to_expand {
-        expand_component(
-            &mut fclass,
-            comp_name,
-            comp,
-            &main_class_name,
-            &class_dict,
-            &symbol_table,
-            &mut pin_types,
-        )?;
+        ctx.expand_component(comp_name, comp, &main_class_name)?;
     }
+
+    // Rewrite equations to redirect outer references to inner components
+    ctx.apply_outer_renaming();
+
+    // Extract pin_types for connect equation expansion
+    let pin_types = ctx.pin_types;
 
     // Expand connect equations into simple equations
     expand_connect_equations(&mut fclass, &class_dict, &pin_types)?;

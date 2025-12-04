@@ -1,12 +1,19 @@
 // Simplified Integrator to debug balance issue
 // Based on MSL Modelica.Blocks.Continuous.Integrator
-
 package Interfaces
-  connector RealInput = input Real "Input connector";
-  connector RealOutput = output Real "Output connector";
-  connector BooleanOutput = output Boolean "Boolean output connector";
+  connector RealInput
+    extends Real;
+  end RealInput;
 
-  partial block SISO "Single input single output"
+  connector RealOutput
+    extends Real;
+  end RealOutput;
+
+  connector BooleanOutput
+    extends Boolean;
+  end BooleanOutput;
+
+  block SISO "Single input single output"
     RealInput u "Input";
     RealOutput y "Output";
   end SISO;
@@ -23,7 +30,6 @@ block IntegratorWithProtected "Integrator with protected outputs"
   extends Interfaces.SISO;
   parameter Real k = 1 "Gain";
   parameter Boolean use_reset = false "Enable reset";
-protected
   Interfaces.BooleanOutput local_reset;
   Interfaces.RealOutput local_set;
 equation
@@ -37,16 +43,16 @@ block IntegratorWithIf "Integrator with if-equations"
   extends Interfaces.SISO;
   parameter Real k = 1 "Gain";
   parameter Boolean use_reset = false "Enable reset";
-protected
   Interfaces.BooleanOutput local_reset;
   Interfaces.RealOutput local_set;
 equation
   if use_reset then
-    local_reset = true;  // Would be connected in real code
+    local_reset = true;
     local_set = 1.0;
   else
     local_reset = false;
     local_set = 0;
   end if;
+  // Would be connected in real code
   der(y) = k * u;
 end IntegratorWithIf;

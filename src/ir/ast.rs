@@ -134,6 +134,10 @@ pub struct Component {
     /// Conditional component expression (e.g., `if use_reset` in `BooleanInput reset if use_reset`)
     /// None means the component is unconditional (always present)
     pub condition: Option<Expression>,
+    /// True if declared with 'inner' prefix (provides instance to outer references)
+    pub inner: bool,
+    /// True if declared with 'outer' prefix (references an inner instance from enclosing scope)
+    pub outer: bool,
 }
 
 impl Debug for Component {
@@ -168,6 +172,12 @@ impl Debug for Component {
         }
         if self.condition.is_some() {
             builder.field("condition", &self.condition);
+        }
+        if self.inner {
+            builder.field("inner", &self.inner);
+        }
+        if self.outer {
+            builder.field("outer", &self.outer);
         }
         builder.finish()
     }

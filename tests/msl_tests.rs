@@ -882,8 +882,13 @@ fn test_msl_balance_with_json_export() {
 
     let parse_time = parse_start.elapsed();
     let parse_passed = parse_results.iter().filter(|r| r.success).count();
+    let avg_parse_time_ms = if total_files > 0 {
+        parse_time.as_secs_f64() * 1000.0 / total_files as f64
+    } else {
+        0.0
+    };
     println!(
-        "\nParse Results: {}/{} passed ({:.1}%) in {:.2}s",
+        "\nParse Results: {}/{} passed ({:.1}%) in {:.2}s ({:.2}ms/file)",
         parse_passed,
         total_files,
         if total_files > 0 {
@@ -891,7 +896,8 @@ fn test_msl_balance_with_json_export() {
         } else {
             0.0
         },
-        parse_time.as_secs_f64()
+        parse_time.as_secs_f64(),
+        avg_parse_time_ms
     );
 
     // =========================================================================
@@ -925,12 +931,7 @@ fn test_msl_balance_with_json_export() {
     }
     model_names.sort();
 
-    // Limit to 500 models for the sample test
-    model_names.truncate(500);
-    println!(
-        "Found {} simulatable models/blocks (limited to 500)",
-        model_names.len()
-    );
+    println!("Found {} simulatable models/blocks", model_names.len());
 
     // =========================================================================
     // PHASE 3: Full compile with JSON export
@@ -1021,6 +1022,11 @@ fn test_msl_balance_with_json_export() {
         .collect();
 
     println!("BALANCE CHECK:");
+    let avg_compile_time_ms = if total_models > 0 {
+        compile_time.as_secs_f64() * 1000.0 / total_models as f64
+    } else {
+        0.0
+    };
     println!("  Total Models:     {}", total_models);
     println!(
         "  Compile Success:  {} ({:.1}%)",
@@ -1034,7 +1040,16 @@ fn test_msl_balance_with_json_export() {
     );
     println!("  Unbalanced:       {}", unbalanced.len());
     println!("  Compile Errors:   {}", compile_errors.len());
-    println!("  Time:             {:.2}s", compile_time.as_secs_f64());
+    println!(
+        "  Compile Time:     {:.2}s ({:.2}ms/model)",
+        compile_time.as_secs_f64(),
+        avg_compile_time_ms
+    );
+    println!(
+        "  Parse Time:       {:.2}s ({:.2}ms/file)",
+        parse_time.as_secs_f64(),
+        avg_parse_time_ms
+    );
     println!();
     println!("JSON files exported to: {:?}", output_dir);
 
@@ -1057,11 +1072,15 @@ fn test_msl_balance_with_json_export() {
     // Save summary to JSON
     let summary_path = output_dir.join("_summary.json");
     let summary = serde_json::json!({
+        "total_files": total_files,
         "total_models": total_models,
         "balanced": balanced,
         "unbalanced": unbalanced.len(),
         "compile_errors": compile_errors.len(),
+        "parse_time_secs": parse_time.as_secs_f64(),
+        "parse_time_ms_per_file": avg_parse_time_ms,
         "compile_time_secs": compile_time.as_secs_f64(),
+        "compile_time_ms_per_model": avg_compile_time_ms,
         "unbalanced_models": unbalanced.iter().map(|(name, _, eq, unk, _)| {
             serde_json::json!({
                 "name": name,

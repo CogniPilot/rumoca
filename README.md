@@ -276,9 +276,9 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 
 | Metric | Result | Notes |
 |--------|--------|-------|
-| **Parse Rate** | 100% (2551/2551 files) | All MSL files parse successfully |
-| **Compile Rate** | 53% (267/500 models) | Limited by missing built-in features |
-| **Balance Rate** | 75% (199/267 compiled) | Of models that compile, most are balanced |
+| **Parse Rate** | 100% (2551/2551 files) | 3.40 ms/file |
+| **Compile Rate** | 38% (860/2283 models) | 186 ms/model |
+| **Balance Rate** | 62% (532/860 compiled) | Of models that compile |
 
 ### What Works Well
 
@@ -298,8 +298,6 @@ Most compile errors are due to missing Modelica features:
 | SI Unit Conversions | 7% of models | `conversionTable` |
 | Complex Numbers | 2% of models | `Complex` type |
 | Table Interpolation | 3% of models | `CombiTable1D`, external tables |
-
-See [docs/MSL_BALANCE_ROADMAP.md](docs/MSL_BALANCE_ROADMAP.md) for detailed analysis and improvement plans.
 
 ## Architecture
 

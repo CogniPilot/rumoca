@@ -10,6 +10,8 @@ use crate::ir::analysis::balance_check::check_dae_balance;
 use crate::ir::analysis::var_validator::VarValidator;
 use crate::ir::ast::{ClassType, StoredDefinition};
 use crate::ir::structural::create_dae::create_dae;
+use crate::ir::transform::constant_substitutor::ConstantSubstitutor;
+use crate::ir::transform::enum_substitutor::EnumSubstitutor;
 use crate::ir::transform::flatten::flatten;
 use crate::ir::transform::function_inliner::FunctionInliner;
 use crate::ir::transform::import_resolver::ImportResolver;
@@ -24,11 +26,12 @@ use std::time::Instant;
 /// This function takes a parsed StoredDefinition and performs:
 /// 1. Flattening - resolve class hierarchy
 /// 2. Import resolution - rewrite short names to fully qualified
-/// 3. Variable validation - check for undefined variables
-/// 4. Function inlining - inline user-defined functions
-/// 5. Tuple expansion - expand tuple equations
-/// 6. DAE creation - create the final DAE representation
-/// 7. Balance checking - verify equations match unknowns
+/// 3. Constant substitution - replace Modelica.Constants with literal values
+/// 4. Variable validation - check for undefined variables
+/// 5. Function inlining - inline user-defined functions
+/// 6. Tuple expansion - expand tuple equations
+/// 7. DAE creation - create the final DAE representation
+/// 8. Balance checking - verify equations match unknowns
 pub fn compile_from_ast(
     def: StoredDefinition,
     source: &str,
@@ -97,6 +100,15 @@ pub fn compile_from_ast_ref(
     // This must happen before validation so imported names are recognized
     let mut import_resolver = ImportResolver::new(&fclass, def);
     fclass.accept_mut(&mut import_resolver);
+
+    // Substitute Modelica.Constants with their literal values
+    // This must happen after import resolution and before validation
+    let mut const_substitutor = ConstantSubstitutor::new();
+    fclass.accept_mut(&mut const_substitutor);
+
+    // Substitute built-in enumeration values (StateSelect.prefer -> 4, etc.)
+    let mut enum_substitutor = EnumSubstitutor::new();
+    fclass.accept_mut(&mut enum_substitutor);
 
     // Collect all function names from the stored definition (including nested)
     let function_names = collect_all_functions(def);
@@ -210,6 +222,14 @@ pub fn check_balance_only(
     };
 
     // Skip import resolution and validation for speed - we just need balance
+
+    // But we do need constant substitution for Modelica.Constants
+    let mut const_substitutor = ConstantSubstitutor::new();
+    fclass.accept_mut(&mut const_substitutor);
+
+    // Substitute built-in enumeration values (StateSelect.prefer -> 4, etc.)
+    let mut enum_substitutor = EnumSubstitutor::new();
+    fclass.accept_mut(&mut enum_substitutor);
 
     // Inline user-defined function calls
     let mut inliner = FunctionInliner::from_class_list(&def.class_list);
