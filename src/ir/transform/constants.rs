@@ -160,7 +160,7 @@ pub const MODELICA_D2R: f64 = std::f64::consts::PI / 180.0;
 pub const MODELICA_R2D: f64 = 180.0 / std::f64::consts::PI;
 
 /// Euler-Mascheroni constant (γ)
-pub const MODELICA_GAMMA: f64 = 0.57721566490153286061;
+pub const MODELICA_GAMMA: f64 = 0.577_215_664_901_532_9;
 
 /// Machine epsilon - difference between 1 and next representable float
 pub const MODELICA_EPS: f64 = f64::EPSILON;

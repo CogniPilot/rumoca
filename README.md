@@ -255,13 +255,14 @@ See [`templates/examples/`](templates/examples/) for complete template examples 
 |---------|--------|
 | Connect equations | Flow/potential semantics implemented; `stream` not yet supported |
 | External functions | `external` keyword recognized; no linking |
+| Inner/outer | Basic outer→inner resolution implemented; nested scopes in progress |
+| Complex operators | `Complex` record expansion; operator overloading in progress |
 
 ### Not Yet Implemented
 
 | Feature | Notes |
 |---------|-------|
 | Stream connectors | `inStream`, `actualStream` operators |
-| Inner/outer | Keywords recognized; lookup not implemented |
 | Redeclarations | `redeclare`, `replaceable` parsed only |
 | Overloaded operators | `operator` class prefix recognized only |
 | State machines | Synchronous language elements (Ch. 17) |
@@ -276,9 +277,9 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 
 | Metric | Result | Notes |
 |--------|--------|-------|
-| **Parse Rate** | 100% (2551/2551 files) | 3.40 ms/file |
-| **Compile Rate** | 38% (860/2283 models) | 186 ms/model |
-| **Balance Rate** | 62% (532/860 compiled) | Of models that compile |
+| **Parse Rate** | 100% (2551/2551 files) | 3.35 ms/file |
+| **Compile Rate** | 100% (2283/2283 models) | All models compile |
+| **Balance Rate** | 32% (728/2283 models) | Equation-variable balance |
 
 ### What Works Well
 
@@ -290,14 +291,15 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 
 ### Known Limitations
 
-Most compile errors are due to missing Modelica features:
+Most unbalanced models are due to:
 
-| Feature | Impact | Examples |
-|---------|--------|----------|
-| Clocked Modelica | 15% of models | `Clock`, `previous`, `interval` |
-| SI Unit Conversions | 7% of models | `conversionTable` |
-| Complex Numbers | 2% of models | `Complex` type |
-| Table Interpolation | 3% of models | `CombiTable1D`, external tables |
+| Category | Impact | Notes |
+|----------|--------|-------|
+| Connect equations | ~40% | Missing equations from flow/potential expansion |
+| Algorithm sections | ~20% | Algorithm assignments not counted as equations |
+| Partial/abstract models | ~15% | Intentionally incomplete models |
+| Array handling | ~15% | Dynamic array sizes in equations |
+| External functions | ~10% | Functions without equations |
 
 ## Architecture
 

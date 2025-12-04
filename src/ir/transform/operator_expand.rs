@@ -444,8 +444,10 @@ mod tests {
         let mut class_dict = IndexMap::new();
 
         // Create a Complex-like record
-        let mut complex_class = ClassDefinition::default();
-        complex_class.class_type = ClassType::Record;
+        let mut complex_class = ClassDefinition {
+            class_type: ClassType::Record,
+            ..Default::default()
+        };
         complex_class.components.insert(
             "re".to_string(),
             crate::ir::ast::Component {
