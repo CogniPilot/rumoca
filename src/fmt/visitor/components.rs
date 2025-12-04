@@ -153,7 +153,11 @@ impl FormatVisitor {
             // Add start= modifier if it's a modification
             if has_start_mod {
                 let each_prefix = if comp.start_has_each { "each " } else { "" };
-                mods.push(format!("{}start = {}", each_prefix, self.format_expression(&comp.start)));
+                mods.push(format!(
+                    "{}start = {}",
+                    each_prefix,
+                    self.format_expression(&comp.start)
+                ));
             }
             // Add other modifications
             for (k, v) in &comp.modifications {

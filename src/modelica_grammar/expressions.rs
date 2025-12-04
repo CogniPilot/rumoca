@@ -670,7 +670,10 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
             }
         }
         let each_flags = vec![false; v.len()];
-        Ok(ExpressionList { args: v, each_flags })
+        Ok(ExpressionList {
+            args: v,
+            each_flags,
+        })
     }
 }
 
@@ -685,7 +688,10 @@ impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
             let each_flags = opt.function_arguments.each_flags.clone();
             Ok(ExpressionList { args, each_flags })
         } else {
-            Ok(ExpressionList { args: vec![], each_flags: vec![] })
+            Ok(ExpressionList {
+                args: vec![],
+                each_flags: vec![],
+            })
         }
     }
 }

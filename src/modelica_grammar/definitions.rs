@@ -635,15 +635,13 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         // Store the full subscript (Expression or Range) for formatting
                                         value.shape_expr.push(subscript.clone());
                                         // Also try to extract integer dimension if it's a literal expression
-                                        if let ir::ast::Subscript::Expression(expr) = subscript {
-                                            if let ir::ast::Expression::Terminal {
-                                                token,
-                                                terminal_type: ir::ast::TerminalType::UnsignedInteger,
-                                            } = expr
-                                            {
-                                                if let Ok(dim) = token.text.parse::<usize>() {
-                                                    value.shape.push(dim);
-                                                }
+                                        if let ir::ast::Subscript::Expression(ir::ast::Expression::Terminal {
+                                            token,
+                                            terminal_type: ir::ast::TerminalType::UnsignedInteger,
+                                        }) = subscript
+                                        {
+                                            if let Ok(dim) = token.text.parse::<usize>() {
+                                                value.shape.push(dim);
                                             }
                                         }
                                     }
