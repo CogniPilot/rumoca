@@ -411,7 +411,10 @@ fn substitute_variable(expr: &Expression, var_name: &str, value: i64) -> Express
         Expression::Parenthesized { inner } => Expression::Parenthesized {
             inner: Box::new(substitute_variable(inner, var_name, value)),
         },
-        Expression::ArrayComprehension { expr: inner, indices } => {
+        Expression::ArrayComprehension {
+            expr: inner,
+            indices,
+        } => {
             // Check if the variable is shadowed by the comprehension's own indices
             let is_shadowed = indices.iter().any(|idx| idx.ident.text == var_name);
             if is_shadowed {
