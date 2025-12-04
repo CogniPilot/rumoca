@@ -111,9 +111,9 @@ package ComparisonOperators
   // a = {1,2,3}, size(a,1) = 3, so nx = size(a,1) - 1 = 2
   // Condition nx == 0 is false, so we use else branch (2 equations)
   model SizeComparisonFalse
-    parameter Real a = {1, 2, 3};
+    parameter Real a[:] = {1, 2, 3};
     parameter Integer nx = size(a, 1) - 1; // nx = 2
-    Real x; // x[2]
+    Real x[nx]; // x[2]
   equation
     if nx == 0 then
     else
@@ -129,7 +129,7 @@ package ComparisonOperators
   // a = {1}, size(a,1) = 1, so nx = size(a,1) - 1 = 0
   // Condition nx == 0 is true, so we use then branch (0 equations, 0 unknowns)
   model SizeComparisonTrue
-    parameter Real a = {1};
+    parameter Real a[:] = {1};
     parameter Integer nx = size(a, 1) - 1; // nx = 0
     input Real u;
     output Real y;
@@ -149,7 +149,7 @@ package ComparisonOperators
   // a = {1}, so nx = size(a, 1) - 1 = 0
   // if nx == 0 should be true, so 1 equation
   model ProtectedParamTest
-    parameter Real a = {1};
+    parameter Real a[:] = {1};
     input Real u;
     output Real y;
     parameter Integer nx = size(a, 1) - 1; // nx = 0 (protected)
@@ -168,16 +168,16 @@ package ComparisonOperators
   // Unknowns: y only (since x[0] and x_scaled[0] are empty)
   // Expected: 1 equation, 1 unknown = balanced
   model TransferFunctionLike
-    parameter Real b = {1};
-    parameter Real a = {1};
+    parameter Real b[:] = {1};
+    parameter Real a[:] = {1};
     input Real u;
     output Real y;
     parameter Integer na = size(a, 1); // na = 1
     parameter Integer nb = size(b, 1); // nb = 1
     parameter Integer nx = size(a, 1) - 1; // nx = 0
     parameter Real d = b[1] / a[1]; // d = 1
-    output Real x; // x[0] with default a={1}
-    Real x_scaled; // x_scaled[0] with default
+    output Real x[nx]; // x[0] with default a={1}
+    Real x_scaled[nx]; // x_scaled[0] with default
   equation
     if nx == 0 then
       y = d * u;
@@ -189,5 +189,3 @@ package ComparisonOperators
     end if;
   end TransferFunctionLike;
 end ComparisonOperators;
-// 1 equation when nx == 0
-// These equations should NOT be counted when nx == 0
