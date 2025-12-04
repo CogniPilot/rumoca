@@ -156,6 +156,7 @@ fn get_msl_path() -> Result<PathBuf> {
 // =============================================================================
 
 #[test]
+#[ignore] // Requires MSL download - run with --ignored
 fn test_msl_path_detection() {
     match get_msl_path() {
         Ok(path) => println!("MSL {} available at: {:?}", MSL_VERSION, path),
@@ -734,6 +735,7 @@ fn print_combined_results(results: &CombinedTestResults) {
 
 /// Sample MSL balance test - parses all files, balance checks 500 models
 #[test]
+#[ignore] // Requires MSL download - run with --ignored
 fn test_msl_balance_sample() {
     let msl_path = get_msl_path().expect("Failed to download MSL");
     let results = run_combined_msl_test(&msl_path, Some(500));
@@ -821,6 +823,7 @@ fn test_msl_balance_all() {
 /// MSL test with JSON export for every compiled model
 /// Exports DAE JSON to /tmp/msl_json/ for analysis
 #[test]
+#[ignore] // Requires MSL download - run with --ignored
 fn test_msl_balance_with_json_export() {
     let msl_path = get_msl_path().expect("Failed to download MSL");
 

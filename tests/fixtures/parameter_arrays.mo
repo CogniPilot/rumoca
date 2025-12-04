@@ -5,7 +5,7 @@ package ParameterArrays
   // n = 3, x[3] states = 3 unknowns, for i in 1:n = 3 equations
   model SimpleParameterForLoop
     parameter Integer n = 3 "Array size";
-    Real x;
+    Real x[n];
   equation
     for i in 1:n loop
       der(x[i]) = -x[i];
@@ -16,7 +16,7 @@ package ParameterArrays
   // n = 2, x[4] states = 4 unknowns, for i in 1:2*n = 4 equations
   model ParameterArithmetic
     parameter Integer n = 2 "Half array size";
-    Real x;
+    Real x[2 * n];
   equation
     for i in 1:2 * n loop
       der(x[i]) = -x[i];
@@ -28,8 +28,8 @@ package ParameterArrays
   model MultipleParameters
     parameter Integer n = 2;
     parameter Integer m = 3;
-    Real x;
-    Real y;
+    Real x[n];
+    Real y[m];
   equation
     for i in 1:n loop
       der(x[i]) = -x[i];
@@ -44,7 +44,7 @@ package ParameterArrays
   model NestedForLoop
     parameter Integer n = 2;
     parameter Integer m = 2;
-    Real x;
+    Real x[n, m];
   equation
     for i in 1:n loop
       for j in 1:m loop

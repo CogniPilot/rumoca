@@ -2,21 +2,13 @@
 // Tests that conditional components are properly filtered based on parameter defaults
 package ConditionalComponents
   // Interfaces for testing
-  connector RealInput
-    extends Real;
-  end RealInput;
+  connector RealInput = input Real;
 
-  connector RealOutput
-    extends Real;
-  end RealOutput;
+  connector RealOutput = output Real;
 
-  connector BooleanInput
-    extends Boolean;
-  end BooleanInput;
+  connector BooleanInput = input Boolean;
 
-  connector BooleanOutput
-    extends Boolean;
-  end BooleanOutput;
+  connector BooleanOutput = output Boolean;
 
   // Simple model WITHOUT conditional components - should balance as 1 eq, 1 unk
   model SimpleNoConditional

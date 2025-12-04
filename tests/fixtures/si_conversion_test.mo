@@ -2,7 +2,6 @@
 model SIConversionTest
   import Modelica.Units.Conversions.from_degC;
   import Modelica.Units.Conversions.to_degC;
-
   parameter Real T_celsius = 25.0 "Temperature in Celsius";
   Real T_kelvin "Temperature in Kelvin";
   Real T_back "Temperature converted back to Celsius";
