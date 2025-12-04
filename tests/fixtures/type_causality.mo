@@ -1,9 +1,13 @@
 // Test type causality propagation
 // Mimics MSL's Modelica.Blocks.Interfaces pattern
 package Interfaces
-  connector RealInput = input Real;
+  connector RealInput
+    extends Real;
+  end RealInput;
 
-  connector RealOutput = output Real;
+  connector RealOutput
+    extends Real;
+  end RealOutput;
 
   block SISO "Single input single output"
     RealInput u "Input";

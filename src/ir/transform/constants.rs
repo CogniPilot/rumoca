@@ -180,7 +180,7 @@ pub const MODELICA_G_N: f64 = 9.80665;
 /// Newtonian constant of gravitation [m³/(kg·s²)]
 pub const MODELICA_G: f64 = 6.67430e-11;
 
-/// Elementary charge [C] (exact)
+/// Elementary charge \[C\] (exact)
 pub const MODELICA_Q: f64 = 1.602176634e-19;
 
 /// Planck constant [J·s] (exact)

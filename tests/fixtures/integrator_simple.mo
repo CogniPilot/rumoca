@@ -1,11 +1,17 @@
 // Simplified Integrator to debug balance issue
 // Based on MSL Modelica.Blocks.Continuous.Integrator
 package Interfaces
-  connector RealInput = input Real;
+  connector RealInput
+    extends Real;
+  end RealInput;
 
-  connector RealOutput = output Real;
+  connector RealOutput
+    extends Real;
+  end RealOutput;
 
-  connector BooleanOutput = output Boolean;
+  connector BooleanOutput
+    extends Boolean;
+  end BooleanOutput;
 
   block SISO "Single input single output"
     RealInput u "Input";
