@@ -21,7 +21,7 @@ use std::fmt::{Display, Error, Formatter};
 // Re-export types used by modelica_grammar_trait (generated code references these)
 pub use components::{ComponentList, TokenList};
 pub use definitions::{Composition, ElementList};
-pub use expressions::{ArraySubscripts, ExpressionList};
+pub use expressions::{ArraySubscripts, ExpressionList, ModificationArg};
 pub use sections::{AlgorithmSection, EquationSection};
 
 /// A parsed comment with its location information

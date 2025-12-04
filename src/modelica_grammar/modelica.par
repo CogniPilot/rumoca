@@ -5,7 +5,7 @@
 %block_comment "/\*" "\*/"
 %t_type crate::ir::ast::Token
 %nt_type algorithm_section = crate::modelica_grammar::AlgorithmSection
-%nt_type argument = crate::ir::ast::Expression
+%nt_type argument = crate::modelica_grammar::ModificationArg
 %nt_type argument_list = crate::modelica_grammar::ExpressionList
 %nt_type arithmetic_expression = crate::ir::ast::Expression
 %nt_type array_subscripts = crate::modelica_grammar::ArraySubscripts

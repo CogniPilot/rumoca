@@ -167,7 +167,7 @@ impl FormatVisitor {
                     })
                     .collect();
                 format!(
-                    "{{{{ {} for {} }}}}",
+                    "{{ {} for {} }}",
                     self.format_expression(expr),
                     indices_str.join(", ")
                 )
@@ -193,7 +193,7 @@ impl FormatVisitor {
         result
     }
 
-    fn format_subscript(&self, sub: &Subscript) -> String {
+    pub fn format_subscript(&self, sub: &Subscript) -> String {
         match sub {
             Subscript::Empty => String::new(),
             Subscript::Expression(expr) => self.format_expression(expr),

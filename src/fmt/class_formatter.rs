@@ -1,7 +1,7 @@
 //! Class formatting with comment preservation.
 
 use super::visitor::FormatVisitor;
-use crate::ir::ast::{ClassDefinition, ClassType, Component, Equation, Statement};
+use crate::ir::ast::{Causality, ClassDefinition, ClassType, Component, Equation, Statement};
 
 /// Get the source line number of an equation
 pub fn get_equation_location(eq: &Equation) -> Option<u32> {
@@ -43,6 +43,22 @@ pub fn get_statement_location(stmt: &Statement) -> Option<u32> {
     }
 }
 
+/// Check if a class is a short class definition (type alias)
+/// e.g., `connector RealInput = input Real;`
+fn is_short_class_definition(class: &ClassDefinition) -> bool {
+    // Short class definitions have no end_name_token and typically:
+    // - Have exactly one extends clause
+    // - Have no components, equations, algorithms, or nested classes
+    class.end_name_token.is_none()
+        && class.extends.len() == 1
+        && class.components.is_empty()
+        && class.equations.is_empty()
+        && class.initial_equations.is_empty()
+        && class.algorithms.is_empty()
+        && class.initial_algorithms.is_empty()
+        && class.classes.is_empty()
+}
+
 /// Format a class definition with comment insertion
 ///
 /// `add_trailing_blanks` - if true, adds blank lines after this class ends (for spacing between classes)
@@ -56,6 +72,41 @@ pub fn format_class_with_comments(
 
     // Emit any comments that should appear before this class
     visitor.emit_comments_before_line(class_line);
+
+    // Check for short class definition (type alias) like `connector RealInput = input Real;`
+    if is_short_class_definition(class) {
+        let class_keyword = match class.class_type {
+            ClassType::Model => "model",
+            ClassType::Class => "class",
+            ClassType::Block => "block",
+            ClassType::Connector => "connector",
+            ClassType::Record => "record",
+            ClassType::Type => "type",
+            ClassType::Package => "package",
+            ClassType::Function => "function",
+            ClassType::Operator => "operator",
+        };
+
+        let causality_prefix = match &class.causality {
+            Causality::Input(_) => "input ",
+            Causality::Output(_) => "output ",
+            Causality::Empty => "",
+        };
+
+        let base_type = &class.extends[0].comp;
+        visitor.writeln(&format!(
+            "{} {} = {}{};",
+            class_keyword, class.name.text, causality_prefix, base_type
+        ));
+
+        // Add blank lines after this class if requested
+        if add_trailing_blanks {
+            for _ in 0..visitor.options.blank_lines_between_classes {
+                visitor.write("\n");
+            }
+        }
+        return;
+    }
 
     // Format the class header
     let class_keyword = match class.class_type {

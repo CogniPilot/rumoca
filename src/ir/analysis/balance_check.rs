@@ -167,18 +167,28 @@ fn count_scalar_elements_with_params(
             } else if !comp.shape_expr.is_empty() {
                 // Try to evaluate shape_expr with parameter context
                 let mut product = 1usize;
-                for dim_expr in &comp.shape_expr {
-                    if let Some(dim) = try_evaluate_integer_with_params(dim_expr, params) {
-                        if dim <= 0 {
-                            // Zero or negative dimension means empty array
-                            product = 0;
-                            break;
+                for subscript in &comp.shape_expr {
+                    match subscript {
+                        crate::ir::ast::Subscript::Expression(dim_expr) => {
+                            if let Some(dim) = try_evaluate_integer_with_params(dim_expr, params) {
+                                if dim <= 0 {
+                                    // Zero or negative dimension means empty array
+                                    product = 0;
+                                    break;
+                                }
+                                product *= dim as usize;
+                            } else {
+                                // Can't evaluate dimension - default to 1
+                                // This is conservative (might undercount)
+                                product *= 1;
+                            }
                         }
-                        product *= dim as usize;
-                    } else {
-                        // Can't evaluate dimension - default to 1
-                        // This is conservative (might undercount)
-                        product *= 1;
+                        crate::ir::ast::Subscript::Range { .. } => {
+                            // Colon subscript (`:`) means inferred dimension
+                            // Can't evaluate without runtime info - default to 1
+                            product *= 1;
+                        }
+                        crate::ir::ast::Subscript::Empty => {}
                     }
                 }
                 product
@@ -655,11 +665,12 @@ fn try_evaluate_integer_with_depth(
                             && dim_index >= 1
                             && dim_index <= array_comp.shape_expr.len()
                         {
-                            return try_evaluate_integer_with_depth(
-                                &array_comp.shape_expr[dim_index - 1],
-                                params,
-                                depth + 1,
-                            );
+                            if let crate::ir::ast::Subscript::Expression(expr) =
+                                &array_comp.shape_expr[dim_index - 1]
+                            {
+                                return try_evaluate_integer_with_depth(expr, params, depth + 1);
+                            }
+                            // Subscript::Range (`:`) can't be evaluated directly
                         }
                         // Fall back to inferring size from start expression (array literal)
                         // For `parameter Real a[:] = {1, 2, 3}`, infer size from the literal

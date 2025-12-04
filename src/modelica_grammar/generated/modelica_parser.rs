@@ -127,8 +127,8 @@ pub const TERMINALS: &[(&str, Option<(bool, &str)>); 101] = &[
     /* 100 */ (ERROR_TOKEN, None),
 ];
 
-pub const TERMINAL_NAMES: &[&str; 101] = &[
-    /*   0 */ "EndOfInput",
+pub const TERMINAL_NAMES : & [& str; 101] = &
+[    /*   0 */ "EndOfInput",
     /*   1 */ "Newline",
     /*   2 */ "Whitespace",
     /*   3 */ "LineComment",
@@ -192,19 +192,14 @@ pub const TERMINAL_NAMES: &[&str; 101] = &[
     /*  61 */ "When",
     /*  62 */ "While",
     /*  63 */ "Within",
-    /*  64 */
-    "LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar",
-    /*  65 */
-    "TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick",
+    /*  64 */ "LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar",
+    /*  65 */ "TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick",
     /*  66 */ "String",
     /*  67 */ "UnsignedInteger",
     /*  68 */ "LBracket0Minus9RBracketPlusDotLBracket0Minus9RBracketPlus",
-    /*  69 */
-    "LBracket0Minus9RBracketPlusDotLParenLBracket0Minus9RBracketPlusRParenQuestLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
-    /*  70 */
-    "DotLBracket0Minus9RBracketPlusLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
-    /*  71 */
-    "LBracket0Minus9RBracketPlusLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlus",
+    /*  69 */ "LBracket0Minus9RBracketPlusDotLParenLBracket0Minus9RBracketPlusRParenQuestLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
+    /*  70 */ "DotLBracket0Minus9RBracketPlusLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest",
+    /*  71 */ "LBracket0Minus9RBracketPlusLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlus",
     /*  72 */ "Semicolon",
     /*  73 */ "Equ",
     /*  74 */ "LParen",
@@ -7315,7 +7310,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 11,
         production: &[ParseType::N(13), ParseType::N(12)],
     },
-    // 203 - argument_or_inheritance_modification_listGroup: argument : crate::ir::ast::Expression ;
+    // 203 - argument_or_inheritance_modification_listGroup: argument : crate::modelica_grammar::ModificationArg ;
     Production {
         lhs: 12,
         production: &[ParseType::N(8)],
@@ -7330,7 +7325,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 13,
         production: &[ParseType::N(13), ParseType::N(14), ParseType::T(77)],
     },
-    // 206 - argument_or_inheritance_modification_listListGroup: argument : crate::ir::ast::Expression ;
+    // 206 - argument_or_inheritance_modification_listListGroup: argument : crate::modelica_grammar::ModificationArg ;
     Production {
         lhs: 14,
         production: &[ParseType::N(8)],
@@ -7555,12 +7550,12 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 35,
         production: &[],
     },
-    // 250 - argument_list: argument : crate::ir::ast::Expression  argument_listList /* Vec */;
+    // 250 - argument_list: argument : crate::modelica_grammar::ModificationArg  argument_listList /* Vec */;
     Production {
         lhs: 9,
         production: &[ParseType::N(10), ParseType::N(8)],
     },
-    // 251 - argument_listList: ','^ /* Clipped */ argument : crate::ir::ast::Expression  argument_listList;
+    // 251 - argument_listList: ','^ /* Clipped */ argument : crate::modelica_grammar::ModificationArg  argument_listList;
     Production {
         lhs: 10,
         production: &[ParseType::N(10), ParseType::N(8), ParseType::T(77)],

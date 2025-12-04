@@ -1411,7 +1411,7 @@ pub struct ImportClauseOptGroupGroupLBraceImportListRBrace {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListGroupArgument {
-    pub argument: crate::ir::ast::Expression,
+    pub argument: crate::modelica_grammar::ModificationArg,
 }
 
 ///
@@ -1433,7 +1433,7 @@ pub struct ArgumentOrInheritanceModificationListGroupInheritanceModification {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListListGroupArgument {
-    pub argument: crate::ir::ast::Expression,
+    pub argument: crate::modelica_grammar::ModificationArg,
 }
 
 ///
@@ -2487,7 +2487,7 @@ pub enum Argument {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArgumentList {
-    pub argument: crate::ir::ast::Expression,
+    pub argument: crate::modelica_grammar::ModificationArg,
     pub argument_list_list: Vec<ArgumentListList>,
 }
 
@@ -2497,7 +2497,7 @@ pub struct ArgumentList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArgumentListList {
-    pub argument: crate::ir::ast::Expression,
+    pub argument: crate::modelica_grammar::ModificationArg,
 }
 
 ///

@@ -300,11 +300,12 @@ fn try_evaluate_integer(
                             && dim_index >= 1
                             && dim_index <= array_comp.shape_expr.len()
                         {
-                            return try_evaluate_integer(
-                                &array_comp.shape_expr[dim_index - 1],
-                                params,
-                                depth + 1,
-                            );
+                            if let crate::ir::ast::Subscript::Expression(expr) =
+                                &array_comp.shape_expr[dim_index - 1]
+                            {
+                                return try_evaluate_integer(expr, params, depth + 1);
+                            }
+                            // Subscript::Range (`:`) can't be evaluated directly
                         }
                         // Try to infer from start expression (array literal)
                         if let Expression::Array { elements } = &array_comp.start {

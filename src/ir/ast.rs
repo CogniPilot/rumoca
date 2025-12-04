@@ -116,12 +116,15 @@ pub struct Component {
     pub start: Expression,
     /// True if start value is from a modification (start=x), false if from binding (= x)
     pub start_is_modification: bool,
+    /// True if the start modifier has `each` prefix (for array components)
+    pub start_has_each: bool,
     /// Array dimensions - empty for scalars, e.g., [2, 3] for a 2x3 matrix
     /// Only populated when dimensions are known literal integers
     pub shape: Vec<usize>,
-    /// Raw array dimension expressions (e.g., `n` in `Real x[n]`)
+    /// Raw array dimension subscripts (e.g., `n` in `Real x[n]` or `:` in `Real a[:]`)
     /// Used for parameter-dependent dimensions that need runtime evaluation
-    pub shape_expr: Vec<Expression>,
+    /// Can be Subscript::Expression for explicit dimensions or Subscript::Range for `:`
+    pub shape_expr: Vec<Subscript>,
     /// True if shape is from a modification (shape=x), false if from subscript \[x\]
     pub shape_is_modification: bool,
     /// Annotation arguments (e.g., from `annotation(Icon(...), Dialog(...))`)

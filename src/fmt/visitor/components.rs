@@ -81,12 +81,12 @@ impl FormatVisitor {
             .iter()
             .map(|comp| {
                 let mut name = comp.name.clone();
-                // Prefer shape_expr (original expressions) over shape (evaluated integers)
+                // Prefer shape_expr (original subscripts) over shape (evaluated integers)
                 if !comp.shape_expr.is_empty() {
                     let dims: Vec<String> = comp
                         .shape_expr
                         .iter()
-                        .map(|e| self.format_expression(e))
+                        .map(|s| self.format_subscript(s))
                         .collect();
                     name.push_str(&format!("[{}]", dims.join(", ")));
                 } else if !comp.shape.is_empty() {
@@ -133,12 +133,12 @@ impl FormatVisitor {
         // Component name
         result.push_str(&comp.name);
 
-        // Array dimensions - prefer shape_expr (original expressions) over shape (evaluated integers)
+        // Array dimensions - prefer shape_expr (original subscripts) over shape (evaluated integers)
         if !comp.shape_expr.is_empty() {
             let dims: Vec<String> = comp
                 .shape_expr
                 .iter()
-                .map(|e| self.format_expression(e))
+                .map(|s| self.format_subscript(s))
                 .collect();
             result.push_str(&format!("[{}]", dims.join(", ")));
         } else if !comp.shape.is_empty() {
@@ -152,7 +152,8 @@ impl FormatVisitor {
             let mut mods: Vec<String> = Vec::new();
             // Add start= modifier if it's a modification
             if has_start_mod {
-                mods.push(format!("start = {}", self.format_expression(&comp.start)));
+                let each_prefix = if comp.start_has_each { "each " } else { "" };
+                mods.push(format!("{}start = {}", each_prefix, self.format_expression(&comp.start)));
             }
             // Add other modifications
             for (k, v) in &comp.modifications {

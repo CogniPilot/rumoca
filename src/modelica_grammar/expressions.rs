@@ -41,10 +41,22 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for ir::ast::Subscript {
 }
 
 //-----------------------------------------------------------------------------
+/// Represents a modification argument with optional `each` and `final` prefixes
+#[derive(Debug, Default, Clone)]
+pub struct ModificationArg {
+    pub expression: ir::ast::Expression,
+    /// True if this argument has `each` prefix (for array modifications)
+    pub each: bool,
+    /// True if this argument has `final` prefix
+    pub r#final: bool,
+}
+
 #[derive(Debug, Default, Clone)]
 
 pub struct ExpressionList {
     pub args: Vec<ir::ast::Expression>,
+    /// Parallel to args - true if the corresponding arg has `each` modifier prefix
+    pub each_flags: Vec<bool>,
 }
 
 /// Convert a NamedArgument to an Expression representing `name = value`
@@ -157,11 +169,13 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                             };
                             return Ok(ExpressionList {
                                 args: vec![comprehension],
+                                each_flags: vec![false],
                             });
                         }
                     }
                 }
-                Ok(ExpressionList { args })
+                let each_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags })
             }
             modelica_grammar_trait::FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(fpa) => {
                 // Convert 'function Foo.Bar(arg=val)' to a function call expression
@@ -201,11 +215,13 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                     args.append(&mut opt0.function_arguments_non_first.args.clone());
                 }
 
-                Ok(ExpressionList { args })
+                let each_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags })
             }
             modelica_grammar_trait::FunctionArguments::NamedArguments(named) => {
                 let args = collect_named_arguments(&named.named_arguments);
-                Ok(ExpressionList { args })
+                let each_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags })
             }
         }
     }
@@ -223,11 +239,13 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
                 if let Some(opt) = &expr.function_arguments_non_first_opt {
                     args.append(&mut opt.function_arguments_non_first.args.clone());
                 }
-                Ok(ExpressionList { args })
+                let each_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags })
             }
             modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(named) => {
                 let args = collect_named_arguments(&named.named_arguments);
-                Ok(ExpressionList { args })
+                let each_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags })
             }
         }
     }
@@ -240,11 +258,15 @@ impl TryFrom<&modelica_grammar_trait::ArgumentList> for ExpressionList {
     fn try_from(
         ast: &modelica_grammar_trait::ArgumentList,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut args = vec![ast.argument.clone()];
+        // After grammar change, ast.argument is ModificationArg
+        // Extract expressions and each_flags from ModificationArgs
+        let mut args = vec![ast.argument.expression.clone()];
+        let mut each_flags = vec![ast.argument.each];
         for arg in &ast.argument_list_list {
-            args.push(arg.argument.clone())
+            args.push(arg.argument.expression.clone());
+            each_flags.push(arg.argument.each);
         }
-        Ok(ExpressionList { args })
+        Ok(ExpressionList { args, each_flags })
     }
 }
 
@@ -602,6 +624,35 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
     }
 }
 
+impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
+    type Error = anyhow::Error;
+
+    fn try_from(ast: &modelica_grammar_trait::Argument) -> std::result::Result<Self, Self::Error> {
+        // Extract the `each` and `final` flags from the argument structure
+        let (each, r#final) = match ast {
+            modelica_grammar_trait::Argument::ElementModificationOrReplaceable(modif) => {
+                let emor = &modif.element_modification_or_replaceable;
+                let each = emor.element_modification_or_replaceable_opt.is_some();
+                let r#final = emor.element_modification_or_replaceable_opt0.is_some();
+                (each, r#final)
+            }
+            modelica_grammar_trait::Argument::ElementRedeclaration(_) => {
+                // Redeclarations don't have each/final in the same way
+                (false, false)
+            }
+        };
+
+        // Use the existing conversion to get the expression
+        let expression: ir::ast::Expression = ast.try_into()?;
+
+        Ok(ModificationArg {
+            expression,
+            each,
+            r#final,
+        })
+    }
+}
+
 //-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
     type Error = anyhow::Error;
@@ -618,7 +669,8 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
                 v.push(opt.expression.clone());
             }
         }
-        Ok(ExpressionList { args: v })
+        let each_flags = vec![false; v.len()];
+        Ok(ExpressionList { args: v, each_flags })
     }
 }
 
@@ -629,11 +681,11 @@ impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
         ast: &modelica_grammar_trait::FunctionCallArgs,
     ) -> std::result::Result<Self, Self::Error> {
         if let Some(opt) = &ast.function_call_args_opt {
-            Ok(ExpressionList {
-                args: opt.function_arguments.args.clone(),
-            })
+            let args = opt.function_arguments.args.clone();
+            let each_flags = opt.function_arguments.each_flags.clone();
+            Ok(ExpressionList { args, each_flags })
         } else {
-            Ok(ExpressionList { args: vec![] })
+            Ok(ExpressionList { args: vec![], each_flags: vec![] })
         }
     }
 }

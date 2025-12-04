@@ -591,6 +591,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                         },
                                     },
                                     start_is_modification: false,
+                                    start_has_each: false,
                                     shape: type_level_shape.clone(), // Start with type-level subscripts (Real[3] z)
                                     shape_expr: Vec::new(), // Raw dimension expressions for parameter-dependent sizes
                                     shape_is_modification: false,
@@ -628,13 +629,13 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     _ => ir::ast::Expression::Empty {},
                                 };
 
-                                // Append declaration-level subscripts (e.g., Real z[2] or Real z[n]) to type-level shape
+                                // Append declaration-level subscripts (e.g., Real z[2] or Real z[n] or Real a[:]) to type-level shape
                                 if let Some(decl_opt) = &c.declaration.declaration_opt {
                                     for subscript in &decl_opt.array_subscripts.subscripts {
+                                        // Store the full subscript (Expression or Range) for formatting
+                                        value.shape_expr.push(subscript.clone());
+                                        // Also try to extract integer dimension if it's a literal expression
                                         if let ir::ast::Subscript::Expression(expr) = subscript {
-                                            // Store the raw expression for parameter-dependent evaluation
-                                            value.shape_expr.push(expr.clone());
-                                            // Also try to extract integer dimension if it's a literal
                                             if let ir::ast::Expression::Terminal {
                                                 token,
                                                 terminal_type: ir::ast::TerminalType::UnsignedInteger,
@@ -657,16 +658,19 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             let modif = &*(class_mod.class_modification);
                                             if let Some(opt) = &modif.class_modification_opt {
                                                 // Look for start=, shape=, and other parameter modifications
-                                                for arg in &opt.argument_list.args {
+                                                for (idx, arg) in opt.argument_list.args.iter().enumerate() {
                                                     if let ir::ast::Expression::Binary { op, lhs, rhs } = arg {
                                                         if matches!(op, ir::ast::OpBinary::Eq(_)) {
                                                             // This is a named argument like start=2.5, shape=(3), or R=10
                                                             if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
                                                                 let param_name = comp.to_string();
+                                                                // Check if this argument has the `each` modifier
+                                                                let has_each = opt.argument_list.each_flags.get(idx).copied().unwrap_or(false);
                                                                 match param_name.as_str() {
                                                                     "start" => {
                                                                         value.start = (**rhs).clone();
                                                                         value.start_is_modification = true;
+                                                                        value.start_has_each = has_each;
                                                                     }
                                                                     "shape" => {
                                                                         // Extract shape from expression like (3) or {3, 2}
@@ -848,6 +852,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             description: c.description.description_string.tokens.clone(),
                                             start: ir::ast::Expression::Empty,
                                             start_is_modification: false,
+                                            start_has_each: false,
                                             shape: Vec::new(),
                                             shape_expr: Vec::new(),
                                             shape_is_modification: false,
@@ -948,7 +953,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                             // First item
                             match &list.argument_or_inheritance_modification_list_group {
                                 modelica_grammar_trait::ArgumentOrInheritanceModificationListGroup::Argument(arg) => {
-                                    mods.push(arg.argument.clone());
+                                    mods.push(arg.argument.expression.clone());
                                 }
                                 modelica_grammar_trait::ArgumentOrInheritanceModificationListGroup::InheritanceModification(_) => {
                                     // Inheritance modifications (break/connect) not yet supported
@@ -959,7 +964,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                             for item in &list.argument_or_inheritance_modification_list_list {
                                 match &item.argument_or_inheritance_modification_list_list_group {
                                     modelica_grammar_trait::ArgumentOrInheritanceModificationListListGroup::Argument(arg) => {
-                                        mods.push(arg.argument.clone());
+                                        mods.push(arg.argument.expression.clone());
                                     }
                                     modelica_grammar_trait::ArgumentOrInheritanceModificationListListGroup::InheritanceModification(_) => {
                                         // Inheritance modifications (break/connect) not yet supported
