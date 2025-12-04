@@ -313,6 +313,12 @@ impl Visitable for ir::ast::Expression {
             ir::ast::Expression::Parenthesized { inner } => {
                 inner.accept(visitor);
             }
+            ir::ast::Expression::ArrayComprehension { expr, indices } => {
+                expr.accept(visitor);
+                for idx in indices {
+                    idx.range.accept(visitor);
+                }
+            }
         }
         visitor.exit_expression(self);
     }
@@ -551,6 +557,12 @@ impl MutVisitable for ir::ast::Expression {
             }
             ir::ast::Expression::Parenthesized { inner } => {
                 inner.accept_mut(visitor);
+            }
+            ir::ast::Expression::ArrayComprehension { expr, indices } => {
+                expr.accept_mut(visitor);
+                for idx in indices {
+                    idx.range.accept_mut(visitor);
+                }
             }
         }
         visitor.exit_expression(self);

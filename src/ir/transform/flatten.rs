@@ -22,8 +22,8 @@
 use crate::ir;
 use crate::ir::analysis::symbol_table::SymbolTable;
 use crate::ir::ast::{
-    ComponentRefPart, ComponentReference, Connection, Equation, Expression, OpBinary, TerminalType,
-    Token,
+    ClassDefinition, ComponentRefPart, ComponentReference, Connection, Equation, Expression,
+    OpBinary, TerminalType, Token,
 };
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::is_primitive_type;
@@ -31,6 +31,46 @@ use crate::ir::transform::sub_comp_namer::SubCompNamer;
 use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
+
+/// Resolves a class name by searching the enclosing scope hierarchy.
+///
+/// This function implements Modelica's name lookup rules for extends clauses:
+/// 1. First tries an exact match (for fully qualified names)
+/// 2. Then tries prepending enclosing package prefixes from most specific to least
+///
+/// For example, if `current_class_path` is `Modelica.Blocks.Continuous.Derivative`
+/// and `name` is `Interfaces.SISO`, it will try:
+/// - `Interfaces.SISO` (exact match)
+/// - `Modelica.Blocks.Continuous.Interfaces.SISO`
+/// - `Modelica.Blocks.Interfaces.SISO` (found!)
+/// - `Modelica.Interfaces.SISO`
+/// - `Interfaces.SISO` (at root level)
+fn resolve_class_name(
+    name: &str,
+    current_class_path: &str,
+    class_dict: &IndexMap<String, ClassDefinition>,
+) -> Option<String> {
+    // 1. Try exact match first (handles fully qualified names)
+    if class_dict.contains_key(name) {
+        return Some(name.to_string());
+    }
+
+    // 2. Try prepending enclosing package prefixes
+    let parts: Vec<&str> = current_class_path.split('.').collect();
+    for i in (0..parts.len()).rev() {
+        let prefix = parts[..i].join(".");
+        let candidate = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}.{}", prefix, name)
+        };
+        if class_dict.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
 
 /// Visitor that renames component references using a symbol table.
 ///
@@ -76,10 +116,36 @@ impl MutVisitor for ScopeRenamer<'_> {
 ///
 /// This function takes a class and resolves all inheritance by copying components
 /// and equations from parent classes into the returned class definition.
+///
+/// # Arguments
+///
+/// * `class` - The class definition to resolve
+/// * `current_class_path` - The fully qualified path of the current class (for scope lookup)
+/// * `class_dict` - Dictionary of all available classes
 fn resolve_class(
     class: &ir::ast::ClassDefinition,
+    current_class_path: &str,
     class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
 ) -> Result<ir::ast::ClassDefinition> {
+    // Use the internal function with empty visited set for cycle detection
+    let mut visited = IndexSet::new();
+    resolve_class_internal(class, current_class_path, class_dict, &mut visited)
+}
+
+/// Internal implementation of resolve_class with cycle detection.
+fn resolve_class_internal(
+    class: &ir::ast::ClassDefinition,
+    current_class_path: &str,
+    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
+    visited: &mut IndexSet<String>,
+) -> Result<ir::ast::ClassDefinition> {
+    // Check for cycles
+    if visited.contains(current_class_path) {
+        // Already resolving this class - skip to avoid infinite recursion
+        return Ok(class.clone());
+    }
+    visited.insert(current_class_path.to_string());
+
     let mut resolved = class.clone();
 
     // Process all extends clauses
@@ -91,13 +157,26 @@ fn resolve_class(
             continue;
         }
 
-        // Get the parent class
-        let parent_class = class_dict
-            .get(&parent_name)
-            .ok_or_else(|| IrError::ExtendClassNotFound(parent_name.clone()))?;
+        // Resolve the parent class name using enclosing scope search
+        let resolved_name = match resolve_class_name(&parent_name, current_class_path, class_dict) {
+            Some(name) => name,
+            None => continue, // Skip unresolved extends (might be external dependency)
+        };
 
-        // Recursively resolve the parent class first
-        let resolved_parent = resolve_class(parent_class, class_dict)?;
+        // Skip if this would create a cycle
+        if visited.contains(&resolved_name) {
+            continue;
+        }
+
+        // Get the parent class
+        let parent_class = match class_dict.get(&resolved_name) {
+            Some(c) => c,
+            None => continue, // Skip missing classes
+        };
+
+        // Recursively resolve the parent class first (using resolved name as new context)
+        let resolved_parent =
+            resolve_class_internal(parent_class, &resolved_name, class_dict, visited)?;
 
         // Add parent's components (insert at the beginning to maintain proper order)
         for (comp_name, comp) in resolved_parent.components.iter().rev() {
@@ -115,7 +194,43 @@ fn resolve_class(
         resolved.equations = new_equations;
     }
 
+    // Apply causality from type definitions to components
+    // e.g., if a component has type RealInput which is defined as "connector RealInput = input Real"
+    // then the component should have Input causality
+    apply_type_causality(&mut resolved, current_class_path, class_dict);
+
     Ok(resolved)
+}
+
+/// Apply causality from type definitions to components whose causality is Empty
+/// This handles type aliases like "connector RealInput = input Real"
+fn apply_type_causality(
+    class: &mut ir::ast::ClassDefinition,
+    current_class_path: &str,
+    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
+) {
+    use crate::ir::ast::Causality;
+
+    for (_comp_name, comp) in class.components.iter_mut() {
+        // Only apply if component's causality is empty (not explicitly set)
+        if !matches!(comp.causality, Causality::Empty) {
+            continue;
+        }
+
+        let type_name = comp.type_name.to_string();
+
+        // Resolve the type name using enclosing scope search
+        let resolved_type_name = resolve_class_name(&type_name, current_class_path, class_dict);
+
+        if let Some(resolved_name) = resolved_type_name {
+            if let Some(type_class) = class_dict.get(&resolved_name) {
+                // If the type has causality (from base_prefix), apply it to the component
+                if !matches!(type_class.causality, Causality::Empty) {
+                    comp.causality = type_class.causality.clone();
+                }
+            }
+        }
+    }
 }
 
 /// Creates a component reference from a flattened name like "R1.p.v"
@@ -333,20 +448,27 @@ fn expand_component(
     fclass: &mut ir::ast::ClassDefinition,
     comp_name: &str,
     comp: &ir::ast::Component,
+    current_class_path: &str,
     class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
     symbol_table: &SymbolTable,
     pin_types: &mut IndexMap<String, String>,
 ) -> Result<()> {
     let type_name = comp.type_name.to_string();
 
-    // Skip if not a class type (primitive type)
-    let comp_class_raw = match class_dict.get(&type_name) {
+    // Resolve the type name using enclosing scope search
+    let resolved_type_name = match resolve_class_name(&type_name, current_class_path, class_dict) {
+        Some(name) => name,
+        None => return Ok(()), // Primitive type or not found, nothing to expand
+    };
+
+    // Get the component class
+    let comp_class_raw = match class_dict.get(&resolved_type_name) {
         Some(c) => c,
-        None => return Ok(()), // Primitive type, nothing to expand
+        None => return Ok(()), // Should not happen after resolve_class_name succeeded
     };
 
     // Resolve the component class (handle its extends clauses)
-    let comp_class = resolve_class(comp_class_raw, class_dict)?;
+    let comp_class = resolve_class(comp_class_raw, &resolved_type_name, class_dict)?;
 
     // If the resolved class has no components, it's effectively a type alias (like Voltage = Real)
     // Don't remove the component, just add any equations it might have
@@ -363,7 +485,7 @@ fn expand_component(
 
     // Record the connector type for this component (before it gets expanded)
     // This is used later for connect equation expansion
-    pin_types.insert(comp_name.to_string(), type_name.clone());
+    pin_types.insert(comp_name.to_string(), resolved_type_name.clone());
 
     // Create a scope renamer for this component
     let mut renamer = ScopeRenamer::new(symbol_table, comp_name);
@@ -411,11 +533,19 @@ fn expand_component(
 
     // Recursively expand any subcomponents that are also class types
     for (subcomp_name, subcomp) in &subcomponents {
-        if class_dict.contains_key(&subcomp.type_name.to_string()) {
+        // Use resolved_type_name as context for resolving nested component types
+        if resolve_class_name(
+            &subcomp.type_name.to_string(),
+            &resolved_type_name,
+            class_dict,
+        )
+        .is_some()
+        {
             expand_component(
                 fclass,
                 subcomp_name,
                 subcomp,
+                &resolved_type_name,
                 class_dict,
                 symbol_table,
                 pin_types,
@@ -554,7 +684,7 @@ pub fn flatten(
         lookup_class(def, &class_dict, &main_class_name).ok_or(IrError::MainClassNotFound)?;
 
     // Resolve the main class (process extends clauses recursively)
-    let resolved_main = resolve_class(&main_class, &class_dict)?;
+    let resolved_main = resolve_class(&main_class, &main_class_name, &class_dict)?;
 
     // Create the flat class starting from resolved main
     let mut fclass = resolved_main.clone();
@@ -567,10 +697,13 @@ pub fn flatten(
     let mut pin_types: IndexMap<String, String> = IndexMap::new();
 
     // Collect component names that need expansion (to avoid borrow issues)
+    // Use scope-aware class resolution to determine which components are class types
     let components_to_expand: Vec<(String, ir::ast::Component)> = resolved_main
         .components
         .iter()
-        .filter(|(_, comp)| class_dict.contains_key(&comp.type_name.to_string()))
+        .filter(|(_, comp)| {
+            resolve_class_name(&comp.type_name.to_string(), &main_class_name, &class_dict).is_some()
+        })
         .map(|(name, comp)| (name.clone(), comp.clone()))
         .collect();
 
@@ -580,6 +713,7 @@ pub fn flatten(
             &mut fclass,
             comp_name,
             comp,
+            &main_class_name,
             &class_dict,
             &symbol_table,
             &mut pin_types,

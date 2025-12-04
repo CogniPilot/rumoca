@@ -323,6 +323,12 @@ fn check_expression_references(
         Expression::Parenthesized { inner } => {
             check_expression_references(inner, file_path, defined, globals, result);
         }
+        Expression::ArrayComprehension { expr, indices } => {
+            check_expression_references(expr, file_path, defined, globals, result);
+            for idx in indices {
+                check_expression_references(&idx.range, file_path, defined, globals, result);
+            }
+        }
     }
 }
 

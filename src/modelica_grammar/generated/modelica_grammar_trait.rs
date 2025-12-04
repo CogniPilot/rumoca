@@ -439,14 +439,6 @@ pub trait ModelicaGrammarTrait {
         Ok(())
     }
 
-    /// Semantic action for non-terminal 'element_replaceable_definition'
-    fn element_replaceable_definition(
-        &mut self,
-        _arg: &ElementReplaceableDefinition,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     /// Semantic action for non-terminal 'import_clause'
     fn import_clause(&mut self, _arg: &ImportClause) -> Result<()> {
         Ok(())
@@ -952,7 +944,18 @@ pub struct UnsignedRealScientific2 {
 }
 
 ///
-/// Type derived for production 78
+/// Type derived for production 66
+///
+/// `unsigned_real: /[0-9]+[eE][+-]?[0-9]+/@scientific_int;`
+///
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct UnsignedRealScientificInt {
+    pub scientific_int: crate::ir::ast::Token, /* [0-9]+[eE][+-]?[0-9]+ */
+}
+
+///
+/// Type derived for production 79
 ///
 /// `class_type: class;`
 ///
@@ -963,7 +966,7 @@ pub struct ClassTypeClass {
 }
 
 ///
-/// Type derived for production 79
+/// Type derived for production 80
 ///
 /// `class_type: model;`
 ///
@@ -974,7 +977,7 @@ pub struct ClassTypeModel {
 }
 
 ///
-/// Type derived for production 80
+/// Type derived for production 81
 ///
 /// `class_type: class_typeOpt /* Option */ record;`
 ///
@@ -986,7 +989,7 @@ pub struct ClassTypeClassTypeOptRecord {
 }
 
 ///
-/// Type derived for production 81
+/// Type derived for production 82
 ///
 /// `class_type: block;`
 ///
@@ -997,7 +1000,7 @@ pub struct ClassTypeBlock {
 }
 
 ///
-/// Type derived for production 82
+/// Type derived for production 83
 ///
 /// `class_type: class_typeOpt0 /* Option */ connector;`
 ///
@@ -1009,7 +1012,7 @@ pub struct ClassTypeClassTypeOpt0Connector {
 }
 
 ///
-/// Type derived for production 83
+/// Type derived for production 84
 ///
 /// `class_type: type;`
 ///
@@ -1020,7 +1023,7 @@ pub struct ClassTypeType {
 }
 
 ///
-/// Type derived for production 84
+/// Type derived for production 85
 ///
 /// `class_type: package;`
 ///
@@ -1031,7 +1034,7 @@ pub struct ClassTypePackage {
 }
 
 ///
-/// Type derived for production 85
+/// Type derived for production 86
 ///
 /// `class_type: class_typeOpt1 /* Option */ class_typeOpt2 /* Option */ function;`
 ///
@@ -1044,7 +1047,7 @@ pub struct ClassTypeClassTypeOpt1ClassTypeOpt2Function {
 }
 
 ///
-/// Type derived for production 86
+/// Type derived for production 87
 ///
 /// `class_type: operator;`
 ///
@@ -1055,7 +1058,7 @@ pub struct ClassTypeOperator {
 }
 
 ///
-/// Type derived for production 90
+/// Type derived for production 91
 ///
 /// `class_typeOpt1Group: pure;`
 ///
@@ -1066,7 +1069,7 @@ pub struct ClassTypeOpt1GroupPure {
 }
 
 ///
-/// Type derived for production 91
+/// Type derived for production 92
 ///
 /// `class_typeOpt1Group: impure;`
 ///
@@ -1077,7 +1080,7 @@ pub struct ClassTypeOpt1GroupImpure {
 }
 
 ///
-/// Type derived for production 100
+/// Type derived for production 101
 ///
 /// `class_specifier: long_class_specifier;`
 ///
@@ -1088,7 +1091,7 @@ pub struct ClassSpecifierLongClassSpecifier {
 }
 
 ///
-/// Type derived for production 101
+/// Type derived for production 102
 ///
 /// `class_specifier: short_class_specifier;`
 ///
@@ -1099,7 +1102,7 @@ pub struct ClassSpecifierShortClassSpecifier {
 }
 
 ///
-/// Type derived for production 102
+/// Type derived for production 103
 ///
 /// `class_specifier: der_class_specifier;`
 ///
@@ -1110,7 +1113,7 @@ pub struct ClassSpecifierDerClassSpecifier {
 }
 
 ///
-/// Type derived for production 103
+/// Type derived for production 104
 ///
 /// `long_class_specifier: standard_class_specifier;`
 ///
@@ -1121,7 +1124,7 @@ pub struct LongClassSpecifierStandardClassSpecifier {
 }
 
 ///
-/// Type derived for production 104
+/// Type derived for production 105
 ///
 /// `long_class_specifier: extends_class_specifier;`
 ///
@@ -1132,7 +1135,7 @@ pub struct LongClassSpecifierExtendsClassSpecifier {
 }
 
 ///
-/// Type derived for production 109
+/// Type derived for production 110
 ///
 /// `short_class_specifier: type_class_specifier;`
 ///
@@ -1143,7 +1146,7 @@ pub struct ShortClassSpecifierTypeClassSpecifier {
 }
 
 ///
-/// Type derived for production 110
+/// Type derived for production 111
 ///
 /// `short_class_specifier: enum_class_specifier;`
 ///
@@ -1154,7 +1157,7 @@ pub struct ShortClassSpecifierEnumClassSpecifier {
 }
 
 ///
-/// Type derived for production 117
+/// Type derived for production 118
 ///
 /// `enum_class_specifierGroup: enum_class_specifierOpt /* Option */;`
 ///
@@ -1165,7 +1168,7 @@ pub struct EnumClassSpecifierGroupEnumClassSpecifierOpt {
 }
 
 ///
-/// Type derived for production 118
+/// Type derived for production 119
 ///
 /// `enum_class_specifierGroup: ':'^ /* Clipped */;`
 ///
@@ -1174,7 +1177,7 @@ pub struct EnumClassSpecifierGroupEnumClassSpecifierOpt {
 pub struct EnumClassSpecifierGroupColon {}
 
 ///
-/// Type derived for production 126
+/// Type derived for production 127
 ///
 /// `base_prefixOptGroup: input;`
 ///
@@ -1185,7 +1188,7 @@ pub struct BasePrefixOptGroupInput {
 }
 
 ///
-/// Type derived for production 127
+/// Type derived for production 128
 ///
 /// `base_prefixOptGroup: output;`
 ///
@@ -1196,7 +1199,7 @@ pub struct BasePrefixOptGroupOutput {
 }
 
 ///
-/// Type derived for production 135
+/// Type derived for production 136
 ///
 /// `compositionListGroup: public element_list;`
 ///
@@ -1208,7 +1211,7 @@ pub struct CompositionListGroupPublicElementList {
 }
 
 ///
-/// Type derived for production 136
+/// Type derived for production 137
 ///
 /// `compositionListGroup: protected element_list;`
 ///
@@ -1220,7 +1223,7 @@ pub struct CompositionListGroupProtectedElementList {
 }
 
 ///
-/// Type derived for production 137
+/// Type derived for production 138
 ///
 /// `compositionListGroup: equation_section;`
 ///
@@ -1231,7 +1234,7 @@ pub struct CompositionListGroupEquationSection {
 }
 
 ///
-/// Type derived for production 138
+/// Type derived for production 139
 ///
 /// `compositionListGroup: algorithm_section;`
 ///
@@ -1242,7 +1245,7 @@ pub struct CompositionListGroupAlgorithmSection {
 }
 
 ///
-/// Type derived for production 159
+/// Type derived for production 160
 ///
 /// `element: import_clause;`
 ///
@@ -1253,7 +1256,7 @@ pub struct ElementImportClause {
 }
 
 ///
-/// Type derived for production 160
+/// Type derived for production 161
 ///
 /// `element: extends_clause;`
 ///
@@ -1264,7 +1267,7 @@ pub struct ElementExtendsClause {
 }
 
 ///
-/// Type derived for production 161
+/// Type derived for production 162
 ///
 /// `element: element_definition;`
 ///
@@ -1272,17 +1275,6 @@ pub struct ElementExtendsClause {
 #[derive(Debug, Clone)]
 pub struct ElementElementDefinition {
     pub element_definition: ElementDefinition,
-}
-
-///
-/// Type derived for production 162
-///
-/// `element: element_replaceable_definition;`
-///
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct ElementElementReplaceableDefinition {
-    pub element_replaceable_definition: ElementReplaceableDefinition,
 }
 
 ///
@@ -1308,24 +1300,37 @@ pub struct ElementDefinitionGroupComponentClause {
 }
 
 ///
-/// Type derived for production 175
+/// Type derived for production 166
 ///
-/// `element_replaceable_definitionGroup: class_definition;`
+/// `element_definitionGroup: replaceable element_definitionGroupGroup element_definitionOpt3 /* Option */;`
 ///
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct ElementReplaceableDefinitionGroupClassDefinition {
+pub struct ElementDefinitionGroupReplaceableElementDefinitionGroupGroupElementDefinitionOpt3 {
+    pub replaceable: Replaceable,
+    pub element_definition_group_group: ElementDefinitionGroupGroup,
+    pub element_definition_opt3: Option<ElementDefinitionOpt3>,
+}
+
+///
+/// Type derived for production 167
+///
+/// `element_definitionGroupGroup: class_definition;`
+///
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct ElementDefinitionGroupGroupClassDefinition {
     pub class_definition: crate::ir::ast::ClassDefinition,
 }
 
 ///
-/// Type derived for production 176
+/// Type derived for production 168
 ///
-/// `element_replaceable_definitionGroup: component_clause;`
+/// `element_definitionGroupGroup: component_clause;`
 ///
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct ElementReplaceableDefinitionGroupComponentClause {
+pub struct ElementDefinitionGroupGroupComponentClause {
     pub component_clause: ComponentClause,
 }
 
@@ -3311,7 +3316,6 @@ pub enum Element {
     ImportClause(ElementImportClause),
     ExtendsClause(ElementExtendsClause),
     ElementDefinition(ElementElementDefinition),
-    ElementReplaceableDefinition(ElementElementReplaceableDefinition),
 }
 
 ///
@@ -3335,6 +3339,19 @@ pub struct ElementDefinition {
 pub enum ElementDefinitionGroup {
     ClassDefinition(ElementDefinitionGroupClassDefinition),
     ComponentClause(ElementDefinitionGroupComponentClause),
+    ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(
+        ElementDefinitionGroupReplaceableElementDefinitionGroupGroupElementDefinitionOpt3,
+    ),
+}
+
+///
+/// Type derived for non-terminal element_definitionGroupGroup
+///
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum ElementDefinitionGroupGroup {
+    ClassDefinition(ElementDefinitionGroupGroupClassDefinition),
+    ComponentClause(ElementDefinitionGroupGroupComponentClause),
 }
 
 ///
@@ -3371,6 +3388,16 @@ pub struct ElementDefinitionOpt1 {
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt2 {
     pub outer: Outer,
+}
+
+///
+/// Type derived for non-terminal element_definitionOpt3
+///
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct ElementDefinitionOpt3 {
+    pub constraining_clause: ConstrainingClause,
+    pub description: Description,
 }
 
 ///
@@ -3519,37 +3546,6 @@ pub enum ElementReplaceableGroup {
 #[derive(Debug, Clone)]
 pub struct ElementReplaceableOpt {
     pub constraining_clause: ConstrainingClause,
-}
-
-///
-/// Type derived for non-terminal element_replaceable_definition
-///
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct ElementReplaceableDefinition {
-    pub replaceable: Replaceable,
-    pub element_replaceable_definition_group: ElementReplaceableDefinitionGroup,
-    pub element_replaceable_definition_opt: Option<ElementReplaceableDefinitionOpt>,
-}
-
-///
-/// Type derived for non-terminal element_replaceable_definitionGroup
-///
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum ElementReplaceableDefinitionGroup {
-    ClassDefinition(ElementReplaceableDefinitionGroupClassDefinition),
-    ComponentClause(ElementReplaceableDefinitionGroupComponentClause),
-}
-
-///
-/// Type derived for non-terminal element_replaceable_definitionOpt
-///
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct ElementReplaceableDefinitionOpt {
-    pub constraining_clause: ConstrainingClause,
-    pub description: Description,
 }
 
 ///
@@ -5283,6 +5279,7 @@ pub enum UnsignedReal {
     Decimal(UnsignedRealDecimal),
     Scientific(UnsignedRealScientific),
     Scientific2(UnsignedRealScientific2),
+    ScientificInt(UnsignedRealScientificInt),
 }
 
 ///
@@ -5474,10 +5471,12 @@ pub enum ASTType {
     Element(Element),
     ElementDefinition(ElementDefinition),
     ElementDefinitionGroup(ElementDefinitionGroup),
+    ElementDefinitionGroupGroup(ElementDefinitionGroupGroup),
     ElementDefinitionOpt(Option<ElementDefinitionOpt>),
     ElementDefinitionOpt0(Option<ElementDefinitionOpt0>),
     ElementDefinitionOpt1(Option<ElementDefinitionOpt1>),
     ElementDefinitionOpt2(Option<ElementDefinitionOpt2>),
+    ElementDefinitionOpt3(Option<ElementDefinitionOpt3>),
     ElementList(ElementList),
     ElementListList(Vec<ElementListList>),
     ElementModification(ElementModification),
@@ -5493,9 +5492,6 @@ pub enum ASTType {
     ElementReplaceable(ElementReplaceable),
     ElementReplaceableGroup(ElementReplaceableGroup),
     ElementReplaceableOpt(Option<ElementReplaceableOpt>),
-    ElementReplaceableDefinition(ElementReplaceableDefinition),
-    ElementReplaceableDefinitionGroup(ElementReplaceableDefinitionGroup),
-    ElementReplaceableDefinitionOpt(Option<ElementReplaceableDefinitionOpt>),
     Else(Else),
     Elseif(Elseif),
     Elsewhen(Elsewhen),
@@ -7011,6 +7007,26 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 66:
     ///
+    /// `unsigned_real: /[0-9]+[eE][+-]?[0-9]+/@scientific_int;`
+    ///
+    #[parol_runtime::function_name::named]
+    fn unsigned_real_3(&mut self, scientific_int: &ParseTreeType<'t>) -> Result<()> {
+        let context = function_name!();
+        trace!("{}", self.trace_item_stack(context));
+        let scientific_int = scientific_int
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
+        let unsigned_real_3_built = UnsignedRealScientificInt { scientific_int };
+        let unsigned_real_3_built = UnsignedReal::ScientificInt(unsigned_real_3_built);
+        // Calling user action here
+        self.user_grammar.unsigned_real(&unsigned_real_3_built)?;
+        self.push(ASTType::UnsignedReal(unsigned_real_3_built), context);
+        Ok(())
+    }
+
+    /// Semantic action for production 67:
+    ///
     /// `stored_definition: stored_definitionOpt /* Option */ stored_definitionList /* Vec */;`
     ///
     #[parol_runtime::function_name::named]
@@ -7036,7 +7052,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 67:
+    /// Semantic action for production 68:
     ///
     /// `stored_definitionList /* Vec<T>::Push */: stored_definitionOpt0 /* Option */ class_definition ';'^ /* Clipped */ stored_definitionList;`
     ///
@@ -7070,7 +7086,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 68:
+    /// Semantic action for production 69:
     ///
     /// `stored_definitionList /* Vec<T>::New */: ;`
     ///
@@ -7086,7 +7102,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 69:
+    /// Semantic action for production 70:
     ///
     /// `stored_definitionOpt0 /* Option<T>::Some */: final;`
     ///
@@ -7103,7 +7119,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 70:
+    /// Semantic action for production 71:
     ///
     /// `stored_definitionOpt0 /* Option<T>::None */: ;`
     ///
@@ -7115,7 +7131,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 71:
+    /// Semantic action for production 72:
     ///
     /// `stored_definitionOpt /* Option<T>::Some */: within^ /* Clipped */ stored_definitionOpt1 /* Option */ ';'^ /* Clipped */;`
     ///
@@ -7141,7 +7157,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 72:
+    /// Semantic action for production 73:
     ///
     /// `stored_definitionOpt1 /* Option<T>::Some */: name;`
     ///
@@ -7162,7 +7178,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 73:
+    /// Semantic action for production 74:
     ///
     /// `stored_definitionOpt1 /* Option<T>::None */: ;`
     ///
@@ -7174,7 +7190,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 74:
+    /// Semantic action for production 75:
     ///
     /// `stored_definitionOpt /* Option<T>::None */: ;`
     ///
@@ -7186,7 +7202,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 75:
+    /// Semantic action for production 76:
     ///
     /// `class_definition: class_definitionOpt /* Option */ class_prefixes class_specifier;`
     ///
@@ -7215,7 +7231,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 76:
+    /// Semantic action for production 77:
     ///
     /// `class_definitionOpt /* Option<T>::Some */: encapsulated;`
     ///
@@ -7232,7 +7248,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 77:
+    /// Semantic action for production 78:
     ///
     /// `class_definitionOpt /* Option<T>::None */: ;`
     ///
@@ -7244,7 +7260,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 78:
+    /// Semantic action for production 79:
     ///
     /// `class_type: class;`
     ///
@@ -7261,7 +7277,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 79:
+    /// Semantic action for production 80:
     ///
     /// `class_type: model;`
     ///
@@ -7278,7 +7294,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 80:
+    /// Semantic action for production 81:
     ///
     /// `class_type: class_typeOpt /* Option */ record;`
     ///
@@ -7303,7 +7319,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 81:
+    /// Semantic action for production 82:
     ///
     /// `class_type: block;`
     ///
@@ -7320,7 +7336,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 82:
+    /// Semantic action for production 83:
     ///
     /// `class_type: class_typeOpt0 /* Option */ connector;`
     ///
@@ -7345,7 +7361,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 83:
+    /// Semantic action for production 84:
     ///
     /// `class_type: type;`
     ///
@@ -7362,7 +7378,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 84:
+    /// Semantic action for production 85:
     ///
     /// `class_type: package;`
     ///
@@ -7379,7 +7395,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 85:
+    /// Semantic action for production 86:
     ///
     /// `class_type: class_typeOpt1 /* Option */ class_typeOpt2 /* Option */ function;`
     ///
@@ -7407,7 +7423,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 86:
+    /// Semantic action for production 87:
     ///
     /// `class_type: operator;`
     ///
@@ -7424,7 +7440,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 87:
+    /// Semantic action for production 88:
     ///
     /// `class_typeOpt2 /* Option<T>::Some */: operator;`
     ///
@@ -7441,7 +7457,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 88:
+    /// Semantic action for production 89:
     ///
     /// `class_typeOpt2 /* Option<T>::None */: ;`
     ///
@@ -7453,7 +7469,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 89:
+    /// Semantic action for production 90:
     ///
     /// `class_typeOpt1 /* Option<T>::Some */: class_typeOpt1Group;`
     ///
@@ -7473,7 +7489,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 90:
+    /// Semantic action for production 91:
     ///
     /// `class_typeOpt1Group: pure;`
     ///
@@ -7491,7 +7507,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 91:
+    /// Semantic action for production 92:
     ///
     /// `class_typeOpt1Group: impure;`
     ///
@@ -7510,7 +7526,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 92:
+    /// Semantic action for production 93:
     ///
     /// `class_typeOpt1 /* Option<T>::None */: ;`
     ///
@@ -7522,7 +7538,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 93:
+    /// Semantic action for production 94:
     ///
     /// `class_typeOpt0 /* Option<T>::Some */: expandable;`
     ///
@@ -7539,7 +7555,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 94:
+    /// Semantic action for production 95:
     ///
     /// `class_typeOpt0 /* Option<T>::None */: ;`
     ///
@@ -7551,7 +7567,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 95:
+    /// Semantic action for production 96:
     ///
     /// `class_typeOpt /* Option<T>::Some */: operator;`
     ///
@@ -7565,7 +7581,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 96:
+    /// Semantic action for production 97:
     ///
     /// `class_typeOpt /* Option<T>::None */: ;`
     ///
@@ -7577,7 +7593,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 97:
+    /// Semantic action for production 98:
     ///
     /// `class_prefixes: class_prefixesOpt /* Option */ class_type;`
     ///
@@ -7601,7 +7617,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 98:
+    /// Semantic action for production 99:
     ///
     /// `class_prefixesOpt /* Option<T>::Some */: partial;`
     ///
@@ -7618,7 +7634,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 99:
+    /// Semantic action for production 100:
     ///
     /// `class_prefixesOpt /* Option<T>::None */: ;`
     ///
@@ -7630,7 +7646,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 100:
+    /// Semantic action for production 101:
     ///
     /// `class_specifier: long_class_specifier;`
     ///
@@ -7651,7 +7667,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 101:
+    /// Semantic action for production 102:
     ///
     /// `class_specifier: short_class_specifier;`
     ///
@@ -7672,7 +7688,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 102:
+    /// Semantic action for production 103:
     ///
     /// `class_specifier: der_class_specifier;`
     ///
@@ -7692,7 +7708,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 103:
+    /// Semantic action for production 104:
     ///
     /// `long_class_specifier: standard_class_specifier;`
     ///
@@ -7724,7 +7740,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 104:
+    /// Semantic action for production 105:
     ///
     /// `long_class_specifier: extends_class_specifier;`
     ///
@@ -7756,7 +7772,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 105:
+    /// Semantic action for production 106:
     ///
     /// `standard_class_specifier: ident@name description_string composition end^ /* Clipped */ ident;`
     ///
@@ -7800,7 +7816,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 106:
+    /// Semantic action for production 107:
     ///
     /// `extends_class_specifier: extends^ /* Clipped */ ident extends_class_specifierOpt /* Option */ description_string composition end^ /* Clipped */ ident;`
     ///
@@ -7854,7 +7870,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 107:
+    /// Semantic action for production 108:
     ///
     /// `extends_class_specifierOpt /* Option<T>::Some */: class_modification;`
     ///
@@ -7874,7 +7890,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 108:
+    /// Semantic action for production 109:
     ///
     /// `extends_class_specifierOpt /* Option<T>::None */: ;`
     ///
@@ -7886,7 +7902,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 109:
+    /// Semantic action for production 110:
     ///
     /// `short_class_specifier: type_class_specifier;`
     ///
@@ -7911,7 +7927,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 110:
+    /// Semantic action for production 111:
     ///
     /// `short_class_specifier: enum_class_specifier;`
     ///
@@ -7936,7 +7952,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 111:
+    /// Semantic action for production 112:
     ///
     /// `type_class_specifier: ident '='^ /* Clipped */ base_prefix type_specifier type_class_specifierOpt /* Option */ type_class_specifierOpt0 /* Option */ description;`
     ///
@@ -7989,7 +8005,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 112:
+    /// Semantic action for production 113:
     ///
     /// `type_class_specifierOpt0 /* Option<T>::Some */: class_modification;`
     ///
@@ -8009,7 +8025,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 113:
+    /// Semantic action for production 114:
     ///
     /// `type_class_specifierOpt0 /* Option<T>::None */: ;`
     ///
@@ -8021,7 +8037,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 114:
+    /// Semantic action for production 115:
     ///
     /// `type_class_specifierOpt /* Option<T>::Some */: array_subscripts;`
     ///
@@ -8042,7 +8058,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 115:
+    /// Semantic action for production 116:
     ///
     /// `type_class_specifierOpt /* Option<T>::None */: ;`
     ///
@@ -8054,7 +8070,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 116:
+    /// Semantic action for production 117:
     ///
     /// `enum_class_specifier: ident '='^ /* Clipped */ enumeration '('^ /* Clipped */ enum_class_specifierGroup ')'^ /* Clipped */ description;`
     ///
@@ -8098,7 +8114,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 117:
+    /// Semantic action for production 118:
     ///
     /// `enum_class_specifierGroup: enum_class_specifierOpt /* Option */;`
     ///
@@ -8127,7 +8143,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 118:
+    /// Semantic action for production 119:
     ///
     /// `enum_class_specifierGroup: ':'^ /* Clipped */;`
     ///
@@ -8145,7 +8161,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 119:
+    /// Semantic action for production 120:
     ///
     /// `enum_class_specifierOpt /* Option<T>::Some */: enum_list;`
     ///
@@ -8162,7 +8178,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 120:
+    /// Semantic action for production 121:
     ///
     /// `enum_class_specifierOpt /* Option<T>::None */: ;`
     ///
@@ -8174,7 +8190,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 121:
+    /// Semantic action for production 122:
     ///
     /// `der_class_specifier: ident '='^ /* Clipped */ der '('^ /* Clipped */ type_specifier ','^ /* Clipped */ ident der_class_specifierList /* Vec */ ')'^ /* Clipped */ description;`
     ///
@@ -8227,7 +8243,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 122:
+    /// Semantic action for production 123:
     ///
     /// `der_class_specifierList /* Vec<T>::Push */: ','^ /* Clipped */ ident der_class_specifierList;`
     ///
@@ -8261,7 +8277,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 123:
+    /// Semantic action for production 124:
     ///
     /// `der_class_specifierList /* Vec<T>::New */: ;`
     ///
@@ -8277,7 +8293,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 124:
+    /// Semantic action for production 125:
     ///
     /// `base_prefix: base_prefixOpt /* Option */;`
     ///
@@ -8293,7 +8309,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 125:
+    /// Semantic action for production 126:
     ///
     /// `base_prefixOpt /* Option<T>::Some */: base_prefixOptGroup;`
     ///
@@ -8313,7 +8329,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 126:
+    /// Semantic action for production 127:
     ///
     /// `base_prefixOptGroup: input;`
     ///
@@ -8332,7 +8348,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 127:
+    /// Semantic action for production 128:
     ///
     /// `base_prefixOptGroup: output;`
     ///
@@ -8351,7 +8367,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 128:
+    /// Semantic action for production 129:
     ///
     /// `base_prefixOpt /* Option<T>::None */: ;`
     ///
@@ -8363,7 +8379,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 129:
+    /// Semantic action for production 130:
     ///
     /// `enum_list: enumeration_literal enum_listList /* Vec */;`
     ///
@@ -8387,7 +8403,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 130:
+    /// Semantic action for production 131:
     ///
     /// `enum_listList /* Vec<T>::Push */: ','^ /* Clipped */ enumeration_literal enum_listList;`
     ///
@@ -8411,7 +8427,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 131:
+    /// Semantic action for production 132:
     ///
     /// `enum_listList /* Vec<T>::New */: ;`
     ///
@@ -8424,7 +8440,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 132:
+    /// Semantic action for production 133:
     ///
     /// `enumeration_literal: ident description;`
     ///
@@ -8454,7 +8470,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 133:
+    /// Semantic action for production 134:
     ///
     /// `composition: element_list compositionList /* Vec */ compositionOpt /* Option */ compositionOpt0 /* Option */;`
     ///
@@ -8487,7 +8503,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 134:
+    /// Semantic action for production 135:
     ///
     /// `compositionList /* Vec<T>::Push */: compositionListGroup compositionList;`
     ///
@@ -8511,7 +8527,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 135:
+    /// Semantic action for production 136:
     ///
     /// `compositionListGroup: public element_list;`
     ///
@@ -8540,7 +8556,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 136:
+    /// Semantic action for production 137:
     ///
     /// `compositionListGroup: protected element_list;`
     ///
@@ -8569,7 +8585,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 137:
+    /// Semantic action for production 138:
     ///
     /// `compositionListGroup: equation_section;`
     ///
@@ -8592,7 +8608,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 138:
+    /// Semantic action for production 139:
     ///
     /// `compositionListGroup: algorithm_section;`
     ///
@@ -8615,7 +8631,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 139:
+    /// Semantic action for production 140:
     ///
     /// `compositionList /* Vec<T>::New */: ;`
     ///
@@ -8628,7 +8644,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 140:
+    /// Semantic action for production 141:
     ///
     /// `compositionOpt0 /* Option<T>::Some */: annotation_clause ';'^ /* Clipped */;`
     ///
@@ -8649,7 +8665,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 141:
+    /// Semantic action for production 142:
     ///
     /// `compositionOpt0 /* Option<T>::None */: ;`
     ///
@@ -8661,7 +8677,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 142:
+    /// Semantic action for production 143:
     ///
     /// `compositionOpt /* Option<T>::Some */: external^ /* Clipped */ compositionOpt1 /* Option */ compositionOpt2 /* Option */ compositionOpt3 /* Option */ ';'^ /* Clipped */;`
     ///
@@ -8692,7 +8708,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 143:
+    /// Semantic action for production 144:
     ///
     /// `compositionOpt3 /* Option<T>::Some */: annotation_clause;`
     ///
@@ -8709,7 +8725,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 144:
+    /// Semantic action for production 145:
     ///
     /// `compositionOpt3 /* Option<T>::None */: ;`
     ///
@@ -8721,7 +8737,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 145:
+    /// Semantic action for production 146:
     ///
     /// `compositionOpt2 /* Option<T>::Some */: external_function_call;`
     ///
@@ -8741,7 +8757,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 146:
+    /// Semantic action for production 147:
     ///
     /// `compositionOpt2 /* Option<T>::None */: ;`
     ///
@@ -8753,7 +8769,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 147:
+    /// Semantic action for production 148:
     ///
     /// `compositionOpt1 /* Option<T>::Some */: language_specification;`
     ///
@@ -8773,7 +8789,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 148:
+    /// Semantic action for production 149:
     ///
     /// `compositionOpt1 /* Option<T>::None */: ;`
     ///
@@ -8785,7 +8801,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 149:
+    /// Semantic action for production 150:
     ///
     /// `compositionOpt /* Option<T>::None */: ;`
     ///
@@ -8797,7 +8813,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 150:
+    /// Semantic action for production 151:
     ///
     /// `language_specification: string;`
     ///
@@ -8821,7 +8837,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 151:
+    /// Semantic action for production 152:
     ///
     /// `external_function_call: external_function_callOpt /* Option */ ident '('^ /* Clipped */ external_function_callOpt0 /* Option */ ')'^ /* Clipped */;`
     ///
@@ -8866,7 +8882,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 152:
+    /// Semantic action for production 153:
     ///
     /// `external_function_callOpt0 /* Option<T>::Some */: expression_list;`
     ///
@@ -8886,7 +8902,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 153:
+    /// Semantic action for production 154:
     ///
     /// `external_function_callOpt0 /* Option<T>::None */: ;`
     ///
@@ -8898,7 +8914,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 154:
+    /// Semantic action for production 155:
     ///
     /// `external_function_callOpt /* Option<T>::Some */: component_reference '='^ /* Clipped */;`
     ///
@@ -8923,7 +8939,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 155:
+    /// Semantic action for production 156:
     ///
     /// `external_function_callOpt /* Option<T>::None */: ;`
     ///
@@ -8935,7 +8951,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 156:
+    /// Semantic action for production 157:
     ///
     /// `element_list: element_listList /* Vec */;`
     ///
@@ -8952,7 +8968,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 157:
+    /// Semantic action for production 158:
     ///
     /// `element_listList /* Vec<T>::Push */: element ';'^ /* Clipped */ element_listList;`
     ///
@@ -8974,7 +8990,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 158:
+    /// Semantic action for production 159:
     ///
     /// `element_listList /* Vec<T>::New */: ;`
     ///
@@ -8987,7 +9003,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 159:
+    /// Semantic action for production 160:
     ///
     /// `element: import_clause;`
     ///
@@ -9004,7 +9020,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 160:
+    /// Semantic action for production 161:
     ///
     /// `element: extends_clause;`
     ///
@@ -9021,7 +9037,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 161:
+    /// Semantic action for production 162:
     ///
     /// `element: element_definition;`
     ///
@@ -9035,30 +9051,6 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         // Calling user action here
         self.user_grammar.element(&element_2_built)?;
         self.push(ASTType::Element(element_2_built), context);
-        Ok(())
-    }
-
-    /// Semantic action for production 162:
-    ///
-    /// `element: element_replaceable_definition;`
-    ///
-    #[parol_runtime::function_name::named]
-    fn element_3(&mut self, _element_replaceable_definition: &ParseTreeType<'t>) -> Result<()> {
-        let context = function_name!();
-        trace!("{}", self.trace_item_stack(context));
-        let element_replaceable_definition = pop_item!(
-            self,
-            element_replaceable_definition,
-            ElementReplaceableDefinition,
-            context
-        );
-        let element_3_built = ElementElementReplaceableDefinition {
-            element_replaceable_definition,
-        };
-        let element_3_built = Element::ElementReplaceableDefinition(element_3_built);
-        // Calling user action here
-        self.user_grammar.element(&element_3_built)?;
-        self.push(ASTType::Element(element_3_built), context);
         Ok(())
     }
 
@@ -9165,6 +9157,135 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 166:
     ///
+    /// `element_definitionGroup: replaceable element_definitionGroupGroup element_definitionOpt3 /* Option */;`
+    ///
+    #[parol_runtime::function_name::named]
+    fn element_definition_group_2(
+        &mut self,
+        _replaceable: &ParseTreeType<'t>,
+        _element_definition_group_group: &ParseTreeType<'t>,
+        _element_definition_opt3: &ParseTreeType<'t>,
+    ) -> Result<()> {
+        let context = function_name!();
+        trace!("{}", self.trace_item_stack(context));
+        let element_definition_opt3 = pop_item!(
+            self,
+            element_definition_opt3,
+            ElementDefinitionOpt3,
+            context
+        );
+        let element_definition_group_group = pop_item!(
+            self,
+            element_definition_group_group,
+            ElementDefinitionGroupGroup,
+            context
+        );
+        let replaceable = pop_item!(self, replaceable, Replaceable, context);
+        let element_definition_group_2_built =
+            ElementDefinitionGroupReplaceableElementDefinitionGroupGroupElementDefinitionOpt3 {
+                replaceable,
+                element_definition_group_group,
+                element_definition_opt3,
+            };
+        let element_definition_group_2_built =
+            ElementDefinitionGroup::ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(
+                element_definition_group_2_built,
+            );
+        self.push(
+            ASTType::ElementDefinitionGroup(element_definition_group_2_built),
+            context,
+        );
+        Ok(())
+    }
+
+    /// Semantic action for production 167:
+    ///
+    /// `element_definitionGroupGroup: class_definition;`
+    ///
+    #[parol_runtime::function_name::named]
+    fn element_definition_group_group_0(
+        &mut self,
+        _class_definition: &ParseTreeType<'t>,
+    ) -> Result<()> {
+        let context = function_name!();
+        trace!("{}", self.trace_item_stack(context));
+        let class_definition = pop_item!(self, class_definition, ClassDefinition, context);
+        let element_definition_group_group_0_built = ElementDefinitionGroupGroupClassDefinition {
+            class_definition: (&class_definition)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
+        };
+        let element_definition_group_group_0_built =
+            ElementDefinitionGroupGroup::ClassDefinition(element_definition_group_group_0_built);
+        self.push(
+            ASTType::ElementDefinitionGroupGroup(element_definition_group_group_0_built),
+            context,
+        );
+        Ok(())
+    }
+
+    /// Semantic action for production 168:
+    ///
+    /// `element_definitionGroupGroup: component_clause;`
+    ///
+    #[parol_runtime::function_name::named]
+    fn element_definition_group_group_1(
+        &mut self,
+        _component_clause: &ParseTreeType<'t>,
+    ) -> Result<()> {
+        let context = function_name!();
+        trace!("{}", self.trace_item_stack(context));
+        let component_clause = pop_item!(self, component_clause, ComponentClause, context);
+        let element_definition_group_group_1_built =
+            ElementDefinitionGroupGroupComponentClause { component_clause };
+        let element_definition_group_group_1_built =
+            ElementDefinitionGroupGroup::ComponentClause(element_definition_group_group_1_built);
+        self.push(
+            ASTType::ElementDefinitionGroupGroup(element_definition_group_group_1_built),
+            context,
+        );
+        Ok(())
+    }
+
+    /// Semantic action for production 169:
+    ///
+    /// `element_definitionOpt3 /* Option<T>::Some */: constraining_clause description;`
+    ///
+    #[parol_runtime::function_name::named]
+    fn element_definition_opt3_0(
+        &mut self,
+        _constraining_clause: &ParseTreeType<'t>,
+        _description: &ParseTreeType<'t>,
+    ) -> Result<()> {
+        let context = function_name!();
+        trace!("{}", self.trace_item_stack(context));
+        let description = pop_item!(self, description, Description, context);
+        let constraining_clause = pop_item!(self, constraining_clause, ConstrainingClause, context);
+        let element_definition_opt3_0_built = ElementDefinitionOpt3 {
+            constraining_clause,
+            description,
+        };
+        self.push(
+            ASTType::ElementDefinitionOpt3(Some(element_definition_opt3_0_built)),
+            context,
+        );
+        Ok(())
+    }
+
+    /// Semantic action for production 170:
+    ///
+    /// `element_definitionOpt3 /* Option<T>::None */: ;`
+    ///
+    #[parol_runtime::function_name::named]
+    fn element_definition_opt3_1(&mut self) -> Result<()> {
+        let context = function_name!();
+        trace!("{}", self.trace_item_stack(context));
+        self.push(ASTType::ElementDefinitionOpt3(None), context);
+        Ok(())
+    }
+
+    /// Semantic action for production 171:
+    ///
     /// `element_definitionOpt2 /* Option<T>::Some */: outer;`
     ///
     #[parol_runtime::function_name::named]
@@ -9180,7 +9301,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 167:
+    /// Semantic action for production 172:
     ///
     /// `element_definitionOpt2 /* Option<T>::None */: ;`
     ///
@@ -9192,7 +9313,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 168:
+    /// Semantic action for production 173:
     ///
     /// `element_definitionOpt1 /* Option<T>::Some */: inner;`
     ///
@@ -9209,7 +9330,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 169:
+    /// Semantic action for production 174:
     ///
     /// `element_definitionOpt1 /* Option<T>::None */: ;`
     ///
@@ -9221,7 +9342,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 170:
+    /// Semantic action for production 175:
     ///
     /// `element_definitionOpt0 /* Option<T>::Some */: final;`
     ///
@@ -9238,7 +9359,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 171:
+    /// Semantic action for production 176:
     ///
     /// `element_definitionOpt0 /* Option<T>::None */: ;`
     ///
@@ -9250,7 +9371,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 172:
+    /// Semantic action for production 177:
     ///
     /// `element_definitionOpt /* Option<T>::Some */: redeclare;`
     ///
@@ -9267,7 +9388,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         Ok(())
     }
 
-    /// Semantic action for production 173:
+    /// Semantic action for production 178:
     ///
     /// `element_definitionOpt /* Option<T>::None */: ;`
     ///
@@ -9276,144 +9397,6 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         self.push(ASTType::ElementDefinitionOpt(None), context);
-        Ok(())
-    }
-
-    /// Semantic action for production 174:
-    ///
-    /// `element_replaceable_definition: replaceable element_replaceable_definitionGroup element_replaceable_definitionOpt /* Option */;`
-    ///
-    #[parol_runtime::function_name::named]
-    fn element_replaceable_definition(
-        &mut self,
-        _replaceable: &ParseTreeType<'t>,
-        _element_replaceable_definition_group: &ParseTreeType<'t>,
-        _element_replaceable_definition_opt: &ParseTreeType<'t>,
-    ) -> Result<()> {
-        let context = function_name!();
-        trace!("{}", self.trace_item_stack(context));
-        let element_replaceable_definition_opt = pop_item!(
-            self,
-            element_replaceable_definition_opt,
-            ElementReplaceableDefinitionOpt,
-            context
-        );
-        let element_replaceable_definition_group = pop_item!(
-            self,
-            element_replaceable_definition_group,
-            ElementReplaceableDefinitionGroup,
-            context
-        );
-        let replaceable = pop_item!(self, replaceable, Replaceable, context);
-        let element_replaceable_definition_built = ElementReplaceableDefinition {
-            replaceable,
-            element_replaceable_definition_group,
-            element_replaceable_definition_opt,
-        };
-        // Calling user action here
-        self.user_grammar
-            .element_replaceable_definition(&element_replaceable_definition_built)?;
-        self.push(
-            ASTType::ElementReplaceableDefinition(element_replaceable_definition_built),
-            context,
-        );
-        Ok(())
-    }
-
-    /// Semantic action for production 175:
-    ///
-    /// `element_replaceable_definitionGroup: class_definition;`
-    ///
-    #[parol_runtime::function_name::named]
-    fn element_replaceable_definition_group_0(
-        &mut self,
-        _class_definition: &ParseTreeType<'t>,
-    ) -> Result<()> {
-        let context = function_name!();
-        trace!("{}", self.trace_item_stack(context));
-        let class_definition = pop_item!(self, class_definition, ClassDefinition, context);
-        let element_replaceable_definition_group_0_built =
-            ElementReplaceableDefinitionGroupClassDefinition {
-                class_definition: (&class_definition)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            };
-        let element_replaceable_definition_group_0_built =
-            ElementReplaceableDefinitionGroup::ClassDefinition(
-                element_replaceable_definition_group_0_built,
-            );
-        self.push(
-            ASTType::ElementReplaceableDefinitionGroup(
-                element_replaceable_definition_group_0_built,
-            ),
-            context,
-        );
-        Ok(())
-    }
-
-    /// Semantic action for production 176:
-    ///
-    /// `element_replaceable_definitionGroup: component_clause;`
-    ///
-    #[parol_runtime::function_name::named]
-    fn element_replaceable_definition_group_1(
-        &mut self,
-        _component_clause: &ParseTreeType<'t>,
-    ) -> Result<()> {
-        let context = function_name!();
-        trace!("{}", self.trace_item_stack(context));
-        let component_clause = pop_item!(self, component_clause, ComponentClause, context);
-        let element_replaceable_definition_group_1_built =
-            ElementReplaceableDefinitionGroupComponentClause { component_clause };
-        let element_replaceable_definition_group_1_built =
-            ElementReplaceableDefinitionGroup::ComponentClause(
-                element_replaceable_definition_group_1_built,
-            );
-        self.push(
-            ASTType::ElementReplaceableDefinitionGroup(
-                element_replaceable_definition_group_1_built,
-            ),
-            context,
-        );
-        Ok(())
-    }
-
-    /// Semantic action for production 177:
-    ///
-    /// `element_replaceable_definitionOpt /* Option<T>::Some */: constraining_clause description;`
-    ///
-    #[parol_runtime::function_name::named]
-    fn element_replaceable_definition_opt_0(
-        &mut self,
-        _constraining_clause: &ParseTreeType<'t>,
-        _description: &ParseTreeType<'t>,
-    ) -> Result<()> {
-        let context = function_name!();
-        trace!("{}", self.trace_item_stack(context));
-        let description = pop_item!(self, description, Description, context);
-        let constraining_clause = pop_item!(self, constraining_clause, ConstrainingClause, context);
-        let element_replaceable_definition_opt_0_built = ElementReplaceableDefinitionOpt {
-            constraining_clause,
-            description,
-        };
-        self.push(
-            ASTType::ElementReplaceableDefinitionOpt(Some(
-                element_replaceable_definition_opt_0_built,
-            )),
-            context,
-        );
-        Ok(())
-    }
-
-    /// Semantic action for production 178:
-    ///
-    /// `element_replaceable_definitionOpt /* Option<T>::None */: ;`
-    ///
-    #[parol_runtime::function_name::named]
-    fn element_replaceable_definition_opt_1(&mut self) -> Result<()> {
-        let context = function_name!();
-        trace!("{}", self.trace_item_stack(context));
-        self.push(ASTType::ElementReplaceableDefinitionOpt(None), context);
         Ok(())
     }
 
@@ -16943,71 +16926,59 @@ impl<'t> UserActionsTrait<'t> for ModelicaGrammarAuto<'t, '_> {
             63 => self.unsigned_real_0(&children[0]),
             64 => self.unsigned_real_1(&children[0]),
             65 => self.unsigned_real_2(&children[0]),
-            66 => self.stored_definition(&children[0], &children[1]),
-            67 => self.stored_definition_list_0(
+            66 => self.unsigned_real_3(&children[0]),
+            67 => self.stored_definition(&children[0], &children[1]),
+            68 => self.stored_definition_list_0(
                 &children[0],
                 &children[1],
                 &children[2],
                 &children[3],
             ),
-            68 => self.stored_definition_list_1(),
-            69 => self.stored_definition_opt0_0(&children[0]),
-            70 => self.stored_definition_opt0_1(),
-            71 => self.stored_definition_opt_0(&children[0], &children[1], &children[2]),
-            72 => self.stored_definition_opt1_0(&children[0]),
-            73 => self.stored_definition_opt1_1(),
-            74 => self.stored_definition_opt_1(),
-            75 => self.class_definition(&children[0], &children[1], &children[2]),
-            76 => self.class_definition_opt_0(&children[0]),
-            77 => self.class_definition_opt_1(),
-            78 => self.class_type_0(&children[0]),
-            79 => self.class_type_1(&children[0]),
-            80 => self.class_type_2(&children[0], &children[1]),
-            81 => self.class_type_3(&children[0]),
-            82 => self.class_type_4(&children[0], &children[1]),
-            83 => self.class_type_5(&children[0]),
-            84 => self.class_type_6(&children[0]),
-            85 => self.class_type_7(&children[0], &children[1], &children[2]),
-            86 => self.class_type_8(&children[0]),
-            87 => self.class_type_opt2_0(&children[0]),
-            88 => self.class_type_opt2_1(),
-            89 => self.class_type_opt1_0(&children[0]),
-            90 => self.class_type_opt1_group_0(&children[0]),
-            91 => self.class_type_opt1_group_1(&children[0]),
-            92 => self.class_type_opt1_1(),
-            93 => self.class_type_opt0_0(&children[0]),
-            94 => self.class_type_opt0_1(),
-            95 => self.class_type_opt_0(&children[0]),
-            96 => self.class_type_opt_1(),
-            97 => self.class_prefixes(&children[0], &children[1]),
-            98 => self.class_prefixes_opt_0(&children[0]),
-            99 => self.class_prefixes_opt_1(),
-            100 => self.class_specifier_0(&children[0]),
-            101 => self.class_specifier_1(&children[0]),
-            102 => self.class_specifier_2(&children[0]),
-            103 => self.long_class_specifier_0(&children[0]),
-            104 => self.long_class_specifier_1(&children[0]),
-            105 => self.standard_class_specifier(
-                &children[0],
-                &children[1],
-                &children[2],
-                &children[3],
-                &children[4],
-            ),
-            106 => self.extends_class_specifier(
+            69 => self.stored_definition_list_1(),
+            70 => self.stored_definition_opt0_0(&children[0]),
+            71 => self.stored_definition_opt0_1(),
+            72 => self.stored_definition_opt_0(&children[0], &children[1], &children[2]),
+            73 => self.stored_definition_opt1_0(&children[0]),
+            74 => self.stored_definition_opt1_1(),
+            75 => self.stored_definition_opt_1(),
+            76 => self.class_definition(&children[0], &children[1], &children[2]),
+            77 => self.class_definition_opt_0(&children[0]),
+            78 => self.class_definition_opt_1(),
+            79 => self.class_type_0(&children[0]),
+            80 => self.class_type_1(&children[0]),
+            81 => self.class_type_2(&children[0], &children[1]),
+            82 => self.class_type_3(&children[0]),
+            83 => self.class_type_4(&children[0], &children[1]),
+            84 => self.class_type_5(&children[0]),
+            85 => self.class_type_6(&children[0]),
+            86 => self.class_type_7(&children[0], &children[1], &children[2]),
+            87 => self.class_type_8(&children[0]),
+            88 => self.class_type_opt2_0(&children[0]),
+            89 => self.class_type_opt2_1(),
+            90 => self.class_type_opt1_0(&children[0]),
+            91 => self.class_type_opt1_group_0(&children[0]),
+            92 => self.class_type_opt1_group_1(&children[0]),
+            93 => self.class_type_opt1_1(),
+            94 => self.class_type_opt0_0(&children[0]),
+            95 => self.class_type_opt0_1(),
+            96 => self.class_type_opt_0(&children[0]),
+            97 => self.class_type_opt_1(),
+            98 => self.class_prefixes(&children[0], &children[1]),
+            99 => self.class_prefixes_opt_0(&children[0]),
+            100 => self.class_prefixes_opt_1(),
+            101 => self.class_specifier_0(&children[0]),
+            102 => self.class_specifier_1(&children[0]),
+            103 => self.class_specifier_2(&children[0]),
+            104 => self.long_class_specifier_0(&children[0]),
+            105 => self.long_class_specifier_1(&children[0]),
+            106 => self.standard_class_specifier(
                 &children[0],
                 &children[1],
                 &children[2],
                 &children[3],
                 &children[4],
-                &children[5],
-                &children[6],
             ),
-            107 => self.extends_class_specifier_opt_0(&children[0]),
-            108 => self.extends_class_specifier_opt_1(),
-            109 => self.short_class_specifier_0(&children[0]),
-            110 => self.short_class_specifier_1(&children[0]),
-            111 => self.type_class_specifier(
+            107 => self.extends_class_specifier(
                 &children[0],
                 &children[1],
                 &children[2],
@@ -17016,11 +16987,11 @@ impl<'t> UserActionsTrait<'t> for ModelicaGrammarAuto<'t, '_> {
                 &children[5],
                 &children[6],
             ),
-            112 => self.type_class_specifier_opt0_0(&children[0]),
-            113 => self.type_class_specifier_opt0_1(),
-            114 => self.type_class_specifier_opt_0(&children[0]),
-            115 => self.type_class_specifier_opt_1(),
-            116 => self.enum_class_specifier(
+            108 => self.extends_class_specifier_opt_0(&children[0]),
+            109 => self.extends_class_specifier_opt_1(),
+            110 => self.short_class_specifier_0(&children[0]),
+            111 => self.short_class_specifier_1(&children[0]),
+            112 => self.type_class_specifier(
                 &children[0],
                 &children[1],
                 &children[2],
@@ -17029,11 +17000,24 @@ impl<'t> UserActionsTrait<'t> for ModelicaGrammarAuto<'t, '_> {
                 &children[5],
                 &children[6],
             ),
-            117 => self.enum_class_specifier_group_0(&children[0]),
-            118 => self.enum_class_specifier_group_1(&children[0]),
-            119 => self.enum_class_specifier_opt_0(&children[0]),
-            120 => self.enum_class_specifier_opt_1(),
-            121 => self.der_class_specifier(
+            113 => self.type_class_specifier_opt0_0(&children[0]),
+            114 => self.type_class_specifier_opt0_1(),
+            115 => self.type_class_specifier_opt_0(&children[0]),
+            116 => self.type_class_specifier_opt_1(),
+            117 => self.enum_class_specifier(
+                &children[0],
+                &children[1],
+                &children[2],
+                &children[3],
+                &children[4],
+                &children[5],
+                &children[6],
+            ),
+            118 => self.enum_class_specifier_group_0(&children[0]),
+            119 => self.enum_class_specifier_group_1(&children[0]),
+            120 => self.enum_class_specifier_opt_0(&children[0]),
+            121 => self.enum_class_specifier_opt_1(),
+            122 => self.der_class_specifier(
                 &children[0],
                 &children[1],
                 &children[2],
@@ -17045,59 +17029,58 @@ impl<'t> UserActionsTrait<'t> for ModelicaGrammarAuto<'t, '_> {
                 &children[8],
                 &children[9],
             ),
-            122 => self.der_class_specifier_list_0(&children[0], &children[1], &children[2]),
-            123 => self.der_class_specifier_list_1(),
-            124 => self.base_prefix(&children[0]),
-            125 => self.base_prefix_opt_0(&children[0]),
-            126 => self.base_prefix_opt_group_0(&children[0]),
-            127 => self.base_prefix_opt_group_1(&children[0]),
-            128 => self.base_prefix_opt_1(),
-            129 => self.enum_list(&children[0], &children[1]),
-            130 => self.enum_list_list_0(&children[0], &children[1], &children[2]),
-            131 => self.enum_list_list_1(),
-            132 => self.enumeration_literal(&children[0], &children[1]),
-            133 => self.composition(&children[0], &children[1], &children[2], &children[3]),
-            134 => self.composition_list_0(&children[0], &children[1]),
-            135 => self.composition_list_group_0(&children[0], &children[1]),
-            136 => self.composition_list_group_1(&children[0], &children[1]),
-            137 => self.composition_list_group_2(&children[0]),
-            138 => self.composition_list_group_3(&children[0]),
-            139 => self.composition_list_1(),
-            140 => self.composition_opt0_0(&children[0], &children[1]),
-            141 => self.composition_opt0_1(),
-            142 => self.composition_opt_0(
+            123 => self.der_class_specifier_list_0(&children[0], &children[1], &children[2]),
+            124 => self.der_class_specifier_list_1(),
+            125 => self.base_prefix(&children[0]),
+            126 => self.base_prefix_opt_0(&children[0]),
+            127 => self.base_prefix_opt_group_0(&children[0]),
+            128 => self.base_prefix_opt_group_1(&children[0]),
+            129 => self.base_prefix_opt_1(),
+            130 => self.enum_list(&children[0], &children[1]),
+            131 => self.enum_list_list_0(&children[0], &children[1], &children[2]),
+            132 => self.enum_list_list_1(),
+            133 => self.enumeration_literal(&children[0], &children[1]),
+            134 => self.composition(&children[0], &children[1], &children[2], &children[3]),
+            135 => self.composition_list_0(&children[0], &children[1]),
+            136 => self.composition_list_group_0(&children[0], &children[1]),
+            137 => self.composition_list_group_1(&children[0], &children[1]),
+            138 => self.composition_list_group_2(&children[0]),
+            139 => self.composition_list_group_3(&children[0]),
+            140 => self.composition_list_1(),
+            141 => self.composition_opt0_0(&children[0], &children[1]),
+            142 => self.composition_opt0_1(),
+            143 => self.composition_opt_0(
                 &children[0],
                 &children[1],
                 &children[2],
                 &children[3],
                 &children[4],
             ),
-            143 => self.composition_opt3_0(&children[0]),
-            144 => self.composition_opt3_1(),
-            145 => self.composition_opt2_0(&children[0]),
-            146 => self.composition_opt2_1(),
-            147 => self.composition_opt1_0(&children[0]),
-            148 => self.composition_opt1_1(),
-            149 => self.composition_opt_1(),
-            150 => self.language_specification(&children[0]),
-            151 => self.external_function_call(
+            144 => self.composition_opt3_0(&children[0]),
+            145 => self.composition_opt3_1(),
+            146 => self.composition_opt2_0(&children[0]),
+            147 => self.composition_opt2_1(),
+            148 => self.composition_opt1_0(&children[0]),
+            149 => self.composition_opt1_1(),
+            150 => self.composition_opt_1(),
+            151 => self.language_specification(&children[0]),
+            152 => self.external_function_call(
                 &children[0],
                 &children[1],
                 &children[2],
                 &children[3],
                 &children[4],
             ),
-            152 => self.external_function_call_opt0_0(&children[0]),
-            153 => self.external_function_call_opt0_1(),
-            154 => self.external_function_call_opt_0(&children[0], &children[1]),
-            155 => self.external_function_call_opt_1(),
-            156 => self.element_list(&children[0]),
-            157 => self.element_list_list_0(&children[0], &children[1], &children[2]),
-            158 => self.element_list_list_1(),
-            159 => self.element_0(&children[0]),
-            160 => self.element_1(&children[0]),
-            161 => self.element_2(&children[0]),
-            162 => self.element_3(&children[0]),
+            153 => self.external_function_call_opt0_0(&children[0]),
+            154 => self.external_function_call_opt0_1(),
+            155 => self.external_function_call_opt_0(&children[0], &children[1]),
+            156 => self.external_function_call_opt_1(),
+            157 => self.element_list(&children[0]),
+            158 => self.element_list_list_0(&children[0], &children[1], &children[2]),
+            159 => self.element_list_list_1(),
+            160 => self.element_0(&children[0]),
+            161 => self.element_1(&children[0]),
+            162 => self.element_2(&children[0]),
             163 => self.element_definition(
                 &children[0],
                 &children[1],
@@ -17107,19 +17090,19 @@ impl<'t> UserActionsTrait<'t> for ModelicaGrammarAuto<'t, '_> {
             ),
             164 => self.element_definition_group_0(&children[0]),
             165 => self.element_definition_group_1(&children[0]),
-            166 => self.element_definition_opt2_0(&children[0]),
-            167 => self.element_definition_opt2_1(),
-            168 => self.element_definition_opt1_0(&children[0]),
-            169 => self.element_definition_opt1_1(),
-            170 => self.element_definition_opt0_0(&children[0]),
-            171 => self.element_definition_opt0_1(),
-            172 => self.element_definition_opt_0(&children[0]),
-            173 => self.element_definition_opt_1(),
-            174 => self.element_replaceable_definition(&children[0], &children[1], &children[2]),
-            175 => self.element_replaceable_definition_group_0(&children[0]),
-            176 => self.element_replaceable_definition_group_1(&children[0]),
-            177 => self.element_replaceable_definition_opt_0(&children[0], &children[1]),
-            178 => self.element_replaceable_definition_opt_1(),
+            166 => self.element_definition_group_2(&children[0], &children[1], &children[2]),
+            167 => self.element_definition_group_group_0(&children[0]),
+            168 => self.element_definition_group_group_1(&children[0]),
+            169 => self.element_definition_opt3_0(&children[0], &children[1]),
+            170 => self.element_definition_opt3_1(),
+            171 => self.element_definition_opt2_0(&children[0]),
+            172 => self.element_definition_opt2_1(),
+            173 => self.element_definition_opt1_0(&children[0]),
+            174 => self.element_definition_opt1_1(),
+            175 => self.element_definition_opt0_0(&children[0]),
+            176 => self.element_definition_opt0_1(),
+            177 => self.element_definition_opt_0(&children[0]),
+            178 => self.element_definition_opt_1(),
             179 => self.import_clause(&children[0], &children[1], &children[2]),
             180 => self.import_clause_group_0(&children[0], &children[1], &children[2]),
             181 => self.import_clause_group_1(&children[0], &children[1]),

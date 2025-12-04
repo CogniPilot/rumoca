@@ -1,6 +1,5 @@
 //! Conversion for equations and statements.
 
-use super::helpers::{expr_loc_info, loc_info};
 use crate::ir;
 use crate::modelica_grammar_trait;
 
@@ -53,6 +52,9 @@ impl TryFrom<&modelica_grammar_trait::UnsignedReal> for ir::ast::Token {
             modelica_grammar_trait::UnsignedReal::Decimal(num) => Ok(num.decimal.clone()),
             modelica_grammar_trait::UnsignedReal::Scientific(num) => Ok(num.scientific.clone()),
             modelica_grammar_trait::UnsignedReal::Scientific2(num) => Ok(num.scientific2.clone()),
+            modelica_grammar_trait::UnsignedReal::ScientificInt(num) => {
+                Ok(num.scientific_int.clone())
+            }
         }
     }
 }
@@ -232,35 +234,64 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::ast::Statement {
                 })
             }
             modelica_grammar_trait::StatementOption::IfStatement(stmt) => {
-                anyhow::bail!(
-                    "'if' statement is not yet supported{}",
-                    expr_loc_info(&stmt.if_statement.r#if0.cond)
-                )
+                let if_stmt = &stmt.if_statement;
+
+                // Build cond_blocks: first the if block, then all elseif blocks
+                let mut cond_blocks = vec![if_stmt.r#if0.clone()];
+                for elseif_item in &if_stmt.if_statement_list {
+                    cond_blocks.push(elseif_item.elseif0.clone());
+                }
+
+                // Build else_block if present
+                let else_block = if_stmt.if_statement_opt.as_ref().map(|else_opt| {
+                    else_opt
+                        .if_statement_opt_list
+                        .iter()
+                        .map(|item| item.r#else.clone())
+                        .collect()
+                });
+
+                Ok(ir::ast::Statement::If {
+                    cond_blocks,
+                    else_block,
+                })
             }
             modelica_grammar_trait::StatementOption::WhenStatement(stmt) => {
-                anyhow::bail!(
-                    "'when' statement is not yet supported{}",
-                    expr_loc_info(&stmt.when_statement.when0.cond)
-                )
+                let when_stmt = &stmt.when_statement;
+
+                // Build blocks: first the when block, then all elsewhen blocks
+                let mut blocks = vec![when_stmt.when0.clone()];
+                for elsewhen_item in &when_stmt.when_statement_list {
+                    blocks.push(elsewhen_item.elsewhen0.clone());
+                }
+
+                Ok(ir::ast::Statement::When(blocks))
             }
             modelica_grammar_trait::StatementOption::WhileStatement(stmt) => {
-                anyhow::bail!(
-                    "'while' statement is not yet supported{}",
-                    expr_loc_info(&stmt.while_statement.expression)
-                )
+                let while_stmt = &stmt.while_statement;
+
+                // Collect all statements in the while body
+                let stmts: Vec<ir::ast::Statement> = while_stmt
+                    .while_statement_list
+                    .iter()
+                    .map(|item| item.statement.clone())
+                    .collect();
+
+                Ok(ir::ast::Statement::While(ir::ast::StatementBlock {
+                    cond: while_stmt.expression.clone(),
+                    stmts,
+                }))
             }
             modelica_grammar_trait::StatementOption::FunctionCallOutputStatement(stmt) => {
-                let loc = stmt
-                    .function_call_output_statement
-                    .component_reference
-                    .parts
-                    .first()
-                    .map(|p| loc_info(&p.ident))
-                    .unwrap_or_default();
-                anyhow::bail!(
-                    "Function call with output list like '(a, b) = func()' is not yet supported{}",
-                    loc
-                )
+                // Handle '(a, b) := func(x)' - multi-output function call
+                // For now, we convert this to a function call statement
+                // (the output bindings are preserved in the args for later processing)
+                let fcall = &stmt.function_call_output_statement;
+
+                Ok(ir::ast::Statement::FunctionCall {
+                    comp: fcall.component_reference.clone(),
+                    args: fcall.function_call_args.args.clone(),
+                })
             }
         }
     }

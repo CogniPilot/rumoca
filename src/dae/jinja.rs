@@ -15,7 +15,7 @@ pub fn warn(msg: &str) {
     eprintln!("{:?}", msg);
 }
 
-pub fn render_template(dae: Dae, template_file: &str) -> Result<()> {
+pub fn render_template(dae: &Dae, template_file: &str) -> Result<()> {
     let template_txt = fs::read_to_string(template_file)
         .with_context(|| format!("Can't read file {}", template_file))?;
 

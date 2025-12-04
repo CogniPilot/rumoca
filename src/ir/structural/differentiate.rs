@@ -190,6 +190,13 @@ pub fn differentiate_expression(expr: &Expression) -> Expression {
                 inner: Box::new(differentiate_expression(inner)),
             }
         }
+        Expression::ArrayComprehension { expr, indices } => {
+            // Differentiate the expression inside the comprehension
+            Expression::ArrayComprehension {
+                expr: Box::new(differentiate_expression(expr)),
+                indices: indices.clone(),
+            }
+        }
     }
 }
 

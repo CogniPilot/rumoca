@@ -133,6 +133,8 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             initial_algorithms: spec.composition.initial_algorithms.clone(),
                             components: spec.composition.components.clone(),
                             encapsulated: ast.class_definition_opt.is_some(),
+                            partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            causality: ir::ast::Causality::Empty,
                             equation_keyword: spec.composition.equation_keyword.clone(),
                             initial_equation_keyword: spec
                                 .composition
@@ -144,13 +146,72 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                                 .initial_algorithm_keyword
                                 .clone(),
                             end_name_token: Some(spec.ident.clone()),
+                            enum_literals: vec![],
                         })
                     }
                     modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(ext) => {
-                        anyhow::bail!(
-                            "'extends' class specifier is not yet supported{}",
-                            loc_info(&ext.extends_class_specifier.ident)
-                        )
+                        // Handle 'extends IDENT [class_modification] description composition end IDENT'
+                        // This is a class that extends an inherited class by the same name
+                        let spec = &ext.extends_class_specifier;
+
+                        // Create an extends clause for the inherited class
+                        let extends_modifiers =
+                            if let Some(class_mod) = &spec.extends_class_specifier_opt {
+                                if let Some(arg_list) =
+                                    &class_mod.class_modification.class_modification_opt
+                                {
+                                    arg_list.argument_list.args.clone()
+                                } else {
+                                    vec![]
+                                }
+                            } else {
+                                vec![]
+                            };
+
+                        let extends_name = ir::ast::Name {
+                            name: vec![spec.ident.clone()],
+                        };
+
+                        let inherited_extends = ir::ast::Extend {
+                            comp: extends_name,
+                            location: spec.ident.location.clone(),
+                            modifications: extends_modifiers,
+                        };
+
+                        // Combine inherited extends with composition extends
+                        let mut all_extends = vec![inherited_extends];
+                        all_extends.extend(spec.composition.extends.clone());
+
+                        Ok(ir::ast::ClassDefinition {
+                            name: spec.ident.clone(),
+                            class_type,
+                            class_type_token,
+                            description: spec.description_string.tokens.clone(),
+                            location: span_location(&spec.ident, &spec.ident0),
+                            extends: all_extends,
+                            imports: spec.composition.imports.clone(),
+                            classes: spec.composition.classes.clone(),
+                            equations: spec.composition.equations.clone(),
+                            algorithms: spec.composition.algorithms.clone(),
+                            initial_equations: spec.composition.initial_equations.clone(),
+                            initial_algorithms: spec.composition.initial_algorithms.clone(),
+                            components: spec.composition.components.clone(),
+                            encapsulated: ast.class_definition_opt.is_some(),
+                            partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            causality: ir::ast::Causality::Empty,
+                            equation_keyword: spec.composition.equation_keyword.clone(),
+                            initial_equation_keyword: spec
+                                .composition
+                                .initial_equation_keyword
+                                .clone(),
+                            algorithm_keyword: spec.composition.algorithm_keyword.clone(),
+                            initial_algorithm_keyword: spec
+                                .composition
+                                .initial_algorithm_keyword
+                                .clone(),
+                            end_name_token: Some(spec.ident0.clone()),
+                            enum_literals: vec![],
+                        })
                     }
                 }
             }
@@ -163,22 +224,79 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
             modelica_grammar_trait::ClassSpecifier::ShortClassSpecifier(short) => {
                 match &short.short_class_specifier {
                     modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(spec) => {
-                        anyhow::bail!(
-                            "'enumeration' class specifier is not yet supported{}",
-                            loc_info(&spec.enum_class_specifier.ident)
-                        )
+                        let enum_spec = &spec.enum_class_specifier;
+
+                        // Extract enumeration literals
+                        let enum_literals = match &enum_spec.enum_class_specifier_group {
+                            modelica_grammar_trait::EnumClassSpecifierGroup::EnumClassSpecifierOpt(opt) => {
+                                if let Some(list_opt) = &opt.enum_class_specifier_opt {
+                                    let list = &list_opt.enum_list;
+                                    let mut literals = vec![list.enumeration_literal.ident.clone()];
+                                    for item in &list.enum_list_list {
+                                        literals.push(item.enumeration_literal.ident.clone());
+                                    }
+                                    literals
+                                } else {
+                                    vec![]
+                                }
+                            }
+                            modelica_grammar_trait::EnumClassSpecifierGroup::Colon(_) => {
+                                // enumeration(:) - represents an extensible enumeration
+                                vec![]
+                            }
+                        };
+
+                        Ok(ir::ast::ClassDefinition {
+                            name: enum_spec.ident.clone(),
+                            class_type: ir::ast::ClassType::Type,
+                            class_type_token,
+                            description: vec![],
+                            location: enum_spec.ident.location.clone(),
+                            extends: vec![],
+                            imports: vec![],
+                            classes: IndexMap::new(),
+                            equations: vec![],
+                            algorithms: vec![],
+                            initial_equations: vec![],
+                            initial_algorithms: vec![],
+                            components: IndexMap::new(),
+                            encapsulated: ast.class_definition_opt.is_some(),
+                            partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            causality: ir::ast::Causality::Empty,
+                            equation_keyword: None,
+                            initial_equation_keyword: None,
+                            algorithm_keyword: None,
+                            initial_algorithm_keyword: None,
+                            end_name_token: None,
+                            enum_literals,
+                        })
                     }
                     modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(spec) => {
-                        // type MyType = BaseType "description";
-                        // Creates a class that extends the base type
+                        // type MyType = [input|output] BaseType "description";
+                        // Creates a class that extends the base type with optional causality
+                        // e.g., connector RealInput = input Real;
                         let type_spec = &spec.type_class_specifier;
                         let base_type_name = type_spec.type_specifier.name.clone();
+
+                        // Extract causality from base_prefix (input/output keyword)
+                        let causality = match &type_spec.base_prefix.base_prefix_opt {
+                            Some(opt) => match &opt.base_prefix_opt_group {
+                                modelica_grammar_trait::BasePrefixOptGroup::Input(inp) => {
+                                    ir::ast::Causality::Input(inp.input.input.clone())
+                                }
+                                modelica_grammar_trait::BasePrefixOptGroup::Output(out) => {
+                                    ir::ast::Causality::Output(out.output.output.clone())
+                                }
+                            },
+                            None => ir::ast::Causality::Empty,
+                        };
 
                         // Create an Extend clause for the base type
                         // For short class specifiers, use ident location for both start and end
                         let extend = ir::ast::Extend {
                             comp: base_type_name,
                             location: type_spec.ident.location.clone(),
+                            modifications: vec![],
                         };
 
                         Ok(ir::ast::ClassDefinition {
@@ -196,11 +314,14 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             initial_algorithms: vec![],
                             components: IndexMap::new(),
                             encapsulated: ast.class_definition_opt.is_some(),
+                            partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            causality,
                             equation_keyword: None,
                             initial_equation_keyword: None,
                             algorithm_keyword: None,
                             initial_algorithm_keyword: None,
                             end_name_token: None, // Short class specifiers don't have "end Name"
+                            enum_literals: vec![],
                         })
                     }
                 }
@@ -249,16 +370,22 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
         for comp_list in &ast.composition_list {
             match &comp_list.composition_list_group {
                 modelica_grammar_trait::CompositionListGroup::PublicElementList(elem_list) => {
-                    anyhow::bail!(
-                        "'public' element list is not yet supported{}",
-                        loc_info(&elem_list.public.public)
-                    )
+                    // Merge public elements into composition
+                    // Note: 'public' is the default visibility, so we just add them
+                    comp.components
+                        .extend(elem_list.element_list.components.clone());
+                    comp.classes.extend(elem_list.element_list.classes.clone());
+                    comp.extends.extend(elem_list.element_list.extends.clone());
+                    comp.imports.extend(elem_list.element_list.imports.clone());
                 }
                 modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
-                    anyhow::bail!(
-                        "'protected' element list is not yet supported{}",
-                        loc_info(&elem_list.protected.protected)
-                    )
+                    // Merge protected elements into composition
+                    // Note: For now, we treat protected same as public (visibility not enforced)
+                    comp.components
+                        .extend(elem_list.element_list.components.clone());
+                    comp.classes.extend(elem_list.element_list.classes.clone());
+                    comp.extends.extend(elem_list.element_list.extends.clone());
+                    comp.imports.extend(elem_list.element_list.imports.clone());
                 }
                 modelica_grammar_trait::CompositionListGroup::EquationSection(eq_sec) => {
                     let sec = &eq_sec.equation_section;
@@ -666,6 +793,48 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     .insert(c.declaration.ident.text.clone(), value);
                             }
                         }
+                        modelica_grammar_trait::ElementDefinitionGroup::ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(repl) => {
+                            // Handle replaceable ( class_definition | component_clause )
+                            match &repl.element_definition_group_group {
+                                modelica_grammar_trait::ElementDefinitionGroupGroup::ClassDefinition(class) => {
+                                    let nested_class = class.class_definition.clone();
+                                    let name = nested_class.name.text.clone();
+                                    def.classes.insert(name, nested_class);
+                                }
+                                modelica_grammar_trait::ElementDefinitionGroupGroup::ComponentClause(clause) => {
+                                    // Process replaceable component clause - simplified handling
+                                    for c in &clause.component_clause.component_list.components {
+                                        let comp_location = clause
+                                            .component_clause
+                                            .type_specifier
+                                            .name
+                                            .name
+                                            .first()
+                                            .map(|start_tok| span_location(start_tok, &c.declaration.ident))
+                                            .unwrap_or_else(|| c.declaration.ident.location.clone());
+
+                                        let value = ir::ast::Component {
+                                            name: c.declaration.ident.text.clone(),
+                                            name_token: c.declaration.ident.clone(),
+                                            type_name: clause.component_clause.type_specifier.name.clone(),
+                                            variability: ir::ast::Variability::Empty,
+                                            causality: ir::ast::Causality::Empty,
+                                            connection: ir::ast::Connection::Empty,
+                                            description: c.description.description_string.tokens.clone(),
+                                            start: ir::ast::Expression::Empty,
+                                            start_is_modification: false,
+                                            shape: Vec::new(),
+                                            shape_is_modification: false,
+                                            annotation: Vec::new(),
+                                            modifications: indexmap::IndexMap::new(),
+                                            location: comp_location,
+                                        };
+
+                                        def.components.insert(c.declaration.ident.text.clone(), value);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 modelica_grammar_trait::Element::ImportClause(import_elem) => {
@@ -722,26 +891,6 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                     def.imports.push(parsed_import);
                 }
                 modelica_grammar_trait::Element::ExtendsClause(clause) => {
-                    let type_loc = clause
-                        .extends_clause
-                        .type_specifier
-                        .name
-                        .name
-                        .first()
-                        .map(loc_info)
-                        .unwrap_or_default();
-                    if clause.extends_clause.extends_clause_opt.is_some() {
-                        anyhow::bail!(
-                            "Class or inheritance modification in 'extends' is not yet supported{}",
-                            type_loc
-                        )
-                    }
-                    if clause.extends_clause.extends_clause_opt0.is_some() {
-                        anyhow::bail!(
-                            "Annotation in 'extends' clause is not yet supported{}",
-                            type_loc
-                        )
-                    }
                     // Compute location spanning from 'extends' keyword to end of type_specifier
                     let extend_location = clause
                         .extends_clause
@@ -754,16 +903,57 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                         })
                         .unwrap_or_else(|| clause.extends_clause.extends.extends.location.clone());
 
+                    // Extract modifications from extends clause if present
+                    let modifications = if let Some(ext_opt) =
+                        &clause.extends_clause.extends_clause_opt
+                    {
+                        // class_or_inheritance_modification contains the modifications
+                        if let Some(mod_opt) = &ext_opt
+                            .class_or_inheritance_modification
+                            .class_or_inheritance_modification_opt
+                        {
+                            // Extract all arguments from the modification list
+                            let list = &mod_opt.argument_or_inheritance_modification_list;
+                            let mut mods = Vec::new();
+
+                            // First item
+                            match &list.argument_or_inheritance_modification_list_group {
+                                modelica_grammar_trait::ArgumentOrInheritanceModificationListGroup::Argument(arg) => {
+                                    mods.push(arg.argument.clone());
+                                }
+                                modelica_grammar_trait::ArgumentOrInheritanceModificationListGroup::InheritanceModification(_) => {
+                                    // Inheritance modifications (break/connect) not yet supported
+                                }
+                            }
+
+                            // Remaining items
+                            for item in &list.argument_or_inheritance_modification_list_list {
+                                match &item.argument_or_inheritance_modification_list_list_group {
+                                    modelica_grammar_trait::ArgumentOrInheritanceModificationListListGroup::Argument(arg) => {
+                                        mods.push(arg.argument.clone());
+                                    }
+                                    modelica_grammar_trait::ArgumentOrInheritanceModificationListListGroup::InheritanceModification(_) => {
+                                        // Inheritance modifications (break/connect) not yet supported
+                                    }
+                                }
+                            }
+
+                            mods
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Note: Annotations in extends clauses are currently ignored
+                    // if clause.extends_clause.extends_clause_opt0.is_some() { ... }
+
                     def.extends.push(ir::ast::Extend {
                         comp: clause.extends_clause.type_specifier.name.clone(),
                         location: extend_location,
+                        modifications,
                     });
-                }
-                modelica_grammar_trait::Element::ElementReplaceableDefinition(repl) => {
-                    anyhow::bail!(
-                        "'replaceable' element definition is not yet supported{}",
-                        loc_info(&repl.element_replaceable_definition.replaceable.replaceable)
-                    )
                 }
             }
         }

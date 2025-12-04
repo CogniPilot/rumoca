@@ -231,5 +231,10 @@ pub fn infer_expression_type(
             InferredType::Array(Box::new(InferredType::Integer), None)
         }
         Expression::Parenthesized { inner } => infer_expression_type(inner, defined),
+        Expression::ArrayComprehension { expr, .. } => {
+            // Array comprehension produces an array of the expression type
+            let elem_type = infer_expression_type(expr, defined);
+            InferredType::Array(Box::new(elem_type), None)
+        }
     }
 }

@@ -91,7 +91,7 @@ impl CompilationResult {
         let template_hash = format!("{:x}", chksum_md5::hash(&template_content));
         self.dae.template_hash = template_hash;
 
-        crate::dae::jinja::render_template(self.dae.clone(), template_path)
+        crate::dae::jinja::render_template(&self.dae, template_path)
     }
 
     /// Renders the DAE using a Jinja2 template file and returns the result as a string.
@@ -138,7 +138,7 @@ impl CompilationResult {
         env.add_function("warn", crate::dae::jinja::warn);
         env.add_template("template", &template_content)?;
         let tmpl = env.get_template("template")?;
-        let output = tmpl.render(context!(dae => self.dae.clone()))?;
+        let output = tmpl.render(context!(dae => &self.dae))?;
 
         Ok(output)
     }

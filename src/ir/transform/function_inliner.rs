@@ -8,20 +8,21 @@ use crate::ir::visitor::MutVisitor;
 use indexmap::IndexMap;
 
 /// Visitor that inlines user-defined function calls
-pub struct FunctionInliner {
-    /// Map of function names to their definitions
-    functions: IndexMap<String, ClassDefinition>,
+/// Uses references to avoid cloning ClassDefinition objects
+pub struct FunctionInliner<'a> {
+    /// Map of function names to references to their definitions
+    functions: IndexMap<String, &'a ClassDefinition>,
 }
 
-impl FunctionInliner {
+impl<'a> FunctionInliner<'a> {
     /// Create a new function inliner with the given function definitions
-    pub fn new(functions: IndexMap<String, ClassDefinition>) -> Self {
+    pub fn new(functions: IndexMap<String, &'a ClassDefinition>) -> Self {
         Self { functions }
     }
 
     /// Create from a class list, extracting functions recursively (including nested)
-    pub fn from_class_list(class_list: &IndexMap<String, ClassDefinition>) -> Self {
-        let mut functions: IndexMap<String, ClassDefinition> = IndexMap::new();
+    pub fn from_class_list(class_list: &'a IndexMap<String, ClassDefinition>) -> Self {
+        let mut functions: IndexMap<String, &'a ClassDefinition> = IndexMap::new();
         for (_name, class) in class_list {
             Self::collect_functions_recursive(class, "", &mut functions);
         }
@@ -30,9 +31,9 @@ impl FunctionInliner {
 
     /// Recursively collect functions from a class and its nested classes
     fn collect_functions_recursive(
-        class: &ClassDefinition,
+        class: &'a ClassDefinition,
         prefix: &str,
-        functions: &mut IndexMap<String, ClassDefinition>,
+        functions: &mut IndexMap<String, &'a ClassDefinition>,
     ) {
         let full_name = if prefix.is_empty() {
             class.name.text.clone()
@@ -42,9 +43,9 @@ impl FunctionInliner {
 
         // If this is a function, add it with its full path
         if matches!(class.class_type, ClassType::Function) {
-            functions.insert(full_name.clone(), class.clone());
+            functions.insert(full_name.clone(), class);
             // Also add the short name for calls within the same package
-            functions.insert(class.name.text.clone(), class.clone());
+            functions.insert(class.name.text.clone(), class);
         }
 
         // Recursively process nested classes
@@ -62,15 +63,15 @@ impl FunctionInliner {
     /// Collect functions with relative paths from a given package root
     /// This allows functions to be called with package-relative names
     fn collect_functions_with_relative_paths(
-        class: &ClassDefinition,
+        class: &'a ClassDefinition,
         relative_prefix: &str,
-        functions: &mut IndexMap<String, ClassDefinition>,
+        functions: &mut IndexMap<String, &'a ClassDefinition>,
     ) {
         for (_name, nested_class) in &class.classes {
             let relative_name = format!("{}.{}", relative_prefix, nested_class.name.text);
 
             if matches!(nested_class.class_type, ClassType::Function) {
-                functions.insert(relative_name.clone(), nested_class.clone());
+                functions.insert(relative_name.clone(), nested_class);
             }
 
             // Recursively process nested packages
@@ -197,7 +198,7 @@ fn substitute_vars(expr: &Expression, substitutions: &IndexMap<String, Expressio
     }
 }
 
-impl MutVisitor for FunctionInliner {
+impl<'a> MutVisitor for FunctionInliner<'a> {
     fn exit_expression(&mut self, expr: &mut Expression) {
         if let Expression::FunctionCall { comp, args } = expr {
             let func_name = comp.to_string();

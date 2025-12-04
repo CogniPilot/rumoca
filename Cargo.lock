@@ -1132,6 +1132,7 @@ dependencies = [
  "parol",
  "parol_runtime",
  "pyo3",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 2.0.17",

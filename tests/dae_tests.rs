@@ -334,6 +334,12 @@ fn extract_variables(expr: &rumoca::ir::ast::Expression) -> Vec<String> {
         Expression::Parenthesized { inner } => {
             vars.extend(extract_variables(inner));
         }
+        Expression::ArrayComprehension { expr, indices } => {
+            vars.extend(extract_variables(expr));
+            for idx in indices {
+                vars.extend(extract_variables(&idx.range));
+            }
+        }
     }
 
     vars

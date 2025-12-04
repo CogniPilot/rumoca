@@ -306,6 +306,7 @@ unsigned_real
     : /[0-9]+\.[0-9]+/@decimal
     | /[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?/@scientific
     | /\.[0-9]+([eE][+-]?[0-9]+)?/@scientific2
+    | /[0-9]+[eE][+-]?[0-9]+/@scientific_int
     ;
 
 //=============================================================================
@@ -472,15 +473,14 @@ element
     : import_clause
     | extends_clause
     | element_definition
-    | element_replaceable_definition
     ;
 
 element_definition
-    : [ redeclare ] [ final ] [ inner ] [ outer ] ( class_definition | component_clause )
-    ;
-
-element_replaceable_definition
-    : replaceable ( class_definition | component_clause ) [ constraining_clause description ]
+    : [ redeclare ] [ final ] [ inner ] [ outer ]
+      ( class_definition
+      | component_clause
+      | replaceable ( class_definition | component_clause ) [ constraining_clause description ]
+      )
     ;
 
 //✅ import-clause :

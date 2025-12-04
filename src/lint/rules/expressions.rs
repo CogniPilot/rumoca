@@ -167,5 +167,13 @@ fn expression_depth(expr: &Expression) -> usize {
                 .max(expression_depth(end))
         }
         Expression::Parenthesized { inner } => expression_depth(inner),
+        Expression::ArrayComprehension { expr, indices } => {
+            let index_depth = indices
+                .iter()
+                .map(|idx| expression_depth(&idx.range))
+                .max()
+                .unwrap_or(0);
+            1 + expression_depth(expr).max(index_depth)
+        }
     }
 }

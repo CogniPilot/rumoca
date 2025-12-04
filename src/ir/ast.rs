@@ -183,6 +183,11 @@ pub struct ClassDefinition {
     /// Token for the class type keyword (model, class, function, etc.)
     pub class_type_token: Token,
     pub encapsulated: bool,
+    /// True if the class is declared with the `partial` keyword
+    pub partial: bool,
+    /// Causality from type alias definition (e.g., `connector RealInput = input Real`)
+    /// Components of this type inherit this causality
+    pub causality: Causality,
     /// Description string for this class (e.g., "A test model")
     pub description: Vec<Token>,
     /// Full source location spanning from class keyword to end statement
@@ -206,6 +211,8 @@ pub struct ClassDefinition {
     pub initial_algorithm_keyword: Option<Token>,
     /// Token for the class name in "end ClassName;" (for rename support)
     pub end_name_token: Option<Token>,
+    /// Enumeration literals for enum types (e.g., `type MyEnum = enumeration(A, B, C)`)
+    pub enum_literals: Vec<Token>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +221,8 @@ pub struct Extend {
     pub comp: Name,
     /// Source location of the extends clause
     pub location: Location,
+    /// Modifications applied to the extends clause (e.g., extends Foo(bar=1))
+    pub modifications: Vec<Expression>,
 }
 
 /// Import clause for bringing names into scope
@@ -480,6 +489,11 @@ pub enum Expression {
     Parenthesized {
         inner: Box<Expression>,
     },
+    /// Array comprehension: {expr for i in range}
+    ArrayComprehension {
+        expr: Box<Expression>,
+        indices: Vec<ForIndex>,
+    },
 }
 
 impl Debug for Expression {
@@ -538,6 +552,9 @@ impl Debug for Expression {
             Expression::Parenthesized { inner } => {
                 write!(f, "({:?})", inner)
             }
+            Expression::ArrayComprehension { expr, indices } => {
+                write!(f, "{{{{ {:?} for {:?} }}}}", expr, indices)
+            }
         }
     }
 }
@@ -564,6 +581,7 @@ impl Expression {
                 branches.first().and_then(|(cond, _)| cond.get_location())
             }
             Expression::Parenthesized { inner } => inner.get_location(),
+            Expression::ArrayComprehension { expr, .. } => expr.get_location(),
         }
     }
 }

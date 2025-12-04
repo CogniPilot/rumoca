@@ -466,6 +466,84 @@ impl Compiler {
         let definitions = vec![(file_name.to_string(), def)];
         self.compile_definitions(definitions, source, file_name)
     }
+
+    /// Compiles from a pre-parsed StoredDefinition.
+    ///
+    /// This method is useful when you have already parsed the Modelica code
+    /// and want to avoid re-parsing it. This is especially beneficial when
+    /// compiling multiple models from the same source files (e.g., testing).
+    ///
+    /// # Arguments
+    ///
+    /// * `def` - The pre-parsed StoredDefinition
+    /// * `source` - The original source code (for error reporting)
+    ///
+    /// # Returns
+    ///
+    /// A [`CompilationResult`] containing the DAE and metadata
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rumoca::{Compiler, ir::ast::StoredDefinition};
+    /// use rumoca::modelica_grammar::ModelicaGrammar;
+    /// use rumoca::modelica_parser::parse;
+    ///
+    /// // Parse once
+    /// let source = "model Test\n  Real x;\nequation\n  der(x) = 1;\nend Test;";
+    /// let mut grammar = ModelicaGrammar::new();
+    /// parse(source, "test.mo", &mut grammar).unwrap();
+    /// let def = grammar.modelica.unwrap();
+    ///
+    /// // Compile multiple times without re-parsing
+    /// let result = Compiler::new()
+    ///     .model("Test")
+    ///     .compile_parsed(def.clone(), source)?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn compile_parsed(&self, def: StoredDefinition, source: &str) -> Result<CompilationResult> {
+        let model_hash = format!("{:x}", chksum_md5::hash(source));
+        pipeline::compile_from_ast(
+            def,
+            source,
+            self.model_name.as_deref(),
+            model_hash,
+            std::time::Duration::ZERO, // No parse time for pre-parsed
+            self.verbose,
+        )
+    }
+
+    /// Compiles from a reference to a pre-parsed StoredDefinition.
+    ///
+    /// This is more efficient than `compile_parsed` when compiling many models
+    /// from the same AST because it avoids cloning the StoredDefinition during
+    /// the compilation process. The def is only cloned once at the end.
+    pub fn compile_parsed_ref(
+        &self,
+        def: &StoredDefinition,
+        source: &str,
+    ) -> Result<CompilationResult> {
+        let model_hash = format!("{:x}", chksum_md5::hash(source));
+        pipeline::compile_from_ast_ref(
+            def,
+            source,
+            self.model_name.as_deref(),
+            model_hash,
+            std::time::Duration::ZERO,
+            self.verbose,
+        )
+    }
+
+    /// Performs a lightweight balance check only, without full compilation.
+    ///
+    /// This is much faster than full compilation when you only need to check
+    /// if a model is balanced. It skips the StoredDefinition cloning entirely.
+    pub fn check_balance(
+        &self,
+        def: &StoredDefinition,
+    ) -> Result<crate::ir::analysis::balance_check::BalanceCheckResult> {
+        pipeline::check_balance_only(def, self.model_name.as_deref())
+    }
 }
 
 #[cfg(test)]

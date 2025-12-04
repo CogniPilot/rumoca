@@ -37,9 +37,25 @@ pub fn compile_from_ast(
     parse_time: std::time::Duration,
     verbose: bool,
 ) -> Result<CompilationResult> {
+    compile_from_ast_ref(&def, source, model_name, model_hash, parse_time, verbose)
+}
+
+/// Run the compilation pipeline on a reference to a parsed AST.
+///
+/// This is more efficient when compiling many models from the same AST
+/// because it avoids cloning the StoredDefinition for each compilation.
+/// The def is only cloned once at the end when storing in the result.
+pub fn compile_from_ast_ref(
+    def: &StoredDefinition,
+    source: &str,
+    model_name: Option<&str>,
+    model_hash: String,
+    parse_time: std::time::Duration,
+    verbose: bool,
+) -> Result<CompilationResult> {
     // Flatten
     let flatten_start = Instant::now();
-    let fclass_result = flatten(&def, model_name);
+    let fclass_result = flatten(def, model_name);
 
     // Handle flatten errors with proper source location
     let mut fclass = match fclass_result {
@@ -79,11 +95,11 @@ pub fn compile_from_ast(
 
     // Resolve imports - rewrite short function names to fully qualified names
     // This must happen before validation so imported names are recognized
-    let mut import_resolver = ImportResolver::new(&fclass, &def);
+    let mut import_resolver = ImportResolver::new(&fclass, def);
     fclass.accept_mut(&mut import_resolver);
 
     // Collect all function names from the stored definition (including nested)
-    let function_names = collect_all_functions(&def);
+    let function_names = collect_all_functions(def);
 
     // Skip validation for packages and classes with nested functions
     // (function parameters aren't yet properly scoped)
@@ -134,6 +150,7 @@ pub fn compile_from_ast(
     // Inline user-defined function calls
     let mut inliner = FunctionInliner::from_class_list(&def.class_list);
     fclass.accept_mut(&mut inliner);
+    drop(inliner); // Drop before cloning def
 
     // Expand tuple equations like (a, b) = (expr1, expr2) into separate equations
     expand_tuple_equations(&mut fclass);
@@ -165,11 +182,46 @@ pub fn compile_from_ast(
 
     Ok(CompilationResult {
         dae,
-        def,
+        def: def.clone(), // Clone only at the end for result storage
         parse_time,
         flatten_time,
         dae_time,
         model_hash,
         balance,
     })
+}
+
+/// Run a lightweight compilation that only returns the balance check result.
+///
+/// This is much faster than full compilation when you only need to check
+/// if a model is balanced, as it avoids cloning the StoredDefinition.
+pub fn check_balance_only(
+    def: &StoredDefinition,
+    model_name: Option<&str>,
+) -> Result<crate::ir::analysis::balance_check::BalanceCheckResult> {
+    // Flatten
+    let fclass_result = flatten(def, model_name);
+
+    let mut fclass = match fclass_result {
+        Ok(fc) => fc,
+        Err(e) => {
+            return Err(anyhow::anyhow!("Flatten error: {}", e));
+        }
+    };
+
+    // Skip import resolution and validation for speed - we just need balance
+
+    // Inline user-defined function calls
+    let mut inliner = FunctionInliner::from_class_list(&def.class_list);
+    fclass.accept_mut(&mut inliner);
+    drop(inliner);
+
+    // Expand tuple equations
+    expand_tuple_equations(&mut fclass);
+
+    // Create DAE
+    let dae = create_dae(&mut fclass)?;
+
+    // Check model balance
+    Ok(check_dae_balance(&dae))
 }

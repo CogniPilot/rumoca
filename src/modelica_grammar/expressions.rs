@@ -1,6 +1,6 @@
 //! Conversion for expressions.
 
-use super::helpers::{collect_array_elements, expr_loc_info, loc_info};
+use super::helpers::{collect_array_elements, loc_info};
 use crate::ir;
 use crate::modelica_grammar_trait;
 
@@ -47,6 +47,43 @@ pub struct ExpressionList {
     pub args: Vec<ir::ast::Expression>,
 }
 
+/// Convert a NamedArgument to an Expression representing `name = value`
+fn named_argument_to_expr(
+    named_arg: &modelica_grammar_trait::NamedArgument,
+) -> ir::ast::Expression {
+    // Create a component reference for the argument name
+    let name_expr = ir::ast::Expression::ComponentReference(ir::ast::ComponentReference {
+        local: false,
+        parts: vec![ir::ast::ComponentRefPart {
+            ident: named_arg.ident.clone(),
+            subs: None,
+        }],
+    });
+
+    // Create a binary expression: name = value
+    ir::ast::Expression::Binary {
+        op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+        lhs: Box::new(name_expr),
+        rhs: Box::new(named_arg.function_argument.clone()),
+    }
+}
+
+/// Collect all named arguments from a NamedArguments structure
+fn collect_named_arguments(
+    named_args: &modelica_grammar_trait::NamedArguments,
+) -> Vec<ir::ast::Expression> {
+    let mut args = vec![named_argument_to_expr(&named_args.named_argument)];
+
+    // Recursively collect additional named arguments
+    let mut current_opt = &named_args.named_arguments_opt;
+    while let Some(opt) = current_opt {
+        args.push(named_argument_to_expr(&opt.named_arguments.named_argument));
+        current_opt = &opt.named_arguments.named_arguments_opt;
+    }
+
+    args
+}
+
 impl TryFrom<&modelica_grammar_trait::FunctionArgument> for ir::ast::Expression {
     type Error = anyhow::Error;
 
@@ -58,14 +95,34 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgument> for ir::ast::Expression 
                 Ok(expr.expression.clone())
             }
             modelica_grammar_trait::FunctionArgument::FunctionPartialApplication(fpa) => {
-                let loc = &fpa.function_partial_application.function.function.location;
-                anyhow::bail!(
-                    "Function partial application is not supported at line {}, column {}. \
-                     This may indicate a syntax error in your Modelica code - \
-                     check for stray text or missing semicolons near function calls.",
-                    loc.start_line,
-                    loc.start_column
-                )
+                // Convert 'function Foo.Bar(arg=val)' to a function call expression
+                let partial_app = &fpa.function_partial_application;
+
+                // Convert Name to ComponentReference
+                let parts: Vec<ir::ast::ComponentRefPart> = partial_app
+                    .type_specifier
+                    .name
+                    .name
+                    .iter()
+                    .map(|token| ir::ast::ComponentRefPart {
+                        ident: token.clone(),
+                        subs: None,
+                    })
+                    .collect();
+
+                let comp = ir::ast::ComponentReference {
+                    local: partial_app.type_specifier.type_specifier_opt.is_some(),
+                    parts,
+                };
+
+                // Get named arguments if present
+                let args = if let Some(opt) = &partial_app.function_partial_application_opt {
+                    collect_named_arguments(&opt.named_arguments)
+                } else {
+                    vec![]
+                };
+
+                Ok(ir::ast::Expression::FunctionCall { comp, args })
             }
         }
     }
@@ -87,29 +144,68 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                         ) => {
                             args.append(&mut expr.function_arguments_non_first.args.clone());
                         }
-                        modelica_grammar_trait::FunctionArgumentsOptGroup::ForForIndices(..) => {
-                            anyhow::bail!(
-                                "Array comprehensions with 'for' are not yet supported."
-                            )
+                        modelica_grammar_trait::FunctionArgumentsOptGroup::ForForIndices(
+                            for_clause,
+                        ) => {
+                            // Iterator expression like max(expr for i in 1:10)
+                            // Convert to an array comprehension expression
+                            use super::helpers::convert_for_indices;
+                            let indices = convert_for_indices(&for_clause.for_indices);
+                            let comprehension = ir::ast::Expression::ArrayComprehension {
+                                expr: Box::new(def.expression.clone()),
+                                indices,
+                            };
+                            return Ok(ExpressionList {
+                                args: vec![comprehension],
+                            });
                         }
                     }
                 }
                 Ok(ExpressionList { args })
             }
             modelica_grammar_trait::FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(fpa) => {
-                let loc = &fpa.function_partial_application.function.function.location;
-                anyhow::bail!(
-                    "Function partial application is not supported at line {}, column {}. \
-                     This may indicate a syntax error in your Modelica code - \
-                     check for stray text or missing semicolons near function calls.",
-                    loc.start_line, loc.start_column
-                )
+                // Convert 'function Foo.Bar(arg=val)' to a function call expression
+                let partial_app = &fpa.function_partial_application;
+
+                // Convert Name to ComponentReference
+                let parts: Vec<ir::ast::ComponentRefPart> = partial_app
+                    .type_specifier
+                    .name
+                    .name
+                    .iter()
+                    .map(|token| ir::ast::ComponentRefPart {
+                        ident: token.clone(),
+                        subs: None,
+                    })
+                    .collect();
+
+                let comp = ir::ast::ComponentReference {
+                    local: partial_app.type_specifier.type_specifier_opt.is_some(),
+                    parts,
+                };
+
+                // Get named arguments if present
+                let func_args = if let Some(opt) = &partial_app.function_partial_application_opt {
+                    collect_named_arguments(&opt.named_arguments)
+                } else {
+                    vec![]
+                };
+
+                let func_call_expr = ir::ast::Expression::FunctionCall { comp, args: func_args };
+
+                // Start with the partial application as the first arg
+                let mut args = vec![func_call_expr];
+
+                // Collect additional arguments if present
+                if let Some(opt0) = &fpa.function_arguments_opt0 {
+                    args.append(&mut opt0.function_arguments_non_first.args.clone());
+                }
+
+                Ok(ExpressionList { args })
             }
-            modelica_grammar_trait::FunctionArguments::NamedArguments(..) => {
-                anyhow::bail!(
-                    "Named function arguments are not yet supported. \
-                     Use positional arguments instead."
-                )
+            modelica_grammar_trait::FunctionArguments::NamedArguments(named) => {
+                let args = collect_named_arguments(&named.named_arguments);
+                Ok(ExpressionList { args })
             }
         }
     }
@@ -129,12 +225,9 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
                 }
                 Ok(ExpressionList { args })
             }
-            modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(args) => {
-                anyhow::bail!(
-                    "Named arguments like 'func(x=1, y=2)' are not yet supported{}. \
-                     Use positional arguments instead.",
-                    loc_info(&args.named_arguments.named_argument.ident)
-                )
+            modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(named) => {
+                let args = collect_named_arguments(&named.named_arguments);
+                Ok(ExpressionList { args })
             }
         }
     }
@@ -163,7 +256,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
             modelica_grammar_trait::Argument::ElementModificationOrReplaceable(modif) => {
                 match &modif.element_modification_or_replaceable.element_modification_or_replaceable_group {
                     modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementModification(elem) => {
-                        let name_loc = elem
+                        let _name_loc = elem
                             .element_modification
                             .name
                             .name
@@ -173,11 +266,56 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                         match &elem.element_modification.element_modification_opt {
                             Some(opt) => {
                                 match &opt.modification {
-                                    modelica_grammar_trait::Modification::ClassModificationModificationOpt(_modif) => {
-                                        anyhow::bail!(
-                                            "Class modification in argument is not yet supported{}",
-                                            name_loc
-                                        )
+                                    modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_modif) => {
+                                        // Handle class modification like: name(submod=value) or name(a, b)
+                                        // Represent as a function call expression
+
+                                        // Build the function name from the element name
+                                        let name = &elem.element_modification.name;
+                                        let parts: Vec<ir::ast::ComponentRefPart> = name.name.iter().map(|token| {
+                                            ir::ast::ComponentRefPart {
+                                                ident: token.clone(),
+                                                subs: None,
+                                            }
+                                        }).collect();
+                                        let func_ref = ir::ast::ComponentReference {
+                                            local: false,
+                                            parts,
+                                        };
+
+                                        // Get the arguments from the class modification
+                                        let args = if let Some(opt) = &class_modif.class_modification.class_modification_opt {
+                                            opt.argument_list.args.clone()
+                                        } else {
+                                            vec![]
+                                        };
+
+                                        // Create the function call expression
+                                        let call_expr = ir::ast::Expression::FunctionCall {
+                                            comp: func_ref,
+                                            args,
+                                        };
+
+                                        // If there's also a value assignment (name(mods) = value), wrap in binary
+                                        if let Some(mod_opt) = &class_modif.modification_opt {
+                                            match &mod_opt.modification_expression {
+                                                modelica_grammar_trait::ModificationExpression::Expression(expr) => {
+                                                    Ok(ir::ast::Expression::Binary {
+                                                        op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                        lhs: Box::new(call_expr),
+                                                        rhs: Box::new(expr.expression.clone()),
+                                                    })
+                                                }
+                                                modelica_grammar_trait::ModificationExpression::Break(brk) => {
+                                                    anyhow::bail!(
+                                                        "'break' in modification expression is not yet supported{}",
+                                                        loc_info(&brk.r#break.r#break)
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            Ok(call_expr)
+                                        }
                                     }
                                     modelica_grammar_trait::Modification::EquModificationExpression(modif) => {
                                         match &modif.modification_expression {
@@ -227,10 +365,238 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                 }
             }
             modelica_grammar_trait::Argument::ElementRedeclaration(redcl) => {
-                anyhow::bail!(
-                    "'redeclare' in argument is not yet supported{}",
-                    loc_info(&redcl.element_redeclaration.redeclare.redeclare)
-                )
+                let redecl = &redcl.element_redeclaration;
+                match &redecl.element_redeclaration_group {
+                    modelica_grammar_trait::ElementRedeclarationGroup::ShortClassDefinition(
+                        short_def,
+                    ) => {
+                        // Handle short class definition redeclaration
+                        // e.g., redeclare Modelica.Blocks.Sources.Step signalSource(final height=I)
+                        match &short_def.short_class_definition.short_class_specifier {
+                            modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(
+                                type_spec,
+                            ) => {
+                                // Build component reference from the declared name
+                                let name_ref = ir::ast::ComponentReference {
+                                    local: false,
+                                    parts: vec![ir::ast::ComponentRefPart {
+                                        ident: type_spec.type_class_specifier.ident.clone(),
+                                        subs: None,
+                                    }],
+                                };
+
+                                // Get class modification arguments if present
+                                let args = if let Some(class_mod) =
+                                    &type_spec.type_class_specifier.type_class_specifier_opt0
+                                {
+                                    if let Some(arg_list) =
+                                        &class_mod.class_modification.class_modification_opt
+                                    {
+                                        arg_list.argument_list.args.clone()
+                                    } else {
+                                        vec![]
+                                    }
+                                } else {
+                                    vec![]
+                                };
+
+                                // Create function call expression representing the redeclaration
+                                Ok(ir::ast::Expression::FunctionCall {
+                                    comp: name_ref,
+                                    args,
+                                })
+                            }
+                            modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(
+                                enum_spec,
+                            ) => {
+                                // Handle enum redeclaration
+                                let name_ref = ir::ast::ComponentReference {
+                                    local: false,
+                                    parts: vec![ir::ast::ComponentRefPart {
+                                        ident: enum_spec.enum_class_specifier.ident.clone(),
+                                        subs: None,
+                                    }],
+                                };
+                                Ok(ir::ast::Expression::FunctionCall {
+                                    comp: name_ref,
+                                    args: vec![],
+                                })
+                            }
+                        }
+                    }
+                    modelica_grammar_trait::ElementRedeclarationGroup::ComponentClause1(
+                        comp_clause,
+                    ) => {
+                        // Handle component clause redeclaration
+                        // e.g., redeclare Real x = 1.0
+                        let decl = &comp_clause
+                            .component_clause1
+                            .component_declaration1
+                            .declaration;
+                        let name_ref = ir::ast::ComponentReference {
+                            local: false,
+                            parts: vec![ir::ast::ComponentRefPart {
+                                ident: decl.ident.clone(),
+                                subs: None,
+                            }],
+                        };
+
+                        // Get modification if present
+                        if let Some(modif) = &decl.declaration_opt0 {
+                            match &modif.modification {
+                                modelica_grammar_trait::Modification::EquModificationExpression(
+                                    eq_mod,
+                                ) => {
+                                    match &eq_mod.modification_expression {
+                                        modelica_grammar_trait::ModificationExpression::Expression(
+                                            expr,
+                                        ) => {
+                                            // Create name = value expression
+                                            Ok(ir::ast::Expression::Binary {
+                                                op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                lhs: Box::new(ir::ast::Expression::ComponentReference(
+                                                    name_ref,
+                                                )),
+                                                rhs: Box::new(expr.expression.clone()),
+                                            })
+                                        }
+                                        modelica_grammar_trait::ModificationExpression::Break(_) => {
+                                            Ok(ir::ast::Expression::ComponentReference(name_ref))
+                                        }
+                                    }
+                                }
+                                modelica_grammar_trait::Modification::ClassModificationModificationOpt(
+                                    class_mod,
+                                ) => {
+                                    // Get args from class modification
+                                    let args = if let Some(arg_list) =
+                                        &class_mod.class_modification.class_modification_opt
+                                    {
+                                        arg_list.argument_list.args.clone()
+                                    } else {
+                                        vec![]
+                                    };
+                                    Ok(ir::ast::Expression::FunctionCall {
+                                        comp: name_ref,
+                                        args,
+                                    })
+                                }
+                            }
+                        } else {
+                            Ok(ir::ast::Expression::ComponentReference(name_ref))
+                        }
+                    }
+                    modelica_grammar_trait::ElementRedeclarationGroup::ElementReplaceable(repl) => {
+                        // Handle 'redeclare replaceable ...'
+                        // This is like the other cases but wrapped in element_replaceable
+                        match &repl.element_replaceable.element_replaceable_group {
+                            modelica_grammar_trait::ElementReplaceableGroup::ShortClassDefinition(
+                                short_def,
+                            ) => {
+                                // Handle short class definition: redeclare replaceable package Medium = ...
+                                match &short_def.short_class_definition.short_class_specifier {
+                                    modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(
+                                        type_spec,
+                                    ) => {
+                                        let name_ref = ir::ast::ComponentReference {
+                                            local: false,
+                                            parts: vec![ir::ast::ComponentRefPart {
+                                                ident: type_spec.type_class_specifier.ident.clone(),
+                                                subs: None,
+                                            }],
+                                        };
+
+                                        let args = if let Some(class_mod) =
+                                            &type_spec.type_class_specifier.type_class_specifier_opt0
+                                        {
+                                            if let Some(arg_list) =
+                                                &class_mod.class_modification.class_modification_opt
+                                            {
+                                                arg_list.argument_list.args.clone()
+                                            } else {
+                                                vec![]
+                                            }
+                                        } else {
+                                            vec![]
+                                        };
+
+                                        Ok(ir::ast::Expression::FunctionCall {
+                                            comp: name_ref,
+                                            args,
+                                        })
+                                    }
+                                    modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(
+                                        enum_spec,
+                                    ) => {
+                                        let name_ref = ir::ast::ComponentReference {
+                                            local: false,
+                                            parts: vec![ir::ast::ComponentRefPart {
+                                                ident: enum_spec.enum_class_specifier.ident.clone(),
+                                                subs: None,
+                                            }],
+                                        };
+                                        Ok(ir::ast::Expression::FunctionCall {
+                                            comp: name_ref,
+                                            args: vec![],
+                                        })
+                                    }
+                                }
+                            }
+                            modelica_grammar_trait::ElementReplaceableGroup::ComponentClause1(
+                                comp_clause,
+                            ) => {
+                                // Handle component clause: redeclare replaceable Real x = ...
+                                let decl =
+                                    &comp_clause.component_clause1.component_declaration1.declaration;
+                                let name_ref = ir::ast::ComponentReference {
+                                    local: false,
+                                    parts: vec![ir::ast::ComponentRefPart {
+                                        ident: decl.ident.clone(),
+                                        subs: None,
+                                    }],
+                                };
+
+                                if let Some(modif) = &decl.declaration_opt0 {
+                                    match &modif.modification {
+                                        modelica_grammar_trait::Modification::EquModificationExpression(
+                                            eq_mod,
+                                        ) => match &eq_mod.modification_expression {
+                                            modelica_grammar_trait::ModificationExpression::Expression(
+                                                expr,
+                                            ) => Ok(ir::ast::Expression::Binary {
+                                                op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                lhs: Box::new(ir::ast::Expression::ComponentReference(
+                                                    name_ref,
+                                                )),
+                                                rhs: Box::new(expr.expression.clone()),
+                                            }),
+                                            modelica_grammar_trait::ModificationExpression::Break(_) => {
+                                                Ok(ir::ast::Expression::ComponentReference(name_ref))
+                                            }
+                                        },
+                                        modelica_grammar_trait::Modification::ClassModificationModificationOpt(
+                                            class_mod,
+                                        ) => {
+                                            let args = if let Some(arg_list) =
+                                                &class_mod.class_modification.class_modification_opt
+                                            {
+                                                arg_list.argument_list.args.clone()
+                                            } else {
+                                                vec![]
+                                            };
+                                            Ok(ir::ast::Expression::FunctionCall {
+                                                comp: name_ref,
+                                                args,
+                                            })
+                                        }
+                                    }
+                                } else {
+                                    Ok(ir::ast::Expression::ComponentReference(name_ref))
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -321,14 +687,44 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::ast::Expression {
                 token: end.end.end.clone(),
             }),
             modelica_grammar_trait::Primary::ArrayPrimary(arr) => {
-                let elements = collect_array_elements(&arr.array_primary.array_arguments)?;
-                Ok(ir::ast::Expression::Array { elements })
+                collect_array_elements(&arr.array_primary.array_arguments)
             }
             modelica_grammar_trait::Primary::RangePrimary(range) => {
-                anyhow::bail!(
-                    "Range primary like '{{1:10}}' is not yet supported{}",
-                    expr_loc_info(&range.range_primary.expression_list.expression)
-                )
+                // range_primary is: '[' expression_list { ';' expression_list } ']'
+                // This creates matrix literals like [1, 2; 3, 4]
+                let rp = &range.range_primary;
+
+                // Helper to convert ExpressionList to Vec<Expression>
+                fn expr_list_to_vec(
+                    el: &modelica_grammar_trait::ExpressionList,
+                ) -> Vec<ir::ast::Expression> {
+                    let mut elements = vec![el.expression.clone()];
+                    for item in &el.expression_list_list {
+                        elements.push(item.expression.clone());
+                    }
+                    elements
+                }
+
+                // First row
+                let first_row = expr_list_to_vec(&rp.expression_list);
+
+                // Check if there are additional rows (semicolons)
+                if rp.range_primary_list.is_empty() {
+                    // Single row: [1, 2, 3] - just return as Array
+                    Ok(ir::ast::Expression::Array {
+                        elements: first_row,
+                    })
+                } else {
+                    // Multiple rows: [1, 2; 3, 4] - create array of row arrays
+                    let mut rows = vec![ir::ast::Expression::Array {
+                        elements: first_row,
+                    }];
+                    for row_item in &rp.range_primary_list {
+                        let row = expr_list_to_vec(&row_item.expression_list);
+                        rows.push(ir::ast::Expression::Array { elements: row });
+                    }
+                    Ok(ir::ast::Expression::Array { elements: rows })
+                }
             }
             modelica_grammar_trait::Primary::OutputPrimary(output) => {
                 let primary = &output.output_primary;

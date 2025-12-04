@@ -543,6 +543,12 @@ fn collect_expr_symbols(expr: &Expression, used: &mut HashSet<String>) {
         Expression::Parenthesized { inner } => {
             collect_expr_symbols(inner, used);
         }
+        Expression::ArrayComprehension { expr, indices } => {
+            collect_expr_symbols(expr, used);
+            for idx in indices {
+                collect_expr_symbols(&idx.range, used);
+            }
+        }
     }
 }
 

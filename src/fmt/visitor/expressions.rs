@@ -155,6 +155,23 @@ impl FormatVisitor {
             Expression::Parenthesized { inner } => {
                 format!("({})", self.format_expression(inner))
             }
+            Expression::ArrayComprehension { expr, indices } => {
+                let indices_str: Vec<String> = indices
+                    .iter()
+                    .map(|idx| {
+                        format!(
+                            "{} in {}",
+                            idx.ident.text,
+                            self.format_expression(&idx.range)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{{{{ {} for {} }}}}",
+                    self.format_expression(expr),
+                    indices_str.join(", ")
+                )
+            }
         }
     }
 

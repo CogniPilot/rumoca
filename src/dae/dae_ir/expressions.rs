@@ -156,6 +156,13 @@ impl<'a> Serialize for ExpressionWrapper<'a> {
                 // Parentheses are transparent for serialization - just serialize the inner expression
                 ExpressionWrapper(inner).serialize(serializer)
             }
+            Expression::ArrayComprehension { expr, indices } => {
+                let mut map = serializer.serialize_map(Some(3))?;
+                map.serialize_entry("type", "array_comprehension")?;
+                map.serialize_entry("expr", &ExpressionWrapper(expr))?;
+                map.serialize_entry("indices", &indices)?;
+                map.end()
+            }
         }
     }
 }

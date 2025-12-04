@@ -201,6 +201,67 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                     }
                                 }
                             }
+                            Equation::Simple { lhs, rhs } => {
+                                // Handle direct variable assignments in when blocks
+                                // e.g., when trigger then y = expr; end when;
+                                let cond_name = match &block.cond {
+                                    Expression::ComponentReference(cref) => cref.to_string(),
+                                    other => {
+                                        let loc = other
+                                            .get_location()
+                                            .map(|l| {
+                                                format!(
+                                                    " at {}:{}:{}",
+                                                    l.file_name, l.start_line, l.start_column
+                                                )
+                                            })
+                                            .unwrap_or_default();
+                                        anyhow::bail!(
+                                            "Unsupported condition type in 'when' block{}. \
+                                             Expected a component reference.",
+                                            loc
+                                        )
+                                    }
+                                };
+                                // Convert lhs to ComponentReference for assignment
+                                match lhs {
+                                    Expression::ComponentReference(cref) => {
+                                        dae.fr.insert(
+                                            format!("{}_{}", cond_name, cref),
+                                            Statement::Assignment {
+                                                comp: cref.clone(),
+                                                value: rhs.clone(),
+                                            },
+                                        );
+                                    }
+                                    Expression::Tuple { elements } => {
+                                        // Handle tuple assignments like (a, b) = func()
+                                        // Add as event update equation
+                                        dae.fz.push(eq.clone());
+                                        // Also add individual assignments for simple tuple elements
+                                        for (i, elem) in elements.iter().enumerate() {
+                                            if let Expression::ComponentReference(cref) = elem {
+                                                // Create indexed access to RHS if it's a tuple result
+                                                dae.fr.insert(
+                                                    format!("{}_tuple_{}", cond_name, i),
+                                                    Statement::Assignment {
+                                                        comp: cref.clone(),
+                                                        value: rhs.clone(), // Will be handled by backend
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        // For other complex LHS patterns, add as event equation
+                                        dae.fz.push(eq.clone());
+                                    }
+                                }
+                            }
+                            Equation::If { .. } | Equation::For { .. } => {
+                                // Pass through if/for equations inside when blocks as event equations
+                                dae.fz.push(eq.clone());
+                            }
                             other => {
                                 let loc = other
                                     .get_location()
@@ -213,7 +274,7 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                     .unwrap_or_default();
                                 anyhow::bail!(
                                     "Unsupported equation type in 'when' block{}. \
-                                     Only 'reinit' function calls are currently supported.",
+                                     Only assignments, 'reinit', 'if' and 'for' are currently supported.",
                                     loc
                                 )
                             }

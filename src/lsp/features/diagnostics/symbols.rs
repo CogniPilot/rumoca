@@ -259,6 +259,12 @@ pub fn collect_used_symbols(expr: &Expression, used: &mut HashSet<String>) {
         Expression::Parenthesized { inner } => {
             collect_used_symbols(inner, used);
         }
+        Expression::ArrayComprehension { expr, indices } => {
+            collect_used_symbols(expr, used);
+            for idx in indices {
+                collect_used_symbols(&idx.range, used);
+            }
+        }
     }
 }
 
@@ -328,6 +334,12 @@ pub fn collect_and_check_expression(
         }
         Expression::Parenthesized { inner } => {
             collect_and_check_expression(inner, used, diagnostics, defined, globals);
+        }
+        Expression::ArrayComprehension { expr, indices } => {
+            collect_and_check_expression(expr, used, diagnostics, defined, globals);
+            for idx in indices {
+                collect_and_check_expression(&idx.range, used, diagnostics, defined, globals);
+            }
         }
     }
 }
