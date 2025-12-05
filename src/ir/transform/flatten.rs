@@ -23,7 +23,7 @@ use crate::ir;
 use crate::ir::analysis::symbol_table::SymbolTable;
 use crate::ir::ast::{
     ClassDefinition, ComponentRefPart, ComponentReference, Connection, Equation, Expression,
-    OpBinary, TerminalType, Token,
+    Import, OpBinary, TerminalType, Token,
 };
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::is_primitive_type;
@@ -55,11 +55,101 @@ fn extract_extends_modifications(modifications: &[Expression]) -> IndexMap<Strin
     result
 }
 
+/// Builds a map of import aliases from a class's imports.
+///
+/// For renamed imports like `import D = Modelica.Electrical.Digital;`,
+/// this creates an entry mapping "D" -> "Modelica.Electrical.Digital".
+///
+/// For qualified imports like `import Modelica.Electrical.Digital;`,
+/// this creates an entry mapping "Digital" -> "Modelica.Electrical.Digital".
+fn build_import_aliases(imports: &[Import]) -> IndexMap<String, String> {
+    let mut aliases = IndexMap::new();
+
+    for import in imports {
+        match import {
+            Import::Renamed { alias, path, .. } => {
+                // import D = A.B.C; => D -> A.B.C
+                aliases.insert(alias.text.clone(), path.to_string());
+            }
+            Import::Qualified { path, .. } => {
+                // import A.B.C; => C -> A.B.C
+                if let Some(last) = path.name.last() {
+                    aliases.insert(last.text.clone(), path.to_string());
+                }
+            }
+            Import::Unqualified { .. } => {
+                // import A.B.*; - handled differently (need to check all classes in A.B)
+                // For now, skip as this requires checking the class dictionary
+            }
+            Import::Selective { path, names, .. } => {
+                // import A.B.{C, D}; => C -> A.B.C, D -> A.B.D
+                let base_path = path.to_string();
+                for name in names {
+                    aliases.insert(name.text.clone(), format!("{}.{}", base_path, name.text));
+                }
+            }
+        }
+    }
+
+    aliases
+}
+
+/// Builds a combined import alias map from a class and all its enclosing scopes.
+///
+/// This collects imports from the class itself and all parent packages up to the root.
+fn build_import_aliases_for_class(
+    class_path: &str,
+    class_dict: &IndexMap<String, ClassDefinition>,
+) -> IndexMap<String, String> {
+    let mut all_aliases = IndexMap::new();
+
+    // Collect imports from each level of the class hierarchy (most specific first)
+    let parts: Vec<&str> = class_path.split('.').collect();
+    for i in (1..=parts.len()).rev() {
+        let path = parts[..i].join(".");
+        if let Some(class) = class_dict.get(&path) {
+            let aliases = build_import_aliases(&class.imports);
+            // Earlier (more specific) imports take precedence
+            for (alias, target) in aliases {
+                all_aliases.entry(alias).or_insert(target);
+            }
+        }
+    }
+
+    all_aliases
+}
+
+/// Applies import aliases to a type name.
+///
+/// If the first part of the name is an import alias, replace it with the full path.
+/// For example, with alias "D" -> "Modelica.Electrical.Digital":
+/// - "D.Basic.Nor" becomes "Modelica.Electrical.Digital.Basic.Nor"
+/// - "Real" stays "Real" (no alias)
+fn apply_import_aliases(name: &str, aliases: &IndexMap<String, String>) -> String {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.is_empty() {
+        return name.to_string();
+    }
+
+    let first = parts[0];
+    if let Some(target) = aliases.get(first) {
+        // Replace the first part with the full path
+        if parts.len() == 1 {
+            target.clone()
+        } else {
+            format!("{}.{}", target, parts[1..].join("."))
+        }
+    } else {
+        name.to_string()
+    }
+}
+
 /// Resolves a class name by searching the enclosing scope hierarchy.
 ///
 /// This function implements Modelica's name lookup rules for extends clauses:
-/// 1. First tries an exact match (for fully qualified names)
-/// 2. Then tries prepending enclosing package prefixes from most specific to least
+/// 1. First applies import aliases to resolve aliased names
+/// 2. Then tries an exact match (for fully qualified names)
+/// 3. Then tries prepending enclosing package prefixes from most specific to least
 ///
 /// For example, if `current_class_path` is `Modelica.Blocks.Continuous.Derivative`
 /// and `name` is `Interfaces.SISO`, it will try:
@@ -73,9 +163,22 @@ fn resolve_class_name(
     current_class_path: &str,
     class_dict: &IndexMap<String, ClassDefinition>,
 ) -> Option<String> {
+    resolve_class_name_with_imports(name, current_class_path, class_dict, &IndexMap::new())
+}
+
+/// Resolves a class name with import alias support.
+fn resolve_class_name_with_imports(
+    name: &str,
+    current_class_path: &str,
+    class_dict: &IndexMap<String, ClassDefinition>,
+    import_aliases: &IndexMap<String, String>,
+) -> Option<String> {
+    // 0. Apply import aliases first
+    let resolved_name = apply_import_aliases(name, import_aliases);
+
     // 1. Try exact match first (handles fully qualified names)
-    if class_dict.contains_key(name) {
-        return Some(name.to_string());
+    if class_dict.contains_key(&resolved_name) {
+        return Some(resolved_name);
     }
 
     // 2. Try prepending enclosing package prefixes
@@ -83,12 +186,31 @@ fn resolve_class_name(
     for i in (0..parts.len()).rev() {
         let prefix = parts[..i].join(".");
         let candidate = if prefix.is_empty() {
-            name.to_string()
+            resolved_name.clone()
         } else {
-            format!("{}.{}", prefix, name)
+            format!("{}.{}", prefix, resolved_name)
         };
         if class_dict.contains_key(&candidate) {
             return Some(candidate);
+        }
+    }
+
+    // 3. If import alias resolution changed the name but still not found,
+    //    try with the original name too
+    if resolved_name != name {
+        if class_dict.contains_key(name) {
+            return Some(name.to_string());
+        }
+        for i in (0..parts.len()).rev() {
+            let prefix = parts[..i].join(".");
+            let candidate = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{}.{}", prefix, name)
+            };
+            if class_dict.contains_key(&candidate) {
+                return Some(candidate);
+            }
         }
     }
 
@@ -171,6 +293,9 @@ fn resolve_class_internal(
 
     let mut resolved = class.clone();
 
+    // Build import aliases for this class
+    let import_aliases = build_import_aliases_for_class(current_class_path, class_dict);
+
     // Process all extends clauses
     for extend in &class.extends {
         let parent_name = extend.comp.to_string();
@@ -180,8 +305,13 @@ fn resolve_class_internal(
             continue;
         }
 
-        // Resolve the parent class name using enclosing scope search
-        let resolved_name = match resolve_class_name(&parent_name, current_class_path, class_dict) {
+        // Resolve the parent class name using enclosing scope search with import aliases
+        let resolved_name = match resolve_class_name_with_imports(
+            &parent_name,
+            current_class_path,
+            class_dict,
+            &import_aliases,
+        ) {
             Some(name) => name,
             None => continue, // Skip unresolved extends (might be external dependency)
         };
@@ -245,6 +375,9 @@ fn apply_type_causality(
 ) {
     use crate::ir::ast::Causality;
 
+    // Build import aliases for this class
+    let import_aliases = build_import_aliases_for_class(current_class_path, class_dict);
+
     for (_comp_name, comp) in class.components.iter_mut() {
         // Only apply if component's causality is empty (not explicitly set)
         if !matches!(comp.causality, Causality::Empty) {
@@ -253,8 +386,13 @@ fn apply_type_causality(
 
         let type_name = comp.type_name.to_string();
 
-        // Resolve the type name using enclosing scope search
-        let resolved_type_name = resolve_class_name(&type_name, current_class_path, class_dict);
+        // Resolve the type name using enclosing scope search with import aliases
+        let resolved_type_name = resolve_class_name_with_imports(
+            &type_name,
+            current_class_path,
+            class_dict,
+            &import_aliases,
+        );
 
         if let Some(resolved_name) = resolved_type_name {
             if let Some(type_class) = class_dict.get(&resolved_name) {
@@ -330,6 +468,88 @@ fn make_sum_eq(vars: &[String]) -> Equation {
     }
 }
 
+/// Recursively extract connect equations from an equation, including nested For/If/When.
+/// Returns the connect equations found and the equation with connect equations removed.
+fn extract_connect_equations_recursive(
+    eq: &Equation,
+    connect_eqs: &mut Vec<(ComponentReference, ComponentReference)>,
+) -> Option<Equation> {
+    match eq {
+        Equation::Connect { lhs, rhs } => {
+            connect_eqs.push((lhs.clone(), rhs.clone()));
+            None // Remove connect equation
+        }
+        Equation::For { indices, equations } => {
+            let mut filtered_eqs = Vec::new();
+            for inner_eq in equations {
+                if let Some(filtered) = extract_connect_equations_recursive(inner_eq, connect_eqs) {
+                    filtered_eqs.push(filtered);
+                }
+            }
+            if filtered_eqs.is_empty() {
+                None
+            } else {
+                Some(Equation::For {
+                    indices: indices.clone(),
+                    equations: filtered_eqs,
+                })
+            }
+        }
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
+            let mut new_cond_blocks = Vec::new();
+            for block in cond_blocks {
+                let mut filtered_eqs = Vec::new();
+                for inner_eq in &block.eqs {
+                    if let Some(filtered) =
+                        extract_connect_equations_recursive(inner_eq, connect_eqs)
+                    {
+                        filtered_eqs.push(filtered);
+                    }
+                }
+                new_cond_blocks.push(ir::ast::EquationBlock {
+                    cond: block.cond.clone(),
+                    eqs: filtered_eqs,
+                });
+            }
+            let new_else = else_block.as_ref().map(|eqs| {
+                let mut filtered = Vec::new();
+                for inner_eq in eqs {
+                    if let Some(f) = extract_connect_equations_recursive(inner_eq, connect_eqs) {
+                        filtered.push(f);
+                    }
+                }
+                filtered
+            });
+            Some(Equation::If {
+                cond_blocks: new_cond_blocks,
+                else_block: new_else,
+            })
+        }
+        Equation::When(blocks) => {
+            let mut new_blocks = Vec::new();
+            for block in blocks {
+                let mut filtered_eqs = Vec::new();
+                for inner_eq in &block.eqs {
+                    if let Some(filtered) =
+                        extract_connect_equations_recursive(inner_eq, connect_eqs)
+                    {
+                        filtered_eqs.push(filtered);
+                    }
+                }
+                new_blocks.push(ir::ast::EquationBlock {
+                    cond: block.cond.clone(),
+                    eqs: filtered_eqs,
+                });
+            }
+            Some(Equation::When(new_blocks))
+        }
+        _ => Some(eq.clone()),
+    }
+}
+
 /// Expands connect equations into simple equations.
 ///
 /// Connect equations in Modelica follow these rules:
@@ -337,7 +557,7 @@ fn make_sum_eq(vars: &[String]) -> Equation {
 /// - For flow variables: sum at each node = 0 (a.i + b.i + ... = 0)
 ///
 /// This function:
-/// 1. Collects all connections and builds a graph of connected nodes
+/// 1. Collects all connections (including from nested For/If/When) and builds a graph
 /// 2. For each connection set, generates equality equations for non-flow vars
 /// 3. For flow variables, generates a single sum=0 equation per connection set
 fn expand_connect_equations(
@@ -348,16 +568,13 @@ fn expand_connect_equations(
     // Use Union-Find to group connected pins
     let mut connection_sets: IndexMap<String, IndexSet<String>> = IndexMap::new();
 
-    // Extract connect equations and collect connected pins
+    // Extract connect equations recursively from all equations (including nested structures)
     let mut connect_eqs: Vec<(ComponentReference, ComponentReference)> = Vec::new();
     let mut other_eqs: Vec<Equation> = Vec::new();
 
     for eq in &fclass.equations {
-        match eq {
-            Equation::Connect { lhs, rhs } => {
-                connect_eqs.push((lhs.clone(), rhs.clone()));
-            }
-            _ => other_eqs.push(eq.clone()),
+        if let Some(filtered_eq) = extract_connect_equations_recursive(eq, &mut connect_eqs) {
+            other_eqs.push(filtered_eq);
         }
     }
 
@@ -580,12 +797,19 @@ impl<'a> ExpansionContext<'a> {
     ) -> Result<()> {
         let type_name = comp.type_name.to_string();
 
-        // Resolve the type name using enclosing scope search
-        let resolved_type_name =
-            match resolve_class_name(&type_name, current_class_path, self.class_dict) {
-                Some(name) => name,
-                None => return Ok(()), // Primitive type or not found, nothing to expand
-            };
+        // Build import aliases for the current class path
+        let import_aliases = build_import_aliases_for_class(current_class_path, self.class_dict);
+
+        // Resolve the type name using enclosing scope search and import aliases
+        let resolved_type_name = match resolve_class_name_with_imports(
+            &type_name,
+            current_class_path,
+            self.class_dict,
+            &import_aliases,
+        ) {
+            Some(name) => name,
+            None => return Ok(()), // Primitive type or not found, nothing to expand
+        };
 
         // Get the component class
         let comp_class_raw = match self.class_dict.get(&resolved_type_name) {
@@ -596,8 +820,15 @@ impl<'a> ExpansionContext<'a> {
         // Resolve the component class (handle its extends clauses)
         let comp_class = resolve_class(comp_class_raw, &resolved_type_name, self.class_dict)?;
 
+        // Record the connector type for this component BEFORE checking if it has sub-components.
+        // This is critical for connectors like Pin that have only primitive types (Real v, Real i).
+        // These connectors have no class-type sub-components but are still used in connect equations.
+        self.pin_types
+            .insert(comp_name.to_string(), resolved_type_name.clone());
+
         // If the resolved class has no components, it's effectively a type alias (like Voltage = Real)
-        // Don't remove the component, just add any equations it might have
+        // or a "leaf" connector with only primitive types.
+        // Don't remove the component, just add any equations and algorithms it might have.
         if comp_class.components.is_empty() {
             // Still add any equations from the type alias (though rare)
             let mut renamer = ScopeRenamer::new(self.symbol_table, comp_name);
@@ -606,13 +837,18 @@ impl<'a> ExpansionContext<'a> {
                 feq.accept_mut(&mut renamer);
                 self.fclass.equations.push(feq);
             }
+            // Add algorithm sections from leaf component
+            for algo_section in &comp_class.algorithms {
+                let mut scoped_section = Vec::new();
+                for stmt in algo_section {
+                    let mut fstmt = stmt.clone();
+                    fstmt.accept_mut(&mut renamer);
+                    scoped_section.push(fstmt);
+                }
+                self.fclass.algorithms.push(scoped_section);
+            }
             return Ok(());
         }
-
-        // Record the connector type for this component (before it gets expanded)
-        // This is used later for connect equation expansion
-        self.pin_types
-            .insert(comp_name.to_string(), resolved_type_name.clone());
 
         // Create a scope renamer for this component
         let mut renamer = ScopeRenamer::new(self.symbol_table, comp_name);
@@ -622,6 +858,17 @@ impl<'a> ExpansionContext<'a> {
             let mut feq = eq.clone();
             feq.accept_mut(&mut renamer);
             self.fclass.equations.push(feq);
+        }
+
+        // Add algorithm sections from component class, with scoped variable references
+        for algo_section in &comp_class.algorithms {
+            let mut scoped_section = Vec::new();
+            for stmt in algo_section {
+                let mut fstmt = stmt.clone();
+                fstmt.accept_mut(&mut renamer);
+                scoped_section.push(fstmt);
+            }
+            self.fclass.algorithms.push(scoped_section);
         }
 
         // Expand comp.sub_comp names to use dots in existing equations
@@ -675,12 +922,16 @@ impl<'a> ExpansionContext<'a> {
         self.fclass.components.swap_remove(comp_name);
 
         // Recursively expand any subcomponents that are also class types
+        // Build import aliases for the resolved component class for subcomponent resolution
+        let subcomp_import_aliases =
+            build_import_aliases_for_class(&resolved_type_name, self.class_dict);
         for (subcomp_name, subcomp) in &subcomponents {
             // Use resolved_type_name as context for resolving nested component types
-            if resolve_class_name(
+            if resolve_class_name_with_imports(
                 &subcomp.type_name.to_string(),
                 &resolved_type_name,
                 self.class_dict,
+                &subcomp_import_aliases,
             )
             .is_some()
             {

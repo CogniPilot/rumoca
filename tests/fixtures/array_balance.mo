@@ -77,4 +77,15 @@ package ArrayBalance
       der(x[i]) = -x[i];
     end for;
   end ForLoopArrayState;
+
+  // Vector equation test - no for loop, just array assignment
+  model VectorEquation
+    Real x[3];
+    Real y[3];
+  equation
+    x = y;
+    // This is 3 equations
+    der(y) = -y;
+  end VectorEquation;
 end ArrayBalance;
+// This is 3 equations

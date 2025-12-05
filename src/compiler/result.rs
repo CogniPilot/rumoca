@@ -5,7 +5,7 @@
 //! and timing information.
 
 use crate::dae::ast::Dae;
-use crate::ir::analysis::balance_check::BalanceCheckResult;
+use crate::dae::balance::BalanceResult;
 use crate::ir::ast::StoredDefinition;
 use anyhow::{Context, Result};
 use std::fs;
@@ -35,7 +35,7 @@ pub struct CompilationResult {
     pub model_hash: String,
 
     /// Balance check result
-    pub balance: BalanceCheckResult,
+    pub balance: BalanceResult,
 }
 
 impl CompilationResult {

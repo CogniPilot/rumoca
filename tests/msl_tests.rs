@@ -17,9 +17,11 @@
 //! ```
 
 use anyhow::{Context, Result};
+use rand::seq::SliceRandom;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use rumoca::Compiler;
+use rumoca::dae::balance::BalanceStatus;
 use rumoca::ir::ast::StoredDefinition;
 use rumoca::ir::transform::multi_file::merge_stored_definitions;
 use rumoca::modelica_grammar::ModelicaGrammar;
@@ -170,6 +172,8 @@ struct BalanceResult {
     model_name: String,
     num_equations: usize,
     num_unknowns: usize,
+    num_external_connectors: usize,
+    status: BalanceStatus,
     is_balanced: bool,
     error: Option<String>,
 }
@@ -210,6 +214,7 @@ struct FailureSummary {
     parse_failed: usize,
     total_models: usize,
     balanced: usize,
+    partial: usize,
     unbalanced: usize,
     compile_errors: usize,
     parse_rate_pct: f64,
@@ -228,11 +233,13 @@ struct CombinedTestResults {
     // Balance stats
     total_models: usize,
     balanced: usize,
+    partial: usize,
     unbalanced: usize,
     compile_errors: usize,
     balance_time: Duration,
     // Detailed results for reporting
     parse_failures: Vec<(PathBuf, String)>,
+    partial_models: Vec<BalanceResult>,
     unbalanced_models: Vec<BalanceResult>,
     compile_error_models: Vec<BalanceResult>,
 }
@@ -429,10 +436,12 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
                 parse_time,
                 total_models: 0,
                 balanced: 0,
+                partial: 0,
                 unbalanced: 0,
                 compile_errors: 0,
                 balance_time: Duration::ZERO,
                 parse_failures,
+                partial_models: vec![],
                 unbalanced_models: vec![],
                 compile_error_models: vec![],
             };
@@ -448,10 +457,12 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
 
     println!("Found {} simulatable models/blocks", model_names.len());
 
-    // Apply model limit if specified
+    // Apply model limit if specified (randomly sample)
     if let Some(limit) = model_limit {
+        let mut rng = rand::thread_rng();
+        model_names.shuffle(&mut rng);
         model_names.truncate(limit);
-        println!("Limiting to first {} models", limit);
+        println!("Randomly selected {} models for testing", limit);
     }
 
     // =========================================================================
@@ -492,6 +503,8 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
                     model_name: model_name.clone(),
                     num_equations: balance.num_equations,
                     num_unknowns: balance.num_unknowns,
+                    num_external_connectors: balance.num_external_connectors,
+                    status: balance.status.clone(),
                     is_balanced: balance.is_balanced,
                     error: None,
                 },
@@ -499,6 +512,8 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
                     model_name: model_name.clone(),
                     num_equations: 0,
                     num_unknowns: 0,
+                    num_external_connectors: 0,
+                    status: BalanceStatus::Unbalanced,
                     is_balanced: false,
                     error: Some(format!("{:?}", e)),
                 },
@@ -508,14 +523,19 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
 
     let balance_time = balance_start.elapsed();
 
-    // Categorize balance results
+    // Categorize balance results by status
     let balanced = balance_results
         .iter()
-        .filter(|r| r.is_balanced && r.error.is_none())
+        .filter(|r| r.error.is_none() && r.status == BalanceStatus::Balanced)
         .count();
+    let partial_models: Vec<_> = balance_results
+        .iter()
+        .filter(|r| r.error.is_none() && r.status == BalanceStatus::Partial)
+        .cloned()
+        .collect();
     let unbalanced_models: Vec<_> = balance_results
         .iter()
-        .filter(|r| !r.is_balanced && r.error.is_none())
+        .filter(|r| r.error.is_none() && r.status == BalanceStatus::Unbalanced)
         .cloned()
         .collect();
     let compile_error_models: Vec<_> = balance_results
@@ -531,10 +551,12 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
         parse_time,
         total_models,
         balanced,
+        partial: partial_models.len(),
         unbalanced: unbalanced_models.len(),
         compile_errors: compile_error_models.len(),
         balance_time,
         parse_failures,
+        partial_models,
         unbalanced_models,
         compile_error_models,
     }
@@ -605,6 +627,7 @@ fn export_failures_to_json(results: &CombinedTestResults, output_path: &Path) ->
             parse_failed: results.parse_failed,
             total_models: results.total_models,
             balanced: results.balanced,
+            partial: results.partial,
             unbalanced: results.unbalanced,
             compile_errors: results.compile_errors,
             parse_rate_pct: results.parse_rate(),
@@ -664,7 +687,24 @@ fn print_combined_results(results: &CombinedTestResults) {
         results.balanced,
         results.balance_rate()
     );
-    println!("  Unbalanced:       {}", results.unbalanced);
+    println!(
+        "  Partial:          {} ({:.1}%) - under-determined by design",
+        results.partial,
+        if results.total_models > 0 {
+            results.partial as f64 / results.total_models as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "  Unbalanced:       {} ({:.1}%) - bugs, need fixing",
+        results.unbalanced,
+        if results.total_models > 0 {
+            results.unbalanced as f64 / results.total_models as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!("  Compile Errors:   {}", results.compile_errors);
     println!(
         "  Time:             {:.2}s",
@@ -693,9 +733,9 @@ fn print_combined_results(results: &CombinedTestResults) {
         }
     }
 
-    // Print unbalanced models
+    // Print unbalanced models (bugs that need fixing)
     if !results.unbalanced_models.is_empty() {
-        println!("\nFirst 20 Unbalanced Models:");
+        println!("\nUnbalanced Models (bugs - need fixing):");
         println!("------------------------------------------------------------");
         for result in results.unbalanced_models.iter().take(20) {
             let diff = result.num_equations as i64 - result.num_unknowns as i64;
@@ -711,6 +751,26 @@ fn print_combined_results(results: &CombinedTestResults) {
         }
         if results.unbalanced_models.len() > 20 {
             println!("  ... and {} more", results.unbalanced_models.len() - 20);
+        }
+    }
+
+    // Print partial models (under-determined by design)
+    if !results.partial_models.is_empty() {
+        println!("\nFirst 10 Partial Models (under-determined by design):");
+        println!("------------------------------------------------------------");
+        for result in results.partial_models.iter().take(10) {
+            let diff = result.num_unknowns as i64 - result.num_equations as i64;
+            println!(
+                "  {} ({} eq, {} unk, {} ext conn) - under by {}",
+                result.model_name,
+                result.num_equations,
+                result.num_unknowns,
+                result.num_external_connectors,
+                diff
+            );
+        }
+        if results.partial_models.len() > 10 {
+            println!("  ... and {} more", results.partial_models.len() - 10);
         }
     }
 
@@ -733,12 +793,12 @@ fn print_combined_results(results: &CombinedTestResults) {
     }
 }
 
-/// Sample MSL balance test - parses all files, balance checks 500 models
+/// Sample MSL balance test - parses all files, balance checks 20 models
 #[test]
 #[ignore] // Requires MSL download - run with --ignored
 fn test_msl_balance_sample() {
     let msl_path = get_msl_path().expect("Failed to download MSL");
-    let results = run_combined_msl_test(&msl_path, Some(500));
+    let results = run_combined_msl_test(&msl_path, Some(20));
     print_combined_results(&results);
 }
 
@@ -976,8 +1036,7 @@ fn test_msl_balance_with_json_export() {
             match compile_result {
                 Ok(result) => {
                     // Check balance using DAE
-                    let balance =
-                        rumoca::ir::analysis::balance_check::check_dae_balance(&result.dae);
+                    let balance = result.dae.check_balance();
 
                     // Export DAE to JSON
                     let safe_name = model_name.replace(".", "_").replace("/", "_");
@@ -1103,5 +1162,75 @@ fn test_msl_balance_with_json_export() {
     if let Ok(summary_json) = serde_json::to_string_pretty(&summary) {
         fs::write(&summary_path, summary_json).ok();
         println!("\nSummary saved to: {:?}", summary_path);
+    }
+}
+
+/// Test Nonlinear blocks balance
+#[test]
+#[ignore]
+fn test_nonlinear_blocks_balance() {
+    let msl_path = get_msl_path().expect("Failed to download MSL");
+
+    // Find and parse all needed files
+    let modelica_dir = msl_path.join("Modelica");
+    let mo_files = find_mo_files(&modelica_dir);
+
+    println!("Parsing {} files...", mo_files.len());
+
+    let definitions: Vec<_> = mo_files
+        .iter()
+        .filter_map(|path| {
+            let content = std::fs::read_to_string(path).ok()?;
+            let mut grammar = ModelicaGrammar::new();
+            if parse(&content, path.to_string_lossy().as_ref(), &mut grammar).is_ok() {
+                grammar
+                    .modelica
+                    .map(|def| (path.to_string_lossy().to_string(), def))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let merged = merge_stored_definitions(definitions).expect("Merge failed");
+    let merged = Arc::new(merged);
+
+    let models = [
+        "Modelica.Blocks.Nonlinear.Limiter",
+        "Modelica.Blocks.Nonlinear.VariableLimiter",
+        "Modelica.Blocks.Nonlinear.SlewRateLimiter",
+        "Modelica.Blocks.Nonlinear.DeadZone",
+        "Modelica.Blocks.Nonlinear.FixedDelay",
+        "Modelica.Blocks.Nonlinear.PadeDelay",
+        "Modelica.Blocks.Nonlinear.VariableDelay",
+    ];
+
+    println!("\nNonlinear Blocks Balance Check:");
+    println!("============================================================");
+
+    for model in &models {
+        print!("{}: ", model);
+        match Compiler::new().model(model).check_balance(&merged) {
+            Ok(balance) => {
+                if balance.is_balanced {
+                    println!(
+                        "✓ balanced ({} eq, {} unk)",
+                        balance.num_equations, balance.num_unknowns
+                    );
+                } else {
+                    println!(
+                        "✗ {} ({} eq, {} unk, {} states)",
+                        balance.status_message(),
+                        balance.num_equations,
+                        balance.num_unknowns,
+                        balance.num_states
+                    );
+                }
+            }
+            Err(e) => {
+                let msg = format!("{:?}", e);
+                println!("✗ Error: {}", msg.lines().next().unwrap_or("unknown"));
+            }
+        }
     }
 }

@@ -6,13 +6,13 @@
 use super::error_handling::{SyntaxError, UndefinedVariableError, extract_line_col_from_error};
 use super::function_collector::collect_all_functions;
 use super::result::CompilationResult;
-use crate::ir::analysis::balance_check::check_dae_balance;
 use crate::ir::analysis::var_validator::VarValidator;
 use crate::ir::ast::{ClassType, StoredDefinition};
 use crate::ir::structural::create_dae::create_dae;
 use crate::ir::transform::array_comprehension::expand_array_comprehensions;
 use crate::ir::transform::constant_substitutor::ConstantSubstitutor;
 use crate::ir::transform::enum_substitutor::EnumSubstitutor;
+use crate::ir::transform::equation_expander::expand_equations;
 use crate::ir::transform::flatten::flatten;
 use crate::ir::transform::function_inliner::FunctionInliner;
 use crate::ir::transform::import_resolver::ImportResolver;
@@ -171,9 +171,15 @@ pub fn compile_from_ast_ref(
     // Expand array comprehensions like {expr for i in 1:n} into explicit arrays
     expand_array_comprehensions(&mut fclass);
 
+    // Expand structured equations to scalar form:
+    // - For-loops expanded to individual equations
+    // - Array equations expanded to element equations
+    // - Binding equations converted to regular equations
+    expand_equations(&mut fclass);
+
     if verbose {
         println!(
-            "After function inlining, tuple expansion, and array comprehension expansion:\n{:#?}\n",
+            "After function inlining, tuple expansion, array comprehension, and equation expansion:\n{:#?}\n",
             fclass
         );
     }
@@ -190,7 +196,7 @@ pub fn compile_from_ast_ref(
     }
 
     // Check model balance
-    let balance = check_dae_balance(&dae);
+    let balance = dae.check_balance();
 
     if verbose {
         println!("{}", balance.status_message());
@@ -214,7 +220,7 @@ pub fn compile_from_ast_ref(
 pub fn check_balance_only(
     def: &StoredDefinition,
     model_name: Option<&str>,
-) -> Result<crate::ir::analysis::balance_check::BalanceCheckResult> {
+) -> Result<crate::dae::balance::BalanceResult> {
     // Flatten
     let fclass_result = flatten(def, model_name);
 
@@ -246,9 +252,12 @@ pub fn check_balance_only(
     // Expand array comprehensions
     expand_array_comprehensions(&mut fclass);
 
+    // Expand structured equations to scalar form
+    expand_equations(&mut fclass);
+
     // Create DAE
     let dae = create_dae(&mut fclass)?;
 
     // Check model balance
-    Ok(check_dae_balance(&dae))
+    Ok(dae.check_balance())
 }

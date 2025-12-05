@@ -4,8 +4,6 @@
 
 use lsp_types::Uri;
 
-use crate::ir::analysis::balance_check::check_dae_balance;
-
 use super::WorkspaceState;
 use super::utils::parse_document;
 
@@ -80,7 +78,7 @@ pub fn analyze_class(workspace: &mut WorkspaceState, uri: &Uri, class_name: &str
         .compile_str(&text, path)
     {
         Ok(result) => {
-            let balance = check_dae_balance(&result.dae);
+            let balance = result.dae.check_balance();
 
             // Cache the balance result
             workspace.set_balance(uri.clone(), class_name.to_string(), balance.clone());

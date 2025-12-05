@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use lsp_types::Uri;
 
-use crate::ir::analysis::balance_check::BalanceCheckResult;
+use crate::dae::balance::BalanceResult;
 use crate::ir::ast::{ClassDefinition, ClassType, Import, StoredDefinition};
 use crate::ir::transform::multi_file::{
     discover_modelica_files, get_modelica_path, is_modelica_package,
@@ -135,7 +135,7 @@ pub struct WorkspaceState {
     cached_asts: HashMap<Uri, StoredDefinition>,
     /// Cache of balance check results per class name (computed during diagnostics)
     /// Key is (Uri, class_name) to support multiple classes per file
-    balance_cache: HashMap<(Uri, String), BalanceCheckResult>,
+    balance_cache: HashMap<(Uri, String), BalanceResult>,
     /// Debug mode flag for verbose logging
     debug: bool,
 }
@@ -176,12 +176,12 @@ impl WorkspaceState {
     }
 
     /// Set the cached balance result for a specific class in a document
-    pub fn set_balance(&mut self, uri: Uri, class_name: String, balance: BalanceCheckResult) {
+    pub fn set_balance(&mut self, uri: Uri, class_name: String, balance: BalanceResult) {
         self.balance_cache.insert((uri, class_name), balance);
     }
 
     /// Get the cached balance result for a specific class in a document
-    pub fn get_balance(&self, uri: &Uri, class_name: &str) -> Option<&BalanceCheckResult> {
+    pub fn get_balance(&self, uri: &Uri, class_name: &str) -> Option<&BalanceResult> {
         self.balance_cache
             .get(&(uri.clone(), class_name.to_string()))
     }

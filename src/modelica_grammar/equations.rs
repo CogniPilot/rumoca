@@ -227,11 +227,45 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::ast::Statement {
                     token: tok.r#return.r#return.clone(),
                 })
             }
-            modelica_grammar_trait::StatementOption::ForStatement(..) => {
-                Ok(ir::ast::Statement::For {
-                    indices: vec![], // todo
-                    equations: vec![],
-                })
+            modelica_grammar_trait::StatementOption::ForStatement(stmt) => {
+                // Convert for indices
+                let mut indices = Vec::new();
+
+                // First index
+                let first_idx = &stmt.for_statement.for_indices.for_index;
+                let range = first_idx
+                    .for_index_opt
+                    .as_ref()
+                    .map(|opt| opt.expression.clone())
+                    .unwrap_or_default();
+                indices.push(ir::ast::ForIndex {
+                    ident: first_idx.ident.clone(),
+                    range,
+                });
+
+                // Additional indices
+                for idx_item in &stmt.for_statement.for_indices.for_indices_list {
+                    let idx = &idx_item.for_index;
+                    let range = idx
+                        .for_index_opt
+                        .as_ref()
+                        .map(|opt| opt.expression.clone())
+                        .unwrap_or_default();
+                    indices.push(ir::ast::ForIndex {
+                        ident: idx.ident.clone(),
+                        range,
+                    });
+                }
+
+                // Convert statements in the loop body
+                let equations: Vec<ir::ast::Statement> = stmt
+                    .for_statement
+                    .for_statement_list
+                    .iter()
+                    .map(|stmt_item| stmt_item.statement.clone())
+                    .collect();
+
+                Ok(ir::ast::Statement::For { indices, equations })
             }
             modelica_grammar_trait::StatementOption::IfStatement(stmt) => {
                 let if_stmt = &stmt.if_statement;

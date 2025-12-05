@@ -68,6 +68,7 @@ path = "src/bin/rumoca_lint.rs"
 [dev-dependencies]
 rayon = "1.10"
 num_cpus = "1.16"
+rand = "0.8"
 
 [build-dependencies]
 parol = "3.0.1"

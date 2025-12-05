@@ -7,6 +7,7 @@ pub mod array_comprehension;
 pub mod constant_substitutor;
 pub mod constants;
 pub mod enum_substitutor;
+pub mod equation_expander;
 pub mod flatten;
 pub mod function_inliner;
 pub mod import_resolver;

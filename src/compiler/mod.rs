@@ -580,7 +580,7 @@ impl Compiler {
     pub fn check_balance(
         &self,
         def: &StoredDefinition,
-    ) -> Result<crate::ir::analysis::balance_check::BalanceCheckResult> {
+    ) -> Result<crate::dae::balance::BalanceResult> {
         pipeline::check_balance_only(def, self.model_name.as_deref())
     }
 }

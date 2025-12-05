@@ -8,33 +8,35 @@
 [![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
 [![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
 
-> **Note:** Rumoca is in early development. While already usable for many practical tasks, you may encounter issues. Please [file bug reports](https://github.com/cognipilot/rumoca/issues) to help improve the compiler. APIs may change between releases.
+A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports to the [DAE IR Format](https://github.com/CogniPilot/modelica_ir) (supporting both implicit and explicit model serialization), or via user-customizable templates using [MiniJinja](https://github.com/mitsuhiko/minijinja). The DAE IR format is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, and other backends.
 
-A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports to the [DAE IR Format](https://github.com/CogniPilot/modelica_ir) supporting both implicit and explicit model serialization), or via user customizable template leveraging [minijinja](https://github.com/mitsuhiko/minijinja). The DAE IR format is consumed by [Cyecca](https://github.com/cognipilot/cyecca) (see the [`ir` branch](https://github.com/cognipilot/cyecca/tree/ir) for ongoing integration) for model simulation, analysis, and Python library integration with CasADi, SymPy, and other backends planned (e.g. Jax).
+> **Note:** Rumoca is in early development. While already usable for many practical tasks, you may encounter issues. Please [file bug reports](https://github.com/cognipilot/rumoca/issues) to help improve the compiler.
 
-Future targets include:
-- **Export**: [eFMI/GALEC](https://www.efmi-standard.org/)
-- **Import**: [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) to interface with more mature compilers (OpenModelica, Dymola, etc.)
+## Quick Start
 
-## Tools
+```bash
+# Install
+cargo install rumoca
 
-| Tool | Description |
-|------|-------------|
-| `rumoca` | Main compiler - parses Modelica and exports DAE IR (JSON) |
-| `rumoca-fmt` | Code formatter for Modelica files (like `rustfmt`) |
-| `rumoca-lint` | Linter for Modelica files (like `clippy`) |
-| `rumoca-lsp` | Language Server Protocol server for editor integration |
-| **VSCode Extension** | Full Modelica IDE support via the [Rumoca Modelica](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica) extension |
+# Compile to DAE IR (JSON)
+rumoca model.mo --json > model.json
+
+# Format Modelica files
+rumoca-fmt
+
+# Lint Modelica files
+rumoca-lint
+```
 
 ## Installation
 
-### Compiler, Formatter, and Linter
+### Rust (Compiler, Formatter, Linter)
 
 ```bash
 cargo install rumoca
 ```
 
-### Python Package
+### Python
 
 The Python package bundles the Rust compiler, so no separate Rust installation is needed:
 
@@ -52,7 +54,7 @@ result = rumoca.compile("model.mo")
 json_str = result.to_base_modelica_json()
 model_dict = result.to_base_modelica_dict()
 
-# Compile from string (requires native bindings)
+# Compile from string
 result = rumoca.compile_source("""
     model Test
         Real x(start=0);
@@ -62,15 +64,114 @@ result = rumoca.compile_source("""
 """, "Test")
 ```
 
-### VSCode Extension
+### Rust Library
+
+```toml
+[dependencies]
+rumoca = "0.7"
+```
+
+```rust
+use rumoca::Compiler;
+
+fn main() -> anyhow::Result<()> {
+    let result = Compiler::new()
+        .model("MyModel")
+        .compile_file("model.mo")?;
+
+    let json = result.to_json()?;
+    println!("{}", json);
+    Ok(())
+}
+```
+
+## Tools
+
+| Tool | Description |
+|------|-------------|
+| `rumoca` | Main compiler - parses Modelica and exports DAE IR (JSON) |
+| `rumoca-fmt` | Code formatter for Modelica files (like `rustfmt`) |
+| `rumoca-lint` | Linter for Modelica files (like `clippy`) |
+| `rumoca-lsp` | Language Server Protocol server for editor integration |
+
+### Formatter
+
+```bash
+rumoca-fmt                              # Format all .mo files
+rumoca-fmt --check                      # Check formatting (CI mode)
+rumoca-fmt model.mo                     # Format specific files
+rumoca-fmt --config indent_size=4       # Custom indentation
+```
+
+**Configuration:** Create `.rumoca_fmt.toml` in your project:
+
+```toml
+indent_size = 2
+use_tabs = false
+max_line_length = 100
+blank_lines_between_classes = 1
+```
+
+### Linter
+
+```bash
+rumoca-lint                     # Lint all .mo files
+rumoca-lint --level warning     # Show only warnings and errors
+rumoca-lint --format json       # JSON output for CI
+rumoca-lint --list-rules        # List available rules
+rumoca-lint --deny-warnings     # Exit with error on warnings
+```
+
+**Available Rules:**
+
+| Rule | Level | Description |
+|------|-------|-------------|
+| `naming-convention` | note | CamelCase for types, camelCase for variables |
+| `missing-documentation` | note | Classes without documentation strings |
+| `unused-variable` | warning | Declared but unused variables |
+| `undefined-reference` | error | References to undefined variables |
+| `parameter-no-default` | help | Parameters without default values |
+| `empty-section` | note | Empty equation or algorithm sections |
+| `magic-number` | help | Magic numbers that should be constants |
+| `complex-expression` | note | Overly complex/deeply nested expressions |
+| `inconsistent-units` | warning | Potential unit inconsistencies |
+| `redundant-extends` | warning | Duplicate or circular extends |
+
+**Configuration:** Create `.rumoca_lint.toml` in your project:
+
+```toml
+min_level = "warning"
+disabled_rules = ["magic-number", "missing-documentation"]
+deny_warnings = false
+```
+
+### Custom Code Generation
+
+Rumoca supports [MiniJinja](https://docs.rs/minijinja/) templates for custom code generation:
+
+```bash
+rumoca model.mo -m MyModel --template-file templates/examples/casadi.jinja > model.py
+rumoca model.mo -m MyModel --template-file templates/examples/sympy.jinja > model.py
+```
+
+Example template:
+
+```jinja
+# Generated from {{ dae.model_name }}
+{% for name, comp in dae.x | items %}
+{{ name }}: {{ comp.type_name }} (start={{ comp.start }})
+{% endfor %}
+```
+
+See [`templates/examples/`](templates/examples/) for complete examples (CasADi, SymPy, Base Modelica).
+
+## VSCode Extension
 
 Search for "Rumoca Modelica" in the VSCode Extensions marketplace, or install from the [marketplace page](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica).
 
 ![Rumoca VSCode Extension Demo](docs/rumoca-demo.gif)
 
-The extension includes a bundled `rumoca-lsp` language server, so **no additional installation is required**.
-
-To use a custom or development version of `rumoca-lsp`, see the [extension documentation](editors/vscode/README.md).
+The extension includes a bundled `rumoca-lsp` language server - **no additional installation required**.
 
 **Features:**
 - Syntax highlighting (semantic tokens)
@@ -90,8 +191,6 @@ To use a custom or development version of `rumoca-lsp`, see the [extension docum
 
 **Configuring Library Paths:**
 
-To use external Modelica libraries (like the Modelica Standard Library), configure the `rumoca.modelicaPath` setting in your VS Code settings:
-
 ```json
 {
   "rumoca.modelicaPath": [
@@ -101,115 +200,9 @@ To use external Modelica libraries (like the Modelica Standard Library), configu
 }
 ```
 
-Alternatively, set the `MODELICAPATH` environment variable before starting VS Code. See the [extension documentation](editors/vscode/README.md) for more details.
+Alternatively, set the `MODELICAPATH` environment variable. See the [extension documentation](editors/vscode/README.md) for details.
 
-## Quick Start
-
-### Compile to DAE IR (JSON)
-
-```bash
-rumoca model.mo --json > model.json
-```
-
-### Format Modelica Files
-
-```bash
-# Format all .mo files in current directory
-rumoca-fmt
-
-# Check formatting (CI mode)
-rumoca-fmt --check
-
-# Format specific files
-rumoca-fmt model.mo library.mo
-
-# Use 4-space indentation
-rumoca-fmt --config indent_size=4
-
-# Configure blank lines between classes
-rumoca-fmt --config blank_lines_between_classes=1
-```
-
-**Configuration:** Create `.rumoca_fmt.toml` or `rumoca_fmt.toml` in your project:
-
-```toml
-indent_size = 2
-use_tabs = false
-max_line_length = 100
-blank_lines_between_classes = 1
-```
-
-### Lint Modelica Files
-
-```bash
-# Lint all .mo files in current directory
-rumoca-lint
-
-# Lint specific files
-rumoca-lint model.mo
-
-# Show only warnings and errors
-rumoca-lint --level warning
-
-# Output as JSON (for CI integration)
-rumoca-lint --format json
-
-# List available lint rules
-rumoca-lint --list-rules
-
-# Exit with error on warnings (CI mode)
-rumoca-lint --deny-warnings
-```
-
-**Available Lint Rules:**
-
-| Rule | Level | Description |
-|------|-------|-------------|
-| `naming-convention` | note | CamelCase for types, camelCase for variables |
-| `missing-documentation` | note | Classes without documentation strings |
-| `unused-variable` | warning | Declared but unused variables |
-| `undefined-reference` | error | References to undefined variables |
-| `parameter-no-default` | help | Parameters without default values |
-| `empty-section` | note | Empty equation or algorithm sections |
-| `magic-number` | help | Magic numbers that should be constants |
-| `complex-expression` | note | Overly complex/deeply nested expressions |
-| `inconsistent-units` | warning | Potential unit inconsistencies |
-| `redundant-extends` | warning | Duplicate or circular extends |
-
-**Configuration:** Create `.rumoca_lint.toml` or `rumoca_lint.toml` in your project. The linter searches for config files starting from the file's directory and walking up to parent directories:
-
-```toml
-min_level = "warning"                                    # help, note, warning, error
-disabled_rules = ["magic-number", "missing-documentation"]
-deny_warnings = false                                    # exit with error on warnings
-```
-
-CLI options override config file settings.
-
-### Library Usage
-
-```toml
-[dependencies]
-rumoca = "0.7"
-```
-
-```rust
-use rumoca::Compiler;
-
-fn main() -> anyhow::Result<()> {
-    let result = Compiler::new()
-        .model("MyModel")
-        .compile_file("model.mo")?;
-
-    // Export to DAE IR (JSON)
-    let json = result.to_json()?;
-    println!("{}", json);
-
-    Ok(())
-}
-```
-
-### Use with Cyecca
+## Integration with Cyecca
 
 ```bash
 rumoca model.mo --json > model.json
@@ -221,29 +214,6 @@ from cyecca.io.rumoca import import_rumoca
 model = import_rumoca('model.json')
 # Use model for simulation, analysis, code generation, etc.
 ```
-
-### Custom Code Generation with Templates
-
-Rumoca supports [MiniJinja](https://docs.rs/minijinja/) templates for custom code generation:
-
-```bash
-# Generate CasADi Python code
-rumoca model.mo -m MyModel --template-file templates/examples/casadi.jinja > model.py
-
-# Generate SymPy code
-rumoca model.mo -m MyModel --template-file templates/examples/sympy.jinja > model.py
-```
-
-The DAE structure is passed to templates as the `dae` variable. Example template:
-
-```jinja
-# Generated from {{ dae.model_name }}
-{% for name, comp in dae.x | items %}
-{{ name }}: {{ comp.type_name }} (start={{ comp.start }})
-{% endfor %}
-```
-
-See [`templates/examples/`](templates/examples/) for complete template examples (CasADi, SymPy, Base Modelica).
 
 ## Modelica Language Support
 
@@ -284,37 +254,41 @@ See [`templates/examples/`](templates/examples/) for complete template examples 
 | Expandable connectors | Dynamic connector sizing |
 | Overconstrained connectors | `Connections.root`, `branch`, etc. |
 
-## Modelica Standard Library (MSL) Compatibility
+## MSL Compatibility
 
 Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.com/modelica/ModelicaStandardLibrary).
 
-### Current Status
+| Metric | Result |
+|--------|--------|
+| **Parse Rate** | 100% (2551/2551 files) |
+| **Compile Rate** | 100% (2283/2283 models) |
 
-| Metric | Result | Notes |
-|--------|--------|-------|
-| **Parse Rate** | 100% (2551/2551 files) | 3.35 ms/file |
-| **Compile Rate** | 100% (2283/2283 models) | 173 ms/model |
-| **Balance Rate** | 32% (728/2283 models) | Equation-variable balance |
+**Balance Check Results:**
 
-### What Works Well
+| Status | Count | Percentage | Description |
+|--------|-------|------------|-------------|
+| **Balanced** | 790 | 34.6% | Fully determined (equations = unknowns) |
+| **Partial** | 1072 | 47.0% | Under-determined by design (external connectors) |
+| **Unbalanced** | 421 | 18.4% | Needs further work |
 
-- **Modelica.Blocks** - Basic continuous and discrete blocks (Integrator, Der, Gain, etc.)
-- **Modelica.Electrical.Analog.Basic** - Basic electrical components
-- **Array handling** - `size()` function, parameter-dependent dimensions
-- **Conditional equations** - `if nx == 0 then...` with parameter evaluation
-- **When equations** - Discrete event handling and `reinit`
+*Partial models have external connector flow variables that receive equations when connected in a larger system.*
 
-### Known Limitations
+**What Works Well:**
+- Modelica.Blocks (Integrator, Der, Gain, etc.)
+- Modelica.Electrical.Analog.Basic
+- Array handling with `size()` and parameter-dependent dimensions
+- Conditional equations with parameter evaluation
+- When equations and discrete event handling
 
-Most unbalanced models are due to:
+**Known Limitations** (421 unbalanced models):
 
-| Category | Impact | Notes |
-|----------|--------|-------|
-| Connect equations | ~40% | Missing equations from flow/potential expansion |
-| Algorithm sections | ~20% | Algorithm assignments not counted as equations |
-| Partial/abstract models | ~15% | Intentionally incomplete models |
-| Array handling | ~15% | Dynamic array sizes in equations |
-| External functions | ~10% | Functions without equations |
+| Category | Notes |
+|----------|-------|
+| Algorithm sections | Assignments not yet counted as equations |
+| Complex enumerations | Some types not yet substituted |
+| Stream connectors | `inStream`/`actualStream` not implemented |
+| External functions | Functions without equation bodies |
+| Operator records | Operator overloading not implemented |
 
 ## Architecture
 
@@ -336,20 +310,21 @@ Modelica Source -> Parse -> Flatten -> BLT -> DAE -> DAE IR (JSON)
 ## Development
 
 ```bash
-# Build
-cargo build --release
-
-# Run tests
-cargo test
-
-# Check formatting
-cargo fmt --check
-rumoca-fmt --check
-
-# Lint
-cargo clippy
-rumoca-lint
+cargo build --release   # Build
+cargo test              # Run tests
+cargo fmt --check       # Check Rust formatting
+cargo clippy            # Lint Rust code
+rumoca-fmt --check      # Check Modelica formatting
+rumoca-lint             # Lint Modelica files
 ```
+
+## Roadmap
+
+**Export Targets:**
+- [eFMI/GALEC](https://www.efmi-standard.org/)
+
+**Import Targets:**
+- [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) - interface with OpenModelica, Dymola, etc.
 
 ## Contributing
 
@@ -375,6 +350,4 @@ Apache-2.0 ([LICENSE](LICENSE))
 
 - [Modelica IR](https://github.com/CogniPilot/modelica_ir) - DAE IR specification
 - [Cyecca](https://github.com/cognipilot/cyecca) - Model simulation, analysis, and code generation
-- [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) - Planned import format
-- [eFMI/GALEC](https://www.efmi-standard.org/) - Planned export format
 - [Modelica Language](https://www.modelica.org/)

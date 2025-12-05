@@ -473,6 +473,33 @@ pub mod assertion_level {
     pub const ERROR: i64 = 2;
 }
 
+/// AnalogFilter enumeration - analog filter characteristics
+/// enumeration(CriticalDamping, Bessel, Butterworth, ChebyshevI)
+pub mod analog_filter {
+    pub const CRITICAL_DAMPING: i64 = 1;
+    pub const BESSEL: i64 = 2;
+    pub const BUTTERWORTH: i64 = 3;
+    pub const CHEBYSHEV_I: i64 = 4;
+}
+
+/// FilterType enumeration - type of analog filter
+/// enumeration(LowPass, HighPass, BandPass, BandStop)
+pub mod filter_type {
+    pub const LOW_PASS: i64 = 1;
+    pub const HIGH_PASS: i64 = 2;
+    pub const BAND_PASS: i64 = 3;
+    pub const BAND_STOP: i64 = 4;
+}
+
+/// SimpleController enumeration - simple controller type
+/// enumeration(P, PI, PD, PID)
+pub mod simple_controller {
+    pub const P: i64 = 1;
+    pub const PI: i64 = 2;
+    pub const PD: i64 = 3;
+    pub const PID: i64 = 4;
+}
+
 /// Look up a built-in enumeration value by qualified name
 /// Returns the integer value for enumeration literals like "StateSelect.prefer"
 pub fn get_enumeration_value(name: &str) -> Option<i64> {
@@ -543,6 +570,48 @@ pub fn get_enumeration_value(name: &str) -> Option<i64> {
         return Some(assertion_level::ERROR);
     }
 
+    // AnalogFilter enumeration (Modelica.Blocks.Types.AnalogFilter)
+    if name == "AnalogFilter.CriticalDamping" || name.ends_with(".AnalogFilter.CriticalDamping") {
+        return Some(analog_filter::CRITICAL_DAMPING);
+    }
+    if name == "AnalogFilter.Bessel" || name.ends_with(".AnalogFilter.Bessel") {
+        return Some(analog_filter::BESSEL);
+    }
+    if name == "AnalogFilter.Butterworth" || name.ends_with(".AnalogFilter.Butterworth") {
+        return Some(analog_filter::BUTTERWORTH);
+    }
+    if name == "AnalogFilter.ChebyshevI" || name.ends_with(".AnalogFilter.ChebyshevI") {
+        return Some(analog_filter::CHEBYSHEV_I);
+    }
+
+    // FilterType enumeration (Modelica.Blocks.Types.FilterType)
+    if name == "FilterType.LowPass" || name.ends_with(".FilterType.LowPass") {
+        return Some(filter_type::LOW_PASS);
+    }
+    if name == "FilterType.HighPass" || name.ends_with(".FilterType.HighPass") {
+        return Some(filter_type::HIGH_PASS);
+    }
+    if name == "FilterType.BandPass" || name.ends_with(".FilterType.BandPass") {
+        return Some(filter_type::BAND_PASS);
+    }
+    if name == "FilterType.BandStop" || name.ends_with(".FilterType.BandStop") {
+        return Some(filter_type::BAND_STOP);
+    }
+
+    // SimpleController enumeration (Modelica.Blocks.Types.SimpleController)
+    if name == "SimpleController.P" || name.ends_with(".SimpleController.P") {
+        return Some(simple_controller::P);
+    }
+    if name == "SimpleController.PI" || name.ends_with(".SimpleController.PI") {
+        return Some(simple_controller::PI);
+    }
+    if name == "SimpleController.PD" || name.ends_with(".SimpleController.PD") {
+        return Some(simple_controller::PD);
+    }
+    if name == "SimpleController.PID" || name.ends_with(".SimpleController.PID") {
+        return Some(simple_controller::PID);
+    }
+
     None
 }
 
@@ -577,5 +646,23 @@ pub fn builtin_enumeration_names() -> Vec<String> {
         "AssertionLevel".to_string(),
         "AssertionLevel.warning".to_string(),
         "AssertionLevel.error".to_string(),
+        // AnalogFilter
+        "AnalogFilter".to_string(),
+        "AnalogFilter.CriticalDamping".to_string(),
+        "AnalogFilter.Bessel".to_string(),
+        "AnalogFilter.Butterworth".to_string(),
+        "AnalogFilter.ChebyshevI".to_string(),
+        // FilterType
+        "FilterType".to_string(),
+        "FilterType.LowPass".to_string(),
+        "FilterType.HighPass".to_string(),
+        "FilterType.BandPass".to_string(),
+        "FilterType.BandStop".to_string(),
+        // SimpleController
+        "SimpleController".to_string(),
+        "SimpleController.P".to_string(),
+        "SimpleController.PI".to_string(),
+        "SimpleController.PD".to_string(),
+        "SimpleController.PID".to_string(),
     ]
 }

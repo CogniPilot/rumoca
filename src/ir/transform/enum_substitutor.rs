@@ -9,6 +9,9 @@
 //! - Dynamics: DynamicFreeInitial(1), FixedInitial(2), SteadyStateInitial(3), SteadyState(4)
 //! - GravityTypes: NoGravity(1), UniformGravity(2), PointGravity(3)
 //! - AssertionLevel: warning(1), error(2)
+//! - AnalogFilter: CriticalDamping(1), Bessel(2), Butterworth(3), ChebyshevI(4)
+//! - FilterType: LowPass(1), HighPass(2), BandPass(3), BandStop(4)
+//! - SimpleController: P(1), PI(2), PD(3), PID(4)
 
 use crate::ir::ast::{Expression, TerminalType, Token};
 use crate::ir::transform::constants::get_enumeration_value;
