@@ -6,6 +6,7 @@
 //! - Algorithm sections
 //! - If/when/for blocks
 //! - Comments
+//! - Annotations
 
 use std::collections::HashMap;
 
@@ -27,6 +28,9 @@ pub fn handle_folding_range(
 
     // Add comment folding ranges
     collect_comment_ranges(text, &mut ranges);
+
+    // Add annotation folding ranges
+    collect_annotation_ranges(text, &mut ranges);
 
     // Parse and add AST-based folding ranges
     if let Some(ast) = parse_document(text, path) {
@@ -104,6 +108,92 @@ fn collect_comment_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
 
         i += 1;
     }
+}
+
+/// Collect folding ranges for annotation() blocks that span multiple lines
+/// Note: We use FoldingRangeKind::Imports so VSCode's "editor.foldingImportsByDefault"
+/// setting will auto-collapse annotations. This is a workaround since VSCode doesn't
+/// have a generic "fold by kind" setting for custom region types.
+fn collect_annotation_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
+    let lines: Vec<&str> = text.lines().collect();
+
+    for (line_idx, line) in lines.iter().enumerate() {
+        // Find "annotation(" pattern (with optional whitespace)
+        if let Some(ann_pos) = line.find("annotation(") {
+            // Check if annotation is inside a string or comment
+            let before_ann = &line[..ann_pos];
+            if before_ann.contains("//") || is_inside_string(line, ann_pos) {
+                continue;
+            }
+
+            let start_line = line_idx as u32;
+
+            // Find the matching closing parenthesis
+            if let Some(end_line) = find_matching_paren(&lines, line_idx, ann_pos + 11) {
+                // Only create a folding range if it spans multiple lines
+                if end_line > start_line {
+                    ranges.push(FoldingRange {
+                        start_line,
+                        start_character: Some(ann_pos as u32),
+                        end_line,
+                        end_character: None,
+                        // Use Imports kind so "editor.foldingImportsByDefault" works
+                        kind: Some(FoldingRangeKind::Imports),
+                        collapsed_text: Some("annotation(...)".to_string()),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Check if position is inside a string literal (simple heuristic)
+fn is_inside_string(line: &str, pos: usize) -> bool {
+    let before = &line[..pos];
+    // Count unescaped quotes before this position
+    let quote_count = before.matches('"').count() - before.matches("\\\"").count();
+    quote_count % 2 == 1
+}
+
+/// Find the matching closing parenthesis for an annotation starting at given position
+fn find_matching_paren(lines: &[&str], start_line: usize, start_col: usize) -> Option<u32> {
+    let mut depth = 1; // We start after the opening paren of annotation(
+    let mut in_string = false;
+
+    // Start from the position after "annotation("
+    let first_line = lines.get(start_line)?;
+    for ch in first_line[start_col..].chars() {
+        match ch {
+            '"' => in_string = !in_string,
+            '(' if !in_string => depth += 1,
+            ')' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start_line as u32);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Continue on subsequent lines
+    for (offset, line) in lines.iter().enumerate().skip(start_line + 1) {
+        for ch in line.chars() {
+            match ch {
+                '"' => in_string = !in_string,
+                '(' if !in_string => depth += 1,
+                ')' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(offset as u32);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    None
 }
 
 /// Collect folding ranges for a class definition
@@ -482,5 +572,43 @@ mod tests {
         let text = "for i in 1:10 loop\n  x := i;\nend for;";
         let end_line = find_end_keyword(text, 0, "for");
         assert_eq!(end_line, Some(2));
+    }
+
+    #[test]
+    fn test_collect_annotation_ranges_single_line() {
+        let text = "x = 1 annotation(Evaluate=true);";
+        let mut ranges = Vec::new();
+        collect_annotation_ranges(text, &mut ranges);
+        // Single-line annotation should not create a folding range
+        assert_eq!(ranges.len(), 0);
+    }
+
+    #[test]
+    fn test_collect_annotation_ranges_multiline() {
+        let text = r#"  annotation(
+    Documentation(info="<html>
+      <p>Test</p>
+    </html>"));"#;
+        let mut ranges = Vec::new();
+        collect_annotation_ranges(text, &mut ranges);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].start_line, 0);
+        assert_eq!(ranges[0].end_line, 3);
+        assert_eq!(
+            ranges[0].collapsed_text,
+            Some("annotation(...)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_collect_annotation_ranges_nested_parens() {
+        let text = r#"annotation(
+  Placement(transformation(extent={{-80,70},{-60,90}})),
+  Documentation(info="text"))"#;
+        let mut ranges = Vec::new();
+        collect_annotation_ranges(text, &mut ranges);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].start_line, 0);
+        assert_eq!(ranges[0].end_line, 2);
     }
 }

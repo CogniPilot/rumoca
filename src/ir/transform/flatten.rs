@@ -643,9 +643,46 @@ fn expand_connect_equations(
 
         // Get the connector type from the first pin using the pin_types map
         let first_pin = pins_vec[0];
+        let mut generated = false;
+
         if let Some(connector_type) = pin_types.get(first_pin) {
             if let Some(connector_class) = class_dict.get(connector_type) {
-                generate_connection_equations(&pins_vec, connector_class, &mut new_equations);
+                if !connector_class.components.is_empty() {
+                    generate_connection_equations(&pins_vec, connector_class, &mut new_equations);
+                    generated = true;
+                }
+            }
+        }
+
+        // For signal connectors (type aliases like RealInput/RealOutput with no internal components),
+        // generate equality equations only where needed.
+        // For causal connectors: output = connected_output creates one equation for the unknown output.
+        // Input variables should be aliased to their connected outputs, not have equations generated.
+        if !generated {
+            // Find which pins are outputs (non-inputs) - these are the unknowns that need equations
+            let output_pins: Vec<&String> = pins_vec
+                .iter()
+                .filter(|pin| {
+                    // Check if this pin is an output (Causality::Output or Empty) vs input
+                    if let Some(comp) = fclass.components.get(**pin) {
+                        !matches!(comp.causality, ir::ast::Causality::Input(..))
+                    } else {
+                        true // Unknown pins are treated as outputs
+                    }
+                })
+                .cloned()
+                .collect();
+
+            // Find one "source" output to use as the reference value
+            let source_pin = output_pins.first().or(pins_vec.first());
+
+            if let Some(source) = source_pin {
+                // Generate equations only for output pins (unknowns) that are not the source
+                for pin in &output_pins {
+                    if *pin != *source {
+                        new_equations.push(make_simple_eq(source, pin));
+                    }
+                }
             }
         }
     }
@@ -909,6 +946,10 @@ impl<'a> ExpansionContext<'a> {
             if let Some(mod_expr) = comp.modifications.get(subcomp_name) {
                 scomp.start = mod_expr.clone();
             }
+
+            // Apply scope renaming to the component's start expression
+            // This prefixes internal references like `x_start` to `comp.x_start`
+            scomp.start.accept_mut(&mut renamer);
 
             subcomponents.push((name, scomp));
         }

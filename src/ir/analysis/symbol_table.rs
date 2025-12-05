@@ -97,6 +97,13 @@ impl SymbolTable {
         &self.symbols
     }
 
+    /// Check if any symbol starts with the given prefix followed by a dot
+    /// This is used to validate references like "D.x" when "D.x_start" is defined
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        let prefix_dot = format!("{}.", prefix);
+        self.symbols.keys().any(|k| k.starts_with(&prefix_dot))
+    }
+
     /// Clear all non-global symbols
     pub fn clear(&mut self) {
         self.symbols.clear();

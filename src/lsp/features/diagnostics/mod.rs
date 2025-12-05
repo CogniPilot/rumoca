@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use indexmap::IndexMap;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
+use crate::dae::balance::BalanceStatus;
 use crate::ir::ast::{Causality, ClassDefinition, ClassType, Expression, Variability};
 use crate::ir::transform::constants::global_builtins;
 use crate::ir::transform::flatten::flatten;
@@ -47,7 +48,6 @@ pub fn compute_diagnostics(
         match parse(text, path, &mut grammar) {
             Ok(_) => {
                 // Parsing succeeded - clear stale balance cache since document changed
-                // Balance will be recomputed on-demand when user clicks "Analyze"
                 workspace.clear_balances(uri);
 
                 // Run semantic analysis on each class (using flattening for inherited symbols)
@@ -57,6 +57,9 @@ pub fn compute_diagnostics(
                             analyze_class(&fclass, &ast.class_list, &mut diagnostics);
                         }
                     }
+
+                    // Compute balance for each model/block/class and cache it
+                    compute_balance_for_classes(uri, text, path, ast, workspace);
                 }
             }
             Err(e) => {
@@ -209,8 +212,9 @@ fn analyze_class(
     }
 
     // Check for unused variables (warning)
-    // Skip for records and connectors since their fields are accessed externally
-    if !matches!(class.class_type, ClassType::Record | ClassType::Connector) {
+    // Skip for records, connectors, and partial classes since their fields are accessed externally
+    // or will be used when the partial class is extended
+    if !class.partial && !matches!(class.class_type, ClassType::Record | ClassType::Connector) {
         for (name, sym) in &defined {
             if !used.contains(name) && !name.starts_with('_') {
                 // Skip parameters, classes, and class instances (submodels)
@@ -245,5 +249,59 @@ fn analyze_class(
     // Recursively analyze nested classes
     for nested_class in class.classes.values() {
         analyze_class(nested_class, peer_classes, diagnostics);
+    }
+}
+
+/// Compute balance for all model/block/class definitions and cache the results
+fn compute_balance_for_classes(
+    uri: &Uri,
+    text: &str,
+    path: &str,
+    ast: &crate::ir::ast::StoredDefinition,
+    workspace: &mut WorkspaceState,
+) {
+    // Recursively process all classes
+    for (class_name, class) in &ast.class_list {
+        compute_balance_recursive(uri, text, path, class, class_name, workspace);
+    }
+}
+
+/// Recursively compute balance for a class and its nested classes
+fn compute_balance_recursive(
+    uri: &Uri,
+    text: &str,
+    path: &str,
+    class: &ClassDefinition,
+    class_path: &str,
+    workspace: &mut WorkspaceState,
+) {
+    // Compute balance for models, blocks, classes, and connectors (not functions, records, etc.)
+    if matches!(
+        class.class_type,
+        ClassType::Model | ClassType::Block | ClassType::Class | ClassType::Connector
+    ) {
+        // Try to compile and get balance - silently ignore errors
+        if let Ok(result) = crate::Compiler::new()
+            .model(class_path)
+            .compile_str(text, path)
+        {
+            let mut balance = result.dae.check_balance();
+
+            // Mark as Partial if:
+            // - Class is explicitly declared with `partial` keyword, or
+            // - Class is a connector (connectors are partial by design)
+            let is_connector = matches!(class.class_type, ClassType::Connector);
+            if (class.partial || is_connector) && !balance.is_balanced {
+                balance.status = BalanceStatus::Partial;
+            }
+
+            workspace.set_balance(uri.clone(), class_path.to_string(), balance);
+        }
+    }
+
+    // Recursively process nested classes
+    for (nested_name, nested_class) in &class.classes {
+        let nested_path = format!("{}.{}", class_path, nested_name);
+        compute_balance_recursive(uri, text, path, nested_class, &nested_path, workspace);
     }
 }

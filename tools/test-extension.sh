@@ -86,6 +86,12 @@ if [[ -z "$USE_SYSTEM" ]]; then
     step "Building rumoca-lsp (release)..."
     cargo build --release --bin rumoca-lsp
     info "Built: $ROOT_DIR/target/release/rumoca-lsp"
+
+    # Copy binary to extension's bin directory so it gets bundled
+    step "Copying rumoca-lsp to extension bin directory..."
+    mkdir -p "$VSCODE_DIR/bin"
+    cp "$ROOT_DIR/target/release/rumoca-lsp" "$VSCODE_DIR/bin/"
+    info "Copied to: $VSCODE_DIR/bin/rumoca-lsp"
 else
     info "Skipping cargo build (using system rumoca-lsp)"
 fi
@@ -144,18 +150,5 @@ step "Installing extension in VSCode..."
 code --install-extension "$VSIX_FILE" --force
 
 echo ""
-info "Extension installed successfully!"
-echo ""
-info "To use your local rumoca-lsp build, configure VSCode settings:"
-echo ""
-echo "  Option 1: Use serverPath (recommended for testing)"
-echo "    {"
-echo "      \"rumoca.serverPath\": \"$ROOT_DIR/target/release/rumoca-lsp\""
-echo "    }"
-echo ""
-echo "  Option 2: Use system server (if rumoca-lsp is in PATH)"
-echo "    {"
-echo "      \"rumoca.useSystemServer\": true"
-echo "    }"
-echo ""
+info "Extension installed successfully with bundled rumoca-lsp!"
 info "Reload VSCode window (Ctrl+Shift+P -> 'Developer: Reload Window') to activate."

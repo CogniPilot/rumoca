@@ -1,19 +1,17 @@
 //! Code Lens handler for Modelica files.
 //!
 //! Provides inline actionable information:
+//! - Balance status for models/blocks (states, unknowns, equations)
 //! - Reference counts for classes, functions, and variables
 //! - "Extends" information for models
-//! - Clickable "Analyze" lens to compile and show balance status for models
 
 use lsp_types::{CodeLens, CodeLensParams, Command, Position, Range, Uri};
 
+use crate::dae::balance::BalanceStatus;
 use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition};
 
 use crate::lsp::WorkspaceState;
 use crate::lsp::utils::parse_document;
-
-/// Command name for analyzing a Modelica class
-pub const ANALYZE_CLASS_COMMAND: &str = "rumoca.analyzeClass";
 
 /// Handle code lens request
 pub fn handle_code_lens(
@@ -62,20 +60,22 @@ fn collect_class_lenses(
         format!("{}.{}", prefix, class.name.text)
     };
 
-    // Add analyze/balance lens for models/blocks
+    // Show balance info for models/blocks/classes/connectors (computed automatically during diagnostics)
     if matches!(
         class.class_type,
-        ClassType::Model | ClassType::Block | ClassType::Class
+        ClassType::Model | ClassType::Block | ClassType::Class | ClassType::Connector
     ) {
-        // Check if we have cached balance for this specific class
         if let Some(balance) = workspace.get_balance(uri, &class_path) {
-            // Show cached balance results
-            let status_icon = if balance.is_balanced {
-                "✓"
-            } else if balance.difference() > 0 {
-                "⚠ over"
-            } else {
-                "⚠ under"
+            let status_icon = match balance.status {
+                BalanceStatus::Balanced => "✓",
+                BalanceStatus::Partial => "◐ partial",
+                BalanceStatus::Unbalanced => {
+                    if balance.difference() > 0 {
+                        "⚠ over"
+                    } else {
+                        "⚠ under"
+                    }
+                }
             };
 
             let title = format!(
@@ -96,39 +96,13 @@ fn collect_class_lenses(
                 },
                 command: Some(Command {
                     title,
-                    // Clicking again will re-analyze
-                    command: ANALYZE_CLASS_COMMAND.to_string(),
-                    arguments: Some(vec![
-                        serde_json::Value::String(uri.to_string()),
-                        serde_json::Value::String(class_path.clone()),
-                    ]),
-                }),
-                data: None,
-            });
-        } else {
-            // No cached balance - show clickable "Analyze" lens
-            lenses.push(CodeLens {
-                range: Range {
-                    start: Position {
-                        line: class_line,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: class_line,
-                        character: 0,
-                    },
-                },
-                command: Some(Command {
-                    title: "▶ Analyze".to_string(),
-                    command: ANALYZE_CLASS_COMMAND.to_string(),
-                    arguments: Some(vec![
-                        serde_json::Value::String(uri.to_string()),
-                        serde_json::Value::String(class_path.clone()),
-                    ]),
+                    command: String::new(), // Not clickable
+                    arguments: None,
                 }),
                 data: None,
             });
         }
+        // No fallback "Analyze" button - balance is computed automatically
     }
 
     // Add extends lens if class extends another

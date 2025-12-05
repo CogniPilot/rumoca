@@ -170,7 +170,11 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     const clientOptions: LanguageClientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'modelica' }],
+        documentSelector: [
+            { scheme: 'file', language: 'modelica' },
+            // Support Modelica cells in Jupyter notebooks
+            { scheme: 'vscode-notebook-cell', language: 'modelica' }
+        ],
         outputChannelName: 'Rumoca Modelica',
         initializationOptions: {
             debug: debug,

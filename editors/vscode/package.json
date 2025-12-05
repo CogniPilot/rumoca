@@ -18,15 +18,21 @@
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Notebooks"
   ],
   "keywords": [
     "modelica",
     "simulation",
     "dae",
-    "modeling"
+    "modeling",
+    "jupyter",
+    "notebook"
   ],
   "main": "./out/extension.js",
+  "activationEvents": [
+    "onNotebook:jupyter-notebook"
+  ],
   "contributes": {
     "languages": [
       {
@@ -45,9 +51,13 @@
       {
         "language": "modelica",
         "scopeName": "source.modelica",
-        "path": "./syntaxes/modelica.tmLanguage.json"
+        "path": "./syntaxes/modelica.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.modelica": "modelica"
+        }
       }
     ],
+    "notebookRenderer": [],
     "configuration": {
       "type": "object",
       "title": "Rumoca Modelica",

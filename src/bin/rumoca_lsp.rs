@@ -26,28 +26,26 @@ use lsp_types::notification::Notification as NotificationTrait;
 use lsp_types::{
     CallHierarchyServerCapability, CodeActionProviderCapability, CodeLensOptions,
     CompletionOptions, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentLinkOptions, ExecuteCommandOptions, HoverProviderCapability,
-    InitializeParams, InlayHintOptions, InlayHintServerCapabilities, RenameOptions,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
-    ServerCapabilities, SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
-    Uri,
+    DidOpenTextDocumentParams, DocumentLinkOptions, HoverProviderCapability, InitializeParams,
+    RenameOptions, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
     notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Initialized},
     request::{
         CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
         CodeActionRequest, CodeLensRequest, Completion, DocumentLinkRequest, DocumentSymbolRequest,
-        ExecuteCommand, FoldingRangeRequest, Formatting, GotoDefinition, GotoTypeDefinition,
-        HoverRequest, InlayHintRequest, PrepareRenameRequest, References, Rename,
-        SemanticTokensFullRequest, SignatureHelpRequest, WorkspaceSymbolRequest,
+        FoldingRangeRequest, Formatting, GotoDefinition, GotoTypeDefinition, HoverRequest,
+        PrepareRenameRequest, References, Rename, SemanticTokensFullRequest, SignatureHelpRequest,
+        WorkspaceSymbolRequest,
     },
 };
 use rumoca::lsp::{
-    ANALYZE_CLASS_COMMAND, WorkspaceState, analyze_class, compute_diagnostics,
-    get_semantic_token_legend, handle_code_action, handle_code_lens, handle_completion_workspace,
-    handle_document_links, handle_document_symbols, handle_folding_range, handle_formatting,
-    handle_goto_definition_workspace, handle_hover, handle_incoming_calls, handle_inlay_hints,
-    handle_outgoing_calls, handle_prepare_call_hierarchy, handle_prepare_rename, handle_references,
-    handle_rename_workspace, handle_semantic_tokens, handle_signature_help, handle_type_definition,
-    handle_workspace_symbol,
+    WorkspaceState, compute_diagnostics, get_semantic_token_legend, handle_code_action,
+    handle_code_lens, handle_completion_workspace, handle_document_links, handle_document_symbols,
+    handle_folding_range, handle_formatting, handle_goto_definition_workspace, handle_hover,
+    handle_incoming_calls, handle_outgoing_calls, handle_prepare_call_hierarchy,
+    handle_prepare_rename, handle_references, handle_rename_workspace, handle_semantic_tokens,
+    handle_signature_help, handle_type_definition, handle_workspace_symbol,
 };
 use std::error::Error;
 use std::path::PathBuf;
@@ -113,12 +111,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         })),
         folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-        inlay_hint_provider: Some(lsp_types::OneOf::Right(
-            InlayHintServerCapabilities::Options(InlayHintOptions {
-                work_done_progress_options: Default::default(),
-                resolve_provider: Some(false),
-            }),
-        )),
+        // Inlay hints disabled - can be distracting
+        inlay_hint_provider: None,
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(false),
@@ -126,10 +120,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         document_link_provider: Some(DocumentLinkOptions {
             resolve_provider: Some(false),
-            work_done_progress_options: Default::default(),
-        }),
-        execute_command_provider: Some(ExecuteCommandOptions {
-            commands: vec![ANALYZE_CLASS_COMMAND.to_string()],
             work_done_progress_options: Default::default(),
         }),
         ..Default::default()
@@ -457,20 +447,6 @@ fn main_loop(
                     Err(ExtractError::MethodMismatch(req)) => req,
                 };
 
-                let req = match cast_request::<InlayHintRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_inlay_hints(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
                 let req = match cast_request::<Formatting>(req) {
                     Ok((id, params)) => {
                         let result = handle_formatting(workspace.documents(), params);
@@ -541,23 +517,9 @@ fn main_loop(
                     Err(ExtractError::MethodMismatch(req)) => req,
                 };
 
-                let req = match cast_request::<DocumentLinkRequest>(req) {
+                match cast_request::<DocumentLinkRequest>(req) {
                     Ok((id, params)) => {
                         let result = handle_document_links(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                match cast_request::<ExecuteCommand>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_execute_command(&connection, &mut workspace, params)?;
                         let resp = Response::new_ok(id, result);
                         connection.sender.send(Message::Response(resp))?;
                         continue;
@@ -572,7 +534,7 @@ fn main_loop(
                 };
             }
             Message::Response(_resp) => {
-                // We don't send requests, so we don't expect responses
+                // We don't send requests to the client, so we don't expect responses
             }
             Message::Notification(notif) => {
                 // Handle initialized notification
@@ -705,75 +667,4 @@ fn publish_diagnostics(
     );
     connection.sender.send(Message::Notification(notif))?;
     Ok(())
-}
-
-fn handle_execute_command(
-    connection: &Connection,
-    workspace: &mut WorkspaceState,
-    params: lsp_types::ExecuteCommandParams,
-) -> Result<Option<serde_json::Value>, Box<dyn Error + Sync + Send>> {
-    eprintln!("Execute command: {}", params.command);
-
-    if params.command == ANALYZE_CLASS_COMMAND {
-        // Extract arguments: [uri_string, class_name]
-        let args = params.arguments;
-        if args.len() >= 2 {
-            let uri_str = args[0].as_str().unwrap_or("");
-            let class_name = args[1].as_str().unwrap_or("");
-
-            eprintln!("Analyzing class '{}' in {}", class_name, uri_str);
-
-            if let Ok(uri) = uri_str.parse::<Uri>() {
-                let result = analyze_class(workspace, &uri, class_name);
-
-                // Show result to user via notification
-                let message = if let Some(error) = &result.error {
-                    format!("Analysis failed for '{}': {}", class_name, error)
-                } else {
-                    format!(
-                        "Analysis of '{}': {} states, {} unknowns, {} equations [{}]",
-                        class_name,
-                        result.num_states,
-                        result.num_unknowns,
-                        result.num_equations,
-                        if result.is_balanced {
-                            "✓ balanced"
-                        } else {
-                            "⚠ unbalanced"
-                        }
-                    )
-                };
-
-                // Send showMessage notification
-                let show_params = lsp_types::ShowMessageParams {
-                    typ: if result.error.is_some() {
-                        lsp_types::MessageType::ERROR
-                    } else if result.is_balanced {
-                        lsp_types::MessageType::INFO
-                    } else {
-                        lsp_types::MessageType::WARNING
-                    },
-                    message,
-                };
-                let notif = Notification::new(
-                    <lsp_types::notification::ShowMessage as NotificationTrait>::METHOD.to_string(),
-                    show_params,
-                );
-                connection.sender.send(Message::Notification(notif))?;
-
-                // Trigger code lens refresh by sending a notification
-                // (The client will re-request code lenses after receiving the response)
-                return Ok(Some(serde_json::json!({
-                    "success": result.error.is_none(),
-                    "class": class_name,
-                    "states": result.num_states,
-                    "unknowns": result.num_unknowns,
-                    "equations": result.num_equations,
-                    "balanced": result.is_balanced
-                })));
-            }
-        }
-    }
-
-    Ok(None)
 }

@@ -612,6 +612,187 @@ impl Expression {
     }
 }
 
+impl std::fmt::Display for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expression::Empty => write!(f, ""),
+            Expression::Range { start, step, end } => {
+                if let Some(s) = step {
+                    write!(f, "{}:{}:{}", start, s, end)
+                } else {
+                    write!(f, "{}:{}", start, end)
+                }
+            }
+            Expression::Unary { op, rhs } => {
+                let op_str = match op {
+                    OpUnary::Minus(_) => "-",
+                    OpUnary::Plus(_) => "+",
+                    OpUnary::DotMinus(_) => ".-",
+                    OpUnary::DotPlus(_) => ".+",
+                    OpUnary::Not(_) => "not ",
+                    OpUnary::Empty => "",
+                };
+                write!(f, "{}{}", op_str, rhs)
+            }
+            Expression::Binary { op, lhs, rhs } => {
+                let op_str = match op {
+                    OpBinary::Add(_) => "+",
+                    OpBinary::Sub(_) => "-",
+                    OpBinary::Mul(_) => "*",
+                    OpBinary::Div(_) => "/",
+                    OpBinary::Eq(_) => "==",
+                    OpBinary::Neq(_) => "<>",
+                    OpBinary::Lt(_) => "<",
+                    OpBinary::Le(_) => "<=",
+                    OpBinary::Gt(_) => ">",
+                    OpBinary::Ge(_) => ">=",
+                    OpBinary::And(_) => "and",
+                    OpBinary::Or(_) => "or",
+                    OpBinary::Exp(_) => "^",
+                    OpBinary::AddElem(_) => ".+",
+                    OpBinary::SubElem(_) => ".-",
+                    OpBinary::MulElem(_) => ".*",
+                    OpBinary::DivElem(_) => "./",
+                    OpBinary::Empty => "?",
+                };
+                write!(f, "{} {} {}", lhs, op_str, rhs)
+            }
+            Expression::Terminal {
+                terminal_type,
+                token,
+            } => match terminal_type {
+                TerminalType::String => write!(f, "\"{}\"", token.text),
+                TerminalType::Bool => write!(f, "{}", token.text),
+                _ => write!(f, "{}", token.text),
+            },
+            Expression::ComponentReference(comp) => write!(f, "{}", comp),
+            Expression::FunctionCall { comp, args } => {
+                write!(f, "{}(", comp)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
+            Expression::Array { elements } => {
+                write!(f, "{{")?;
+                for (i, e) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", e)?;
+                }
+                write!(f, "}}")
+            }
+            Expression::Tuple { elements } => {
+                write!(f, "(")?;
+                for (i, e) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", e)?;
+                }
+                write!(f, ")")
+            }
+            Expression::If {
+                branches,
+                else_branch,
+            } => {
+                write!(f, "if ")?;
+                for (i, (cond, expr)) in branches.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " elseif ")?;
+                    }
+                    write!(f, "{} then {}", cond, expr)?;
+                }
+                write!(f, " else {}", else_branch)
+            }
+            Expression::Parenthesized { inner } => write!(f, "({})", inner),
+            Expression::ArrayComprehension { expr, indices } => {
+                write!(f, "{{ {} for ", expr)?;
+                for (i, idx) in indices.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} in {}", idx.ident.text, idx.range)?;
+                }
+                write!(f, " }}")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Equation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Equation::Empty => write!(f, ""),
+            Equation::Simple { lhs, rhs } => write!(f, "{} = {}", lhs, rhs),
+            Equation::Connect { lhs, rhs } => write!(f, "connect({}, {})", lhs, rhs),
+            Equation::For { indices, equations } => {
+                write!(f, "for ")?;
+                for (i, idx) in indices.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} in {}", idx.ident.text, idx.range)?;
+                }
+                writeln!(f, " loop")?;
+                for eq in equations {
+                    writeln!(f, "  {};", eq)?;
+                }
+                write!(f, "end for")
+            }
+            Equation::When(blocks) => {
+                for (i, block) in blocks.iter().enumerate() {
+                    if i == 0 {
+                        write!(f, "when {} then", block.cond)?;
+                    } else {
+                        write!(f, " elsewhen {} then", block.cond)?;
+                    }
+                    for eq in &block.eqs {
+                        write!(f, " {};", eq)?;
+                    }
+                }
+                write!(f, " end when")
+            }
+            Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for (i, block) in cond_blocks.iter().enumerate() {
+                    if i == 0 {
+                        write!(f, "if {} then", block.cond)?;
+                    } else {
+                        write!(f, " elseif {} then", block.cond)?;
+                    }
+                    for eq in &block.eqs {
+                        write!(f, " {};", eq)?;
+                    }
+                }
+                if let Some(else_eqs) = else_block {
+                    write!(f, " else")?;
+                    for eq in else_eqs {
+                        write!(f, " {};", eq)?;
+                    }
+                }
+                write!(f, " end if")
+            }
+            Equation::FunctionCall { comp, args } => {
+                write!(f, "{}(", comp)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 
 pub enum Statement {

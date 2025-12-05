@@ -8,7 +8,7 @@ pub mod folding;
 pub mod inlay_hints;
 
 pub use code_actions::handle_code_action;
-pub use code_lens::{ANALYZE_CLASS_COMMAND, handle_code_lens};
+pub use code_lens::handle_code_lens;
 pub use diagnostics::compute_diagnostics;
 pub use document_links::handle_document_links;
 pub use folding::handle_folding_range;

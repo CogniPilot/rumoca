@@ -81,6 +81,26 @@ fn main() -> Result<()> {
         compiler = compiler.modelica_path(&paths);
     }
 
+    // Auto-include packages from MODELICAPATH based on model name
+    // E.g., "Modelica.Blocks.Continuous.PID" -> include "Modelica" package
+    if let Some(root_package) = args.model.split('.').next() {
+        // Try to include the root package from library paths
+        // This will fail silently if the package is not found (it may be in the main file)
+        compiler = match compiler.include_from_modelica_path(root_package) {
+            Ok(c) => c,
+            Err(_) => Compiler::new()
+                .verbose(args.verbose)
+                .model(&args.model)
+                .modelica_path(
+                    &args
+                        .lib_paths
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>(),
+                ),
+        };
+    }
+
     let mut result = compiler.compile_file(&args.model_file)?;
 
     // Export using native JSON or template
