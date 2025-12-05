@@ -229,7 +229,7 @@ impl WorkspaceState {
         // Discover packages in workspace folders
         for folder in &workspace_folders {
             self.debug_log(&format!(
-                "[workspace] Discovering packages in: {:?}",
+                "[workspace] Discovering packages in workspace: {:?}",
                 folder
             ));
             let start = std::time::Instant::now();
@@ -240,7 +240,30 @@ impl WorkspaceState {
                 start.elapsed()
             ));
         }
-        self.debug_log("[workspace] initialize() complete");
+
+        // Also discover packages in library paths (MODELICAPATH + extra paths)
+        // This enables autocompletion for library imports
+        let library_paths: Vec<PathBuf> = self.package_roots.clone();
+        for lib_path in &library_paths {
+            if !workspace_folders.contains(lib_path) {
+                self.debug_log(&format!(
+                    "[workspace] Discovering packages in library path: {:?}",
+                    lib_path
+                ));
+                let start = std::time::Instant::now();
+                self.discover_packages_in_folder(lib_path);
+                self.debug_log(&format!(
+                    "[workspace] Finished {:?} in {:?}",
+                    lib_path,
+                    start.elapsed()
+                ));
+            }
+        }
+
+        self.debug_log(&format!(
+            "[workspace] initialize() complete - {} files discovered",
+            self.discovered_files.len()
+        ));
     }
 
     /// Check if a directory should be ignored during package discovery
@@ -272,6 +295,18 @@ impl WorkspaceState {
         if is_modelica_package(folder) {
             self.debug_log(&format!("[workspace] Found Modelica package: {:?}", folder));
             self.package_roots.push(folder.to_path_buf());
+
+            // Register the package name as a symbol for import autocompletion
+            if let Some(package_name) = folder.file_name().and_then(|n| n.to_str()) {
+                let package_mo = folder.join("package.mo");
+                if let Some(path_str) = package_mo.to_str() {
+                    let uri_str = format!("file://{}", path_str);
+                    if let Ok(uri) = uri_str.parse::<Uri>() {
+                        self.register_package_symbol(package_name, &uri);
+                    }
+                }
+            }
+
             // Discover all files in this package
             if let Ok(files) = discover_modelica_files(folder) {
                 self.debug_log(&format!(
@@ -395,6 +430,31 @@ impl WorkspaceState {
         }
 
         self.file_symbols.insert(uri.clone(), file_symbols);
+    }
+
+    /// Register a package symbol for import autocompletion
+    /// This is called during package discovery to make package names available
+    /// without needing to fully parse all files
+    fn register_package_symbol(&mut self, package_name: &str, uri: &Uri) {
+        // Only add if not already present
+        if self.symbol_index.contains_key(package_name) {
+            return;
+        }
+
+        let symbol = WorkspaceSymbol {
+            qualified_name: package_name.to_string(),
+            uri: uri.clone(),
+            line: 0,
+            column: 0,
+            kind: SymbolKind::Package,
+            detail: Some("Package".to_string()),
+        };
+
+        self.debug_log(&format!(
+            "[workspace] Registered package symbol: {}",
+            package_name
+        ));
+        self.symbol_index.insert(package_name.to_string(), symbol);
     }
 
     /// Index a class and its nested contents
@@ -553,6 +613,11 @@ impl WorkspaceState {
         &self.discovered_files
     }
 
+    /// Get the number of indexed symbols
+    pub fn symbol_count(&self) -> usize {
+        self.symbol_index.len()
+    }
+
     /// Load a file from disk if not already open
     pub fn ensure_file_loaded(&mut self, path: &Path) -> Option<Uri> {
         // Convert path to URI
@@ -568,6 +633,86 @@ impl WorkspaceState {
         self.open_document(uri.clone(), text);
 
         Some(uri)
+    }
+
+    /// Lazily load and index a package's contents for completion
+    /// This is called when the user types "PackageName." to get sub-packages
+    pub fn ensure_package_indexed(&mut self, package_prefix: &str) {
+        // Split prefix into components (e.g., "Modelica.Blocks" -> ["Modelica", "Blocks"])
+        let components: Vec<&str> = package_prefix.split('.').collect();
+        if components.is_empty() {
+            return;
+        }
+
+        // Find the package root that matches the first component
+        let top_level = components[0];
+        let mut package_path: Option<PathBuf> = None;
+
+        for root in &self.package_roots {
+            if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
+                if name == top_level {
+                    package_path = Some(root.clone());
+                    break;
+                }
+            }
+        }
+
+        let Some(mut current_path) = package_path else {
+            return;
+        };
+
+        // Navigate to nested package if needed (e.g., Modelica/Blocks)
+        for component in components.iter().skip(1) {
+            current_path = current_path.join(component);
+            if !current_path.is_dir() {
+                return;
+            }
+        }
+
+        // Load the package.mo file to index its contents
+        let package_mo = current_path.join("package.mo");
+        if package_mo.exists() {
+            self.debug_log(&format!(
+                "[workspace] Lazy-loading package: {} from {:?}",
+                package_prefix, package_mo
+            ));
+            let _ = self.ensure_file_loaded(&package_mo);
+
+            // Scan directory contents
+            if let Ok(entries) = std::fs::read_dir(&current_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+
+                    if path.is_dir() {
+                        // Sub-packages (directories with package.mo)
+                        if path.join("package.mo").exists() {
+                            if let Some(subpkg_name) = path.file_name().and_then(|n| n.to_str()) {
+                                let qualified_name = format!("{}.{}", package_prefix, subpkg_name);
+                                let subpkg_mo = path.join("package.mo");
+                                if let Some(path_str) = subpkg_mo.to_str() {
+                                    let uri_str = format!("file://{}", path_str);
+                                    if let Ok(uri) = uri_str.parse::<Uri>() {
+                                        self.register_package_symbol(&qualified_name, &uri);
+                                    }
+                                }
+                            }
+                        }
+                    } else if path.extension().is_some_and(|ext| ext == "mo") {
+                        // Individual .mo files (classes within the package)
+                        // Skip package.mo as it's already loaded
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if file_name != "package.mo" && file_name != "package.order" {
+                                self.debug_log(&format!(
+                                    "[workspace] Loading package member: {:?}",
+                                    path
+                                ));
+                                let _ = self.ensure_file_loaded(&path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Get imports from a file

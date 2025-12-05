@@ -9,11 +9,19 @@ use crate::lsp::workspace::{SymbolKind, WorkspaceState};
 
 /// Check if the cursor is in an import statement context
 pub fn is_in_import_context(text_before: &str) -> bool {
-    // Look for "import" keyword before the cursor (on the same line or recent context)
+    // Look for "import" keyword before the cursor (on the same line)
     let lines: Vec<&str> = text_before.lines().collect();
     if let Some(last_line) = lines.last() {
         let trimmed = last_line.trim();
-        return trimmed.starts_with("import ") || trimmed == "import";
+        // Match: "import", "import ", "import Foo", "import Modelica.Blocks"
+        // But not if we're past a semicolon (completed import)
+        if trimmed.contains(';') {
+            return false;
+        }
+        // Check if line starts with "import" keyword
+        if trimmed == "import" || trimmed.starts_with("import ") {
+            return true;
+        }
     }
     false
 }
@@ -58,6 +66,38 @@ pub fn get_workspace_completions(
                 kind: Some(kind),
                 detail: Some(symbol.qualified_name.clone()),
                 filter_text: Some(format!("{} {}", simple_name, symbol.qualified_name)),
+                ..Default::default()
+            });
+        }
+    }
+
+    // In import context, also add top-level package names from MODELICAPATH
+    if is_import_context {
+        items.extend(get_modelica_path_packages(workspace));
+    }
+
+    items
+}
+
+/// Get top-level package names from MODELICAPATH for import completion
+fn get_modelica_path_packages(workspace: &WorkspaceState) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Get top-level packages from indexed symbols
+    for symbol in workspace.find_symbols("") {
+        // Extract top-level package name (first component of qualified name)
+        let top_level = symbol
+            .qualified_name
+            .split('.')
+            .next()
+            .unwrap_or(&symbol.qualified_name);
+
+        if seen.insert(top_level.to_string()) {
+            items.push(CompletionItem {
+                label: top_level.to_string(),
+                kind: Some(CompletionItemKind::MODULE),
+                detail: Some("Package".to_string()),
                 ..Default::default()
             });
         }

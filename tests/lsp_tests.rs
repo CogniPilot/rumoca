@@ -1342,7 +1342,7 @@ end B;"#;
         }),
     };
 
-    let result = rumoca::lsp::handle_completion_workspace(&ws, params);
+    let result = rumoca::lsp::handle_completion_workspace(&mut ws, params);
     assert!(
         result.is_some(),
         "Expected completion items for ball. even with syntax error"

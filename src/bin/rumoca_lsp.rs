@@ -71,7 +71,13 @@ macro_rules! debug_log {
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    // Print startup message with binary path for debugging
+    let exe_path = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     eprintln!("Starting rumoca-lsp server");
+    eprintln!("  Binary: {}", exe_path);
+    eprintln!("  Version: {}", env!("CARGO_PKG_VERSION"));
 
     let (connection, io_threads) = Connection::stdio();
 
@@ -143,8 +149,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     // Check for debug flag in initialization options
     let mut extra_library_paths: Vec<PathBuf> = Vec::new();
+    let mut debug_enabled = false;
     if let Some(options) = &init_params.initialization_options {
         if let Some(debug) = options.get("debug").and_then(|v| v.as_bool()) {
+            debug_enabled = debug;
             DEBUG_MODE.store(debug, Ordering::Relaxed);
         }
         // Extract modelicaPath from initialization options
@@ -157,25 +165,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
     }
 
-    debug_log!("[rumoca-lsp] Server initialized (debug mode enabled)");
-    if !extra_library_paths.is_empty() {
-        debug_log!(
-            "[rumoca-lsp] Extra library paths from settings: {:?}",
-            extra_library_paths
-        );
-    }
-
     // Extract workspace folders for multi-file support
-    debug_log!("[rumoca-lsp] Extracting workspace folders...");
     let workspace_folders: Vec<PathBuf> = init_params
         .workspace_folders
         .unwrap_or_default()
         .into_iter()
         .filter_map(|folder| {
-            // Uri in lsp_types uses fluent_uri
-            // Extract the file path from the URI
             let uri_str = folder.uri.as_str();
-            debug_log!("[rumoca-lsp] Processing workspace folder: {}", uri_str);
             if uri_str.starts_with("file://") {
                 Some(PathBuf::from(folder.uri.path().as_str()))
             } else {
@@ -184,7 +180,32 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         })
         .collect();
 
-    debug_log!("[rumoca-lsp] Workspace folders: {:?}", workspace_folders);
+    // Echo configuration at startup (always visible in Output panel)
+    eprintln!("Configuration:");
+    eprintln!("  Debug mode: {}", debug_enabled);
+    if extra_library_paths.is_empty() {
+        eprintln!("  Modelica paths: (none configured)");
+    } else {
+        eprintln!("  Modelica paths:");
+        for path in &extra_library_paths {
+            eprintln!("    - {}", path.display());
+        }
+    }
+    if workspace_folders.is_empty() {
+        eprintln!("  Workspace folders: (none)");
+    } else {
+        eprintln!("  Workspace folders:");
+        for folder in &workspace_folders {
+            eprintln!("    - {}", folder.display());
+        }
+    }
+
+    // Also check MODELICAPATH environment variable
+    if let Ok(modelica_path) = std::env::var("MODELICAPATH") {
+        eprintln!("  MODELICAPATH env: {}", modelica_path);
+    }
+
+    debug_log!("[rumoca-lsp] Server initialized (debug mode enabled)");
     debug_log!("[rumoca-lsp] Starting main_loop (will initialize workspace)...");
 
     main_loop(connection, workspace_folders, extra_library_paths)?;
@@ -206,9 +227,19 @@ fn main_loop(
     debug_log!("[rumoca-lsp] Calling workspace.initialize() - this scans for Modelica packages...");
     let init_start = std::time::Instant::now();
     workspace.initialize(workspace_folders, extra_library_paths);
+    let init_elapsed = init_start.elapsed();
+
+    // Report what was discovered (always visible)
+    eprintln!(
+        "Initialized in {:?} - {} files, {} packages indexed",
+        init_elapsed,
+        workspace.discovered_files().len(),
+        workspace.symbol_count()
+    );
+
     debug_log!(
         "[rumoca-lsp] workspace.initialize() completed in {:?}",
-        init_start.elapsed()
+        init_elapsed
     );
     debug_log!(
         "[rumoca-lsp] Discovered {} files, {} package roots",
@@ -262,8 +293,8 @@ fn main_loop(
                             "Completion request for: {:?}",
                             params.text_document_position.text_document.uri
                         );
-                        // Use workspace-aware completion
-                        let result = handle_completion_workspace(&workspace, params);
+                        // Use workspace-aware completion (mutable for lazy package loading)
+                        let result = handle_completion_workspace(&mut workspace, params);
                         eprintln!(
                             "Completion result: {} items",
                             result

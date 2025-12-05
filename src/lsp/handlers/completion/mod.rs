@@ -37,7 +37,7 @@ use workspace::{
 /// - Built-in functions and keywords
 /// - Modifier completions (start, fixed, min, max, etc.)
 pub fn handle_completion_workspace(
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
     params: CompletionParams,
 ) -> Option<CompletionResponse> {
     let uri = &params.text_document_position.text_document.uri;
@@ -92,11 +92,19 @@ pub fn handle_completion_workspace(
             // This handles package navigation (e.g., Modelica.Math.) but not
             // local variable member access (e.g., ball.)
             if items.is_empty() {
+                // Lazily load package contents if not already indexed
+                workspace.ensure_package_indexed(&prefix);
                 items.extend(get_workspace_member_completions(workspace, &prefix));
             }
         }
 
         // For dot completion, only return the member items (no keywords/functions)
+        return Some(CompletionResponse::Array(items));
+    }
+
+    // In import context, only show importable symbols (packages, classes, etc.)
+    if is_import {
+        items.extend(get_workspace_completions(workspace, true));
         return Some(CompletionResponse::Array(items));
     }
 
@@ -106,7 +114,7 @@ pub fn handle_completion_workspace(
     }
 
     // Add workspace symbols (classes, models from other files)
-    items.extend(get_workspace_completions(workspace, is_import));
+    items.extend(get_workspace_completions(workspace, false));
 
     // Add built-in functions with snippets
     items.extend(get_builtin_function_completions());

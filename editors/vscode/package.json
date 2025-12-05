@@ -26,9 +26,6 @@
     "dae",
     "modeling"
   ],
-  "activationEvents": [
-    "onLanguage:modelica"
-  ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
