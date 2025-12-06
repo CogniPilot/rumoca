@@ -1,6 +1,5 @@
 // Simple PID-like test model
 // Mimics MSL PID structure with component modifications
-
 block Gain
   parameter Real k = 1 "Gain";
   Real u;
@@ -33,21 +32,17 @@ model SimplePID
   parameter Real Ti = 1.0 "Integral time";
   parameter Real Td = 0.5 "Derivative time";
   parameter Real Nd = 10 "Derivative filter coefficient";
-
   Real u "Control input";
   Real y "Control output";
-
   // Component modifications with expressions
   Gain P(k = Kp);
   Integrator I(k = Kp / Ti);
   Derivative D(k = Kp * Td, T = Td / Nd);
-
 equation
   // Connect all components to same input
   P.u = u;
   I.u = u;
   D.u = u;
-
   // Sum outputs: PID = P + I + D
   y = P.y + I.y + D.y;
 end SimplePID;

@@ -1,5 +1,4 @@
 // Test constant propagation
-
 block Inner
   constant Real c1 = 1.0 "A constant";
   parameter Real p1 = 2.0 "A parameter with default";
@@ -12,5 +11,4 @@ end Inner;
 model ConstantTest
   parameter Real gain = 3.0;
   Inner inner1(p2 = gain);
-equation
 end ConstantTest;

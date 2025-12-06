@@ -1,5 +1,4 @@
 // Test constant propagation with extends
-
 block BaseBlock
   constant Real baseConst = 1.0;
   parameter Real baseParam = 2.0;
@@ -16,5 +15,4 @@ end DerivedBlock;
 
 model ExtendsConstantTest
   DerivedBlock block1;
-equation
 end ExtendsConstantTest;

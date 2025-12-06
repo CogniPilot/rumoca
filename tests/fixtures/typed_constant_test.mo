@@ -1,7 +1,6 @@
 // Test typed constant propagation (like MSL's SI.Time)
-
 package SI
-  type Time = Real(unit="s");
+  type Time = Real(unit = "s");
 end SI;
 
 block Inner
@@ -14,5 +13,4 @@ end Inner;
 
 model TypedConstantTest
   Inner inner1;
-equation
 end TypedConstantTest;
