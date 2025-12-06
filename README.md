@@ -261,15 +261,16 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 | Metric | Result |
 |--------|--------|
 | **Parse Rate** | 100% (2551/2551 files) |
-| **Compile Rate** | 100% (2283/2283 models) |
+| **Compile Rate** | 92.1% (2102/2283 models) |
 
 **Balance Check Results:**
 
 | Status | Count | Percentage | Description |
 |--------|-------|------------|-------------|
-| **Balanced** | 790 | 34.6% | Fully determined (equations = unknowns) |
-| **Partial** | 1072 | 47.0% | Under-determined by design (external connectors) |
-| **Unbalanced** | 421 | 18.4% | Needs further work |
+| **Balanced** | 669 | 29.3% | Fully determined (equations = unknowns) |
+| **Partial** | 1177 | 51.6% | Under-determined by design (external connectors) |
+| **Unbalanced** | 256 | 11.2% | Needs further work |
+| **Compile Errors** | 181 | 7.9% | Missing type/class resolution |
 
 *Partial models have external connector flow variables that receive equations when connected in a larger system.*
 
@@ -280,12 +281,21 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 - Conditional equations with parameter evaluation
 - When equations and discrete event handling
 
-**Known Limitations** (421 unbalanced models):
+**Top Compile Errors** (181 models):
+
+| Count | Missing Type |
+|-------|--------------|
+| 41 | `Complex` |
+| 32 | `StateSelect` |
+| 26 | `Medium.AbsolutePressure` |
+| 17 | `Medium.MassFlowRate` |
+| 16 | `Medium.ThermodynamicState` |
+
+**Known Limitations** (256 unbalanced models):
 
 | Category | Notes |
 |----------|-------|
 | Algorithm sections | Assignments not yet counted as equations |
-| Complex enumerations | Some types not yet substituted |
 | Stream connectors | `inStream`/`actualStream` not implemented |
 | External functions | Functions without equation bodies |
 | Operator records | Operator overloading not implemented |
