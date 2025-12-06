@@ -217,31 +217,27 @@ model = import_rumoca('model.json')
 
 ## Modelica Language Support
 
-### Fully Supported
+| Category | Supported |
+|----------|-----------|
+| Classes | `model`, `class`, `block`, `connector`, `record`, `type`, `package`, `function` |
+| Equations | Simple, connect (flow/potential), if, for, when |
+| Expressions | Binary/unary ops, function calls, if-expressions, arrays |
+| Type prefixes | `flow`, `discrete`, `parameter`, `constant`, `input`, `output` |
+| Packages | Nested packages, `package.mo`/`package.order`, MODELICAPATH |
+| Imports | Qualified, renamed, unqualified (`.*`), selective (`{a,b}`) |
+| Functions | Single/multi-output, tuple equations `(a,b) = func()` |
+| Built-ins | `der`, `pre`, `reinit`, `time`, trig, array functions |
+| Events | `noEvent`, `smooth`, `sample`, `edge`, `change`, `initial`, `terminal` |
 
-- **Class definitions**: `model`, `class`, `block`, `connector`, `record`, `type`, `package`, `function`
-- **Components**: Declarations with modifications, array subscripts
-- **Inheritance**: `extends` clause with recursive resolution
-- **Equations**: Simple, connect, if, for, when equations
-- **Algorithms**: Assignment, if, for, while, when statements
-- **Expressions**: Binary/unary operators, function calls, if-expressions, arrays
-- **Type prefixes**: `flow`, `stream`, `discrete`, `parameter`, `constant`, `input`, `output`
-- **Modifications**: Component and class modifications
-- **Packages**: Nested packages, `package.mo`/`package.order` directory structure, MODELICAPATH
-- **Imports**: Qualified, renamed, unqualified (`.*`), selective (`{a,b}`)
-- **Functions**: Single and multi-output functions, tuple equations `(a,b) = func()`
-- **Built-in operators**: `der()`, `pre()`, `reinit()`, `time`, trig functions, array functions
-- **Event functions**: `noEvent`, `smooth`, `sample`, `edge`, `change`, `initial`, `terminal`
-- **Annotations**: Parsed and exported to JSON on components
-
-### Partially Supported
+### Partial Support
 
 | Feature | Status |
 |---------|--------|
-| Connect equations | Flow/potential semantics implemented; `stream` not yet supported |
-| External functions | `external` keyword recognized; no linking |
-| Inner/outer | Basic outer→inner resolution implemented; nested scopes in progress |
-| Complex operators | `Complex` record expansion; operator overloading in progress |
+| Algorithm sections | Parsed; assignments not yet counted in balance check |
+| Connect equations | Flow/potential semantics; `stream` not supported |
+| External functions | `external` recognized; no linking |
+| Inner/outer | Basic resolution; nested scopes in progress |
+| Complex type | Record expansion; operator overloading in progress |
 
 ### Not Yet Implemented
 
