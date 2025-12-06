@@ -278,13 +278,12 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 - Modelica.Thermal (97% success)
 - Modelica.Magnetic (96% success)
 - Modelica.Math (excellent coverage)
-- Most Modelica.Electrical.Analog components
-- Most Modelica.Mechanics.Rotational/Translational components
 
 **Problematic Areas:**
 - Modelica.Fluid (Medium type resolution)
 - Modelica.ComplexBlocks (Complex type)
 - Modelica.Electrical.Digital (algorithm sections)
+- Modelica.Mechanics.MultiBody (StateSelect, algorithm sections)
 - Modelica.Clocked (synchronous features)
 
 **Top Compile Errors** (181 models):
