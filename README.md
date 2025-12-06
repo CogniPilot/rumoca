@@ -274,12 +274,18 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 
 *Partial models have external connector flow variables that receive equations when connected in a larger system.*
 
-**What Works Well:**
-- Modelica.Blocks (Integrator, Der, Gain, etc.)
-- Modelica.Electrical.Analog.Basic
-- Array handling with `size()` and parameter-dependent dimensions
-- Conditional equations with parameter evaluation
-- When equations and discrete event handling
+**What Works Well** (92% of models compile successfully):
+- Modelica.Thermal (97% success)
+- Modelica.Magnetic (96% success)
+- Modelica.Math (excellent coverage)
+- Most Modelica.Electrical.Analog components
+- Most Modelica.Mechanics.Rotational/Translational components
+
+**Problematic Areas:**
+- Modelica.Fluid (Medium type resolution)
+- Modelica.ComplexBlocks (Complex type)
+- Modelica.Electrical.Digital (algorithm sections)
+- Modelica.Clocked (synchronous features)
 
 **Top Compile Errors** (181 models):
 
