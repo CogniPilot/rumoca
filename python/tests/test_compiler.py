@@ -205,8 +205,9 @@ def test_native_bindings_available():
     # When running without the native extension, it may be False
     print(f"Native bindings available: {rumoca.NATIVE_AVAILABLE}")
     if rumoca.NATIVE_AVAILABLE:
-        assert rumoca.compile_str is not None
-        assert rumoca.compile_file is not None
+        # Check that the public API functions exist
+        assert rumoca.compile_source is not None
+        assert rumoca.compile is not None
 
 
 def test_compile_source_native():
