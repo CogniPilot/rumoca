@@ -383,18 +383,7 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
         .map(|r| (r.file_path.clone(), r.error.clone().unwrap_or_default()))
         .collect();
 
-    // Print parse progress dots
-    for (idx, result) in parse_results.iter().enumerate() {
-        if result.success {
-            print!(".");
-        } else {
-            print!("F");
-        }
-        if (idx + 1) % 100 == 0 {
-            println!(" [{}/{}]", idx + 1, total_files);
-        }
-    }
-    println!();
+    // Print parse summary (no dots - cleaner output)
 
     println!(
         "\nParse Results: {}/{} passed ({:.1}%) in {:.2}s",
@@ -476,24 +465,34 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
     let checked_count = AtomicUsize::new(0);
     let balance_start = Instant::now();
 
-    println!("Checking {} models in parallel...", total_models);
+    println!("Checking {} models in parallel...\n", total_models);
 
     // Wrap merged_def in Arc for cheap sharing across threads
     let merged_def = Arc::new(merged_def);
+
+    // Track last progress update time for throttled output
+    let last_update = std::sync::Mutex::new(Instant::now());
 
     // Check all models in parallel using lightweight balance check
     let balance_results: Vec<BalanceResult> = model_names
         .par_iter()
         .map(|model_name| {
-            let count = checked_count.fetch_add(1, Ordering::Relaxed);
-            let pct = (count + 1) as f64 / total_models as f64 * 100.0;
-            eprintln!(
-                "[{:4}/{} {:5.1}%] {}",
-                count + 1,
-                total_models,
-                pct,
-                model_name
-            );
+            let count = checked_count.fetch_add(1, Ordering::Relaxed) + 1;
+            let pct = count as f64 / total_models as f64 * 100.0;
+
+            // Update progress bar every 100ms (throttled to reduce output)
+            let mut last = last_update.lock().unwrap();
+            if last.elapsed() >= Duration::from_millis(100) || count == total_models {
+                *last = Instant::now();
+                let bar_width = 40;
+                let filled = (pct / 100.0 * bar_width as f64) as usize;
+                let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
+                eprint!("\r  [{}] {:5.1}% ({}/{})", bar, pct, count, total_models);
+                if count == total_models {
+                    eprintln!(); // Final newline
+                }
+            }
+            drop(last);
 
             // Use check_balance for fast balance-only check (no cloning)
             let balance_result = Compiler::new().model(model_name).check_balance(&merged_def);
@@ -655,6 +654,106 @@ fn export_failures_to_json(results: &CombinedTestResults, output_path: &Path) ->
     Ok(())
 }
 
+/// Detailed failure info for failed_models.json
+#[derive(Debug, Serialize)]
+struct DetailedFailure {
+    model_name: String,
+    failure_type: String,
+    error_message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_equations: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_unknowns: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_external_connectors: Option<usize>,
+}
+
+/// Export detailed failed models to JSON for debugging
+fn export_failed_models_to_json(results: &CombinedTestResults, output_path: &Path) -> Result<()> {
+    let mut failures = Vec::new();
+
+    // Add compile errors with full details
+    for result in &results.compile_error_models {
+        failures.push(DetailedFailure {
+            model_name: result.model_name.clone(),
+            failure_type: "compile".to_string(),
+            error_message: result.error.clone().unwrap_or_default(),
+            num_equations: None,
+            num_unknowns: None,
+            num_external_connectors: None,
+        });
+    }
+
+    // Add unbalanced models with full details
+    for result in &results.unbalanced_models {
+        let diff = result.num_equations as i64 - result.num_unknowns as i64;
+        let msg = if diff > 0 {
+            format!("Over-determined by {} equations", diff)
+        } else {
+            format!("Under-determined by {} equations", -diff)
+        };
+        failures.push(DetailedFailure {
+            model_name: result.model_name.clone(),
+            failure_type: "unbalanced".to_string(),
+            error_message: msg,
+            num_equations: Some(result.num_equations),
+            num_unknowns: Some(result.num_unknowns),
+            num_external_connectors: Some(result.num_external_connectors),
+        });
+    }
+
+    // Sort by failure type then name
+    failures.sort_by(|a, b| {
+        a.failure_type
+            .cmp(&b.failure_type)
+            .then_with(|| a.model_name.cmp(&b.model_name))
+    });
+
+    // Group errors by error message for summary
+    let mut error_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for f in &failures {
+        if f.failure_type == "compile" {
+            // Extract the core error type (e.g., "Component class 'X' not found")
+            let key = f.error_message.clone();
+            *error_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+
+    let mut error_summary: Vec<_> = error_counts.into_iter().collect();
+    error_summary.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by count descending
+
+    let report = serde_json::json!({
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        "msl_version": MSL_VERSION,
+        "total_failures": failures.len(),
+        "compile_errors": results.compile_errors,
+        "unbalanced": results.unbalanced,
+        "error_summary": error_summary.iter().take(20).map(|(msg, count)| {
+            serde_json::json!({
+                "error": msg,
+                "count": count
+            })
+        }).collect::<Vec<_>>(),
+        "failures": failures
+    });
+
+    let json = serde_json::to_string_pretty(&report)
+        .with_context(|| "Failed to serialize failed models to JSON")?;
+
+    let mut file = fs::File::create(output_path)
+        .with_context(|| format!("Failed to create output file: {:?}", output_path))?;
+    file.write_all(json.as_bytes())
+        .with_context(|| "Failed to write JSON to file")?;
+
+    println!("  Failed models exported to: {:?}", output_path);
+
+    Ok(())
+}
+
 /// Print detailed results summary
 fn print_combined_results(results: &CombinedTestResults) {
     println!("\n");
@@ -810,6 +909,22 @@ fn test_msl_balance_all() {
     const MIN_PARSE_RATE: f64 = 99.0;
     const MIN_COMPILE_RATE: f64 = 25.0; // Lower threshold while working on fixes
 
+    // Print instructions for where to find output files
+    println!("============================================================");
+    println!("                MSL BALANCE TEST");
+    println!("============================================================");
+    println!();
+    println!("Output files (in target/):");
+    println!("  - msl_failures.json   : Summary of all failures with stats");
+    println!("  - failed_models.json  : Detailed list of failed models with");
+    println!("                          error summary grouped by error type");
+    println!();
+    println!("Quick analysis commands:");
+    println!("  jq '.summary' target/msl_failures.json");
+    println!("  jq '.error_summary' target/failed_models.json");
+    println!("============================================================");
+    println!();
+
     let msl_path = get_msl_path().expect("Failed to download MSL");
 
     // Record overall start time for profiling
@@ -824,6 +939,14 @@ fn test_msl_balance_all() {
         .join("msl_failures.json");
     if let Err(e) = export_failures_to_json(&results, &output_path) {
         eprintln!("Warning: Failed to export failures: {:?}", e);
+    }
+
+    // Export detailed failed models to separate JSON
+    let failed_models_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("failed_models.json");
+    if let Err(e) = export_failed_models_to_json(&results, &failed_models_path) {
+        eprintln!("Warning: Failed to export failed models: {:?}", e);
     }
 
     // Print profiling summary
@@ -1233,4 +1356,186 @@ fn test_nonlinear_blocks_balance() {
             }
         }
     }
+}
+
+#[test]
+fn test_constants_components() {
+    let msl_path = match ensure_msl_downloaded() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Skipping test: {}", e);
+            return;
+        }
+    };
+
+    let constants_file = msl_path.join("Modelica/Constants.mo");
+    let content = std::fs::read_to_string(&constants_file).unwrap();
+
+    let mut grammar = ModelicaGrammar::new();
+    parse(&content, "Constants.mo", &mut grammar).unwrap();
+
+    let def = grammar.modelica.as_ref().unwrap();
+    println!("=== RAW PARSED ===");
+    println!("Within: {:?}", def.within.as_ref().map(|w| w.to_string()));
+
+    for (name, class) in &def.class_list {
+        println!("Class: {} has {} components", name, class.components.len());
+        for (comp_name, _) in class.components.iter().take(5) {
+            println!("  - {}", comp_name);
+        }
+    }
+
+    // Assert that Constants class has pi component
+    let constants = def
+        .class_list
+        .get("Constants")
+        .expect("Constants not found");
+    assert!(
+        constants.components.contains_key("pi"),
+        "pi not in components"
+    );
+    assert!(
+        constants.components.contains_key("e"),
+        "e not in components"
+    );
+
+    // Now test merging
+    let merged = merge_stored_definitions(vec![("Constants.mo".to_string(), def.clone())]).unwrap();
+
+    println!("\n=== AFTER MERGING ===");
+    let modelica = merged
+        .class_list
+        .get("Modelica")
+        .expect("Modelica package not found after merge");
+    let constants_merged = modelica
+        .classes
+        .get("Constants")
+        .expect("Constants not in Modelica.classes");
+
+    println!(
+        "Modelica.Constants has {} components",
+        constants_merged.components.len()
+    );
+    for (comp_name, _) in constants_merged.components.iter().take(5) {
+        println!("  - {}", comp_name);
+    }
+
+    assert!(
+        constants_merged.components.contains_key("pi"),
+        "pi not in Modelica.Constants after merge"
+    );
+}
+
+#[test]
+fn test_constants_in_class_dict() {
+    use indexmap::IndexMap;
+    use rumoca::ir::ast::ClassDefinition;
+
+    let msl_path = match ensure_msl_downloaded() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Skipping test: {}", e);
+            return;
+        }
+    };
+
+    let constants_file = msl_path.join("Modelica/Constants.mo");
+    let content = std::fs::read_to_string(&constants_file).unwrap();
+
+    let mut grammar = ModelicaGrammar::new();
+    parse(&content, "Constants.mo", &mut grammar).unwrap();
+
+    let def = grammar.modelica.as_ref().unwrap();
+
+    // Merge
+    let merged = merge_stored_definitions(vec![("Constants.mo".to_string(), def.clone())]).unwrap();
+
+    // Build class_dict similar to what flatten does
+    fn build_class_dict(
+        class: &ClassDefinition,
+        prefix: &str,
+        dict: &mut IndexMap<String, ClassDefinition>,
+    ) {
+        let full_name = if prefix.is_empty() {
+            class.name.text.clone()
+        } else {
+            format!("{}.{}", prefix, class.name.text)
+        };
+        dict.insert(full_name.clone(), class.clone());
+
+        for (_name, nested_class) in &class.classes {
+            build_class_dict(nested_class, &full_name, dict);
+        }
+    }
+
+    let mut class_dict = IndexMap::new();
+    for (_class_name, class) in &merged.class_list {
+        build_class_dict(class, "", &mut class_dict);
+    }
+
+    println!("=== CLASS DICT ===");
+    for key in class_dict.keys() {
+        println!("  {}", key);
+    }
+
+    // Check if Modelica.Constants exists
+    assert!(
+        class_dict.contains_key("Modelica"),
+        "Modelica not in class_dict"
+    );
+    assert!(
+        class_dict.contains_key("Modelica.Constants"),
+        "Modelica.Constants not in class_dict"
+    );
+
+    // Check if Modelica.Constants has pi component
+    let constants = class_dict.get("Modelica.Constants").unwrap();
+    println!(
+        "\nModelica.Constants components: {}",
+        constants.components.len()
+    );
+    for (name, _) in constants.components.iter().take(5) {
+        println!("  - {}", name);
+    }
+
+    assert!(
+        constants.components.contains_key("pi"),
+        "pi not in Modelica.Constants.components in class_dict"
+    );
+
+    // Test path_exists_in_dict logic
+    fn path_exists_in_dict(path: &str, class_dict: &IndexMap<String, ClassDefinition>) -> bool {
+        if class_dict.contains_key(path) {
+            return true;
+        }
+        if let Some(dot_pos) = path.rfind('.') {
+            let parent_path = &path[..dot_pos];
+            let component_name = &path[dot_pos + 1..];
+            if let Some(parent_class) = class_dict.get(parent_path) {
+                if parent_class.components.contains_key(component_name) {
+                    return true;
+                }
+                if parent_class.classes.contains_key(component_name) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    println!("\n=== PATH EXISTS TESTS ===");
+    println!("Modelica: {}", path_exists_in_dict("Modelica", &class_dict));
+    println!(
+        "Modelica.Constants: {}",
+        path_exists_in_dict("Modelica.Constants", &class_dict)
+    );
+    println!(
+        "Modelica.Constants.pi: {}",
+        path_exists_in_dict("Modelica.Constants.pi", &class_dict)
+    );
+
+    assert!(
+        path_exists_in_dict("Modelica.Constants.pi", &class_dict),
+        "Modelica.Constants.pi should exist"
+    );
 }

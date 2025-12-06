@@ -205,9 +205,25 @@ impl Compiler {
 
     /// Returns the number of threads to use for parallel parsing.
     /// Defaults to (num_cpus - 1) to leave one core free for the system, minimum 1.
+    ///
+    /// If called from within an existing rayon thread pool (nested parallelism),
+    /// returns 1 to avoid thread explosion.
     fn get_thread_count(&self) -> usize {
-        self.threads
-            .unwrap_or_else(|| std::cmp::max(1, num_cpus::get().saturating_sub(1)))
+        // If explicitly set, use that value
+        if let Some(threads) = self.threads {
+            return threads;
+        }
+
+        // Detect if we're already inside a rayon pool (nested parallelism)
+        // rayon::current_num_threads() returns 1 when not in a pool
+        let in_pool = rayon::current_num_threads() > 1;
+        if in_pool {
+            // We're inside a parallel context - use single thread to avoid explosion
+            return 1;
+        }
+
+        // Default: use num_cpus - 1, minimum 1
+        std::cmp::max(1, num_cpus::get().saturating_sub(1))
     }
 
     /// Enables or disables AST caching.

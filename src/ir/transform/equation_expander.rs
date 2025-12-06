@@ -1185,9 +1185,12 @@ fn subscript_expr(expr: Expression, indices: &[usize]) -> Expression {
             op,
             rhs: Box::new(subscript_expr(*rhs, indices)),
         },
-        Expression::Array { elements } => {
+        Expression::Array { ref elements } => {
             // For array literals, extract the element
-            if indices.len() == 1 && indices[0] > 0 && indices[0] <= elements.len() {
+            if elements.is_empty() {
+                // Empty array - return unchanged
+                expr
+            } else if indices.len() == 1 && indices[0] > 0 && indices[0] <= elements.len() {
                 elements[indices[0] - 1].clone()
             } else {
                 subscript_expr(elements[0].clone(), indices)

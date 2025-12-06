@@ -94,8 +94,41 @@ fn build_import_aliases(imports: &[Import]) -> IndexMap<String, String> {
     aliases
 }
 
+/// Checks if a path refers to a class or a component (constant/variable) within a class.
+///
+/// For example:
+/// - "Modelica.Constants" -> true (it's a class)
+/// - "Modelica.Constants.pi" -> true (pi is a component in Constants class)
+/// - "Modelica.DoesNotExist" -> false
+fn path_exists_in_dict(path: &str, class_dict: &IndexMap<String, ClassDefinition>) -> bool {
+    // First check if it's a class
+    if class_dict.contains_key(path) {
+        return true;
+    }
+
+    // If not a class, check if it's a component in a parent class
+    // Split path into parent.component
+    if let Some(dot_pos) = path.rfind('.') {
+        let parent_path = &path[..dot_pos];
+        let component_name = &path[dot_pos + 1..];
+
+        if let Some(parent_class) = class_dict.get(parent_path) {
+            // Check if the component exists in the parent class
+            if parent_class.components.contains_key(component_name) {
+                return true;
+            }
+            // Also check nested classes (for cases like importing a nested type)
+            if parent_class.classes.contains_key(component_name) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Validates that all imported classes exist in the class dictionary.
-/// Returns an error if any import refers to a non-existent class.
+/// Returns an error if any import refers to a non-existent class or component.
 fn validate_imports(
     imports: &[Import],
     class_dict: &IndexMap<String, ClassDefinition>,
@@ -104,7 +137,7 @@ fn validate_imports(
         match import {
             Import::Renamed { path, .. } | Import::Qualified { path, .. } => {
                 let target = path.to_string();
-                if !class_dict.contains_key(&target) {
+                if !path_exists_in_dict(&target, class_dict) {
                     return Err(IrError::ImportClassNotFound(target).into());
                 }
             }
@@ -112,7 +145,7 @@ fn validate_imports(
                 let base_path = path.to_string();
                 for name in names {
                     let full_path = format!("{}.{}", base_path, name.text);
-                    if !class_dict.contains_key(&full_path) {
+                    if !path_exists_in_dict(&full_path, class_dict) {
                         return Err(IrError::ImportClassNotFound(full_path).into());
                     }
                 }
