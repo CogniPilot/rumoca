@@ -447,6 +447,9 @@ pub enum OpBinary {
     SubElem(Token),
     MulElem(Token),
     DivElem(Token),
+    /// Assignment/modification operator `=` (not equality `==`)
+    /// Used in named arguments and modifications like `annotation(HideResult=true)`
+    Assign(Token),
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -655,6 +658,7 @@ impl std::fmt::Display for Expression {
                     OpBinary::SubElem(_) => ".-",
                     OpBinary::MulElem(_) => ".*",
                     OpBinary::DivElem(_) => "./",
+                    OpBinary::Assign(_) => "=",
                     OpBinary::Empty => "?",
                 };
                 write!(f, "{} {} {}", lhs, op_str, rhs)

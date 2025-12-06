@@ -93,10 +93,22 @@ pub fn format_class_with_comments(
             Causality::Empty => "",
         };
 
-        let base_type = &class.extends[0].comp;
+        let ext = &class.extends[0];
+        let base_type = &ext.comp;
+        // Include modifications if present (e.g., Real(unit="s"))
+        let mods_str = if !ext.modifications.is_empty() {
+            let mod_strs: Vec<String> = ext
+                .modifications
+                .iter()
+                .map(|e| visitor.format_expression(e))
+                .collect();
+            format!("({})", mod_strs.join(", "))
+        } else {
+            String::new()
+        };
         visitor.writeln(&format!(
-            "{} {} = {}{};",
-            class_keyword, class.name.text, causality_prefix, base_type
+            "{} {} = {}{}{};",
+            class_keyword, class.name.text, causality_prefix, base_type, mods_str
         ));
 
         // Add blank lines after this class if requested

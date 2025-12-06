@@ -73,8 +73,9 @@ fn named_argument_to_expr(
     });
 
     // Create a binary expression: name = value
+    // Use Assign (not Eq) because this is a modification assignment, not equality comparison
     ir::ast::Expression::Binary {
-        op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+        op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
         lhs: Box::new(name_expr),
         rhs: Box::new(named_arg.function_argument.clone()),
     }
@@ -323,7 +324,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                             match &mod_opt.modification_expression {
                                                 modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                                                     Ok(ir::ast::Expression::Binary {
-                                                        op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                        op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
                                                         lhs: Box::new(call_expr),
                                                         rhs: Box::new(expr.expression.clone()),
                                                     })
@@ -364,7 +365,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                                     }
                                                 );
                                                 Ok(ir::ast::Expression::Binary {
-                                                    op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                    op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
                                                     lhs: Box::new(name_expr),
                                                     rhs: Box::new(expr.expression.clone()),
                                                 })
@@ -475,7 +476,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                         ) => {
                                             // Create name = value expression
                                             Ok(ir::ast::Expression::Binary {
-                                                op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
                                                 lhs: Box::new(ir::ast::Expression::ComponentReference(
                                                     name_ref,
                                                 )),
@@ -586,7 +587,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                             modelica_grammar_trait::ModificationExpression::Expression(
                                                 expr,
                                             ) => Ok(ir::ast::Expression::Binary {
-                                                op: ir::ast::OpBinary::Eq(ir::ast::Token::default()),
+                                                op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
                                                 lhs: Box::new(ir::ast::Expression::ComponentReference(
                                                     name_ref,
                                                 )),

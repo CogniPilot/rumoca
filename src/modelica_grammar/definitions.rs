@@ -274,9 +274,10 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         })
                     }
                     modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(spec) => {
-                        // type MyType = [input|output] BaseType "description";
+                        // type MyType = [input|output] BaseType(mods) "description";
                         // Creates a class that extends the base type with optional causality
-                        // e.g., connector RealInput = input Real;
+                        // e.g., type Time = Real(unit="s");
+                        //       connector RealInput = input Real;
                         let type_spec = &spec.type_class_specifier;
                         let base_type_name = type_spec.type_specifier.name.clone();
 
@@ -293,12 +294,28 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             None => ir::ast::Causality::Empty,
                         };
 
+                        // Extract modifications from class_modification if present
+                        // e.g., Real(unit="s") -> modifications = [unit = "s"]
+                        let modifications = if let Some(class_mod_opt0) =
+                            &type_spec.type_class_specifier_opt0
+                        {
+                            if let Some(arg_list) =
+                                &class_mod_opt0.class_modification.class_modification_opt
+                            {
+                                arg_list.argument_list.args.clone()
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            vec![]
+                        };
+
                         // Create an Extend clause for the base type
                         // For short class specifiers, use ident location for both start and end
                         let extend = ir::ast::Extend {
                             comp: base_type_name,
                             location: type_spec.ident.location.clone(),
-                            modifications: vec![],
+                            modifications,
                         };
 
                         Ok(ir::ast::ClassDefinition {
@@ -675,7 +692,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                 // Look for start=, shape=, and other parameter modifications
                                                 for (idx, arg) in opt.argument_list.args.iter().enumerate() {
                                                     if let ir::ast::Expression::Binary { op, lhs, rhs } = arg {
-                                                        if matches!(op, ir::ast::OpBinary::Eq(_)) {
+                                                        if matches!(op, ir::ast::OpBinary::Assign(_)) {
                                                             // This is a named argument like start=2.5, shape=(3), or R=10
                                                             if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
                                                                 let param_name = comp.to_string();

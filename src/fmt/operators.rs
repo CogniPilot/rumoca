@@ -22,6 +22,7 @@ pub fn format_binary_op(op: &OpBinary) -> &'static str {
         OpBinary::SubElem(_) => ".-",
         OpBinary::MulElem(_) => ".*",
         OpBinary::DivElem(_) => "./",
+        OpBinary::Assign(_) => "=",
     }
 }
 
@@ -38,7 +39,8 @@ pub fn format_unary_op(op: &OpUnary) -> &'static str {
 
 /// Get the precedence level for a binary operator.
 /// Higher values bind tighter. Based on Modelica specification:
-/// 1. or (lowest)
+/// 0. assignment: = (lowest, used in modifications)
+/// 1. or
 /// 2. and
 /// 3. relational: <, <=, >, >=, ==, <>
 /// 4. additive: +, -, .+, .-
@@ -47,6 +49,7 @@ pub fn format_unary_op(op: &OpUnary) -> &'static str {
 pub fn binary_op_precedence(op: &OpBinary) -> u8 {
     match op {
         OpBinary::Empty => 0,
+        OpBinary::Assign(_) => 0,
         OpBinary::Or(_) => 1,
         OpBinary::And(_) => 2,
         OpBinary::Eq(_)
