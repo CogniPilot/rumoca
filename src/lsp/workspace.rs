@@ -264,6 +264,42 @@ impl WorkspaceState {
             "[workspace] initialize() complete - {} files discovered",
             self.discovered_files.len()
         ));
+
+        // Index all discovered files upfront for reliable hover/goto-definition
+        self.index_all_discovered_files();
+    }
+
+    /// Index all discovered Modelica files upfront
+    ///
+    /// This provides immediate hover/goto-definition support without lazy loading
+    fn index_all_discovered_files(&mut self) {
+        let start = std::time::Instant::now();
+        let files: Vec<PathBuf> = self.discovered_files.iter().cloned().collect();
+        let total = files.len();
+
+        self.debug_log(&format!(
+            "[workspace] Starting upfront indexing of {} files",
+            total
+        ));
+
+        let mut indexed = 0;
+        let mut failed = 0;
+
+        for path in files {
+            if self.ensure_file_loaded(&path).is_some() {
+                indexed += 1;
+            } else {
+                failed += 1;
+            }
+        }
+
+        self.debug_log(&format!(
+            "[workspace] Upfront indexing complete in {:?}: {} indexed, {} failed, {} symbols",
+            start.elapsed(),
+            indexed,
+            failed,
+            self.symbol_index.len()
+        ));
     }
 
     /// Check if a directory should be ignored during package discovery
@@ -569,19 +605,14 @@ impl WorkspaceState {
     ///
     /// This handles:
     /// - Simple names (look up in current class, then imports, then global)
-    /// - Qualified names (direct lookup)
+    /// - Qualified names (try with within prefix first, then direct lookup)
     pub fn resolve_type(
         &self,
         type_name: &str,
         context_uri: &Uri,
         context_class: Option<&str>,
     ) -> Option<&WorkspaceSymbol> {
-        // If it's a qualified name, look it up directly
-        if type_name.contains('.') {
-            return self.lookup_symbol(type_name);
-        }
-
-        // Try looking up in the context class first
+        // Try looking up in the context class first (both simple and qualified names)
         if let Some(class_name) = context_class {
             let qualified = format!("{}.{}", class_name, type_name);
             if let Some(sym) = self.lookup_symbol(&qualified) {
@@ -590,6 +621,8 @@ impl WorkspaceState {
         }
 
         // Try looking up with the file's within prefix
+        // This handles cases like "Interfaces.DiscreteSISO" in a file with
+        // "within Modelica.Blocks;" -> "Modelica.Blocks.Interfaces.DiscreteSISO"
         if let Some(ast) = self.parsed_asts.get(context_uri) {
             if let Some(within) = &ast.within {
                 let qualified = format!("{}.{}", within, type_name);
@@ -599,8 +632,25 @@ impl WorkspaceState {
             }
         }
 
-        // Try as a top-level symbol
-        self.lookup_symbol(type_name)
+        // Try direct lookup (for fully qualified names or top-level symbols)
+        if let Some(sym) = self.lookup_symbol(type_name) {
+            return Some(sym);
+        }
+
+        None
+    }
+
+    /// Get the parsed AST for a symbol by its qualified name
+    ///
+    /// This looks up the symbol, finds its file URI, and returns the parsed AST for that file.
+    pub fn get_parsed_ast_by_name(&self, qualified_name: &str) -> Option<&StoredDefinition> {
+        let sym = self.lookup_symbol(qualified_name)?;
+        self.parsed_asts.get(&sym.uri)
+    }
+
+    /// Get the parsed AST for a URI
+    pub fn get_parsed_ast(&self, uri: &Uri) -> Option<&StoredDefinition> {
+        self.parsed_asts.get(uri)
     }
 
     /// Get all package roots
@@ -663,8 +713,21 @@ impl WorkspaceState {
 
         // Navigate to nested package if needed (e.g., Modelica/Blocks)
         for component in components.iter().skip(1) {
-            current_path = current_path.join(component);
-            if !current_path.is_dir() {
+            let dir_path = current_path.join(component);
+            let file_path = current_path.join(format!("{}.mo", component));
+
+            if dir_path.is_dir() {
+                // Directory package structure
+                current_path = dir_path;
+            } else if file_path.exists() {
+                // Single-file package (e.g., Units.mo instead of Units/package.mo)
+                self.debug_log(&format!(
+                    "[workspace] Loading single-file package: {} from {:?}",
+                    package_prefix, file_path
+                ));
+                let _ = self.ensure_file_loaded(&file_path);
+                return; // No more nested directories to navigate
+            } else {
                 return;
             }
         }

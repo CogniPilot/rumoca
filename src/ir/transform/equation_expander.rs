@@ -485,7 +485,7 @@ fn expand_equation(
                     return;
                 }
                 if size > 1 {
-                    expand_array_equation(lhs, rhs, size, out);
+                    expand_array_equation(lhs, rhs, size, components, out);
                     return;
                 }
             }
@@ -1080,16 +1080,36 @@ fn get_equation_array_size(
             }
             Some(1)
         }
+        Expression::Array { elements } => {
+            // Array literal like [y] or [u1; u2]
+            // Sum up the sizes of all elements (handles concatenation)
+            let mut total = 0;
+            for elem in elements {
+                if let Some(size) = get_equation_array_size(elem, components) {
+                    total += size;
+                } else {
+                    return None;
+                }
+            }
+            Some(total)
+        }
         _ => Some(1),
     }
 }
 
 /// Expand an array equation to scalar equations.
-fn expand_array_equation(lhs: &Expression, rhs: &Expression, size: usize, out: &mut Vec<Equation>) {
-    // For 1D arrays, expand to individual equations
+/// Takes components map for determining array sizes during flattening.
+fn expand_array_equation(
+    lhs: &Expression,
+    rhs: &Expression,
+    size: usize,
+    components: &IndexMap<String, Component>,
+    out: &mut Vec<Equation>,
+) {
+    // For 1D arrays, expand to individual equations using flat indexing
     for i in 1..=size {
-        let lhs_elem = subscript_expr(lhs.clone(), &[i]);
-        let rhs_elem = subscript_expr(rhs.clone(), &[i]);
+        let lhs_elem = flatten_and_subscript(lhs, i, components);
+        let rhs_elem = flatten_and_subscript(rhs, i, components);
         out.push(Equation::Simple {
             lhs: lhs_elem,
             rhs: rhs_elem,
@@ -1125,6 +1145,7 @@ fn make_subscripted_ref(name: &str, indices: &[usize]) -> Expression {
 }
 
 /// Add subscripts to an expression.
+/// For flat indexing, use subscript_expr_flat which handles concatenated arrays.
 fn subscript_expr(expr: Expression, indices: &[usize]) -> Expression {
     match expr {
         Expression::ComponentReference(mut comp_ref) => {
@@ -1173,6 +1194,54 @@ fn subscript_expr(expr: Expression, indices: &[usize]) -> Expression {
             }
         }
         _ => expr,
+    }
+}
+
+/// Flatten an array expression and get element at flat index.
+/// For example, [[a, b], [c]] with index 2 returns b, index 3 returns c.
+/// This handles matrix concatenation like [y] or [u1; u2].
+fn flatten_and_subscript(
+    expr: &Expression,
+    flat_index: usize,
+    components: &IndexMap<String, Component>,
+) -> Expression {
+    match expr {
+        Expression::Array { elements } => {
+            // Track cumulative size as we go through elements
+            let mut cumulative = 0;
+            for elem in elements {
+                let elem_size = get_equation_array_size(elem, components).unwrap_or(1);
+                if flat_index <= cumulative + elem_size {
+                    // The index falls within this element
+                    let local_index = flat_index - cumulative;
+                    if elem_size == 1 {
+                        // Scalar element - return as-is
+                        return elem.clone();
+                    } else {
+                        // Array element - recurse or subscript
+                        return flatten_and_subscript(elem, local_index, components);
+                    }
+                }
+                cumulative += elem_size;
+            }
+            // Fallback: shouldn't reach here if sizes are correct
+            expr.clone()
+        }
+        Expression::ComponentReference(comp_ref) => {
+            // Subscript the component reference
+            if let Some(first_part) = comp_ref.parts.first() {
+                let name = &first_part.ident.text;
+                if let Some(comp) = components.get(name) {
+                    if !comp.shape.is_empty() {
+                        // It's an array - subscript it
+                        return subscript_expr(expr.clone(), &[flat_index]);
+                    }
+                }
+            }
+            // Scalar - return as-is
+            expr.clone()
+        }
+        _ => expr.clone(),
     }
 }
 

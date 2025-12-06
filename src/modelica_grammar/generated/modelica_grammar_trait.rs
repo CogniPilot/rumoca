@@ -5037,6 +5037,7 @@ pub struct StoredDefinitionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StoredDefinitionOpt {
+    pub within: Within,
     pub stored_definition_opt1: Option<StoredDefinitionOpt1>,
 }
 
@@ -7133,7 +7134,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 72:
     ///
-    /// `stored_definitionOpt /* Option<T>::Some */: within^ /* Clipped */ stored_definitionOpt1 /* Option */ ';'^ /* Clipped */;`
+    /// `stored_definitionOpt /* Option<T>::Some */: within stored_definitionOpt1 /* Option */ ';'^ /* Clipped */;`
     ///
     #[parol_runtime::function_name::named]
     fn stored_definition_opt_0(
@@ -7146,8 +7147,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let stored_definition_opt1 =
             pop_item!(self, stored_definition_opt1, StoredDefinitionOpt1, context);
-        self.pop(context);
+        let within = pop_item!(self, within, Within, context);
         let stored_definition_opt_0_built = StoredDefinitionOpt {
+            within,
             stored_definition_opt1,
         };
         self.push(

@@ -24,6 +24,9 @@ pub enum IrError {
     #[error("Component class '{0}' not found")]
     ComponentClassNotFound(String),
 
+    #[error("Import failed: class '{0}' not found. Did you forget to include the library?")]
+    ImportClassNotFound(String),
+
     #[error("Unsupported feature: {feature}")]
     UnsupportedFeature { feature: String },
 

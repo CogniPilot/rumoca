@@ -315,7 +315,7 @@ unsigned_real
 //✅    [ within [ name ] ";" ]
 //✅    { [ final ] class-definition ";" }
 stored_definition
-    : [ within^ [ name ] ';'^ ] { [ final ] class_definition ';'^ }
+    : [ within [ name ] ';'^ ] { [ final ] class_definition ';'^ }
     ;
 
 //=============================================================================

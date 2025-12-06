@@ -4,6 +4,7 @@
 //! the function body with actual arguments.
 
 use crate::ir::ast::{Causality, ClassDefinition, ClassType, Expression, Statement};
+use crate::ir::transform::constants::is_builtin_function;
 use crate::ir::visitor::MutVisitor;
 use indexmap::IndexMap;
 
@@ -89,6 +90,14 @@ impl<'a> FunctionInliner<'a> {
     /// For single-output functions, returns the single expression
     /// For multi-output functions, returns a Tuple of expressions
     fn inline_call(&self, func_name: &str, args: &[Expression]) -> Option<Expression> {
+        // Don't inline built-in functions (like abs, sqrt, sin, cos, etc.)
+        // These should be preserved and handled by the backend
+        // Also extract the simple function name (last part) for checking
+        let simple_name = func_name.rsplit('.').next().unwrap_or(func_name);
+        if is_builtin_function(simple_name) {
+            return None;
+        }
+
         let func = self.functions.get(func_name)?;
 
         // Get input and output parameters from function components

@@ -52,6 +52,44 @@ pub fn get_word_at_position(text: &str, position: Position) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
+/// Get a qualified name (dotted path like SI.Mass) at the given position in text
+/// This is useful for type references that span multiple identifiers
+pub fn get_qualified_name_at_position(text: &str, position: Position) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line = lines.get(position.line as usize)?;
+    let col = position.character as usize;
+
+    if col > line.len() {
+        return None;
+    }
+
+    // Find boundaries including dots for qualified names
+    let start = line[..col]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let end = line[col..]
+        .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+        .map(|i| col + i)
+        .unwrap_or(line.len());
+
+    if start >= end {
+        return None;
+    }
+
+    let qualified = line[start..end].to_string();
+
+    // Clean up leading/trailing dots
+    let qualified = qualified.trim_matches('.');
+
+    if qualified.is_empty() {
+        return None;
+    }
+
+    Some(qualified.to_string())
+}
+
 /// Find the function name being called at the cursor position (for signature help)
 /// Returns (function_name, active_parameter_index)
 pub fn find_function_at_cursor(text: &str, position: Position) -> Option<(String, usize)> {

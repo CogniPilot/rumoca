@@ -55,6 +55,14 @@
         "embeddedLanguages": {
           "meta.embedded.block.modelica": "modelica"
         }
+      },
+      {
+        "scopeName": "source.modelica.injection",
+        "path": "./syntaxes/modelica-injection.tmLanguage.json",
+        "injectTo": ["source.python"],
+        "embeddedLanguages": {
+          "meta.embedded.block.modelica": "modelica"
+        }
       }
     ],
     "notebookRenderer": [],
@@ -94,9 +102,39 @@
           },
           "default": [],
           "description": "List of directories containing Modelica libraries (e.g., path to ModelicaStandardLibrary). These are added to MODELICAPATH for import resolution."
+        },
+        "rumoca.collapseAnnotations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Collapse single-line annotation contents by default, showing 'annotation(...)' instead of the full content. Click on the annotation to expand."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "rumoca.toggleAnnotation",
+        "title": "Toggle Annotation Expansion",
+        "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.expandAllAnnotations",
+        "title": "Expand All Annotations",
+        "category": "Rumoca"
+      },
+      {
+        "command": "rumoca.collapseAllAnnotations",
+        "title": "Collapse All Annotations",
+        "category": "Rumoca"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "rumoca.toggleAnnotation",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus && editorLangId == modelica"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",

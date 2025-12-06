@@ -49,6 +49,7 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
+pub mod cache;
 mod error_handling;
 mod function_collector;
 mod pipeline;
@@ -61,7 +62,10 @@ use crate::modelica_grammar::ModelicaGrammar;
 use crate::modelica_parser::parse;
 use anyhow::{Context, Result};
 use error_handling::create_syntax_error;
+use indexmap::IndexSet;
+use rayon::prelude::*;
 use std::fs;
+use std::path::PathBuf;
 use std::time::Instant;
 
 /// A high-level compiler for Modelica models.
@@ -80,15 +84,32 @@ use std::time::Instant;
 ///     .compile_file("model.mo")?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Compiler {
     verbose: bool,
     /// Main model/class name to simulate (required)
     model_name: Option<String>,
-    /// Additional source files to include in compilation
-    additional_files: Vec<String>,
+    /// Additional source files to include in compilation (deduplicated by canonical path)
+    additional_files: IndexSet<PathBuf>,
     /// Explicit library paths (overrides MODELICAPATH env var if set)
     modelica_paths: Vec<std::path::PathBuf>,
+    /// Number of threads for parallel parsing (None = 50% of cores)
+    threads: Option<usize>,
+    /// Enable AST caching for faster library loading (default: true)
+    use_cache: bool,
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self {
+            verbose: false,
+            model_name: None,
+            additional_files: IndexSet::new(),
+            modelica_paths: Vec::new(),
+            threads: None,   // Will use 50% of cores
+            use_cache: true, // Enable caching by default
+        }
+    }
 }
 
 impl Compiler {
@@ -161,10 +182,57 @@ impl Compiler {
         self
     }
 
+    /// Sets the number of threads for parallel file parsing.
+    ///
+    /// By default, uses 50% of available CPU cores to leave resources for other tasks.
+    /// Set to 1 for single-threaded parsing, or a higher number to use more cores.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rumoca::Compiler;
+    ///
+    /// // Use all available cores
+    /// let compiler = Compiler::new().threads(num_cpus::get());
+    ///
+    /// // Use single-threaded parsing
+    /// let compiler = Compiler::new().threads(1);
+    /// ```
+    pub fn threads(mut self, threads: usize) -> Self {
+        self.threads = Some(threads.max(1));
+        self
+    }
+
+    /// Returns the number of threads to use for parallel parsing.
+    /// Defaults to (num_cpus - 1) to leave one core free for the system, minimum 1.
+    fn get_thread_count(&self) -> usize {
+        self.threads
+            .unwrap_or_else(|| std::cmp::max(1, num_cpus::get().saturating_sub(1)))
+    }
+
+    /// Enables or disables AST caching.
+    ///
+    /// When enabled (default), parsed ASTs are cached to `~/.cache/rumoca/ast/`
+    /// to speed up subsequent compilations of the same files.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rumoca::Compiler;
+    ///
+    /// // Disable caching
+    /// let compiler = Compiler::new().cache(false);
+    /// ```
+    pub fn cache(mut self, enable: bool) -> Self {
+        self.use_cache = enable;
+        self
+    }
+
     /// Adds an additional source file to include in compilation.
     ///
     /// Use this to include library files, package definitions, or other
-    /// dependencies that the main model requires.
+    /// dependencies that the main model requires. Files are automatically
+    /// deduplicated by canonical path.
     ///
     /// # Examples
     ///
@@ -179,7 +247,10 @@ impl Compiler {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn include(mut self, path: &str) -> Self {
-        self.additional_files.push(path.to_string());
+        let path_buf = PathBuf::from(path);
+        // Canonicalize to detect duplicates (same file via different paths)
+        let canonical = path_buf.canonicalize().unwrap_or(path_buf);
+        self.additional_files.insert(canonical);
         self
     }
 
@@ -198,7 +269,7 @@ impl Compiler {
     /// ```
     pub fn include_all(mut self, paths: &[&str]) -> Self {
         for path in paths {
-            self.additional_files.push((*path).to_string());
+            self = self.include(path);
         }
         self
     }
@@ -229,8 +300,9 @@ impl Compiler {
         let files = discover_modelica_files(package_path)?;
 
         for file in files {
-            self.additional_files
-                .push(file.to_string_lossy().to_string());
+            // Canonicalize to detect duplicates
+            let canonical = file.canonicalize().unwrap_or(file);
+            self.additional_files.insert(canonical);
         }
 
         Ok(self)
@@ -349,18 +421,80 @@ impl Compiler {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn compile_file(&self, path: &str) -> Result<CompilationResult> {
-        // Parse additional files first
-        let mut all_definitions = Vec::new();
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        for additional_path in &self.additional_files {
-            let additional_source = fs::read_to_string(additional_path)
-                .with_context(|| format!("Failed to read file: {}", additional_path))?;
+        // Configure thread pool
+        let thread_count = self.get_thread_count();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .build()
+            .with_context(|| "Failed to create thread pool")?;
 
-            let def = self.parse_source(&additional_source, additional_path)?;
-            all_definitions.push((additional_path.clone(), def));
+        let cache_hits = AtomicUsize::new(0);
+        let cache_misses = AtomicUsize::new(0);
+
+        if self.verbose {
+            println!(
+                "Parsing {} files using {} threads (cache: {})...",
+                self.additional_files.len() + 1,
+                thread_count,
+                if self.use_cache {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
         }
 
-        // Parse main file
+        // Parse additional files in parallel (with caching)
+        let additional_paths: Vec<_> = self.additional_files.iter().collect();
+        let use_cache = self.use_cache;
+        let parsed_additional: Result<Vec<_>> = pool.install(|| {
+            additional_paths
+                .par_iter()
+                .map(|additional_path| {
+                    let path_str = additional_path.to_string_lossy().to_string();
+
+                    // Try cache first
+                    if use_cache {
+                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
+                            if let Some(cached_def) = cache::load_cached_ast(additional_path, &hash)
+                            {
+                                cache_hits.fetch_add(1, Ordering::Relaxed);
+                                return Ok((path_str, cached_def));
+                            }
+                        }
+                    }
+
+                    // Cache miss - parse the file
+                    cache_misses.fetch_add(1, Ordering::Relaxed);
+                    let additional_source = fs::read_to_string(additional_path)
+                        .with_context(|| format!("Failed to read file: {}", path_str))?;
+                    let def = self.parse_source(&additional_source, &path_str)?;
+
+                    // Store in cache
+                    if use_cache {
+                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
+                            let _ = cache::store_cached_ast(additional_path, &hash, &def);
+                        }
+                    }
+
+                    Ok((path_str, def))
+                })
+                .collect()
+        });
+
+        let mut all_definitions = parsed_additional?;
+
+        if self.verbose {
+            println!(
+                "Cache: {} hits, {} misses",
+                cache_hits.load(Ordering::Relaxed),
+                cache_misses.load(Ordering::Relaxed)
+            );
+        }
+
+        // Parse main file (not cached - it's the user's code that changes frequently)
         let input =
             fs::read_to_string(path).with_context(|| format!("Failed to read file: {}", path))?;
 
@@ -399,20 +533,44 @@ impl Compiler {
             anyhow::bail!("At least one file must be provided");
         }
 
-        let mut all_definitions = Vec::new();
-        let mut all_sources = Vec::new();
+        // Configure thread pool
+        let thread_count = self.get_thread_count();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .build()
+            .with_context(|| "Failed to create thread pool")?;
 
-        for path in paths {
-            let source = fs::read_to_string(path)
-                .with_context(|| format!("Failed to read file: {}", path))?;
-
-            let def = self.parse_source(&source, path)?;
-            all_definitions.push((path.to_string(), def));
-            all_sources.push((path.to_string(), source));
+        if self.verbose {
+            println!(
+                "Parsing {} files using {} threads...",
+                paths.len(),
+                thread_count
+            );
         }
 
-        // Use last file as the "main" for error reporting
-        let (main_path, main_source) = all_sources.last().unwrap();
+        // Parse all files in parallel
+        let parsed_results: Result<Vec<_>> = pool.install(|| {
+            paths
+                .par_iter()
+                .map(|path| {
+                    let source = fs::read_to_string(path)
+                        .with_context(|| format!("Failed to read file: {}", path))?;
+                    let def = self.parse_source(&source, path)?;
+                    Ok((path.to_string(), def, source))
+                })
+                .collect()
+        });
+
+        let results = parsed_results?;
+
+        // Separate definitions and sources
+        let all_definitions: Vec<_> = results
+            .iter()
+            .map(|(path, def, _)| (path.clone(), def.clone()))
+            .collect();
+        let main_source = &results.last().unwrap().2;
+        let main_path = &results.last().unwrap().0;
+
         self.compile_definitions(all_definitions, main_source, main_path)
     }
 
@@ -501,9 +659,85 @@ impl Compiler {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn compile_str(&self, source: &str, file_name: &str) -> Result<CompilationResult> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Configure thread pool
+        let thread_count = self.get_thread_count();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .build()
+            .with_context(|| "Failed to create thread pool")?;
+
+        let cache_hits = AtomicUsize::new(0);
+        let cache_misses = AtomicUsize::new(0);
+
+        if self.verbose && !self.additional_files.is_empty() {
+            println!(
+                "Parsing {} additional files using {} threads (cache: {})...",
+                self.additional_files.len(),
+                thread_count,
+                if self.use_cache {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+
+        // Parse additional files in parallel (with caching)
+        let additional_paths: Vec<_> = self.additional_files.iter().collect();
+        let use_cache = self.use_cache;
+        let parsed_additional: Result<Vec<_>> = pool.install(|| {
+            additional_paths
+                .par_iter()
+                .map(|additional_path| {
+                    let path_str = additional_path.to_string_lossy().to_string();
+
+                    // Try cache first
+                    if use_cache {
+                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
+                            if let Some(cached_def) = cache::load_cached_ast(additional_path, &hash)
+                            {
+                                cache_hits.fetch_add(1, Ordering::Relaxed);
+                                return Ok((path_str, cached_def));
+                            }
+                        }
+                    }
+
+                    // Cache miss - parse the file
+                    cache_misses.fetch_add(1, Ordering::Relaxed);
+                    let additional_source = fs::read_to_string(additional_path)
+                        .with_context(|| format!("Failed to read file: {}", path_str))?;
+                    let def = self.parse_source(&additional_source, &path_str)?;
+
+                    // Store in cache
+                    if use_cache {
+                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
+                            let _ = cache::store_cached_ast(additional_path, &hash, &def);
+                        }
+                    }
+
+                    Ok((path_str, def))
+                })
+                .collect()
+        });
+
+        let mut all_definitions = parsed_additional?;
+
+        if self.verbose && !self.additional_files.is_empty() {
+            println!(
+                "Cache: {} hits, {} misses",
+                cache_hits.load(Ordering::Relaxed),
+                cache_misses.load(Ordering::Relaxed)
+            );
+        }
+
+        // Parse main source
         let def = self.parse_source(source, file_name)?;
-        let definitions = vec![(file_name.to_string(), def)];
-        self.compile_definitions(definitions, source, file_name)
+        all_definitions.push((file_name.to_string(), def));
+
+        // Compile with all definitions
+        self.compile_definitions(all_definitions, source, file_name)
     }
 
     /// Compiles from a pre-parsed StoredDefinition.

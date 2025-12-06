@@ -74,6 +74,10 @@ impl SemanticTokenCollector {
     }
 
     fn add_token(&mut self, line: u32, col: u32, len: u32, token_type: u32, modifiers: u32) {
+        // Skip tokens with invalid locations (line=0 or col=0 means uninitialized/default)
+        if line == 0 || col == 0 || len == 0 {
+            return;
+        }
         self.tokens.push((
             line.saturating_sub(1),
             col.saturating_sub(1),

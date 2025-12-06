@@ -117,7 +117,7 @@
 /*  69 */ stored_definitionList /* Vec<T>::New */: ;
 /*  70 */ stored_definitionOpt0 /* Option<T>::Some */: final;
 /*  71 */ stored_definitionOpt0 /* Option<T>::None */: ;
-/*  72 */ stored_definitionOpt /* Option<T>::Some */: within^ /* Clipped */ stored_definitionOpt1 /* Option */ ';'^ /* Clipped */;
+/*  72 */ stored_definitionOpt /* Option<T>::Some */: within stored_definitionOpt1 /* Option */ ';'^ /* Clipped */;
 /*  73 */ stored_definitionOpt1 /* Option<T>::Some */: name;
 /*  74 */ stored_definitionOpt1 /* Option<T>::None */: ;
 /*  75 */ stored_definitionOpt /* Option<T>::None */: ;

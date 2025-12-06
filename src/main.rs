@@ -36,8 +36,13 @@ use rumoca::Compiler;
 
 use anyhow::Result;
 
+/// Git version string including commit hash and build timestamp for dirty builds
+/// Format: "v0.7.18" (clean release), "v0.7.18-dirty-1234567890" (dirty with timestamp)
+///         "v0.7.18-5-g1234567" (5 commits after tag)
+const GIT_VERSION: &str = env!("RUMOCA_GIT_VERSION");
+
 #[derive(Parser, Debug)]
-#[command(version, about = "Rumoca Modelica Translator", long_about = None)]
+#[command(version = GIT_VERSION, about = "Rumoca Modelica Translator", long_about = None)]
 struct Args {
     /// Export to Base Modelica JSON (native, recommended)
     #[arg(long, conflicts_with = "template_file")]
@@ -81,24 +86,20 @@ fn main() -> Result<()> {
         compiler = compiler.modelica_path(&paths);
     }
 
-    // Auto-include packages from MODELICAPATH based on model name
-    // E.g., "Modelica.Blocks.Continuous.PID" -> include "Modelica" package
-    if let Some(root_package) = args.model.split('.').next() {
-        // Try to include the root package from library paths
-        // This will fail silently if the package is not found (it may be in the main file)
-        compiler = match compiler.include_from_modelica_path(root_package) {
-            Ok(c) => c,
-            Err(_) => Compiler::new()
-                .verbose(args.verbose)
-                .model(&args.model)
-                .modelica_path(
-                    &args
-                        .lib_paths
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>(),
-                ),
-        };
+    // Auto-include packages from MODELICAPATH
+    // Include root package from model name (e.g., "Modelica.Blocks.PID" -> "Modelica")
+    // Also include "Modelica" if not already included (for user files with MSL imports)
+    let root_package = args.model.split('.').next().unwrap_or("");
+
+    if let Ok(c) = compiler.clone().include_from_modelica_path(root_package) {
+        compiler = c;
+    }
+
+    // If model doesn't start with "Modelica", also try loading MSL for imports
+    if root_package != "Modelica" {
+        if let Ok(c) = compiler.clone().include_from_modelica_path("Modelica") {
+            compiler = c;
+        }
     }
 
     let mut result = compiler.compile_file(&args.model_file)?;

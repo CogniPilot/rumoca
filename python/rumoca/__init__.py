@@ -7,16 +7,17 @@ with Cyecca for code generation and simulation.
 Example:
     >>> import rumoca
     >>> result = rumoca.compile("bouncing_ball.mo")
-    >>>
-    >>> # Export to Base Modelica JSON
     >>> result.export_base_modelica_json("output.json")
     >>>
-    >>> # Then use Cyecca for backend-specific code generation:
-    >>> from cyecca.io import import_base_modelica
-    >>> model = import_base_modelica("output.json")
-    >>> # Use CasADi backend
-    >>> from cyecca.backends import CasadiBackend
-    >>> backend = CasadiBackend(model)
+    >>> # Or use with cyecca directly:
+    >>> from cyecca.backends.casadi import compile_modelica
+    >>> model = compile_modelica('''
+    ...     model MyModel
+    ...         Real x;
+    ...     equation
+    ...         der(x) = -x;
+    ...     end MyModel;
+    ... ''')
 """
 
 from .compiler import (
@@ -29,25 +30,27 @@ from .compiler import (
 )
 from .version import __version__
 
-# Try to import native bindings for direct access
-try:
-    from ._native import compile_str, compile_file, version as native_version
-    NATIVE_AVAILABLE = True
-except ImportError:
-    NATIVE_AVAILABLE = False
-    compile_str = None
-    compile_file = None
-    native_version = None
+# Check if native bindings are available
+def _check_native() -> bool:
+    try:
+        from . import _native  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+NATIVE_AVAILABLE = _check_native()
+del _check_native  # Remove helper from namespace
 
 __all__ = [
+    # Core API
     "compile",
     "compile_source",
     "CompilationResult",
     "CompilationError",
+    # Configuration
     "get_prefer_system_binary",
     "set_prefer_system_binary",
+    # Metadata
     "__version__",
     "NATIVE_AVAILABLE",
-    "compile_str",
-    "compile_file",
 ]

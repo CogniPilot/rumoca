@@ -17,7 +17,158 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
-const GIT_VERSION: &str = git_version!(fallback = "unknown");
+const GIT_VERSION: &str = git_version!(
+    args = ["--tags", "--always", "--dirty=-dirty"],
+    fallback = "unknown"
+);
+
+/// Collect variable names that appear on the left-hand side of simple equations.
+/// These variables have defining equations and should not be treated as external inputs
+/// even if they have Input causality (e.g., signal connector inputs with connect equations).
+fn collect_defined_variables(equations: &[Equation]) -> HashSet<String> {
+    let mut defined = HashSet::new();
+    collect_defined_variables_recursive(equations, &mut defined);
+    defined
+}
+
+/// Recursively collect defined variables from equations, handling nested structures.
+fn collect_defined_variables_recursive(equations: &[Equation], defined: &mut HashSet<String>) {
+    for eq in equations {
+        match eq {
+            Equation::Simple {
+                lhs: Expression::ComponentReference(cref),
+                ..
+            } => {
+                defined.insert(cref.to_string());
+            }
+            Equation::Simple { .. } => {}
+            Equation::For {
+                equations: inner, ..
+            } => {
+                collect_defined_variables_recursive(inner, defined);
+            }
+            Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    collect_defined_variables_recursive(&block.eqs, defined);
+                }
+                if let Some(else_eqs) = else_block {
+                    collect_defined_variables_recursive(else_eqs, defined);
+                }
+            }
+            Equation::When(blocks) => {
+                for block in blocks {
+                    collect_defined_variables_recursive(&block.eqs, defined);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Expand an array component into individual scalar components.
+/// For example, `x[3]` becomes `x[1]`, `x[2]`, `x[3]`.
+fn expand_array_component(comp: &Component) -> Vec<(String, Component)> {
+    if comp.shape.is_empty() {
+        // Scalar component - return as-is
+        return vec![(comp.name.clone(), comp.clone())];
+    }
+
+    // Calculate total number of elements
+    let total_elements: usize = comp.shape.iter().product();
+    if total_elements == 0 {
+        // Empty array (e.g., x[0]) - return nothing
+        return vec![];
+    }
+
+    let mut result = Vec::with_capacity(total_elements);
+
+    // Generate all index combinations
+    let indices = generate_indices(&comp.shape);
+
+    for idx in indices {
+        // Create subscripted name like "x[1]" or "x[1,2]"
+        let subscript_str = idx
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let scalar_name = format!("{}[{}]", comp.name, subscript_str);
+
+        // Create a scalar component (empty shape)
+        let mut scalar_comp = comp.clone();
+        scalar_comp.name = scalar_name.clone();
+        scalar_comp.shape = vec![]; // Now it's a scalar
+
+        // If the start value is an array, extract the corresponding element
+        if !matches!(comp.start, Expression::Empty) {
+            scalar_comp.start = extract_array_element(&comp.start, &idx);
+        }
+
+        result.push((scalar_name, scalar_comp));
+    }
+
+    result
+}
+
+/// Generate all index combinations for a given shape.
+/// For shape [2, 3], generates [[1,1], [1,2], [1,3], [2,1], [2,2], [2,3]]
+fn generate_indices(shape: &[usize]) -> Vec<Vec<usize>> {
+    if shape.is_empty() {
+        return vec![vec![]];
+    }
+
+    let mut result = Vec::new();
+    generate_indices_recursive(shape, 0, &mut vec![], &mut result);
+    result
+}
+
+fn generate_indices_recursive(
+    shape: &[usize],
+    dim: usize,
+    current: &mut Vec<usize>,
+    result: &mut Vec<Vec<usize>>,
+) {
+    if dim >= shape.len() {
+        result.push(current.clone());
+        return;
+    }
+
+    for i in 1..=shape[dim] {
+        current.push(i);
+        generate_indices_recursive(shape, dim + 1, current, result);
+        current.pop();
+    }
+}
+
+/// Extract an element from an array expression given indices.
+fn extract_array_element(expr: &Expression, indices: &[usize]) -> Expression {
+    if indices.is_empty() {
+        return expr.clone();
+    }
+
+    match expr {
+        Expression::Array { elements } => {
+            let idx = indices[0];
+            if idx > 0 && idx <= elements.len() {
+                if indices.len() == 1 {
+                    elements[idx - 1].clone()
+                } else {
+                    extract_array_element(&elements[idx - 1], &indices[1..])
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        _ => {
+            // For non-array expressions, create a subscripted reference
+            // This handles cases like `x_start` where start is a parameter
+            expr.clone()
+        }
+    }
+}
 
 /// Creates a DAE (Differential-Algebraic Equation) representation from a flattened class definition.
 ///
@@ -74,32 +225,52 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     let mut condition_finder = ConditionFinder::default();
     fclass.accept_mut(&mut condition_finder);
 
-    // handle components
+    // Find variables that have defining equations (appear on LHS of simple equations)
+    // These should be treated as algebraic variables, not inputs, even if they have Input causality
+    let defined_variables = collect_defined_variables(&fclass.equations);
+
+    // handle components - expand arrays to scalar components
     for (_, comp) in &fclass.components {
-        match comp.variability {
-            Variability::Parameter(..) => {
-                dae.p.insert(comp.name.clone(), comp.clone());
-            }
-            Variability::Constant(..) => {
-                dae.cp.insert(comp.name.clone(), comp.clone());
-            }
-            Variability::Discrete(..) => {
-                dae.m.insert(comp.name.clone(), comp.clone());
-            }
-            Variability::Empty => {
-                // Check causality FIRST - inputs are always inputs even if they appear in der()
-                match comp.causality {
-                    Causality::Input(..) => {
-                        // Inputs are provided externally, never states or unknowns
-                        dae.u.insert(comp.name.clone(), comp.clone());
-                    }
-                    Causality::Output(..) | Causality::Empty => {
-                        // For outputs and regular variables, check if it's a state
-                        if state_finder.states.contains(&comp.name) {
-                            // Add state variable only - derivatives remain as der() calls in equations
-                            dae.x.insert(comp.name.clone(), comp.clone());
-                        } else {
-                            dae.y.insert(comp.name.clone(), comp.clone());
+        // Expand array components to individual scalars
+        let expanded = expand_array_component(comp);
+
+        for (scalar_name, scalar_comp) in expanded {
+            match scalar_comp.variability {
+                Variability::Parameter(..) => {
+                    dae.p.insert(scalar_name, scalar_comp);
+                }
+                Variability::Constant(..) => {
+                    dae.cp.insert(scalar_name, scalar_comp);
+                }
+                Variability::Discrete(..) => {
+                    dae.m.insert(scalar_name, scalar_comp);
+                }
+                Variability::Empty => {
+                    // Check causality, but also check if the variable has a defining equation
+                    match scalar_comp.causality {
+                        Causality::Input(..) => {
+                            // Input causality variables are only true "inputs" if they have no defining equation
+                            // If they have a defining equation (e.g., from connect), they're algebraic variables
+                            if defined_variables.contains(&scalar_name) {
+                                // Has a defining equation - treat as algebraic variable
+                                dae.y.insert(scalar_name, scalar_comp);
+                            } else {
+                                // No defining equation - true external input
+                                dae.u.insert(scalar_name, scalar_comp);
+                            }
+                        }
+                        Causality::Output(..) | Causality::Empty => {
+                            // For outputs and regular variables, check if it's a state
+                            // Check both the original array name and the scalar name for states
+                            let base_name = comp.name.clone();
+                            if state_finder.states.contains(&base_name)
+                                || state_finder.states.contains(&scalar_name)
+                            {
+                                // Add state variable only - derivatives remain as der() calls in equations
+                                dae.x.insert(scalar_name, scalar_comp);
+                            } else {
+                                dae.y.insert(scalar_name, scalar_comp);
+                            }
                         }
                     }
                 }

@@ -21,6 +21,7 @@
 //! - Call hierarchy
 //! - Document links
 
+use crossbeam_channel::{Select, unbounded};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as NotificationTrait;
 use lsp_types::{
@@ -39,13 +40,15 @@ use lsp_types::{
         WorkspaceSymbolRequest,
     },
 };
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher, event::EventKind};
 use rumoca::lsp::{
     WorkspaceState, compute_diagnostics, get_semantic_token_legend, handle_code_action,
     handle_code_lens, handle_completion_workspace, handle_document_links, handle_document_symbols,
-    handle_folding_range, handle_formatting, handle_goto_definition_workspace, handle_hover,
-    handle_incoming_calls, handle_outgoing_calls, handle_prepare_call_hierarchy,
-    handle_prepare_rename, handle_references, handle_rename_workspace, handle_semantic_tokens,
-    handle_signature_help, handle_type_definition, handle_workspace_symbol,
+    handle_folding_range, handle_formatting, handle_goto_definition_workspace,
+    handle_hover_workspace, handle_incoming_calls, handle_outgoing_calls,
+    handle_prepare_call_hierarchy, handle_prepare_rename, handle_references,
+    handle_rename_workspace, handle_semantic_tokens, handle_signature_help, handle_type_definition,
+    handle_workspace_symbol,
 };
 use std::error::Error;
 use std::path::PathBuf;
@@ -216,7 +219,7 @@ fn main_loop(
     workspace.set_debug(is_debug());
     debug_log!("[rumoca-lsp] Calling workspace.initialize() - this scans for Modelica packages...");
     let init_start = std::time::Instant::now();
-    workspace.initialize(workspace_folders, extra_library_paths);
+    workspace.initialize(workspace_folders.clone(), extra_library_paths.clone());
     let init_elapsed = init_start.elapsed();
 
     // Report what was discovered (always visible)
@@ -236,362 +239,381 @@ fn main_loop(
         workspace.discovered_files().len(),
         workspace.package_roots().len()
     );
-    debug_log!("[rumoca-lsp] Ready to process messages");
 
-    for msg in &connection.receiver {
-        match msg {
-            Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    return Ok(());
+    // Set up file watcher for automatic indexing of new files
+    let (fs_tx, fs_rx) = unbounded();
+    let _watcher = setup_file_watcher(&workspace_folders, &extra_library_paths, fs_tx);
+
+    debug_log!("[rumoca-lsp] File watcher started, ready to process messages");
+
+    // Main event loop using select to handle both LSP messages and file events
+    loop {
+        let mut sel = Select::new();
+        sel.recv(&connection.receiver);
+        sel.recv(&fs_rx);
+
+        let oper = sel.select();
+        match oper.index() {
+            // LSP message received
+            0 => {
+                let msg = match oper.recv(&connection.receiver) {
+                    Ok(msg) => msg,
+                    Err(_) => return Ok(()), // Channel closed, shutdown
+                };
+                if handle_lsp_message(&connection, &mut workspace, msg)? {
+                    return Ok(()); // Shutdown requested
                 }
-
-                let req = match cast_request::<GotoDefinition>(req) {
-                    Ok((id, params)) => {
-                        // Use workspace-aware go to definition
-                        let result = handle_goto_definition_workspace(&workspace, params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<GotoTypeDefinition>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_type_definition(
-                            workspace.documents(),
-                            params.text_document_position_params,
-                        );
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<Completion>(req) {
-                    Ok((id, params)) => {
-                        eprintln!(
-                            "Completion request for: {:?}",
-                            params.text_document_position.text_document.uri
-                        );
-                        // Use workspace-aware completion (mutable for lazy package loading)
-                        let result = handle_completion_workspace(&mut workspace, params);
-                        eprintln!(
-                            "Completion result: {} items",
-                            result
-                                .as_ref()
-                                .map(|r| match r {
-                                    lsp_types::CompletionResponse::Array(items) => items.len(),
-                                    lsp_types::CompletionResponse::List(list) => list.items.len(),
-                                })
-                                .unwrap_or(0)
-                        );
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<SignatureHelpRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_signature_help(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<HoverRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_hover(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<DocumentSymbolRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_document_symbols(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<References>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_references(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<SemanticTokensFullRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_semantic_tokens(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<WorkspaceSymbolRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_workspace_symbol(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<PrepareRenameRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_prepare_rename(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<Rename>(req) {
-                    Ok((id, params)) => {
-                        // Use workspace-aware rename
-                        let result = handle_rename_workspace(&workspace, params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<FoldingRangeRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_folding_range(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<CodeActionRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_code_action(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<Formatting>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_formatting(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<CodeLensRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_code_lens(&workspace, params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<CallHierarchyPrepare>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_prepare_call_hierarchy(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<CallHierarchyIncomingCalls>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_incoming_calls(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                let req = match cast_request::<CallHierarchyOutgoingCalls>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_outgoing_calls(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                };
-
-                match cast_request::<DocumentLinkRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_document_links(workspace.documents(), params);
-                        let resp = Response::new_ok(id, result);
-                        connection.sender.send(Message::Response(resp))?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(_req)) => {
-                        // Unknown request, ignore
-                    }
-                };
             }
-            Message::Response(_resp) => {
-                // We don't send requests to the client, so we don't expect responses
+            // File system event received
+            1 => {
+                if let Ok(event) = oper.recv(&fs_rx) {
+                    handle_file_event(&mut workspace, event);
+                }
             }
-            Message::Notification(notif) => {
-                // Handle initialized notification
-                let notif = match cast_notification::<Initialized>(notif) {
-                    Ok(_params) => {
-                        eprintln!("Client initialized");
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(notif)) => notif,
-                };
+            _ => {}
+        }
+    }
+}
 
-                let notif = match cast_notification::<DidOpenTextDocument>(notif) {
-                    Ok(params) => {
-                        handle_did_open(&connection, &mut workspace, params)?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(notif)) => notif,
-                };
-
-                let notif = match cast_notification::<DidChangeTextDocument>(notif) {
-                    Ok(params) => {
-                        handle_did_change(&connection, &mut workspace, params)?;
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(notif)) => notif,
-                };
-
-                match cast_notification::<DidCloseTextDocument>(notif) {
-                    Ok(params) => {
-                        handle_did_close(&mut workspace, params);
-                        continue;
-                    }
-                    Err(err @ ExtractError::JsonError { .. }) => {
-                        eprintln!("JSON error: {err:?}");
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(_notif)) => {
-                        // Unknown notification, ignore
-                    }
-                };
+/// Set up file watcher for workspace directories
+fn setup_file_watcher(
+    workspace_folders: &[PathBuf],
+    extra_library_paths: &[PathBuf],
+    tx: crossbeam_channel::Sender<notify::Event>,
+) -> Option<RecommendedWatcher> {
+    let tx_clone = tx.clone();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx_clone.send(event);
             }
+        },
+        Config::default(),
+    )
+    .ok()?;
+
+    // Watch workspace folders
+    for folder in workspace_folders {
+        if let Err(e) = watcher.watch(folder, RecursiveMode::Recursive) {
+            eprintln!("Warning: Failed to watch {}: {}", folder.display(), e);
+        } else {
+            debug_log!("[file-watcher] Watching: {}", folder.display());
         }
     }
 
-    Ok(())
+    // Watch library paths
+    for path in extra_library_paths {
+        if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
+            eprintln!("Warning: Failed to watch {}: {}", path.display(), e);
+        } else {
+            debug_log!("[file-watcher] Watching library: {}", path.display());
+        }
+    }
+
+    eprintln!(
+        "File watcher active for {} directories",
+        workspace_folders.len() + extra_library_paths.len()
+    );
+    Some(watcher)
+}
+
+/// Handle file system events (new files, modifications, deletions)
+fn handle_file_event(workspace: &mut WorkspaceState, event: notify::Event) {
+    for path in event.paths {
+        // Only process .mo files
+        if path.extension().is_some_and(|ext| ext == "mo") {
+            match event.kind {
+                EventKind::Create(_) => {
+                    debug_log!("[file-watcher] New file: {}", path.display());
+                    if workspace.ensure_file_loaded(&path).is_some() {
+                        eprintln!("Indexed new file: {}", path.display());
+                    }
+                }
+                EventKind::Modify(_) => {
+                    // File modified on disk - only update if not currently open in editor
+                    // (editor changes are handled via didChange notifications)
+                    debug_log!("[file-watcher] Modified: {}", path.display());
+                }
+                EventKind::Remove(_) => {
+                    debug_log!("[file-watcher] Removed: {}", path.display());
+                    // File deleted - could remove from index, but for now just log
+                    eprintln!("File removed: {}", path.display());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Handle a single LSP message, returns true if shutdown was requested
+fn handle_lsp_message(
+    connection: &Connection,
+    workspace: &mut WorkspaceState,
+    msg: Message,
+) -> Result<bool, Box<dyn Error + Sync + Send>> {
+    match msg {
+        Message::Request(req) => {
+            if connection.handle_shutdown(&req)? {
+                return Ok(true); // Shutdown requested
+            }
+
+            let req = match cast_request::<GotoDefinition>(req) {
+                Ok((id, params)) => {
+                    let result = handle_goto_definition_workspace(workspace, params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<GotoTypeDefinition>(req) {
+                Ok((id, params)) => {
+                    let result = handle_type_definition(
+                        workspace.documents(),
+                        params.text_document_position_params,
+                    );
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<Completion>(req) {
+                Ok((id, params)) => {
+                    let result = handle_completion_workspace(workspace, params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<SignatureHelpRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_signature_help(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<HoverRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_hover_workspace(workspace, params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<DocumentSymbolRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_document_symbols(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<References>(req) {
+                Ok((id, params)) => {
+                    let result = handle_references(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<SemanticTokensFullRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_semantic_tokens(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<WorkspaceSymbolRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_workspace_symbol(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<PrepareRenameRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_prepare_rename(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<Rename>(req) {
+                Ok((id, params)) => {
+                    let result = handle_rename_workspace(workspace, params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<FoldingRangeRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_folding_range(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<CodeActionRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_code_action(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<Formatting>(req) {
+                Ok((id, params)) => {
+                    let result = handle_formatting(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<CodeLensRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_code_lens(workspace, params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<CallHierarchyPrepare>(req) {
+                Ok((id, params)) => {
+                    let result = handle_prepare_call_hierarchy(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<CallHierarchyIncomingCalls>(req) {
+                Ok((id, params)) => {
+                    let result = handle_incoming_calls(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            let req = match cast_request::<CallHierarchyOutgoingCalls>(req) {
+                Ok((id, params)) => {
+                    let result = handle_outgoing_calls(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(req)) => req,
+            };
+
+            match cast_request::<DocumentLinkRequest>(req) {
+                Ok((id, params)) => {
+                    let result = handle_document_links(workspace.documents(), params);
+                    let resp = Response::new_ok(id, result);
+                    connection.sender.send(Message::Response(resp))?;
+                }
+                Err(ExtractError::JsonError { .. }) => {}
+                Err(ExtractError::MethodMismatch(_req)) => {
+                    // Unknown request, ignore
+                }
+            };
+        }
+        Message::Response(_resp) => {
+            // We don't send requests to the client, so we don't expect responses
+        }
+        Message::Notification(notif) => {
+            let notif = match cast_notification::<Initialized>(notif) {
+                Ok(_params) => {
+                    eprintln!("Client initialized");
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(notif)) => notif,
+            };
+
+            let notif = match cast_notification::<DidOpenTextDocument>(notif) {
+                Ok(params) => {
+                    handle_did_open(connection, workspace, params)?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(notif)) => notif,
+            };
+
+            let notif = match cast_notification::<DidChangeTextDocument>(notif) {
+                Ok(params) => {
+                    handle_did_change(connection, workspace, params)?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(notif)) => notif,
+            };
+
+            match cast_notification::<DidCloseTextDocument>(notif) {
+                Ok(params) => {
+                    handle_did_close(workspace, params);
+                }
+                Err(ExtractError::JsonError { .. }) => {}
+                Err(ExtractError::MethodMismatch(_notif)) => {
+                    // Unknown notification, ignore
+                }
+            };
+        }
+    }
+
+    Ok(false)
 }
 
 fn cast_request<R>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>>

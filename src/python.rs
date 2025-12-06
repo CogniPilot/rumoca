@@ -7,6 +7,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::compiler::Compiler;
+use crate::ir::transform::multi_file::{discover_modelica_files, get_modelica_path};
 
 /// Python wrapper for compilation results.
 #[pyclass]
@@ -89,6 +90,9 @@ impl PyCompilationResult {
 ///     source: Modelica source code as a string
 ///     model_name: Name of the model to compile
 ///     filename: Optional filename for error messages (default: "<string>")
+///     library_paths: Optional list of library paths to include (e.g., ["/path/to/MSL"])
+///     use_modelica_path: If True, also search MODELICAPATH env var for libraries (default: True)
+///     threads: Number of threads for parallel parsing (default: num_cpus - 1)
 ///
 /// Returns:
 ///     PyCompilationResult containing the compiled model
@@ -96,10 +100,26 @@ impl PyCompilationResult {
 /// Raises:
 ///     RuntimeError: If compilation fails
 #[pyfunction]
-#[pyo3(signature = (source, model_name, filename = "<string>"))]
-fn compile_str(source: &str, model_name: &str, filename: &str) -> PyResult<PyCompilationResult> {
-    let result = Compiler::new()
-        .model(model_name)
+#[pyo3(signature = (source, model_name, filename = "<string>", library_paths = None, use_modelica_path = true, threads = None))]
+fn compile_str(
+    source: &str,
+    model_name: &str,
+    filename: &str,
+    library_paths: Option<Vec<String>>,
+    use_modelica_path: bool,
+    threads: Option<usize>,
+) -> PyResult<PyCompilationResult> {
+    let mut compiler = Compiler::new().model(model_name);
+
+    // Set thread count if specified
+    if let Some(t) = threads {
+        compiler = compiler.threads(t);
+    }
+
+    // Add library paths
+    compiler = add_library_paths(compiler, library_paths, use_modelica_path)?;
+
+    let result = compiler
         .compile_str(source, filename)
         .map_err(|e| PyRuntimeError::new_err(format!("Compilation failed: {}", e)))?;
 
@@ -118,11 +138,51 @@ fn compile_str(source: &str, model_name: &str, filename: &str) -> PyResult<PyCom
     })
 }
 
+/// Helper function to add library paths to a compiler
+fn add_library_paths(
+    mut compiler: Compiler,
+    library_paths: Option<Vec<String>>,
+    use_modelica_path: bool,
+) -> PyResult<Compiler> {
+    // Collect all paths to search
+    let mut all_paths: Vec<std::path::PathBuf> = Vec::new();
+
+    // Add explicit library paths
+    if let Some(paths) = library_paths {
+        for path in paths {
+            all_paths.push(std::path::PathBuf::from(path));
+        }
+    }
+
+    // Add MODELICAPATH paths if enabled
+    if use_modelica_path {
+        all_paths.extend(get_modelica_path());
+    }
+
+    // Discover and include files from all library paths
+    // The Compiler handles deduplication internally
+    for path in all_paths {
+        if path.exists() {
+            let files = discover_modelica_files(&path).map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to discover files in {:?}: {}", path, e))
+            })?;
+            for file in files {
+                compiler = compiler.include(&file.to_string_lossy());
+            }
+        }
+    }
+
+    Ok(compiler)
+}
+
 /// Compile a Modelica file.
 ///
 /// Args:
 ///     path: Path to the Modelica file
 ///     model_name: Name of the model to compile
+///     library_paths: Optional list of library paths to include (e.g., ["/path/to/MSL"])
+///     use_modelica_path: If True, also search MODELICAPATH env var for libraries (default: True)
+///     threads: Number of threads for parallel parsing (default: num_cpus - 1)
 ///
 /// Returns:
 ///     PyCompilationResult containing the compiled model
@@ -130,9 +190,25 @@ fn compile_str(source: &str, model_name: &str, filename: &str) -> PyResult<PyCom
 /// Raises:
 ///     RuntimeError: If compilation fails
 #[pyfunction]
-fn compile_file(path: &str, model_name: &str) -> PyResult<PyCompilationResult> {
-    let result = Compiler::new()
-        .model(model_name)
+#[pyo3(signature = (path, model_name, library_paths = None, use_modelica_path = true, threads = None))]
+fn compile_file(
+    path: &str,
+    model_name: &str,
+    library_paths: Option<Vec<String>>,
+    use_modelica_path: bool,
+    threads: Option<usize>,
+) -> PyResult<PyCompilationResult> {
+    let mut compiler = Compiler::new().model(model_name);
+
+    // Set thread count if specified
+    if let Some(t) = threads {
+        compiler = compiler.threads(t);
+    }
+
+    // Add library paths
+    compiler = add_library_paths(compiler, library_paths, use_modelica_path)?;
+
+    let result = compiler
         .compile_file(path)
         .map_err(|e| PyRuntimeError::new_err(format!("Compilation failed: {}", e)))?;
 

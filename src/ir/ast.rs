@@ -239,6 +239,8 @@ pub struct ClassDefinition {
     pub end_name_token: Option<Token>,
     /// Enumeration literals for enum types (e.g., `type MyEnum = enumeration(A, B, C)`)
     pub enum_literals: Vec<Token>,
+    /// Annotation clause for this class (e.g., Documentation, Icon, Diagram)
+    pub annotation: Vec<Expression>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

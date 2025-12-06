@@ -6591,7 +6591,7 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 271,
         production: &[],
     },
-    // 72 - stored_definitionOpt: within^ /* Clipped */ stored_definitionOpt1 /* Option */ ';'^ /* Clipped */;
+    // 72 - stored_definitionOpt: within stored_definitionOpt1 /* Option */ ';'^ /* Clipped */;
     Production {
         lhs: 270,
         production: &[ParseType::T(72), ParseType::N(272), ParseType::N(304)],

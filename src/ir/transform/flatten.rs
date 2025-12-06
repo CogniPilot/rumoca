@@ -94,6 +94,41 @@ fn build_import_aliases(imports: &[Import]) -> IndexMap<String, String> {
     aliases
 }
 
+/// Validates that all imported classes exist in the class dictionary.
+/// Returns an error if any import refers to a non-existent class.
+fn validate_imports(
+    imports: &[Import],
+    class_dict: &IndexMap<String, ClassDefinition>,
+) -> Result<()> {
+    for import in imports {
+        match import {
+            Import::Renamed { path, .. } | Import::Qualified { path, .. } => {
+                let target = path.to_string();
+                if !class_dict.contains_key(&target) {
+                    return Err(IrError::ImportClassNotFound(target).into());
+                }
+            }
+            Import::Selective { path, names, .. } => {
+                let base_path = path.to_string();
+                for name in names {
+                    let full_path = format!("{}.{}", base_path, name.text);
+                    if !class_dict.contains_key(&full_path) {
+                        return Err(IrError::ImportClassNotFound(full_path).into());
+                    }
+                }
+            }
+            Import::Unqualified { path, .. } => {
+                // For unqualified imports (import A.B.*;), just check the base path exists
+                let target = path.to_string();
+                if !class_dict.contains_key(&target) {
+                    return Err(IrError::ImportClassNotFound(target).into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Builds a combined import alias map from a class and all its enclosing scopes.
 ///
 /// This collects imports from the class itself and all parent packages up to the root.
@@ -158,15 +193,6 @@ fn apply_import_aliases(name: &str, aliases: &IndexMap<String, String>) -> Strin
 /// - `Modelica.Blocks.Interfaces.SISO` (found!)
 /// - `Modelica.Interfaces.SISO`
 /// - `Interfaces.SISO` (at root level)
-fn resolve_class_name(
-    name: &str,
-    current_class_path: &str,
-    class_dict: &IndexMap<String, ClassDefinition>,
-) -> Option<String> {
-    resolve_class_name_with_imports(name, current_class_path, class_dict, &IndexMap::new())
-}
-
-/// Resolves a class name with import alias support.
 fn resolve_class_name_with_imports(
     name: &str,
     current_class_path: &str,
@@ -334,10 +360,38 @@ fn resolve_class_internal(
         // Extract modifications from the extends clause (e.g., extends Foo(L=1e-3))
         let extends_mods = extract_extends_modifications(&extend.modifications);
 
+        // Build import aliases for the parent class (for resolving type names)
+        let parent_import_aliases = build_import_aliases_for_class(&resolved_name, class_dict);
+
         // Add parent's components (insert at the beginning to maintain proper order)
         for (comp_name, comp) in resolved_parent.components.iter().rev() {
             if !resolved.components.contains_key(comp_name) {
                 let mut modified_comp = comp.clone();
+
+                // Fully qualify the component's type name using the parent class's context
+                // This is critical when inheriting components - e.g., SISO has "RealInput u"
+                // and when SimpleIntegrator extends SISO, we need to resolve RealInput
+                // in SISO's context (Interfaces package) to get "Interfaces.RealInput"
+                let type_name = comp.type_name.to_string();
+                if !is_primitive_type(&type_name) {
+                    if let Some(fq_name) = resolve_class_name_with_imports(
+                        &type_name,
+                        &resolved_name,
+                        class_dict,
+                        &parent_import_aliases,
+                    ) {
+                        // Update the type name to the fully qualified version
+                        modified_comp.type_name = ir::ast::Name {
+                            name: fq_name
+                                .split('.')
+                                .map(|s| ir::ast::Token {
+                                    text: s.to_string(),
+                                    ..Default::default()
+                                })
+                                .collect(),
+                        };
+                    }
+                }
 
                 // Apply extends modifications to inherited components
                 if let Some(mod_value) = extends_mods.get(comp_name) {
@@ -425,6 +479,36 @@ fn make_simple_eq(lhs: &str, rhs: &str) -> Equation {
     Equation::Simple {
         lhs: Expression::ComponentReference(make_comp_ref(lhs)),
         rhs: Expression::ComponentReference(make_comp_ref(rhs)),
+    }
+}
+
+/// Creates a binding equation: lhs = expr
+fn make_binding_eq(lhs: &str, rhs: Expression) -> Equation {
+    Equation::Simple {
+        lhs: Expression::ComponentReference(make_comp_ref(lhs)),
+        rhs,
+    }
+}
+
+/// Checks if an expression is a simple literal that can be used as a start value
+fn is_simple_literal(expr: &Expression) -> bool {
+    match expr {
+        Expression::Empty => true,
+        Expression::Terminal { terminal_type, .. } => {
+            matches!(
+                terminal_type,
+                TerminalType::UnsignedInteger
+                    | TerminalType::UnsignedReal
+                    | TerminalType::Bool
+                    | TerminalType::String
+            )
+        }
+        Expression::Unary { op, rhs } => {
+            // Allow negated literals like -1.0 or -10
+            matches!(op, ir::ast::OpUnary::Minus(_) | ir::ast::OpUnary::Plus(_))
+                && is_simple_literal(rhs)
+        }
+        _ => false,
     }
 }
 
@@ -655,32 +739,43 @@ fn expand_connect_equations(
         }
 
         // For signal connectors (type aliases like RealInput/RealOutput with no internal components),
-        // generate equality equations only where needed.
-        // For causal connectors: output = connected_output creates one equation for the unknown output.
-        // Input variables should be aliased to their connected outputs, not have equations generated.
+        // generate equality equations for the connection.
+        // For causal connectors: input = output (the input receives the value from the output)
         if !generated {
-            // Find which pins are outputs (non-inputs) - these are the unknowns that need equations
-            let output_pins: Vec<&String> = pins_vec
-                .iter()
-                .filter(|pin| {
-                    // Check if this pin is an output (Causality::Output or Empty) vs input
-                    if let Some(comp) = fclass.components.get(**pin) {
-                        !matches!(comp.causality, ir::ast::Causality::Input(..))
-                    } else {
-                        true // Unknown pins are treated as outputs
-                    }
-                })
-                .cloned()
-                .collect();
+            // Separate pins into outputs (sources) and inputs (sinks)
+            let mut output_pins: Vec<&String> = Vec::new();
+            let mut input_pins: Vec<&String> = Vec::new();
 
-            // Find one "source" output to use as the reference value
+            for pin in &pins_vec {
+                if let Some(comp) = fclass.components.get(*pin) {
+                    if matches!(comp.causality, ir::ast::Causality::Input(..)) {
+                        input_pins.push(pin);
+                    } else {
+                        output_pins.push(pin);
+                    }
+                } else {
+                    // Unknown pins are treated as outputs
+                    output_pins.push(pin);
+                }
+            }
+
+            // Find the source (output pin) - there should be exactly one
+            // If no outputs, fall back to first pin as source (all-input connections)
             let source_pin = output_pins.first().or(pins_vec.first());
 
             if let Some(source) = source_pin {
-                // Generate equations only for output pins (unknowns) that are not the source
-                for pin in &output_pins {
-                    if *pin != *source {
-                        new_equations.push(make_simple_eq(source, pin));
+                // For each input pin, generate: input = source
+                // Skip if source == input (would create tautology like x = x)
+                for input_pin in &input_pins {
+                    if *input_pin != *source {
+                        new_equations.push(make_simple_eq(input_pin, source));
+                    }
+                }
+
+                // For additional outputs (if any), also set them equal to source
+                for output_pin in output_pins.iter().skip(1) {
+                    if *output_pin != *source {
+                        new_equations.push(make_simple_eq(output_pin, source));
                     }
                 }
             }
@@ -834,6 +929,11 @@ impl<'a> ExpansionContext<'a> {
     ) -> Result<()> {
         let type_name = comp.type_name.to_string();
 
+        // Skip primitive types - they don't need expansion
+        if is_primitive_type(&type_name) {
+            return Ok(());
+        }
+
         // Build import aliases for the current class path
         let import_aliases = build_import_aliases_for_class(current_class_path, self.class_dict);
 
@@ -845,7 +945,10 @@ impl<'a> ExpansionContext<'a> {
             &import_aliases,
         ) {
             Some(name) => name,
-            None => return Ok(()), // Primitive type or not found, nothing to expand
+            None => {
+                // Type is not primitive and not found in class dictionary - this is an error
+                return Err(IrError::ComponentClassNotFound(type_name).into());
+            }
         };
 
         // Get the component class
@@ -943,13 +1046,55 @@ impl<'a> ExpansionContext<'a> {
             }
 
             // Apply modifications from parent component
+            // For simple literals, use as start value
+            // For complex expressions, generate binding equations
             if let Some(mod_expr) = comp.modifications.get(subcomp_name) {
-                scomp.start = mod_expr.clone();
+                if is_simple_literal(mod_expr) {
+                    scomp.start = mod_expr.clone();
+                } else {
+                    // Complex expression - generate binding equation
+                    // The binding equation references parent scope variables (not renamed)
+                    let binding_eq = make_binding_eq(&name, mod_expr.clone());
+                    // Parameter and constant bindings go to initial equations (computed once at init)
+                    // Other bindings go to regular equations
+                    if matches!(
+                        subcomp.variability,
+                        ir::ast::Variability::Parameter(_) | ir::ast::Variability::Constant(_)
+                    ) {
+                        self.fclass.initial_equations.push(binding_eq);
+                    } else {
+                        self.fclass.equations.push(binding_eq);
+                    }
+                }
             }
 
             // Apply scope renaming to the component's start expression
             // This prefixes internal references like `x_start` to `comp.x_start`
             scomp.start.accept_mut(&mut renamer);
+
+            // Apply scope renaming to the component's modifications
+            // This prefixes internal references like `unitTime/Ti` to `comp.unitTime/comp.Ti`
+            for mod_expr in scomp.modifications.values_mut() {
+                mod_expr.accept_mut(&mut renamer);
+            }
+
+            // For parameters with non-simple start expressions (binding equations like
+            // `zeroGain = abs(k) < eps`), generate an initial equation if no parent
+            // modification was applied. The start expression has already been scope-renamed.
+            let has_parent_mod = comp.modifications.contains_key(subcomp_name);
+            if !has_parent_mod
+                && matches!(
+                    scomp.variability,
+                    ir::ast::Variability::Parameter(_) | ir::ast::Variability::Constant(_)
+                )
+                && !is_simple_literal(&scomp.start)
+                && !matches!(scomp.start, Expression::Empty)
+            {
+                let binding_eq = make_binding_eq(&name, scomp.start.clone());
+                self.fclass.initial_equations.push(binding_eq);
+                // Clear the start expression since it's now an initial equation
+                scomp.start = Expression::Empty;
+            }
 
             subcomponents.push((name, scomp));
         }
@@ -1114,6 +1259,9 @@ pub fn flatten(
     // Resolve the main class (process extends clauses recursively)
     let resolved_main = resolve_class(&main_class, &main_class_name, &class_dict)?;
 
+    // Validate all imports in the resolved class before proceeding
+    validate_imports(&resolved_main.imports, &class_dict)?;
+
     // Create the flat class starting from resolved main
     let mut fclass = resolved_main.clone();
 
@@ -1127,12 +1275,13 @@ pub fn flatten(
     ctx.register_inner_components(&resolved_main.components);
 
     // Collect component names that need expansion (to avoid borrow issues)
-    // Use scope-aware class resolution to determine which components are class types
+    // Include all non-primitive types - expand_component will error if type is not found
     let components_to_expand: Vec<(String, ir::ast::Component)> = resolved_main
         .components
         .iter()
         .filter(|(_, comp)| {
-            resolve_class_name(&comp.type_name.to_string(), &main_class_name, &class_dict).is_some()
+            // Skip primitive types, they don't need expansion
+            !is_primitive_type(&comp.type_name.to_string())
         })
         .map(|(name, comp)| (name.clone(), comp.clone()))
         .collect();

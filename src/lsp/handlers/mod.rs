@@ -20,7 +20,7 @@ pub use completion::{handle_completion, handle_completion_workspace};
 pub use document_symbols::handle_document_symbols;
 pub use formatting::handle_formatting;
 pub use goto_definition::{handle_goto_definition, handle_goto_definition_workspace};
-pub use hover::handle_hover;
+pub use hover::{handle_hover, handle_hover_workspace};
 pub use references::handle_references;
 pub use rename::{handle_prepare_rename, handle_rename, handle_rename_workspace};
 pub use semantic_tokens::{get_semantic_token_legend, handle_semantic_tokens};

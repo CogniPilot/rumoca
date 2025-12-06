@@ -240,3 +240,90 @@ fn test_type_causality_debug() {
         y.causality
     );
 }
+
+#[test]
+fn test_flatten_modifications_scope_renaming() {
+    // This test verifies that when a component with nested components is flattened,
+    // the modification expressions on subcomponents are properly scope-renamed.
+    //
+    // For example, if Block B has:
+    //   constant Real k = 1;
+    //   SubBlock sub(gain = k);  // modification uses local constant k
+    //
+    // When flattening Model M with B b, we should get:
+    //   b.k = 1;
+    //   b.sub.gain = b.k;  // modification must reference b.k, not just k
+    //
+    // This was a bug fixed in the flattening code where modifications were not
+    // being scope-renamed, causing "undefined variable" errors.
+
+    let source = r#"
+// Subcomponent class
+class Sub
+  parameter Real k = 1.0;
+  Real value;
+equation
+  value = k;
+end Sub;
+
+// Block class with constant used in modification
+class Block
+  constant Real unitTime = 5.0;
+  Sub sub(k = unitTime);
+  Real out;
+equation
+  out = sub.value;
+end Block;
+
+// Main model with nested Block
+model TestModel
+  Block b;
+  Real total;
+equation
+  total = b.out;
+end TestModel;
+"#;
+
+    use common::parse_source;
+
+    let def = parse_source(source).expect("Parse failed");
+    let fclass = flatten(&def, Some("TestModel")).expect("Flatten failed");
+
+    // After flattening:
+    // - b.unitTime should exist (constant from Block)
+    // - b.sub.k should exist (parameter from Sub)
+    // - The modification on b.sub.k should reference b.unitTime
+
+    let component_names: Vec<&String> = fclass.components.keys().collect();
+
+    // Check that constants and parameters are properly flattened
+    assert!(
+        fclass.components.contains_key("b.unitTime"),
+        "Should have b.unitTime. Got: {:?}",
+        component_names
+    );
+    assert!(
+        fclass.components.contains_key("b.sub.k"),
+        "Should have b.sub.k. Got: {:?}",
+        component_names
+    );
+
+    // Check that the modification on b.sub.k was properly scope-renamed
+    let sub_k = fclass.components.get("b.sub.k").unwrap();
+    if !sub_k.modifications.is_empty() {
+        // If the modifications dict is not empty, they should reference b.* scope
+        for (param_name, mod_expr) in &sub_k.modifications {
+            let mod_str = format!("{:?}", mod_expr);
+            // The modification should NOT contain just "unitTime" without prefix
+            // It should contain "b.unitTime"
+            if mod_str.contains("unitTime") {
+                assert!(
+                    mod_str.contains("b.unitTime") || mod_str.contains(r#""b""#),
+                    "Modification {} should reference 'b.unitTime', got {:?}",
+                    param_name,
+                    mod_expr
+                );
+            }
+        }
+    }
+}

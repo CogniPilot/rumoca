@@ -111,15 +111,14 @@ fn collect_comment_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
 }
 
 /// Collect folding ranges for annotation() blocks that span multiple lines
-/// Note: We use FoldingRangeKind::Imports so VSCode's "editor.foldingImportsByDefault"
-/// setting will auto-collapse annotations. This is a workaround since VSCode doesn't
-/// have a generic "fold by kind" setting for custom region types.
+/// We use FoldingRangeKind::Imports so annotations auto-fold on file open
+/// (via VSCode's "editor.foldingImportsByDefault" setting)
 fn collect_annotation_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
     let lines: Vec<&str> = text.lines().collect();
 
     for (line_idx, line) in lines.iter().enumerate() {
-        // Find "annotation(" pattern (with optional whitespace)
-        if let Some(ann_pos) = line.find("annotation(") {
+        // Find "annotation" keyword followed by optional whitespace and "("
+        if let Some(ann_pos) = find_annotation_start(line) {
             // Check if annotation is inside a string or comment
             let before_ann = &line[..ann_pos];
             if before_ann.contains("//") || is_inside_string(line, ann_pos) {
@@ -128,23 +127,58 @@ fn collect_annotation_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
 
             let start_line = line_idx as u32;
 
-            // Find the matching closing parenthesis
-            if let Some(end_line) = find_matching_paren(&lines, line_idx, ann_pos + 11) {
-                // Only create a folding range if it spans multiple lines
-                if end_line > start_line {
-                    ranges.push(FoldingRange {
-                        start_line,
-                        start_character: Some(ann_pos as u32),
-                        end_line,
-                        end_character: None,
-                        // Use Imports kind so "editor.foldingImportsByDefault" works
-                        kind: Some(FoldingRangeKind::Imports),
-                        collapsed_text: Some("annotation(...)".to_string()),
-                    });
+            // Find position after the opening parenthesis
+            let after_ann = &line[ann_pos..];
+            if let Some(paren_offset) = after_ann.find('(') {
+                let paren_pos = ann_pos + paren_offset + 1; // Position after '('
+
+                // Find the matching closing parenthesis
+                if let Some(end_line) = find_matching_paren(&lines, line_idx, paren_pos) {
+                    // Only create a folding range if it spans multiple lines
+                    if end_line > start_line {
+                        ranges.push(FoldingRange {
+                            start_line,
+                            start_character: Some(ann_pos as u32),
+                            end_line,
+                            end_character: None,
+                            kind: Some(FoldingRangeKind::Imports),
+                            collapsed_text: Some("annotation(...)".to_string()),
+                        });
+                    }
                 }
             }
         }
     }
+}
+
+/// Find the start position of "annotation" keyword followed by "(" (with optional whitespace)
+fn find_annotation_start(line: &str) -> Option<usize> {
+    let mut search_start = 0;
+    while let Some(pos) = line[search_start..].find("annotation") {
+        let abs_pos = search_start + pos;
+
+        // Make sure it's a word boundary (not part of another identifier)
+        if abs_pos > 0 {
+            let prev_char = line[..abs_pos].chars().last().unwrap();
+            if prev_char.is_alphanumeric() || prev_char == '_' {
+                search_start = abs_pos + 10; // Skip past "annotation"
+                continue;
+            }
+        }
+
+        // Check what comes after "annotation"
+        let after = &line[abs_pos + 10..]; // 10 = len("annotation")
+
+        // Skip whitespace and check for '('
+        let trimmed = after.trim_start();
+        if trimmed.starts_with('(') {
+            return Some(abs_pos);
+        }
+
+        // Not followed by '(', keep searching
+        search_start = abs_pos + 10;
+    }
+    None
 }
 
 /// Check if position is inside a string literal (simple heuristic)
@@ -610,5 +644,77 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].start_line, 0);
         assert_eq!(ranges[0].end_line, 2);
+    }
+
+    #[test]
+    fn test_collect_annotation_ranges_with_whitespace() {
+        // Test annotation with space before parenthesis
+        let text = r#"  annotation (
+    Documentation(info="<html>
+      <p>Test</p>
+    </html>"));"#;
+        let mut ranges = Vec::new();
+        collect_annotation_ranges(text, &mut ranges);
+        assert_eq!(
+            ranges.len(),
+            1,
+            "Expected 1 folding range for 'annotation ('"
+        );
+        assert_eq!(ranges[0].start_line, 0);
+        assert_eq!(ranges[0].end_line, 3);
+    }
+
+    #[test]
+    fn test_find_annotation_start() {
+        // No space
+        assert_eq!(find_annotation_start("  annotation(x=1)"), Some(2));
+        // With space
+        assert_eq!(find_annotation_start("  annotation (x=1)"), Some(2));
+        // With multiple spaces
+        assert_eq!(find_annotation_start("annotation   (x=1)"), Some(0));
+        // With tab
+        assert_eq!(find_annotation_start("annotation\t(x=1)"), Some(0));
+        // Not followed by paren
+        assert_eq!(find_annotation_start("annotation x"), None);
+        // Part of another word
+        assert_eq!(find_annotation_start("myannotation(x=1)"), None);
+    }
+
+    #[test]
+    fn test_algorithm_section_folding() {
+        use lsp_types::Uri;
+        use std::collections::HashMap;
+
+        let text = r#"model Test
+  Real x;
+algorithm
+  x := 1;
+  x := x + 1;
+  x := x * 2;
+end Test;
+"#;
+        let uri: Uri = "file:///tmp/test.mo".parse().unwrap();
+        let mut documents = HashMap::new();
+        documents.insert(uri.clone(), text.to_string());
+
+        let params = FoldingRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let ranges = handle_folding_range(&documents, params).unwrap();
+
+        // Should have at least: model fold + algorithm fold
+        let algo_folds: Vec<_> = ranges
+            .iter()
+            .filter(|r| r.collapsed_text == Some("algorithm ...".to_string()))
+            .collect();
+
+        assert!(
+            !algo_folds.is_empty(),
+            "Expected algorithm folding range, got: {:?}",
+            ranges
+        );
     }
 }

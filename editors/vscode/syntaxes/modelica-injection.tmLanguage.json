@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Modelica Magic Injection",
+  "scopeName": "source.modelica.injection",
+  "injectionSelector": "L:source.python",
+  "patterns": [
+    {
+      "comment": "Modelica code in %%modelica_rumoca magic",
+      "name": "meta.embedded.block.modelica",
+      "contentName": "source.modelica",
+      "begin": "^(%%modelica_rumoca)\\b(.*)$\\n?",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.magic.jupyter"
+        },
+        "2": {
+          "name": "variable.parameter.magic.jupyter"
+        }
+      },
+      "end": "\\z",
+      "patterns": [
+        {
+          "include": "source.modelica"
+        }
+      ]
+    },
+    {
+      "comment": "Modelica code in compile_modelica() with triple single quotes",
+      "name": "meta.embedded.block.modelica",
+      "contentName": "source.modelica",
+      "begin": "(compile_modelica)\\s*\\(\\s*(''')",
+      "beginCaptures": {
+        "1": {
+          "name": "entity.name.function.python"
+        },
+        "2": {
+          "name": "string.quoted.triple.python punctuation.definition.string.begin.python"
+        }
+      },
+      "end": "(''')",
+      "endCaptures": {
+        "1": {
+          "name": "string.quoted.triple.python punctuation.definition.string.end.python"
+        }
+      },
+      "patterns": [
+        {
+          "include": "source.modelica"
+        }
+      ]
+    },
+    {
+      "comment": "Modelica code in compile_modelica() with triple double quotes",
+      "name": "meta.embedded.block.modelica",
+      "contentName": "source.modelica",
+      "begin": "(compile_modelica)\\s*\\(\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": {
+          "name": "entity.name.function.python"
+        },
+        "2": {
+          "name": "string.quoted.triple.python punctuation.definition.string.begin.python"
+        }
+      },
+      "end": "(\"\"\")",
+      "endCaptures": {
+        "1": {
+          "name": "string.quoted.triple.python punctuation.definition.string.end.python"
+        }
+      },
+      "patterns": [
+        {
+          "include": "source.modelica"
+        }
+      ]
+    }
+  ]
+}

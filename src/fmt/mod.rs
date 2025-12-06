@@ -81,6 +81,13 @@ pub fn format_expression(expr: &Expression) -> String {
     visitor.format_expression(expr)
 }
 
+/// Format a single equation to a string
+/// Useful for displaying equations in hover info, etc.
+pub fn format_equation(eq: &crate::ir::ast::Equation) -> String {
+    let visitor = FormatVisitor::new(&FormatOptions::default());
+    visitor.format_equation(eq, 0)
+}
+
 /// Format AST with comments reinserted at their original locations
 fn format_ast_with_comments(
     def: &StoredDefinition,

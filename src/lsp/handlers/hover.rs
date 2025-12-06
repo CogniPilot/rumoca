@@ -4,13 +4,14 @@ use std::collections::HashMap;
 
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind, Position, Uri};
 
-use crate::fmt::format_expression;
+use crate::fmt::{format_equation, format_expression};
 use crate::ir::ast::{Causality, ClassType, Component, Expression, StoredDefinition, Variability};
 use crate::ir::transform::scope_resolver::{ResolvedSymbol, ScopeResolver};
 
 use crate::lsp::data::builtin_functions::get_builtin_functions;
 use crate::lsp::data::keywords::get_keyword_hover;
-use crate::lsp::utils::{get_word_at_position, parse_document};
+use crate::lsp::utils::{get_qualified_name_at_position, get_word_at_position, parse_document};
+use crate::lsp::workspace::WorkspaceState;
 
 /// Handle hover request
 pub fn handle_hover(documents: &HashMap<Uri, String>, params: HoverParams) -> Option<Hover> {
@@ -73,6 +74,131 @@ pub fn handle_hover(documents: &HashMap<Uri, String>, params: HoverParams) -> Op
     })
 }
 
+/// Handle hover request with workspace support for cross-file lookups
+pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -> Option<Hover> {
+    use crate::lsp::scope::WorkspaceScopeResolver;
+
+    let uri = &params.text_document_position_params.text_document.uri;
+    let position = params.text_document_position_params.position;
+
+    let text = workspace.get_document(uri)?;
+    let path = uri.path().as_str();
+
+    // Get both the simple word and the qualified name (dotted path)
+    let word = get_word_at_position(text, position)?;
+    let qualified_name = get_qualified_name_at_position(text, position);
+
+    // Parse the document and use unified scope resolver
+    if let Some(ast) = parse_document(text, path) {
+        let resolver = WorkspaceScopeResolver::new(&ast, workspace);
+
+        // Try qualified name first (e.g., SI.Mass, Interfaces.DiscreteSISO)
+        if let Some(ref qn) = qualified_name {
+            if let Some(resolved) =
+                resolver.resolve_qualified(qn, position.line, position.character)
+            {
+                if let Some(hover_text) = format_resolved_symbol(&resolved, workspace) {
+                    return Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: hover_text,
+                        }),
+                        range: None,
+                    });
+                }
+            }
+        }
+
+        // Fall back to simple word resolution
+        if let Some(resolved) = resolver.resolve(&word, position.line, position.character) {
+            if let Some(hover_text) = format_resolved_symbol(&resolved, workspace) {
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: None,
+                });
+            }
+        }
+    }
+
+    // Check built-in functions
+    let functions = get_builtin_functions();
+    for func in &functions {
+        if func.name == word {
+            let params_doc: String = func
+                .parameters
+                .iter()
+                .map(|(name, doc)| format!("- `{}`: {}", name, doc))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let hover_text = format!(
+                "```modelica\n{}\n```\n\n{}\n\n**Parameters:**\n{}",
+                func.signature, func.documentation, params_doc
+            );
+
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: hover_text,
+                }),
+                range: None,
+            });
+        }
+    }
+
+    // Provide hover info for known Modelica keywords and built-ins
+    let hover_text = get_keyword_hover(&word)?;
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover_text,
+        }),
+        range: None,
+    })
+}
+
+/// Format a resolved symbol for hover display
+fn format_resolved_symbol(
+    resolved: &crate::lsp::scope::ResolvedSymbol,
+    workspace: &WorkspaceState,
+) -> Option<String> {
+    use crate::lsp::scope::ResolvedSymbol;
+
+    match resolved {
+        ResolvedSymbol::LocalComponent {
+            component,
+            defined_in,
+            inherited_via,
+        } => {
+            // Look up the class definition for this component's type
+            let type_name = component.type_name.to_string();
+            // Try to find type class in workspace
+            let type_class = workspace
+                .get_parsed_ast_by_name(&type_name)
+                .and_then(|ast| ast.class_list.values().next());
+
+            let mut info = format_component_hover_with_class(component, type_class);
+
+            // Add inheritance info if applicable
+            if let Some(base_class_name) = inherited_via {
+                info += &format!("\n\n*Inherited from `{}`*", base_class_name);
+            } else {
+                info += &format!("\n\n*Defined in `{}`*", defined_in.name.text);
+            }
+
+            Some(info)
+        }
+        ResolvedSymbol::LocalClass(class_def) => {
+            Some(format_class_hover(class_def, &class_def.name.text))
+        }
+        ResolvedSymbol::WorkspaceSymbol(sym) => Some(format_workspace_symbol_hover(sym, workspace)),
+    }
+}
+
 /// Get hover info from the AST for user-defined symbols
 fn get_ast_hover_info(ast: &StoredDefinition, word: &str, position: Position) -> Option<String> {
     let resolver = ScopeResolver::new(ast);
@@ -118,6 +244,85 @@ fn get_ast_hover_info(ast: &StoredDefinition, word: &str, position: Position) ->
     }
 
     None
+}
+
+/// Format hover info for a workspace symbol
+fn format_workspace_symbol_hover(
+    sym: &crate::lsp::workspace::WorkspaceSymbol,
+    workspace: &WorkspaceState,
+) -> String {
+    // Try to get the full class definition from the workspace's parsed ASTs
+    if let Some(text) = workspace.get_document(&sym.uri) {
+        let path = sym.uri.path().as_str();
+        if let Some(ast) = parse_document(text, path) {
+            // Try to find the class in the AST
+            let simple_name = sym
+                .qualified_name
+                .rsplit('.')
+                .next()
+                .unwrap_or(&sym.qualified_name);
+            if let Some(class_def) = find_class_definition(&ast, simple_name) {
+                return format_class_hover(class_def, simple_name);
+            }
+            // Also check by full qualified name parts
+            if let Some(class_def) = find_class_by_qualified_name(&ast, &sym.qualified_name) {
+                return format_class_hover(class_def, simple_name);
+            }
+        }
+    }
+
+    // Fall back to basic info from the symbol
+    let kind_str = format!("{:?}", sym.kind).to_lowercase();
+    let mut info = format!("```modelica\n{} {}\n```", kind_str, sym.qualified_name);
+
+    if let Some(detail) = &sym.detail {
+        info += &format!("\n\n{}", detail);
+    }
+
+    // Show file location
+    let file_name = sym
+        .uri
+        .path()
+        .as_str()
+        .rsplit('/')
+        .next()
+        .unwrap_or("unknown");
+    info += &format!("\n\n*Defined in `{}`*", file_name);
+
+    info
+}
+
+/// Find a class by qualified name in the AST (handles within clause)
+fn find_class_by_qualified_name<'a>(
+    ast: &'a StoredDefinition,
+    qualified_name: &str,
+) -> Option<&'a crate::ir::ast::ClassDefinition> {
+    let parts: Vec<&str> = qualified_name.split('.').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    // If there's a within clause, skip those parts from the qualified name
+    let skip_count = ast.within.as_ref().map(|w| w.name.len()).unwrap_or(0);
+
+    if parts.len() <= skip_count {
+        return None;
+    }
+
+    let remaining_parts = &parts[skip_count..];
+    if remaining_parts.is_empty() {
+        return None;
+    }
+
+    // Navigate through the class hierarchy
+    let first = remaining_parts[0];
+    let mut current = ast.class_list.get(first)?;
+
+    for part in &remaining_parts[1..] {
+        current = current.classes.get(*part)?;
+    }
+
+    Some(current)
 }
 
 /// Helper to format an expression for display
@@ -322,6 +527,24 @@ fn format_component_hover_with_class(
                 info += &format!("- `{}`\n", sig);
             }
         }
+
+        // Show equations
+        if !class_def.equations.is_empty() {
+            info += "\n**Equations:**\n```modelica\n";
+            for eq in &class_def.equations {
+                info += &format_equation(eq);
+            }
+            info += "```\n";
+        }
+
+        // Show initial equations
+        if !class_def.initial_equations.is_empty() {
+            info += "\n**Initial Equations:**\n```modelica\n";
+            for eq in &class_def.initial_equations {
+                info += &format_equation(eq);
+            }
+            info += "```\n";
+        }
     }
 
     // Build instance-specific attributes table (modifications)
@@ -378,6 +601,133 @@ fn format_component_hover_with_class(
     info
 }
 
+/// Extract Documentation info attribute from an annotation
+fn extract_documentation_info(annotation: &[Expression]) -> Option<String> {
+    for expr in annotation {
+        if let Expression::FunctionCall { comp, args } = expr {
+            // Check if this is a Documentation(...) call
+            if comp.to_string() == "Documentation" {
+                // Look for info="..." argument
+                for arg in args {
+                    if let Expression::Binary { op, lhs, rhs } = arg {
+                        // Named arguments use Eq operator (name = value)
+                        if matches!(op, crate::ir::ast::OpBinary::Eq(_)) {
+                            if let Expression::ComponentReference(comp_ref) = lhs.as_ref() {
+                                if comp_ref.to_string() == "info" {
+                                    if let Expression::Terminal { token, .. } = rhs.as_ref() {
+                                        // Extract the HTML content from the string
+                                        let html = token.text.trim_matches('"');
+                                        return Some(html.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Convert basic HTML to Markdown for hover display
+fn html_to_markdown(html: &str) -> String {
+    let mut result = html.to_string();
+
+    // Remove <html> tags
+    result = result.replace("<html>", "").replace("</html>", "");
+
+    // Handle <pre> blocks first - convert to code blocks
+    // We need to handle <blockquote><pre> and standalone <pre>
+    let mut processed = String::new();
+    let mut remaining = result.as_str();
+
+    while let Some(pre_start) = remaining.find("<pre>") {
+        // Add everything before <pre>
+        processed.push_str(&remaining[..pre_start]);
+
+        // Find the closing </pre>
+        let after_pre_tag = &remaining[pre_start + 5..];
+        if let Some(pre_end) = after_pre_tag.find("</pre>") {
+            // Extract pre content and convert to code block
+            // Only trim newlines, preserve internal whitespace for ASCII art
+            let pre_content = &after_pre_tag[..pre_end];
+            let pre_content = pre_content.trim_start_matches('\n').trim_end_matches('\n');
+            processed.push_str("\n```\n");
+            processed.push_str(pre_content);
+            processed.push_str("\n```\n");
+            remaining = &after_pre_tag[pre_end + 6..];
+        } else {
+            // No closing tag, just add the rest
+            processed.push_str(remaining);
+            remaining = "";
+        }
+    }
+    processed.push_str(remaining);
+    result = processed;
+
+    // Remove blockquote tags (the pre content is already handled)
+    result = result
+        .replace("<blockquote>", "")
+        .replace("</blockquote>", "");
+
+    // Convert common HTML tags to Markdown
+    result = result.replace("<p>", "\n\n").replace("</p>", "");
+    result = result
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n");
+    result = result.replace("<b>", "**").replace("</b>", "**");
+    result = result.replace("<strong>", "**").replace("</strong>", "**");
+    result = result.replace("<i>", "*").replace("</i>", "*");
+    result = result.replace("<em>", "*").replace("</em>", "*");
+    result = result.replace("<code>", "`").replace("</code>", "`");
+
+    // Convert headers
+    result = result.replace("<h1>", "\n# ").replace("</h1>", "\n");
+    result = result.replace("<h2>", "\n## ").replace("</h2>", "\n");
+    result = result.replace("<h3>", "\n### ").replace("</h3>", "\n");
+    result = result.replace("<h4>", "\n#### ").replace("</h4>", "\n");
+
+    // Convert lists
+    result = result.replace("<ul>", "\n").replace("</ul>", "\n");
+    result = result.replace("<ol>", "\n").replace("</ol>", "\n");
+    result = result.replace("<li>", "- ").replace("</li>", "\n");
+
+    // Clean up extra whitespace
+    result = result.trim().to_string();
+
+    // Simple removal of remaining HTML tags (without regex)
+    let mut clean = String::new();
+    let mut in_tag = false;
+    for ch in result.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            clean.push(ch);
+        }
+    }
+
+    // Clean up multiple consecutive newlines
+    let mut final_result = String::new();
+    let mut prev_newline_count = 0;
+    for ch in clean.chars() {
+        if ch == '\n' {
+            prev_newline_count += 1;
+            if prev_newline_count <= 2 {
+                final_result.push(ch);
+            }
+        } else {
+            prev_newline_count = 0;
+            final_result.push(ch);
+        }
+    }
+
+    final_result.trim().to_string()
+}
+
 /// Format hover info for a class definition
 fn format_class_hover(class_def: &crate::ir::ast::ClassDefinition, name: &str) -> String {
     // Class type and name header
@@ -393,6 +743,14 @@ fn format_class_hover(class_def: &crate::ir::ast::ClassDefinition, name: &str) -
             .collect::<Vec<_>>()
             .join(" ");
         info += &format!("\n\n*{}*", desc);
+    }
+
+    // Add Documentation annotation info if present
+    if let Some(doc_html) = extract_documentation_info(&class_def.annotation) {
+        let doc_md = html_to_markdown(&doc_html);
+        if !doc_md.is_empty() {
+            info += &format!("\n\n---\n\n{}", doc_md);
+        }
     }
 
     // For functions, show the signature
@@ -547,6 +905,24 @@ fn format_class_hover(class_def: &crate::ir::ast::ClassDefinition, name: &str) -
             };
             info += &format!("- `{} {}`{}\n", nested_type, nested_name, desc);
         }
+    }
+
+    // Show equations
+    if !class_def.equations.is_empty() {
+        info += "\n\n**Equations:**\n```modelica\n";
+        for eq in &class_def.equations {
+            info += &format_equation(eq);
+        }
+        info += "```";
+    }
+
+    // Show initial equations
+    if !class_def.initial_equations.is_empty() {
+        info += "\n\n**Initial Equations:**\n```modelica\n";
+        for eq in &class_def.initial_equations {
+            info += &format_equation(eq);
+        }
+        info += "```";
     }
 
     info

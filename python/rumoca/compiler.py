@@ -383,6 +383,9 @@ def compile_source(
     source: str,
     model_name: str,
     filename: str = "<string>",
+    library_paths: Optional[list] = None,
+    use_modelica_path: bool = True,
+    threads: Optional[int] = None,
 ) -> CompilationResult:
     """
     Compile Modelica source code from a string.
@@ -393,6 +396,9 @@ def compile_source(
         source: Modelica source code as a string
         model_name: Name of the model to compile
         filename: Optional filename for error messages
+        library_paths: Optional list of library paths to include (e.g., ["/path/to/MSL"])
+        use_modelica_path: If True, also search MODELICAPATH env var for libraries (default: True)
+        threads: Number of threads for parallel parsing (default: 50% of CPU cores)
 
     Returns:
         CompilationResult object containing the compiled model
@@ -411,6 +417,18 @@ def compile_source(
         ...     end Test;
         ... ''', "Test")
         >>> print(result.to_base_modelica_json())
+
+        >>> # With MSL library:
+        >>> result = rumoca.compile_source('''
+        ...     model Test
+        ...         import Modelica.Blocks.Continuous.PID;
+        ...         PID pid;
+        ...     end Test;
+        ... ''', "Test", library_paths=["/path/to/MSL"])
+
+        >>> # Use all CPU cores for parsing:
+        >>> import os
+        >>> result = rumoca.compile_source(source, "Test", threads=os.cpu_count())
     """
     if not _NATIVE_AVAILABLE or _native_compile_str is None:
         raise RuntimeError(
@@ -420,7 +438,9 @@ def compile_source(
         )
 
     try:
-        native_result = _native_compile_str(source, model_name, filename)
+        native_result = _native_compile_str(
+            source, model_name, filename, library_paths, use_modelica_path, threads
+        )
         return CompilationResult(
             _native_result=native_result,
             _cached_json=native_result.json,

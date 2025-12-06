@@ -23,9 +23,8 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::ast::StoredDefin
                 class.class_definition.clone(),
             );
         }
-        def.within = ast.stored_definition_opt.as_ref().map(|within| {
-            // If within keyword exists, we have Some(name) where name may be empty
-            within
+        def.within = ast.stored_definition_opt.as_ref().map(|within_clause| {
+            within_clause
                 .stored_definition_opt1
                 .as_ref()
                 .map(|w| w.name.clone())
@@ -147,6 +146,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                                 .clone(),
                             end_name_token: Some(spec.ident.clone()),
                             enum_literals: vec![],
+                            annotation: spec.composition.annotation.clone(),
                         })
                     }
                     modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(ext) => {
@@ -211,6 +211,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                                 .clone(),
                             end_name_token: Some(spec.ident0.clone()),
                             enum_literals: vec![],
+                            annotation: spec.composition.annotation.clone(),
                         })
                     }
                 }
@@ -269,6 +270,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             initial_algorithm_keyword: None,
                             end_name_token: None,
                             enum_literals,
+                            annotation: vec![],
                         })
                     }
                     modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(spec) => {
@@ -322,6 +324,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             initial_algorithm_keyword: None,
                             end_name_token: None, // Short class specifiers don't have "end Name"
                             enum_literals: vec![],
+                            annotation: vec![],
                         })
                     }
                 }
@@ -350,6 +353,8 @@ pub struct Composition {
     pub algorithm_keyword: Option<ir::ast::Token>,
     /// Token for "initial algorithm" keyword (if present)
     pub initial_algorithm_keyword: Option<ir::ast::Token>,
+    /// Annotation clause for this class
+    pub annotation: Vec<ir::ast::Expression>,
 }
 
 impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
@@ -435,6 +440,18 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                 }
             }
         }
+
+        // Extract annotation from composition_opt0
+        if let Some(annotation_opt) = &ast.composition_opt0 {
+            if let Some(class_mod_opt) = &annotation_opt
+                .annotation_clause
+                .class_modification
+                .class_modification_opt
+            {
+                comp.annotation = class_mod_opt.argument_list.args.clone();
+            }
+        }
+
         Ok(comp)
     }
 }

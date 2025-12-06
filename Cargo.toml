@@ -40,9 +40,19 @@ thiserror = "2.0"
 # LSP dependencies (always included)
 lsp-server = "0.7"
 lsp-types = "0.97"
+notify = "6.1"
+crossbeam-channel = "0.5"
 
 # Python bindings
 pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
+
+# Parallel parsing
+rayon = "1.10"
+num_cpus = "1.16"
+
+# AST caching
+bincode = "1.3"
+dirs = "5.0"
 
 [features]
 regen-parser = []
@@ -66,8 +76,6 @@ name = "rumoca-lint"
 path = "src/bin/rumoca_lint.rs"
 
 [dev-dependencies]
-rayon = "1.10"
-num_cpus = "1.16"
 rand = "0.8"
 
 [build-dependencies]
