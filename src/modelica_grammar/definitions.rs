@@ -296,19 +296,18 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
 
                         // Extract modifications from class_modification if present
                         // e.g., Real(unit="s") -> modifications = [unit = "s"]
-                        let modifications = if let Some(class_mod_opt0) =
-                            &type_spec.type_class_specifier_opt0
-                        {
-                            if let Some(arg_list) =
-                                &class_mod_opt0.class_modification.class_modification_opt
-                            {
-                                arg_list.argument_list.args.clone()
+                        let modifications =
+                            if let Some(class_mod_opt0) = &type_spec.type_class_specifier_opt0 {
+                                if let Some(arg_list) =
+                                    &class_mod_opt0.class_modification.class_modification_opt
+                                {
+                                    arg_list.argument_list.args.clone()
+                                } else {
+                                    vec![]
+                                }
                             } else {
                                 vec![]
-                            }
-                        } else {
-                            vec![]
-                        };
+                            };
 
                         // Create an Extend clause for the base type
                         // For short class specifiers, use ident location for both start and end

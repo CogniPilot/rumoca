@@ -371,7 +371,8 @@ impl<'a> WorkspaceScopeResolver<'a> {
         let mut best_start_line = 0u32;
 
         for class in self.ast.class_list.values() {
-            if let Some(found) = Self::find_innermost_class(class, line, col, &mut best_start_line) {
+            if let Some(found) = Self::find_innermost_class(class, line, col, &mut best_start_line)
+            {
                 best_match = Some(found);
             }
         }
