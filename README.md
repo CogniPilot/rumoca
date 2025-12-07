@@ -353,9 +353,9 @@ Rumoca uses a multi-level caching strategy to optimize repeated compilations:
 
 | Cache | Location | Purpose |
 |-------|----------|---------|
-| `CLASS_DICT_CACHE` | `flatten.rs` | Caches parsed class hierarchies |
-| `RESOLVED_CLASS_CACHE` | `flatten.rs` | Caches resolved class definitions |
-| `FILE_HASH_CACHE` | `flatten.rs` | Caches MD5 hashes of source files |
+| `CLASS_DICT_CACHE` | `flatten.rs` | Index of parsed classes (name → AST) |
+| `RESOLVED_CLASS_CACHE` | `flatten.rs` | Fully resolved classes (extends, imports applied) |
+| `FILE_HASH_CACHE` | `flatten.rs` | MD5 hashes of source files for invalidation |
 | `DAE_CACHE` | `pipeline.rs` | In-memory DAE balance results |
 
 These caches are cleared when the process exits or when source files change (detected via file hashes).
@@ -384,26 +384,6 @@ clear_dae_cache();   // Clear both in-memory and disk DAE cache
 ```bash
 rm -rf ~/.cache/rumoca/dae/   # Manual disk cache removal
 ```
-
-### Performance Counters (perf stat)
-
-Cold cache run (balance check phase):
-```
-583B cycles @ 3.37 GHz
-949B instructions (1.62 IPC)
-143B branches (2.98% miss rate)
-310B L1-dcache loads (5.50% miss rate)
-```
-
-Warm cache run:
-```
-319B cycles @ 3.36 GHz
-428B instructions (1.34 IPC)
-82B branches (4.37% miss rate)
-180B L1-dcache loads (4.78% miss rate)
-```
-
-The warm cache run executes ~55% fewer instructions due to skipping the flattening and DAE creation phases.
 
 ## Roadmap
 
