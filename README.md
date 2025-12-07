@@ -19,7 +19,7 @@ A Modelica compiler written in Rust. Rumoca parses Modelica source files and exp
 cargo install rumoca
 
 # Compile to DAE IR (JSON)
-rumoca model.mo --json > model.json
+rumoca model.mo -m MyModel --json > model.json
 
 # Format Modelica files
 rumoca-fmt
@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
         .model("MyModel")
         .compile_file("model.mo")?;
 
-    let json = result.to_json()?;
+    let json = result.to_dae_ir_json()?;
     println!("{}", json);
     Ok(())
 }
@@ -253,7 +253,7 @@ Alternatively, set the `MODELICAPATH` environment variable. See the [extension d
 ## Integration with Cyecca
 
 ```bash
-rumoca model.mo --json > model.json
+rumoca model.mo -m MyModel --json > model.json
 ```
 
 ```python
@@ -291,7 +291,10 @@ rumoca-fmt --check      # Check Modelica formatting
 rumoca-lint             # Lint Modelica files
 ```
 
-### Formatter
+<details>
+<summary><strong>Formatter & Linter Configuration</strong></summary>
+
+**Formatter:**
 
 ```bash
 rumoca-fmt                              # Format all .mo files
@@ -300,7 +303,7 @@ rumoca-fmt model.mo                     # Format specific files
 rumoca-fmt --config indent_size=4       # Custom indentation
 ```
 
-**Configuration:** Create `.rumoca_fmt.toml` in your project:
+Configuration (`.rumoca_fmt.toml`):
 
 ```toml
 indent_size = 2
@@ -309,7 +312,7 @@ max_line_length = 100
 blank_lines_between_classes = 1
 ```
 
-### Linter
+**Linter:**
 
 ```bash
 rumoca-lint                     # Lint all .mo files
@@ -319,7 +322,7 @@ rumoca-lint --list-rules        # List available rules
 rumoca-lint --deny-warnings     # Exit with error on warnings
 ```
 
-**Available Rules:**
+Available Rules:
 
 | Rule | Level | Description |
 |------|-------|-------------|
@@ -334,13 +337,15 @@ rumoca-lint --deny-warnings     # Exit with error on warnings
 | `inconsistent-units` | warning | Potential unit inconsistencies |
 | `redundant-extends` | warning | Duplicate or circular extends |
 
-**Configuration:** Create `.rumoca_lint.toml` in your project:
+Configuration (`.rumoca_lint.toml`):
 
 ```toml
 min_level = "warning"
 disabled_rules = ["magic-number", "missing-documentation"]
 deny_warnings = false
 ```
+
+</details>
 
 ### Caching
 

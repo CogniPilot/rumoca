@@ -1,4 +1,4 @@
-//! # Rumoca Modelica Translator
+//! # Rumoca Modelica Compiler
 //!
 //! This module provides a command-line tool for parsing, flattening, and translating
 //! Modelica files into Differential Algebraic Equations (DAE) representations. It also
@@ -49,7 +49,7 @@ use anyhow::Result;
 const GIT_VERSION: &str = env!("RUMOCA_GIT_VERSION");
 
 #[derive(Parser, Debug)]
-#[command(version = GIT_VERSION, about = "Rumoca Modelica Translator", long_about = None)]
+#[command(version = GIT_VERSION, about = "Rumoca Modelica Compiler", long_about = None)]
 struct Args {
     /// Export to Base Modelica JSON (native, recommended)
     #[arg(long, conflicts_with = "template_file")]
