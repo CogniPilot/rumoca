@@ -362,12 +362,7 @@ These caches are cleared when the process exits or when source files change (det
 
 #### Disk Cache (Persistent)
 
-| Cache | Location | Size | Purpose |
-|-------|----------|------|---------|
-| **DAE Cache** | `~/.cache/rumoca/dae/` | ~8.4 MB (2102 entries) | Persists balance results across sessions |
-| **MSL Source** | `~/.cache/rumoca/src/` | ~150 MB | Cached Modelica Standard Library download |
-
-The DAE disk cache works like `ccache` - cached results are only valid when all dependent source files and the compiler version are unchanged. This makes the disk cache primarily useful for **CI pipelines and repeated test runs** where the same models are compiled multiple times without modification.
+The DAE disk cache (`~/.cache/rumoca/dae/`) persists balance results across sessions. It works like `ccache` - cached results are only valid when all dependent source files and the compiler version are unchanged. This makes the disk cache primarily useful for **CI pipelines and repeated test runs** where the same models are compiled multiple times without modification.
 
 For the **editing experience** (LSP), the in-memory caches provide the main performance benefit. These caches store parsed class hierarchies and resolved definitions within a session, enabling fast re-analysis as you edit code. The disk cache doesn't help during editing since any file change invalidates the cached result.
 
