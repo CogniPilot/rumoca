@@ -10,59 +10,16 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use lsp_types::Uri;
+use rayon::prelude::*;
 
 use crate::dae::balance::BalanceResult;
 use crate::ir::ast::{ClassDefinition, ClassType, Import, StoredDefinition};
 use crate::ir::transform::multi_file::{
-    discover_modelica_files, get_modelica_path, is_modelica_package,
+    discover_modelica_files, get_modelica_path, is_modelica_package, should_ignore_directory,
 };
+use crate::ir::transform::scope_resolver::{SymbolCategory, SymbolInfo, SymbolLookup};
 
-use super::utils::parse_document;
-
-/// Directories to skip when discovering Modelica packages.
-/// These are common directories that should never contain Modelica code.
-const IGNORED_DIRECTORIES: &[&str] = &[
-    // Version control
-    ".git",
-    ".hg",
-    ".svn",
-    // Build artifacts
-    "target",
-    "build",
-    "out",
-    "dist",
-    "_build",
-    "cmake-build-debug",
-    "cmake-build-release",
-    // Dependencies
-    "node_modules",
-    ".npm",
-    "vendor",
-    // Virtual environments
-    "venv",
-    ".venv",
-    "env",
-    ".env",
-    "__pycache__",
-    ".tox",
-    // IDE/Editor
-    ".idea",
-    ".vscode",
-    ".vs",
-    // Rust
-    ".cargo",
-    // Python
-    ".eggs",
-    "*.egg-info",
-    ".mypy_cache",
-    ".pytest_cache",
-    // Other
-    ".cache",
-    ".tmp",
-    "tmp",
-    "temp",
-    ".DS_Store",
-];
+use super::utils::{parse_document, parse_file_cached};
 
 /// Information about a symbol in the workspace
 #[derive(Debug, Clone)]
@@ -272,6 +229,7 @@ impl WorkspaceState {
     /// Index all discovered Modelica files upfront
     ///
     /// This provides immediate hover/goto-definition support without lazy loading
+    /// Uses parallel parsing with rayon for faster initialization
     fn index_all_discovered_files(&mut self) {
         let start = std::time::Instant::now();
         let files: Vec<PathBuf> = self.discovered_files.iter().cloned().collect();
@@ -282,12 +240,44 @@ impl WorkspaceState {
             total
         ));
 
+        // Parse all files in parallel using the global rayon thread pool
+        // (configured at startup to use num_cpus - 1 threads)
+        // Uses disk cache for files that haven't changed since last parse
+        let parsed_results: Vec<(PathBuf, Option<(String, StoredDefinition)>)> = files
+            .par_iter()
+            .map(|path| {
+                // Use cached parsing - checks disk cache first, then parses if needed
+                if let Some(ast) = parse_file_cached(path) {
+                    // Read text for document storage (needed for LSP features)
+                    let text = std::fs::read_to_string(path).unwrap_or_default();
+                    (path.clone(), Some((text, ast)))
+                } else {
+                    (path.clone(), None)
+                }
+            })
+            .collect();
+
+        // Now merge results into workspace state (single-threaded to avoid lock contention)
         let mut indexed = 0;
         let mut failed = 0;
 
-        for path in files {
-            if self.ensure_file_loaded(&path).is_some() {
-                indexed += 1;
+        for (path, result) in parsed_results {
+            if let Some((text, ast)) = result {
+                // Convert path to URI
+                if let Some(uri) = path_to_uri(&path) {
+                    // Store document and AST
+                    self.documents.insert(uri.clone(), text);
+
+                    // Index symbols from AST
+                    self.remove_file_symbols(&uri);
+                    self.index_stored_definition(&uri, &ast);
+                    self.parsed_asts.insert(uri.clone(), ast.clone());
+                    self.cached_asts.insert(uri, ast);
+
+                    indexed += 1;
+                } else {
+                    failed += 1;
+                }
             } else {
                 failed += 1;
             }
@@ -302,25 +292,10 @@ impl WorkspaceState {
         ));
     }
 
-    /// Check if a directory should be ignored during package discovery
-    fn should_ignore_directory(path: &Path) -> bool {
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            // Check against the ignore list
-            if IGNORED_DIRECTORIES.contains(&name) {
-                return true;
-            }
-            // Also ignore hidden directories (starting with .)
-            if name.starts_with('.') && name != "." && name != ".." {
-                return true;
-            }
-        }
-        false
-    }
-
     /// Discover Modelica packages in a folder
     fn discover_packages_in_folder(&mut self, folder: &Path) {
         // Skip ignored directories
-        if Self::should_ignore_directory(folder) {
+        if should_ignore_directory(folder) {
             self.debug_log(&format!(
                 "[workspace] Skipping ignored directory: {:?}",
                 folder
@@ -367,7 +342,7 @@ impl WorkspaceState {
                     let path = entry.path();
                     if path.is_dir() {
                         // Skip ignored directories
-                        if !Self::should_ignore_directory(&path) {
+                        if !should_ignore_directory(&path) {
                             self.discover_packages_in_folder(&path);
                         }
                     } else if path.extension().is_some_and(|e| e == "mo") {
@@ -828,6 +803,48 @@ fn path_to_uri(path: &Path) -> Option<Uri> {
     let path_str = abs_path.to_str()?;
     let uri_str = format!("file://{}", path_str);
     uri_str.parse().ok()
+}
+
+// ============================================================================
+// SymbolLookup trait implementation for WorkspaceState
+// ============================================================================
+
+impl From<SymbolKind> for SymbolCategory {
+    fn from(kind: SymbolKind) -> Self {
+        match kind {
+            SymbolKind::Package => SymbolCategory::Package,
+            SymbolKind::Model => SymbolCategory::Model,
+            SymbolKind::Class => SymbolCategory::Class,
+            SymbolKind::Block => SymbolCategory::Block,
+            SymbolKind::Connector => SymbolCategory::Connector,
+            SymbolKind::Record => SymbolCategory::Record,
+            SymbolKind::Type => SymbolCategory::Type,
+            SymbolKind::Function => SymbolCategory::Function,
+            SymbolKind::Operator => SymbolCategory::Operator,
+            SymbolKind::Component => SymbolCategory::Component,
+            SymbolKind::Parameter => SymbolCategory::Parameter,
+            SymbolKind::Constant => SymbolCategory::Constant,
+        }
+    }
+}
+
+impl SymbolLookup for WorkspaceState {
+    fn lookup_symbol(&self, name: &str) -> Option<SymbolInfo> {
+        let ws_sym = self.symbol_index.get(name)?;
+        Some(SymbolInfo {
+            qualified_name: ws_sym.qualified_name.clone(),
+            location: ws_sym.uri.to_string(),
+            line: ws_sym.line,
+            column: ws_sym.column,
+            kind: ws_sym.kind.into(),
+            detail: ws_sym.detail.clone(),
+        })
+    }
+
+    fn get_ast_for_symbol(&self, qualified_name: &str) -> Option<&StoredDefinition> {
+        let sym = self.symbol_index.get(qualified_name)?;
+        self.parsed_asts.get(&sym.uri)
+    }
 }
 
 #[cfg(test)]

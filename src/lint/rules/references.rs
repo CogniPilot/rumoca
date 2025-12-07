@@ -111,14 +111,10 @@ fn check_equation_references(
             for index in indices {
                 local_defined.insert(
                     index.ident.text.clone(),
-                    DefinedSymbol {
-                        line: index.ident.location.start_line,
-                        col: index.ident.location.start_column,
-                        is_parameter: false,
-                        is_constant: false,
-                        is_class: false,
-                        type_name: "Integer".to_string(),
-                    },
+                    DefinedSymbol::loop_index(
+                        index.ident.location.start_line,
+                        index.ident.location.start_column,
+                    ),
                 );
                 check_expression_references(
                     &index.range,
@@ -200,14 +196,10 @@ fn check_statement_references(
             for index in indices {
                 local_defined.insert(
                     index.ident.text.clone(),
-                    DefinedSymbol {
-                        line: index.ident.location.start_line,
-                        col: index.ident.location.start_column,
-                        is_parameter: false,
-                        is_constant: false,
-                        is_class: false,
-                        type_name: "Integer".to_string(),
-                    },
+                    DefinedSymbol::loop_index(
+                        index.ident.location.start_line,
+                        index.ident.location.start_column,
+                    ),
                 );
                 check_expression_references(
                     &index.range,

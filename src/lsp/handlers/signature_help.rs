@@ -8,8 +8,7 @@ use lsp_types::{
 };
 
 use crate::ir::ast::{Causality, ClassType};
-
-use crate::lsp::data::builtin_functions::get_builtin_functions;
+use crate::ir::transform::constants::get_builtin_functions;
 use crate::lsp::utils::{find_function_at_cursor, parse_document};
 
 /// Handle signature help request
@@ -26,8 +25,7 @@ pub fn handle_signature_help(
     let simple_name = func_name.rsplit('.').next().unwrap_or(&func_name);
 
     // First check built-in functions
-    let functions = get_builtin_functions();
-    for func in &functions {
+    for func in get_builtin_functions() {
         if func.name == simple_name {
             let params: Vec<ParameterInformation> = func
                 .parameters

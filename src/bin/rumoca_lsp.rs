@@ -72,6 +72,14 @@ macro_rules! debug_log {
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    // Configure rayon's global thread pool to use num_cpus - 1 threads
+    // This leaves one core free for the system and avoids oversubscription
+    let thread_count = std::cmp::max(1, num_cpus::get().saturating_sub(1));
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build_global()
+        .ok(); // Ignore error if pool already initialized
+
     // Print startup message with binary path for debugging
     let exe_path = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -79,6 +87,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     eprintln!("Starting rumoca-lsp server");
     eprintln!("  Binary: {}", exe_path);
     eprintln!("  Version: {}", env!("CARGO_PKG_VERSION"));
+    eprintln!("  Threads: {}", thread_count);
 
     let (connection, io_threads) = Connection::stdio();
 

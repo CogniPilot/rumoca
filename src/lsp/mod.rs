@@ -28,12 +28,11 @@ pub mod analyze;
 pub mod data;
 pub mod features;
 pub mod handlers;
-pub mod scope;
 pub mod utils;
 pub mod workspace;
 
 // Re-export public API
-pub use data::get_builtin_functions;
+pub use data::{BuiltinFunction, get_builtin_functions};
 pub use features::{
     compute_diagnostics, handle_code_action, handle_code_lens, handle_document_links,
     handle_folding_range, handle_inlay_hints,

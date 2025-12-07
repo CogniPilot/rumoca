@@ -53,11 +53,16 @@ fn msl_download_url() -> String {
     )
 }
 
-/// Get the cache directory for MSL downloads
+/// Get the cache directory for source library downloads (~/.cache/rumoca/src/)
 fn msl_cache_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("msl-cache")
+    dirs::cache_dir()
+        .map(|d| d.join("rumoca").join("src"))
+        .unwrap_or_else(|| {
+            // Fallback to target/src-cache if no system cache dir
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("src-cache")
+        })
 }
 
 /// Get the path to the cached MSL

@@ -9,27 +9,30 @@
 //! - Type mismatch detection
 //! - Array dimension warnings
 
-mod errors;
 mod helpers;
 mod symbols;
-mod types;
 
 use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
+use rayon::prelude::*;
 
+use crate::compiler::extract_parse_error;
 use crate::dae::balance::BalanceStatus;
-use crate::ir::ast::{Causality, ClassDefinition, ClassType, Expression, Variability};
+use crate::ir::analysis::symbols::{DefinedSymbol, is_class_instance_type};
+use crate::ir::ast::{Causality, ClassDefinition, ClassType};
 use crate::ir::transform::constants::global_builtins;
 use crate::ir::transform::flatten::flatten;
 
 use crate::lsp::WorkspaceState;
 
-use errors::extract_structured_error;
+use crate::ir::analysis::type_checker;
 use helpers::create_diagnostic;
-use symbols::{collect_equation_symbols, collect_statement_symbols, collect_used_symbols};
-use types::{DefinedSymbol, is_class_instance_type};
+use symbols::{
+    collect_equation_symbols, collect_statement_symbols, collect_used_symbols,
+    type_errors_to_diagnostics,
+};
 
 /// Compute diagnostics for a document
 pub fn compute_diagnostics(
@@ -52,10 +55,27 @@ pub fn compute_diagnostics(
 
                 // Run semantic analysis on each class (using flattening for inherited symbols)
                 if let Some(ref ast) = grammar.modelica {
-                    for class_name in ast.class_list.keys() {
-                        if let Ok(fclass) = flatten(ast, Some(class_name)) {
-                            analyze_class(&fclass, &ast.class_list, &mut diagnostics);
-                        }
+                    // Collect class names for parallel processing
+                    let class_names: Vec<_> = ast.class_list.keys().cloned().collect();
+                    let class_list = &ast.class_list;
+
+                    // Parallelize flattening and analysis across classes
+                    let class_diagnostics: Vec<Vec<Diagnostic>> = class_names
+                        .par_iter()
+                        .filter_map(|class_name| {
+                            if let Ok(fclass) = flatten(ast, Some(class_name)) {
+                                let mut diags = Vec::new();
+                                analyze_class(&fclass, class_list, &mut diags);
+                                Some(diags)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    // Merge all diagnostics
+                    for diags in class_diagnostics {
+                        diagnostics.extend(diags);
                     }
 
                     // Compute balance for each model/block/class and cache it
@@ -65,8 +85,8 @@ pub fn compute_diagnostics(
             Err(e) => {
                 // Clear cached balance on parse error
                 workspace.clear_balances(uri);
-                // Use structured error extraction when possible
-                let (line, col, message) = extract_structured_error(&e, text);
+                // Use compiler's error extraction for consistent error messages
+                let (line, col, message) = extract_parse_error(&e, text);
                 diagnostics.push(create_diagnostic(
                     line,
                     col,
@@ -110,6 +130,7 @@ fn analyze_class(
                     line: peer_class.name.location.start_line,
                     col: peer_class.name.location.start_column,
                     is_parameter: false,
+                    is_constant: false,
                     is_class: true,
                     has_default: true,
                     type_name: peer_name.clone(),
@@ -122,36 +143,8 @@ fn analyze_class(
 
     // Collect component declarations
     for (comp_name, comp) in &class.components {
-        let line = comp
-            .type_name
-            .name
-            .first()
-            .map(|t| t.location.start_line)
-            .unwrap_or(1);
-        let col = comp
-            .type_name
-            .name
-            .first()
-            .map(|t| t.location.start_column)
-            .unwrap_or(1);
-
-        let has_start = !matches!(comp.start, Expression::Empty);
-        let is_parameter = matches!(comp.variability, Variability::Parameter(_));
-        let type_name = comp.type_name.to_string();
-
-        defined.insert(
-            comp_name.clone(),
-            DefinedSymbol {
-                line,
-                col,
-                is_parameter,
-                is_class: false,
-                has_default: has_start,
-                type_name: type_name.clone(),
-                shape: comp.shape.clone(),
-                function_return: None,
-            },
-        );
+        let (name, symbol) = DefinedSymbol::from_component(comp_name, comp);
+        defined.insert(name, symbol);
 
         // Check references in start expression
         collect_used_symbols(&comp.start, &mut used);
@@ -160,54 +153,40 @@ fn analyze_class(
     // Add nested class names as defined (these are types, not variables)
     // For functions, extract the return type from output components
     for (nested_name, nested_class) in &class.classes {
-        // Check if this is a function and extract its return type
-        let function_return = if matches!(nested_class.class_type, ClassType::Function) {
-            // Find the output component(s) - typically just one for the return value
-            nested_class
-                .components
-                .values()
-                .find(|c| matches!(c.causality, Causality::Output(_)))
-                .map(|output| (output.type_name.to_string(), output.shape.clone()))
-        } else {
-            None
-        };
-
-        defined.insert(
-            nested_name.clone(),
-            DefinedSymbol {
-                line: nested_class.name.location.start_line,
-                col: nested_class.name.location.start_column,
-                is_parameter: false,
-                is_class: true,
-                has_default: true,
-                type_name: nested_name.clone(), // class type
-                shape: vec![],
-                function_return,
-            },
-        );
+        let (name, symbol) = DefinedSymbol::from_class(nested_name, nested_class);
+        defined.insert(name, symbol);
     }
 
-    // Collect symbols used in equations
+    // Collect symbols used in equations and run type checking
     for eq in &class.equations {
         collect_equation_symbols(eq, &mut used, diagnostics, &defined, &globals);
+        // Type check the equation using the shared type checker
+        let type_result = type_checker::check_equation(eq, &defined);
+        diagnostics.extend(type_errors_to_diagnostics(&type_result));
     }
 
-    // Collect symbols used in initial equations
+    // Collect symbols used in initial equations and run type checking
     for eq in &class.initial_equations {
         collect_equation_symbols(eq, &mut used, diagnostics, &defined, &globals);
+        let type_result = type_checker::check_equation(eq, &defined);
+        diagnostics.extend(type_errors_to_diagnostics(&type_result));
     }
 
-    // Collect symbols used in algorithms
+    // Collect symbols used in algorithms and run type checking
     for algo in &class.algorithms {
         for stmt in algo {
             collect_statement_symbols(stmt, &mut used, diagnostics, &defined, &globals);
+            let type_result = type_checker::check_statement(stmt, &defined);
+            diagnostics.extend(type_errors_to_diagnostics(&type_result));
         }
     }
 
-    // Collect symbols used in initial algorithms
+    // Collect symbols used in initial algorithms and run type checking
     for algo in &class.initial_algorithms {
         for stmt in algo {
             collect_statement_symbols(stmt, &mut used, diagnostics, &defined, &globals);
+            let type_result = type_checker::check_statement(stmt, &defined);
+            diagnostics.extend(type_errors_to_diagnostics(&type_result));
         }
     }
 
@@ -260,48 +239,70 @@ fn compute_balance_for_classes(
     ast: &crate::ir::ast::StoredDefinition,
     workspace: &mut WorkspaceState,
 ) {
-    // Recursively process all classes
+    // Collect all class paths that need balance computation
+    let mut class_paths: Vec<(String, bool, ClassType)> = Vec::new();
     for (class_name, class) in &ast.class_list {
-        compute_balance_recursive(uri, text, path, class, class_name, workspace);
+        collect_balance_classes(class, class_name, &mut class_paths);
+    }
+
+    // Compute balance in parallel for all classes
+    let uri_clone = uri.clone();
+    let text_owned = text.to_string();
+    let path_owned = path.to_string();
+
+    let balance_results: Vec<_> = class_paths
+        .par_iter()
+        .filter_map(|(class_path, is_partial, class_type)| {
+            // Compute balance for models, blocks, classes, and connectors (not functions, records, etc.)
+            if matches!(
+                class_type,
+                ClassType::Model | ClassType::Block | ClassType::Class | ClassType::Connector
+            ) {
+                // Try to compile and get balance - silently ignore errors
+                // Note: Using threads(1) here since we're already parallelizing at the outer level
+                if let Ok(result) = crate::Compiler::new()
+                    .model(class_path)
+                    .threads(1)
+                    .compile_str(&text_owned, &path_owned)
+                {
+                    let mut balance = result.dae.check_balance();
+
+                    // Mark as Partial if:
+                    // - Class is explicitly declared with `partial` keyword, or
+                    // - Class is a connector (connectors are partial by design)
+                    let is_connector = matches!(class_type, ClassType::Connector);
+                    if (*is_partial || is_connector) && !balance.is_balanced {
+                        balance.status = BalanceStatus::Partial;
+                    }
+
+                    return Some((class_path.clone(), balance));
+                }
+            }
+            None
+        })
+        .collect();
+
+    // Merge results into workspace (single-threaded)
+    for (class_path, balance) in balance_results {
+        workspace.set_balance(uri_clone.clone(), class_path, balance);
     }
 }
 
-/// Recursively compute balance for a class and its nested classes
-fn compute_balance_recursive(
-    uri: &Uri,
-    text: &str,
-    path: &str,
+/// Recursively collect all class paths that need balance computation
+fn collect_balance_classes(
     class: &ClassDefinition,
     class_path: &str,
-    workspace: &mut WorkspaceState,
+    result: &mut Vec<(String, bool, ClassType)>,
 ) {
-    // Compute balance for models, blocks, classes, and connectors (not functions, records, etc.)
-    if matches!(
-        class.class_type,
-        ClassType::Model | ClassType::Block | ClassType::Class | ClassType::Connector
-    ) {
-        // Try to compile and get balance - silently ignore errors
-        if let Ok(result) = crate::Compiler::new()
-            .model(class_path)
-            .compile_str(text, path)
-        {
-            let mut balance = result.dae.check_balance();
+    result.push((
+        class_path.to_string(),
+        class.partial,
+        class.class_type.clone(),
+    ));
 
-            // Mark as Partial if:
-            // - Class is explicitly declared with `partial` keyword, or
-            // - Class is a connector (connectors are partial by design)
-            let is_connector = matches!(class.class_type, ClassType::Connector);
-            if (class.partial || is_connector) && !balance.is_balanced {
-                balance.status = BalanceStatus::Partial;
-            }
-
-            workspace.set_balance(uri.clone(), class_path.to_string(), balance);
-        }
-    }
-
-    // Recursively process nested classes
+    // Recursively collect nested classes
     for (nested_name, nested_class) in &class.classes {
         let nested_path = format!("{}.{}", class_path, nested_name);
-        compute_balance_recursive(uri, text, path, nested_class, &nested_path, workspace);
+        collect_balance_classes(nested_class, &nested_path, result);
     }
 }

@@ -1,17 +1,42 @@
 //! Symbol collection for diagnostics.
 //!
 //! Provides functions to collect and check symbols in expressions, equations, and statements.
+//! Type checking is delegated to the shared `ir::analysis::type_checker` module.
 
 use std::collections::{HashMap, HashSet};
 
 use lsp_types::{Diagnostic, DiagnosticSeverity};
 
+use crate::ir::analysis::symbols::DefinedSymbol;
+use crate::ir::analysis::type_checker::{TypeCheckResult, TypeErrorSeverity};
 use crate::ir::ast::{ComponentReference, Equation, Expression, Statement};
 
 use super::helpers::create_diagnostic;
-use super::types::{DefinedSymbol, InferredType, infer_expression_type};
 
-/// Collect symbols used in an equation and check for undefined references
+/// Convert type errors from the type checker to LSP diagnostics
+pub fn type_errors_to_diagnostics(type_result: &TypeCheckResult) -> Vec<Diagnostic> {
+    type_result
+        .errors
+        .iter()
+        .map(|err| {
+            let severity = match err.severity {
+                TypeErrorSeverity::Warning => DiagnosticSeverity::WARNING,
+                TypeErrorSeverity::Error => DiagnosticSeverity::ERROR,
+            };
+            create_diagnostic(
+                err.location.start_line,
+                err.location.start_column,
+                err.message.clone(),
+                severity,
+            )
+        })
+        .collect()
+}
+
+/// Collect symbols used in an equation and check for undefined references.
+///
+/// Note: Type checking is performed separately using `type_checker::check_equation()`.
+/// Call `type_errors_to_diagnostics()` to convert type errors to LSP diagnostics.
 pub fn collect_equation_symbols(
     eq: &Equation,
     used: &mut HashSet<String>,
@@ -24,39 +49,7 @@ pub fn collect_equation_symbols(
         Equation::Simple { lhs, rhs } => {
             collect_and_check_expression(lhs, used, diagnostics, defined, globals);
             collect_and_check_expression(rhs, used, diagnostics, defined, globals);
-
-            // Type check: lhs and rhs should be compatible
-            let lhs_type = infer_expression_type(lhs, defined);
-            let rhs_type = infer_expression_type(rhs, defined);
-
-            if !lhs_type.is_compatible_with(&rhs_type) {
-                // Get location from lhs expression
-                if let Some(loc) = lhs.get_location() {
-                    diagnostics.push(create_diagnostic(
-                        loc.start_line,
-                        loc.start_column,
-                        format!(
-                            "Type mismatch in equation: {} is not compatible with {}",
-                            lhs_type, rhs_type
-                        ),
-                        DiagnosticSeverity::WARNING,
-                    ));
-                }
-            }
-
-            // Check for Boolean = numeric mismatch specifically
-            if (matches!(lhs_type.base_type(), InferredType::Boolean) && rhs_type.is_numeric())
-                || (lhs_type.is_numeric() && matches!(rhs_type.base_type(), InferredType::Boolean))
-            {
-                if let Some(loc) = lhs.get_location() {
-                    diagnostics.push(create_diagnostic(
-                        loc.start_line,
-                        loc.start_column,
-                        "Cannot mix Boolean and numeric types in equation".to_string(),
-                        DiagnosticSeverity::ERROR,
-                    ));
-                }
-            }
+            // Type checking is handled separately via type_checker::check_equation()
         }
         Equation::Connect { lhs, rhs } => {
             collect_and_check_component_ref(lhs, used, diagnostics, defined, globals);
@@ -68,16 +61,10 @@ pub fn collect_equation_symbols(
             for index in indices {
                 local_defined.insert(
                     index.ident.text.clone(),
-                    DefinedSymbol {
-                        line: index.ident.location.start_line,
-                        col: index.ident.location.start_column,
-                        is_parameter: false,
-                        is_class: false,
-                        has_default: true,
-                        type_name: "Integer".to_string(), // loop indices are integers
-                        shape: vec![],
-                        function_return: None,
-                    },
+                    DefinedSymbol::loop_index(
+                        index.ident.location.start_line,
+                        index.ident.location.start_column,
+                    ),
                 );
                 collect_and_check_expression(
                     &index.range,
@@ -149,16 +136,10 @@ pub fn collect_statement_symbols(
             for index in indices {
                 local_defined.insert(
                     index.ident.text.clone(),
-                    DefinedSymbol {
-                        line: index.ident.location.start_line,
-                        col: index.ident.location.start_column,
-                        is_parameter: false,
-                        is_class: false,
-                        has_default: true,
-                        type_name: "Integer".to_string(), // loop indices are integers
-                        shape: vec![],
-                        function_return: None,
-                    },
+                    DefinedSymbol::loop_index(
+                        index.ident.location.start_line,
+                        index.ident.location.start_column,
+                    ),
                 );
                 collect_and_check_expression(
                     &index.range,

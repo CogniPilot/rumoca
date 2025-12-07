@@ -329,6 +329,82 @@ rumoca-fmt --check      # Check Modelica formatting
 rumoca-lint             # Lint Modelica files
 ```
 
+## Performance
+
+### MSL Test Statistics
+
+The following benchmarks were run on an AMD Ryzen 9 7950X (16 cores / 32 threads) compiling all 2283 simulatable models from the Modelica Standard Library 4.1.0:
+
+| Phase | Time | Throughput |
+|-------|------|------------|
+| **Parsing** | 0.99s | 2,586 files/sec |
+| **Balance Check (cold)** | 31.07s | 73.5 models/sec |
+| **Balance Check (warm)** | 0.01s | 263,242 models/sec |
+| **Total (cold)** | 33.60s | — |
+| **Total (warm)** | 2.55s | — |
+
+The balance check uses parallel processing with Rayon. Cold cache performance is dominated by flattening and DAE creation; warm cache performance is essentially free (disk I/O only).
+
+### Caching Architecture
+
+Rumoca uses a multi-level caching strategy to optimize repeated compilations:
+
+#### In-Memory Caches (Session-Level)
+
+| Cache | Location | Purpose |
+|-------|----------|---------|
+| `CLASS_DICT_CACHE` | `flatten.rs` | Caches parsed class hierarchies |
+| `RESOLVED_CLASS_CACHE` | `flatten.rs` | Caches resolved class definitions |
+| `FILE_HASH_CACHE` | `flatten.rs` | Caches MD5 hashes of source files |
+| `DAE_CACHE` | `pipeline.rs` | In-memory DAE balance results |
+
+These caches are cleared when the process exits or when source files change (detected via file hashes).
+
+#### Disk Cache (Persistent)
+
+| Cache | Location | Size | Purpose |
+|-------|----------|------|---------|
+| **DAE Cache** | `~/.cache/rumoca/dae/` | ~8.4 MB (2102 entries) | Persists balance results across sessions |
+| **MSL Source** | `~/.cache/rumoca/src/` | ~150 MB | Cached Modelica Standard Library download |
+
+The DAE disk cache works like `ccache` - cached results are only valid when all dependent source files and the compiler version are unchanged. This makes the disk cache primarily useful for **CI pipelines and repeated test runs** where the same models are compiled multiple times without modification.
+
+For the **editing experience** (LSP), the in-memory caches provide the main performance benefit. These caches store parsed class hierarchies and resolved definitions within a session, enabling fast re-analysis as you edit code. The disk cache doesn't help during editing since any file change invalidates the cached result.
+
+**Clearing Caches:**
+
+```rust
+use rumoca::ir::transform::flatten::clear_caches;
+use rumoca::compiler::pipeline::clear_dae_cache;
+
+clear_caches();      // Clear in-memory caches
+clear_dae_cache();   // Clear both in-memory and disk DAE cache
+```
+
+```bash
+rm -rf ~/.cache/rumoca/dae/   # Manual disk cache removal
+```
+
+### Performance Counters (perf stat)
+
+Cold cache run (balance check phase):
+```
+583B cycles @ 3.37 GHz
+949B instructions (1.62 IPC)
+143B branches (2.98% miss rate)
+310B L1-dcache loads (5.50% miss rate)
+```
+
+Warm cache run:
+```
+319B cycles @ 3.36 GHz
+428B instructions (1.34 IPC)
+82B branches (4.37% miss rate)
+180B L1-dcache loads (4.78% miss rate)
+```
+
+The warm cache run executes ~55% fewer instructions due to skipping the flattening and DAE creation phases.
+
 ## Roadmap
 
 **Export Targets:**

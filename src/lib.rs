@@ -14,7 +14,10 @@ pub use modelica_grammar::generated::modelica_grammar_trait;
 pub use modelica_grammar::generated::modelica_parser;
 
 // Re-export the main API types for convenience
-pub use compiler::{CompilationResult, Compiler};
+pub use compiler::{
+    CompilationResult, Compiler, extract_parse_error, parse_file_cached, parse_file_cached_result,
+    parse_source, parse_source_simple,
+};
 pub use fmt::{CONFIG_FILE_NAMES, FormatOptions, format_modelica};
 pub use lint::{
     LINT_CONFIG_FILE_NAMES, LintConfig, LintLevel, LintMessage, LintResult, lint_file, lint_str,

@@ -52,9 +52,10 @@
 pub mod cache;
 mod error_handling;
 mod function_collector;
-mod pipeline;
+pub mod pipeline;
 mod result;
 
+pub use error_handling::extract_parse_error;
 pub use result::CompilationResult;
 
 use crate::ir::ast::StoredDefinition;
@@ -65,8 +66,116 @@ use error_handling::create_syntax_error;
 use indexmap::IndexSet;
 use rayon::prelude::*;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+// ============================================================================
+// Standalone parsing functions (used by both compiler and LSP)
+// ============================================================================
+
+/// Parse Modelica source code and return the AST.
+///
+/// This is a low-level parsing function that returns `None` on parse errors.
+/// For error details, use [`parse_source`] instead.
+///
+/// # Arguments
+/// * `source` - The Modelica source code
+/// * `file_name` - The file name (used for error messages and location tracking)
+///
+/// # Returns
+/// `Some(StoredDefinition)` if parsing succeeded, `None` otherwise.
+pub fn parse_source_simple(source: &str, file_name: &str) -> Option<StoredDefinition> {
+    let mut grammar = ModelicaGrammar::new();
+    if parse(source, file_name, &mut grammar).is_ok() {
+        grammar.modelica
+    } else {
+        None
+    }
+}
+
+/// Parse Modelica source code and return the AST with detailed errors.
+///
+/// # Arguments
+/// * `source` - The Modelica source code
+/// * `file_name` - The file name (used for error messages and location tracking)
+///
+/// # Returns
+/// `Ok(StoredDefinition)` if parsing succeeded, `Err` with detailed error otherwise.
+pub fn parse_source(source: &str, file_name: &str) -> Result<StoredDefinition> {
+    let mut grammar = ModelicaGrammar::new();
+    if let Err(e) = parse(source, file_name, &mut grammar) {
+        let diagnostic = create_syntax_error(&e, source);
+        let report = miette::Report::new(diagnostic);
+        return Err(anyhow::anyhow!("{:?}", report));
+    }
+
+    grammar
+        .modelica
+        .ok_or_else(|| anyhow::anyhow!("Parser succeeded but produced no AST for {}", file_name))
+}
+
+/// Parse a Modelica file from disk, using disk cache if available.
+///
+/// This function checks the AST cache (`~/.cache/rumoca/ast/`) first.
+/// If the file hasn't changed since the last parse, the cached AST is returned.
+/// Otherwise, the file is parsed and the result is cached for future use.
+///
+/// # Arguments
+/// * `path` - Path to the Modelica file
+///
+/// # Returns
+/// `Some(StoredDefinition)` if parsing succeeded, `None` otherwise.
+pub fn parse_file_cached(path: &Path) -> Option<StoredDefinition> {
+    // Compute file hash for cache lookup
+    let file_hash = cache::compute_file_hash(path).ok()?;
+
+    // Try cache first
+    if let Some(ast) = cache::load_cached_ast(path, &file_hash) {
+        return Some(ast);
+    }
+
+    // Cache miss - read and parse the file
+    let text = fs::read_to_string(path).ok()?;
+    let path_str = path.to_string_lossy().to_string();
+
+    let ast = parse_source_simple(&text, &path_str)?;
+
+    // Store in cache for next time
+    let _ = cache::store_cached_ast(path, &file_hash, &ast);
+
+    Some(ast)
+}
+
+/// Parse a Modelica file from disk with detailed errors, using disk cache if available.
+///
+/// Like [`parse_file_cached`] but returns detailed error information on failure.
+///
+/// # Arguments
+/// * `path` - Path to the Modelica file
+///
+/// # Returns
+/// `Ok(StoredDefinition)` if parsing succeeded, `Err` with detailed error otherwise.
+pub fn parse_file_cached_result(path: &Path) -> Result<StoredDefinition> {
+    // Compute file hash for cache lookup
+    let file_hash = cache::compute_file_hash(path)?;
+
+    // Try cache first
+    if let Some(ast) = cache::load_cached_ast(path, &file_hash) {
+        return Ok(ast);
+    }
+
+    // Cache miss - read and parse the file
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read file: {}", path.display()))?;
+    let path_str = path.to_string_lossy().to_string();
+
+    let ast = parse_source(&text, &path_str)?;
+
+    // Store in cache for next time
+    let _ = cache::store_cached_ast(path, &file_hash, &ast);
+
+    Ok(ast)
+}
 
 /// A high-level compiler for Modelica models.
 ///

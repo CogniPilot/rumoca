@@ -252,6 +252,33 @@ fn extract_location_from_cause(cause: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Extract structured error information from a ParolError.
+///
+/// Returns (line, column, message) tuple for use in diagnostics.
+/// Line and column are 1-indexed.
+///
+/// This is useful for LSP diagnostics and other error reporting that needs
+/// line/column information without the full miette diagnostic.
+pub fn extract_parse_error(error: &ParolError, source: &str) -> (u32, u32, String) {
+    // Check for user errors (from anyhow::bail! in grammar actions)
+    if let ParolError::UserError(user_error) = error {
+        let message = user_error.to_string();
+        if let Some((line, col)) = extract_line_col_from_error(&message) {
+            return (line as u32, col as u32, message);
+        }
+        return (1, 1, message);
+    }
+
+    if let ParolError::ParserError(parser_error) = error {
+        if let Some((line, col, message)) = extract_from_parser_error(parser_error, source) {
+            return (line as u32, col as u32, message);
+        }
+    }
+
+    // Fallback
+    (1, 1, "Syntax error".to_string())
+}
+
 /// Convert line/column (1-indexed) to byte offset
 pub fn line_col_to_byte_offset(source: &str, line: usize, col: usize) -> usize {
     let mut byte_offset = 0;

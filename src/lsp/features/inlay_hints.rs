@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Position, Uri};
 
 use crate::ir::ast::{ClassDefinition, Equation, Expression, Statement};
-use crate::lsp::data::builtin_functions::{FunctionInfo, get_builtin_functions};
+use crate::ir::transform::constants::{BuiltinFunction, get_builtin_functions};
 
 use crate::lsp::utils::parse_document;
 
@@ -23,8 +23,10 @@ pub fn handle_inlay_hints(
     let range = params.range;
 
     let mut hints = Vec::new();
-    let builtin_vec = get_builtin_functions();
-    let builtins: HashMap<&str, &FunctionInfo> = builtin_vec.iter().map(|f| (f.name, f)).collect();
+    let builtins: HashMap<&str, &BuiltinFunction> = get_builtin_functions()
+        .iter()
+        .map(|f| (f.name, f))
+        .collect();
 
     if let Some(ast) = parse_document(text, path) {
         for class in ast.class_list.values() {
@@ -39,7 +41,7 @@ pub fn handle_inlay_hints(
 fn collect_class_hints(
     class: &ClassDefinition,
     range: &lsp_types::Range,
-    builtins: &HashMap<&str, &FunctionInfo>,
+    builtins: &HashMap<&str, &BuiltinFunction>,
     hints: &mut Vec<InlayHint>,
 ) {
     // Collect hints from equations
@@ -74,7 +76,7 @@ fn collect_class_hints(
 fn collect_equation_hints(
     eq: &Equation,
     range: &lsp_types::Range,
-    builtins: &HashMap<&str, &FunctionInfo>,
+    builtins: &HashMap<&str, &BuiltinFunction>,
     hints: &mut Vec<InlayHint>,
 ) {
     match eq {
@@ -127,7 +129,7 @@ fn collect_equation_hints(
 fn collect_statement_hints(
     stmt: &Statement,
     range: &lsp_types::Range,
-    builtins: &HashMap<&str, &FunctionInfo>,
+    builtins: &HashMap<&str, &BuiltinFunction>,
     hints: &mut Vec<InlayHint>,
 ) {
     match stmt {
@@ -218,7 +220,7 @@ const SKIP_HINT_FUNCTIONS: &[&str] = &[
 fn collect_expression_hints(
     expr: &Expression,
     range: &lsp_types::Range,
-    builtins: &HashMap<&str, &FunctionInfo>,
+    builtins: &HashMap<&str, &BuiltinFunction>,
     hints: &mut Vec<InlayHint>,
 ) {
     match expr {

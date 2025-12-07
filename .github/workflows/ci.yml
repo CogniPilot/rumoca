@@ -73,18 +73,18 @@ jobs:
         uses: actions/cache@v4
         id: msl-cache
         with:
-          path: target/msl-cache
+          path: ~/.cache/rumoca/src
           key: msl-v4.1.0
 
       - name: Download MSL
         if: steps.msl-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          mkdir -p target/msl-cache
-          curl -L -o target/msl-cache/msl-v4.1.0.tar.gz \
+          mkdir -p ~/.cache/rumoca/src
+          curl -L -o ~/.cache/rumoca/src/msl-v4.1.0.tar.gz \
             https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.tar.gz
-          tar -xzf target/msl-cache/msl-v4.1.0.tar.gz -C target/msl-cache
-          rm target/msl-cache/msl-v4.1.0.tar.gz
+          tar -xzf ~/.cache/rumoca/src/msl-v4.1.0.tar.gz -C ~/.cache/rumoca/src
+          rm ~/.cache/rumoca/src/msl-v4.1.0.tar.gz
 
       - name: Run tests
         run: cargo test --verbose

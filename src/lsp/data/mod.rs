@@ -1,6 +1,8 @@
 //! LSP data constants (builtin functions, keywords, etc.).
 
-pub mod builtin_functions;
 pub mod keywords;
 
-pub use builtin_functions::get_builtin_functions;
+// Re-export builtin functions from the shared IR module
+pub use crate::ir::transform::constants::{
+    BuiltinFunction, get_builtin_function, get_builtin_functions,
+};

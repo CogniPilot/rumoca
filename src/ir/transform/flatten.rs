@@ -83,19 +83,11 @@ impl FileDependencies {
     }
 
     /// Check if all dependencies are still valid (files exist and hashes match)
+    /// Uses thread-local cache to avoid re-hashing files
     pub fn is_valid(&self) -> bool {
         for (file_path, expected_hash) in &self.files {
-            // Compute current hash
-            let path = std::path::Path::new(file_path);
-            if !path.exists() {
-                return false;
-            }
-            if let Ok(content) = std::fs::read(path) {
-                let current_hash = format!("{:x}", chksum_md5::hash(&content));
-                if current_hash != *expected_hash {
-                    return false;
-                }
-            } else {
+            let current_hash = get_cached_file_hash(file_path);
+            if current_hash != *expected_hash {
                 return false;
             }
         }
@@ -103,9 +95,32 @@ impl FileDependencies {
     }
 }
 
-// Thread-local cache for file hashes to avoid re-reading files
-thread_local! {
-    static FILE_HASH_CACHE: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
+/// Global cache for file hashes (shared across threads)
+static FILE_HASH_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Get file hash from global cache, computing if not present
+fn get_cached_file_hash(file_path: &str) -> String {
+    // Fast path: check read lock
+    {
+        let cache = FILE_HASH_CACHE.read();
+        if let Some(h) = cache.get(file_path) {
+            return h.clone();
+        }
+    }
+
+    // Slow path: compute hash and insert with write lock
+    let path = std::path::Path::new(file_path);
+    let hash = if let Ok(content) = std::fs::read(path) {
+        format!("{:x}", chksum_md5::hash(&content))
+    } else {
+        "invalid".to_string() // File doesn't exist or can't be read
+    };
+
+    FILE_HASH_CACHE
+        .write()
+        .insert(file_path.to_string(), hash.clone());
+    hash
 }
 
 /// Record a file dependency, using cached hash if available
@@ -120,21 +135,7 @@ fn record_file_dep(deps: &mut FileDependencies, file_name: &str) {
     }
 
     // Get or compute hash using thread-local cache
-    let hash = FILE_HASH_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(h) = cache.get(file_name) {
-            return h.clone();
-        }
-        // Compute hash
-        let path = std::path::Path::new(file_name);
-        let hash = if let Ok(content) = std::fs::read(path) {
-            format!("{:x}", chksum_md5::hash(&content))
-        } else {
-            "unknown".to_string()
-        };
-        cache.insert(file_name.to_string(), hash.clone());
-        hash
-    });
+    let hash = get_cached_file_hash(file_name);
 
     deps.record(file_name, &hash);
 }
@@ -286,13 +287,20 @@ pub fn prewarm_class_cache(def: &ir::ast::StoredDefinition) -> usize {
     total_prewarmed
 }
 
-/// Clear all caches (useful for benchmarking)
+/// Clear all caches (in-memory only, use clear_all_caches for disk too)
 pub fn clear_caches() {
     CLASS_DICT_CACHE.write().clear();
     RESOLVED_CLASS_CACHE.write().clear();
+    FILE_HASH_CACHE.write().clear();
+}
+
+/// Clear all caches (alias for clear_caches)
+pub fn clear_all_caches() {
+    clear_caches();
 }
 
 /// Get cache statistics for diagnostics
+/// Returns (class_dict_entries, resolved_entries)
 pub fn get_cache_stats() -> (usize, usize) {
     let class_dict_size = CLASS_DICT_CACHE.read().len();
     let resolved_size = RESOLVED_CLASS_CACHE.read().len();
@@ -597,12 +605,13 @@ fn resolve_class(
     class_dict: &ClassDict,
     def_hash: u64,
 ) -> Result<Arc<ir::ast::ClassDefinition>> {
-    // Check cache first
+    // Check in-memory cache first
     let cache_key = (def_hash, current_class_path.to_string());
     if let Some((resolved, _deps)) = RESOLVED_CLASS_CACHE.read().get(&cache_key) {
         return Ok(Arc::clone(resolved));
     }
 
+    // Cache miss - do full resolution
     // Use the internal function with empty visited set for cycle detection
     // Dependencies are tracked recursively in resolve_class_internal
     let mut visited = IndexSet::new();
@@ -615,7 +624,7 @@ fn resolve_class(
         &mut deps,
     )?;
 
-    // Wrap in Arc and cache with dependencies
+    // Wrap in Arc and cache in memory
     let resolved_arc = Arc::new(resolved);
     RESOLVED_CLASS_CACHE
         .write()

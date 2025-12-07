@@ -6,6 +6,7 @@
 use super::error_handling::{SyntaxError, UndefinedVariableError, extract_line_col_from_error};
 use super::function_collector::collect_all_functions;
 use super::result::CompilationResult;
+use crate::dae::balance::BalanceResult;
 use crate::ir::analysis::var_validator::VarValidator;
 use crate::ir::ast::{ClassType, StoredDefinition};
 use crate::ir::structural::create_dae::create_dae;
@@ -13,14 +14,103 @@ use crate::ir::transform::array_comprehension::expand_array_comprehensions;
 use crate::ir::transform::constant_substitutor::ConstantSubstitutor;
 use crate::ir::transform::enum_substitutor::EnumSubstitutor;
 use crate::ir::transform::equation_expander::expand_equations;
-use crate::ir::transform::flatten::flatten;
+use crate::ir::transform::flatten::{FileDependencies, flatten, flatten_with_deps};
 use crate::ir::transform::function_inliner::FunctionInliner;
 use crate::ir::transform::import_resolver::ImportResolver;
 use crate::ir::transform::tuple_expander::expand_tuple_equations;
 use crate::ir::visitor::MutVisitable;
 use anyhow::Result;
 use miette::SourceSpan;
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::LazyLock;
 use std::time::Instant;
+
+// =============================================================================
+// DAE Result Disk Cache
+// =============================================================================
+
+/// Disk cache entry for a DAE result
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DaeCacheEntry {
+    result: BalanceResult,
+    dependencies: FileDependencies,
+}
+
+/// Global in-memory cache for DAE results
+static DAE_CACHE: LazyLock<RwLock<HashMap<String, (BalanceResult, FileDependencies)>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Get the DAE cache directory (~/.cache/rumoca/dae/)
+fn dae_cache_dir() -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| d.join("rumoca").join("dae"))
+}
+
+/// Compute cache key for DAE result based on model name and StoredDefinition
+fn compute_dae_cache_key(model_name: &str, def: &StoredDefinition) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    model_name.hash(&mut hasher);
+    // Hash structure of the definition (class names and counts)
+    for (name, class) in &def.class_list {
+        name.hash(&mut hasher);
+        class.components.len().hash(&mut hasher);
+        class.equations.len().hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+/// Try to load DAE result from disk cache
+fn load_dae_from_disk(cache_key: &str) -> Option<BalanceResult> {
+    let cache_dir = dae_cache_dir()?;
+    let cache_file = cache_dir.join(format!("{}.bin", cache_key));
+
+    if !cache_file.exists() {
+        return None;
+    }
+
+    let data = std::fs::read(&cache_file).ok()?;
+    let entry: DaeCacheEntry = bincode::deserialize(&data).ok()?;
+
+    // Validate dependencies
+    if !entry.dependencies.is_valid() {
+        let _ = std::fs::remove_file(&cache_file);
+        return None;
+    }
+
+    Some(entry.result)
+}
+
+/// Save DAE result to disk cache
+fn save_dae_to_disk(cache_key: &str, result: &BalanceResult, dependencies: &FileDependencies) {
+    let Some(cache_dir) = dae_cache_dir() else {
+        return;
+    };
+
+    if std::fs::create_dir_all(&cache_dir).is_err() {
+        return;
+    }
+
+    let cache_file = cache_dir.join(format!("{}.bin", cache_key));
+
+    let entry = DaeCacheEntry {
+        result: result.clone(),
+        dependencies: dependencies.clone(),
+    };
+
+    if let Ok(data) = bincode::serialize(&entry) {
+        let _ = std::fs::write(&cache_file, data);
+    }
+}
+
+/// Clear the DAE disk cache
+pub fn clear_dae_cache() {
+    DAE_CACHE.write().clear();
+    if let Some(cache_dir) = dae_cache_dir() {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+    }
+}
 
 /// Run the compilation pipeline on a parsed AST.
 ///
@@ -217,15 +307,35 @@ pub fn compile_from_ast_ref(
 ///
 /// This is much faster than full compilation when you only need to check
 /// if a model is balanced, as it avoids cloning the StoredDefinition.
+/// Results are cached to disk for fast lookups across compiler restarts.
 pub fn check_balance_only(
     def: &StoredDefinition,
     model_name: Option<&str>,
 ) -> Result<crate::dae::balance::BalanceResult> {
-    // Flatten
-    let fclass_result = flatten(def, model_name);
+    let model_name_str = model_name.unwrap_or("");
+    let cache_key = compute_dae_cache_key(model_name_str, def);
 
-    let mut fclass = match fclass_result {
-        Ok(fc) => fc,
+    // Check in-memory cache first
+    {
+        let cache = DAE_CACHE.read();
+        if let Some((result, _deps)) = cache.get(&cache_key) {
+            return Ok(result.clone());
+        }
+    }
+
+    // Check disk cache second
+    if let Some(result) = load_dae_from_disk(&cache_key) {
+        // Populate in-memory cache
+        let deps = FileDependencies::default(); // We validated deps during load
+        DAE_CACHE.write().insert(cache_key, (result.clone(), deps));
+        return Ok(result);
+    }
+
+    // Cache miss - compute balance with dependency tracking
+    let flatten_result = flatten_with_deps(def, model_name);
+
+    let mut fclass = match flatten_result {
+        Ok(fr) => fr,
         Err(e) => {
             return Err(anyhow::anyhow!("Flatten error: {}", e));
         }
@@ -235,29 +345,37 @@ pub fn check_balance_only(
 
     // But we do need constant substitution for Modelica.Constants
     let mut const_substitutor = ConstantSubstitutor::new();
-    fclass.accept_mut(&mut const_substitutor);
+    fclass.class.accept_mut(&mut const_substitutor);
 
     // Substitute built-in enumeration values (StateSelect.prefer -> 4, etc.)
     let mut enum_substitutor = EnumSubstitutor::new();
-    fclass.accept_mut(&mut enum_substitutor);
+    fclass.class.accept_mut(&mut enum_substitutor);
 
     // Inline user-defined function calls
     let mut inliner = FunctionInliner::from_class_list(&def.class_list);
-    fclass.accept_mut(&mut inliner);
+    fclass.class.accept_mut(&mut inliner);
     drop(inliner);
 
     // Expand tuple equations
-    expand_tuple_equations(&mut fclass);
+    expand_tuple_equations(&mut fclass.class);
 
     // Expand array comprehensions
-    expand_array_comprehensions(&mut fclass);
+    expand_array_comprehensions(&mut fclass.class);
 
     // Expand structured equations to scalar form
-    expand_equations(&mut fclass);
+    expand_equations(&mut fclass.class);
 
     // Create DAE
-    let dae = create_dae(&mut fclass)?;
+    let dae = create_dae(&mut fclass.class)?;
 
     // Check model balance
-    Ok(dae.check_balance())
+    let result = dae.check_balance();
+
+    // Save to caches
+    save_dae_to_disk(&cache_key, &result, &fclass.dependencies);
+    DAE_CACHE
+        .write()
+        .insert(cache_key, (result.clone(), fclass.dependencies));
+
+    Ok(result)
 }

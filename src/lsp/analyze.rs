@@ -1,33 +1,88 @@
 //! Analyze command handler for Modelica classes.
 //!
 //! Provides on-demand compilation and balance analysis for specific classes.
+//! Uses the shared `BalanceResult` from `dae/balance.rs` for balance information.
 
 use lsp_types::Uri;
+
+use crate::dae::balance::BalanceResult;
 
 use super::WorkspaceState;
 use super::utils::parse_document;
 
-/// Result of analyzing a class
+/// Result of analyzing a class.
+///
+/// This wraps `BalanceResult` with additional context about the analysis:
+/// - `class_name`: The class that was analyzed
+/// - `error`: Error message if compilation failed
+///
+/// For numerical balance information, use the `balance` field directly.
 #[derive(Debug, Clone)]
 pub struct AnalyzeResult {
     /// The class that was analyzed
     pub class_name: String,
-    /// Number of state variables
-    pub num_states: usize,
-    /// Number of unknown variables
-    pub num_unknowns: usize,
-    /// Number of equations
-    pub num_equations: usize,
-    /// Number of algebraic variables
-    pub num_algebraic: usize,
-    /// Number of parameters
-    pub num_parameters: usize,
-    /// Number of inputs
-    pub num_inputs: usize,
-    /// Whether the system is balanced
-    pub is_balanced: bool,
+    /// Balance information from the DAE (None if compilation failed)
+    pub balance: Option<BalanceResult>,
     /// Error message if compilation failed
     pub error: Option<String>,
+}
+
+impl AnalyzeResult {
+    /// Create a successful result with balance information
+    pub fn success(class_name: String, balance: BalanceResult) -> Self {
+        Self {
+            class_name,
+            balance: Some(balance),
+            error: None,
+        }
+    }
+
+    /// Create a failed result with an error message
+    pub fn failed(class_name: String, error: String) -> Self {
+        Self {
+            class_name,
+            balance: None,
+            error: Some(error),
+        }
+    }
+
+    /// Convenience accessor for num_states (0 if no balance)
+    pub fn num_states(&self) -> usize {
+        self.balance.as_ref().map(|b| b.num_states).unwrap_or(0)
+    }
+
+    /// Convenience accessor for num_unknowns (0 if no balance)
+    pub fn num_unknowns(&self) -> usize {
+        self.balance.as_ref().map(|b| b.num_unknowns).unwrap_or(0)
+    }
+
+    /// Convenience accessor for num_equations (0 if no balance)
+    pub fn num_equations(&self) -> usize {
+        self.balance.as_ref().map(|b| b.num_equations).unwrap_or(0)
+    }
+
+    /// Convenience accessor for num_algebraic (0 if no balance)
+    pub fn num_algebraic(&self) -> usize {
+        self.balance.as_ref().map(|b| b.num_algebraic).unwrap_or(0)
+    }
+
+    /// Convenience accessor for num_parameters (0 if no balance)
+    pub fn num_parameters(&self) -> usize {
+        self.balance.as_ref().map(|b| b.num_parameters).unwrap_or(0)
+    }
+
+    /// Convenience accessor for num_inputs (0 if no balance)
+    pub fn num_inputs(&self) -> usize {
+        self.balance.as_ref().map(|b| b.num_inputs).unwrap_or(0)
+    }
+
+    /// Convenience accessor for is_balanced (false if no balance)
+    pub fn is_balanced(&self) -> bool {
+        self.balance
+            .as_ref()
+            .map(|b| b.is_balanced)
+            .unwrap_or(false)
+    }
 }
 
 /// Analyze a specific class in a document
@@ -38,17 +93,7 @@ pub fn analyze_class(workspace: &mut WorkspaceState, uri: &Uri, class_name: &str
     let text = match workspace.get_document(uri) {
         Some(t) => t.clone(),
         None => {
-            return AnalyzeResult {
-                class_name: class_name.to_string(),
-                num_states: 0,
-                num_unknowns: 0,
-                num_equations: 0,
-                num_algebraic: 0,
-                num_parameters: 0,
-                num_inputs: 0,
-                is_balanced: false,
-                error: Some("Document not found".to_string()),
-            };
+            return AnalyzeResult::failed(class_name.to_string(), "Document not found".to_string());
         }
     };
 
@@ -58,17 +103,10 @@ pub fn analyze_class(workspace: &mut WorkspaceState, uri: &Uri, class_name: &str
     let ast = match parse_document(&text, path) {
         Some(ast) => ast,
         None => {
-            return AnalyzeResult {
-                class_name: class_name.to_string(),
-                num_states: 0,
-                num_unknowns: 0,
-                num_equations: 0,
-                num_algebraic: 0,
-                num_parameters: 0,
-                num_inputs: 0,
-                is_balanced: false,
-                error: Some("Failed to parse document".to_string()),
-            };
+            return AnalyzeResult::failed(
+                class_name.to_string(),
+                "Failed to parse document".to_string(),
+            );
         }
     };
 
@@ -83,37 +121,20 @@ pub fn analyze_class(workspace: &mut WorkspaceState, uri: &Uri, class_name: &str
             // Cache the balance result
             workspace.set_balance(uri.clone(), class_name.to_string(), balance.clone());
 
-            AnalyzeResult {
-                class_name: class_name.to_string(),
-                num_states: balance.num_states,
-                num_unknowns: balance.num_unknowns,
-                num_equations: balance.num_equations,
-                num_algebraic: balance.num_algebraic,
-                num_parameters: balance.num_parameters,
-                num_inputs: balance.num_inputs,
-                is_balanced: balance.is_balanced,
-                error: None,
-            }
+            AnalyzeResult::success(class_name.to_string(), balance)
         }
         Err(e) => {
             // Check if the class exists in the AST but just failed to compile
             let class_exists = class_exists_in_ast(&ast, class_name);
 
-            AnalyzeResult {
-                class_name: class_name.to_string(),
-                num_states: 0,
-                num_unknowns: 0,
-                num_equations: 0,
-                num_algebraic: 0,
-                num_parameters: 0,
-                num_inputs: 0,
-                is_balanced: false,
-                error: Some(if class_exists {
+            AnalyzeResult::failed(
+                class_name.to_string(),
+                if class_exists {
                     format!("Compilation failed: {}", e)
                 } else {
                     format!("Class '{}' not found", class_name)
-                }),
-            }
+                },
+            )
         }
     }
 }
@@ -147,21 +168,32 @@ fn class_exists_in_ast(ast: &crate::ir::ast::StoredDefinition, class_name: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dae::balance::BalanceStatus;
 
     #[test]
-    fn test_analyze_result_creation() {
-        let result = AnalyzeResult {
-            class_name: "Test".to_string(),
+    fn test_analyze_result_success() {
+        let balance = BalanceResult {
             num_states: 2,
             num_unknowns: 4,
             num_equations: 4,
             num_algebraic: 2,
             num_parameters: 1,
             num_inputs: 0,
+            num_external_connectors: 0,
             is_balanced: true,
-            error: None,
+            status: BalanceStatus::Balanced,
         };
-        assert!(result.is_balanced);
-        assert_eq!(result.num_states, 2);
+        let result = AnalyzeResult::success("Test".to_string(), balance);
+        assert!(result.is_balanced());
+        assert_eq!(result.num_states(), 2);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_analyze_result_failed() {
+        let result = AnalyzeResult::failed("Test".to_string(), "Some error".to_string());
+        assert!(!result.is_balanced());
+        assert_eq!(result.num_states(), 0);
+        assert!(result.error.is_some());
     }
 }

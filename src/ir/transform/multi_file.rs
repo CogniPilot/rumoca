@@ -54,10 +54,15 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     ".tmp",
     "tmp",
     "temp",
+    ".DS_Store",
 ];
 
-/// Check if a directory should be ignored during file discovery
-fn should_ignore_directory(path: &Path) -> bool {
+/// Check if a directory should be ignored during file discovery.
+///
+/// This checks against a list of common directories that should never contain
+/// Modelica code (build artifacts, version control, IDE files, etc.) and also
+/// ignores hidden directories (starting with `.`).
+pub fn should_ignore_directory(path: &Path) -> bool {
     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
         // Check against the ignore list
         if IGNORED_DIRECTORIES.contains(&name) {

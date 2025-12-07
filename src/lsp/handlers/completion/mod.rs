@@ -16,7 +16,7 @@ use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, InsertTextFormat, Uri,
 };
 
-use crate::lsp::data::builtin_functions::get_builtin_functions;
+use crate::ir::transform::constants::get_builtin_functions;
 use crate::lsp::data::keywords::get_keyword_completions;
 use crate::lsp::utils::{get_text_before_cursor, parse_document};
 use crate::lsp::workspace::WorkspaceState;
@@ -192,8 +192,7 @@ pub fn handle_completion(
 
 /// Get completion items for built-in functions
 fn get_builtin_function_completions() -> Vec<CompletionItem> {
-    let functions = get_builtin_functions();
-    functions
+    get_builtin_functions()
         .iter()
         .map(|func| {
             let snippet = if func.parameters.is_empty() {

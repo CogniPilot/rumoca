@@ -1,20 +1,10 @@
 //! Utility functions for LSP handlers.
 
-use crate::ir::ast::{Location, StoredDefinition, Token};
+use crate::ir::ast::{Location, Token};
 use lsp_types::{Position, Range};
 
-/// Parse the document and return the AST if successful
-pub fn parse_document(text: &str, path: &str) -> Option<StoredDefinition> {
-    use crate::modelica_grammar::ModelicaGrammar;
-    use crate::modelica_parser::parse;
-
-    let mut grammar = ModelicaGrammar::new();
-    if parse(text, path, &mut grammar).is_ok() {
-        grammar.modelica
-    } else {
-        None
-    }
-}
+// Re-export compiler parsing functions for LSP use
+pub use crate::compiler::{parse_file_cached, parse_source_simple as parse_document};
 
 /// Get the text before the cursor on the current line
 pub fn get_text_before_cursor(text: &str, position: Position) -> Option<String> {

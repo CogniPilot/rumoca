@@ -6,9 +6,9 @@ use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind, Po
 
 use crate::fmt::{format_equation, format_expression};
 use crate::ir::ast::{Causality, ClassType, Component, Expression, StoredDefinition, Variability};
+use crate::ir::transform::constants::get_builtin_functions;
 use crate::ir::transform::scope_resolver::{ResolvedSymbol, ScopeResolver};
 
-use crate::lsp::data::builtin_functions::get_builtin_functions;
 use crate::lsp::data::keywords::get_keyword_hover;
 use crate::lsp::utils::{get_qualified_name_at_position, get_word_at_position, parse_document};
 use crate::lsp::workspace::WorkspaceState;
@@ -37,8 +37,7 @@ pub fn handle_hover(documents: &HashMap<Uri, String>, params: HoverParams) -> Op
     }
 
     // Check built-in functions
-    let functions = get_builtin_functions();
-    for func in &functions {
+    for func in get_builtin_functions() {
         if func.name == word {
             let params_doc: String = func
                 .parameters
@@ -76,8 +75,6 @@ pub fn handle_hover(documents: &HashMap<Uri, String>, params: HoverParams) -> Op
 
 /// Handle hover request with workspace support for cross-file lookups
 pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -> Option<Hover> {
-    use crate::lsp::scope::WorkspaceScopeResolver;
-
     let uri = &params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -88,16 +85,18 @@ pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -
     let word = get_word_at_position(text, position)?;
     let qualified_name = get_qualified_name_at_position(text, position);
 
-    // Parse the document and use unified scope resolver
+    // Parse the document and use unified scope resolver with workspace lookup
     if let Some(ast) = parse_document(text, path) {
-        let resolver = WorkspaceScopeResolver::new(&ast, workspace);
+        let resolver = ScopeResolver::with_lookup(&ast, workspace);
 
         // Try qualified name first (e.g., SI.Mass, Interfaces.DiscreteSISO)
+        // Note: resolve_qualified uses 1-indexed positions
         if let Some(ref qn) = qualified_name {
             if let Some(resolved) =
-                resolver.resolve_qualified(qn, position.line, position.character)
+                resolver.resolve_qualified(qn, position.line + 1, position.character + 1)
             {
-                if let Some(hover_text) = format_resolved_symbol(&resolved, workspace) {
+                if let Some(hover_text) = format_resolved_symbol_unified(&resolved, workspace, &ast)
+                {
                     return Some(Hover {
                         contents: HoverContents::Markup(MarkupContent {
                             kind: MarkupKind::Markdown,
@@ -109,9 +108,9 @@ pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -
             }
         }
 
-        // Fall back to simple word resolution
-        if let Some(resolved) = resolver.resolve(&word, position.line, position.character) {
-            if let Some(hover_text) = format_resolved_symbol(&resolved, workspace) {
+        // Fall back to simple word resolution (resolve uses 1-indexed positions)
+        if let Some(resolved) = resolver.resolve(&word, position.line + 1, position.character + 1) {
+            if let Some(hover_text) = format_resolved_symbol_unified(&resolved, workspace, &ast) {
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -124,8 +123,7 @@ pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -
     }
 
     // Check built-in functions
-    let functions = get_builtin_functions();
-    for func in &functions {
+    for func in get_builtin_functions() {
         if func.name == word {
             let params_doc: String = func
                 .parameters
@@ -161,15 +159,14 @@ pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -
     })
 }
 
-/// Format a resolved symbol for hover display
-fn format_resolved_symbol(
-    resolved: &crate::lsp::scope::ResolvedSymbol,
+/// Format a resolved symbol for hover display (unified scope resolver)
+fn format_resolved_symbol_unified(
+    resolved: &ResolvedSymbol,
     workspace: &WorkspaceState,
+    _ast: &StoredDefinition,
 ) -> Option<String> {
-    use crate::lsp::scope::ResolvedSymbol;
-
     match resolved {
-        ResolvedSymbol::LocalComponent {
+        ResolvedSymbol::Component {
             component,
             defined_in,
             inherited_via,
@@ -192,11 +189,38 @@ fn format_resolved_symbol(
 
             Some(info)
         }
-        ResolvedSymbol::LocalClass(class_def) => {
+        ResolvedSymbol::Class(class_def) => {
             Some(format_class_hover(class_def, &class_def.name.text))
         }
-        ResolvedSymbol::WorkspaceSymbol(sym) => Some(format_workspace_symbol_hover(sym, workspace)),
+        ResolvedSymbol::External(sym_info) => Some(format_symbol_info_hover(sym_info, workspace)),
     }
+}
+
+/// Format hover info for an external symbol (from workspace lookup via SymbolInfo)
+fn format_symbol_info_hover(
+    sym_info: &crate::ir::transform::scope_resolver::SymbolInfo,
+    workspace: &WorkspaceState,
+) -> String {
+    // Try to get the actual AST for richer information
+    if let Some(ast) = workspace.get_parsed_ast_by_name(&sym_info.qualified_name) {
+        // Find the class in the AST
+        let simple_name = sym_info
+            .qualified_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(&sym_info.qualified_name);
+        if let Some(class) = ast.class_list.get(simple_name) {
+            return format_class_hover(class, &sym_info.qualified_name);
+        }
+    }
+
+    // Fall back to basic info from SymbolInfo
+    let kind = format!("{:?}", sym_info.kind);
+    let mut info = format!("**{}** ({})\n\n", sym_info.qualified_name, kind);
+    if let Some(detail) = &sym_info.detail {
+        info += detail;
+    }
+    info
 }
 
 /// Get hover info from the AST for user-defined symbols
@@ -228,6 +252,15 @@ fn get_ast_hover_info(ast: &StoredDefinition, word: &str, position: Position) ->
             ResolvedSymbol::Class(class_def) => {
                 return Some(format_class_hover(class_def, word));
             }
+            ResolvedSymbol::External(sym_info) => {
+                // External symbol from workspace lookup - format basic info
+                let kind = format!("{:?}", sym_info.kind);
+                let mut info = format!("**{}** ({})\n\n", sym_info.qualified_name, kind);
+                if let Some(detail) = &sym_info.detail {
+                    info += detail;
+                }
+                return Some(info);
+            }
         }
     }
 
@@ -244,85 +277,6 @@ fn get_ast_hover_info(ast: &StoredDefinition, word: &str, position: Position) ->
     }
 
     None
-}
-
-/// Format hover info for a workspace symbol
-fn format_workspace_symbol_hover(
-    sym: &crate::lsp::workspace::WorkspaceSymbol,
-    workspace: &WorkspaceState,
-) -> String {
-    // Try to get the full class definition from the workspace's parsed ASTs
-    if let Some(text) = workspace.get_document(&sym.uri) {
-        let path = sym.uri.path().as_str();
-        if let Some(ast) = parse_document(text, path) {
-            // Try to find the class in the AST
-            let simple_name = sym
-                .qualified_name
-                .rsplit('.')
-                .next()
-                .unwrap_or(&sym.qualified_name);
-            if let Some(class_def) = find_class_definition(&ast, simple_name) {
-                return format_class_hover(class_def, simple_name);
-            }
-            // Also check by full qualified name parts
-            if let Some(class_def) = find_class_by_qualified_name(&ast, &sym.qualified_name) {
-                return format_class_hover(class_def, simple_name);
-            }
-        }
-    }
-
-    // Fall back to basic info from the symbol
-    let kind_str = format!("{:?}", sym.kind).to_lowercase();
-    let mut info = format!("```modelica\n{} {}\n```", kind_str, sym.qualified_name);
-
-    if let Some(detail) = &sym.detail {
-        info += &format!("\n\n{}", detail);
-    }
-
-    // Show file location
-    let file_name = sym
-        .uri
-        .path()
-        .as_str()
-        .rsplit('/')
-        .next()
-        .unwrap_or("unknown");
-    info += &format!("\n\n*Defined in `{}`*", file_name);
-
-    info
-}
-
-/// Find a class by qualified name in the AST (handles within clause)
-fn find_class_by_qualified_name<'a>(
-    ast: &'a StoredDefinition,
-    qualified_name: &str,
-) -> Option<&'a crate::ir::ast::ClassDefinition> {
-    let parts: Vec<&str> = qualified_name.split('.').collect();
-    if parts.is_empty() {
-        return None;
-    }
-
-    // If there's a within clause, skip those parts from the qualified name
-    let skip_count = ast.within.as_ref().map(|w| w.name.len()).unwrap_or(0);
-
-    if parts.len() <= skip_count {
-        return None;
-    }
-
-    let remaining_parts = &parts[skip_count..];
-    if remaining_parts.is_empty() {
-        return None;
-    }
-
-    // Navigate through the class hierarchy
-    let first = remaining_parts[0];
-    let mut current = ast.class_list.get(first)?;
-
-    for part in &remaining_parts[1..] {
-        current = current.classes.get(*part)?;
-    }
-
-    Some(current)
 }
 
 /// Helper to format an expression for display

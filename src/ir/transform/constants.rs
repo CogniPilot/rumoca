@@ -300,6 +300,462 @@ pub fn all_modelica_constant_names() -> Vec<String> {
     ]
 }
 
+// =============================================================================
+// Built-in Function Metadata (for LSP and compiler)
+// =============================================================================
+
+/// Information about a built-in Modelica function
+/// Used by both the compiler and LSP for type checking, signature help, etc.
+#[derive(Debug, Clone)]
+pub struct BuiltinFunction {
+    /// Function name (e.g., "sin", "der")
+    pub name: &'static str,
+    /// Function signature for display (e.g., "sin(x: Real) -> Real")
+    pub signature: &'static str,
+    /// Documentation describing the function's purpose
+    pub documentation: &'static str,
+    /// Parameter names and their descriptions
+    pub parameters: &'static [(&'static str, &'static str)],
+}
+
+/// All built-in Modelica functions with their metadata
+pub static BUILTIN_FUNCTIONS: &[BuiltinFunction] = &[
+    // Derivative and state operators
+    BuiltinFunction {
+        name: "der",
+        signature: "der(x: Real) -> Real",
+        documentation: "Time derivative of the argument. Only allowed for continuous-time expressions.",
+        parameters: &[("x", "Real expression to differentiate with respect to time")],
+    },
+    BuiltinFunction {
+        name: "pre",
+        signature: "pre(x) -> type(x)",
+        documentation: "Returns the value of x at the previous event instant. Can only be used in when-equations/algorithms.",
+        parameters: &[("x", "Variable to get previous value of")],
+    },
+    BuiltinFunction {
+        name: "reinit",
+        signature: "reinit(x: Real, expr: Real)",
+        documentation: "Reinitializes x with expr at an event instant. Can only be used in when-equations.",
+        parameters: &[
+            ("x", "State variable to reinitialize"),
+            ("expr", "New value for the state variable"),
+        ],
+    },
+    BuiltinFunction {
+        name: "noEvent",
+        signature: "noEvent(expr) -> type(expr)",
+        documentation: "Suppresses event generation for the expression. Use with care.",
+        parameters: &[("expr", "Expression to evaluate without event generation")],
+    },
+    BuiltinFunction {
+        name: "smooth",
+        signature: "smooth(p: Integer, expr: Real) -> Real",
+        documentation: "Indicates that expr is p times continuously differentiable.",
+        parameters: &[
+            ("p", "Order of continuous differentiability"),
+            ("expr", "Expression that is smooth to order p"),
+        ],
+    },
+    BuiltinFunction {
+        name: "sample",
+        signature: "sample(start: Real, interval: Real) -> Boolean",
+        documentation: "Returns true at time instants start + i*interval (i=0,1,2,...).",
+        parameters: &[
+            ("start", "Time of first sample"),
+            ("interval", "Sample interval"),
+        ],
+    },
+    BuiltinFunction {
+        name: "edge",
+        signature: "edge(b: Boolean) -> Boolean",
+        documentation: "Returns true at the instant when b becomes true (rising edge).",
+        parameters: &[("b", "Boolean expression to detect rising edge")],
+    },
+    BuiltinFunction {
+        name: "change",
+        signature: "change(v) -> Boolean",
+        documentation: "Returns true when the value of v changes.",
+        parameters: &[("v", "Variable to monitor for changes")],
+    },
+    BuiltinFunction {
+        name: "initial",
+        signature: "initial() -> Boolean",
+        documentation: "Returns true during initialization, false during simulation.",
+        parameters: &[],
+    },
+    BuiltinFunction {
+        name: "terminal",
+        signature: "terminal() -> Boolean",
+        documentation: "Returns true at the end of a successful simulation.",
+        parameters: &[],
+    },
+    // Trigonometric functions
+    BuiltinFunction {
+        name: "sin",
+        signature: "sin(x: Real) -> Real",
+        documentation: "Sine of x (x in radians).",
+        parameters: &[("x", "Angle in radians")],
+    },
+    BuiltinFunction {
+        name: "cos",
+        signature: "cos(x: Real) -> Real",
+        documentation: "Cosine of x (x in radians).",
+        parameters: &[("x", "Angle in radians")],
+    },
+    BuiltinFunction {
+        name: "tan",
+        signature: "tan(x: Real) -> Real",
+        documentation: "Tangent of x (x in radians).",
+        parameters: &[("x", "Angle in radians")],
+    },
+    BuiltinFunction {
+        name: "asin",
+        signature: "asin(x: Real) -> Real",
+        documentation: "Inverse sine (arcsine) of x. Result in radians.",
+        parameters: &[("x", "Value in range [-1, 1]")],
+    },
+    BuiltinFunction {
+        name: "acos",
+        signature: "acos(x: Real) -> Real",
+        documentation: "Inverse cosine (arccosine) of x. Result in radians.",
+        parameters: &[("x", "Value in range [-1, 1]")],
+    },
+    BuiltinFunction {
+        name: "atan",
+        signature: "atan(x: Real) -> Real",
+        documentation: "Inverse tangent (arctangent) of x. Result in radians.",
+        parameters: &[("x", "Real value")],
+    },
+    BuiltinFunction {
+        name: "atan2",
+        signature: "atan2(y: Real, x: Real) -> Real",
+        documentation: "Two-argument arctangent. Returns angle in radians between -π and π.",
+        parameters: &[("y", "Y coordinate"), ("x", "X coordinate")],
+    },
+    BuiltinFunction {
+        name: "sinh",
+        signature: "sinh(x: Real) -> Real",
+        documentation: "Hyperbolic sine of x.",
+        parameters: &[("x", "Real value")],
+    },
+    BuiltinFunction {
+        name: "cosh",
+        signature: "cosh(x: Real) -> Real",
+        documentation: "Hyperbolic cosine of x.",
+        parameters: &[("x", "Real value")],
+    },
+    BuiltinFunction {
+        name: "tanh",
+        signature: "tanh(x: Real) -> Real",
+        documentation: "Hyperbolic tangent of x.",
+        parameters: &[("x", "Real value")],
+    },
+    // Exponential and logarithmic functions
+    BuiltinFunction {
+        name: "exp",
+        signature: "exp(x: Real) -> Real",
+        documentation: "Exponential function e^x.",
+        parameters: &[("x", "Exponent")],
+    },
+    BuiltinFunction {
+        name: "log",
+        signature: "log(x: Real) -> Real",
+        documentation: "Natural logarithm (base e) of x.",
+        parameters: &[("x", "Positive real value")],
+    },
+    BuiltinFunction {
+        name: "log10",
+        signature: "log10(x: Real) -> Real",
+        documentation: "Base-10 logarithm of x.",
+        parameters: &[("x", "Positive real value")],
+    },
+    // Power and root functions
+    BuiltinFunction {
+        name: "sqrt",
+        signature: "sqrt(x: Real) -> Real",
+        documentation: "Square root of x.",
+        parameters: &[("x", "Non-negative real value")],
+    },
+    // Rounding and sign functions
+    BuiltinFunction {
+        name: "abs",
+        signature: "abs(x) -> type(x)",
+        documentation: "Absolute value of x.",
+        parameters: &[("x", "Numeric value")],
+    },
+    BuiltinFunction {
+        name: "sign",
+        signature: "sign(x: Real) -> Integer",
+        documentation: "Sign of x: -1, 0, or 1.",
+        parameters: &[("x", "Real value")],
+    },
+    BuiltinFunction {
+        name: "floor",
+        signature: "floor(x: Real) -> Real",
+        documentation: "Largest integer not greater than x, returned as Real.",
+        parameters: &[("x", "Real value")],
+    },
+    BuiltinFunction {
+        name: "ceil",
+        signature: "ceil(x: Real) -> Real",
+        documentation: "Smallest integer not less than x, returned as Real.",
+        parameters: &[("x", "Real value")],
+    },
+    BuiltinFunction {
+        name: "mod",
+        signature: "mod(x: Real, y: Real) -> Real",
+        documentation: "Modulo: x - floor(x/y)*y. Result has same sign as y.",
+        parameters: &[("x", "Dividend"), ("y", "Divisor")],
+    },
+    BuiltinFunction {
+        name: "rem",
+        signature: "rem(x: Real, y: Real) -> Real",
+        documentation: "Remainder: x - div(x,y)*y. Result has same sign as x.",
+        parameters: &[("x", "Dividend"), ("y", "Divisor")],
+    },
+    // Min/Max functions
+    BuiltinFunction {
+        name: "min",
+        signature: "min(x, y) -> type(x)",
+        documentation: "Returns the smaller of x and y. Can also be applied to arrays.",
+        parameters: &[
+            ("x", "First value or array"),
+            ("y", "Second value (optional for arrays)"),
+        ],
+    },
+    BuiltinFunction {
+        name: "max",
+        signature: "max(x, y) -> type(x)",
+        documentation: "Returns the larger of x and y. Can also be applied to arrays.",
+        parameters: &[
+            ("x", "First value or array"),
+            ("y", "Second value (optional for arrays)"),
+        ],
+    },
+    // Integer conversion
+    BuiltinFunction {
+        name: "integer",
+        signature: "integer(x: Real) -> Integer",
+        documentation: "Converts Real to Integer by truncation toward negative infinity.",
+        parameters: &[("x", "Real value to convert")],
+    },
+    BuiltinFunction {
+        name: "div",
+        signature: "div(x: Real, y: Real) -> Integer",
+        documentation: "Integer division: algebraic quotient with fractional part discarded.",
+        parameters: &[("x", "Dividend"), ("y", "Divisor")],
+    },
+    // Array construction functions
+    BuiltinFunction {
+        name: "zeros",
+        signature: "zeros(n1, n2, ...) -> Real[n1, n2, ...]",
+        documentation: "Creates an array of zeros with given dimensions.",
+        parameters: &[("n1, n2, ...", "Dimensions of the array")],
+    },
+    BuiltinFunction {
+        name: "ones",
+        signature: "ones(n1, n2, ...) -> Real[n1, n2, ...]",
+        documentation: "Creates an array of ones with given dimensions.",
+        parameters: &[("n1, n2, ...", "Dimensions of the array")],
+    },
+    BuiltinFunction {
+        name: "fill",
+        signature: "fill(s, n1, n2, ...) -> type(s)[n1, n2, ...]",
+        documentation: "Creates an array filled with scalar value s.",
+        parameters: &[
+            ("s", "Scalar value to fill with"),
+            ("n1, n2, ...", "Dimensions of the array"),
+        ],
+    },
+    BuiltinFunction {
+        name: "identity",
+        signature: "identity(n: Integer) -> Real[n, n]",
+        documentation: "Creates an n×n identity matrix.",
+        parameters: &[("n", "Size of the square matrix")],
+    },
+    BuiltinFunction {
+        name: "diagonal",
+        signature: "diagonal(v: Real[:]) -> Real[size(v,1), size(v,1)]",
+        documentation: "Creates a diagonal matrix from vector v.",
+        parameters: &[("v", "Vector of diagonal elements")],
+    },
+    BuiltinFunction {
+        name: "linspace",
+        signature: "linspace(x1: Real, x2: Real, n: Integer) -> Real[n]",
+        documentation: "Creates a vector of n equally spaced points from x1 to x2.",
+        parameters: &[
+            ("x1", "Start value"),
+            ("x2", "End value"),
+            ("n", "Number of points"),
+        ],
+    },
+    // Array information functions
+    BuiltinFunction {
+        name: "size",
+        signature: "size(A, i) -> Integer",
+        documentation: "Returns size of dimension i of array A. Without i, returns size vector.",
+        parameters: &[("A", "Array"), ("i", "Dimension index (optional)")],
+    },
+    BuiltinFunction {
+        name: "ndims",
+        signature: "ndims(A) -> Integer",
+        documentation: "Returns number of dimensions of array A.",
+        parameters: &[("A", "Array")],
+    },
+    // Array reduction functions
+    BuiltinFunction {
+        name: "sum",
+        signature: "sum(A) -> type(A[1,...])",
+        documentation: "Returns sum of all elements in array A.",
+        parameters: &[("A", "Array to sum")],
+    },
+    BuiltinFunction {
+        name: "product",
+        signature: "product(A) -> type(A[1,...])",
+        documentation: "Returns product of all elements in array A.",
+        parameters: &[("A", "Array to multiply")],
+    },
+    // Array transformation functions
+    BuiltinFunction {
+        name: "transpose",
+        signature: "transpose(A: Real[:,:]) -> Real[size(A,2), size(A,1)]",
+        documentation: "Transposes a matrix.",
+        parameters: &[("A", "Matrix to transpose")],
+    },
+    BuiltinFunction {
+        name: "symmetric",
+        signature: "symmetric(A: Real[:,:]) -> Real[size(A,1), size(A,2)]",
+        documentation: "Returns symmetric matrix: upper triangle copied to lower.",
+        parameters: &[("A", "Square matrix")],
+    },
+    BuiltinFunction {
+        name: "cross",
+        signature: "cross(x: Real[3], y: Real[3]) -> Real[3]",
+        documentation: "Cross product of two 3-vectors.",
+        parameters: &[("x", "First 3-vector"), ("y", "Second 3-vector")],
+    },
+    BuiltinFunction {
+        name: "skew",
+        signature: "skew(x: Real[3]) -> Real[3, 3]",
+        documentation: "Skew-symmetric matrix from 3-vector. skew(x)*y = cross(x,y).",
+        parameters: &[("x", "3-vector")],
+    },
+    BuiltinFunction {
+        name: "outerProduct",
+        signature: "outerProduct(v1: Real[:], v2: Real[:]) -> Real[size(v1,1), size(v2,1)]",
+        documentation: "Outer product of two vectors: result[i,j] = v1[i]*v2[j].",
+        parameters: &[("v1", "First vector"), ("v2", "Second vector")],
+    },
+    // Scalar conversion functions
+    BuiltinFunction {
+        name: "scalar",
+        signature: "scalar(A: Real[1] or Real[1,1]) -> Real",
+        documentation: "Converts a single-element array to a scalar.",
+        parameters: &[("A", "Single-element array")],
+    },
+    BuiltinFunction {
+        name: "vector",
+        signature: "vector(A) -> Real[:]",
+        documentation: "Converts array to vector (flattens to 1D).",
+        parameters: &[("A", "Array to convert")],
+    },
+    BuiltinFunction {
+        name: "matrix",
+        signature: "matrix(A) -> Real[:,:]",
+        documentation: "Converts array to matrix (2D).",
+        parameters: &[("A", "Array to convert")],
+    },
+    // Special functions
+    BuiltinFunction {
+        name: "cardinality",
+        signature: "cardinality(c: connector) -> Integer",
+        documentation: "Returns number of connections to connector c (deprecated).",
+        parameters: &[("c", "Connector")],
+    },
+    BuiltinFunction {
+        name: "semiLinear",
+        signature: "semiLinear(x: Real, k1: Real, k2: Real) -> Real",
+        documentation: "Piecewise linear: if x >= 0 then k1*x else k2*x.",
+        parameters: &[
+            ("x", "Switching variable"),
+            ("k1", "Slope for positive x"),
+            ("k2", "Slope for negative x"),
+        ],
+    },
+    BuiltinFunction {
+        name: "String",
+        signature: "String(x, ...) -> String",
+        documentation: "Converts value to string representation.",
+        parameters: &[
+            ("x", "Value to convert"),
+            ("format", "Optional format specifier"),
+        ],
+    },
+    BuiltinFunction {
+        name: "delay",
+        signature: "delay(expr: Real, delayTime: Real, maxDelay: Real) -> Real",
+        documentation: "Time delay: returns expr(time - delayTime).",
+        parameters: &[
+            ("expr", "Expression to delay"),
+            ("delayTime", "Delay time"),
+            ("maxDelay", "Maximum delay (optional)"),
+        ],
+    },
+    BuiltinFunction {
+        name: "spatialDistribution",
+        signature: "spatialDistribution(in0, in1, x, positiveVelocity, ...) -> (out0, out1)",
+        documentation: "Transport delay for fluid flow with variable velocity.",
+        parameters: &[
+            ("in0", "Input at position 0"),
+            ("in1", "Input at position 1"),
+            ("x", "Normalized position [0,1]"),
+            ("positiveVelocity", "Direction of transport"),
+        ],
+    },
+    BuiltinFunction {
+        name: "getInstanceName",
+        signature: "getInstanceName() -> String",
+        documentation: "Returns the instance name path of the model.",
+        parameters: &[],
+    },
+    BuiltinFunction {
+        name: "homotopy",
+        signature: "homotopy(actual: Real, simplified: Real) -> Real",
+        documentation: "Continuation method: returns actual in normal simulation, can use simplified for initialization.",
+        parameters: &[
+            ("actual", "Expression used during simulation"),
+            ("simplified", "Simplified expression for initialization"),
+        ],
+    },
+    BuiltinFunction {
+        name: "assert",
+        signature: "assert(condition: Boolean, message: String, level: AssertionLevel)",
+        documentation: "Runtime assertion. Triggers error/warning if condition is false.",
+        parameters: &[
+            ("condition", "Condition that must be true"),
+            ("message", "Error message if condition fails"),
+            ("level", "AssertionLevel.error or .warning (optional)"),
+        ],
+    },
+    BuiltinFunction {
+        name: "terminate",
+        signature: "terminate(message: String)",
+        documentation: "Terminates simulation successfully with given message.",
+        parameters: &[("message", "Termination message")],
+    },
+];
+
+/// Get all built-in functions with their metadata
+pub fn get_builtin_functions() -> &'static [BuiltinFunction] {
+    BUILTIN_FUNCTIONS
+}
+
+/// Look up a built-in function by name
+pub fn get_builtin_function(name: &str) -> Option<&'static BuiltinFunction> {
+    BUILTIN_FUNCTIONS.iter().find(|f| f.name == name)
+}
+
 /// Helper to create derivative variable name
 pub fn derivative_name(var: &str) -> String {
     format!("{}{}", DERIVATIVE_PREFIX, var)
