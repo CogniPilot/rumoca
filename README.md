@@ -125,6 +125,41 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 <details>
 <summary><strong>Detailed Compatibility Notes</strong></summary>
 
+**Language Support:**
+
+| Category | Supported |
+|----------|-----------|
+| Classes | `model`, `class`, `block`, `connector`, `record`, `type`, `package`, `function` |
+| Equations | Simple, connect (flow/potential), if, for, when |
+| Expressions | Binary/unary ops, function calls, if-expressions, arrays |
+| Type prefixes | `flow`, `discrete`, `parameter`, `constant`, `input`, `output` |
+| Packages | Nested packages, `package.mo`/`package.order`, MODELICAPATH |
+| Imports | Qualified, renamed, unqualified (`.*`), selective (`{a,b}`) |
+| Functions | Single/multi-output, tuple equations `(a,b) = func()` |
+| Built-ins | `der`, `pre`, `reinit`, `time`, trig, array functions |
+| Events | `noEvent`, `smooth`, `sample`, `edge`, `change`, `initial`, `terminal` |
+
+**Partial Support:**
+
+| Feature | Status |
+|---------|--------|
+| Algorithm sections | Parsed; assignments not yet counted in balance check |
+| Connect equations | Flow/potential semantics; `stream` not supported |
+| External functions | `external` recognized; no linking |
+| Inner/outer | Basic resolution; nested scopes in progress |
+| Complex type | Record expansion; operator overloading in progress |
+
+**Not Yet Implemented:**
+
+| Feature | Notes |
+|---------|-------|
+| Stream connectors | `inStream`, `actualStream` operators |
+| Redeclarations | `redeclare`, `replaceable` parsed only |
+| Overloaded operators | `operator` class prefix recognized only |
+| State machines | Synchronous language elements (Ch. 17) |
+| Expandable connectors | Dynamic connector sizing |
+| Overconstrained connectors | `Connections.root`, `branch`, etc. |
+
 **What Works Well** (92% of models compile successfully):
 - Modelica.Thermal (97% success)
 - Modelica.Magnetic (96% success)
@@ -228,92 +263,6 @@ model = import_rumoca('model.json')
 # Use model for simulation, analysis, code generation, etc.
 ```
 
-## Modelica Language Support
-
-| Category | Supported |
-|----------|-----------|
-| Classes | `model`, `class`, `block`, `connector`, `record`, `type`, `package`, `function` |
-| Equations | Simple, connect (flow/potential), if, for, when |
-| Expressions | Binary/unary ops, function calls, if-expressions, arrays |
-| Type prefixes | `flow`, `discrete`, `parameter`, `constant`, `input`, `output` |
-| Packages | Nested packages, `package.mo`/`package.order`, MODELICAPATH |
-| Imports | Qualified, renamed, unqualified (`.*`), selective (`{a,b}`) |
-| Functions | Single/multi-output, tuple equations `(a,b) = func()` |
-| Built-ins | `der`, `pre`, `reinit`, `time`, trig, array functions |
-| Events | `noEvent`, `smooth`, `sample`, `edge`, `change`, `initial`, `terminal` |
-
-### Partial Support
-
-| Feature | Status |
-|---------|--------|
-| Algorithm sections | Parsed; assignments not yet counted in balance check |
-| Connect equations | Flow/potential semantics; `stream` not supported |
-| External functions | `external` recognized; no linking |
-| Inner/outer | Basic resolution; nested scopes in progress |
-| Complex type | Record expansion; operator overloading in progress |
-
-### Not Yet Implemented
-
-| Feature | Notes |
-|---------|-------|
-| Stream connectors | `inStream`, `actualStream` operators |
-| Redeclarations | `redeclare`, `replaceable` parsed only |
-| Overloaded operators | `operator` class prefix recognized only |
-| State machines | Synchronous language elements (Ch. 17) |
-| Expandable connectors | Dynamic connector sizing |
-| Overconstrained connectors | `Connections.root`, `branch`, etc. |
-
-## MSL Compatibility
-
-Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.com/modelica/ModelicaStandardLibrary).
-
-| Metric | Result |
-|--------|--------|
-| **Parse Rate** | 100% (2551/2551 files) |
-| **Compile Rate** | 92.1% (2102/2283 models) |
-
-**Balance Check Results:**
-
-| Status | Count | Percentage | Description |
-|--------|-------|------------|-------------|
-| **Balanced** | 669 | 29.3% | Fully determined (equations = unknowns) |
-| **Partial** | 1177 | 51.6% | Under-determined by design (external connectors) |
-| **Unbalanced** | 256 | 11.2% | Needs further work |
-| **Compile Errors** | 181 | 7.9% | Missing type/class resolution |
-
-*Partial models have external connector flow variables that receive equations when connected in a larger system.*
-
-**What Works Well** (92% of models compile successfully):
-- Modelica.Thermal (97% success)
-- Modelica.Magnetic (96% success)
-- Modelica.Math (excellent coverage)
-
-**Problematic Areas:**
-- Modelica.Fluid (Medium type resolution)
-- Modelica.ComplexBlocks (Complex type)
-- Modelica.Electrical.Digital (algorithm sections)
-- Modelica.Mechanics.MultiBody (StateSelect, algorithm sections)
-- Modelica.Clocked (synchronous features)
-
-**Top Compile Errors** (181 models):
-
-| Count | Missing Type |
-|-------|--------------|
-| 41 | `Complex` |
-| 32 | `StateSelect` |
-| 26 | `Medium.AbsolutePressure` |
-| 17 | `Medium.MassFlowRate` |
-| 16 | `Medium.ThermodynamicState` |
-
-**Known Limitations** (256 unbalanced models):
-
-| Category | Notes |
-|----------|-------|
-| Algorithm sections | Assignments not yet counted as equations |
-| Stream connectors | `inStream`/`actualStream` not implemented |
-| External functions | Functions without equation bodies |
-| Operator records | Operator overloading not implemented |
-
 ## Architecture
 
 ```
@@ -393,56 +342,9 @@ disabled_rules = ["magic-number", "missing-documentation"]
 deny_warnings = false
 ```
 
-## Performance
+### Caching
 
-### MSL Test Statistics
-
-The following benchmarks were run on an AMD Ryzen 9 7950X (16 cores / 32 threads) compiling all 2283 simulatable models from the Modelica Standard Library 4.1.0:
-
-| Phase | Time | Throughput |
-|-------|------|------------|
-| **Parsing** | 0.99s | 2,586 files/sec |
-| **Balance Check (cold)** | 31.07s | 73.5 models/sec |
-| **Balance Check (warm)** | 0.01s | 263,242 models/sec |
-| **Total (cold)** | 33.60s | — |
-| **Total (warm)** | 2.55s | — |
-
-The balance check uses parallel processing with Rayon. Cold cache performance is dominated by flattening and DAE creation; warm cache performance is essentially free (disk I/O only).
-
-### Caching Architecture
-
-Rumoca uses a multi-level caching strategy to optimize repeated compilations:
-
-#### In-Memory Caches (Session-Level)
-
-| Cache | Location | Purpose |
-|-------|----------|---------|
-| `CLASS_DICT_CACHE` | `flatten.rs` | Index of parsed classes (name → AST) |
-| `RESOLVED_CLASS_CACHE` | `flatten.rs` | Fully resolved classes (extends, imports applied) |
-| `FILE_HASH_CACHE` | `flatten.rs` | MD5 hashes of source files for invalidation |
-| `DAE_CACHE` | `pipeline.rs` | In-memory DAE balance results |
-
-These caches are cleared when the process exits or when source files change (detected via file hashes).
-
-#### Disk Cache (Persistent)
-
-The DAE disk cache (`~/.cache/rumoca/dae/`) persists balance results across sessions. It works like `ccache` - cached results are only valid when all dependent source files and the compiler version are unchanged. This makes the disk cache primarily useful for **CI pipelines and repeated test runs** where the same models are compiled multiple times without modification.
-
-For the **editing experience** (LSP), the in-memory caches provide the main performance benefit. These caches store parsed class hierarchies and resolved definitions within a session, enabling fast re-analysis as you edit code. The disk cache doesn't help during editing since any file change invalidates the cached result.
-
-**Clearing Caches:**
-
-```rust
-use rumoca::ir::transform::flatten::clear_caches;
-use rumoca::compiler::pipeline::clear_dae_cache;
-
-clear_caches();      // Clear in-memory caches
-clear_dae_cache();   // Clear both in-memory and disk DAE cache
-```
-
-```bash
-rm -rf ~/.cache/rumoca/dae/   # Manual disk cache removal
-```
+Rumoca uses multi-level caching: in-memory caches for session-level performance (parsed classes, resolved definitions), and a persistent disk cache (`~/.cache/rumoca/dae/`) that works like `ccache` for CI pipelines. The disk cache is invalidated when source files or the compiler version change.
 
 ## Roadmap
 
