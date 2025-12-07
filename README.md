@@ -94,57 +94,6 @@ fn main() -> anyhow::Result<()> {
 | `rumoca-lint` | Linter for Modelica files (like `clippy`) |
 | `rumoca-lsp` | Language Server Protocol server for editor integration |
 
-### Formatter
-
-```bash
-rumoca-fmt                              # Format all .mo files
-rumoca-fmt --check                      # Check formatting (CI mode)
-rumoca-fmt model.mo                     # Format specific files
-rumoca-fmt --config indent_size=4       # Custom indentation
-```
-
-**Configuration:** Create `.rumoca_fmt.toml` in your project:
-
-```toml
-indent_size = 2
-use_tabs = false
-max_line_length = 100
-blank_lines_between_classes = 1
-```
-
-### Linter
-
-```bash
-rumoca-lint                     # Lint all .mo files
-rumoca-lint --level warning     # Show only warnings and errors
-rumoca-lint --format json       # JSON output for CI
-rumoca-lint --list-rules        # List available rules
-rumoca-lint --deny-warnings     # Exit with error on warnings
-```
-
-**Available Rules:**
-
-| Rule | Level | Description |
-|------|-------|-------------|
-| `naming-convention` | note | CamelCase for types, camelCase for variables |
-| `missing-documentation` | note | Classes without documentation strings |
-| `unused-variable` | warning | Declared but unused variables |
-| `undefined-reference` | error | References to undefined variables |
-| `parameter-no-default` | help | Parameters without default values |
-| `empty-section` | note | Empty equation or algorithm sections |
-| `magic-number` | help | Magic numbers that should be constants |
-| `complex-expression` | note | Overly complex/deeply nested expressions |
-| `inconsistent-units` | warning | Potential unit inconsistencies |
-| `redundant-extends` | warning | Duplicate or circular extends |
-
-**Configuration:** Create `.rumoca_lint.toml` in your project:
-
-```toml
-min_level = "warning"
-disabled_rules = ["magic-number", "missing-documentation"]
-deny_warnings = false
-```
-
 ### Custom Code Generation
 
 Rumoca supports [MiniJinja](https://docs.rs/minijinja/) templates for custom code generation:
@@ -327,6 +276,57 @@ cargo fmt --check       # Check Rust formatting
 cargo clippy            # Lint Rust code
 rumoca-fmt --check      # Check Modelica formatting
 rumoca-lint             # Lint Modelica files
+```
+
+### Formatter
+
+```bash
+rumoca-fmt                              # Format all .mo files
+rumoca-fmt --check                      # Check formatting (CI mode)
+rumoca-fmt model.mo                     # Format specific files
+rumoca-fmt --config indent_size=4       # Custom indentation
+```
+
+**Configuration:** Create `.rumoca_fmt.toml` in your project:
+
+```toml
+indent_size = 2
+use_tabs = false
+max_line_length = 100
+blank_lines_between_classes = 1
+```
+
+### Linter
+
+```bash
+rumoca-lint                     # Lint all .mo files
+rumoca-lint --level warning     # Show only warnings and errors
+rumoca-lint --format json       # JSON output for CI
+rumoca-lint --list-rules        # List available rules
+rumoca-lint --deny-warnings     # Exit with error on warnings
+```
+
+**Available Rules:**
+
+| Rule | Level | Description |
+|------|-------|-------------|
+| `naming-convention` | note | CamelCase for types, camelCase for variables |
+| `missing-documentation` | note | Classes without documentation strings |
+| `unused-variable` | warning | Declared but unused variables |
+| `undefined-reference` | error | References to undefined variables |
+| `parameter-no-default` | help | Parameters without default values |
+| `empty-section` | note | Empty equation or algorithm sections |
+| `magic-number` | help | Magic numbers that should be constants |
+| `complex-expression` | note | Overly complex/deeply nested expressions |
+| `inconsistent-units` | warning | Potential unit inconsistencies |
+| `redundant-extends` | warning | Duplicate or circular extends |
+
+**Configuration:** Create `.rumoca_lint.toml` in your project:
+
+```toml
+min_level = "warning"
+disabled_rules = ["magic-number", "missing-documentation"]
+deny_warnings = false
 ```
 
 ## Performance
