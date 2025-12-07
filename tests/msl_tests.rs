@@ -16,6 +16,12 @@
 //! cargo test test_msl_balance_all -- --ignored --nocapture     # Balance check all models
 //! ```
 
+// Use mimalloc as the global allocator for better performance
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use anyhow::{Context, Result};
 use rand::seq::SliceRandom;
 use rayon::ThreadPoolBuilder;
@@ -23,6 +29,7 @@ use rayon::prelude::*;
 use rumoca::Compiler;
 use rumoca::dae::balance::BalanceStatus;
 use rumoca::ir::ast::StoredDefinition;
+use rumoca::ir::transform::flatten::prewarm_class_cache;
 use rumoca::ir::transform::multi_file::merge_stored_definitions;
 use rumoca::modelica_grammar::ModelicaGrammar;
 use rumoca::modelica_parser::parse;
@@ -453,6 +460,23 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
         model_names.truncate(limit);
         println!("Randomly selected {} models for testing", limit);
     }
+
+    // =========================================================================
+    // PHASE 2.5: Pre-warm class cache with parallel wavefront processing
+    // =========================================================================
+    println!("\n============================================================");
+    println!("                    PHASE 2.5: PRE-WARMING CACHE");
+    println!("============================================================");
+
+    let prewarm_start = Instant::now();
+    let classes_prewarmed = prewarm_class_cache(&merged_def);
+    let prewarm_time = prewarm_start.elapsed();
+    println!(
+        "Pre-warmed {} classes in {:.2}s ({:.0} classes/sec)",
+        classes_prewarmed,
+        prewarm_time.as_secs_f64(),
+        classes_prewarmed as f64 / prewarm_time.as_secs_f64()
+    );
 
     // =========================================================================
     // PHASE 3: Balance check all models in parallel

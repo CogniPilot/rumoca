@@ -31,6 +31,13 @@
 //! - `env_logger`: Logging support.
 //! - `anyhow`: Error handling with context.
 //! - `rumoca`: Core library for Modelica grammar, parsing, and DAE generation.
+
+// Use mimalloc as the global allocator for better performance
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use clap::Parser;
 use rumoca::Compiler;
 

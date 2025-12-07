@@ -22,8 +22,8 @@
 use crate::ir;
 use crate::ir::analysis::symbol_table::SymbolTable;
 use crate::ir::ast::{
-    ClassDefinition, ComponentRefPart, ComponentReference, Connection, Equation, Expression,
-    Import, OpBinary, TerminalType, Token,
+    ComponentRefPart, ComponentReference, Connection, Equation, Expression, Import, OpBinary,
+    TerminalType, Token,
 };
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::is_primitive_type;
@@ -31,6 +31,273 @@ use crate::ir::transform::sub_comp_namer::SubCompNamer;
 use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
+use parking_lot::RwLock;
+use rayon::prelude::*;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, LazyLock};
+
+/// Type alias for class dictionary with Arc-wrapped definitions for efficient sharing
+pub type ClassDict = IndexMap<String, Arc<ir::ast::ClassDefinition>>;
+
+/// Global cache for class dictionaries, keyed by content hash
+static CLASS_DICT_CACHE: LazyLock<RwLock<HashMap<u64, Arc<ClassDict>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Type alias for resolved class cache entry: (class, dependencies)
+type ResolvedClassEntry = (Arc<ir::ast::ClassDefinition>, FileDependencies);
+
+/// Type alias for resolved class cache key: (def_hash, class_path)
+type ResolvedClassKey = (u64, String);
+
+/// Global cache for resolved classes, keyed by (content_hash, class_path)
+/// Stores both the resolved class and its file dependencies for cache invalidation
+static RESOLVED_CLASS_CACHE: LazyLock<RwLock<HashMap<ResolvedClassKey, ResolvedClassEntry>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+// =============================================================================
+// Dependency Tracking for Disk Caching
+// =============================================================================
+
+/// Tracks file dependencies during flattening for cache invalidation.
+/// Each dependency is a (file_path, file_hash) pair.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FileDependencies {
+    /// Map of file_path -> MD5 hash of file content
+    pub files: IndexMap<String, String>,
+}
+
+impl FileDependencies {
+    pub fn new() -> Self {
+        Self {
+            files: IndexMap::new(),
+        }
+    }
+
+    /// Record a file dependency if we haven't seen it before
+    pub fn record(&mut self, file_path: &str, file_hash: &str) {
+        if !file_path.is_empty() && !self.files.contains_key(file_path) {
+            self.files
+                .insert(file_path.to_string(), file_hash.to_string());
+        }
+    }
+
+    /// Check if all dependencies are still valid (files exist and hashes match)
+    pub fn is_valid(&self) -> bool {
+        for (file_path, expected_hash) in &self.files {
+            // Compute current hash
+            let path = std::path::Path::new(file_path);
+            if !path.exists() {
+                return false;
+            }
+            if let Ok(content) = std::fs::read(path) {
+                let current_hash = format!("{:x}", chksum_md5::hash(&content));
+                if current_hash != *expected_hash {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+// Thread-local cache for file hashes to avoid re-reading files
+thread_local! {
+    static FILE_HASH_CACHE: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Record a file dependency, using cached hash if available
+fn record_file_dep(deps: &mut FileDependencies, file_name: &str) {
+    if file_name.is_empty() || file_name == "<test>" {
+        return;
+    }
+
+    // Check if already recorded
+    if deps.files.contains_key(file_name) {
+        return;
+    }
+
+    // Get or compute hash using thread-local cache
+    let hash = FILE_HASH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(h) = cache.get(file_name) {
+            return h.clone();
+        }
+        // Compute hash
+        let path = std::path::Path::new(file_name);
+        let hash = if let Ok(content) = std::fs::read(path) {
+            format!("{:x}", chksum_md5::hash(&content))
+        } else {
+            "unknown".to_string()
+        };
+        cache.insert(file_name.to_string(), hash.clone());
+        hash
+    });
+
+    deps.record(file_name, &hash);
+}
+
+/// Result of flattening with dependency information
+#[derive(Debug, Clone)]
+pub struct FlattenResult {
+    /// The flattened class definition
+    pub class: ir::ast::ClassDefinition,
+    /// File dependencies used during flattening
+    pub dependencies: FileDependencies,
+}
+
+/// Compute a content-based hash for a StoredDefinition.
+/// This uses the class names and their component/equation counts as a fingerprint.
+fn compute_def_hash(def: &ir::ast::StoredDefinition) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+
+    // Hash class names and basic structure
+    for (name, class) in &def.class_list {
+        name.hash(&mut hasher);
+        class.components.len().hash(&mut hasher);
+        class.equations.len().hash(&mut hasher);
+        class.classes.len().hash(&mut hasher);
+        class.extends.len().hash(&mut hasher);
+    }
+
+    hasher.finish()
+}
+
+/// Build inheritance dependency graph from class dictionary.
+/// Returns a map of class_name -> Vec<parent_class_names>
+fn build_dependency_graph(class_dict: &ClassDict) -> HashMap<String, Vec<String>> {
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (class_name, class_def) in class_dict.iter() {
+        let mut parents = Vec::new();
+        for extend in &class_def.extends {
+            let parent_name = extend.comp.to_string();
+            // Skip primitive types
+            if !is_primitive_type(&parent_name) {
+                // Try to resolve the parent name
+                if class_dict.contains_key(&parent_name) {
+                    parents.push(parent_name);
+                } else {
+                    // Try to find it with class context (simplified resolution)
+                    // Check if it's a sibling or nested class
+                    let parts: Vec<&str> = class_name.split('.').collect();
+                    for i in (0..parts.len()).rev() {
+                        let prefix = parts[..i].join(".");
+                        let candidate = if prefix.is_empty() {
+                            parent_name.clone()
+                        } else {
+                            format!("{}.{}", prefix, parent_name)
+                        };
+                        if class_dict.contains_key(&candidate) {
+                            parents.push(candidate);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        deps.insert(class_name.clone(), parents);
+    }
+
+    deps
+}
+
+/// Compute dependency levels for wavefront parallelism.
+/// Returns classes grouped by level (level 0 = no dependencies, level 1 = depends only on level 0, etc.)
+fn compute_dependency_levels(
+    class_dict: &ClassDict,
+    deps: &HashMap<String, Vec<String>>,
+) -> Vec<Vec<String>> {
+    let mut levels: Vec<Vec<String>> = Vec::new();
+    let mut assigned: HashMap<String, usize> = HashMap::new();
+
+    // Keep iterating until all classes are assigned a level
+    let mut remaining: IndexSet<String> = class_dict.keys().cloned().collect();
+
+    while !remaining.is_empty() {
+        let mut current_level = Vec::new();
+
+        for class_name in remaining.iter() {
+            let parents = deps.get(class_name).map(|v| v.as_slice()).unwrap_or(&[]);
+
+            // Check if all parents are already assigned
+            let all_parents_assigned = parents.iter().all(|p| {
+                // Parent is assigned OR parent is not in our class_dict (external dependency)
+                assigned.contains_key(p) || !class_dict.contains_key(p)
+            });
+
+            if all_parents_assigned {
+                current_level.push(class_name.clone());
+            }
+        }
+
+        // If no progress, break to avoid infinite loop (circular deps)
+        if current_level.is_empty() {
+            // Add remaining classes to final level
+            current_level = remaining.iter().cloned().collect();
+        }
+
+        // Assign level to current batch
+        let level_num = levels.len();
+        for class_name in &current_level {
+            assigned.insert(class_name.clone(), level_num);
+            remaining.swap_remove(class_name);
+        }
+
+        levels.push(current_level);
+    }
+
+    levels
+}
+
+/// Pre-warm the resolved class cache using parallel wavefront processing.
+///
+/// This resolves all classes in the StoredDefinition in dependency order,
+/// with each level processed in parallel. This is optimal for bulk compilation
+/// where many models will be flattened.
+///
+/// Returns the number of classes pre-warmed.
+pub fn prewarm_class_cache(def: &ir::ast::StoredDefinition) -> usize {
+    let def_hash = compute_def_hash(def);
+    let class_dict = get_or_build_class_dict(def, def_hash);
+
+    // Build dependency graph
+    let deps = build_dependency_graph(&class_dict);
+
+    // Compute levels for wavefront parallelism
+    let levels = compute_dependency_levels(&class_dict, &deps);
+
+    let mut total_prewarmed = 0;
+
+    // Process each level in parallel
+    for level in &levels {
+        level.par_iter().for_each(|class_name| {
+            if let Some(class_arc) = class_dict.get(class_name) {
+                // resolve_class will cache the result
+                let _ = resolve_class(class_arc, class_name, &class_dict, def_hash);
+            }
+        });
+        total_prewarmed += level.len();
+    }
+
+    total_prewarmed
+}
+
+/// Clear all caches (useful for benchmarking)
+pub fn clear_caches() {
+    CLASS_DICT_CACHE.write().clear();
+    RESOLVED_CLASS_CACHE.write().clear();
+}
+
+/// Get cache statistics for diagnostics
+pub fn get_cache_stats() -> (usize, usize) {
+    let class_dict_size = CLASS_DICT_CACHE.read().len();
+    let resolved_size = RESOLVED_CLASS_CACHE.read().len();
+    (class_dict_size, resolved_size)
+}
 
 /// Extract name=value pairs from extends clause modifications.
 ///
@@ -100,7 +367,7 @@ fn build_import_aliases(imports: &[Import]) -> IndexMap<String, String> {
 /// - "Modelica.Constants" -> true (it's a class)
 /// - "Modelica.Constants.pi" -> true (pi is a component in Constants class)
 /// - "Modelica.DoesNotExist" -> false
-fn path_exists_in_dict(path: &str, class_dict: &IndexMap<String, ClassDefinition>) -> bool {
+fn path_exists_in_dict(path: &str, class_dict: &ClassDict) -> bool {
     // First check if it's a class
     if class_dict.contains_key(path) {
         return true;
@@ -129,10 +396,7 @@ fn path_exists_in_dict(path: &str, class_dict: &IndexMap<String, ClassDefinition
 
 /// Validates that all imported classes exist in the class dictionary.
 /// Returns an error if any import refers to a non-existent class or component.
-fn validate_imports(
-    imports: &[Import],
-    class_dict: &IndexMap<String, ClassDefinition>,
-) -> Result<()> {
+fn validate_imports(imports: &[Import], class_dict: &ClassDict) -> Result<()> {
     for import in imports {
         match import {
             Import::Renamed { path, .. } | Import::Qualified { path, .. } => {
@@ -167,7 +431,7 @@ fn validate_imports(
 /// This collects imports from the class itself and all parent packages up to the root.
 fn build_import_aliases_for_class(
     class_path: &str,
-    class_dict: &IndexMap<String, ClassDefinition>,
+    class_dict: &ClassDict,
 ) -> IndexMap<String, String> {
     let mut all_aliases = IndexMap::new();
 
@@ -229,7 +493,7 @@ fn apply_import_aliases(name: &str, aliases: &IndexMap<String, String>) -> Strin
 fn resolve_class_name_with_imports(
     name: &str,
     current_class_path: &str,
-    class_dict: &IndexMap<String, ClassDefinition>,
+    class_dict: &ClassDict,
     import_aliases: &IndexMap<String, String>,
 ) -> Option<String> {
     // 0. Apply import aliases first
@@ -326,22 +590,47 @@ impl MutVisitor for ScopeRenamer<'_> {
 /// * `class` - The class definition to resolve
 /// * `current_class_path` - The fully qualified path of the current class (for scope lookup)
 /// * `class_dict` - Dictionary of all available classes
+/// * `def_hash` - Content hash of StoredDefinition for cache key stability
 fn resolve_class(
     class: &ir::ast::ClassDefinition,
     current_class_path: &str,
-    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
-) -> Result<ir::ast::ClassDefinition> {
+    class_dict: &ClassDict,
+    def_hash: u64,
+) -> Result<Arc<ir::ast::ClassDefinition>> {
+    // Check cache first
+    let cache_key = (def_hash, current_class_path.to_string());
+    if let Some((resolved, _deps)) = RESOLVED_CLASS_CACHE.read().get(&cache_key) {
+        return Ok(Arc::clone(resolved));
+    }
+
     // Use the internal function with empty visited set for cycle detection
+    // Dependencies are tracked recursively in resolve_class_internal
     let mut visited = IndexSet::new();
-    resolve_class_internal(class, current_class_path, class_dict, &mut visited)
+    let mut deps = FileDependencies::new();
+    let resolved = resolve_class_internal(
+        class,
+        current_class_path,
+        class_dict,
+        &mut visited,
+        &mut deps,
+    )?;
+
+    // Wrap in Arc and cache with dependencies
+    let resolved_arc = Arc::new(resolved);
+    RESOLVED_CLASS_CACHE
+        .write()
+        .insert(cache_key, (Arc::clone(&resolved_arc), deps));
+
+    Ok(resolved_arc)
 }
 
-/// Internal implementation of resolve_class with cycle detection.
+/// Internal implementation of resolve_class with cycle detection and dependency tracking.
 fn resolve_class_internal(
     class: &ir::ast::ClassDefinition,
     current_class_path: &str,
-    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
+    class_dict: &ClassDict,
     visited: &mut IndexSet<String>,
+    deps: &mut FileDependencies,
 ) -> Result<ir::ast::ClassDefinition> {
     // Check for cycles
     if visited.contains(current_class_path) {
@@ -350,10 +639,36 @@ fn resolve_class_internal(
     }
     visited.insert(current_class_path.to_string());
 
+    // Record this class's file as a dependency
+    record_file_dep(deps, &class.location.file_name);
+
     let mut resolved = class.clone();
 
     // Build import aliases for this class
     let import_aliases = build_import_aliases_for_class(current_class_path, class_dict);
+
+    // Record dependencies from imports
+    // Each imported class/package contributes a file dependency
+    for import in &class.imports {
+        let targets = match import {
+            Import::Renamed { path, .. } | Import::Qualified { path, .. } => {
+                vec![path.to_string()]
+            }
+            Import::Selective { path, names, .. } => names
+                .iter()
+                .map(|n| format!("{}.{}", path, n.text))
+                .collect(),
+            Import::Unqualified { path, .. } => {
+                vec![path.to_string()]
+            }
+        };
+
+        for target in targets {
+            if let Some(imported_class) = class_dict.get(&target) {
+                record_file_dep(deps, &imported_class.location.file_name);
+            }
+        }
+    }
 
     // Process all extends clauses
     for extend in &class.extends {
@@ -387,8 +702,9 @@ fn resolve_class_internal(
         };
 
         // Recursively resolve the parent class first (using resolved name as new context)
+        // This also collects dependencies from parent classes
         let resolved_parent =
-            resolve_class_internal(parent_class, &resolved_name, class_dict, visited)?;
+            resolve_class_internal(parent_class, &resolved_name, class_dict, visited, deps)?;
 
         // Extract modifications from the extends clause (e.g., extends Foo(L=1e-3))
         let extends_mods = extract_extends_modifications(&extend.modifications);
@@ -458,7 +774,7 @@ fn resolve_class_internal(
 fn apply_type_causality(
     class: &mut ir::ast::ClassDefinition,
     current_class_path: &str,
-    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
+    class_dict: &ClassDict,
 ) {
     use crate::ir::ast::Causality;
 
@@ -679,7 +995,7 @@ fn extract_connect_equations_recursive(
 /// 3. For flow variables, generates a single sum=0 equation per connection set
 fn expand_connect_equations(
     fclass: &mut ir::ast::ClassDefinition,
-    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
+    class_dict: &ClassDict,
     pin_types: &IndexMap<String, String>,
 ) -> Result<()> {
     // Use Union-Find to group connected pins
@@ -911,7 +1227,7 @@ struct ExpansionContext<'a> {
     /// The flattened class being built
     fclass: &'a mut ir::ast::ClassDefinition,
     /// Dictionary of all available classes
-    class_dict: &'a IndexMap<String, ir::ast::ClassDefinition>,
+    class_dict: &'a ClassDict,
     /// Symbol table for scope tracking
     symbol_table: &'a SymbolTable,
     /// Maps flattened pin names to their connector types
@@ -920,13 +1236,18 @@ struct ExpansionContext<'a> {
     inner_map: InnerMap,
     /// Tracks outer->inner mappings for equation rewriting
     outer_renamer: OuterRenamer,
+    /// Content hash of StoredDefinition for cache key stability
+    def_hash: u64,
+    /// Collected file dependencies from all resolved classes
+    deps: FileDependencies,
 }
 
 impl<'a> ExpansionContext<'a> {
     fn new(
         fclass: &'a mut ir::ast::ClassDefinition,
-        class_dict: &'a IndexMap<String, ir::ast::ClassDefinition>,
+        class_dict: &'a ClassDict,
         symbol_table: &'a SymbolTable,
+        def_hash: u64,
     ) -> Self {
         Self {
             fclass,
@@ -935,6 +1256,18 @@ impl<'a> ExpansionContext<'a> {
             pin_types: IndexMap::new(),
             inner_map: IndexMap::new(),
             outer_renamer: OuterRenamer::default(),
+            def_hash,
+            deps: FileDependencies::new(),
+        }
+    }
+
+    /// Merge dependencies from a resolved class into our collected dependencies
+    fn merge_class_deps(&mut self, class_path: &str) {
+        let cache_key = (self.def_hash, class_path.to_string());
+        if let Some((_, class_deps)) = RESOLVED_CLASS_CACHE.read().get(&cache_key) {
+            for (file, hash) in &class_deps.files {
+                self.deps.record(file, hash);
+            }
         }
     }
 
@@ -991,7 +1324,15 @@ impl<'a> ExpansionContext<'a> {
         };
 
         // Resolve the component class (handle its extends clauses)
-        let comp_class = resolve_class(comp_class_raw, &resolved_type_name, self.class_dict)?;
+        let comp_class = resolve_class(
+            comp_class_raw,
+            &resolved_type_name,
+            self.class_dict,
+            self.def_hash,
+        )?;
+
+        // Collect dependencies from this resolved class
+        self.merge_class_deps(&resolved_type_name);
 
         // Record the connector type for this component BEFORE checking if it has sub-components.
         // This is critical for connectors like Pin that have only primitive types (Real v, Real i).
@@ -1220,23 +1561,39 @@ impl<'a> ExpansionContext<'a> {
 //
 // This function traverses the class hierarchy and adds all classes
 // to the dictionary with their fully qualified names (e.g., "Package.SubPackage.Model").
-fn build_class_dict(
-    class: &ir::ast::ClassDefinition,
-    prefix: &str,
-    dict: &mut IndexMap<String, ir::ast::ClassDefinition>,
-) {
+fn build_class_dict_internal(class: &ir::ast::ClassDefinition, prefix: &str, dict: &mut ClassDict) {
     // Add the class itself with its full path
     let full_name = if prefix.is_empty() {
         class.name.text.clone()
     } else {
         format!("{}.{}", prefix, class.name.text)
     };
-    dict.insert(full_name.clone(), class.clone());
+    dict.insert(full_name.clone(), Arc::new(class.clone()));
 
     // Recursively add nested classes
     for (_name, nested_class) in &class.classes {
-        build_class_dict(nested_class, &full_name, dict);
+        build_class_dict_internal(nested_class, &full_name, dict);
     }
+}
+
+/// Builds or retrieves a cached class dictionary for the given StoredDefinition.
+fn get_or_build_class_dict(def: &ir::ast::StoredDefinition, def_hash: u64) -> Arc<ClassDict> {
+    // Try to get from cache first (read lock)
+    if let Some(dict) = CLASS_DICT_CACHE.read().get(&def_hash) {
+        return Arc::clone(dict);
+    }
+
+    // Build the dictionary
+    let mut dict = ClassDict::new();
+    for (_name, class) in &def.class_list {
+        build_class_dict_internal(class, "", &mut dict);
+    }
+    let dict = Arc::new(dict);
+
+    // Store in cache
+    CLASS_DICT_CACHE.write().insert(def_hash, Arc::clone(&dict));
+
+    dict
 }
 
 // Internal helper: Looks up a class by path in the stored definition.
@@ -1244,12 +1601,12 @@ fn build_class_dict(
 // Supports both simple names (e.g., "Model") and dotted paths (e.g., "Package.Model").
 fn lookup_class(
     def: &ir::ast::StoredDefinition,
-    class_dict: &IndexMap<String, ir::ast::ClassDefinition>,
+    class_dict: &ClassDict,
     path: &str,
-) -> Option<ir::ast::ClassDefinition> {
+) -> Option<Arc<ir::ast::ClassDefinition>> {
     // First try a direct lookup in the class dictionary
     if let Some(class) = class_dict.get(path) {
-        return Some(class.clone());
+        return Some(Arc::clone(class));
     }
 
     // Try to navigate the path manually for backwards compatibility
@@ -1261,7 +1618,7 @@ fn lookup_class(
     // Start from the root class
     let root = def.class_list.get(parts[0])?;
     if parts.len() == 1 {
-        return Some(root.clone());
+        return Some(Arc::new(root.clone()));
     }
 
     // Navigate through nested classes
@@ -1269,18 +1626,31 @@ fn lookup_class(
     for part in &parts[1..] {
         current = current.classes.get(*part)?;
     }
-    Some(current.clone())
+    Some(Arc::new(current.clone()))
 }
 
+/// Flatten a model and return the flattened class definition.
 pub fn flatten(
     def: &ir::ast::StoredDefinition,
     model_name: Option<&str>,
 ) -> Result<ir::ast::ClassDefinition> {
-    // Build class dictionary from all class definitions (including nested classes)
-    let mut class_dict = IndexMap::new();
-    for (_class_name, class) in &def.class_list {
-        build_class_dict(class, "", &mut class_dict);
-    }
+    let result = flatten_with_deps(def, model_name)?;
+    Ok(result.class)
+}
+
+/// Flatten a model and return both the flattened class and its file dependencies.
+///
+/// The dependencies can be used for disk caching - if any dependency file has changed
+/// (based on MD5 hash), the cached result is invalid.
+pub fn flatten_with_deps(
+    def: &ir::ast::StoredDefinition,
+    model_name: Option<&str>,
+) -> Result<FlattenResult> {
+    // Compute content hash for cache key stability
+    let def_hash = compute_def_hash(def);
+
+    // Get or build cached class dictionary
+    let class_dict = get_or_build_class_dict(def, def_hash);
 
     // Determine main class name - model name is required
     let main_class_name = model_name.ok_or(IrError::ModelNameRequired)?.to_string();
@@ -1290,19 +1660,29 @@ pub fn flatten(
         lookup_class(def, &class_dict, &main_class_name).ok_or(IrError::MainClassNotFound)?;
 
     // Resolve the main class (process extends clauses recursively)
-    let resolved_main = resolve_class(&main_class, &main_class_name, &class_dict)?;
+    // This also collects dependencies from all classes involved
+    let resolved_main = resolve_class(&main_class, &main_class_name, &class_dict, def_hash)?;
+
+    // Get the dependencies from the resolved class cache
+    let cache_key = (def_hash, main_class_name.clone());
+    let mut deps = RESOLVED_CLASS_CACHE
+        .read()
+        .get(&cache_key)
+        .map(|(_, deps)| deps.clone())
+        .unwrap_or_default();
 
     // Validate all imports in the resolved class before proceeding
     validate_imports(&resolved_main.imports, &class_dict)?;
 
     // Create the flat class starting from resolved main
-    let mut fclass = resolved_main.clone();
+    // Clone the inner value from Arc since we need a mutable copy for flattening
+    let mut fclass = (*resolved_main).clone();
 
     // Create symbol table for tracking variable scopes
     let symbol_table = SymbolTable::new();
 
     // Create expansion context
-    let mut ctx = ExpansionContext::new(&mut fclass, &class_dict, &symbol_table);
+    let mut ctx = ExpansionContext::new(&mut fclass, &class_dict, &symbol_table, def_hash);
 
     // Register top-level inner components before expansion
     ctx.register_inner_components(&resolved_main.components);
@@ -1320,6 +1700,8 @@ pub fn flatten(
         .collect();
 
     // Recursively expand each component that references a class (with inner/outer support)
+    // Note: component expansion may use additional classes, but those dependencies
+    // are already captured in resolve_class calls during expansion
     for (comp_name, comp) in &components_to_expand {
         ctx.expand_component(comp_name, comp, &main_class_name)?;
     }
@@ -1327,11 +1709,19 @@ pub fn flatten(
     // Rewrite equations to redirect outer references to inner components
     ctx.apply_outer_renaming();
 
-    // Extract pin_types for connect equation expansion
+    // Extract pin_types and merge component dependencies
     let pin_types = ctx.pin_types;
+
+    // Merge dependencies from component expansion into main deps
+    for (file, hash) in ctx.deps.files {
+        deps.record(&file, &hash);
+    }
 
     // Expand connect equations into simple equations
     expand_connect_equations(&mut fclass, &class_dict, &pin_types)?;
 
-    Ok(fclass)
+    Ok(FlattenResult {
+        class: fclass,
+        dependencies: deps,
+    })
 }

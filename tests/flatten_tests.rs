@@ -327,3 +327,114 @@ end TestModel;
         }
     }
 }
+
+#[test]
+fn test_flatten_with_deps_tracks_dependencies() {
+    use rumoca::ir::transform::flatten::flatten_with_deps;
+
+    // Test with a simple model - should return empty dependencies for inline test code
+    let source = r#"
+model Simple
+  Real x;
+equation
+  der(x) = 1;
+end Simple;
+"#;
+
+    use common::parse_source;
+
+    let def = parse_source(source).expect("Parse failed");
+    let result = flatten_with_deps(&def, Some("Simple")).expect("Flatten failed");
+
+    // For inline test code with file_name "<test>", we expect no file dependencies
+    // because test code doesn't come from a file on disk
+    assert!(
+        result.dependencies.files.is_empty(),
+        "Inline test code should have no file dependencies, got: {:?}",
+        result.dependencies.files
+    );
+
+    // Verify the class was flattened correctly
+    assert!(
+        result.class.components.contains_key("x"),
+        "Should have component x"
+    );
+    assert!(!result.class.equations.is_empty(), "Should have equations");
+}
+
+#[test]
+fn test_flatten_with_deps_model_with_inheritance() {
+    use rumoca::ir::transform::flatten::flatten_with_deps;
+
+    // Test with a model that has inheritance
+    let source = r#"
+class Base
+  Real x;
+equation
+  der(x) = 1;
+end Base;
+
+model Derived
+  extends Base;
+  Real y;
+equation
+  y = x * 2;
+end Derived;
+"#;
+
+    use common::parse_source;
+
+    let def = parse_source(source).expect("Parse failed");
+    let result = flatten_with_deps(&def, Some("Derived")).expect("Flatten failed");
+
+    // For inline test code, no file dependencies expected
+    assert!(
+        result.dependencies.files.is_empty(),
+        "Inline test code should have no file dependencies"
+    );
+
+    // Verify inheritance was resolved correctly
+    assert!(
+        result.class.components.contains_key("x"),
+        "Should have inherited component x"
+    );
+    assert!(
+        result.class.components.contains_key("y"),
+        "Should have component y"
+    );
+}
+
+#[test]
+fn test_flatten_with_deps_tracks_file_dependencies() {
+    use rumoca::ir::transform::flatten::flatten_with_deps;
+
+    // Parse a real file and verify dependencies are tracked
+    let def = parse_test_file("integrator").expect("Parse failed");
+    let result = flatten_with_deps(&def, Some("Integrator")).expect("Flatten failed");
+
+    // For file-based code, we expect at least one file dependency
+    // (the integrator.mo file itself)
+    assert!(
+        !result.dependencies.files.is_empty(),
+        "File-based code should have file dependencies"
+    );
+
+    // Check that the dependency file path is valid
+    for (file_path, hash) in &result.dependencies.files {
+        assert!(!file_path.is_empty(), "File path should not be empty");
+        assert!(!hash.is_empty(), "Hash should not be empty");
+        // The file should contain the expected filename or exist
+        // (relative paths may not pass exists() check depending on cwd)
+        assert!(
+            file_path.contains("integrator") || std::path::Path::new(file_path).exists(),
+            "Dependency file should contain integrator or exist: {}",
+            file_path
+        );
+    }
+
+    println!(
+        "Tracked {} file dependencies: {:?}",
+        result.dependencies.files.len(),
+        result.dependencies.files.keys().collect::<Vec<_>>()
+    );
+}

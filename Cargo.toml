@@ -48,7 +48,11 @@ pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 
 # Parallel parsing
 rayon = "1.10"
+parking_lot = "0.12"
 num_cpus = "1.16"
+
+# Fast memory allocator (global)
+mimalloc = { version = "0.1", default-features = false }
 
 # AST caching
 bincode = "1.3"

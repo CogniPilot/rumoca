@@ -463,6 +463,7 @@ impl Compiler {
         }
 
         // Parse additional files in parallel (with caching)
+        // Returns (path, definition, file_hash) for each file
         let additional_paths: Vec<_> = self.additional_files.iter().collect();
         let use_cache = self.use_cache;
         let parsed_additional: Result<Vec<_>> = pool.install(|| {
@@ -471,14 +472,17 @@ impl Compiler {
                 .map(|additional_path| {
                     let path_str = additional_path.to_string_lossy().to_string();
 
+                    // Compute hash for this file (used for both AST cache and flat cache key)
+                    let file_hash = cache::compute_file_hash(additional_path)
+                        .unwrap_or_else(|_| "unknown".to_string());
+
                     // Try cache first
                     if use_cache {
-                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
-                            if let Some(cached_def) = cache::load_cached_ast(additional_path, &hash)
-                            {
-                                cache_hits.fetch_add(1, Ordering::Relaxed);
-                                return Ok((path_str, cached_def));
-                            }
+                        if let Some(cached_def) =
+                            cache::load_cached_ast(additional_path, &file_hash)
+                        {
+                            cache_hits.fetch_add(1, Ordering::Relaxed);
+                            return Ok((path_str, cached_def, file_hash));
                         }
                     }
 
@@ -490,17 +494,15 @@ impl Compiler {
 
                     // Store in cache
                     if use_cache {
-                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
-                            let _ = cache::store_cached_ast(additional_path, &hash, &def);
-                        }
+                        let _ = cache::store_cached_ast(additional_path, &file_hash, &def);
                     }
 
-                    Ok((path_str, def))
+                    Ok((path_str, def, file_hash))
                 })
                 .collect()
         });
 
-        let mut all_definitions = parsed_additional?;
+        let additional_results = parsed_additional?;
 
         if self.verbose {
             println!(
@@ -513,12 +515,23 @@ impl Compiler {
         // Parse main file (not cached - it's the user's code that changes frequently)
         let input =
             fs::read_to_string(path).with_context(|| format!("Failed to read file: {}", path))?;
+        let main_hash = format!("{:x}", chksum_md5::hash(&input));
 
         let main_def = self.parse_source(&input, path)?;
+
+        // Collect all definitions and hashes
+        let mut all_definitions: Vec<(String, StoredDefinition)> = additional_results
+            .iter()
+            .map(|(p, d, _)| (p.clone(), d.clone()))
+            .collect();
         all_definitions.push((path.to_string(), main_def));
 
-        // Compile with all definitions
-        self.compile_definitions(all_definitions, &input, path)
+        let mut all_hashes: Vec<String> =
+            additional_results.into_iter().map(|(_, _, h)| h).collect();
+        all_hashes.push(main_hash);
+
+        // Compile with all definitions and hashes for flat class caching
+        self.compile_definitions_with_hashes(all_definitions, &input, path, Some(all_hashes))
     }
 
     /// Compiles multiple Modelica files together.
@@ -611,6 +624,17 @@ impl Compiler {
         main_source: &str,
         _main_file_name: &str,
     ) -> Result<CompilationResult> {
+        self.compile_definitions_with_hashes(definitions, main_source, _main_file_name, None)
+    }
+
+    /// Compile from pre-parsed definitions with optional source hashes for flat class caching
+    fn compile_definitions_with_hashes(
+        &self,
+        definitions: Vec<(String, StoredDefinition)>,
+        main_source: &str,
+        _main_file_name: &str,
+        _source_hashes: Option<Vec<String>>,
+    ) -> Result<CompilationResult> {
         use crate::ir::transform::multi_file::merge_stored_definitions;
 
         let start = Instant::now();
@@ -634,8 +658,8 @@ impl Compiler {
         }
 
         // Run the compilation pipeline
-        pipeline::compile_from_ast(
-            def,
+        pipeline::compile_from_ast_ref(
+            &def,
             main_source,
             self.model_name.as_deref(),
             model_hash,
