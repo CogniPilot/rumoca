@@ -8,6 +8,8 @@
 [![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
 [![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
 
+**[Try Rumoca in your browser!](https://cognipilot.github.io/rumoca/)** - No installation required.
+
 A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports to the [DAE IR Format](https://github.com/CogniPilot/modelica_ir) (supporting both implicit and explicit model serialization), or via user-customizable templates using [MiniJinja](https://github.com/mitsuhiko/minijinja). The DAE IR format is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, and other backends.
 
 > **Note:** Rumoca is in early development. While already usable for many practical tasks, you may encounter issues. Please [file bug reports](https://github.com/cognipilot/rumoca/issues) to help improve the compiler.
