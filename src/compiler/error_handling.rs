@@ -3,6 +3,9 @@
 //! This module provides utilities for converting parser errors into
 //! user-friendly diagnostics with accurate source locations.
 
+// False positive from miette derive macro on some nightly versions
+#![allow(unused_assignments)]
+
 use miette::{Diagnostic, SourceSpan};
 use owo_colors::OwoColorize;
 use parol_runtime::{ParolError, ParserError};
@@ -22,6 +25,7 @@ use thiserror::Error;
          declared = "declared".green())
 )]
 #[allow(dead_code)] // Defined for future semantic analysis
+#[allow(unused_assignments)] // False positive from miette derive macro
 pub struct UndefinedVariableError {
     /// The source code being compiled
     #[source_code]
@@ -42,6 +46,7 @@ pub struct UndefinedVariableError {
     code(rumoca::syntax_error),
     help("Check the {syntax} near the highlighted location", syntax = "Modelica syntax".cyan())
 )]
+#[allow(unused_assignments)] // False positive from miette derive macro
 pub struct SyntaxError {
     /// The source code being compiled
     #[source_code]
