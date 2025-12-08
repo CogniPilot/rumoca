@@ -236,7 +236,7 @@ jobs:
 
       - name: Prepare GitHub Pages content
         run: |
-          mkdir -p gh-pages/pkg gh-pages/assets
+          mkdir -p gh-pages/pkg
 
           # Copy WASM package files
           cp pkg/rumoca.js gh-pages/pkg/
@@ -245,16 +245,17 @@ jobs:
           cp pkg/index.js gh-pages/pkg/ 2>/dev/null || true
           cp -r pkg/snippets gh-pages/pkg/ 2>/dev/null || true
 
-          # Copy logo
-          cp editors/icons/rumoca.png gh-pages/assets/
+          # Fix wasm-bindgen-rayon's workerHelpers.js to use explicit import path
+          # (browsers can't import directories like Node.js can)
+          find gh-pages/pkg/snippets -name "workerHelpers.js" -exec \
+            sed -i "s|import('../../..')|import('../../../rumoca.js')|g" {} \;
 
-          # Download coi-serviceworker for SharedArrayBuffer support on GitHub Pages
-          curl -sL https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js \
-            -o gh-pages/coi-serviceworker.js
+          # Copy static assets from wasm_editor
+          cp examples/wasm_editor/rumoca.png gh-pages/
+          cp examples/wasm_editor/coi-serviceworker.js gh-pages/
 
-          # Copy and modify HTML for GitHub Pages paths
-          sed -e 's|\.\./\.\./pkg/|./pkg/|g' \
-              -e 's|\.\./\.\./editors/icons/rumoca\.png|./assets/rumoca.png|g' \
+          # Copy and modify HTML for GitHub Pages paths (only pkg path needs updating)
+          sed 's|\.\./\.\./pkg/|./pkg/|g' \
               examples/wasm_editor/index.html > gh-pages/index.html
 
           echo "=== GitHub Pages content ==="
