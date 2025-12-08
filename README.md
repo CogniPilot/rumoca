@@ -250,6 +250,64 @@ The extension includes a bundled `rumoca-lsp` language server - **no additional 
 
 Alternatively, set the `MODELICAPATH` environment variable. See the [extension documentation](editors/vscode/README.md) for details.
 
+## WebAssembly (Browser)
+
+Rumoca compiles to WebAssembly, enabling browser-based Modelica compilation without a backend server.
+
+**Features:**
+- Parse and compile Modelica models in the browser
+- DAE IR (JSON) generation
+- Template rendering with MiniJinja
+- Multi-threaded compilation using Web Workers
+
+**Try the Demo:**
+
+```bash
+./scripts/wasm-test.sh
+# Open http://localhost:8080/examples/wasm_test.html
+```
+
+The demo provides a Monaco-based editor with:
+- Split-pane Modelica and Jinja2 template editing
+- Real-time template preview
+- DAE IR JSON export
+- Autocomplete for template variables (`dae.x`, `dae.u`, etc.)
+
+**Building WASM:**
+
+```bash
+# Install wasm-pack
+cargo install wasm-pack
+
+# Build WASM package (outputs to pkg/)
+wasm-pack build --target web --release
+```
+
+**Using in JavaScript:**
+
+```javascript
+import init, { compile, render_template } from './pkg/rumoca.js';
+
+await init();
+
+const modelica = `
+  model Test
+    Real x(start=0);
+  equation
+    der(x) = 1;
+  end Test;
+`;
+
+// Compile to DAE IR JSON
+const result = compile(modelica, "Test");
+console.log(result);
+
+// Render custom template
+const template = "Model: {{ dae.model_name }}";
+const output = render_template(modelica, "Test", template);
+console.log(output);
+```
+
 ## Integration with Cyecca
 
 ```bash

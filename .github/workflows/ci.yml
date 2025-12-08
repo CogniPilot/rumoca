@@ -144,7 +144,7 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           pip install maturin pytest
-          cd python
+          cd bindings/python
           maturin develop --release
 
       - name: Test import and native bindings
@@ -156,7 +156,7 @@ jobs:
       - name: Run Python tests
         run: |
           source .venv/bin/activate
-          cd python
+          cd bindings/python
           python -m pytest tests/ -v
 
   # ============================================================================
