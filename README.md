@@ -200,8 +200,8 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 Rumoca supports [MiniJinja](https://docs.rs/minijinja/) templates for custom code generation:
 
 ```bash
-rumoca model.mo -m MyModel --template-file templates/examples/casadi.jinja > model.py
-rumoca model.mo -m MyModel --template-file templates/examples/sympy.jinja > model.py
+rumoca model.mo -m MyModel --template-file examples/templates/casadi.jinja > model.py
+rumoca model.mo -m MyModel --template-file examples/templates/sympy.jinja > model.py
 ```
 
 Example template:
@@ -213,7 +213,7 @@ Example template:
 {% endfor %}
 ```
 
-See [`templates/examples/`](templates/examples/) for complete examples (CasADi, SymPy, Base Modelica).
+See [`examples/templates/`](examples/templates/) for complete examples (CasADi, SymPy, Base Modelica).
 
 ## VSCode Extension
 

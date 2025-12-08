@@ -63,7 +63,7 @@ These templates demonstrate the template system for custom code generation:
 
 ```bash
 # Export using a template
-rumoca model.mo --template-file templates/examples/casadi.jinja > model_casadi.py
+rumoca model.mo --template-file examples/templates/casadi.jinja > model_casadi.py
 
 # Export using native JSON (recommended)
 rumoca model.mo --json > model.json
