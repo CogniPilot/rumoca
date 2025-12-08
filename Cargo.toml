@@ -117,6 +117,14 @@ name = "rumoca-lint"
 path = "src/bin/rumoca_lint.rs"
 required-features = ["cli"]
 
+[[example]]
+name = "basic_usage"
+path = "examples/rust/basic_usage.rs"
+
+[[example]]
+name = "file_compilation"
+path = "examples/rust/file_compilation.rs"
+
 [dev-dependencies]
 rand = "0.8"
 tempfile = "3.23.0"

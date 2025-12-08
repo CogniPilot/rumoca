@@ -266,7 +266,7 @@ Rumoca compiles to WebAssembly, enabling browser-based Modelica compilation with
 
 ```bash
 ./tools/wasm-test.sh
-# Open http://localhost:8080/examples/wasm_test.html
+# Open http://localhost:8080/examples/wasm_editor/index.html
 ```
 
 The demo provides a Monaco-based editor with:
