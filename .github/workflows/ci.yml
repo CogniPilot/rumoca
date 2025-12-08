@@ -195,16 +195,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust nightly with rust-src
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustup target add wasm32-unknown-unknown
+          rustup component add rust-src
 
-      - name: Add WASM target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -216,7 +215,21 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build WASM package
-        run: wasm-pack build --target web --release
+        run: |
+          # Build with only WASM features (excludes cli, lsp-server, cache, mimalloc)
+          cargo build --lib --release \
+            --target wasm32-unknown-unknown \
+            --no-default-features --features wasm
+
+          # Generate JS bindings
+          mkdir -p pkg
+          wasm-bindgen \
+            --target web \
+            --out-dir pkg \
+            --out-name rumoca \
+            target/wasm32-unknown-unknown/release/rumoca.wasm
+
+          ls -lh pkg/
 
       - name: Prepare GitHub Pages content
         run: |
@@ -225,7 +238,8 @@ jobs:
           # Copy WASM package files
           cp pkg/rumoca.js gh-pages/pkg/
           cp pkg/rumoca_bg.wasm gh-pages/pkg/
-          cp pkg/rumoca_worker.js gh-pages/pkg/
+          cp pkg/rumoca_worker.js gh-pages/pkg/ 2>/dev/null || true
+          cp pkg/index.js gh-pages/pkg/ 2>/dev/null || true
           cp -r pkg/snippets gh-pages/pkg/ 2>/dev/null || true
 
           # Copy logo
