@@ -110,9 +110,9 @@ if [[ -z "$DRY_RUN" ]]; then
 fi
 
 # Update pyproject.toml
-step "Updating python/pyproject.toml..."
+step "Updating bindings/python/pyproject.toml..."
 if [[ -z "$DRY_RUN" ]]; then
-    sed -i "s/^version = \"$PYTHON_VERSION\"/version = \"$VERSION\"/" python/pyproject.toml
+    sed -i "s/^version = \"$PYTHON_VERSION\"/version = \"$VERSION\"/" bindings/python/pyproject.toml
 fi
 
 # Update package.json
@@ -138,7 +138,7 @@ fi
 # Commit
 step "Committing version bump..."
 if [[ -z "$DRY_RUN" ]]; then
-    git add Cargo.toml Cargo.lock python/pyproject.toml editors/vscode/package.json
+    git add Cargo.toml Cargo.lock bindings/python/pyproject.toml editors/vscode/package.json
     git commit -m "Release v$VERSION"
 fi
 
