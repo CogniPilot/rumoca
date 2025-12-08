@@ -1,6 +1,6 @@
 # Rumoca
 
-<img src="editors/vscode/icon.png" alt="Rumoca Logo" width="128" align="right">
+<img src="editors/icons/rumoca.png" alt="Rumoca Logo" width="128" align="right">
 
 [![CI](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/cognipilot/rumoca/actions)
 [![Crates.io](https://img.shields.io/crates/v/rumoca)](https://crates.io/crates/rumoca)
