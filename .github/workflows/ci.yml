@@ -413,7 +413,7 @@ jobs:
       - name: Build wheels
         shell: bash
         run: |
-          cd python
+          cd bindings/python
           if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
             maturin build --release --out dist
           else
@@ -424,7 +424,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.name }}
-          path: python/dist
+          path: bindings/python/dist
 
   build-python-sdist:
     name: Build Python sdist
@@ -448,14 +448,14 @@ jobs:
 
       - name: Build sdist
         run: |
-          cd python
+          cd bindings/python
           maturin sdist --out dist
 
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
-          path: python/dist
+          path: bindings/python/dist
 
   build-vscode-extension:
     name: Build VS Code Extension (${{ matrix.target }})
