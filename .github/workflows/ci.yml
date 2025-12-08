@@ -245,6 +245,10 @@ jobs:
           # Copy logo
           cp editors/icons/rumoca.png gh-pages/assets/
 
+          # Download coi-serviceworker for SharedArrayBuffer support on GitHub Pages
+          curl -sL https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js \
+            -o gh-pages/coi-serviceworker.js
+
           # Copy and modify HTML for GitHub Pages paths
           sed -e 's|\.\./pkg/|./pkg/|g' \
               -e 's|\.\./editors/icons/rumoca\.png|./assets/rumoca.png|g' \
