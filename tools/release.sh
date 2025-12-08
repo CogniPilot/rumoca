@@ -87,7 +87,7 @@ fi
 
 # Get current versions
 CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-PYTHON_VERSION=$(grep -E '^version = ' python/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+PYTHON_VERSION=$(grep -E '^version = ' bindings/python/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 VSCODE_VERSION=$(grep -E '"version"' editors/vscode/package.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')
 
 info "Current versions:"
