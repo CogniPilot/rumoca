@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.22] - 2025-12-08
+
+### Changed
+- Moved templates from `templates/examples/` to `examples/templates/` for better project organization
+- Reorganized examples directory structure:
+  - `examples/rust/` - Rust usage examples
+  - `examples/templates/` - Jinja templates (CasADi, SymPy, Base Modelica)
+  - `examples/wasm_editor/` - Browser-based WASM demo
+
+### Fixed
+- Fixed Python bindings CI paths after move to `bindings/python/`
+
+## [0.7.21] - 2025-12-07
+
+### Added
+- **WebAssembly (WASM) Support**
+  - Compile Modelica models directly in the browser
+  - Multi-threaded compilation using Web Workers and `wasm-bindgen-rayon`
+  - Full LSP features available in WASM (diagnostics, hover, completion)
+  - Template rendering with MiniJinja in browser
+  - Live demo at [cognipilot.github.io/rumoca](https://cognipilot.github.io/rumoca/)
+- **WASM Editor Demo**
+  - Monaco-based editor with split-pane Modelica and Jinja2 editing
+  - Real-time template preview
+  - DAE IR JSON export
+  - Autocomplete for template variables (`dae.x`, `dae.u`, etc.)
+- GitHub Pages deployment for WASM demo in CI
+
+### Changed
+- Upgraded to Parol 4.2.1
+- Reorganized project scripts to `tools/` directory
+
+## [0.7.20] - 2025-12-06
+
+### Added
+- **Flattened model caching** - DAE compilation results cached to `~/.cache/rumoca/dae/`
+- Cache works like `ccache` - invalidated when source files or compiler version change
+
+### Changed
+- **Significant performance improvements**
+  - Optimized parsing and flattening pipeline
+  - Balance check warm cache: 263,242 models/sec (vs 73.5 cold)
+- Improved documentation on caching behavior
+
+## [0.7.19] - 2025-12-05
+
+### Fixed
+- Formatter losing type modifications and assignment issues
+- Various formatter edge cases
+
+## [0.7.18] - 2025-12-05
+
+### Added
+- LSP caching for faster responses
+- Collapsable annotations in LSP
+
+### Changed
+- Improved MSL (Modelica Standard Library) support
+
+## [0.7.17] - 2025-12-04
+
+### Added
+- Import autocomplete in LSP
+
+## [0.7.16] - 2025-12-04
+
+### Added
+- Array comprehension support
+- `each` modifier support
+- `-L` command line option for library paths
+- VS Code extension setting for Modelica library paths
+
+### Changed
+- Improved MSL compatibility
+
+## [0.7.15] - 2025-12-03
+
+### Added
+- MSL (Modelica Standard Library) test suite
+- Demo GIF in documentation
+
+### Changed
+- Improved MSL compatibility
+- Added timing information to compilation output
+
 ## [0.7.14] - 2025-12-03
 
 ### Added
