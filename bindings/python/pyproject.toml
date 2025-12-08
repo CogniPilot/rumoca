@@ -38,7 +38,7 @@ cyecca = ["cyecca"]
 
 [tool.maturin]
 # Path to Cargo.toml relative to this pyproject.toml
-manifest-path = "../Cargo.toml"
+manifest-path = "../../Cargo.toml"
 # Build with the python feature enabled
 features = ["python"]
 # Python source directory (for mixed Rust/Python packages)

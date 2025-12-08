@@ -11,6 +11,17 @@
 //! The `ScopeResolver` provides single-file scope resolution. For multi-file
 //! workspace resolution, use it with an optional `SymbolLookup` implementation
 //! that provides cross-file symbol lookup.
+//!
+//! ## Canonical Functions
+//!
+//! This module provides the canonical implementations for class/symbol lookup
+//! that should be reused across the codebase (compiler, LSP, etc.):
+//!
+//! - [`find_class_in_ast`]: Find a class by qualified name in an AST
+//! - [`resolve_type_candidates`]: Generate possible qualified names walking up package hierarchy
+//! - [`ImportResolver`]: Resolve import aliases to fully qualified paths
+
+use std::collections::HashMap;
 
 use crate::ir::ast::{ClassDefinition, Component, Import, Location, StoredDefinition};
 
@@ -189,12 +200,11 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
             }
 
             // 3. Check import aliases
-            if let Some(resolved_path) = self.resolve_import_alias(class, name) {
-                if let Some(lookup) = &self.lookup {
-                    if let Some(sym) = lookup.lookup_symbol(&resolved_path) {
-                        return Some(ResolvedSymbol::External(sym));
-                    }
-                }
+            if let Some(resolved_path) = self.resolve_import_alias(class, name)
+                && let Some(lookup) = &self.lookup
+                && let Some(sym) = lookup.lookup_symbol(&resolved_path)
+            {
+                return Some(ResolvedSymbol::External(sym));
             }
 
             // 4. Check nested classes
@@ -302,10 +312,10 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
                     format!("{}.{}", resolved_path, rest_parts.join("."))
                 };
 
-                if let Some(lookup) = &self.lookup {
-                    if let Some(sym) = lookup.lookup_symbol(&full_qualified) {
-                        return Some(ResolvedSymbol::External(sym));
-                    }
+                if let Some(lookup) = &self.lookup
+                    && let Some(sym) = lookup.lookup_symbol(&full_qualified)
+                {
+                    return Some(ResolvedSymbol::External(sym));
                 }
             }
 
@@ -335,18 +345,18 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
         }
 
         // 5. Check local nested class path (e.g., "OuterClass.InnerClass")
-        if parts.len() >= 2 {
-            if let Some(outer) = self.ast.class_list.get(first_part) {
-                let mut current = outer;
-                for part in rest_parts {
-                    if let Some(nested) = current.classes.get(*part) {
-                        current = nested;
-                    } else {
-                        return None;
-                    }
+        if parts.len() >= 2
+            && let Some(outer) = self.ast.class_list.get(first_part)
+        {
+            let mut current = outer;
+            for part in rest_parts {
+                if let Some(nested) = current.classes.get(*part) {
+                    current = nested;
+                } else {
+                    return None;
                 }
-                return Some(ResolvedSymbol::Class(current));
             }
+            return Some(ResolvedSymbol::Class(current));
         }
 
         None
@@ -376,10 +386,10 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
                 }
                 Import::Qualified { path, .. } => {
                     // For `import A.B.C;`, the alias is "C"
-                    if let Some(last) = path.name.last() {
-                        if last.text == alias {
-                            return Some(path.to_string());
-                        }
+                    if let Some(last) = path.name.last()
+                        && last.text == alias
+                    {
+                        return Some(path.to_string());
                     }
                 }
                 _ => {}
@@ -438,12 +448,12 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
         }
 
         // Try with within prefix
-        if let Some(lookup) = &self.lookup {
-            if let Some(within) = self.within_prefix() {
-                let qualified = format!("{}.{}", within, name);
-                if lookup.lookup_symbol(&qualified).is_some() {
-                    return qualified;
-                }
+        if let Some(lookup) = &self.lookup
+            && let Some(within) = self.within_prefix()
+        {
+            let qualified = format!("{}.{}", within, name);
+            if lookup.lookup_symbol(&qualified).is_some() {
+                return qualified;
             }
         }
 
@@ -478,12 +488,12 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
                 let qualified_base = self.resolve_class_name(&base_name);
                 if let Some(base_ast) = lookup.get_ast_for_symbol(&qualified_base) {
                     // Find the class in the external AST
-                    if let Some(base_class) = Self::find_class_in_ast(base_ast, &base_name) {
-                        if let Some(component) = base_class.components.get(name) {
-                            return Some((component, base_class, base_name));
-                        }
-                        // Note: recursive cross-file lookup would require more complex handling
+                    if let Some(base_class) = Self::find_class_in_ast(base_ast, &base_name)
+                        && let Some(component) = base_class.components.get(name)
+                    {
+                        return Some((component, base_class, base_name));
                     }
+                    // Note: recursive cross-file lookup would require more complex handling
                 }
             }
         }
@@ -521,6 +531,255 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
             return false;
         }
         true
+    }
+}
+
+// =============================================================================
+// Canonical standalone functions for class/symbol lookup
+// =============================================================================
+
+/// Find a class definition in an AST by its qualified name.
+///
+/// This is the canonical implementation for finding classes. It handles:
+/// - Simple names (e.g., "MyClass")
+/// - Qualified names (e.g., "Package.SubPackage.MyClass")
+/// - Files with `within` clauses (e.g., "within Modelica.Blocks;")
+/// - Nested class hierarchies
+///
+/// # Arguments
+/// * `ast` - The parsed AST (StoredDefinition)
+/// * `qualified_name` - The fully qualified or simple name to find
+///
+/// # Returns
+/// The class definition if found, or None.
+///
+/// # Example
+/// ```ignore
+/// // Find "Modelica.Blocks.Continuous.PID" in an AST with "within Modelica.Blocks.Continuous"
+/// let class = find_class_in_ast(&ast, "Modelica.Blocks.Continuous.PID");
+/// ```
+pub fn find_class_in_ast<'a>(
+    ast: &'a StoredDefinition,
+    qualified_name: &str,
+) -> Option<&'a ClassDefinition> {
+    let parts: Vec<&str> = qualified_name.split('.').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Strategy 1: Try simple name lookup (handles files where class is stored by simple name)
+    let simple_name = parts.last().unwrap();
+    if let Some(class) = ast.class_list.get(*simple_name) {
+        return Some(class);
+    }
+
+    // Strategy 2: Handle `within` clause
+    // If the AST has "within X.Y", and we're looking for "X.Y.Z.W", strip the prefix
+    if let Some(within) = &ast.within {
+        let within_str = within.to_string();
+        let within_prefix = format!("{}.", within_str);
+        if qualified_name.starts_with(&within_prefix) {
+            let remainder = &qualified_name[within_prefix.len()..];
+            let remainder_parts: Vec<&str> = remainder.split('.').collect();
+            if !remainder_parts.is_empty()
+                && let Some(class) = ast.class_list.get(remainder_parts[0])
+            {
+                if remainder_parts.len() == 1 {
+                    return Some(class);
+                }
+                return find_nested_class(class, &remainder_parts[1..]);
+            }
+        }
+    }
+
+    // Strategy 3: Navigate from top-level class (for nested classes in same file)
+    let first_part = parts[0];
+    if let Some(class) = ast.class_list.get(first_part) {
+        if parts.len() == 1 {
+            return Some(class);
+        }
+        return find_nested_class(class, &parts[1..]);
+    }
+
+    // Strategy 4: Try the full qualified name as a direct key (rare but possible)
+    ast.class_list.get(qualified_name)
+}
+
+/// Navigate to a nested class by path components.
+///
+/// # Arguments
+/// * `parent` - The parent class to start from
+/// * `path` - Remaining path components (e.g., ["SubClass", "InnerClass"])
+pub fn find_nested_class<'a>(
+    parent: &'a ClassDefinition,
+    path: &[&str],
+) -> Option<&'a ClassDefinition> {
+    if path.is_empty() {
+        return Some(parent);
+    }
+
+    if let Some(child) = parent.classes.get(path[0]) {
+        if path.len() == 1 {
+            return Some(child);
+        }
+        return find_nested_class(child, &path[1..]);
+    }
+
+    None
+}
+
+/// Generate all possible qualified name candidates for a type name.
+///
+/// When resolving a relative type name like "Interfaces.SISO" from within
+/// "Modelica.Blocks.Continuous.PID", this generates candidates by walking up
+/// the package hierarchy:
+///
+/// 1. Modelica.Blocks.Continuous.Interfaces.SISO
+/// 2. Modelica.Blocks.Interfaces.SISO
+/// 3. Modelica.Interfaces.SISO
+/// 4. Interfaces.SISO (as-is)
+///
+/// # Arguments
+/// * `current_qualified` - The fully qualified name of the current context (e.g., "Modelica.Blocks.Continuous.PID")
+/// * `type_name` - The type name to resolve (e.g., "Interfaces.SISO" or "SISO")
+///
+/// # Returns
+/// Vector of candidate names in order of preference (most specific first).
+pub fn resolve_type_candidates(current_qualified: &str, type_name: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    // Get the package path (everything except the class name)
+    let current_parts: Vec<&str> = current_qualified.split('.').collect();
+    if current_parts.len() > 1 {
+        // Start from the immediate parent package and work up
+        for i in (1..current_parts.len()).rev() {
+            let prefix = current_parts[..i].join(".");
+            candidates.push(format!("{}.{}", prefix, type_name));
+        }
+    }
+
+    // Always try the type_name as-is (might be fully qualified or top-level)
+    candidates.push(type_name.to_string());
+
+    candidates
+}
+
+/// Helper for resolving import aliases to fully qualified paths.
+///
+/// Builds a mapping from alias names to fully qualified paths based on
+/// the import declarations in a class.
+///
+/// # Example
+/// ```ignore
+/// // Given: import Modelica.Blocks.Continuous.PID;
+/// //        import SI = Modelica.Units.SI;
+/// let resolver = ImportResolver::from_imports(&class.imports);
+/// assert_eq!(resolver.resolve("PID"), Some("Modelica.Blocks.Continuous.PID"));
+/// assert_eq!(resolver.resolve("SI"), Some("Modelica.Units.SI"));
+/// ```
+#[derive(Debug, Default)]
+pub struct ImportResolver {
+    /// Maps alias name -> fully qualified path
+    aliases: HashMap<String, String>,
+}
+
+impl ImportResolver {
+    /// Create a new empty import resolver.
+    pub fn new() -> Self {
+        Self {
+            aliases: HashMap::new(),
+        }
+    }
+
+    /// Build an import resolver from a list of imports.
+    pub fn from_imports(imports: &[Import]) -> Self {
+        let mut resolver = Self::new();
+        for import in imports {
+            match import {
+                Import::Renamed { alias, path, .. } => {
+                    resolver
+                        .aliases
+                        .insert(alias.text.clone(), path.to_string());
+                }
+                Import::Qualified { path, .. } => {
+                    // For `import A.B.C;`, the alias is "C"
+                    if let Some(last) = path.name.last() {
+                        resolver.aliases.insert(last.text.clone(), path.to_string());
+                    }
+                }
+                Import::Selective { path, names, .. } => {
+                    // For `import A.B.{C, D};`, create entries for each name
+                    let base_path = path.to_string();
+                    for name in names {
+                        resolver
+                            .aliases
+                            .insert(name.text.clone(), format!("{}.{}", base_path, name.text));
+                    }
+                }
+                Import::Unqualified { .. } => {
+                    // Wildcard imports need runtime lookup, can't pre-resolve
+                }
+            }
+        }
+        resolver
+    }
+
+    /// Resolve an alias to its fully qualified path.
+    pub fn resolve(&self, alias: &str) -> Option<&str> {
+        self.aliases.get(alias).map(|s| s.as_str())
+    }
+
+    /// Get all aliases as an iterator.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.aliases.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// Get the underlying hashmap (for compatibility with existing code).
+    pub fn as_map(&self) -> &HashMap<String, String> {
+        &self.aliases
+    }
+}
+
+/// Collect all inherited components from a class and its base classes.
+///
+/// This recursively traverses the inheritance chain and collects all components
+/// that are visible in the derived class, with proper handling of:
+/// - Direct components in the base class
+/// - Components inherited from grandparent classes
+/// - Override semantics (derived class components take precedence)
+///
+/// # Arguments
+/// * `class` - The class to collect inherited components from
+/// * `peer_classes` - Map of peer classes in the same file (for resolving extends)
+///
+/// # Returns
+/// HashMap mapping component name to (Component reference, base class name)
+pub fn collect_inherited_components<'a>(
+    class: &'a ClassDefinition,
+    peer_classes: &'a indexmap::IndexMap<String, ClassDefinition>,
+) -> HashMap<String, (&'a Component, String)> {
+    let mut result = HashMap::new();
+    collect_inherited_recursive(class, peer_classes, &mut result);
+    result
+}
+
+fn collect_inherited_recursive<'a>(
+    class: &'a ClassDefinition,
+    peer_classes: &'a indexmap::IndexMap<String, ClassDefinition>,
+    result: &mut HashMap<String, (&'a Component, String)>,
+) {
+    for ext in &class.extends {
+        let base_name = ext.comp.to_string();
+        if let Some(base_class) = peer_classes.get(&base_name) {
+            // Add components from base class (don't override existing)
+            for (comp_name, comp) in &base_class.components {
+                if !result.contains_key(comp_name) {
+                    result.insert(comp_name.clone(), (comp, base_name.clone()));
+                }
+            }
+            // Recursively collect from grandparent classes
+            collect_inherited_recursive(base_class, peer_classes, result);
+        }
     }
 }
 
@@ -640,5 +899,139 @@ end MyClass;
         } else {
             panic!("Expected Class");
         }
+    }
+
+    // =========================================================================
+    // Tests for canonical standalone functions
+    // =========================================================================
+
+    #[test]
+    fn test_find_class_in_ast_simple() {
+        let code = r#"
+model TestModel
+    Real x;
+end TestModel;
+"#;
+        let ast = parse_test_code(code);
+        let result = find_class_in_ast(&ast, "TestModel");
+        assert!(result.is_some());
+        assert!(result.unwrap().components.contains_key("x"));
+    }
+
+    #[test]
+    fn test_find_class_in_ast_with_within() {
+        let code = r#"
+within Modelica.Blocks.Continuous;
+model PID
+    Real x;
+end PID;
+"#;
+        let ast = parse_test_code(code);
+
+        // Should find by qualified name
+        let result = find_class_in_ast(&ast, "Modelica.Blocks.Continuous.PID");
+        assert!(result.is_some(), "Should find PID by qualified name");
+        assert!(result.unwrap().components.contains_key("x"));
+
+        // Should also find by simple name
+        let result = find_class_in_ast(&ast, "PID");
+        assert!(result.is_some(), "Should find PID by simple name");
+    }
+
+    #[test]
+    fn test_find_class_in_ast_nested() {
+        let code = r#"
+package MyPackage
+    model InnerModel
+        Real z;
+    end InnerModel;
+end MyPackage;
+"#;
+        let ast = parse_test_code(code);
+
+        // Find nested class
+        let result = find_class_in_ast(&ast, "MyPackage.InnerModel");
+        assert!(result.is_some(), "Should find nested InnerModel");
+        assert!(result.unwrap().components.contains_key("z"));
+    }
+
+    #[test]
+    fn test_resolve_type_candidates() {
+        // Test with deeply nested context
+        let candidates =
+            resolve_type_candidates("Modelica.Blocks.Continuous.PID", "Interfaces.SISO");
+        assert_eq!(candidates.len(), 4);
+        assert_eq!(candidates[0], "Modelica.Blocks.Continuous.Interfaces.SISO");
+        assert_eq!(candidates[1], "Modelica.Blocks.Interfaces.SISO");
+        assert_eq!(candidates[2], "Modelica.Interfaces.SISO");
+        assert_eq!(candidates[3], "Interfaces.SISO");
+
+        // Test with simple context
+        let candidates = resolve_type_candidates("PID", "SISO");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0], "SISO");
+
+        // Test with two-level context
+        let candidates = resolve_type_candidates("Modelica.PID", "SISO");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0], "Modelica.SISO");
+        assert_eq!(candidates[1], "SISO");
+    }
+
+    #[test]
+    fn test_import_resolver() {
+        let code = r#"
+model Test
+    import Modelica.Blocks.Continuous.PID;
+    import SI = Modelica.Units.SI;
+    import Modelica.Constants.{pi, e};
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+        let resolver = ImportResolver::from_imports(&class.imports);
+
+        // Qualified import: PID -> Modelica.Blocks.Continuous.PID
+        assert_eq!(
+            resolver.resolve("PID"),
+            Some("Modelica.Blocks.Continuous.PID")
+        );
+
+        // Renamed import: SI -> Modelica.Units.SI
+        assert_eq!(resolver.resolve("SI"), Some("Modelica.Units.SI"));
+
+        // Selective import: pi -> Modelica.Constants.pi
+        assert_eq!(resolver.resolve("pi"), Some("Modelica.Constants.pi"));
+        assert_eq!(resolver.resolve("e"), Some("Modelica.Constants.e"));
+    }
+
+    #[test]
+    fn test_collect_inherited_components() {
+        let code = r#"
+class Base
+    Real x;
+    Real y;
+end Base;
+
+class Derived
+    extends Base;
+    Real z;
+end Derived;
+"#;
+        let ast = parse_test_code(code);
+        let derived = ast.class_list.get("Derived").expect("Derived not found");
+
+        let inherited = collect_inherited_components(derived, &ast.class_list);
+
+        // Should have x and y from Base
+        assert!(inherited.contains_key("x"), "Should inherit x");
+        assert!(inherited.contains_key("y"), "Should inherit y");
+
+        // z is direct, not inherited, so it won't be in the inherited map
+        assert!(!inherited.contains_key("z"), "z is direct, not inherited");
+
+        // Check base class name
+        let (_, base_name) = inherited.get("x").unwrap();
+        assert_eq!(base_name, "Base");
     }
 }

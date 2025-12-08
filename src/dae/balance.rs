@@ -20,6 +20,8 @@ pub enum BalanceStatus {
     Partial,
     /// Invalid: over-determined (too many equations) or under-determined without external connectors
     Unbalanced,
+    /// Compilation failed - could not analyze balance
+    CompileError(String),
 }
 
 /// Result of checking DAE balance
@@ -46,6 +48,21 @@ pub struct BalanceResult {
 }
 
 impl BalanceResult {
+    /// Create a BalanceResult representing a compilation error
+    pub fn compile_error(message: String) -> Self {
+        Self {
+            num_equations: 0,
+            num_unknowns: 0,
+            num_states: 0,
+            num_algebraic: 0,
+            num_parameters: 0,
+            num_inputs: 0,
+            num_external_connectors: 0,
+            status: BalanceStatus::CompileError(message),
+            is_balanced: false,
+        }
+    }
+
     /// Get the difference between equations and unknowns
     pub fn difference(&self) -> i64 {
         self.num_equations as i64 - self.num_unknowns as i64
@@ -53,7 +70,7 @@ impl BalanceResult {
 
     /// Get a human-readable status message
     pub fn status_message(&self) -> String {
-        match self.status {
+        match &self.status {
             BalanceStatus::Balanced => "balanced".to_string(),
             BalanceStatus::Partial => {
                 let diff = -self.difference();
@@ -70,6 +87,7 @@ impl BalanceResult {
                     format!("unbalanced: under-determined by {}", -diff)
                 }
             }
+            BalanceStatus::CompileError(msg) => format!("compile error: {}", msg),
         }
     }
 }

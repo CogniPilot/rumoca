@@ -1,0 +1,23 @@
+# WASM configuration for threading with wasm-bindgen-rayon
+# See: https://github.com/RReverser/wasm-bindgen-rayon
+[target.wasm32-unknown-unknown]
+rustflags = [
+    # Enable getrandom's wasm_js feature
+    '--cfg', 'getrandom_backend="wasm_js"',
+    # Enable WASM threading features (from official wasm-bindgen-rayon docs)
+    # Note: atomics/bulk-memory are "unstable" features which produces a compiler warning,
+    # but they are required for SharedArrayBuffer and WASM threads. This is expected.
+    "-C", "target-feature=+atomics,+bulk-memory",
+    "-C", "link-arg=--shared-memory",
+    "-C", "link-arg=--max-memory=4294967296",
+    "-C", "link-arg=--import-memory",
+    "-C", "link-arg=--export=__wasm_init_tls",
+    "-C", "link-arg=--export=__tls_size",
+    "-C", "link-arg=--export=__tls_align",
+    "-C", "link-arg=--export=__tls_base",
+    # Increase stack size for recursive operations (16MB stack)
+    "-C", "link-arg=-zstack-size=16777216",
+]
+
+[unstable]
+build-std = ["panic_abort", "std"]

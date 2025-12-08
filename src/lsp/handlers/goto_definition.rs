@@ -30,13 +30,15 @@ pub fn handle_goto_definition(
 
     let word = get_word_at_position(text, position)?;
 
-    if let Ok(result) = crate::Compiler::new().compile_str(text, path) {
-        if let Some(token) = find_definition_in_ast(&result.def, &word) {
-            return Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
-                range: token_to_range(token),
-            }));
-        }
+    // Note: Compilation errors are handled by the diagnostics system, not here.
+    // If compilation fails, we fall through to return None (no definition found).
+    if let Ok(result) = crate::Compiler::new().compile_str(text, path)
+        && let Some(token) = find_definition_in_ast(&result.def, &word)
+    {
+        return Some(GotoDefinitionResponse::Scalar(Location {
+            uri: uri.clone(),
+            range: token_to_range(token),
+        }));
     }
 
     None
@@ -44,7 +46,7 @@ pub fn handle_goto_definition(
 
 /// Handle go to definition with workspace support for cross-file navigation
 pub fn handle_goto_definition_workspace(
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
     params: GotoDefinitionParams,
 ) -> Option<GotoDefinitionResponse> {
     let uri = &params.text_document_position_params.text_document.uri;
@@ -59,13 +61,15 @@ pub fn handle_goto_definition_workspace(
     // First try local definition
     if let Some(ast) = parse_document(text, path) {
         // Try qualified name first (e.g., SI.Mass)
-        if let Some(ref qn) = qualified_name {
-            if let Some(response) = try_resolve_qualified_name(&ast, qn, workspace) {
-                return Some(response);
-            }
+        if let Some(ref qn) = qualified_name
+            && let Some(response) = try_resolve_qualified_name(&ast, qn, workspace)
+        {
+            return Some(response);
         }
         // Check for import alias first
         if let Some(import_path) = find_import_alias_in_ast(&ast, &word) {
+            // Ensure the package is indexed before lookup
+            workspace.ensure_package_indexed(&import_path);
             // Try to resolve the import path in the workspace
             if let Some(sym) = workspace.lookup_symbol(&import_path) {
                 return Some(GotoDefinitionResponse::Scalar(Location {
@@ -87,24 +91,23 @@ pub fn handle_goto_definition_workspace(
         }
 
         // Check if clicking on the within clause path
-        if let Some(within_name) = &ast.within {
-            if let Some(within_path) = get_within_path_for_word(within_name, &word) {
-                if let Some(sym) = workspace.lookup_symbol(&within_path) {
-                    return Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: sym.uri.clone(),
-                        range: Range {
-                            start: Position {
-                                line: sym.line,
-                                character: sym.column,
-                            },
-                            end: Position {
-                                line: sym.line,
-                                character: sym.column + word.len() as u32,
-                            },
-                        },
-                    }));
-                }
-            }
+        if let Some(within_name) = &ast.within
+            && let Some(within_path) = get_within_path_for_word(within_name, &word)
+            && let Some(sym) = workspace.lookup_symbol(&within_path)
+        {
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: sym.uri.clone(),
+                range: Range {
+                    start: Position {
+                        line: sym.line,
+                        character: sym.column,
+                    },
+                    end: Position {
+                        line: sym.line,
+                        character: sym.column + word.len() as u32,
+                    },
+                },
+            }));
         }
 
         // Check if the word is a type reference that can be resolved with imports
@@ -216,7 +219,7 @@ fn get_qualified_class_name(ast: &StoredDefinition, class_name: &str) -> String 
 fn try_resolve_qualified_name(
     ast: &StoredDefinition,
     qualified_name: &str,
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
 ) -> Option<GotoDefinitionResponse> {
     let parts: Vec<&str> = qualified_name.split('.').collect();
     if parts.is_empty() {
@@ -236,7 +239,8 @@ fn try_resolve_qualified_name(
                 format!("{}.{}", resolved_path, rest_parts.join("."))
             };
 
-            // Look up in workspace
+            // Ensure package is indexed and look up in workspace
+            workspace.ensure_package_indexed(&full_qualified);
             if let Some(sym) = workspace.lookup_symbol(&full_qualified) {
                 return Some(GotoDefinitionResponse::Scalar(Location {
                     uri: sym.uri.clone(),
@@ -320,10 +324,10 @@ fn resolve_import_alias_in_class(class: &ClassDefinition, alias: &str) -> Option
             }
             Import::Qualified { path, .. } => {
                 // For `import A.B.C;`, the alias is "C"
-                if let Some(last) = path.name.last() {
-                    if last.text == alias {
-                        return Some(path.to_string());
-                    }
+                if let Some(last) = path.name.last()
+                    && last.text == alias
+                {
+                    return Some(path.to_string());
                 }
             }
             _ => {}
@@ -344,7 +348,7 @@ fn resolve_import_alias_in_class(class: &ClassDefinition, alias: &str) -> Option
 fn try_resolve_type_with_imports(
     ast: &StoredDefinition,
     word: &str,
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
     _uri: &Uri,
 ) -> Option<GotoDefinitionResponse> {
     // Check all imports in all classes to see if the word matches an import
@@ -360,14 +364,16 @@ fn try_resolve_type_with_imports(
 fn try_resolve_in_class_imports(
     class: &ClassDefinition,
     word: &str,
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
 ) -> Option<GotoDefinitionResponse> {
     for import in &class.imports {
         match import {
             Import::Renamed { alias, path, .. } => {
                 // If the word matches the alias, resolve to the full path
                 if alias.text == word {
-                    if let Some(sym) = workspace.lookup_symbol(&path.to_string()) {
+                    let path_str = path.to_string();
+                    workspace.ensure_package_indexed(&path_str);
+                    if let Some(sym) = workspace.lookup_symbol(&path_str) {
                         return Some(GotoDefinitionResponse::Scalar(Location {
                             uri: sym.uri.clone(),
                             range: Range {
@@ -386,29 +392,32 @@ fn try_resolve_in_class_imports(
             }
             Import::Qualified { path, .. } => {
                 // For `import A.B.C;`, check if word matches C
-                if let Some(last) = path.name.last() {
-                    if last.text == word {
-                        if let Some(sym) = workspace.lookup_symbol(&path.to_string()) {
-                            return Some(GotoDefinitionResponse::Scalar(Location {
-                                uri: sym.uri.clone(),
-                                range: Range {
-                                    start: Position {
-                                        line: sym.line,
-                                        character: sym.column,
-                                    },
-                                    end: Position {
-                                        line: sym.line,
-                                        character: sym.column + word.len() as u32,
-                                    },
+                if let Some(last) = path.name.last()
+                    && last.text == word
+                {
+                    let path_str = path.to_string();
+                    workspace.ensure_package_indexed(&path_str);
+                    if let Some(sym) = workspace.lookup_symbol(&path_str) {
+                        return Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: sym.uri.clone(),
+                            range: Range {
+                                start: Position {
+                                    line: sym.line,
+                                    character: sym.column,
                                 },
-                            }));
-                        }
+                                end: Position {
+                                    line: sym.line,
+                                    character: sym.column + word.len() as u32,
+                                },
+                            },
+                        }));
                     }
                 }
             }
             Import::Unqualified { path, .. } => {
                 // For `import A.B.*;`, check if path.word exists in workspace
                 let qualified = format!("{}.{}", path, word);
+                workspace.ensure_package_indexed(&qualified);
                 if let Some(sym) = workspace.lookup_symbol(&qualified) {
                     return Some(GotoDefinitionResponse::Scalar(Location {
                         uri: sym.uri.clone(),
@@ -430,6 +439,7 @@ fn try_resolve_in_class_imports(
                 for name in names {
                     if name.text == word {
                         let qualified = format!("{}.{}", path, word);
+                        workspace.ensure_package_indexed(&qualified);
                         if let Some(sym) = workspace.lookup_symbol(&qualified) {
                             return Some(GotoDefinitionResponse::Scalar(Location {
                                 uri: sym.uri.clone(),
@@ -518,10 +528,10 @@ fn find_import_alias_in_class(class: &ClassDefinition, alias: &str) -> Option<St
             }
             Import::Qualified { path, .. } => {
                 // For `import A.B.C;`, the alias is "C"
-                if let Some(last) = path.name.last() {
-                    if last.text == alias {
-                        return Some(path.to_string());
-                    }
+                if let Some(last) = path.name.last()
+                    && last.text == alias
+                {
+                    return Some(path.to_string());
                 }
             }
             _ => {}

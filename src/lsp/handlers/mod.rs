@@ -16,7 +16,7 @@ pub mod workspace_symbols;
 pub use call_hierarchy::{
     handle_incoming_calls, handle_outgoing_calls, handle_prepare_call_hierarchy,
 };
-pub use completion::{handle_completion, handle_completion_workspace};
+pub use completion::handle_completion_workspace;
 pub use document_symbols::handle_document_symbols;
 pub use formatting::handle_formatting;
 pub use goto_definition::{handle_goto_definition, handle_goto_definition_workspace};

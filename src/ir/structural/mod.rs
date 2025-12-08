@@ -105,12 +105,12 @@ impl DerivativeFinder {
 
 impl Visitor for DerivativeFinder {
     fn enter_expression(&mut self, node: &Expression) {
-        if let Expression::FunctionCall { comp, args } = node {
-            if comp.to_string() == "der" && !args.is_empty() {
-                if let Expression::ComponentReference(cref) = &args[0] {
-                    self.derivatives.push(cref.to_string());
-                }
-            }
+        if let Expression::FunctionCall { comp, args } = node
+            && comp.to_string() == "der"
+            && !args.is_empty()
+            && let Expression::ComponentReference(cref) = &args[0]
+        {
+            self.derivatives.push(cref.to_string());
         }
     }
 }
@@ -260,14 +260,15 @@ pub fn blt_transform_with_info(
                     all_variables_set.insert(var_name);
                 }
                 Expression::FunctionCall { comp, args } => {
-                    if comp.to_string() == "der" && !args.is_empty() {
-                        if let Expression::ComponentReference(cref) = &args[0] {
-                            let var_name = format!("der({})", cref);
-                            info.lhs_variable = Some(var_name.clone());
-                            info.all_variables.insert(var_name.clone());
-                            all_variables_set.insert(var_name);
-                            info.is_derivative = true;
-                        }
+                    if comp.to_string() == "der"
+                        && !args.is_empty()
+                        && let Expression::ComponentReference(cref) = &args[0]
+                    {
+                        let var_name = format!("der({})", cref);
+                        info.lhs_variable = Some(var_name.clone());
+                        info.all_variables.insert(var_name.clone());
+                        all_variables_set.insert(var_name);
+                        info.is_derivative = true;
                     }
                 }
                 _ => {

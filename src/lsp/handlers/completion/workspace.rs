@@ -41,6 +41,20 @@ pub fn get_workspace_completions(
             continue;
         }
 
+        // Never show components/variables - they're not importable and shouldn't
+        // pollute completions from other files
+        match symbol.kind {
+            SymbolKind::Component | SymbolKind::Parameter | SymbolKind::Constant => continue,
+            _ => {}
+        }
+
+        // For non-import context, only show top-level symbols
+        // Nested symbols like NestedTestPackage.Controllers.pid should not appear
+        // as "pid" in completions - they're not in scope unless imported
+        if !is_import_context && symbol.qualified_name.contains('.') {
+            continue;
+        }
+
         let kind = symbol_kind_to_completion_kind(symbol.kind);
 
         // For import context, prefer showing qualified names

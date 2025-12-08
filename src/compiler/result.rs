@@ -6,7 +6,7 @@
 
 use crate::dae::ast::Dae;
 use crate::dae::balance::BalanceResult;
-use crate::ir::ast::StoredDefinition;
+use crate::ir::ast::{ClassDefinition, StoredDefinition};
 use anyhow::{Context, Result};
 use std::fs;
 
@@ -21,6 +21,10 @@ pub struct CompilationResult {
 
     /// The parsed AST (before flattening)
     pub def: StoredDefinition,
+
+    /// The expanded class (after flattening and import resolution, before DAE creation)
+    /// Used for semantic analysis (undefined variables, unused variables, etc.)
+    pub expanded_class: ClassDefinition,
 
     /// Time spent parsing
     pub parse_time: std::time::Duration,

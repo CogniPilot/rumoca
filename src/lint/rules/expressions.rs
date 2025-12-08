@@ -119,9 +119,10 @@ pub fn lint_complex_expressions(class: &ClassDefinition, file_path: &str, result
             let lhs_depth = expression_depth(lhs);
             let rhs_depth = expression_depth(rhs);
 
-            if lhs_depth > 5 || rhs_depth > 5 {
-                if let Some(loc) = lhs.get_location() {
-                    result.messages.push(
+            if (lhs_depth > 5 || rhs_depth > 5)
+                && let Some(loc) = lhs.get_location()
+            {
+                result.messages.push(
                         LintMessage::new(
                             "complex-expression",
                             LintLevel::Note,
@@ -132,7 +133,6 @@ pub fn lint_complex_expressions(class: &ClassDefinition, file_path: &str, result
                         )
                         .with_suggestion("Extract sub-expressions into named variables for clarity"),
                     );
-                }
             }
         }
     }

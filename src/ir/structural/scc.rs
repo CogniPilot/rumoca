@@ -122,10 +122,10 @@ pub(super) fn tarjan_scc(eq_infos: &[EquationInfo]) -> TarjanResult {
                 continue;
             }
 
-            if let Some(&j) = var_to_eq.get(var) {
-                if i != j {
-                    graph[j].push(i);
-                }
+            if let Some(&j) = var_to_eq.get(var)
+                && i != j
+            {
+                graph[j].push(i);
             }
         }
     }

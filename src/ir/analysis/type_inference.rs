@@ -105,6 +105,17 @@ pub fn infer_expression_type(
                         for &dim in sym.shape.iter().rev() {
                             result = InferredType::Array(Box::new(result), Some(dim));
                         }
+                        // Account for subscripts - each index reduces one dimension
+                        // e.g., q[3] where q is Real[4] becomes Real (scalar)
+                        // e.g., R[1,2] where R is Real[3,3] becomes Real (scalar)
+                        if let Some(subs) = &first.subs {
+                            for _sub in subs {
+                                // Each subscript strips one array dimension
+                                if let InferredType::Array(inner, _) = result {
+                                    result = *inner;
+                                }
+                            }
+                        }
                         result
                     }
                 } else {

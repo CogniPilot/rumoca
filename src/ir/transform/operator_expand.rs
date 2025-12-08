@@ -144,14 +144,14 @@ fn expand_complex_assignment(
         Expression::ComponentReference(ref_comp) => {
             // Simple assignment: c = a (where both are Complex)
             let ref_name = ref_comp.to_string();
-            if let Some(ref_type) = type_map.get(&ref_name) {
-                if operator_records.get(ref_type).is_some_and(|r| r.is_complex) {
-                    // c = a => c.re = a.re; c.im = a.im
-                    return Some(vec![
-                        make_field_eq(lhs_name, "re", &ref_name, "re"),
-                        make_field_eq(lhs_name, "im", &ref_name, "im"),
-                    ]);
-                }
+            if let Some(ref_type) = type_map.get(&ref_name)
+                && operator_records.get(ref_type).is_some_and(|r| r.is_complex)
+            {
+                // c = a => c.re = a.re; c.im = a.im
+                return Some(vec![
+                    make_field_eq(lhs_name, "re", &ref_name, "re"),
+                    make_field_eq(lhs_name, "im", &ref_name, "im"),
+                ]);
             }
         }
         Expression::FunctionCall { comp, args } => {

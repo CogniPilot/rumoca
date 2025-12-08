@@ -164,10 +164,10 @@ fn matches_query(name: &str, query: &str) -> bool {
     // Fuzzy match: all query characters appear in order in name
     let mut query_chars = query.chars().peekable();
     for name_char in name_lower.chars() {
-        if let Some(&query_char) = query_chars.peek() {
-            if name_char == query_char {
-                query_chars.next();
-            }
+        if let Some(&query_char) = query_chars.peek()
+            && name_char == query_char
+        {
+            query_chars.next();
         }
     }
     query_chars.peek().is_none()

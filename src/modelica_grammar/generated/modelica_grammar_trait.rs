@@ -5717,7 +5717,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     #[allow(dead_code)]
     fn push(&mut self, item: ASTType, context: &str) {
-        trace!("push    {}: {:?}", context, item);
+        trace!("push    {context}: {item:?}");
         self.item_stack.push(item)
     }
 
@@ -5725,7 +5725,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
     fn pop(&mut self, context: &str) -> Option<ASTType> {
         let item = self.item_stack.pop();
         if let Some(ref item) = item {
-            trace!("pop     {}: {:?}", context, item);
+            trace!("pop     {context}: {item:?}");
         }
         item
     }
@@ -5740,7 +5740,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             self.item_stack
                 .iter()
                 .rev()
-                .map(|s| format!("  {:?}", s))
+                .map(|s| format!("  {s:?}"))
                 .collect::<Vec<std::string::String>>()
                 .join("\n")
         )
@@ -17521,8 +17521,7 @@ impl<'t> UserActionsTrait<'t> for ModelicaGrammarAuto<'t, '_> {
             503 => self.description_string_opt_1(),
             504 => self.annotation_clause(&children[0], &children[1]),
             _ => Err(ParserError::InternalError(format!(
-                "Unhandled production number: {}",
-                prod_num
+                "Unhandled production number: {prod_num}"
             ))
             .into()),
         }

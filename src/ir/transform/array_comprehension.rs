@@ -148,10 +148,9 @@ fn expand_in_expression(expr: &mut Expression, params: &IndexMap<String, Compone
         expr: inner_expr,
         indices,
     } = expr
+        && let Some(expanded) = try_expand_comprehension(inner_expr, indices, params)
     {
-        if let Some(expanded) = try_expand_comprehension(inner_expr, indices, params) {
-            *expr = expanded;
-        }
+        *expr = expanded;
     }
 }
 
@@ -299,19 +298,17 @@ fn try_evaluate_integer(
                         if !array_comp.shape_expr.is_empty()
                             && dim_index >= 1
                             && dim_index <= array_comp.shape_expr.len()
-                        {
-                            if let crate::ir::ast::Subscript::Expression(expr) =
+                            && let crate::ir::ast::Subscript::Expression(expr) =
                                 &array_comp.shape_expr[dim_index - 1]
-                            {
-                                return try_evaluate_integer(expr, params, depth + 1);
-                            }
-                            // Subscript::Range (`:`) can't be evaluated directly
+                        {
+                            return try_evaluate_integer(expr, params, depth + 1);
                         }
+                        // Subscript::Range (`:`) can't be evaluated directly
                         // Try to infer from start expression (array literal)
-                        if let Expression::Array { elements } = &array_comp.start {
-                            if dim_index == 1 {
-                                return Some(elements.len() as i64);
-                            }
+                        if let Expression::Array { elements } = &array_comp.start
+                            && dim_index == 1
+                        {
+                            return Some(elements.len() as i64);
                         }
                     }
                 }

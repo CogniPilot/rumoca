@@ -229,11 +229,11 @@ pub fn format_class_with_comments(
     // Equations
     if !class.equations.is_empty() {
         // Find first equation's line for comment insertion
-        if let Some(first_eq) = class.equations.first() {
-            if let Some(loc) = get_equation_location(first_eq) {
-                // Emit comments before the equation keyword (approximate)
-                visitor.emit_comments_before_line(loc.saturating_sub(1));
-            }
+        if let Some(first_eq) = class.equations.first()
+            && let Some(loc) = get_equation_location(first_eq)
+        {
+            // Emit comments before the equation keyword (approximate)
+            visitor.emit_comments_before_line(loc.saturating_sub(1));
         }
         visitor.indent_level -= 1;
         visitor.writeln("equation");
@@ -249,10 +249,10 @@ pub fn format_class_with_comments(
 
     // Initial equations
     if !class.initial_equations.is_empty() {
-        if let Some(first_eq) = class.initial_equations.first() {
-            if let Some(loc) = get_equation_location(first_eq) {
-                visitor.emit_comments_before_line(loc.saturating_sub(1));
-            }
+        if let Some(first_eq) = class.initial_equations.first()
+            && let Some(loc) = get_equation_location(first_eq)
+        {
+            visitor.emit_comments_before_line(loc.saturating_sub(1));
         }
         visitor.indent_level -= 1;
         visitor.writeln("initial equation");

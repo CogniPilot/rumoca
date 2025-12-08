@@ -350,7 +350,7 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
         .par_iter()
         .map(|file_path| {
             let count = parsed_count.fetch_add(1, Ordering::Relaxed);
-            if (count + 1) % 500 == 0 {
+            if (count + 1).is_multiple_of(500) {
                 eprintln!("Parsed: {}/{}", count + 1, total_files);
             }
 
@@ -1194,10 +1194,10 @@ fn test_msl_balance_with_json_export() {
                     let safe_name = model_name.replace(".", "_").replace("/", "_");
                     let json_path = output_dir.join(format!("{}.json", safe_name));
 
-                    if let Ok(json) = result.dae.to_dae_ir_json() {
-                        if let Err(e) = fs::write(&json_path, &json) {
-                            eprintln!("  Warning: Failed to write JSON for {}: {}", model_name, e);
-                        }
+                    if let Ok(json) = result.dae.to_dae_ir_json()
+                        && let Err(e) = fs::write(&json_path, &json)
+                    {
+                        eprintln!("  Warning: Failed to write JSON for {}: {}", model_name, e);
                     }
 
                     (

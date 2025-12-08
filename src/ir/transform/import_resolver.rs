@@ -92,26 +92,26 @@ impl MutVisitor for ImportResolver {
             let func_name = comp.to_string();
 
             // If this is a simple name (no dots) and we have a mapping, resolve it
-            if !func_name.contains('.') {
-                if let Some(full_path) = self.name_map.get(&func_name) {
-                    // Rewrite the component reference to use the full path
-                    let parts: Vec<&str> = full_path.split('.').collect();
-                    let new_parts: Vec<crate::ir::ast::ComponentRefPart> = parts
-                        .iter()
-                        .map(|p| crate::ir::ast::ComponentRefPart {
-                            ident: crate::ir::ast::Token {
-                                text: p.to_string(),
-                                ..Default::default()
-                            },
-                            subs: None,
-                        })
-                        .collect();
+            if !func_name.contains('.')
+                && let Some(full_path) = self.name_map.get(&func_name)
+            {
+                // Rewrite the component reference to use the full path
+                let parts: Vec<&str> = full_path.split('.').collect();
+                let new_parts: Vec<crate::ir::ast::ComponentRefPart> = parts
+                    .iter()
+                    .map(|p| crate::ir::ast::ComponentRefPart {
+                        ident: crate::ir::ast::Token {
+                            text: p.to_string(),
+                            ..Default::default()
+                        },
+                        subs: None,
+                    })
+                    .collect();
 
-                    *comp = ComponentReference {
-                        local: false,
-                        parts: new_parts,
-                    };
-                }
+                *comp = ComponentReference {
+                    local: false,
+                    parts: new_parts,
+                };
             }
         }
     }

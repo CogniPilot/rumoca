@@ -3,7 +3,6 @@
 //! This module contains the main compilation pipeline that transforms
 //! a Modelica AST into a DAE representation.
 
-use super::error_handling::{SyntaxError, UndefinedVariableError, extract_line_col_from_error};
 use super::function_collector::collect_all_functions;
 use super::result::CompilationResult;
 use crate::dae::balance::BalanceResult;
@@ -14,102 +13,160 @@ use crate::ir::transform::array_comprehension::expand_array_comprehensions;
 use crate::ir::transform::constant_substitutor::ConstantSubstitutor;
 use crate::ir::transform::enum_substitutor::EnumSubstitutor;
 use crate::ir::transform::equation_expander::expand_equations;
-use crate::ir::transform::flatten::{FileDependencies, flatten, flatten_with_deps};
+use crate::ir::transform::flatten::{
+    FileDependencies, flatten, flatten_with_deps, is_cache_enabled,
+};
 use crate::ir::transform::function_inliner::FunctionInliner;
 use crate::ir::transform::import_resolver::ImportResolver;
 use crate::ir::transform::tuple_expander::expand_tuple_equations;
 use crate::ir::visitor::MutVisitable;
 use anyhow::Result;
-use miette::SourceSpan;
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, RwLock};
+
+// Use web_time on WASM for Instant::now() polyfill
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 // =============================================================================
-// DAE Result Disk Cache
+// DAE Result Cache
 // =============================================================================
 
-/// Disk cache entry for a DAE result
+/// Disk cache entry for a DAE result (only needed with cache feature)
+#[cfg(feature = "cache")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DaeCacheEntry {
     result: BalanceResult,
     dependencies: FileDependencies,
 }
 
-/// Global in-memory cache for DAE results
+/// Global in-memory cache for DAE results.
+/// For WASM, this is safe because compilation runs on worker threads (not main thread)
+/// which support Atomics.wait.
 static DAE_CACHE: LazyLock<RwLock<HashMap<String, (BalanceResult, FileDependencies)>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
-
-/// Get the DAE cache directory (~/.cache/rumoca/dae/)
-fn dae_cache_dir() -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join("rumoca").join("dae"))
-}
 
 /// Compute cache key for DAE result based on model name and StoredDefinition
 fn compute_dae_cache_key(model_name: &str, def: &StoredDefinition) -> String {
     use std::collections::hash_map::DefaultHasher;
     let mut hasher = DefaultHasher::new();
     model_name.hash(&mut hasher);
-    // Hash structure of the definition (class names and counts)
+    // Hash actual content of the definition including component names and equations
     for (name, class) in &def.class_list {
-        name.hash(&mut hasher);
-        class.components.len().hash(&mut hasher);
-        class.equations.len().hash(&mut hasher);
+        hash_class_for_cache(name, class, &mut hasher);
     }
     format!("{:016x}", hasher.finish())
 }
 
-/// Try to load DAE result from disk cache
-fn load_dae_from_disk(cache_key: &str) -> Option<BalanceResult> {
-    let cache_dir = dae_cache_dir()?;
-    let cache_file = cache_dir.join(format!("{}.bin", cache_key));
+/// Hash the content of a class definition for cache key computation
+fn hash_class_for_cache(
+    name: &str,
+    class: &crate::ir::ast::ClassDefinition,
+    hasher: &mut impl std::hash::Hasher,
+) {
+    // Hash class name and type
+    name.hash(hasher);
+    std::mem::discriminant(&class.class_type).hash(hasher);
 
-    if !cache_file.exists() {
-        return None;
+    // Hash all component names and their type names
+    for (comp_name, comp) in &class.components {
+        comp_name.hash(hasher);
+        comp.type_name.to_string().hash(hasher);
+        std::mem::discriminant(&comp.variability).hash(hasher);
+        std::mem::discriminant(&comp.causality).hash(hasher);
+        comp.shape.hash(hasher);
     }
 
-    let data = std::fs::read(&cache_file).ok()?;
-    let entry: DaeCacheEntry = bincode::deserialize(&data).ok()?;
-
-    // Validate dependencies
-    if !entry.dependencies.is_valid() {
-        let _ = std::fs::remove_file(&cache_file);
-        return None;
+    // Hash extends clauses
+    for ext in &class.extends {
+        ext.comp.to_string().hash(hasher);
     }
 
-    Some(entry.result)
-}
-
-/// Save DAE result to disk cache
-fn save_dae_to_disk(cache_key: &str, result: &BalanceResult, dependencies: &FileDependencies) {
-    let Some(cache_dir) = dae_cache_dir() else {
-        return;
-    };
-
-    if std::fs::create_dir_all(&cache_dir).is_err() {
-        return;
+    // Hash equations
+    class.equations.len().hash(hasher);
+    for eq in &class.equations {
+        format!("{:?}", eq).hash(hasher);
     }
 
-    let cache_file = cache_dir.join(format!("{}.bin", cache_key));
-
-    let entry = DaeCacheEntry {
-        result: result.clone(),
-        dependencies: dependencies.clone(),
-    };
-
-    if let Ok(data) = bincode::serialize(&entry) {
-        let _ = std::fs::write(&cache_file, data);
+    // Recursively hash nested classes
+    for (nested_name, nested_class) in &class.classes {
+        hash_class_for_cache(nested_name, nested_class, hasher);
     }
 }
 
-/// Clear the DAE disk cache
+// Disk cache functions (require filesystem access)
+#[cfg(feature = "cache")]
+mod disk_cache {
+    use super::*;
+
+    /// Get the DAE cache directory (~/.cache/rumoca/dae/)
+    pub fn dae_cache_dir() -> Option<std::path::PathBuf> {
+        dirs::cache_dir().map(|d| d.join("rumoca").join("dae"))
+    }
+
+    /// Try to load DAE result from disk cache
+    pub fn load_dae_from_disk(cache_key: &str) -> Option<BalanceResult> {
+        let cache_dir = dae_cache_dir()?;
+        let cache_file = cache_dir.join(format!("{}.bin", cache_key));
+
+        if !cache_file.exists() {
+            return None;
+        }
+
+        let data = std::fs::read(&cache_file).ok()?;
+        let entry: DaeCacheEntry = bincode::deserialize(&data).ok()?;
+
+        // Validate dependencies
+        if !entry.dependencies.is_valid() {
+            let _ = std::fs::remove_file(&cache_file);
+            return None;
+        }
+
+        Some(entry.result)
+    }
+
+    /// Save DAE result to disk cache
+    pub fn save_dae_to_disk(
+        cache_key: &str,
+        result: &BalanceResult,
+        dependencies: &FileDependencies,
+    ) {
+        let Some(cache_dir) = dae_cache_dir() else {
+            return;
+        };
+
+        if std::fs::create_dir_all(&cache_dir).is_err() {
+            return;
+        }
+
+        let cache_file = cache_dir.join(format!("{}.bin", cache_key));
+
+        let entry = DaeCacheEntry {
+            result: result.clone(),
+            dependencies: dependencies.clone(),
+        };
+
+        if let Ok(data) = bincode::serialize(&entry) {
+            let _ = std::fs::write(&cache_file, data);
+        }
+    }
+
+    /// Clear the DAE disk cache
+    pub fn clear_disk_cache() {
+        if let Some(cache_dir) = dae_cache_dir() {
+            let _ = std::fs::remove_dir_all(&cache_dir);
+        }
+    }
+}
+
+/// Clear the DAE cache (memory and disk)
 pub fn clear_dae_cache() {
-    DAE_CACHE.write().clear();
-    if let Some(cache_dir) = dae_cache_dir() {
-        let _ = std::fs::remove_dir_all(&cache_dir);
-    }
+    DAE_CACHE.write().unwrap().clear();
+    #[cfg(feature = "cache")]
+    disk_cache::clear_disk_cache();
 }
 
 /// Run the compilation pipeline on a parsed AST.
@@ -125,13 +182,12 @@ pub fn clear_dae_cache() {
 /// 8. Balance checking - verify equations match unknowns
 pub fn compile_from_ast(
     def: StoredDefinition,
-    source: &str,
     model_name: Option<&str>,
     model_hash: String,
     parse_time: std::time::Duration,
     verbose: bool,
 ) -> Result<CompilationResult> {
-    compile_from_ast_ref(&def, source, model_name, model_hash, parse_time, verbose)
+    compile_from_ast_ref(&def, model_name, model_hash, parse_time, verbose)
 }
 
 /// Run the compilation pipeline on a reference to a parsed AST.
@@ -141,7 +197,6 @@ pub fn compile_from_ast(
 /// The def is only cloned once at the end when storing in the result.
 pub fn compile_from_ast_ref(
     def: &StoredDefinition,
-    source: &str,
     model_name: Option<&str>,
     model_hash: String,
     parse_time: std::time::Duration,
@@ -151,33 +206,11 @@ pub fn compile_from_ast_ref(
     let flatten_start = Instant::now();
     let fclass_result = flatten(def, model_name);
 
-    // Handle flatten errors with proper source location
+    // Handle flatten errors - return raw error message (miette formatting at CLI only)
     let mut fclass = match fclass_result {
         Ok(fc) => fc,
         Err(e) => {
-            let error_msg = e.to_string();
-
-            // Try to extract line/column from error message like "at line X, column Y"
-            let (line, col) = extract_line_col_from_error(&error_msg).unwrap_or((1, 1));
-
-            // Calculate byte offset for the line/column
-            let mut byte_offset = 0;
-            for (i, src_line) in source.lines().enumerate() {
-                if i + 1 == line {
-                    byte_offset += col.saturating_sub(1);
-                    break;
-                }
-                byte_offset += src_line.len() + 1;
-            }
-
-            let span = SourceSpan::new(byte_offset.into(), 1_usize);
-            let diagnostic = SyntaxError {
-                src: source.to_string(),
-                span,
-                message: error_msg,
-            };
-            let report = miette::Report::new(diagnostic);
-            return Err(anyhow::anyhow!("{:?}", report));
+            return Err(e);
         }
     };
     let flatten_time = flatten_start.elapsed();
@@ -191,6 +224,10 @@ pub fn compile_from_ast_ref(
     // This must happen before validation so imported names are recognized
     let mut import_resolver = ImportResolver::new(&fclass, def);
     fclass.accept_mut(&mut import_resolver);
+
+    // Clone the expanded class after import resolution for semantic analysis
+    // This is the ideal state for checking undefined/unused variables
+    let expanded_class = fclass.clone();
 
     // Substitute Modelica.Constants with their literal values
     // This must happen after import resolution and before validation
@@ -218,35 +255,13 @@ pub fn compile_from_ast_ref(
         fclass.accept_mut(&mut validator);
 
         if !validator.undefined_vars.is_empty() {
-            // Just report the first undefined variable with miette for now
-            let (var_name, _context) = &validator.undefined_vars[0];
-
-            // Find the first occurrence of this variable in the source
-            let mut byte_offset = 0;
-            let mut found = false;
-            for line in source.lines() {
-                if let Some(col) = line.find(var_name) {
-                    byte_offset += col;
-                    found = true;
-                    break;
-                }
-                byte_offset += line.len() + 1;
-            }
-
-            let span = if found {
-                SourceSpan::new(byte_offset.into(), var_name.len())
-            } else {
-                SourceSpan::new(0.into(), 1_usize)
-            };
-
-            let diagnostic = UndefinedVariableError {
-                src: source.to_string(),
-                var_name: var_name.clone(),
-                span,
-            };
-
-            let report = miette::Report::new(diagnostic);
-            return Err(anyhow::anyhow!("{:?}", report));
+            // Return raw error (miette formatting at CLI only)
+            let (var_name, context) = &validator.undefined_vars[0];
+            return Err(anyhow::anyhow!(
+                "Undefined variable '{}' in {}",
+                var_name,
+                context
+            ));
         }
     }
 
@@ -295,6 +310,7 @@ pub fn compile_from_ast_ref(
     Ok(CompilationResult {
         dae,
         def: def.clone(), // Clone only at the end for result storage
+        expanded_class,
         parse_time,
         flatten_time,
         dae_time,
@@ -315,19 +331,25 @@ pub fn check_balance_only(
     let model_name_str = model_name.unwrap_or("");
     let cache_key = compute_dae_cache_key(model_name_str, def);
 
-    // Check in-memory cache first
-    {
-        let cache = DAE_CACHE.read();
+    // Check in-memory cache first (only if caching is enabled)
+    if is_cache_enabled() {
+        let cache = DAE_CACHE.read().unwrap();
         if let Some((result, _deps)) = cache.get(&cache_key) {
             return Ok(result.clone());
         }
     }
 
-    // Check disk cache second
-    if let Some(result) = load_dae_from_disk(&cache_key) {
+    // Check disk cache second (native only - no filesystem in WASM, only if caching enabled)
+    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+    if is_cache_enabled()
+        && let Some(result) = disk_cache::load_dae_from_disk(&cache_key)
+    {
         // Populate in-memory cache
         let deps = FileDependencies::default(); // We validated deps during load
-        DAE_CACHE.write().insert(cache_key, (result.clone(), deps));
+        DAE_CACHE
+            .write()
+            .unwrap()
+            .insert(cache_key, (result.clone(), deps));
         return Ok(result);
     }
 
@@ -371,11 +393,16 @@ pub fn check_balance_only(
     // Check model balance
     let result = dae.check_balance();
 
-    // Save to caches
-    save_dae_to_disk(&cache_key, &result, &fclass.dependencies);
-    DAE_CACHE
-        .write()
-        .insert(cache_key, (result.clone(), fclass.dependencies));
+    // Save to caches (only if caching is enabled)
+    if is_cache_enabled() {
+        #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+        disk_cache::save_dae_to_disk(&cache_key, &result, &fclass.dependencies);
+
+        DAE_CACHE
+            .write()
+            .unwrap()
+            .insert(cache_key, (result.clone(), fclass.dependencies));
+    }
 
     Ok(result)
 }

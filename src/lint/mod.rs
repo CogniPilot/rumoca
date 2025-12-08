@@ -167,12 +167,11 @@ impl LintConfig {
         loop {
             for config_name in LINT_CONFIG_FILE_NAMES {
                 let config_path = current.join(config_name);
-                if config_path.exists() {
-                    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-                        if let Ok(config) = toml::from_str::<LintConfig>(&contents) {
-                            return Some(config);
-                        }
-                    }
+                if config_path.exists()
+                    && let Ok(contents) = std::fs::read_to_string(&config_path)
+                    && let Ok(config) = toml::from_str::<LintConfig>(&contents)
+                {
+                    return Some(config);
                 }
             }
 
@@ -328,7 +327,24 @@ fn lint_class(
     let globals: HashSet<String> = global_builtins().into_iter().collect();
 
     // Try to flatten for inherited symbol analysis
-    let flattened = flatten(ast, Some(class_path)).ok();
+    let flattened = match flatten(ast, Some(class_path)) {
+        Ok(fc) => Some(fc),
+        Err(e) => {
+            // Report flatten error as a lint warning
+            let error_msg = e.to_string();
+            let short_msg = error_msg.lines().next().unwrap_or(&error_msg);
+            result.messages.push(LintMessage {
+                level: LintLevel::Warning,
+                rule: "flatten-error",
+                message: format!("could not flatten '{}': {}", class_path, short_msg),
+                file: file_path.to_string(),
+                line: class.name.location.start_line,
+                column: class.name.location.start_column,
+                suggestion: None,
+            });
+            None
+        }
+    };
     let analysis_class = flattened.as_ref().unwrap_or(class);
 
     // Run individual lint rules

@@ -98,12 +98,12 @@ impl DerivativeCollector {
 
 impl Visitor for DerivativeCollector {
     fn enter_expression(&mut self, node: &Expression) {
-        if let Expression::FunctionCall { comp, args } = node {
-            if comp.to_string() == "der" && !args.is_empty() {
-                if let Expression::ComponentReference(cref) = &args[0] {
-                    self.derivatives.insert(cref.to_string());
-                }
-            }
+        if let Expression::FunctionCall { comp, args } = node
+            && comp.to_string() == "der"
+            && !args.is_empty()
+            && let Expression::ComponentReference(cref) = &args[0]
+        {
+            self.derivatives.insert(cref.to_string());
         }
     }
 }

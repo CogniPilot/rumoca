@@ -746,7 +746,7 @@ print(${modelName})  # Display model summary
 
 export async function activate(context: vscode.ExtensionContext) {
     const startTime = Date.now();
-    outputChannel = vscode.window.createOutputChannel('Rumoca Modelica');
+    outputChannel = vscode.window.createOutputChannel('Rumoca Extension');
 
     const config = vscode.workspace.getConfiguration('rumoca');
     const debug = config.get<boolean>('debug') ?? false;
@@ -892,7 +892,7 @@ export async function activate(context: vscode.ExtensionContext) {
             // Support embedded Modelica in %%modelica blocks
             { scheme: EMBEDDED_MODELICA_SCHEME, language: 'modelica' }
         ],
-        outputChannelName: 'Rumoca Modelica',
+        outputChannelName: 'Rumoca LSP',
         initializationOptions: {
             debug: debug,
             modelicaPath: modelicaPath
@@ -902,7 +902,7 @@ export async function activate(context: vscode.ExtensionContext) {
     debugLog(`[${elapsed()}] Creating LanguageClient...`);
     client = new LanguageClient(
         'rumoca',
-        'Rumoca Modelica',
+        'Rumoca LSP',
         serverOptions,
         clientOptions
     );

@@ -1,10 +1,10 @@
 //! Scoped completion handling.
 //!
-//! Provides completions from the current scope (local variables, types).
+//! Provides completions from the current scope (local variables, types, imports).
 
 use lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
-use crate::ir::ast::{Causality, ClassType, StoredDefinition, Variability};
+use crate::ir::ast::{Causality, ClassType, Import, StoredDefinition, Variability};
 
 /// Get completions from the current scope
 pub fn get_scoped_completions(ast: &StoredDefinition, position: Position) -> Vec<CompletionItem> {
@@ -12,9 +12,11 @@ pub fn get_scoped_completions(ast: &StoredDefinition, position: Position) -> Vec
 
     for class in ast.class_list.values() {
         let class_start = class.name.location.start_line;
+        let class_end = class.location.end_line;
         let pos_line = position.line + 1;
 
-        if pos_line >= class_start {
+        // Only show completions from the class containing the cursor
+        if pos_line >= class_start && pos_line <= class_end {
             for (comp_name, comp) in &class.components {
                 let kind = match (&comp.variability, &comp.causality) {
                     (Variability::Parameter(_), _) => CompletionItemKind::CONSTANT,
@@ -83,6 +85,52 @@ pub fn get_scoped_completions(ast: &StoredDefinition, position: Position) -> Vec
                     },
                     ..Default::default()
                 });
+            }
+
+            // Add imported types to completions
+            for import in &class.imports {
+                match import {
+                    Import::Qualified { path, .. } => {
+                        // import A.B.C; -> C is available as a short name
+                        if let Some(last) = path.name.last() {
+                            items.push(CompletionItem {
+                                label: last.text.clone(),
+                                kind: Some(CompletionItemKind::CLASS),
+                                detail: Some(format!("import {}", path)),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    Import::Renamed { alias, path, .. } => {
+                        // import D = A.B.C; -> D is available as a short name
+                        items.push(CompletionItem {
+                            label: alias.text.clone(),
+                            kind: Some(CompletionItemKind::CLASS),
+                            detail: Some(format!("import {} = {}", alias.text, path)),
+                            ..Default::default()
+                        });
+                    }
+                    Import::Selective { path, names, .. } => {
+                        // import A.B.{C, D}; -> C and D are available as short names
+                        for name_token in names {
+                            items.push(CompletionItem {
+                                label: name_token.text.clone(),
+                                kind: Some(CompletionItemKind::CLASS),
+                                detail: Some(format!("import {}.{}", path, name_token.text)),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    Import::Unqualified { path, .. } => {
+                        // import A.B.*; -> We can't know all names, but we can suggest the package
+                        items.push(CompletionItem {
+                            label: format!("{}.*", path),
+                            kind: Some(CompletionItemKind::MODULE),
+                            detail: Some(format!("import {}.*", path)),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
     }

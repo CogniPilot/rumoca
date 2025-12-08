@@ -28,3 +28,17 @@ pub fn render_template(dae: &Dae, template_file: &str) -> Result<()> {
     println!("{}", txt);
     Ok(())
 }
+
+/// Render a template from a string directly (for WASM/editor use).
+/// Returns the rendered output as a string.
+pub fn render_template_str(dae: &Dae, template_str: &str) -> Result<String> {
+    let mut env = Environment::new();
+    env.add_function("panic", panic);
+    env.add_function("warn", warn);
+    env.add_template("template", template_str)?;
+    let tmpl = env.get_template("template")?;
+    let txt = tmpl
+        .render(context!(dae => dae))
+        .with_context(|| "Template rendering failed")?;
+    Ok(txt)
+}

@@ -198,16 +198,15 @@ fn check_equation_impl(
                 if !matches!(
                     cond_type.base_type(),
                     InferredType::Boolean | InferredType::Unknown
-                ) {
-                    if let Some(loc) = block.cond.get_location() {
-                        result.add_error(TypeError::new(
-                            loc.clone(),
-                            InferredType::Boolean,
-                            cond_type,
-                            "When condition must be Boolean".to_string(),
-                            TypeErrorSeverity::Error,
-                        ));
-                    }
+                ) && let Some(loc) = block.cond.get_location()
+                {
+                    result.add_error(TypeError::new(
+                        loc.clone(),
+                        InferredType::Boolean,
+                        cond_type,
+                        "When condition must be Boolean".to_string(),
+                        TypeErrorSeverity::Error,
+                    ));
                 }
                 for sub_eq in &block.eqs {
                     check_equation_impl(sub_eq, defined, result);
@@ -224,16 +223,15 @@ fn check_equation_impl(
                 if !matches!(
                     cond_type.base_type(),
                     InferredType::Boolean | InferredType::Unknown
-                ) {
-                    if let Some(loc) = block.cond.get_location() {
-                        result.add_error(TypeError::new(
-                            loc.clone(),
-                            InferredType::Boolean,
-                            cond_type,
-                            "If condition must be Boolean".to_string(),
-                            TypeErrorSeverity::Error,
-                        ));
-                    }
+                ) && let Some(loc) = block.cond.get_location()
+                {
+                    result.add_error(TypeError::new(
+                        loc.clone(),
+                        InferredType::Boolean,
+                        cond_type,
+                        "If condition must be Boolean".to_string(),
+                        TypeErrorSeverity::Error,
+                    ));
                 }
                 for sub_eq in &block.eqs {
                     check_equation_impl(sub_eq, defined, result);
@@ -261,20 +259,16 @@ fn check_statement_impl(
         Statement::Empty => {}
         Statement::Assignment { comp, value } => {
             // Infer the type of the target component
-            if let Some(first) = comp.parts.first() {
-                if let Some(sym) = defined.get(&first.ident.text) {
-                    let target_type = super::type_inference::type_from_name(&sym.type_name);
-                    let value_type = infer_expression_type(value, defined);
+            if let Some(first) = comp.parts.first()
+                && let Some(sym) = defined.get(&first.ident.text)
+            {
+                let target_type = super::type_inference::type_from_name(&sym.type_name);
+                let value_type = infer_expression_type(value, defined);
 
-                    if !target_type.is_compatible_with(&value_type) {
-                        if let Some(loc) = value.get_location() {
-                            result.add_error(TypeError::mismatch(
-                                loc.clone(),
-                                target_type,
-                                value_type,
-                            ));
-                        }
-                    }
+                if !target_type.is_compatible_with(&value_type)
+                    && let Some(loc) = value.get_location()
+                {
+                    result.add_error(TypeError::mismatch(loc.clone(), target_type, value_type));
                 }
             }
         }
@@ -302,16 +296,15 @@ fn check_statement_impl(
             if !matches!(
                 cond_type.base_type(),
                 InferredType::Boolean | InferredType::Unknown
-            ) {
-                if let Some(loc) = block.cond.get_location() {
-                    result.add_error(TypeError::new(
-                        loc.clone(),
-                        InferredType::Boolean,
-                        cond_type,
-                        "While condition must be Boolean".to_string(),
-                        TypeErrorSeverity::Error,
-                    ));
-                }
+            ) && let Some(loc) = block.cond.get_location()
+            {
+                result.add_error(TypeError::new(
+                    loc.clone(),
+                    InferredType::Boolean,
+                    cond_type,
+                    "While condition must be Boolean".to_string(),
+                    TypeErrorSeverity::Error,
+                ));
             }
             for sub_stmt in &block.stmts {
                 check_statement_impl(sub_stmt, defined, result);
@@ -326,16 +319,15 @@ fn check_statement_impl(
                 if !matches!(
                     cond_type.base_type(),
                     InferredType::Boolean | InferredType::Unknown
-                ) {
-                    if let Some(loc) = block.cond.get_location() {
-                        result.add_error(TypeError::new(
-                            loc.clone(),
-                            InferredType::Boolean,
-                            cond_type,
-                            "If condition must be Boolean".to_string(),
-                            TypeErrorSeverity::Error,
-                        ));
-                    }
+                ) && let Some(loc) = block.cond.get_location()
+                {
+                    result.add_error(TypeError::new(
+                        loc.clone(),
+                        InferredType::Boolean,
+                        cond_type,
+                        "If condition must be Boolean".to_string(),
+                        TypeErrorSeverity::Error,
+                    ));
                 }
                 for sub_stmt in &block.stmts {
                     check_statement_impl(sub_stmt, defined, result);
@@ -353,16 +345,15 @@ fn check_statement_impl(
                 if !matches!(
                     cond_type.base_type(),
                     InferredType::Boolean | InferredType::Unknown
-                ) {
-                    if let Some(loc) = block.cond.get_location() {
-                        result.add_error(TypeError::new(
-                            loc.clone(),
-                            InferredType::Boolean,
-                            cond_type,
-                            "When condition must be Boolean".to_string(),
-                            TypeErrorSeverity::Error,
-                        ));
-                    }
+                ) && let Some(loc) = block.cond.get_location()
+                {
+                    result.add_error(TypeError::new(
+                        loc.clone(),
+                        InferredType::Boolean,
+                        cond_type,
+                        "When condition must be Boolean".to_string(),
+                        TypeErrorSeverity::Error,
+                    ));
                 }
                 for sub_stmt in &block.stmts {
                     check_statement_impl(sub_stmt, defined, result);
@@ -396,10 +387,10 @@ fn check_expression_pair(
         }
     }
     // Check for general type mismatch (less severe)
-    else if !lhs_type.is_compatible_with(&rhs_type) {
-        if let Some(loc) = lhs.get_location() {
-            result.add_error(TypeError::mismatch(loc.clone(), lhs_type, rhs_type));
-        }
+    else if !lhs_type.is_compatible_with(&rhs_type)
+        && let Some(loc) = lhs.get_location()
+    {
+        result.add_error(TypeError::mismatch(loc.clone(), lhs_type, rhs_type));
     }
 }
 

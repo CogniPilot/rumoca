@@ -13,7 +13,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-PYTHON_DIR="$ROOT_DIR/python"
+PYTHON_DIR="$ROOT_DIR/bindings/python"
 
 # Colors
 RED='\033[0;31m'

@@ -31,16 +31,48 @@ use crate::ir::transform::sub_comp_namer::SubCompNamer;
 use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
-use parking_lot::RwLock;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::RwLock;
 use std::sync::{Arc, LazyLock};
 
 /// Type alias for class dictionary with Arc-wrapped definitions for efficient sharing
 pub type ClassDict = IndexMap<String, Arc<ir::ast::ClassDefinition>>;
 
-/// Global cache for class dictionaries, keyed by content hash
+// =============================================================================
+// Cache Control - Opt-in caching for library parsing
+// =============================================================================
+
+/// Global flag to enable/disable in-memory caching.
+/// Default is OFF (false) for predictable behavior during interactive editing.
+/// Enable when parsing large libraries (like MSL), then disable after.
+static CACHE_ENABLED: RwLock<bool> = RwLock::new(false);
+
+/// Enable in-memory caching for flatten operations.
+/// Call this before parsing large libraries to speed up resolution.
+pub fn enable_cache() {
+    *CACHE_ENABLED.write().unwrap() = true;
+}
+
+/// Disable in-memory caching for flatten operations.
+/// Call this after loading libraries, before compiling user code.
+pub fn disable_cache() {
+    *CACHE_ENABLED.write().unwrap() = false;
+}
+
+/// Check if caching is currently enabled
+pub fn is_cache_enabled() -> bool {
+    *CACHE_ENABLED.read().unwrap()
+}
+
+// =============================================================================
+// Global Caches (only used when CACHE_ENABLED is true)
+// =============================================================================
+
+/// Global cache for class dictionaries, keyed by content hash.
+/// Only populated when caching is enabled via enable_cache().
 static CLASS_DICT_CACHE: LazyLock<RwLock<HashMap<u64, Arc<ClassDict>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -50,8 +82,8 @@ type ResolvedClassEntry = (Arc<ir::ast::ClassDefinition>, FileDependencies);
 /// Type alias for resolved class cache key: (def_hash, class_path)
 type ResolvedClassKey = (u64, String);
 
-/// Global cache for resolved classes, keyed by (content_hash, class_path)
-/// Stores both the resolved class and its file dependencies for cache invalidation
+/// Global cache for resolved classes.
+/// Only populated when caching is enabled via enable_cache().
 static RESOLVED_CLASS_CACHE: LazyLock<RwLock<HashMap<ResolvedClassKey, ResolvedClassEntry>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -103,7 +135,7 @@ static FILE_HASH_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
 fn get_cached_file_hash(file_path: &str) -> String {
     // Fast path: check read lock
     {
-        let cache = FILE_HASH_CACHE.read();
+        let cache = FILE_HASH_CACHE.read().unwrap();
         if let Some(h) = cache.get(file_path) {
             return h.clone();
         }
@@ -119,6 +151,7 @@ fn get_cached_file_hash(file_path: &str) -> String {
 
     FILE_HASH_CACHE
         .write()
+        .unwrap()
         .insert(file_path.to_string(), hash.clone());
     hash
 }
@@ -150,21 +183,62 @@ pub struct FlattenResult {
 }
 
 /// Compute a content-based hash for a StoredDefinition.
-/// This uses the class names and their component/equation counts as a fingerprint.
+/// This hashes the actual content including component names, type names, and equation structure.
 fn compute_def_hash(def: &ir::ast::StoredDefinition) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     let mut hasher = DefaultHasher::new();
 
-    // Hash class names and basic structure
+    // Hash class names and their full content
     for (name, class) in &def.class_list {
-        name.hash(&mut hasher);
-        class.components.len().hash(&mut hasher);
-        class.equations.len().hash(&mut hasher);
-        class.classes.len().hash(&mut hasher);
-        class.extends.len().hash(&mut hasher);
+        hash_class_content(name, class, &mut hasher);
     }
 
     hasher.finish()
+}
+
+/// Hash the content of a class definition for cache key computation
+fn hash_class_content(
+    name: &str,
+    class: &ir::ast::ClassDefinition,
+    hasher: &mut impl std::hash::Hasher,
+) {
+    // Hash class name and type
+    name.hash(hasher);
+    std::mem::discriminant(&class.class_type).hash(hasher);
+
+    // Hash all component names and their type names
+    for (comp_name, comp) in &class.components {
+        comp_name.hash(hasher);
+        comp.type_name.to_string().hash(hasher);
+        // Hash variability and causality as they affect flattening
+        std::mem::discriminant(&comp.variability).hash(hasher);
+        std::mem::discriminant(&comp.causality).hash(hasher);
+        // Hash array shape
+        comp.shape.hash(hasher);
+    }
+
+    // Hash extends clauses (parent class names)
+    for ext in &class.extends {
+        ext.comp.to_string().hash(hasher);
+    }
+
+    // Hash equation count and a representation of equations
+    class.equations.len().hash(hasher);
+    for eq in &class.equations {
+        // Hash equation structure using debug representation
+        format!("{:?}", eq).hash(hasher);
+    }
+
+    // Hash algorithm statement count
+    class.algorithms.len().hash(hasher);
+    for stmt in &class.algorithms {
+        format!("{:?}", stmt).hash(hasher);
+    }
+
+    // Recursively hash nested classes
+    for (nested_name, nested_class) in &class.classes {
+        hash_class_content(nested_name, nested_class, hasher);
+    }
 }
 
 /// Build inheritance dependency graph from class dictionary.
@@ -273,11 +347,17 @@ pub fn prewarm_class_cache(def: &ir::ast::StoredDefinition) -> usize {
 
     let mut total_prewarmed = 0;
 
-    // Process each level in parallel
+    // Process each level (parallel on native, sequential on WASM)
     for level in &levels {
+        #[cfg(not(target_arch = "wasm32"))]
         level.par_iter().for_each(|class_name| {
             if let Some(class_arc) = class_dict.get(class_name) {
-                // resolve_class will cache the result
+                let _ = resolve_class(class_arc, class_name, &class_dict, def_hash);
+            }
+        });
+        #[cfg(target_arch = "wasm32")]
+        level.iter().for_each(|class_name| {
+            if let Some(class_arc) = class_dict.get(class_name) {
                 let _ = resolve_class(class_arc, class_name, &class_dict, def_hash);
             }
         });
@@ -289,9 +369,9 @@ pub fn prewarm_class_cache(def: &ir::ast::StoredDefinition) -> usize {
 
 /// Clear all caches (in-memory only, use clear_all_caches for disk too)
 pub fn clear_caches() {
-    CLASS_DICT_CACHE.write().clear();
-    RESOLVED_CLASS_CACHE.write().clear();
-    FILE_HASH_CACHE.write().clear();
+    CLASS_DICT_CACHE.write().unwrap().clear();
+    RESOLVED_CLASS_CACHE.write().unwrap().clear();
+    FILE_HASH_CACHE.write().unwrap().clear();
 }
 
 /// Clear all caches (alias for clear_caches)
@@ -302,8 +382,8 @@ pub fn clear_all_caches() {
 /// Get cache statistics for diagnostics
 /// Returns (class_dict_entries, resolved_entries)
 pub fn get_cache_stats() -> (usize, usize) {
-    let class_dict_size = CLASS_DICT_CACHE.read().len();
-    let resolved_size = RESOLVED_CLASS_CACHE.read().len();
+    let class_dict_size = CLASS_DICT_CACHE.read().unwrap().len();
+    let resolved_size = RESOLVED_CLASS_CACHE.read().unwrap().len();
     (class_dict_size, resolved_size)
 }
 
@@ -317,13 +397,12 @@ fn extract_extends_modifications(modifications: &[Expression]) -> IndexMap<Strin
     let mut result = IndexMap::new();
 
     for expr in modifications {
-        if let Expression::Binary { op, lhs, rhs } = expr {
-            if matches!(op, OpBinary::Eq(_)) {
-                if let Expression::ComponentReference(comp_ref) = &**lhs {
-                    let param_name = comp_ref.to_string();
-                    result.insert(param_name, (**rhs).clone());
-                }
-            }
+        if let Expression::Binary { op, lhs, rhs } = expr
+            && matches!(op, OpBinary::Eq(_))
+            && let Expression::ComponentReference(comp_ref) = &**lhs
+        {
+            let param_name = comp_ref.to_string();
+            result.insert(param_name, (**rhs).clone());
         }
     }
 
@@ -604,14 +683,16 @@ fn resolve_class(
     current_class_path: &str,
     class_dict: &ClassDict,
     def_hash: u64,
-) -> Result<Arc<ir::ast::ClassDefinition>> {
-    // Check in-memory cache first
+) -> Result<(Arc<ir::ast::ClassDefinition>, FileDependencies)> {
+    // Check in-memory cache first (only if caching is enabled)
     let cache_key = (def_hash, current_class_path.to_string());
-    if let Some((resolved, _deps)) = RESOLVED_CLASS_CACHE.read().get(&cache_key) {
-        return Ok(Arc::clone(resolved));
+    if is_cache_enabled()
+        && let Some((resolved, deps)) = RESOLVED_CLASS_CACHE.read().unwrap().get(&cache_key)
+    {
+        return Ok((Arc::clone(resolved), deps.clone()));
     }
 
-    // Cache miss - do full resolution
+    // Cache miss or caching disabled - do full resolution
     // Use the internal function with empty visited set for cycle detection
     // Dependencies are tracked recursively in resolve_class_internal
     let mut visited = IndexSet::new();
@@ -624,13 +705,16 @@ fn resolve_class(
         &mut deps,
     )?;
 
-    // Wrap in Arc and cache in memory
+    // Wrap in Arc and cache in memory (only if caching is enabled)
     let resolved_arc = Arc::new(resolved);
-    RESOLVED_CLASS_CACHE
-        .write()
-        .insert(cache_key, (Arc::clone(&resolved_arc), deps));
+    if is_cache_enabled() {
+        RESOLVED_CLASS_CACHE
+            .write()
+            .unwrap()
+            .insert(cache_key, (Arc::clone(&resolved_arc), deps.clone()));
+    }
 
-    Ok(resolved_arc)
+    Ok((resolved_arc, deps))
 }
 
 /// Internal implementation of resolve_class with cycle detection and dependency tracking.
@@ -731,24 +815,24 @@ fn resolve_class_internal(
                 // and when SimpleIntegrator extends SISO, we need to resolve RealInput
                 // in SISO's context (Interfaces package) to get "Interfaces.RealInput"
                 let type_name = comp.type_name.to_string();
-                if !is_primitive_type(&type_name) {
-                    if let Some(fq_name) = resolve_class_name_with_imports(
+                if !is_primitive_type(&type_name)
+                    && let Some(fq_name) = resolve_class_name_with_imports(
                         &type_name,
                         &resolved_name,
                         class_dict,
                         &parent_import_aliases,
-                    ) {
-                        // Update the type name to the fully qualified version
-                        modified_comp.type_name = ir::ast::Name {
-                            name: fq_name
-                                .split('.')
-                                .map(|s| ir::ast::Token {
-                                    text: s.to_string(),
-                                    ..Default::default()
-                                })
-                                .collect(),
-                        };
-                    }
+                    )
+                {
+                    // Update the type name to the fully qualified version
+                    modified_comp.type_name = ir::ast::Name {
+                        name: fq_name
+                            .split('.')
+                            .map(|s| ir::ast::Token {
+                                text: s.to_string(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    };
                 }
 
                 // Apply extends modifications to inherited components
@@ -806,12 +890,12 @@ fn apply_type_causality(
             &import_aliases,
         );
 
-        if let Some(resolved_name) = resolved_type_name {
-            if let Some(type_class) = class_dict.get(&resolved_name) {
-                // If the type has causality (from base_prefix), apply it to the component
-                if !matches!(type_class.causality, Causality::Empty) {
-                    comp.causality = type_class.causality.clone();
-                }
+        if let Some(resolved_name) = resolved_type_name
+            && let Some(type_class) = class_dict.get(&resolved_name)
+        {
+            // If the type has causality (from base_prefix), apply it to the component
+            if !matches!(type_class.causality, Causality::Empty) {
+                comp.causality = type_class.causality.clone();
             }
         }
     }
@@ -1087,13 +1171,12 @@ fn expand_connect_equations(
         let first_pin = pins_vec[0];
         let mut generated = false;
 
-        if let Some(connector_type) = pin_types.get(first_pin) {
-            if let Some(connector_class) = class_dict.get(connector_type) {
-                if !connector_class.components.is_empty() {
-                    generate_connection_equations(&pins_vec, connector_class, &mut new_equations);
-                    generated = true;
-                }
-            }
+        if let Some(connector_type) = pin_types.get(first_pin)
+            && let Some(connector_class) = class_dict.get(connector_type)
+            && !connector_class.components.is_empty()
+        {
+            generate_connection_equations(&pins_vec, connector_class, &mut new_equations);
+            generated = true;
         }
 
         // For signal connectors (type aliases like RealInput/RealOutput with no internal components),
@@ -1270,16 +1353,6 @@ impl<'a> ExpansionContext<'a> {
         }
     }
 
-    /// Merge dependencies from a resolved class into our collected dependencies
-    fn merge_class_deps(&mut self, class_path: &str) {
-        let cache_key = (self.def_hash, class_path.to_string());
-        if let Some((_, class_deps)) = RESOLVED_CLASS_CACHE.read().get(&cache_key) {
-            for (file, hash) in &class_deps.files {
-                self.deps.record(file, hash);
-            }
-        }
-    }
-
     /// Register top-level inner components
     fn register_inner_components(&mut self, components: &IndexMap<String, ir::ast::Component>) {
         for (comp_name, comp) in components {
@@ -1333,7 +1406,7 @@ impl<'a> ExpansionContext<'a> {
         };
 
         // Resolve the component class (handle its extends clauses)
-        let comp_class = resolve_class(
+        let (comp_class, comp_deps) = resolve_class(
             comp_class_raw,
             &resolved_type_name,
             self.class_dict,
@@ -1341,7 +1414,9 @@ impl<'a> ExpansionContext<'a> {
         )?;
 
         // Collect dependencies from this resolved class
-        self.merge_class_deps(&resolved_type_name);
+        for (file, hash) in &comp_deps.files {
+            self.deps.record(file, hash);
+        }
 
         // Record the connector type for this component BEFORE checking if it has sub-components.
         // This is critical for connectors like Pin that have only primitive types (Real v, Real i).
@@ -1587,8 +1662,10 @@ fn build_class_dict_internal(class: &ir::ast::ClassDefinition, prefix: &str, dic
 
 /// Builds or retrieves a cached class dictionary for the given StoredDefinition.
 fn get_or_build_class_dict(def: &ir::ast::StoredDefinition, def_hash: u64) -> Arc<ClassDict> {
-    // Try to get from cache first (read lock)
-    if let Some(dict) = CLASS_DICT_CACHE.read().get(&def_hash) {
+    // Try to get from cache first (read lock) - only if caching is enabled
+    if is_cache_enabled()
+        && let Some(dict) = CLASS_DICT_CACHE.read().unwrap().get(&def_hash)
+    {
         return Arc::clone(dict);
     }
 
@@ -1599,8 +1676,13 @@ fn get_or_build_class_dict(def: &ir::ast::StoredDefinition, def_hash: u64) -> Ar
     }
     let dict = Arc::new(dict);
 
-    // Store in cache
-    CLASS_DICT_CACHE.write().insert(def_hash, Arc::clone(&dict));
+    // Store in cache (only if caching is enabled)
+    if is_cache_enabled() {
+        CLASS_DICT_CACHE
+            .write()
+            .unwrap()
+            .insert(def_hash, Arc::clone(&dict));
+    }
 
     dict
 }
@@ -1670,15 +1752,8 @@ pub fn flatten_with_deps(
 
     // Resolve the main class (process extends clauses recursively)
     // This also collects dependencies from all classes involved
-    let resolved_main = resolve_class(&main_class, &main_class_name, &class_dict, def_hash)?;
-
-    // Get the dependencies from the resolved class cache
-    let cache_key = (def_hash, main_class_name.clone());
-    let mut deps = RESOLVED_CLASS_CACHE
-        .read()
-        .get(&cache_key)
-        .map(|(_, deps)| deps.clone())
-        .unwrap_or_default();
+    let (resolved_main, mut deps) =
+        resolve_class(&main_class, &main_class_name, &class_dict, def_hash)?;
 
     // Validate all imports in the resolved class before proceeding
     validate_imports(&resolved_main.imports, &class_dict)?;

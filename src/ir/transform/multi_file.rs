@@ -333,10 +333,10 @@ pub fn package_path_from_file(
         .collect();
 
     // Remove .mo extension from last part
-    if let Some(last) = parts.last_mut() {
-        if last.ends_with(".mo") {
-            *last = &last[..last.len() - 3];
-        }
+    if let Some(last) = parts.last_mut()
+        && last.ends_with(".mo")
+    {
+        *last = &last[..last.len() - 3];
     }
 
     // Handle package.mo specially - remove the "package" part

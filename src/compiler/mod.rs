@@ -64,10 +64,16 @@ use crate::modelica_parser::parse;
 use anyhow::{Context, Result};
 use error_handling::create_syntax_error;
 use indexmap::IndexSet;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+// Use web_time on WASM for Instant::now() polyfill
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 // ============================================================================
 // Standalone parsing functions (used by both compiler and LSP)
@@ -317,6 +323,7 @@ impl Compiler {
     ///
     /// If called from within an existing rayon thread pool (nested parallelism),
     /// returns 1 to avoid thread explosion.
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_thread_count(&self) -> usize {
         // If explicitly set, use that value
         if let Some(threads) = self.threads {
@@ -497,6 +504,7 @@ impl Compiler {
     ///     .compile_package("path/to/MyPackage")?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn compile_package(&self, path: &str) -> Result<CompilationResult> {
         use crate::ir::transform::multi_file::discover_modelica_files;
 
@@ -545,6 +553,7 @@ impl Compiler {
     /// println!("Model has {} states", result.dae.x.len());
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn compile_file(&self, path: &str) -> Result<CompilationResult> {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -586,13 +595,12 @@ impl Compiler {
                         .unwrap_or_else(|_| "unknown".to_string());
 
                     // Try cache first
-                    if use_cache {
-                        if let Some(cached_def) =
+                    if use_cache
+                        && let Some(cached_def) =
                             cache::load_cached_ast(additional_path, &file_hash)
-                        {
-                            cache_hits.fetch_add(1, Ordering::Relaxed);
-                            return Ok((path_str, cached_def, file_hash));
-                        }
+                    {
+                        cache_hits.fetch_add(1, Ordering::Relaxed);
+                        return Ok((path_str, cached_def, file_hash));
                     }
 
                     // Cache miss - parse the file
@@ -666,6 +674,7 @@ impl Compiler {
     ///     .compile_files(&["library.mo", "model.mo"])?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn compile_files(&self, paths: &[&str]) -> Result<CompilationResult> {
         if paths.is_empty() {
             anyhow::bail!("At least one file must be provided");
@@ -726,8 +735,8 @@ impl Compiler {
         })
     }
 
-    /// Compile from pre-parsed definitions
-    fn compile_definitions(
+    /// Compile from pre-parsed definitions (public for WASM caching)
+    pub fn compile_definitions(
         &self,
         definitions: Vec<(String, StoredDefinition)>,
         main_source: &str,
@@ -769,7 +778,6 @@ impl Compiler {
         // Run the compilation pipeline
         pipeline::compile_from_ast_ref(
             &def,
-            main_source,
             self.model_name.as_deref(),
             model_hash,
             parse_time,
@@ -808,85 +816,93 @@ impl Compiler {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn compile_str(&self, source: &str, file_name: &str) -> Result<CompilationResult> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        // Configure thread pool
-        let thread_count = self.get_thread_count();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(thread_count)
-            .build()
-            .with_context(|| "Failed to create thread pool")?;
-
-        let cache_hits = AtomicUsize::new(0);
-        let cache_misses = AtomicUsize::new(0);
-
-        if self.verbose && !self.additional_files.is_empty() {
-            println!(
-                "Parsing {} additional files using {} threads (cache: {})...",
-                self.additional_files.len(),
-                thread_count,
-                if self.use_cache {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
+        // WASM: No filesystem access, so no additional files - just parse main source
+        #[cfg(target_arch = "wasm32")]
+        {
+            let def = self.parse_source(source, file_name)?;
+            let all_definitions = vec![(file_name.to_string(), def)];
+            return self.compile_definitions(all_definitions, source, file_name);
         }
 
-        // Parse additional files in parallel (with caching)
-        let additional_paths: Vec<_> = self.additional_files.iter().collect();
-        let use_cache = self.use_cache;
-        let parsed_additional: Result<Vec<_>> = pool.install(|| {
-            additional_paths
-                .par_iter()
-                .map(|additional_path| {
-                    let path_str = additional_path.to_string_lossy().to_string();
+        // Native: Full parallel processing with thread pool
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::sync::atomic::{AtomicUsize, Ordering};
 
-                    // Try cache first
-                    if use_cache {
-                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
-                            if let Some(cached_def) = cache::load_cached_ast(additional_path, &hash)
-                            {
-                                cache_hits.fetch_add(1, Ordering::Relaxed);
-                                return Ok((path_str, cached_def));
-                            }
-                        }
+            // Configure thread pool
+            let thread_count = self.get_thread_count();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(thread_count)
+                .build()
+                .with_context(|| "Failed to create thread pool")?;
+
+            let cache_hits = AtomicUsize::new(0);
+            let cache_misses = AtomicUsize::new(0);
+
+            if self.verbose && !self.additional_files.is_empty() {
+                println!(
+                    "Parsing {} additional files using {} threads (cache: {})...",
+                    self.additional_files.len(),
+                    thread_count,
+                    if self.use_cache {
+                        "enabled"
+                    } else {
+                        "disabled"
                     }
+                );
+            }
 
-                    // Cache miss - parse the file
-                    cache_misses.fetch_add(1, Ordering::Relaxed);
-                    let additional_source = fs::read_to_string(additional_path)
-                        .with_context(|| format!("Failed to read file: {}", path_str))?;
-                    let def = self.parse_source(&additional_source, &path_str)?;
+            // Parse additional files in parallel (with caching)
+            let additional_paths: Vec<_> = self.additional_files.iter().collect();
+            let use_cache = self.use_cache;
+            let parsed_additional: Result<Vec<_>> = pool.install(|| {
+                additional_paths
+                    .par_iter()
+                    .map(|additional_path| {
+                        let path_str = additional_path.to_string_lossy().to_string();
 
-                    // Store in cache
-                    if use_cache {
-                        if let Ok(hash) = cache::compute_file_hash(additional_path) {
+                        // Try cache first
+                        if use_cache
+                            && let Ok(hash) = cache::compute_file_hash(additional_path)
+                            && let Some(cached_def) = cache::load_cached_ast(additional_path, &hash)
+                        {
+                            cache_hits.fetch_add(1, Ordering::Relaxed);
+                            return Ok((path_str, cached_def));
+                        }
+
+                        // Cache miss - parse the file
+                        cache_misses.fetch_add(1, Ordering::Relaxed);
+                        let additional_source = fs::read_to_string(additional_path)
+                            .with_context(|| format!("Failed to read file: {}", path_str))?;
+                        let def = self.parse_source(&additional_source, &path_str)?;
+
+                        // Store in cache
+                        if use_cache && let Ok(hash) = cache::compute_file_hash(additional_path) {
                             let _ = cache::store_cached_ast(additional_path, &hash, &def);
                         }
-                    }
 
-                    Ok((path_str, def))
-                })
-                .collect()
-        });
+                        Ok((path_str, def))
+                    })
+                    .collect()
+            });
 
-        let mut all_definitions = parsed_additional?;
+            let mut all_definitions = parsed_additional?;
 
-        if self.verbose && !self.additional_files.is_empty() {
-            println!(
-                "Cache: {} hits, {} misses",
-                cache_hits.load(Ordering::Relaxed),
-                cache_misses.load(Ordering::Relaxed)
-            );
+            if self.verbose && !self.additional_files.is_empty() {
+                println!(
+                    "Cache: {} hits, {} misses",
+                    cache_hits.load(Ordering::Relaxed),
+                    cache_misses.load(Ordering::Relaxed)
+                );
+            }
+
+            // Parse main source
+            let def = self.parse_source(source, file_name)?;
+            all_definitions.push((file_name.to_string(), def));
+
+            // Compile with all definitions
+            self.compile_definitions(all_definitions, source, file_name)
         }
-
-        // Parse main source
-        let def = self.parse_source(source, file_name)?;
-        all_definitions.push((file_name.to_string(), def));
-
-        // Compile with all definitions
-        self.compile_definitions(all_definitions, source, file_name)
     }
 
     /// Compiles from a pre-parsed StoredDefinition.
@@ -927,7 +943,6 @@ impl Compiler {
         let model_hash = format!("{:x}", chksum_md5::hash(source));
         pipeline::compile_from_ast(
             def,
-            source,
             self.model_name.as_deref(),
             model_hash,
             std::time::Duration::ZERO, // No parse time for pre-parsed
@@ -948,7 +963,6 @@ impl Compiler {
         let model_hash = format!("{:x}", chksum_md5::hash(source));
         pipeline::compile_from_ast_ref(
             def,
-            source,
             self.model_name.as_deref(),
             model_hash,
             std::time::Duration::ZERO,
@@ -965,6 +979,43 @@ impl Compiler {
         def: &StoredDefinition,
     ) -> Result<crate::dae::balance::BalanceResult> {
         pipeline::check_balance_only(def, self.model_name.as_deref())
+    }
+
+    /// Compile with additional library sources provided as strings.
+    ///
+    /// This is useful for WASM where filesystem access is not available.
+    /// Library sources are parsed and merged with the main source before compilation.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The main Modelica source code
+    /// * `file_name` - Name for the main source file (for error messages)
+    /// * `libraries` - Vector of (file_name, source_code) pairs for library files
+    ///
+    /// # Returns
+    ///
+    /// A [`CompilationResult`] containing the DAE and metadata
+    pub fn compile_str_with_sources(
+        &self,
+        source: &str,
+        file_name: &str,
+        libraries: Vec<(&str, &str)>,
+    ) -> Result<CompilationResult> {
+        // Parse the main source
+        let main_def = self.parse_source(source, file_name)?;
+
+        // Parse all library sources
+        let mut all_definitions = Vec::with_capacity(libraries.len() + 1);
+
+        for (lib_name, lib_source) in libraries {
+            let lib_def = self.parse_source(lib_source, lib_name)?;
+            all_definitions.push((lib_name.to_string(), lib_def));
+        }
+
+        // Add main source last (so its classes take precedence)
+        all_definitions.push((file_name.to_string(), main_def));
+
+        self.compile_definitions(all_definitions, source, file_name)
     }
 }
 

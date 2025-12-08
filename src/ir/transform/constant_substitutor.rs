@@ -70,18 +70,16 @@ impl MutVisitor for ConstantSubstitutor {
                 is_safe_short_name(&name)
             };
 
-            if should_substitute {
-                if let Some(value) = get_modelica_constant(&name) {
-                    // Replace with a literal value
-                    *expr = Expression::Terminal {
-                        terminal_type: TerminalType::UnsignedReal,
-                        token: Token {
-                            text: format_float(value),
-                            ..Default::default()
-                        },
-                    };
-                    self.substitution_count += 1;
-                }
+            if should_substitute && let Some(value) = get_modelica_constant(&name) {
+                // Replace with a literal value
+                *expr = Expression::Terminal {
+                    terminal_type: TerminalType::UnsignedReal,
+                    token: Token {
+                        text: format_float(value),
+                        ..Default::default()
+                    },
+                };
+                self.substitution_count += 1;
             }
         }
     }

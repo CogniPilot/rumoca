@@ -64,46 +64,51 @@ fn collect_class_lenses(
     if matches!(
         class.class_type,
         ClassType::Model | ClassType::Block | ClassType::Class | ClassType::Connector
-    ) {
-        if let Some(balance) = workspace.get_balance(uri, &class_path) {
-            let status_icon = match balance.status {
-                BalanceStatus::Balanced => "✓",
-                BalanceStatus::Partial => "◐ partial",
-                BalanceStatus::Unbalanced => {
-                    if balance.difference() > 0 {
-                        "⚠ over"
-                    } else {
-                        "⚠ under"
-                    }
-                }
-            };
+    ) && let Some(balance) = workspace.get_balance(uri, &class_path)
+    {
+        let title = match &balance.status {
+            BalanceStatus::Balanced => format!(
+                "{} states, {} unknowns, {} equations [✓]",
+                balance.num_states, balance.num_unknowns, balance.num_equations
+            ),
+            BalanceStatus::Partial => format!(
+                "{} states, {} unknowns, {} equations [◐ partial]",
+                balance.num_states, balance.num_unknowns, balance.num_equations
+            ),
+            BalanceStatus::Unbalanced => {
+                let icon = if balance.difference() > 0 {
+                    "⚠ over"
+                } else {
+                    "⚠ under"
+                };
+                format!(
+                    "{} states, {} unknowns, {} equations [{}]",
+                    balance.num_states, balance.num_unknowns, balance.num_equations, icon
+                )
+            }
+            BalanceStatus::CompileError(msg) => format!("✗ compile error: {}", msg),
+        };
 
-            let title = format!(
-                "{} states, {} unknowns, {} equations [{}]",
-                balance.num_states, balance.num_unknowns, balance.num_equations, status_icon
-            );
-
-            lenses.push(CodeLens {
-                range: Range {
-                    start: Position {
-                        line: class_line,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: class_line,
-                        character: 0,
-                    },
+        lenses.push(CodeLens {
+            range: Range {
+                start: Position {
+                    line: class_line,
+                    character: 0,
                 },
-                command: Some(Command {
-                    title,
-                    command: String::new(), // Not clickable
-                    arguments: None,
-                }),
-                data: None,
-            });
-        }
-        // No fallback "Analyze" button - balance is computed automatically
+                end: Position {
+                    line: class_line,
+                    character: 0,
+                },
+            },
+            command: Some(Command {
+                title,
+                command: String::new(), // Not clickable
+                arguments: None,
+            }),
+            data: None,
+        });
     }
+    // No fallback "Analyze" button - balance is computed automatically
 
     // Add extends lens if class extends another
     if !class.extends.is_empty() {

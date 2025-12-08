@@ -33,8 +33,10 @@
 //! - `rumoca`: Core library for Modelica grammar, parsing, and DAE generation.
 
 // Use mimalloc as the global allocator for better performance
+#[cfg(feature = "allocator")]
 use mimalloc::MiMalloc;
 
+#[cfg(feature = "allocator")]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -98,14 +100,31 @@ fn main() -> Result<()> {
     // Also include "Modelica" if not already included (for user files with MSL imports)
     let root_package = args.model.split('.').next().unwrap_or("");
 
-    if let Ok(c) = compiler.clone().include_from_modelica_path(root_package) {
-        compiler = c;
+    if !root_package.is_empty() {
+        match compiler.clone().include_from_modelica_path(root_package) {
+            Ok(c) => compiler = c,
+            Err(e) => {
+                eprintln!(
+                    "warning: could not load package '{}' from MODELICAPATH: {}",
+                    root_package,
+                    e.to_string().lines().next().unwrap_or("")
+                );
+            }
+        }
     }
 
     // If model doesn't start with "Modelica", also try loading MSL for imports
     if root_package != "Modelica" {
-        if let Ok(c) = compiler.clone().include_from_modelica_path("Modelica") {
-            compiler = c;
+        match compiler.clone().include_from_modelica_path("Modelica") {
+            Ok(c) => compiler = c,
+            Err(e) => {
+                if args.verbose {
+                    eprintln!(
+                        "note: Modelica Standard Library not found in MODELICAPATH: {}",
+                        e.to_string().lines().next().unwrap_or("")
+                    );
+                }
+            }
         }
     }
 

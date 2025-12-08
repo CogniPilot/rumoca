@@ -8,6 +8,9 @@
 //! - Missing parameter default warnings
 //! - Type mismatch detection
 //! - Array dimension warnings
+//!
+//! This module uses canonical scope resolution functions from
+//! `crate::ir::transform::scope_resolver` to avoid duplication.
 
 mod helpers;
 mod symbols;
@@ -19,11 +22,11 @@ use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 use rayon::prelude::*;
 
 use crate::compiler::extract_parse_error;
-use crate::dae::balance::BalanceStatus;
+use crate::dae::balance::{BalanceResult, BalanceStatus};
 use crate::ir::analysis::symbols::{DefinedSymbol, is_class_instance_type};
 use crate::ir::ast::{Causality, ClassDefinition, ClassType};
 use crate::ir::transform::constants::global_builtins;
-use crate::ir::transform::flatten::flatten;
+use crate::ir::transform::scope_resolver::collect_inherited_components;
 
 use crate::lsp::WorkspaceState;
 
@@ -53,33 +56,10 @@ pub fn compute_diagnostics(
                 // Parsing succeeded - clear stale balance cache since document changed
                 workspace.clear_balances(uri);
 
-                // Run semantic analysis on each class (using flattening for inherited symbols)
                 if let Some(ref ast) = grammar.modelica {
-                    // Collect class names for parallel processing
-                    let class_names: Vec<_> = ast.class_list.keys().cloned().collect();
-                    let class_list = &ast.class_list;
-
-                    // Parallelize flattening and analysis across classes
-                    let class_diagnostics: Vec<Vec<Diagnostic>> = class_names
-                        .par_iter()
-                        .filter_map(|class_name| {
-                            if let Ok(fclass) = flatten(ast, Some(class_name)) {
-                                let mut diags = Vec::new();
-                                analyze_class(&fclass, class_list, &mut diags);
-                                Some(diags)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    // Merge all diagnostics
-                    for diags in class_diagnostics {
-                        diagnostics.extend(diags);
-                    }
-
-                    // Compute balance for each model/block/class and cache it
-                    compute_balance_for_classes(uri, text, path, ast, workspace);
+                    // Compile each class using the full Compiler pipeline (with library access)
+                    // This gives us both the flattened class (for semantic analysis) and balance
+                    compile_and_analyze_classes(uri, text, path, ast, workspace, &mut diagnostics);
                 }
             }
             Err(e) => {
@@ -150,6 +130,19 @@ fn analyze_class(
         collect_used_symbols(&comp.start, &mut used);
     }
 
+    // Add inherited components from extends clauses (using canonical function)
+    // Track inherited names so we can skip them in unused variable warnings
+    let inherited = collect_inherited_components(class, peer_classes);
+    let mut inherited_names: HashSet<String> = HashSet::new();
+    for (comp_name, (comp, _base_name)) in inherited {
+        // Don't override if already defined (derived class takes precedence)
+        if !defined.contains_key(&comp_name) {
+            let (name, symbol) = DefinedSymbol::from_component(&comp_name, comp);
+            inherited_names.insert(name.clone());
+            defined.insert(name, symbol);
+        }
+    }
+
     // Add nested class names as defined (these are types, not variables)
     // For functions, extract the return type from output components
     for (nested_name, nested_class) in &class.classes {
@@ -196,9 +189,14 @@ fn analyze_class(
     if !class.partial && !matches!(class.class_type, ClassType::Record | ClassType::Connector) {
         for (name, sym) in &defined {
             if !used.contains(name) && !name.starts_with('_') {
-                // Skip parameters, classes, and class instances (submodels)
-                // Class instances contribute to the system even without explicit references
-                if !sym.is_parameter && !sym.is_class && !is_class_instance_type(&sym.type_name) {
+                // Skip parameters, classes, class instances (submodels), and inherited components
+                // - Class instances contribute to the system even without explicit references
+                // - Inherited components are used in their base class's equations
+                if !sym.is_parameter
+                    && !sym.is_class
+                    && !is_class_instance_type(&sym.type_name)
+                    && !inherited_names.contains(name)
+                {
                     diagnostics.push(create_diagnostic(
                         sym.line,
                         sym.col,
@@ -231,59 +229,117 @@ fn analyze_class(
     }
 }
 
-/// Compute balance for all model/block/class definitions and cache the results
-fn compute_balance_for_classes(
+// Note: collect_inherited_components is now imported from canonical module
+
+/// Collect root package names from imports in a class (recursively)
+fn collect_import_roots(class: &ClassDefinition, roots: &mut std::collections::HashSet<String>) {
+    for import in &class.imports {
+        let path = import.base_path();
+        if let Some(first) = path.name.first() {
+            roots.insert(first.text.clone());
+        }
+    }
+    // Recurse into nested classes
+    for nested in class.classes.values() {
+        collect_import_roots(nested, roots);
+    }
+}
+
+/// Compile and analyze all classes in the document.
+/// Semantic analysis runs on original AST classes (pre-flattening) to match source code.
+/// Compilation is used for balance checking (post-flattening).
+fn compile_and_analyze_classes(
     uri: &Uri,
     text: &str,
     path: &str,
     ast: &crate::ir::ast::StoredDefinition,
     workspace: &mut WorkspaceState,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Collect all class paths that need balance computation
+    // First, run semantic analysis on original AST classes (pre-flattening)
+    // This checks for undefined/unused variables against what the user wrote
+    for class in ast.class_list.values() {
+        analyze_class(class, &ast.class_list, diagnostics);
+    }
+
+    // Note: Import validation is deferred to the compiler, which has access to
+    // the full library cache. The workspace symbol index may not have all
+    // library symbols indexed, leading to false positives.
+
+    // Collect all class paths that need compilation for balance checking
     let mut class_paths: Vec<(String, bool, ClassType)> = Vec::new();
     for (class_name, class) in &ast.class_list {
         collect_balance_classes(class, class_name, &mut class_paths);
     }
 
-    // Compute balance in parallel for all classes
+    // Collect all root package names from imports across all classes
+    let mut import_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for class in ast.class_list.values() {
+        collect_import_roots(class, &mut import_roots);
+    }
+
     let uri_clone = uri.clone();
     let text_owned = text.to_string();
     let path_owned = path.to_string();
 
-    let balance_results: Vec<_> = class_paths
+    // Get library paths from workspace for import resolution
+    let library_paths: Vec<String> = workspace
+        .package_roots()
+        .iter()
+        .filter_map(|p| p.to_str().map(String::from))
+        .collect();
+
+    // Convert to Vec for use in closure
+    let import_roots_vec: Vec<String> = import_roots.into_iter().collect();
+
+    // Compile all classes in parallel for balance checking only
+    let results: Vec<_> = class_paths
         .par_iter()
         .filter_map(|(class_path, is_partial, class_type)| {
-            // Compute balance for models, blocks, classes, and connectors (not functions, records, etc.)
-            if matches!(
+            // Only compile models, blocks, classes, and connectors
+            if !matches!(
                 class_type,
                 ClassType::Model | ClassType::Block | ClassType::Class | ClassType::Connector
             ) {
-                // Try to compile and get balance - silently ignore errors
-                // Note: Using threads(1) here since we're already parallelizing at the outer level
-                if let Ok(result) = crate::Compiler::new()
-                    .model(class_path)
-                    .threads(1)
-                    .compile_str(&text_owned, &path_owned)
-                {
-                    let mut balance = result.dae.check_balance();
+                return None;
+            }
 
-                    // Mark as Partial if:
-                    // - Class is explicitly declared with `partial` keyword, or
-                    // - Class is a connector (connectors are partial by design)
+            let path_refs: Vec<&str> = library_paths.iter().map(|s| s.as_str()).collect();
+
+            // Build compiler and include required packages
+            let mut compiler = crate::Compiler::new()
+                .model(class_path)
+                .modelica_path(&path_refs)
+                .threads(1);
+
+            for pkg_name in &import_roots_vec {
+                if let Ok(c) = compiler.clone().include_from_modelica_path(pkg_name) {
+                    compiler = c;
+                }
+            }
+
+            match compiler.compile_str(&text_owned, &path_owned) {
+                Ok(result) => {
+                    // Get balance result from compilation
+                    let mut balance = result.balance;
                     let is_connector = matches!(class_type, ClassType::Connector);
                     if (*is_partial || is_connector) && !balance.is_balanced {
                         balance.status = BalanceStatus::Partial;
                     }
 
-                    return Some((class_path.clone(), balance));
+                    Some((class_path.clone(), balance))
+                }
+                Err(e) => {
+                    // Errors are now raw (no miette formatting), just use the message directly
+                    let balance = BalanceResult::compile_error(e.to_string());
+                    Some((class_path.clone(), balance))
                 }
             }
-            None
         })
         .collect();
 
-    // Merge results into workspace (single-threaded)
-    for (class_path, balance) in balance_results {
+    // Merge balance results (single-threaded)
+    for (class_path, balance) in results {
         workspace.set_balance(uri_clone.clone(), class_path, balance);
     }
 }

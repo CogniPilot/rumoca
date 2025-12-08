@@ -72,12 +72,11 @@ pub fn handle_code_action(
                 // Check if this component is in the requested range
                 if comp_line >= range.start.line && comp_line <= range.end.line {
                     // Only offer remove for non-parameters (variables)
-                    if !matches!(comp.variability, Variability::Parameter(_)) {
-                        if let Some(action) =
+                    if !matches!(comp.variability, Variability::Parameter(_))
+                        && let Some(action) =
                             create_remove_variable_action(uri, text, comp_name, comp_line)
-                        {
-                            actions.push(action);
-                        }
+                    {
+                        actions.push(action);
                     }
                 }
             }

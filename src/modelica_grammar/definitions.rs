@@ -458,14 +458,13 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
         }
 
         // Extract annotation from composition_opt0
-        if let Some(annotation_opt) = &ast.composition_opt0 {
-            if let Some(class_mod_opt) = &annotation_opt
+        if let Some(annotation_opt) = &ast.composition_opt0
+            && let Some(class_mod_opt) = &annotation_opt
                 .annotation_clause
                 .class_modification
                 .class_modification_opt
-            {
-                comp.annotation = class_mod_opt.argument_list.args.clone();
-            }
+        {
+            comp.annotation = class_mod_opt.argument_list.args.clone();
         }
 
         Ok(comp)
@@ -567,11 +566,9 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             terminal_type: ir::ast::TerminalType::UnsignedInteger,
                                         },
                                     ) = subscript
-                                    {
-                                        if let Ok(dim) = token.text.parse::<usize>() {
+                                        && let Ok(dim) = token.text.parse::<usize>() {
                                             type_level_shape.push(dim);
                                         }
-                                    }
                                 }
                             }
 
@@ -672,11 +669,9 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             token,
                                             terminal_type: ir::ast::TerminalType::UnsignedInteger,
                                         }) = subscript
-                                        {
-                                            if let Ok(dim) = token.text.parse::<usize>() {
+                                            && let Ok(dim) = token.text.parse::<usize>() {
                                                 value.shape.push(dim);
                                             }
-                                        }
                                     }
                                 }
 
@@ -690,8 +685,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             if let Some(opt) = &modif.class_modification_opt {
                                                 // Look for start=, shape=, and other parameter modifications
                                                 for (idx, arg) in opt.argument_list.args.iter().enumerate() {
-                                                    if let ir::ast::Expression::Binary { op, lhs, rhs } = arg {
-                                                        if matches!(op, ir::ast::OpBinary::Assign(_)) {
+                                                    if let ir::ast::Expression::Binary { op, lhs, rhs } = arg
+                                                        && matches!(op, ir::ast::OpBinary::Assign(_)) {
                                                             // This is a named argument like start=2.5, shape=(3), or R=10
                                                             if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
                                                                 let param_name = comp.to_string();
@@ -720,11 +715,10 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                                 if let ir::ast::Expression::Terminal {
                                                                                     token,
                                                                                     terminal_type: ir::ast::TerminalType::UnsignedInteger,
-                                                                                } = &**inner {
-                                                                                    if let Ok(dim) = token.text.parse::<usize>() {
+                                                                                } = &**inner
+                                                                                    && let Ok(dim) = token.text.parse::<usize>() {
                                                                                         value.shape = vec![dim];
                                                                                     }
-                                                                                }
                                                                             }
                                                                             // Handle shape={3, 2} - multi-dimensional with array syntax
                                                                             ir::ast::Expression::Array { elements } => {
@@ -733,11 +727,10 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                                     if let ir::ast::Expression::Terminal {
                                                                                         token,
                                                                                         terminal_type: ir::ast::TerminalType::UnsignedInteger,
-                                                                                    } = elem {
-                                                                                        if let Ok(dim) = token.text.parse::<usize>() {
+                                                                                    } = elem
+                                                                                        && let Ok(dim) = token.text.parse::<usize>() {
                                                                                             value.shape.push(dim);
                                                                                         }
-                                                                                    }
                                                                                 }
                                                                             }
                                                                             // Handle shape=(3, 1) - multi-dimensional with tuple syntax
@@ -747,11 +740,10 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                                     if let ir::ast::Expression::Terminal {
                                                                                         token,
                                                                                         terminal_type: ir::ast::TerminalType::UnsignedInteger,
-                                                                                    } = elem {
-                                                                                        if let Ok(dim) = token.text.parse::<usize>() {
+                                                                                    } = elem
+                                                                                        && let Ok(dim) = token.text.parse::<usize>() {
                                                                                             value.shape.push(dim);
                                                                                         }
-                                                                                    }
                                                                                 }
                                                                             }
                                                                             _ => {}
@@ -817,7 +809,6 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                 }
                                                             }
                                                         }
-                                                    }
                                                 }
                                             }
                                         }

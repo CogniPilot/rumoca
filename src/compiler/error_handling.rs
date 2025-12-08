@@ -21,6 +21,7 @@ use thiserror::Error;
          typos = "typos".yellow(),
          declared = "declared".green())
 )]
+#[allow(dead_code)] // Defined for future semantic analysis
 pub struct UndefinedVariableError {
     /// The source code being compiled
     #[source_code]
@@ -77,18 +78,18 @@ pub fn create_syntax_error(error: &ParolError, source: &str) -> SyntaxError {
     }
 
     // Try to extract structured error information from ParolError
-    if let ParolError::ParserError(parser_error) = error {
-        if let Some((line, col, message)) = extract_from_parser_error(parser_error, source) {
-            let byte_offset = line_col_to_byte_offset(source, line, col);
-            let remaining = source.len().saturating_sub(byte_offset);
-            let span_len = remaining.min(10);
+    if let ParolError::ParserError(parser_error) = error
+        && let Some((line, col, message)) = extract_from_parser_error(parser_error, source)
+    {
+        let byte_offset = line_col_to_byte_offset(source, line, col);
+        let remaining = source.len().saturating_sub(byte_offset);
+        let span_len = remaining.min(10);
 
-            return SyntaxError {
-                src: source.to_string(),
-                span: SourceSpan::new(byte_offset.into(), span_len),
-                message,
-            };
-        }
+        return SyntaxError {
+            src: source.to_string(),
+            span: SourceSpan::new(byte_offset.into(), span_len),
+            message,
+        };
     }
 
     // Fallback for other error types
@@ -243,10 +244,10 @@ fn extract_location_from_cause(cause: &str) -> Option<(usize, usize)> {
     if let Some(mo_pos) = cause.find(".mo:") {
         let after = &cause[mo_pos + 4..];
         let parts: Vec<&str> = after.split(':').take(2).collect();
-        if parts.len() >= 2 {
-            if let (Ok(line), Ok(col)) = (parts[0].parse(), parts[1].split('-').next()?.parse()) {
-                return Some((line, col));
-            }
+        if parts.len() >= 2
+            && let (Ok(line), Ok(col)) = (parts[0].parse(), parts[1].split('-').next()?.parse())
+        {
+            return Some((line, col));
         }
     }
     None
@@ -269,10 +270,10 @@ pub fn extract_parse_error(error: &ParolError, source: &str) -> (u32, u32, Strin
         return (1, 1, message);
     }
 
-    if let ParolError::ParserError(parser_error) = error {
-        if let Some((line, col, message)) = extract_from_parser_error(parser_error, source) {
-            return (line as u32, col as u32, message);
-        }
+    if let ParolError::ParserError(parser_error) = error
+        && let Some((line, col, message)) = extract_from_parser_error(parser_error, source)
+    {
+        return (line as u32, col as u32, message);
     }
 
     // Fallback

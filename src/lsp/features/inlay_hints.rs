@@ -236,38 +236,36 @@ fn collect_expression_hints(
             let should_skip = SKIP_HINT_FUNCTIONS.contains(&func_name);
 
             // Look up the function in builtins
-            if !should_skip {
-                if let Some(builtin) = builtins.get(func_name) {
-                    // Only show hints for functions with multiple parameters
-                    if builtin.parameters.len() > 1 {
-                        // Add parameter name hints for each argument
-                        for (i, arg) in args.iter().enumerate() {
-                            if let Some(loc) = arg.get_location() {
-                                let line = loc.start_line.saturating_sub(1);
+            if !should_skip && let Some(builtin) = builtins.get(func_name) {
+                // Only show hints for functions with multiple parameters
+                if builtin.parameters.len() > 1 {
+                    // Add parameter name hints for each argument
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some(loc) = arg.get_location() {
+                            let line = loc.start_line.saturating_sub(1);
 
-                                // Check if in range
-                                if line < range.start.line || line > range.end.line {
-                                    continue;
-                                }
+                            // Check if in range
+                            if line < range.start.line || line > range.end.line {
+                                continue;
+                            }
 
-                                // Get parameter name from signature
-                                if let Some(param_name) =
-                                    get_param_name_from_signature(builtin.signature, i)
-                                {
-                                    hints.push(InlayHint {
-                                        position: Position {
-                                            line,
-                                            character: loc.start_column.saturating_sub(1),
-                                        },
-                                        label: InlayHintLabel::String(format!("{}:", param_name)),
-                                        kind: Some(InlayHintKind::PARAMETER),
-                                        text_edits: None,
-                                        tooltip: None,
-                                        padding_left: Some(false),
-                                        padding_right: Some(true),
-                                        data: None,
-                                    });
-                                }
+                            // Get parameter name from signature
+                            if let Some(param_name) =
+                                get_param_name_from_signature(builtin.signature, i)
+                            {
+                                hints.push(InlayHint {
+                                    position: Position {
+                                        line,
+                                        character: loc.start_column.saturating_sub(1),
+                                    },
+                                    label: InlayHintLabel::String(format!("{}:", param_name)),
+                                    kind: Some(InlayHintKind::PARAMETER),
+                                    text_edits: None,
+                                    tooltip: None,
+                                    padding_left: Some(false),
+                                    padding_right: Some(true),
+                                    data: None,
+                                });
                             }
                         }
                     }

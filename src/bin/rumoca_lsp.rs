@@ -1,3 +1,7 @@
+// Allow mutable_key_type for HashMap<Uri, _> - Uri's hash is based on its immutable string
+// representation, making it safe to use as a key despite interior mutability in auth data.
+#![allow(clippy::mutable_key_type)]
+
 //! Rumoca Language Server Protocol (LSP) binary.
 //!
 //! This binary provides LSP support for Modelica files, including:
@@ -50,9 +54,20 @@ use rumoca::lsp::{
     handle_rename_workspace, handle_semantic_tokens, handle_signature_help, handle_type_definition,
     handle_workspace_symbol,
 };
+use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+/// Debounce delay for diagnostics (milliseconds)
+const DIAGNOSTIC_DEBOUNCE_MS: u64 = 300;
+
+/// Pending diagnostic request
+struct PendingDiagnostic {
+    text: String,
+    changed_at: Instant,
+}
 
 /// Global debug flag, set from initialization options
 static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
@@ -255,31 +270,76 @@ fn main_loop(
 
     debug_log!("[rumoca-lsp] File watcher started, ready to process messages");
 
+    // Pending diagnostics (debounced)
+    let mut pending_diagnostics: HashMap<Uri, PendingDiagnostic> = HashMap::new();
+    let debounce_duration = Duration::from_millis(DIAGNOSTIC_DEBOUNCE_MS);
+
     // Main event loop using select to handle both LSP messages and file events
     loop {
+        // Calculate timeout for next pending diagnostic
+        let timeout = pending_diagnostics
+            .values()
+            .map(|p| {
+                let elapsed = p.changed_at.elapsed();
+                if elapsed >= debounce_duration {
+                    Duration::ZERO
+                } else {
+                    debounce_duration - elapsed
+                }
+            })
+            .min()
+            .unwrap_or(Duration::from_secs(60)); // Long timeout if no pending
+
         let mut sel = Select::new();
         sel.recv(&connection.receiver);
         sel.recv(&fs_rx);
 
-        let oper = sel.select();
-        match oper.index() {
-            // LSP message received
-            0 => {
-                let msg = match oper.recv(&connection.receiver) {
-                    Ok(msg) => msg,
-                    Err(_) => return Ok(()), // Channel closed, shutdown
-                };
-                if handle_lsp_message(&connection, &mut workspace, msg)? {
-                    return Ok(()); // Shutdown requested
+        let oper = sel.select_timeout(timeout);
+        match oper {
+            Ok(oper) => match oper.index() {
+                // LSP message received
+                0 => {
+                    let msg = match oper.recv(&connection.receiver) {
+                        Ok(msg) => msg,
+                        Err(_) => return Ok(()), // Channel closed, shutdown
+                    };
+                    if handle_lsp_message_debounced(
+                        &connection,
+                        &mut workspace,
+                        msg,
+                        &mut pending_diagnostics,
+                    )? {
+                        return Ok(()); // Shutdown requested
+                    }
+                }
+                // File system event received
+                1 => {
+                    if let Ok(event) = oper.recv(&fs_rx) {
+                        handle_file_event(&mut workspace, event);
+                    }
+                }
+                _ => {}
+            },
+            Err(_) => {
+                // Timeout - check for ready diagnostics
+            }
+        }
+
+        // Process any ready diagnostics
+        let now = Instant::now();
+        let ready_uris: Vec<Uri> = pending_diagnostics
+            .iter()
+            .filter(|(_, p)| now.duration_since(p.changed_at) >= debounce_duration)
+            .map(|(uri, _)| uri.clone())
+            .collect();
+
+        for uri in ready_uris {
+            if let Some(pending) = pending_diagnostics.remove(&uri) {
+                let diagnostics = compute_diagnostics(&uri, &pending.text, &mut workspace);
+                if let Err(e) = publish_diagnostics(&connection, uri, diagnostics) {
+                    debug_log!("[rumoca-lsp] Failed to publish diagnostics: {}", e);
                 }
             }
-            // File system event received
-            1 => {
-                if let Ok(event) = oper.recv(&fs_rx) {
-                    handle_file_event(&mut workspace, event);
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -623,6 +683,70 @@ fn handle_lsp_message(
     }
 
     Ok(false)
+}
+
+/// Handle a single LSP message with debounced diagnostics
+fn handle_lsp_message_debounced(
+    connection: &Connection,
+    workspace: &mut WorkspaceState,
+    msg: Message,
+    pending_diagnostics: &mut HashMap<Uri, PendingDiagnostic>,
+) -> Result<bool, Box<dyn Error + Sync + Send>> {
+    match msg {
+        Message::Notification(notif) => {
+            // Handle DidOpen - compute diagnostics immediately (first open)
+            let notif = match cast_notification::<DidOpenTextDocument>(notif) {
+                Ok(params) => {
+                    let uri = params.text_document.uri.clone();
+                    let text = params.text_document.text.clone();
+                    workspace.open_document(uri.clone(), text.clone());
+                    let diagnostics = compute_diagnostics(&uri, &text, workspace);
+                    publish_diagnostics(connection, uri, diagnostics)?;
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(notif)) => notif,
+            };
+
+            // Handle DidChange - defer diagnostics (debounced)
+            let notif = match cast_notification::<DidChangeTextDocument>(notif) {
+                Ok(params) => {
+                    let uri = params.text_document.uri.clone();
+                    if let Some(change) = params.content_changes.into_iter().next() {
+                        let text = change.text;
+                        workspace.update_document(uri.clone(), text.clone());
+                        // Queue for debounced diagnostics
+                        pending_diagnostics.insert(
+                            uri,
+                            PendingDiagnostic {
+                                text,
+                                changed_at: Instant::now(),
+                            },
+                        );
+                    }
+                    return Ok(false);
+                }
+                Err(ExtractError::JsonError { .. }) => return Ok(false),
+                Err(ExtractError::MethodMismatch(notif)) => notif,
+            };
+
+            // Handle DidClose
+            match cast_notification::<DidCloseTextDocument>(notif) {
+                Ok(params) => {
+                    pending_diagnostics.remove(&params.text_document.uri);
+                    workspace.close_document(&params.text_document.uri);
+                }
+                Err(ExtractError::JsonError { .. }) => {}
+                Err(ExtractError::MethodMismatch(notif)) => {
+                    // Pass other notifications to the regular handler
+                    return handle_lsp_message(connection, workspace, Message::Notification(notif));
+                }
+            };
+            Ok(false)
+        }
+        // Pass other message types to the regular handler
+        other => handle_lsp_message(connection, workspace, other),
+    }
 }
 
 fn cast_request<R>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>>

@@ -120,6 +120,86 @@ impl WorkspaceState {
         }
     }
 
+    /// Create a workspace state from in-memory library ASTs.
+    ///
+    /// This is useful for WASM where there's no file system access.
+    /// The library ASTs are indexed and made available for completion, hover, etc.
+    pub fn from_library_asts(library_asts: &[&StoredDefinition]) -> Self {
+        let mut ws = Self::new();
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[workspace] from_library_asts: indexing {} library ASTs",
+                library_asts.len()
+            )
+            .into(),
+        );
+
+        // Index each library AST
+        for (i, ast) in library_asts.iter().enumerate() {
+            // Create a synthetic URI for each library file
+            let uri: Uri = format!("memory:///library_{}.mo", i)
+                .parse()
+                .expect("valid URI");
+
+            #[cfg(target_arch = "wasm32")]
+            {
+                let within_str = ast
+                    .within
+                    .as_ref()
+                    .map(|w| w.to_string())
+                    .unwrap_or_else(|| "<none>".to_string());
+                let classes: Vec<_> = ast.class_list.keys().collect();
+                if i < 10 || ast.class_list.keys().any(|k| k.contains("PID")) {
+                    web_sys::console::log_1(
+                        &format!(
+                            "[workspace] AST {}: within='{}', classes={:?}",
+                            i, within_str, classes
+                        )
+                        .into(),
+                    );
+                }
+            }
+
+            // Index the symbols from this AST
+            ws.index_stored_definition(&uri, ast);
+
+            // Store the AST for lookups
+            ws.parsed_asts.insert(uri.clone(), (*ast).clone());
+            ws.cached_asts.insert(uri, (*ast).clone());
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Log some sample indexed symbols
+            let pid_symbols: Vec<_> = ws
+                .symbol_index
+                .keys()
+                .filter(|k| k.contains("PID"))
+                .take(10)
+                .collect();
+            web_sys::console::log_1(
+                &format!(
+                    "[workspace] indexed {} symbols, PID-related: {:?}",
+                    ws.symbol_index.len(),
+                    pid_symbols
+                )
+                .into(),
+            );
+        }
+
+        ws
+    }
+
+    /// Add a document to the workspace (for WASM use).
+    ///
+    /// This parses the document and indexes its symbols.
+    pub fn add_document(&mut self, uri: Uri, text: String) {
+        self.documents.insert(uri.clone(), text.clone());
+        self.reparse_document(&uri);
+    }
+
     /// Enable or disable debug logging
     pub fn set_debug(&mut self, debug: bool) {
         self.debug = debug;
@@ -410,6 +490,11 @@ impl WorkspaceState {
         self.cached_asts.get(uri)
     }
 
+    /// Set a cached AST for a URI (used for WASM fallback when parsing fails)
+    pub fn set_cached_ast(&mut self, uri: Uri, ast: StoredDefinition) {
+        self.cached_asts.insert(uri, ast);
+    }
+
     /// Remove symbols from a file from the index
     fn remove_file_symbols(&mut self, uri: &Uri) {
         if let Some(symbols) = self.file_symbols.remove(uri) {
@@ -598,12 +683,12 @@ impl WorkspaceState {
         // Try looking up with the file's within prefix
         // This handles cases like "Interfaces.DiscreteSISO" in a file with
         // "within Modelica.Blocks;" -> "Modelica.Blocks.Interfaces.DiscreteSISO"
-        if let Some(ast) = self.parsed_asts.get(context_uri) {
-            if let Some(within) = &ast.within {
-                let qualified = format!("{}.{}", within, type_name);
-                if let Some(sym) = self.lookup_symbol(&qualified) {
-                    return Some(sym);
-                }
+        if let Some(ast) = self.parsed_asts.get(context_uri)
+            && let Some(within) = &ast.within
+        {
+            let qualified = format!("{}.{}", within, type_name);
+            if let Some(sym) = self.lookup_symbol(&qualified) {
+                return Some(sym);
             }
         }
 
@@ -674,11 +759,11 @@ impl WorkspaceState {
         let mut package_path: Option<PathBuf> = None;
 
         for root in &self.package_roots {
-            if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
-                if name == top_level {
-                    package_path = Some(root.clone());
-                    break;
-                }
+            if let Some(name) = root.file_name().and_then(|n| n.to_str())
+                && name == top_level
+            {
+                package_path = Some(root.clone());
+                break;
             }
         }
 
@@ -723,29 +808,30 @@ impl WorkspaceState {
 
                     if path.is_dir() {
                         // Sub-packages (directories with package.mo)
-                        if path.join("package.mo").exists() {
-                            if let Some(subpkg_name) = path.file_name().and_then(|n| n.to_str()) {
-                                let qualified_name = format!("{}.{}", package_prefix, subpkg_name);
-                                let subpkg_mo = path.join("package.mo");
-                                if let Some(path_str) = subpkg_mo.to_str() {
-                                    let uri_str = format!("file://{}", path_str);
-                                    if let Ok(uri) = uri_str.parse::<Uri>() {
-                                        self.register_package_symbol(&qualified_name, &uri);
-                                    }
+                        if path.join("package.mo").exists()
+                            && let Some(subpkg_name) = path.file_name().and_then(|n| n.to_str())
+                        {
+                            let qualified_name = format!("{}.{}", package_prefix, subpkg_name);
+                            let subpkg_mo = path.join("package.mo");
+                            if let Some(path_str) = subpkg_mo.to_str() {
+                                let uri_str = format!("file://{}", path_str);
+                                if let Ok(uri) = uri_str.parse::<Uri>() {
+                                    self.register_package_symbol(&qualified_name, &uri);
                                 }
                             }
                         }
                     } else if path.extension().is_some_and(|ext| ext == "mo") {
                         // Individual .mo files (classes within the package)
                         // Skip package.mo as it's already loaded
-                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if file_name != "package.mo" && file_name != "package.order" {
-                                self.debug_log(&format!(
-                                    "[workspace] Loading package member: {:?}",
-                                    path
-                                ));
-                                let _ = self.ensure_file_loaded(&path);
-                            }
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                            && file_name != "package.mo"
+                            && file_name != "package.order"
+                        {
+                            self.debug_log(&format!(
+                                "[workspace] Loading package member: {:?}",
+                                path
+                            ));
+                            let _ = self.ensure_file_loaded(&path);
                         }
                     }
                 }
@@ -830,7 +916,21 @@ impl From<SymbolKind> for SymbolCategory {
 
 impl SymbolLookup for WorkspaceState {
     fn lookup_symbol(&self, name: &str) -> Option<SymbolInfo> {
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[workspace] lookup_symbol('{}'), symbol_index has {} entries",
+                name,
+                self.symbol_index.len()
+            )
+            .into(),
+        );
+
         let ws_sym = self.symbol_index.get(name)?;
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&format!("[workspace] found symbol: {:?}", ws_sym.kind).into());
+
         Some(SymbolInfo {
             qualified_name: ws_sym.qualified_name.clone(),
             location: ws_sym.uri.to_string(),
@@ -842,7 +942,34 @@ impl SymbolLookup for WorkspaceState {
     }
 
     fn get_ast_for_symbol(&self, qualified_name: &str) -> Option<&StoredDefinition> {
-        let sym = self.symbol_index.get(qualified_name)?;
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[workspace] get_ast_for_symbol('{}'), symbol_index has {} entries",
+                qualified_name,
+                self.symbol_index.len()
+            )
+            .into(),
+        );
+
+        let sym = self.symbol_index.get(qualified_name);
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            if sym.is_none() {
+                // Log some sample symbols to help debug
+                let samples: Vec<_> = self.symbol_index.keys().take(5).collect();
+                web_sys::console::log_1(
+                    &format!(
+                        "[workspace] symbol '{}' not found, sample keys: {:?}",
+                        qualified_name, samples
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        let sym = sym?;
         self.parsed_asts.get(&sym.uri)
     }
 }

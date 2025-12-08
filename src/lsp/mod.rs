@@ -38,12 +38,12 @@ pub use features::{
     handle_folding_range, handle_inlay_hints,
 };
 pub use handlers::{
-    get_semantic_token_legend, handle_completion, handle_completion_workspace,
-    handle_document_symbols, handle_formatting, handle_goto_definition,
-    handle_goto_definition_workspace, handle_hover, handle_hover_workspace, handle_incoming_calls,
-    handle_outgoing_calls, handle_prepare_call_hierarchy, handle_prepare_rename, handle_references,
-    handle_rename, handle_rename_workspace, handle_semantic_tokens, handle_signature_help,
-    handle_type_definition, handle_workspace_symbol,
+    get_semantic_token_legend, handle_completion_workspace, handle_document_symbols,
+    handle_formatting, handle_goto_definition, handle_goto_definition_workspace, handle_hover,
+    handle_hover_workspace, handle_incoming_calls, handle_outgoing_calls,
+    handle_prepare_call_hierarchy, handle_prepare_rename, handle_references, handle_rename,
+    handle_rename_workspace, handle_semantic_tokens, handle_signature_help, handle_type_definition,
+    handle_workspace_symbol,
 };
 pub use utils::parse_document;
 pub use workspace::WorkspaceState;

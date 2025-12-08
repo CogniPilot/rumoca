@@ -83,24 +83,25 @@ fn collect_import_links(
 
         // Find the import in the text
         for (line_num, line) in text.lines().enumerate() {
-            if line.trim().starts_with("import ") && line.contains(&import_path) {
-                if let Some(start) = line.find(&import_path) {
-                    links.push(DocumentLink {
-                        range: Range {
-                            start: Position {
-                                line: line_num as u32,
-                                character: start as u32,
-                            },
-                            end: Position {
-                                line: line_num as u32,
-                                character: (start + import_path.len()) as u32,
-                            },
+            if line.trim().starts_with("import ")
+                && line.contains(&import_path)
+                && let Some(start) = line.find(&import_path)
+            {
+                links.push(DocumentLink {
+                    range: Range {
+                        start: Position {
+                            line: line_num as u32,
+                            character: start as u32,
                         },
-                        target: None, // Would need workspace support to resolve
-                        tooltip: Some(format!("Go to {}", import_path)),
-                        data: None,
-                    });
-                }
+                        end: Position {
+                            line: line_num as u32,
+                            character: (start + import_path.len()) as u32,
+                        },
+                    },
+                    target: None, // Would need workspace support to resolve
+                    tooltip: Some(format!("Go to {}", import_path)),
+                    data: None,
+                });
             }
         }
     }
@@ -123,10 +124,10 @@ fn collect_annotation_links(text: &str, links: &mut Vec<DocumentLink>) {
 
         // Look for Diagram/Icon annotations with file references
         // Pattern: fileName="path/to/file.svg"
-        if line.contains("fileName") {
-            if let Some(file_link) = extract_filename_link(line, line_num) {
-                links.push(file_link);
-            }
+        if line.contains("fileName")
+            && let Some(file_link) = extract_filename_link(line, line_num)
+        {
+            links.push(file_link);
         }
 
         // Look for uses annotation
@@ -233,24 +234,24 @@ fn collect_uses_links(line: &str, line_num: usize, links: &mut Vec<DocumentLink>
                     lib_ref
                 };
 
-                if !lib_name.is_empty() {
-                    if let Some(lib_pos) = line.find(lib_name) {
-                        links.push(DocumentLink {
-                            range: Range {
-                                start: Position {
-                                    line: line_num as u32,
-                                    character: lib_pos as u32,
-                                },
-                                end: Position {
-                                    line: line_num as u32,
-                                    character: (lib_pos + lib_name.len()) as u32,
-                                },
+                if !lib_name.is_empty()
+                    && let Some(lib_pos) = line.find(lib_name)
+                {
+                    links.push(DocumentLink {
+                        range: Range {
+                            start: Position {
+                                line: line_num as u32,
+                                character: lib_pos as u32,
                             },
-                            target: None,
-                            tooltip: Some(format!("Go to library {}", lib_name)),
-                            data: None,
-                        });
-                    }
+                            end: Position {
+                                line: line_num as u32,
+                                character: (lib_pos + lib_name.len()) as u32,
+                            },
+                        },
+                        target: None,
+                        tooltip: Some(format!("Go to library {}", lib_name)),
+                        data: None,
+                    });
                 }
             }
         }

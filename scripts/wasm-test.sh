@@ -1,0 +1,185 @@
+#!/bin/bash
+# WASM build and test script for Rumoca
+#
+# Usage:
+#   ./scripts/wasm-test.sh          # Build and serve
+#   ./scripts/wasm-test.sh build    # Build only
+#   ./scripts/wasm-test.sh serve    # Serve only (assumes already built)
+#   ./scripts/wasm-test.sh clean    # Clean WASM build artifacts
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PORT="${PORT:-8080}"
+
+cd "$PROJECT_DIR"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log() { echo -e "${GREEN}[wasm-test]${NC} $1"; }
+warn() { echo -e "${YELLOW}[wasm-test]${NC} $1"; }
+error() { echo -e "${RED}[wasm-test]${NC} $1"; exit 1; }
+
+check_deps() {
+    # Check for wasm-bindgen-cli
+    if ! command -v wasm-bindgen &> /dev/null; then
+        warn "wasm-bindgen-cli not found. Installing..."
+        cargo install wasm-bindgen-cli
+    fi
+
+    if ! rustup target list --installed | grep -q wasm32-unknown-unknown; then
+        warn "Adding wasm32-unknown-unknown target..."
+        rustup target add wasm32-unknown-unknown
+    fi
+
+    # Check for nightly toolchain (needed for -Z build-std)
+    if ! rustup toolchain list | grep -q nightly; then
+        error "Nightly toolchain required. Install with: rustup toolchain install nightly"
+    fi
+
+    # Ensure rust-src is installed for build-std
+    if ! rustup +nightly component list --installed | grep -q rust-src; then
+        warn "Installing rust-src component for nightly..."
+        rustup +nightly component add rust-src
+    fi
+}
+
+build_wasm() {
+    log "Building WASM module with threading support..."
+
+    # Build with nightly for atomics support
+    # Note: rustflags and build-std are configured in .cargo/config.toml
+    cargo +nightly build --lib --release \
+        --target wasm32-unknown-unknown \
+        --no-default-features --features wasm
+
+    log "Generating JS bindings with wasm-bindgen..."
+
+    # Create pkg directory
+    mkdir -p pkg
+
+    # Generate bindings
+    wasm-bindgen \
+        --target web \
+        --out-dir pkg \
+        --out-name rumoca \
+        target/wasm32-unknown-unknown/release/rumoca.wasm
+
+    log "Build complete! Output in pkg/"
+    ls -lh pkg/*.wasm pkg/*.js 2>/dev/null || true
+}
+
+serve() {
+    log "Starting server on http://localhost:$PORT"
+    log "Test page: http://localhost:$PORT/examples/wasm_test.html"
+    log "Press Ctrl+C to stop"
+    echo ""
+
+    # Python server with COOP/COEP headers for SharedArrayBuffer
+    python3 << 'EOF'
+import http.server
+import mimetypes
+import os
+import sys
+
+PORT = int(os.environ.get('PORT', 8080))
+
+# Ensure correct MIME types for WASM and JS modules
+mimetypes.add_type('application/javascript', '.js')
+mimetypes.add_type('application/wasm', '.wasm')
+
+class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
+    # Override extensions_map to ensure correct MIME types
+    extensions_map = {
+        '': 'application/octet-stream',
+        '.html': 'text/html',
+        '.js': 'application/javascript',
+        '.mjs': 'application/javascript',
+        '.json': 'application/json',
+        '.wasm': 'application/wasm',
+        '.css': 'text/css',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.svg': 'image/svg+xml',
+    }
+
+    def do_GET(self):
+        # Handle directory imports by serving index.js
+        # This is needed for wasm-bindgen-rayon's import('../../..')
+        if self.path.endswith('/pkg/') or self.path == '/pkg':
+            self.path = '/pkg/index.js'
+        super().do_GET()
+
+    def end_headers(self):
+        # Required for SharedArrayBuffer (WASM threading)
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        # CORS for local development
+        self.send_header('Access-Control-Allow-Origin', '*')
+        super().end_headers()
+
+    def log_message(self, format, *args):
+        # Colorize log output
+        if '200' in str(args):
+            print(f"\033[32m{self.address_string()}\033[0m - {format % args}")
+        elif '404' in str(args):
+            print(f"\033[31m{self.address_string()}\033[0m - {format % args}")
+        else:
+            print(f"{self.address_string()} - {format % args}")
+
+try:
+    with http.server.HTTPServer(('', PORT), CORSRequestHandler) as httpd:
+        httpd.serve_forever()
+except KeyboardInterrupt:
+    print("\nServer stopped.")
+    sys.exit(0)
+EOF
+}
+
+clean() {
+    log "Cleaning WASM build artifacts..."
+    rm -rf pkg/
+    rm -rf target/wasm32-unknown-unknown/
+    log "Clean complete!"
+}
+
+# Main
+case "${1:-all}" in
+    build)
+        check_deps
+        build_wasm
+        ;;
+    serve)
+        if [ ! -d "pkg" ]; then
+            error "No pkg/ directory found. Run './scripts/wasm-test.sh build' first."
+        fi
+        serve
+        ;;
+    clean)
+        clean
+        ;;
+    all|"")
+        check_deps
+        build_wasm
+        echo ""
+        serve
+        ;;
+    *)
+        echo "Usage: $0 [build|serve|clean|all]"
+        echo ""
+        echo "Commands:"
+        echo "  build  - Build WASM module only"
+        echo "  serve  - Start local server (requires prior build)"
+        echo "  clean  - Remove WASM build artifacts"
+        echo "  all    - Build and serve (default)"
+        echo ""
+        echo "Environment variables:"
+        echo "  PORT   - Server port (default: 8080)"
+        exit 1
+        ;;
+esac

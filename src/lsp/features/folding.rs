@@ -384,19 +384,19 @@ fn collect_equation_ranges(eq: &Equation, text: &str, ranges: &mut Vec<FoldingRa
             cond_blocks,
             else_block: _,
         } => {
-            if let Some(first_block) = cond_blocks.first() {
-                if let Some(loc) = first_block.cond.get_location() {
-                    let start_line = loc.start_line.saturating_sub(1);
-                    if let Some(end_line) = find_end_keyword(text, start_line, "if") {
-                        ranges.push(FoldingRange {
-                            start_line,
-                            start_character: None,
-                            end_line,
-                            end_character: None,
-                            kind: Some(FoldingRangeKind::Region),
-                            collapsed_text: Some("if ... end if".to_string()),
-                        });
-                    }
+            if let Some(first_block) = cond_blocks.first()
+                && let Some(loc) = first_block.cond.get_location()
+            {
+                let start_line = loc.start_line.saturating_sub(1);
+                if let Some(end_line) = find_end_keyword(text, start_line, "if") {
+                    ranges.push(FoldingRange {
+                        start_line,
+                        start_character: None,
+                        end_line,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: Some("if ... end if".to_string()),
+                    });
                 }
             }
 
@@ -427,19 +427,19 @@ fn collect_equation_ranges(eq: &Equation, text: &str, ranges: &mut Vec<FoldingRa
             }
         }
         Equation::When(blocks) => {
-            if let Some(first_block) = blocks.first() {
-                if let Some(loc) = first_block.cond.get_location() {
-                    let start_line = loc.start_line.saturating_sub(1);
-                    if let Some(end_line) = find_end_keyword(text, start_line, "when") {
-                        ranges.push(FoldingRange {
-                            start_line,
-                            start_character: None,
-                            end_line,
-                            end_character: None,
-                            kind: Some(FoldingRangeKind::Region),
-                            collapsed_text: Some("when ... end when".to_string()),
-                        });
-                    }
+            if let Some(first_block) = blocks.first()
+                && let Some(loc) = first_block.cond.get_location()
+            {
+                let start_line = loc.start_line.saturating_sub(1);
+                if let Some(end_line) = find_end_keyword(text, start_line, "when") {
+                    ranges.push(FoldingRange {
+                        start_line,
+                        start_character: None,
+                        end_line,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: Some("when ... end when".to_string()),
+                    });
                 }
             }
 
@@ -498,19 +498,19 @@ fn collect_statement_ranges(stmt: &Statement, text: &str, ranges: &mut Vec<Foldi
             cond_blocks,
             else_block,
         } => {
-            if let Some(first_block) = cond_blocks.first() {
-                if let Some(loc) = first_block.cond.get_location() {
-                    let start_line = loc.start_line.saturating_sub(1);
-                    if let Some(end_line) = find_end_keyword(text, start_line, "if") {
-                        ranges.push(FoldingRange {
-                            start_line,
-                            start_character: None,
-                            end_line,
-                            end_character: None,
-                            kind: Some(FoldingRangeKind::Region),
-                            collapsed_text: Some("if ... end if".to_string()),
-                        });
-                    }
+            if let Some(first_block) = cond_blocks.first()
+                && let Some(loc) = first_block.cond.get_location()
+            {
+                let start_line = loc.start_line.saturating_sub(1);
+                if let Some(end_line) = find_end_keyword(text, start_line, "if") {
+                    ranges.push(FoldingRange {
+                        start_line,
+                        start_character: None,
+                        end_line,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: Some("if ... end if".to_string()),
+                    });
                 }
             }
 
@@ -526,19 +526,19 @@ fn collect_statement_ranges(stmt: &Statement, text: &str, ranges: &mut Vec<Foldi
             }
         }
         Statement::When(blocks) => {
-            if let Some(first_block) = blocks.first() {
-                if let Some(loc) = first_block.cond.get_location() {
-                    let start_line = loc.start_line.saturating_sub(1);
-                    if let Some(end_line) = find_end_keyword(text, start_line, "when") {
-                        ranges.push(FoldingRange {
-                            start_line,
-                            start_character: None,
-                            end_line,
-                            end_character: None,
-                            kind: Some(FoldingRangeKind::Region),
-                            collapsed_text: Some("when ... end when".to_string()),
-                        });
-                    }
+            if let Some(first_block) = blocks.first()
+                && let Some(loc) = first_block.cond.get_location()
+            {
+                let start_line = loc.start_line.saturating_sub(1);
+                if let Some(end_line) = find_end_keyword(text, start_line, "when") {
+                    ranges.push(FoldingRange {
+                        start_line,
+                        start_character: None,
+                        end_line,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: Some("when ... end when".to_string()),
+                    });
                 }
             }
 

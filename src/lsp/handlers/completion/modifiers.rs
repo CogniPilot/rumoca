@@ -1,12 +1,14 @@
 //! Modifier completion handling.
 //!
 //! Provides completions for component modifiers inside parentheses.
+//!
+//! This module uses canonical scope resolution functions from
+//! `crate::ir::transform::scope_resolver` to avoid duplication.
 
 use lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat};
 
-use crate::ir::ast::{StoredDefinition, Variability};
-
-use super::members::find_class_by_name;
+use crate::ir::ast::{Import, StoredDefinition, Variability};
+use crate::ir::transform::scope_resolver::{SymbolLookup, find_class_in_ast};
 
 /// Check if we're in a modifier context and return appropriate completions
 ///
@@ -16,9 +18,12 @@ use super::members::find_class_by_name;
 /// - `Real x(start=1, ` - after comma with space
 /// - `Real x(st` - typing a modifier name
 /// - `test.BouncingBall ball(` - class instance with member modifiers
+///
+/// The `workspace` parameter enables lookup of types from libraries.
 pub fn get_modifier_completions(
     text_before: &str,
     ast: Option<&StoredDefinition>,
+    workspace: Option<&dyn SymbolLookup>,
 ) -> Option<Vec<CompletionItem>> {
     // Find the last unmatched opening parenthesis
     let mut paren_depth = 0;
@@ -79,17 +84,129 @@ pub fn get_modifier_completions(
     if should_show {
         let mut items = Vec::new();
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[modifiers] type_name='{}', has_ast={}, has_workspace={}",
+                type_name,
+                ast.is_some(),
+                workspace.is_some()
+            )
+            .into(),
+        );
+
         // Check if the type is a primitive type - if so, add standard modifiers
         if is_primitive_type(&type_name) {
             items.extend(get_modifier_items());
-        } else if let Some(ast) = ast {
+        } else {
             // For class types, add member overrides from the class definition
-            if let Some(type_class) = find_class_by_name(ast, &type_name) {
+            // First try looking up in the local AST
+            let mut found_class = false;
+            if let Some(ast) = ast
+                && let Some(type_class) = find_class_in_ast(ast, &type_name)
+            {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(
+                    &format!("[modifiers] found '{}' in local AST", type_name).into(),
+                );
                 items.extend(get_class_modifier_completions(type_class));
+                found_class = true;
             }
+
+            // If not found locally, try looking up in the workspace (for library types)
+            if !found_class && let Some(ws) = workspace {
+                // First, try to resolve the type name via imports in the current AST
+                let qualified_names = resolve_type_via_imports(&type_name, ast);
+
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(
+                    &format!(
+                        "[modifiers] resolved '{}' via imports: {:?}",
+                        type_name, qualified_names
+                    )
+                    .into(),
+                );
+
+                for qname in &qualified_names {
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::log_1(
+                        &format!("[modifiers] looking up '{}' in workspace", qname).into(),
+                    );
+
+                    if let Some(lib_ast) = ws.get_ast_for_symbol(qname) {
+                        #[cfg(target_arch = "wasm32")]
+                        web_sys::console::log_1(
+                            &format!(
+                                "[modifiers] found AST for '{}', class_list keys: {:?}",
+                                qname,
+                                lib_ast.class_list.keys().collect::<Vec<_>>()
+                            )
+                            .into(),
+                        );
+
+                        if let Some(type_class) = find_class_in_ast(lib_ast, qname) {
+                            #[cfg(target_arch = "wasm32")]
+                            web_sys::console::log_1(
+                                &format!(
+                                    "[modifiers] found class '{}' with {} components",
+                                    qname,
+                                    type_class.components.len()
+                                )
+                                .into(),
+                            );
+                            items.extend(get_class_modifier_completions(type_class));
+                            found_class = true;
+                            break;
+                        } else {
+                            #[cfg(target_arch = "wasm32")]
+                            web_sys::console::log_1(
+                                &format!(
+                                    "[modifiers] find_class_in_ast returned None for '{}'",
+                                    qname
+                                )
+                                .into(),
+                            );
+                        }
+                    } else {
+                        #[cfg(target_arch = "wasm32")]
+                        web_sys::console::log_1(
+                            &format!(
+                                "[modifiers] get_ast_for_symbol returned None for '{}'",
+                                qname
+                            )
+                            .into(),
+                        );
+                    }
+                }
+
+                // If still not found, try direct lookup (for fully qualified names in source)
+                if !found_class
+                    && let Some(lib_ast) = ws.get_ast_for_symbol(&type_name)
+                    && let Some(type_class) = find_class_in_ast(lib_ast, &type_name)
+                {
+                    items.extend(get_class_modifier_completions(type_class));
+                    found_class = true;
+                }
+            }
+
             // Also add standard modifiers that apply to any component (like each, redeclare, final)
-            items.extend(get_general_modifier_items());
+            if found_class || ast.is_some() || workspace.is_some() {
+                items.extend(get_general_modifier_items());
+            }
         }
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[modifiers] returning {} items, found_class={}",
+                items.len(),
+                items
+                    .iter()
+                    .any(|i| i.kind == Some(CompletionItemKind::FIELD)
+                        || i.kind == Some(CompletionItemKind::CONSTANT))
+            )
+            .into(),
+        );
 
         if !items.is_empty() { Some(items) } else { None }
     } else {
@@ -250,6 +367,56 @@ fn get_general_modifier_items() -> Vec<CompletionItem> {
             ..Default::default()
         })
         .collect()
+}
+
+/// Resolve a type name to its fully qualified name(s) using imports from the AST
+///
+/// Given a short type name like "PID" and an AST containing imports like
+/// `import Modelica.Blocks.Continuous.PID;`, returns a list of possible
+/// fully qualified names (e.g., ["Modelica.Blocks.Continuous.PID"]).
+fn resolve_type_via_imports(type_name: &str, ast: Option<&StoredDefinition>) -> Vec<String> {
+    let mut qualified_names = Vec::new();
+
+    let Some(ast) = ast else {
+        return qualified_names;
+    };
+
+    // Search all classes in the AST for imports that match the type name
+    for class in ast.class_list.values() {
+        for import in &class.imports {
+            match import {
+                Import::Qualified { path, .. } => {
+                    // import A.B.C; -> C maps to A.B.C
+                    if let Some(last_part) = path.name.last()
+                        && last_part.text == type_name
+                    {
+                        qualified_names.push(path.to_string());
+                    }
+                }
+                Import::Renamed { alias, path, .. } => {
+                    // import D = A.B.C; -> D maps to A.B.C
+                    if alias.text == type_name {
+                        qualified_names.push(path.to_string());
+                    }
+                }
+                Import::Selective { path, names, .. } => {
+                    // import A.B.{C, D}; -> C maps to A.B.C, D maps to A.B.D
+                    for name_token in names {
+                        if name_token.text == type_name {
+                            qualified_names.push(format!("{}.{}", path, type_name));
+                        }
+                    }
+                }
+                Import::Unqualified { path, .. } => {
+                    // import A.B.*; -> Any name could be from A.B
+                    // We'll add the qualified path as a candidate to try
+                    qualified_names.push(format!("{}.{}", path, type_name));
+                }
+            }
+        }
+    }
+
+    qualified_names
 }
 
 /// Get completion items for modifiers

@@ -1,0 +1,2040 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Rumoca WASM + Monaco Editor</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+            flex-shrink: 0;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        h1 { color: #569cd6; margin: 0; font-size: clamp(1.2rem, 3vw, 1.5rem); }
+        .logo {
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+            object-fit: contain;
+            flex-shrink: 0;
+        }
+        .main-container {
+            display: flex;
+            flex-direction: row;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .left-area {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 300px;
+            overflow: hidden;
+        }
+        .editor-panel {
+            display: flex;
+            flex-direction: column;
+            min-height: 150px;
+            flex: 1;
+            overflow: hidden;
+        }
+        .editor-toolbar {
+            display: flex;
+            align-items: center;
+            padding: 8px 15px;
+            gap: 10px;
+            flex-wrap: wrap;
+            background: #252526;
+            border-bottom: 1px solid #3c3c3c;
+            flex-shrink: 0;
+        }
+        .editor-toolbar h3 { margin: 0; color: #9cdcfe; font-size: 13px; white-space: nowrap; }
+        .editor-toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-left: auto;
+        }
+        #editor { flex: 1; min-height: 0; }
+
+        /* Horizontal resize handle (for right panel) */
+        .resize-handle-h {
+            width: 6px;
+            background: #3c3c3c;
+            cursor: ew-resize;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .resize-handle-h:hover { background: #569cd6; }
+        .resize-handle-h::after {
+            content: '';
+            width: 2px;
+            height: 40px;
+            background: #666;
+            border-radius: 1px;
+        }
+        .resize-handle-h:hover::after { background: #fff; }
+
+        /* Vertical resize handle (for bottom panel) */
+        .resize-handle-v {
+            height: 6px;
+            background: #3c3c3c;
+            cursor: ns-resize;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .resize-handle-v:hover { background: #569cd6; }
+        .resize-handle-v::after {
+            content: '';
+            width: 40px;
+            height: 2px;
+            background: #666;
+            border-radius: 1px;
+        }
+        .resize-handle-v:hover::after { background: #fff; }
+
+        /* Middle panel - Template Editor (collapsible) */
+        .middle-panel {
+            display: flex;
+            flex-direction: column;
+            width: 350px;
+            min-width: 50px;
+            max-width: 40vw;
+            background: #1e1e1e;
+            flex-shrink: 0;
+            overflow: hidden;
+            border-left: 1px solid #3c3c3c;
+            transition: width 0.15s ease-out;
+        }
+        .middle-panel.collapsed {
+            width: 36px !important;
+            min-width: 36px;
+        }
+        .middle-panel.collapsed .panel-content-middle {
+            display: none;
+        }
+        .middle-panel.collapsed .panel-header-middle {
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            padding: 12px 8px;
+        }
+        .middle-panel.collapsed .section-title {
+            writing-mode: vertical-rl;
+        }
+        .panel-header-middle {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background: #252526;
+            cursor: pointer;
+            gap: 8px;
+            flex-shrink: 0;
+            user-select: none;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .panel-header-middle:hover { background: #2d2d2d; }
+        .panel-content-middle {
+            flex: 1;
+            overflow: hidden;
+            padding: 10px 12px;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Right panel - Rendered Model */
+        .right-panel {
+            display: flex;
+            flex-direction: column;
+            width: 400px;
+            min-width: 50px;
+            max-width: 40vw;
+            background: #1e1e1e;
+            flex-shrink: 0;
+            overflow: hidden;
+            border-left: 1px solid #3c3c3c;
+            transition: width 0.15s ease-out;
+        }
+        .right-panel.collapsed {
+            width: 36px !important;
+            min-width: 36px;
+        }
+        .right-panel.collapsed .panel-content-right {
+            display: none;
+        }
+        .right-panel.collapsed .panel-header-right {
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            padding: 12px 8px;
+        }
+        .right-panel.collapsed .section-title {
+            writing-mode: vertical-rl;
+        }
+        .panel-header-right {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background: #252526;
+            cursor: pointer;
+            gap: 8px;
+            flex-shrink: 0;
+            user-select: none;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .panel-header-right:hover { background: #2d2d2d; }
+        .panel-content-right {
+            flex: 1;
+            overflow: hidden;
+            padding: 10px 12px;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Bottom panel - Diagnostics & Libraries */
+        .bottom-panel {
+            display: flex;
+            flex-direction: column;
+            height: 200px;
+            min-height: 36px;
+            max-height: 50vh;
+            background: #1e1e1e;
+            flex-shrink: 0;
+            overflow: hidden;
+            border-top: 1px solid #3c3c3c;
+            transition: height 0.15s ease-out;
+        }
+        .bottom-panel.collapsed {
+            height: 36px !important;
+            min-height: 36px;
+        }
+        .bottom-panel.collapsed .bottom-sections {
+            display: none;
+        }
+        .panel-header-bottom {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background: #252526;
+            gap: 8px;
+            flex-shrink: 0;
+            user-select: none;
+        }
+        .bottom-tab {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: transparent;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            color: #888;
+            font-size: 12px;
+        }
+        .bottom-tab:hover { color: #d4d4d4; background: #2d2d2d; }
+        .bottom-tab.active { color: #569cd6; background: #1e1e1e; }
+        .bottom-sections {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .bottom-section {
+            display: none;
+            flex: 1;
+            overflow: auto;
+            padding: 10px 12px;
+            min-height: 0;
+        }
+        .bottom-section.active { display: block; }
+
+        /* Shared styles */
+        .section-arrow {
+            font-size: 10px;
+            transition: transform 0.15s;
+            color: #888;
+        }
+        /* Arrow rotation handled in JavaScript */
+        .section-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: #d4d4d4;
+        }
+        .section-badge {
+            font-size: 11px;
+            color: #888;
+        }
+        .collapse-btn {
+            background: none;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            padding: 4px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .collapse-btn:hover { color: #d4d4d4; }
+
+        /* Buttons */
+        button {
+            padding: 6px 12px;
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        button:hover { background: #1177bb; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.small { padding: 4px 10px; font-size: 11px; }
+        button.danger { background: #c9184a; }
+        button.danger:hover { background: #e02050; }
+
+        /* Status */
+        .status {
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .status.ready { background: #2d6a4f; }
+        .status.loading { background: #9a6700; }
+        .status.error { background: #c9184a; }
+
+        /* Output */
+        pre {
+            background: #1e1e1e;
+            margin: 0;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            flex: 1;
+            overflow: auto;
+            min-height: 0;
+        }
+
+        /* ANSI colors */
+        .ansi-bold { font-weight: bold; }
+        .ansi-red { color: #cd3131; }
+        .ansi-green { color: #0dbc79; }
+        .ansi-yellow { color: #e5e510; }
+        .ansi-blue { color: #2472c8; }
+        .ansi-magenta { color: #bc3fbc; }
+        .ansi-cyan { color: #11a8cd; }
+        .ansi-bright-red { color: #f14c4c; }
+        .ansi-bright-green { color: #23d18b; }
+        .ansi-bright-yellow { color: #f5f543; }
+        .ansi-bright-blue { color: #3b8eea; }
+
+        /* Diagnostics */
+        .diagnostic-item {
+            padding: 6px 10px;
+            margin: 4px 0;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .diagnostic-error { background: rgba(255, 0, 0, 0.15); border-left: 3px solid #f44336; }
+        .diagnostic-warning { background: rgba(255, 193, 7, 0.15); border-left: 3px solid #ffc107; }
+        .diagnostic-info { background: rgba(3, 169, 244, 0.15); border-left: 3px solid #03a9f4; }
+        .diagnostic-hint { background: rgba(76, 175, 80, 0.15); border-left: 3px solid #4caf50; }
+
+        /* Libraries */
+        .library-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .library-row input {
+            flex: 1;
+            min-width: 200px;
+            padding: 6px 8px;
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #d4d4d4;
+            font-size: 12px;
+        }
+        .library-row input:focus { outline: 1px solid #569cd6; }
+        .library-status {
+            font-size: 11px;
+            padding: 3px 6px;
+            border-radius: 3px;
+            min-width: 70px;
+            text-align: center;
+        }
+        .library-status.loaded { background: #2d6a4f; }
+        .library-status.loading { background: #9a6700; }
+        .library-status.error { background: #c9184a; }
+        .library-status.pending { background: #3c3c3c; }
+        .library-info { font-size: 11px; color: #888; margin-top: 10px; }
+        .library-buttons { margin-top: 10px; display: flex; gap: 8px; }
+
+        /* Form inputs */
+        input[type="text"] {
+            padding: 4px 8px;
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #d4d4d4;
+            font-size: 12px;
+        }
+        input[type="text"]:focus { outline: 1px solid #569cd6; }
+        label { font-size: 12px; display: flex; align-items: center; gap: 5px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Rumoca WASM Editor</h1>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span>Status: <span id="status" class="status loading">Loading...</span></span>
+            <a href="https://github.com/cognipilot/rumoca" target="_blank" title="Rumoca on GitHub">
+                <img src="../editors/icons/rumoca.png" alt="Rumoca" class="logo">
+            </a>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="left-area">
+            <div class="editor-panel">
+                <div class="editor-toolbar">
+                    <h3>Modelica Source</h3>
+                    <span id="autoCompileStatus" style="font-size: 11px; color: #888;"></span>
+                    <div class="editor-toolbar-right">
+                        <button class="small" onclick="saveFile()">Save .mo</button>
+                    </div>
+                </div>
+                <div id="editor"></div>
+            </div>
+
+            <!-- Bottom Panel - Diagnostics & Libraries -->
+            <div class="resize-handle-v" id="resizeHandleV"></div>
+            <div class="bottom-panel" id="bottomPanel">
+                <div class="panel-header-bottom">
+                    <button class="collapse-btn" onclick="toggleBottomPanel()" title="Collapse">
+                        <span class="section-arrow" id="bottomArrow">&#9660;</span>
+                    </button>
+                    <button class="bottom-tab active" data-tab="output" onclick="switchBottomTab('output')">
+                        <span>Output</span>
+                    </button>
+                    <button class="bottom-tab" data-tab="errors" onclick="switchBottomTab('errors')">
+                        <span>Errors</span>
+                        <span class="section-badge" id="diagnosticsCount"></span>
+                    </button>
+                    <button class="bottom-tab" data-tab="libraries" onclick="switchBottomTab('libraries')">
+                        <span>Libraries</span>
+                        <span class="section-badge" id="libCount">(0)</span>
+                    </button>
+                </div>
+                <div class="bottom-sections">
+                    <div class="bottom-section active" id="outputSection">
+                        <pre id="terminalOutput">Initializing WASM worker...</pre>
+                    </div>
+                    <div class="bottom-section" id="errorsSection">
+                        <div id="diagnosticsPanel"></div>
+                    </div>
+                    <div class="bottom-section" id="librariesSection">
+                        <div id="libraryList">
+                            <div class="library-row" data-index="0">
+                                <input type="text" placeholder="Enter library URL (.zip)" value="https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.zip">
+                                <button class="small" onclick="fetchLibrary(0)">Fetch</button>
+                                <span class="library-status pending">Not loaded</span>
+                            </div>
+                        </div>
+                        <div class="library-buttons">
+                            <button class="small" onclick="addLibraryRow()">+ Add Library</button>
+                            <button class="small danger" onclick="clearLibraries()">Clear All</button>
+                        </div>
+                        <div class="library-info">
+                            Supports ZIP archives containing .mo files (like MSL from GitHub).
+                            URLs are fetched via CORS proxy (corsproxy.io).
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Middle Panel - Template Editor (collapsible) -->
+        <div class="resize-handle-h" id="resizeHandleTemplate"></div>
+        <div class="middle-panel" id="templatePanel">
+            <div class="panel-header-middle">
+                <button class="collapse-btn" onclick="toggleTemplatePanel()" title="Collapse Template">
+                    <span class="section-arrow" id="templateArrow">&#9664;</span>
+                </button>
+                <span class="section-title">Template</span>
+            </div>
+            <div class="panel-content-middle">
+                <div style="flex-shrink: 0; margin-bottom: 8px;">
+                    <label style="font-size: 11px; color: #888;">Jinja Template (use <code>dae</code> variable):</label>
+                </div>
+                <div id="templateEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
+            </div>
+        </div>
+
+        <div class="resize-handle-h" id="resizeHandleH"></div>
+
+        <!-- Right Panel - Rendered Model -->
+        <div class="right-panel" id="rightPanel">
+            <div class="panel-header-right">
+                <button class="collapse-btn" onclick="toggleRightPanel()" title="Collapse">
+                    <span class="section-arrow" id="rightArrow">&#9654;</span>
+                </button>
+                <span class="section-title">Rendered Model</span>
+            </div>
+            <div class="panel-content-right">
+                <div style="flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; margin-bottom: 8px; gap: 8px;">
+                    <label style="font-size: 11px; color: #888;">Model:</label>
+                    <select id="modelSelect" onchange="updateSelectedModel()" style="flex: 1; min-width: 100px; padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;">
+                        <option value="">-- No models --</option>
+                    </select>
+                    <select id="formatSelect" onchange="updateOutputFormat()" style="padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;">
+                        <option value="pretty" selected>Pretty</option>
+                        <option value="json">DAE JSON</option>
+                        <option value="template">Template</option>
+                    </select>
+                    <button class="small" onclick="saveOutput()">Save</button>
+                </div>
+                <div id="outputEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+    <script type="module">
+        // Panel references
+        const resizeHandleH = document.getElementById('resizeHandleH');
+        const resizeHandleTemplate = document.getElementById('resizeHandleTemplate');
+        const rightPanel = document.getElementById('rightPanel');
+        const templatePanel = document.getElementById('templatePanel');
+        let isResizingH = false;
+        let isResizingTemplate = false;
+        let lastRightPanelWidth = 400;
+        let lastTemplatePanelWidth = 350;
+
+        // Right panel resize
+        resizeHandleH.addEventListener('mousedown', (e) => {
+            isResizingH = true;
+            document.body.style.cursor = 'ew-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        // Template panel resize
+        resizeHandleTemplate.addEventListener('mousedown', (e) => {
+            isResizingTemplate = true;
+            document.body.style.cursor = 'ew-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (isResizingH) {
+                const containerRect = document.querySelector('.main-container').getBoundingClientRect();
+                const newWidth = containerRect.right - e.clientX;
+                const clampedWidth = Math.max(200, Math.min(newWidth, window.innerWidth * 0.4));
+                rightPanel.style.width = clampedWidth + 'px';
+                lastRightPanelWidth = clampedWidth;
+                if (window.editor) window.editor.layout();
+                if (window.templateEditor) window.templateEditor.layout();
+                if (window.outputEditor) window.outputEditor.layout();
+            }
+            if (isResizingTemplate) {
+                // Template panel width is from handle to the right of template panel
+                const templateRect = templatePanel.getBoundingClientRect();
+                const newWidth = templateRect.right - e.clientX;
+                const clampedWidth = Math.max(200, Math.min(newWidth, window.innerWidth * 0.4));
+                templatePanel.style.width = clampedWidth + 'px';
+                lastTemplatePanelWidth = clampedWidth;
+                if (window.editor) window.editor.layout();
+                if (window.templateEditor) window.templateEditor.layout();
+                if (window.outputEditor) window.outputEditor.layout();
+            }
+            if (isResizingV) {
+                const leftArea = document.querySelector('.left-area');
+                const leftAreaRect = leftArea.getBoundingClientRect();
+                const newHeight = leftAreaRect.bottom - e.clientY;
+                const clampedHeight = Math.max(100, Math.min(newHeight, window.innerHeight * 0.5));
+                bottomPanel.style.height = clampedHeight + 'px';
+                lastBottomHeight = clampedHeight;
+                if (window.editor) window.editor.layout();
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizingH || isResizingV || isResizingTemplate) {
+                isResizingH = false;
+                isResizingV = false;
+                isResizingTemplate = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                if (window.editor) window.editor.layout();
+                if (window.templateEditor) window.templateEditor.layout();
+                if (window.outputEditor) window.outputEditor.layout();
+            }
+        });
+
+        // Bottom panel resize (vertical)
+        const resizeHandleV = document.getElementById('resizeHandleV');
+        const bottomPanel = document.getElementById('bottomPanel');
+        let isResizingV = false;
+        let lastBottomHeight = 200;
+
+        resizeHandleV.addEventListener('mousedown', (e) => {
+            isResizingV = true;
+            document.body.style.cursor = 'ns-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        // Toggle template panel collapse/expand
+        window.toggleTemplatePanel = function() {
+            templatePanel.classList.toggle('collapsed');
+            const arrow = document.getElementById('templateArrow');
+            if (templatePanel.classList.contains('collapsed')) {
+                arrow.innerHTML = '&#9654;'; // Right arrow when collapsed (pointing to expand direction)
+            } else {
+                arrow.innerHTML = '&#9664;'; // Left arrow when expanded
+            }
+            if (window.editor) window.editor.layout();
+            if (window.templateEditor) window.templateEditor.layout();
+        };
+
+        // Toggle right panel collapse/expand (collapses right)
+        window.toggleRightPanel = function() {
+            rightPanel.classList.toggle('collapsed');
+            const arrow = document.getElementById('rightArrow');
+            if (rightPanel.classList.contains('collapsed')) {
+                arrow.innerHTML = '&#9664;'; // Left arrow when collapsed
+            } else {
+                arrow.innerHTML = '&#9654;'; // Right arrow when expanded
+            }
+            if (window.editor) window.editor.layout();
+            if (window.templateEditor) window.templateEditor.layout();
+            if (window.outputEditor) window.outputEditor.layout();
+        };
+
+        // Toggle bottom panel collapse/expand (collapses down)
+        window.toggleBottomPanel = function() {
+            bottomPanel.classList.toggle('collapsed');
+            const arrow = document.getElementById('bottomArrow');
+            if (bottomPanel.classList.contains('collapsed')) {
+                arrow.innerHTML = '&#9650;'; // Up arrow when collapsed
+            } else {
+                arrow.innerHTML = '&#9660;'; // Down arrow when expanded
+            }
+            if (window.editor) window.editor.layout();
+        };
+
+        // Switch between bottom panel tabs
+        window.switchBottomTab = function(tabName) {
+            // Update tab buttons (only within bottom panel)
+            document.querySelectorAll('.panel-header-bottom .bottom-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.tab === tabName);
+            });
+            // Update sections
+            document.getElementById('outputSection').classList.toggle('active', tabName === 'output');
+            document.getElementById('errorsSection').classList.toggle('active', tabName === 'errors');
+            document.getElementById('librariesSection').classList.toggle('active', tabName === 'libraries');
+        };
+
+        // Output format state
+        window.outputFormat = 'pretty';
+        // Current template text
+        window.currentTemplate = '';
+
+        // Update output format and refresh display
+        window.updateOutputFormat = function() {
+            window.outputFormat = document.getElementById('formatSelect').value;
+            // Refresh current output with new format
+            const modelName = document.getElementById('modelSelect').value;
+            if (modelName && window.compiledModels && window.compiledModels[modelName]) {
+                displayModelOutput(modelName);
+            }
+        };
+
+        // Display output for a model in the selected format
+        async function displayModelOutput(modelName) {
+            console.log('[displayModelOutput] called for:', modelName);
+            const result = window.compiledModels[modelName];
+            if (!result) {
+                console.log('[displayModelOutput] no result found');
+                setDaeOutput(`No compilation result for ${modelName}`);
+                return;
+            }
+            if (result.error) {
+                console.log('[displayModelOutput] has error:', result.error);
+                // Don't show error details in Rendered Model - errors go to Errors tab only
+                setDaeOutput('');
+                return;
+            }
+            if (!result.dae) {
+                console.log('[displayModelOutput] no DAE');
+                setDaeOutput(`No DAE available for ${modelName}`);
+                return;
+            }
+            console.log('[displayModelOutput] has DAE, format:', window.outputFormat);
+
+            if (window.outputFormat === 'pretty') {
+                // Use Rust-generated pretty-printed output
+                const prettyOutput = result.pretty || '';
+                if (prettyOutput) {
+                    console.log('[displayModelOutput] setting pretty output');
+                    setDaeOutput(prettyOutput);
+                } else {
+                    // Fallback to JSON if pretty output is empty
+                    console.log('[displayModelOutput] fallback to JSON');
+                    setDaeOutput(JSON.stringify(result.dae, null, 2));
+                }
+            } else if (window.outputFormat === 'json') {
+                console.log('[displayModelOutput] setting DAE JSON output');
+                if (result.dae_native) {
+                    setDaeOutput(JSON.stringify(result.dae_native, null, 2));
+                } else {
+                    setDaeOutput('DAE JSON not available');
+                }
+            } else if (window.outputFormat === 'template') {
+                // Render with user's template
+                const template = window.templateEditor ? window.templateEditor.getValue() : '';
+                if (!template.trim()) {
+                    setDaeOutput('Enter a template in the Template tab to render output.');
+                    clearTemplateErrors();
+                    return;
+                }
+                if (!result.dae_native) {
+                    setDaeOutput('Native DAE not available for template rendering.');
+                    clearTemplateErrors();
+                    return;
+                }
+                try {
+                    console.log('[displayModelOutput] rendering template');
+                    // Use dae_native for template rendering (has correct field names)
+                    const daeJson = JSON.stringify(result.dae_native);
+                    const rendered = await sendRequest('renderTemplate', { daeJson, template });
+                    setDaeOutput(rendered);
+                    clearTemplateErrors();
+                } catch (e) {
+                    console.error('[displayModelOutput] template error:', e);
+                    setDaeOutput('');
+                    showTemplateError(e.message);
+                }
+            }
+        }
+
+        // ANSI to HTML converter
+        function ansiToHtml(text) {
+            text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const colorMap = {
+                '30': 'ansi-black', '31': 'ansi-red', '32': 'ansi-green', '33': 'ansi-yellow',
+                '34': 'ansi-blue', '35': 'ansi-magenta', '36': 'ansi-cyan', '37': 'ansi-white',
+                '90': 'ansi-bright-black', '91': 'ansi-bright-red', '92': 'ansi-bright-green',
+                '93': 'ansi-bright-yellow', '94': 'ansi-bright-blue', '95': 'ansi-bright-magenta',
+                '96': 'ansi-bright-cyan', '97': 'ansi-bright-white'
+            };
+            let result = '';
+            let openSpans = 0;
+            const regex = /\x1b\[([0-9;]*)m|\[([0-9;]*)m/g;
+            let lastIndex = 0;
+            let match;
+            while ((match = regex.exec(text)) !== null) {
+                result += text.substring(lastIndex, match.index);
+                lastIndex = regex.lastIndex;
+                const codes = (match[1] || match[2] || '0').split(';');
+                for (const code of codes) {
+                    if (code === '0' || code === '39' || code === '') {
+                        while (openSpans > 0) { result += '</span>'; openSpans--; }
+                    } else if (code === '1') {
+                        result += '<span class="ansi-bold">'; openSpans++;
+                    } else if (colorMap[code]) {
+                        result += `<span class="${colorMap[code]}">`; openSpans++;
+                    }
+                }
+            }
+            result += text.substring(lastIndex);
+            while (openSpans > 0) { result += '</span>'; openSpans--; }
+            return result;
+        }
+
+        // Set DAE IR output (right panel) - uses Monaco editor
+        function setDaeOutput(text, language) {
+            console.log('[setDaeOutput] updating, text length:', text?.length, 'format:', window.outputFormat);
+            if (window.outputEditor) {
+                // Determine language based on format
+                const lang = language || (window.outputFormat === 'json' ? 'json' : 'plaintext');
+                const model = window.outputEditor.getModel();
+                if (model) {
+                    monaco.editor.setModelLanguage(model, lang);
+                }
+                window.outputEditor.setValue(text || '');
+            }
+        }
+
+        // Set terminal output (bottom panel Output tab)
+        function setTerminalOutput(text) {
+            document.getElementById('terminalOutput').innerHTML = ansiToHtml(text);
+        }
+
+        // Template error handling - show in Errors panel
+        let currentTemplateError = null;
+
+        function showTemplateError(message) {
+            currentTemplateError = message;
+            updateErrorsPanel();
+            // Switch to errors tab and update badge
+            switchBottomTab('errors');
+        }
+
+        function clearTemplateErrors() {
+            if (currentTemplateError) {
+                currentTemplateError = null;
+                updateErrorsPanel();
+            }
+        }
+
+        function updateErrorsPanel() {
+            // Re-render all diagnostics (Modelica + template errors)
+            // Check if renderAllDiagnostics is available (Monaco loaded)
+            if (typeof window.renderAllDiagnostics === 'function') {
+                window.renderAllDiagnostics();
+            } else {
+                // Fallback: just update the panel directly without Monaco markers
+                const diagnosticsDiv = document.getElementById('diagnosticsPanel');
+                const diagnosticsCount = document.getElementById('diagnosticsCount');
+                let html = '';
+                if (currentTemplateError) {
+                    html = `<div class="diagnostic-item diagnostic-error">
+                        <strong>Template Error</strong> - ${currentTemplateError}
+                    </div>`;
+                    diagnosticsCount.textContent = '(1 error)';
+                    diagnosticsCount.style.color = '#f44336';
+                } else {
+                    html = '<div class="diagnostic-item diagnostic-info">No issues found!</div>';
+                    diagnosticsCount.textContent = '';
+                }
+                diagnosticsDiv.innerHTML = html;
+            }
+        }
+
+        // Legacy alias for backwards compatibility
+        function setOutput(text) {
+            setTerminalOutput(text);
+        }
+
+        // Pretty print DAE IR for human-readable display
+        function formatExpr(expr) {
+            if (!expr) return '?';
+            if (typeof expr === 'number') return String(expr);
+            if (typeof expr === 'string') return expr;
+            if (expr.Real !== undefined) return String(expr.Real);
+            if (expr.Integer !== undefined) return String(expr.Integer);
+            if (expr.Boolean !== undefined) return expr.Boolean ? 'true' : 'false';
+            if (expr.Ref) return expr.Ref;
+            if (expr.Neg) return `-${formatExpr(expr.Neg)}`;
+            if (expr.Add) return `(${formatExpr(expr.Add[0])} + ${formatExpr(expr.Add[1])})`;
+            if (expr.Sub) return `(${formatExpr(expr.Sub[0])} - ${formatExpr(expr.Sub[1])})`;
+            if (expr.Mul) return `(${formatExpr(expr.Mul[0])} * ${formatExpr(expr.Mul[1])})`;
+            if (expr.Div) return `(${formatExpr(expr.Div[0])} / ${formatExpr(expr.Div[1])})`;
+            if (expr.Pow) return `(${formatExpr(expr.Pow[0])} ^ ${formatExpr(expr.Pow[1])})`;
+            if (expr.Der) return `der(${formatExpr(expr.Der)})`;
+            if (expr.Sin) return `sin(${formatExpr(expr.Sin)})`;
+            if (expr.Cos) return `cos(${formatExpr(expr.Cos)})`;
+            if (expr.Sqrt) return `sqrt(${formatExpr(expr.Sqrt)})`;
+            if (expr.Exp) return `exp(${formatExpr(expr.Exp)})`;
+            if (expr.Log) return `log(${formatExpr(expr.Log)})`;
+            if (expr.Abs) return `abs(${formatExpr(expr.Abs)})`;
+            if (expr.Sign) return `sign(${formatExpr(expr.Sign)})`;
+            if (expr.Gt) return `(${formatExpr(expr.Gt[0])} > ${formatExpr(expr.Gt[1])})`;
+            if (expr.Lt) return `(${formatExpr(expr.Lt[0])} < ${formatExpr(expr.Lt[1])})`;
+            if (expr.Ge) return `(${formatExpr(expr.Ge[0])} >= ${formatExpr(expr.Ge[1])})`;
+            if (expr.Le) return `(${formatExpr(expr.Le[0])} <= ${formatExpr(expr.Le[1])})`;
+            if (expr.Eq) return `(${formatExpr(expr.Eq[0])} == ${formatExpr(expr.Eq[1])})`;
+            if (expr.And) return `(${formatExpr(expr.And[0])} and ${formatExpr(expr.And[1])})`;
+            if (expr.Or) return `(${formatExpr(expr.Or[0])} or ${formatExpr(expr.Or[1])})`;
+            if (expr.Not) return `not ${formatExpr(expr.Not)}`;
+            if (expr.IfExpr) return `if ${formatExpr(expr.IfExpr.cond)} then ${formatExpr(expr.IfExpr.then_expr)} else ${formatExpr(expr.IfExpr.else_expr)}`;
+            if (expr.Pre) return `pre(${formatExpr(expr.Pre)})`;
+            if (expr.call) return `${expr.call}(${(expr.args || []).map(formatExpr).join(', ')})`;
+            return JSON.stringify(expr);
+        }
+
+        // Format equation to string
+        function formatEq(eq) {
+            if (!eq) return '?';
+            // Handle Simple equation variant
+            if (eq.Simple) {
+                return `${formatExpr(eq.Simple.lhs)} = ${formatExpr(eq.Simple.rhs)}`;
+            }
+            // Handle direct lhs/rhs format
+            if (eq.lhs !== undefined && eq.rhs !== undefined) {
+                return `${formatExpr(eq.lhs)} = ${formatExpr(eq.rhs)}`;
+            }
+            // Handle For equation variant
+            if (eq.For) {
+                const indices = eq.For.indices || [];
+                const idxStr = indices.map(i => `${i.ident?.text || '?'} in ${formatExpr(i.range)}`).join(', ');
+                const eqsStr = (eq.For.equations || []).map(formatEq).join('; ');
+                return `for ${idxStr} loop ${eqsStr} end for`;
+            }
+            // Handle Connect equation variant
+            if (eq.Connect) {
+                return `connect(${formatExpr(eq.Connect.from)}, ${formatExpr(eq.Connect.to)})`;
+            }
+            return JSON.stringify(eq);
+        }
+
+        // Format component to string
+        function formatComp(name, comp) {
+            if (!comp) return `  ${name}: ?`;
+            const type = comp.type_name || 'Real';
+            const shape = comp.shape && comp.shape.length > 0 ? `[${comp.shape.join(', ')}]` : '';
+            const start = comp.start && comp.start !== 'Empty' ? ` = ${formatExpr(comp.start)}` : '';
+            return `  ${name}: ${type}${shape}${start}`;
+        }
+
+        // Format statement to string
+        function formatStmt(stmt) {
+            if (!stmt) return '?';
+            if (stmt.Assignment) {
+                return `${formatExpr(stmt.Assignment.comp)} := ${formatExpr(stmt.Assignment.value)}`;
+            }
+            if (stmt.Return) return 'return';
+            if (stmt.Break) return 'break';
+            if (stmt.For) {
+                const indices = stmt.For.indices || [];
+                const idxStr = indices.map(i => `${i.ident?.text || '?'} in ${formatExpr(i.range)}`).join(', ');
+                return `for ${idxStr} loop ... end for`;
+            }
+            if (stmt.When) {
+                return 'when ... end when';
+            }
+            if (stmt.If) {
+                return 'if ... end if';
+            }
+            return JSON.stringify(stmt);
+        }
+
+        function prettyPrintDae(dae) {
+            if (!dae) return 'No DAE';
+            let out = [];
+
+            out.push(`=== ${dae.model_name || 'Model'} ===`);
+            if (dae.rumoca_version) out.push(`Rumoca: ${dae.rumoca_version}`);
+            out.push('');
+
+            // Parameters (p)
+            if (dae.p && Object.keys(dae.p).length > 0) {
+                out.push('Parameters:');
+                for (const [name, comp] of Object.entries(dae.p)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // Constant parameters (cp)
+            if (dae.cp && Object.keys(dae.cp).length > 0) {
+                out.push('Constants:');
+                for (const [name, comp] of Object.entries(dae.cp)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // Inputs (u)
+            if (dae.u && Object.keys(dae.u).length > 0) {
+                out.push('Inputs:');
+                for (const [name, comp] of Object.entries(dae.u)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // States (x)
+            if (dae.x && Object.keys(dae.x).length > 0) {
+                out.push('States (x):');
+                for (const [name, comp] of Object.entries(dae.x)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // Algebraic variables (y)
+            if (dae.y && Object.keys(dae.y).length > 0) {
+                out.push('Algebraics (y):');
+                for (const [name, comp] of Object.entries(dae.y)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // Discrete Real (z)
+            if (dae.z && Object.keys(dae.z).length > 0) {
+                out.push('Discrete Real (z):');
+                for (const [name, comp] of Object.entries(dae.z)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // Discrete-valued (m)
+            if (dae.m && Object.keys(dae.m).length > 0) {
+                out.push('Discrete (m):');
+                for (const [name, comp] of Object.entries(dae.m)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // Conditions (c)
+            if (dae.c && Object.keys(dae.c).length > 0) {
+                out.push('Conditions (c):');
+                for (const [name, comp] of Object.entries(dae.c)) {
+                    out.push(formatComp(name, comp));
+                }
+                out.push('');
+            }
+
+            // Continuous equations (fx)
+            if (dae.fx && dae.fx.length > 0) {
+                out.push('Equations (fx):');
+                dae.fx.forEach(eq => out.push(`  ${formatEq(eq)};`));
+                out.push('');
+            }
+
+            // Initial equations (fx_init)
+            if (dae.fx_init && dae.fx_init.length > 0) {
+                out.push('Initial Equations (fx_init):');
+                dae.fx_init.forEach(eq => out.push(`  ${formatEq(eq)};`));
+                out.push('');
+            }
+
+            // Algebraic equations (fz)
+            if (dae.fz && dae.fz.length > 0) {
+                out.push('Algebraic Equations (fz):');
+                dae.fz.forEach(eq => out.push(`  ${formatEq(eq)};`));
+                out.push('');
+            }
+
+            // Discrete update equations (fm)
+            if (dae.fm && dae.fm.length > 0) {
+                out.push('Discrete Equations (fm):');
+                dae.fm.forEach(eq => out.push(`  ${formatEq(eq)};`));
+                out.push('');
+            }
+
+            // Reset statements (fr)
+            if (dae.fr && Object.keys(dae.fr).length > 0) {
+                out.push('Reset Statements (fr):');
+                for (const [cond, stmt] of Object.entries(dae.fr)) {
+                    out.push(`  when ${cond}: ${formatStmt(stmt)}`);
+                }
+                out.push('');
+            }
+
+            // Condition updates (fc)
+            if (dae.fc && Object.keys(dae.fc).length > 0) {
+                out.push('Condition Updates (fc):');
+                for (const [cond, expr] of Object.entries(dae.fc)) {
+                    out.push(`  ${cond} := ${formatExpr(expr)}`);
+                }
+                out.push('');
+            }
+
+            // Summary
+            const numStates = dae.x ? Object.keys(dae.x).length : 0;
+            const numAlg = dae.y ? Object.keys(dae.y).length : 0;
+            const numFx = dae.fx ? dae.fx.length : 0;
+            const numFz = dae.fz ? dae.fz.length : 0;
+
+            out.push('Summary:');
+            out.push(`  States: ${numStates}`);
+            out.push(`  Algebraics: ${numAlg}`);
+            out.push(`  Equations: ${numFx} (continuous) + ${numFz} (algebraic)`);
+
+            return out.join('\n');
+        }
+
+        // Library management
+        let loadedLibraries = {};
+        let libraryRowCount = 1;
+
+        window.addLibraryRow = function() {
+            const list = document.getElementById('libraryList');
+            const index = libraryRowCount++;
+            const row = document.createElement('div');
+            row.className = 'library-row';
+            row.dataset.index = index;
+            row.innerHTML = `
+                <input type="text" placeholder="Enter library URL (.zip)" value="">
+                <button class="small" onclick="fetchLibrary(${index})">Fetch</button>
+                <button class="small danger" onclick="removeLibraryRow(${index})">X</button>
+                <span class="library-status pending">Not loaded</span>
+            `;
+            list.appendChild(row);
+        };
+
+        window.removeLibraryRow = function(index) {
+            const row = document.querySelector(`.library-row[data-index="${index}"]`);
+            if (row) row.remove();
+            updateLibraryCount();
+        };
+
+        window.fetchLibrary = async function(index) {
+            const row = document.querySelector(`.library-row[data-index="${index}"]`);
+            const input = row.querySelector('input');
+            const status = row.querySelector('.library-status');
+            const url = input.value.trim();
+
+            if (!url) {
+                status.textContent = 'No URL';
+                status.className = 'library-status error';
+                return;
+            }
+
+            status.textContent = 'Loading...';
+            status.className = 'library-status loading';
+
+            try {
+                const fetchUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+                setOutput(`Fetching via CORS proxy: ${url}`);
+
+                const response = await fetch(fetchUrl);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const isZip = url.endsWith('.zip') || response.headers.get('content-type')?.includes('application/zip');
+                let data, fileCount;
+
+                if (isZip) {
+                    status.textContent = 'Extracting...';
+                    setOutput('Downloading and extracting ZIP file...');
+
+                    const arrayBuffer = await response.arrayBuffer();
+                    const zip = await JSZip.loadAsync(arrayBuffer);
+
+                    data = {};
+                    let processedCount = 0;
+                    const moFiles = [];
+
+                    zip.forEach((relativePath, file) => {
+                        if (relativePath.endsWith('.mo') && !file.dir) {
+                            if (!relativePath.includes('Test') && !relativePath.includes('Obsolete')) {
+                                moFiles.push({ path: relativePath, file });
+                            }
+                        }
+                    });
+
+                    setOutput(`Found ${moFiles.length} .mo files, extracting...`);
+
+                    for (const { path, file } of moFiles) {
+                        const content = await file.async('string');
+                        const normalizedPath = path.replace(/^[^\/]+\//, '');
+                        data[normalizedPath] = content;
+                        processedCount++;
+                        if (processedCount % 100 === 0) {
+                            status.textContent = `${processedCount}/${moFiles.length}`;
+                        }
+                    }
+                    fileCount = Object.keys(data).length;
+                } else {
+                    data = await response.json();
+                    fileCount = Object.keys(data).length;
+                }
+
+                Object.assign(loadedLibraries, data);
+                status.textContent = `${fileCount} files`;
+                status.className = 'library-status loaded';
+
+                setOutput(`Loaded ${fileCount} .mo files from ${url}\n\nParsing libraries...`);
+
+                try {
+                    const librariesJson = JSON.stringify(loadedLibraries);
+                    const cachedCount = await sendRequest('loadLibraries', { libraries: librariesJson });
+                    setOutput(`Loaded and parsed ${cachedCount} library files.\nLibraries are now cached!`);
+                    updateLibraryCount(cachedCount);
+                } catch (e) {
+                    setOutput(`Loaded ${fileCount} files but failed to parse: ${e.message}`);
+                    updateLibraryCount();
+                }
+            } catch (e) {
+                status.textContent = 'Error';
+                status.className = 'library-status error';
+                setOutput(`Failed to load library: ${e.message}\n\nURL: ${url}`);
+            }
+        };
+
+        window.clearLibraries = async function() {
+            loadedLibraries = {};
+            document.querySelectorAll('.library-status').forEach(s => {
+                s.textContent = 'Not loaded';
+                s.className = 'library-status pending';
+            });
+            try {
+                await sendRequest('clearLibraryCache', {});
+            } catch (e) {
+                console.warn('Failed to clear library cache:', e);
+            }
+            updateLibraryCount(0);
+        };
+
+        function updateLibraryCount(count) {
+            if (count === undefined) count = Object.keys(loadedLibraries).length;
+            document.getElementById('libCount').textContent = `(${count})`;
+        }
+
+        window.saveFile = function() {
+            const content = window.editor?.getValue() || '';
+            // Extract first model name from source for filename
+            const match = content.match(/(?:model|class|block|connector|record|function)\s+(\w+)/);
+            const filename = match ? `${match[1]}.mo` : 'Model.mo';
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        };
+
+        // Store compiled results for all models: { modelName: { dae, balance } }
+        window.compiledModels = {};
+        window.selectedModel = null;
+
+        window.saveOutput = function() {
+            const modelName = document.getElementById('modelSelect').value;
+            if (!modelName || !window.compiledModels[modelName]) {
+                alert('No output available yet. Please select a model and wait for compilation.');
+                return;
+            }
+            const result = window.compiledModels[modelName];
+            if (result.error || !result.dae) {
+                alert('No output available - model has compilation errors.');
+                return;
+            }
+
+            let content, filename, mimeType;
+
+            if (window.outputFormat === 'pretty') {
+                content = result.pretty || JSON.stringify(result.dae, null, 2);
+                filename = `${modelName}.txt`;
+                mimeType = 'text/plain';
+            } else if (window.outputFormat === 'json') {
+                content = JSON.stringify(result.dae_native, null, 2);
+                filename = `${modelName}.json`;
+                mimeType = 'application/json';
+            } else if (window.outputFormat === 'template') {
+                // Get the currently rendered output from the output editor
+                content = window.outputEditor ? window.outputEditor.getValue() : '';
+                if (!content || content.startsWith('Enter a template') || content.startsWith('Template error')) {
+                    alert('No valid template output to save. Check your template in the Template panel.');
+                    return;
+                }
+                filename = `${modelName}.txt`;
+                mimeType = 'text/plain';
+            }
+
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        };
+
+        // Update display when model selection changes
+        window.updateSelectedModel = function() {
+            const modelName = document.getElementById('modelSelect').value;
+            window.selectedModel = modelName;
+            if (modelName && window.compiledModels[modelName]) {
+                const result = window.compiledModels[modelName];
+                displayModelOutput(modelName);
+                // Update DAE for template autocompletion
+                if (result.dae_native) {
+                    window.currentDaeForCompletions = result.dae_native;
+                    console.log('[updateSelectedModel] updated currentDaeForCompletions for', modelName);
+                }
+                // Update balance status
+                const statusSpan = document.getElementById('autoCompileStatus');
+                const b = result.balance;
+                if (b) {
+                    const balanceStatus = b.is_balanced ? 'BALANCED' :
+                        (typeof b.status === 'string' ? b.status.toUpperCase() :
+                        (b.status.CompileError ? 'ERROR' : 'UNBALANCED'));
+                    statusSpan.textContent = b.is_balanced ? `${modelName}: Balanced` : `${modelName}: ${balanceStatus}`;
+                    statusSpan.style.color = b.is_balanced ? '#2d6a4f' : '#c9184a';
+                }
+            } else if (!modelName) {
+                setDaeOutput('No model selected');
+            }
+        };
+
+        // Detect model/class definitions in source code
+        function detectModels(source) {
+            const regex = /(?:model|class|block|connector|record)\s+(\w+)/g;
+            const models = [];
+            let match;
+            while ((match = regex.exec(source)) !== null) {
+                models.push(match[1]);
+            }
+            return models;
+        }
+
+        // Web Worker setup
+        const worker = new Worker('../pkg/rumoca_worker.js', { type: 'module' });
+        let requestId = 0;
+        const pendingRequests = new Map();
+        let editor;
+        let workerReady = false;
+
+        worker.onmessage = (e) => {
+            const { id, ready, success, result, error } = e.data;
+            if (ready !== undefined) {
+                const status = document.getElementById('status');
+                if (success) {
+                    status.textContent = 'Ready';
+                    status.className = 'status ready';
+                    workerReady = true;
+                    setOutput('WASM initialized!\n\nEdit code - auto-compiles as you type.\nClick Libraries tab to load MSL.');
+                } else {
+                    status.textContent = 'Error';
+                    status.className = 'status error';
+                    setOutput('Failed to initialize WASM worker.');
+                }
+                return;
+            }
+            const resolver = pendingRequests.get(id);
+            if (resolver) {
+                pendingRequests.delete(id);
+                if (error) resolver.reject(new Error(error));
+                else resolver.resolve(result);
+            }
+        };
+
+        worker.onerror = (e) => {
+            console.error('Worker error:', e);
+            document.getElementById('status').textContent = 'Worker Error';
+            document.getElementById('status').className = 'status error';
+        };
+
+        function sendRequest(action, params = {}) {
+            const id = ++requestId;
+            return new Promise((resolve, reject) => {
+                pendingRequests.set(id, { resolve, reject });
+                worker.postMessage({ id, action, ...params });
+            });
+        }
+
+        // Monaco Editor
+        require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' }});
+        require(['vs/editor/editor.main'], function() {
+            monaco.languages.register({ id: 'modelica' });
+            monaco.languages.register({ id: 'jinja2' });
+
+            // Jinja2 language definition for template highlighting
+            monaco.languages.setMonarchTokensProvider('jinja2', {
+                defaultToken: '',
+                tokenPostfix: '.jinja2',
+
+                keywords: ['for', 'endfor', 'if', 'elif', 'else', 'endif', 'block', 'endblock',
+                           'extends', 'include', 'import', 'from', 'macro', 'endmacro', 'call', 'endcall',
+                           'filter', 'endfilter', 'set', 'endset', 'raw', 'endraw', 'with', 'endwith',
+                           'autoescape', 'endautoescape', 'trans', 'endtrans', 'pluralize',
+                           'in', 'not', 'and', 'or', 'is', 'as', 'loop', 'recursive', 'scoped'],
+
+                builtins: ['abs', 'attr', 'batch', 'capitalize', 'center', 'default', 'd', 'dictsort',
+                           'escape', 'e', 'filesizeformat', 'first', 'float', 'forceescape', 'format',
+                           'groupby', 'indent', 'int', 'join', 'last', 'length', 'list', 'lower', 'map',
+                           'max', 'min', 'pprint', 'random', 'reject', 'rejectattr', 'replace', 'reverse',
+                           'round', 'safe', 'select', 'selectattr', 'slice', 'sort', 'string', 'striptags',
+                           'sum', 'title', 'trim', 'truncate', 'unique', 'upper', 'urlencode', 'urlize',
+                           'wordcount', 'wordwrap', 'xmlattr', 'tojson', 'range', 'lipsum', 'dict',
+                           'cycler', 'joiner', 'namespace', 'true', 'false', 'none', 'True', 'False', 'None'],
+
+                operators: ['==', '!=', '<', '>', '<=', '>=', '+', '-', '*', '/', '//', '%', '**', '~', '|'],
+
+                tokenizer: {
+                    root: [
+                        // Jinja2 comments {# ... #}
+                        [/\{#/, 'comment', '@jinjaComment'],
+
+                        // Jinja2 statements {% ... %}
+                        [/\{%-?/, { token: 'delimiter.jinja', next: '@jinjaStatement' }],
+
+                        // Jinja2 expressions {{ ... }}
+                        [/\{\{-?/, { token: 'delimiter.jinja', next: '@jinjaExpression' }],
+
+                        // Plain text (anything else)
+                        [/[^{]+/, ''],
+                        [/\{/, ''],
+                    ],
+
+                    jinjaComment: [
+                        [/#\}/, 'comment', '@pop'],
+                        [/./, 'comment'],
+                    ],
+
+                    jinjaStatement: [
+                        [/-?%\}/, { token: 'delimiter.jinja', next: '@pop' }],
+                        [/\b(for|endfor|if|elif|else|endif|block|endblock|extends|include|import|from|macro|endmacro|set|endset|raw|endraw|with|endwith|in|not|and|or|is|as|loop|recursive)\b/, 'keyword'],
+                        [/\b(true|false|none|True|False|None)\b/, 'constant'],
+                        [/[a-zA-Z_]\w*/, {
+                            cases: {
+                                '@builtins': 'predefined',
+                                '@default': 'variable'
+                            }
+                        }],
+                        [/"([^"\\]|\\.)*"/, 'string'],
+                        [/'([^'\\]|\\.)*'/, 'string'],
+                        [/\d+\.?\d*/, 'number'],
+                        [/[|.]/, 'delimiter'],
+                        [/[(),\[\]]/, 'delimiter.bracket'],
+                        [/\s+/, ''],
+                    ],
+
+                    jinjaExpression: [
+                        [/-?\}\}/, { token: 'delimiter.jinja', next: '@pop' }],
+                        [/\b(not|and|or|is|in)\b/, 'keyword'],
+                        [/\b(true|false|none|True|False|None)\b/, 'constant'],
+                        [/[a-zA-Z_]\w*/, {
+                            cases: {
+                                '@builtins': 'predefined',
+                                '@default': 'variable'
+                            }
+                        }],
+                        [/"([^"\\]|\\.)*"/, 'string'],
+                        [/'([^'\\]|\\.)*'/, 'string'],
+                        [/\d+\.?\d*/, 'number'],
+                        [/[|.]/, 'delimiter'],
+                        [/[(),\[\]]/, 'delimiter.bracket'],
+                        [/\s+/, ''],
+                    ],
+                }
+            });
+
+            // Store current DAE for dynamic completions
+            window.currentDaeForCompletions = null;
+
+            // Extract dynamic completions from the current DAE
+            function getDynamicDaeCompletions(dae) {
+                if (!dae) return [];
+                const completions = [];
+
+                // Component fields that can be accessed on variables
+                const componentFields = [
+                    { name: 'type_name', detail: 'Type name (e.g., Real, Integer)' },
+                    { name: 'shape', detail: 'Array shape' },
+                    { name: 'start', detail: 'Start value' },
+                    { name: 'variability', detail: 'Variability (parameter, constant, etc.)' },
+                    { name: 'causality', detail: 'Causality (input, output, etc.)' },
+                    { name: 'description', detail: 'Description string' },
+                ];
+
+                // Variable maps to iterate over
+                const varMaps = [
+                    { key: 'x', name: 'State', desc: 'state variable' },
+                    { key: 'y', name: 'Algebraic', desc: 'algebraic variable' },
+                    { key: 'p', name: 'Parameter', desc: 'parameter' },
+                    { key: 'cp', name: 'Constant', desc: 'constant parameter' },
+                    { key: 'u', name: 'Input', desc: 'input variable' },
+                    { key: 'z', name: 'Discrete Real', desc: 'discrete Real variable' },
+                    { key: 'm', name: 'Discrete', desc: 'discrete-valued variable' },
+                    { key: 'c', name: 'Condition', desc: 'condition variable' },
+                ];
+
+                // Add variable name completions for each map
+                for (const { key, name, desc } of varMaps) {
+                    const varMap = dae[key];
+                    if (varMap && typeof varMap === 'object') {
+                        for (const varName of Object.keys(varMap)) {
+                            // Add dae.x.varname style completion
+                            completions.push({
+                                label: `dae.${key}.${varName}`,
+                                kind: monaco.languages.CompletionItemKind.Variable,
+                                insertText: `dae.${key}.${varName}`,
+                                detail: `${name}: ${varName} (${desc})`,
+                                sortText: `0_${key}_${varName}` // Sort model vars first
+                            });
+
+                            // Add component field completions (dae.x.varname.start, etc.)
+                            for (const field of componentFields) {
+                                completions.push({
+                                    label: `dae.${key}.${varName}.${field.name}`,
+                                    kind: monaco.languages.CompletionItemKind.Property,
+                                    insertText: `dae.${key}.${varName}.${field.name}`,
+                                    detail: `${varName}.${field.name} - ${field.detail}`,
+                                    sortText: `1_${key}_${varName}_${field.name}`
+                                });
+                            }
+                        }
+                    }
+                }
+
+                return completions;
+            }
+
+            // Jinja2 completion provider for DAE fields
+            monaco.languages.registerCompletionItemProvider('jinja2', {
+                triggerCharacters: ['.', '{'],
+                provideCompletionItems: (model, position) => {
+                    const textUntilPosition = model.getValueInRange({
+                        startLineNumber: 1,
+                        startColumn: 1,
+                        endLineNumber: position.lineNumber,
+                        endColumn: position.column
+                    });
+
+                    // Get the word being typed
+                    const lineText = model.getLineContent(position.lineNumber);
+                    const textBeforeCursor = lineText.substring(0, position.column - 1);
+
+                    // Check for context-specific completions
+                    // Match patterns like "dae.", "dae.x.", "dae.x.varname."
+                    const daePathMatch = textBeforeCursor.match(/dae\.(\w*)$/);
+                    const daeVarMatch = textBeforeCursor.match(/dae\.(\w+)\.(\w*)$/);
+                    const daeFieldMatch = textBeforeCursor.match(/dae\.(\w+)\.(\w+)\.(\w*)$/);
+
+                    // Static DAE field suggestions (always available)
+                    const daeFields = [
+                        { label: 'dae.model_name', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.model_name', detail: 'Model name', sortText: '2_model_name' },
+                        { label: 'dae.rumoca_version', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.rumoca_version', detail: 'Rumoca version', sortText: '2_rumoca_version' },
+                        { label: 'dae.x', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.x', detail: 'State variables (IndexMap)', sortText: '2_x' },
+                        { label: 'dae.y', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.y', detail: 'Algebraic variables (IndexMap)', sortText: '2_y' },
+                        { label: 'dae.p', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.p', detail: 'Parameters (IndexMap)', sortText: '2_p' },
+                        { label: 'dae.cp', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.cp', detail: 'Constant parameters (IndexMap)', sortText: '2_cp' },
+                        { label: 'dae.u', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.u', detail: 'Inputs (IndexMap)', sortText: '2_u' },
+                        { label: 'dae.z', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.z', detail: 'Discrete Real variables (IndexMap)', sortText: '2_z' },
+                        { label: 'dae.m', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.m', detail: 'Discrete-valued variables (IndexMap)', sortText: '2_m' },
+                        { label: 'dae.c', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.c', detail: 'Conditions (IndexMap)', sortText: '2_c' },
+                        { label: 'dae.fx', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fx', detail: 'Continuous equations (Vec)', sortText: '2_fx' },
+                        { label: 'dae.fx_init', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fx_init', detail: 'Initial equations (Vec)', sortText: '2_fx_init' },
+                        { label: 'dae.fz', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fz', detail: 'Algebraic equations (Vec)', sortText: '2_fz' },
+                        { label: 'dae.fm', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fm', detail: 'Discrete equations (Vec)', sortText: '2_fm' },
+                        { label: 'dae.fr', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fr', detail: 'Reset statements (IndexMap)', sortText: '2_fr' },
+                        { label: 'dae.fc', kind: monaco.languages.CompletionItemKind.Field, insertText: 'dae.fc', detail: 'Condition updates (IndexMap)', sortText: '2_fc' },
+                    ];
+
+                    // Jinja2 snippets
+                    const snippets = [
+                        { label: 'for loop', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '{% for ${1:item} in ${2:items} %}\n  $0\n{% endfor %}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'For loop', sortText: '3_for' },
+                        { label: 'for key,val', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '{% for ${1:name}, ${2:value} in ${3:dict} %}\n  $0\n{% endfor %}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'For loop over dict items', sortText: '3_for_kv' },
+                        { label: 'if', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '{% if ${1:condition} %}\n  $0\n{% endif %}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'If statement', sortText: '3_if' },
+                        { label: 'if-else', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '{% if ${1:condition} %}\n  $2\n{% else %}\n  $0\n{% endif %}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'If-else statement', sortText: '3_if_else' },
+                        { label: 'expression', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '{{ ${1:expr} }}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'Output expression', sortText: '3_expr' },
+                        { label: 'comment', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '{# ${1:comment} #}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'Comment', sortText: '3_comment' },
+                        { label: 'set variable', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '{% set ${1:var} = ${2:value} %}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, detail: 'Set variable', sortText: '3_set' },
+                        { label: 'loop.index', kind: monaco.languages.CompletionItemKind.Property, insertText: 'loop.index', detail: 'Current iteration (1-indexed)', sortText: '4_loop_index' },
+                        { label: 'loop.index0', kind: monaco.languages.CompletionItemKind.Property, insertText: 'loop.index0', detail: 'Current iteration (0-indexed)', sortText: '4_loop_index0' },
+                        { label: 'loop.first', kind: monaco.languages.CompletionItemKind.Property, insertText: 'loop.first', detail: 'True if first iteration', sortText: '4_loop_first' },
+                        { label: 'loop.last', kind: monaco.languages.CompletionItemKind.Property, insertText: 'loop.last', detail: 'True if last iteration', sortText: '4_loop_last' },
+                        { label: 'loop.length', kind: monaco.languages.CompletionItemKind.Property, insertText: 'loop.length', detail: 'Total number of items', sortText: '4_loop_length' },
+                    ];
+
+                    // Get dynamic completions from current DAE
+                    const dynamicCompletions = getDynamicDaeCompletions(window.currentDaeForCompletions);
+
+                    return { suggestions: [...dynamicCompletions, ...daeFields, ...snippets] };
+                }
+            });
+
+            monaco.languages.setMonarchTokensProvider('modelica', {
+                keywords: [
+                    'algorithm', 'and', 'annotation', 'assert', 'block', 'break',
+                    'class', 'connect', 'connector', 'constant', 'constrainedby',
+                    'der', 'discrete', 'each', 'else', 'elseif', 'elsewhen',
+                    'encapsulated', 'end', 'enumeration', 'equation', 'expandable',
+                    'extends', 'external', 'false', 'final', 'flow', 'for',
+                    'function', 'if', 'import', 'impure', 'in', 'initial',
+                    'inner', 'input', 'loop', 'model', 'not', 'operator',
+                    'or', 'outer', 'output', 'package', 'parameter', 'partial',
+                    'protected', 'public', 'pure', 'record', 'redeclare',
+                    'replaceable', 'return', 'stream', 'then', 'true', 'type',
+                    'when', 'while', 'within'
+                ],
+                types: ['Real', 'Integer', 'Boolean', 'String'],
+                builtins: ['der', 'pre', 'edge', 'change', 'initial', 'terminal', 'sample', 'sin', 'cos', 'tan', 'exp', 'log', 'sqrt', 'abs', 'sign', 'max', 'min', 'mod', 'rem', 'ceil', 'floor', 'div', 'zeros', 'ones', 'fill', 'size', 'ndims', 'sum', 'product', 'transpose', 'time'],
+                tokenizer: {
+                    root: [
+                        [/[a-zA-Z_]\w*/, {
+                            cases: {
+                                '@keywords': 'keyword',
+                                '@types': 'type',
+                                '@builtins': 'predefined',
+                                '@default': 'identifier'
+                            }
+                        }],
+                        [/[{}()\[\]]/, 'delimiter.bracket'],
+                        [/[;,.]/, 'delimiter'],
+                        [/[<>=!]+/, 'operator'],
+                        [/[+\-*\/^:]/, 'operator'],
+                        [/\d+\.?\d*([eE][-+]?\d+)?/, 'number'],
+                        [/"([^"\\]|\\.)*"/, 'string'],
+                        [/\/\/.*$/, 'comment'],
+                        [/\/\*/, 'comment', '@comment'],
+                    ],
+                    comment: [
+                        [/[^/*]+/, 'comment'],
+                        [/\*\//, 'comment', '@pop'],
+                        [/[/*]/, 'comment']
+                    ],
+                }
+            });
+
+            monaco.languages.registerHoverProvider('modelica', {
+                provideHover: async (model, position) => {
+                    try {
+                        const source = model.getValue();
+                        const json = await sendRequest('hover', {
+                            source,
+                            line: position.lineNumber - 1,
+                            character: position.column - 1
+                        });
+                        const hover = JSON.parse(json);
+                        if (hover && hover.contents) {
+                            const content = typeof hover.contents === 'string'
+                                ? hover.contents
+                                : (hover.contents.value || JSON.stringify(hover.contents));
+                            return { contents: [{ value: content }] };
+                        }
+                    } catch (e) { console.warn('Hover error:', e); }
+                    return null;
+                }
+            });
+
+            monaco.languages.registerCompletionItemProvider('modelica', {
+                triggerCharacters: ['.', ' ', '(', ','],
+                provideCompletionItems: async (model, position) => {
+                    try {
+                        const source = model.getValue();
+                        const json = await sendRequest('completion', {
+                            source,
+                            line: position.lineNumber - 1,
+                            character: position.column - 1
+                        });
+                        const completions = JSON.parse(json);
+                        const items = completions?.items || completions || [];
+                        const kindMap = {
+                            1: monaco.languages.CompletionItemKind.Text,
+                            2: monaco.languages.CompletionItemKind.Method,
+                            3: monaco.languages.CompletionItemKind.Function,
+                            4: monaco.languages.CompletionItemKind.Constructor,
+                            5: monaco.languages.CompletionItemKind.Field,
+                            6: monaco.languages.CompletionItemKind.Variable,
+                            7: monaco.languages.CompletionItemKind.Class,
+                            8: monaco.languages.CompletionItemKind.Interface,
+                            9: monaco.languages.CompletionItemKind.Module,
+                            10: monaco.languages.CompletionItemKind.Property,
+                            14: monaco.languages.CompletionItemKind.Keyword,
+                            21: monaco.languages.CompletionItemKind.Constant,
+                        };
+                        return {
+                            suggestions: items.map(item => ({
+                                label: item.label,
+                                kind: kindMap[item.kind] || monaco.languages.CompletionItemKind.Text,
+                                insertText: item.insertText || item.label,
+                                detail: item.detail,
+                                documentation: item.documentation
+                            }))
+                        };
+                    } catch (e) { console.warn('Completion error:', e); }
+                    return { suggestions: [] };
+                }
+            });
+
+            editor = monaco.editor.create(document.getElementById('editor'), {
+                value: `model Ball
+  Real x(start=0);
+  Real v(start=1);
+equation
+  der(x) = v;
+  der(v) = -9.81;
+end Ball;`,
+                language: 'modelica',
+                theme: 'vs-dark',
+                minimap: { enabled: false },
+                fontSize: 14,
+                lineNumbers: 'on',
+                lineNumbersMinChars: 3,
+                automaticLayout: true,
+                quickSuggestions: true,
+                suggestOnTriggerCharacters: true,
+                glyphMargin: false,
+                folding: true
+            });
+
+            window.editor = editor;
+
+            // Create template editor with Jinja2 highlighting
+            const templateEditor = monaco.editor.create(document.getElementById('templateEditor'), {
+                value: `{# Simple example template #}
+Model: {{ dae.model_name }}
+Version: {{ dae.rumoca_version }}
+`,
+                language: 'jinja2',
+                theme: 'vs-dark',
+                minimap: { enabled: false },
+                fontSize: 13,
+                lineNumbers: 'on',
+                lineNumbersMinChars: 3,
+                automaticLayout: true,
+                quickSuggestions: true,
+                suggestOnTriggerCharacters: true,
+                wordWrap: 'on',
+                folding: true
+            });
+
+            window.templateEditor = templateEditor;
+
+            // Create read-only output editor with JSON/text highlighting
+            const outputEditor = monaco.editor.create(document.getElementById('outputEditor'), {
+                value: '',
+                language: 'plaintext',
+                theme: 'vs-dark',
+                readOnly: true,
+                minimap: { enabled: false },
+                fontSize: 13,
+                lineNumbers: 'on',
+                lineNumbersMinChars: 3,
+                automaticLayout: true,
+                wordWrap: 'on',
+                folding: true,
+                scrollBeyondLastLine: false,
+                renderLineHighlight: 'none',
+                occurrencesHighlight: 'off',
+                selectionHighlight: false
+            });
+
+            window.outputEditor = outputEditor;
+
+            // CodeLens event emitter for triggering refresh
+            const codeLensEmitter = new monaco.Emitter();
+            window.refreshCodeLens = () => codeLensEmitter.fire();
+
+            monaco.languages.registerCodeLensProvider('modelica', {
+                onDidChange: codeLensEmitter.event,
+                provideCodeLenses: (model) => {
+                    const lenses = [];
+                    const text = model.getValue();
+                    const lines = text.split('\n');
+                    const classRegex = /^(model|class|block|connector|record)\s+(\w+)/;
+
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        const match = classRegex.exec(line);
+                        if (match) {
+                            const modelName = match[2];
+                            const compiled = window.compiledModels?.[modelName];
+
+                            if (compiled?.balance) {
+                                const b = compiled.balance;
+                                const statusIcon = b.is_balanced ? '\u2713' : (b.status === 'Partial' ? '~' : '\u2717');
+                                const statusText = typeof b.status === 'string' ? b.status.toLowerCase() :
+                                    (b.status?.CompileError ? 'error' : 'unknown');
+                                lenses.push({
+                                    range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+                                    command: {
+                                        id: 'showBalance',
+                                        title: `[${statusIcon}] ${modelName}: ${b.num_equations} eqs / ${b.num_unknowns} unknowns (${statusText})`
+                                    }
+                                });
+                            } else if (compiled?.error) {
+                                lenses.push({
+                                    range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+                                    command: {
+                                        id: 'showBalance',
+                                        title: `[\u2717] ${modelName}: compile error`
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    return { lenses, dispose: () => {} };
+                }
+            });
+
+            function debounce(fn, delay) {
+                let timer = null;
+                return function(...args) {
+                    if (timer) clearTimeout(timer);
+                    timer = setTimeout(() => fn.apply(this, args), delay);
+                };
+            }
+
+            function diagnosticsToMarkers(diagnostics, model) {
+                return diagnostics.map(d => {
+                    const startLine = d.range.start.line + 1;
+                    const startCol = d.range.start.character + 1;
+                    let endLine = d.range.end.line + 1;
+                    let endCol = d.range.end.character + 1;
+                    if (startLine === endLine && startCol >= endCol) {
+                        const lineContent = model.getLineContent(startLine);
+                        let wordEnd = startCol;
+                        while (wordEnd <= lineContent.length && /\w/.test(lineContent[wordEnd - 1])) wordEnd++;
+                        if (wordEnd === startCol) endCol = Math.min(startCol + 10, lineContent.length + 1);
+                        else endCol = wordEnd;
+                    }
+                    return {
+                        startLineNumber: startLine,
+                        startColumn: startCol,
+                        endLineNumber: endLine,
+                        endColumn: Math.max(endCol, startCol + 1),
+                        message: d.message,
+                        severity: [0, monaco.MarkerSeverity.Error, monaco.MarkerSeverity.Warning, monaco.MarkerSeverity.Info, monaco.MarkerSeverity.Hint][d.severity] || monaco.MarkerSeverity.Error,
+                        source: 'rumoca'
+                    };
+                });
+            }
+
+            // Store current modelica diagnostics for merging with template errors
+            let currentModelicaDiagnostics = [];
+
+            function updateDiagnostics(diagnostics) {
+                currentModelicaDiagnostics = diagnostics;
+                window.renderAllDiagnostics();
+            }
+
+            window.renderAllDiagnostics = function() {
+                const diagnosticsDiv = document.getElementById('diagnosticsPanel');
+                const diagnosticsCount = document.getElementById('diagnosticsCount');
+                const model = editor.getModel();
+
+                // Count errors and warnings from Modelica diagnostics
+                const modelicaErrors = currentModelicaDiagnostics.filter(d => d.severity === 1).length;
+                const modelicaWarnings = currentModelicaDiagnostics.filter(d => d.severity === 2).length;
+                const templateErrors = currentTemplateError ? 1 : 0;
+
+                const totalErrors = modelicaErrors + templateErrors;
+                const totalWarnings = modelicaWarnings;
+
+                // Update badge
+                if (totalErrors > 0) {
+                    diagnosticsCount.textContent = `(${totalErrors} error${totalErrors > 1 ? 's' : ''})`;
+                    diagnosticsCount.style.color = '#f44336';
+                } else if (totalWarnings > 0) {
+                    diagnosticsCount.textContent = `(${totalWarnings} warning${totalWarnings > 1 ? 's' : ''})`;
+                    diagnosticsCount.style.color = '#ffc107';
+                } else {
+                    diagnosticsCount.textContent = '';
+                }
+
+                let html = '';
+
+                // Add template error first if present
+                if (currentTemplateError) {
+                    html += `<div class="diagnostic-item diagnostic-error">
+                        <strong>Template Error</strong> - ${currentTemplateError}
+                    </div>`;
+                }
+
+                // Add Modelica diagnostics
+                if (currentModelicaDiagnostics.length > 0) {
+                    html += currentModelicaDiagnostics.map(d => {
+                        const severity = ['', 'error', 'warning', 'info', 'hint'][d.severity] || 'info';
+                        const line = d.range.start.line + 1;
+                        const col = d.range.start.character + 1;
+                        return `<div class="diagnostic-item diagnostic-${severity}">
+                            <strong>Line ${line}:${col}</strong> - ${d.message}
+                        </div>`;
+                    }).join('');
+                }
+
+                if (html === '') {
+                    html = '<div class="diagnostic-item diagnostic-info">No issues found!</div>';
+                }
+
+                diagnosticsDiv.innerHTML = html;
+
+                // Update Monaco markers for Modelica diagnostics only
+                if (currentModelicaDiagnostics.length === 0) {
+                    monaco.editor.setModelMarkers(model, 'rumoca', []);
+                } else {
+                    const markers = diagnosticsToMarkers(currentModelicaDiagnostics, model);
+                    monaco.editor.setModelMarkers(model, 'rumoca', markers);
+                }
+            }
+
+            const runLiveChecks = debounce(async () => {
+                if (!workerReady) return;
+
+                const source = editor.getValue();
+                const statusSpan = document.getElementById('autoCompileStatus');
+                const modelSelect = document.getElementById('modelSelect');
+                const startTime = performance.now();
+
+                statusSpan.textContent = 'Compiling...';
+                statusSpan.style.color = '#9a6700';
+
+                // Run diagnostics
+                try {
+                    const diagJson = await sendRequest('diagnostics', { source });
+                    const diagnostics = JSON.parse(diagJson);
+                    updateDiagnostics(diagnostics);
+                } catch (e) { console.warn('Live diagnostics error:', e); }
+
+                // Detect all models in source
+                const models = detectModels(source);
+
+                // Update dropdown
+                const previousSelection = modelSelect.value;
+                modelSelect.innerHTML = models.length === 0
+                    ? '<option value="">-- No models --</option>'
+                    : models.map(m => `<option value="${m}">${m}</option>`).join('');
+
+                // Restore selection if possible, otherwise select first
+                if (models.includes(previousSelection)) {
+                    modelSelect.value = previousSelection;
+                } else if (models.length > 0) {
+                    modelSelect.value = models[0];
+                }
+
+                // Clear old compiled results
+                window.compiledModels = {};
+
+                // Compile all models
+                let cachedCount = 0;
+                try { cachedCount = await sendRequest('getLibraryCount', {}); } catch (e) {}
+
+                let successCount = 0;
+                let errorCount = 0;
+                const compileErrors = [];
+
+                for (const modelName of models) {
+                    try {
+                        let json;
+                        console.log('[compile] compiling model:', modelName);
+                        if (cachedCount > 0) {
+                            json = await sendRequest('compileWithLibraries', { source, modelName, libraries: '{}' });
+                        } else {
+                            json = await sendRequest('compile', { source, modelName });
+                        }
+                        const result = JSON.parse(json);
+                        console.log('[compile] got result for', modelName, '- pretty length:', result.pretty?.length, 'dae keys:', Object.keys(result.dae || {}));
+                        window.compiledModels[modelName] = {
+                            dae: result.dae,
+                            dae_native: result.dae_native,
+                            balance: result.balance,
+                            pretty: result.pretty
+                        };
+                        // Update DAE for template autocompletion (use dae_native for actual field names)
+                        if (result.dae_native && (modelName === modelSelect.value || modelSelect.value === '')) {
+                            window.currentDaeForCompletions = result.dae_native;
+                            console.log('[compile] updated currentDaeForCompletions for', modelName);
+                        }
+                        successCount++;
+                    } catch (e) {
+                        console.log('[compile] error for', modelName, ':', e.message);
+                        window.compiledModels[modelName] = {
+                            dae: null,
+                            balance: null,
+                            error: e.message
+                        };
+                        compileErrors.push({ model: modelName, message: e.message });
+                        errorCount++;
+                    }
+                }
+
+                const elapsed = (performance.now() - startTime).toFixed(0);
+
+                // Update display with selected model
+                let selectedModel = modelSelect.value;
+                console.log('[runLiveChecks] selectedModel:', selectedModel, 'models:', models);
+
+                // If no selection but we have models, select the first one
+                if (!selectedModel && models.length > 0) {
+                    selectedModel = models[0];
+                    modelSelect.value = selectedModel;
+                    console.log('[runLiveChecks] auto-selected:', selectedModel);
+                }
+                window.selectedModel = selectedModel;
+
+                // Always refresh DAE IR output after compilation
+                console.log('[runLiveChecks] checking compiledModels for', selectedModel, ':', !!window.compiledModels[selectedModel]);
+                if (selectedModel && window.compiledModels[selectedModel]) {
+                    const result = window.compiledModels[selectedModel];
+                    console.log('[runLiveChecks] calling displayModelOutput for', selectedModel);
+                    // Always call displayModelOutput to refresh DAE IR panel
+                    displayModelOutput(selectedModel);
+
+                    if (result.error) {
+                        statusSpan.textContent = `Error (${elapsed}ms)`;
+                        statusSpan.style.color = '#c9184a';
+                        // Switch to errors tab
+                        switchBottomTab('errors');
+                    } else {
+                        const b = result.balance;
+                        if (b) {
+                            const balanceStatus = b.is_balanced ? 'BALANCED' :
+                                (typeof b.status === 'string' ? b.status.toUpperCase() :
+                                (b.status.CompileError ? 'ERROR' : 'UNBALANCED'));
+                            const modelCountStr = models.length > 1 ? ` [${successCount}/${models.length}]` : '';
+                            statusSpan.textContent = b.is_balanced
+                                ? `Balanced (${elapsed}ms)${modelCountStr}`
+                                : `${balanceStatus} (${elapsed}ms)${modelCountStr}`;
+                            statusSpan.style.color = b.is_balanced ? '#2d6a4f' : '#c9184a';
+                        }
+                    }
+                } else if (selectedModel && models.includes(selectedModel)) {
+                    // Model exists but compilation result not found - show waiting message
+                    setDaeOutput(`Waiting for compilation of ${selectedModel}...`);
+                    statusSpan.textContent = `${elapsed}ms`;
+                    statusSpan.style.color = '#888';
+                } else {
+                    setDaeOutput(models.length === 0 ? 'No models found in source' : 'Select a model');
+                    statusSpan.textContent = models.length === 0 ? 'No models' : `${elapsed}ms`;
+                    statusSpan.style.color = '#888';
+                }
+
+                // Refresh CodeLens to show balance for all models
+                if (window.refreshCodeLens) window.refreshCodeLens();
+            }, 500);
+
+            editor.onDidChangeModelContent(() => { runLiveChecks(); });
+
+            setTimeout(runLiveChecks, 1000);
+
+            // Template editor change listener - re-render when template changes (if format is template)
+            let templateDebounceTimer = null;
+            templateEditor.onDidChangeModelContent(() => {
+                if (window.outputFormat !== 'template') return;
+                if (templateDebounceTimer) clearTimeout(templateDebounceTimer);
+                templateDebounceTimer = setTimeout(() => {
+                    const modelName = document.getElementById('modelSelect').value;
+                    if (modelName && window.compiledModels[modelName]) {
+                        displayModelOutput(modelName);
+                    }
+                }, 300);
+            });
+        });
+    </script>
+</body>
+</html>

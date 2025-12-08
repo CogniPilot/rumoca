@@ -1,0 +1,6 @@
+# Pin nightly toolchain for WASM threading support
+# See: https://github.com/RReverser/wasm-bindgen-rayon
+[toolchain]
+channel = "nightly"
+components = ["rust-src"]
+targets = ["wasm32-unknown-unknown"]

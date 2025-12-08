@@ -16,15 +16,15 @@ impl FormatVisitor {
                 let lhs_str = self.format_expression(lhs);
 
                 // Check if RHS is a multi-line array
-                if let Expression::Array { elements } = rhs {
-                    if self.should_format_array_multiline(elements, level) {
-                        return format!(
-                            "{}{} = {};\n",
-                            indent,
-                            lhs_str,
-                            self.format_array_multiline(elements, level)
-                        );
-                    }
+                if let Expression::Array { elements } = rhs
+                    && self.should_format_array_multiline(elements, level)
+                {
+                    return format!(
+                        "{}{} = {};\n",
+                        indent,
+                        lhs_str,
+                        self.format_array_multiline(elements, level)
+                    );
                 }
 
                 let rhs_str = self.format_expression(rhs);

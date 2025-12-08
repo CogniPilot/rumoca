@@ -33,16 +33,16 @@ pub struct StateFinder {
 
 impl MutVisitor for StateFinder {
     fn exit_expression(&mut self, node: &mut ir::ast::Expression) {
-        if let ir::ast::Expression::FunctionCall { comp, args } = &node {
-            if comp.to_string() == BUILTIN_DER {
-                // SAFETY: Modelica der() function always has exactly 1 argument
-                let arg = args.first().unwrap();
-                if let ir::ast::Expression::ComponentReference(comp) = &arg {
-                    // Collect the state variable name
-                    self.states.insert(comp.parts[0].ident.text.clone());
-                    // DO NOT transform the AST - keep der() as a function call
-                    // for Base Modelica compliance
-                }
+        if let ir::ast::Expression::FunctionCall { comp, args } = &node
+            && comp.to_string() == BUILTIN_DER
+        {
+            // SAFETY: Modelica der() function always has exactly 1 argument
+            let arg = args.first().unwrap();
+            if let ir::ast::Expression::ComponentReference(comp) = &arg {
+                // Collect the state variable name
+                self.states.insert(comp.parts[0].ident.text.clone());
+                // DO NOT transform the AST - keep der() as a function call
+                // for Base Modelica compliance
             }
         }
     }

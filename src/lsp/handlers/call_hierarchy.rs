@@ -33,10 +33,10 @@ impl<'a> CallRangeFinder<'a> {
     }
 
     fn check_function_call(&mut self, comp: &ComponentReference) {
-        if get_function_name(comp) == self.target {
-            if let Some(ident) = comp.parts.first().map(|p| &p.ident) {
-                self.ranges.push(token_to_range(ident));
-            }
+        if get_function_name(comp) == self.target
+            && let Some(ident) = comp.parts.first().map(|p| &p.ident)
+        {
+            self.ranges.push(token_to_range(ident));
         }
     }
 }

@@ -155,10 +155,10 @@ fn check_equation_references(
         crate::ir::ast::Equation::FunctionCall { comp, args } => {
             // Don't check function name - it might be external
             // But check if it's a locally defined variable being called
-            if let Some(first) = comp.parts.first() {
-                if defined.contains_key(&first.ident.text) {
-                    // It's a local variable, mark as used
-                }
+            if let Some(first) = comp.parts.first()
+                && defined.contains_key(&first.ident.text)
+            {
+                // It's a local variable, mark as used
             }
             for arg in args {
                 check_expression_references(arg, file_path, defined, globals, result);
@@ -182,10 +182,10 @@ fn check_statement_references(
         }
         crate::ir::ast::Statement::FunctionCall { comp, args } => {
             // Don't check function name
-            if let Some(first) = comp.parts.first() {
-                if defined.contains_key(&first.ident.text) {
-                    // It's a local variable
-                }
+            if let Some(first) = comp.parts.first()
+                && defined.contains_key(&first.ident.text)
+            {
+                // It's a local variable
             }
             for arg in args {
                 check_expression_references(arg, file_path, defined, globals, result);

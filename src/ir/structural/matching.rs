@@ -174,13 +174,12 @@ pub(super) fn find_maximum_matching(
 
         // Collect all variables this equation can solve for
         for var in &info.all_variables {
-            if !exclude_from_matching.contains(var) {
-                if let Some(&var_idx) = var_to_idx.get(var) {
-                    if !candidates.contains(&var_idx) {
-                        candidates.push(var_idx);
-                        reverse_adj[var_idx].push(eq_idx);
-                    }
-                }
+            if !exclude_from_matching.contains(var)
+                && let Some(&var_idx) = var_to_idx.get(var)
+                && !candidates.contains(&var_idx)
+            {
+                candidates.push(var_idx);
+                reverse_adj[var_idx].push(eq_idx);
             }
         }
 
@@ -235,26 +234,22 @@ pub(super) fn find_maximum_matching(
             let mut candidates: Vec<usize> = Vec::new();
 
             // First priority: LHS variable (if not forced elsewhere)
-            if let Some(ref lhs_var) = info.lhs_variable {
-                if !exclude_from_matching.contains(lhs_var) {
-                    if let Some(&var_idx) = var_to_idx.get(lhs_var) {
-                        if !forced_var_to_eq.contains_key(&var_idx) {
-                            candidates.push(var_idx);
-                        }
-                    }
-                }
+            if let Some(ref lhs_var) = info.lhs_variable
+                && !exclude_from_matching.contains(lhs_var)
+                && let Some(&var_idx) = var_to_idx.get(lhs_var)
+                && !forced_var_to_eq.contains_key(&var_idx)
+            {
+                candidates.push(var_idx);
             }
 
             // Second priority: all other non-forced variables
             for var in &info.all_variables {
-                if !exclude_from_matching.contains(var) {
-                    if let Some(&var_idx) = var_to_idx.get(var) {
-                        if !forced_var_to_eq.contains_key(&var_idx)
-                            && !candidates.contains(&var_idx)
-                        {
-                            candidates.push(var_idx);
-                        }
-                    }
+                if !exclude_from_matching.contains(var)
+                    && let Some(&var_idx) = var_to_idx.get(var)
+                    && !forced_var_to_eq.contains_key(&var_idx)
+                    && !candidates.contains(&var_idx)
+                {
+                    candidates.push(var_idx);
                 }
             }
 

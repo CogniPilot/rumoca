@@ -45,6 +45,7 @@
 //! v = fr (v, c)    : happens at event time
 
 use indexmap::IndexMap;
+use std::fmt;
 
 use crate::ir::ast::{Component, Equation, Expression, Statement};
 use serde::{Deserialize, Serialize};
@@ -109,5 +110,289 @@ impl Dae {
 
         let ir = DaeIR::from_dae(self);
         serde_json::to_string_pretty(&ir)
+    }
+
+    /// Export to a human-readable pretty-printed text format.
+    ///
+    /// This uses the Display trait to generate a nicely formatted text
+    /// representation of the DAE, showing equations as readable math
+    /// (e.g., `der(x) = v`, `x * y + z`).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use rumoca::Compiler;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = Compiler::new().compile_file("model.mo")?;
+    /// let pretty = result.dae.to_pretty_string();
+    /// println!("{}", pretty);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn to_pretty_string(&self) -> String {
+        format!("{}", self)
+    }
+}
+
+impl fmt::Display for Dae {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "=== {} ===", self.model_name)?;
+        if !self.rumoca_version.is_empty() {
+            writeln!(f, "rumoca: {}", self.rumoca_version)?;
+        }
+        writeln!(f)?;
+
+        // Parameters
+        if !self.p.is_empty() {
+            writeln!(f, "Parameters:")?;
+            for (name, comp) in &self.p {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Constant parameters
+        if !self.cp.is_empty() {
+            writeln!(f, "Constants:")?;
+            for (name, comp) in &self.cp {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Inputs
+        if !self.u.is_empty() {
+            writeln!(f, "Inputs:")?;
+            for (name, comp) in &self.u {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // States (x)
+        if !self.x.is_empty() {
+            writeln!(f, "States (x):")?;
+            for (name, comp) in &self.x {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Algebraic variables (y)
+        if !self.y.is_empty() {
+            writeln!(f, "Algebraics (y):")?;
+            for (name, comp) in &self.y {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Discrete real variables (z)
+        if !self.z.is_empty() {
+            writeln!(f, "Discrete Real (z):")?;
+            for (name, comp) in &self.z {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Discrete-valued variables (m)
+        if !self.m.is_empty() {
+            writeln!(f, "Discrete (m):")?;
+            for (name, comp) in &self.m {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Conditions (c)
+        if !self.c.is_empty() {
+            writeln!(f, "Conditions (c):")?;
+            for (name, comp) in &self.c {
+                write!(f, "  {}: {}", name, comp.type_name)?;
+                format_shape(f, &comp.shape)?;
+                format_start(f, &comp.start)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Continuous equations (fx)
+        if !self.fx.is_empty() {
+            writeln!(f, "Equations (fx):")?;
+            for eq in &self.fx {
+                writeln!(f, "  {};", eq)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Initial equations (fx_init)
+        if !self.fx_init.is_empty() {
+            writeln!(f, "Initial Equations (fx_init):")?;
+            for eq in &self.fx_init {
+                writeln!(f, "  {};", eq)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Algebraic equations (fz)
+        if !self.fz.is_empty() {
+            writeln!(f, "Algebraic Equations (fz):")?;
+            for eq in &self.fz {
+                writeln!(f, "  {};", eq)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Discrete update equations (fm)
+        if !self.fm.is_empty() {
+            writeln!(f, "Discrete Equations (fm):")?;
+            for eq in &self.fm {
+                writeln!(f, "  {};", eq)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Reset equations (fr)
+        if !self.fr.is_empty() {
+            writeln!(f, "Reset Statements (fr):")?;
+            for (cond, stmt) in &self.fr {
+                writeln!(f, "  when {}: {}", cond, format_statement(stmt))?;
+            }
+            writeln!(f)?;
+        }
+
+        // Condition updates (fc)
+        if !self.fc.is_empty() {
+            writeln!(f, "Condition Updates (fc):")?;
+            for (cond, expr) in &self.fc {
+                writeln!(f, "  {} := {}", cond, expr)?;
+            }
+            writeln!(f)?;
+        }
+
+        // Summary
+        writeln!(f, "Summary:")?;
+        writeln!(f, "  States: {}", self.x.len())?;
+        writeln!(f, "  Algebraics: {}", self.y.len())?;
+        writeln!(
+            f,
+            "  Equations: {} (continuous) + {} (algebraic)",
+            self.fx.len(),
+            self.fz.len()
+        )?;
+
+        Ok(())
+    }
+}
+
+/// Helper to format array shape
+fn format_shape(f: &mut fmt::Formatter<'_>, shape: &[usize]) -> fmt::Result {
+    if !shape.is_empty() {
+        write!(
+            f,
+            "[{}]",
+            shape
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+    }
+    Ok(())
+}
+
+/// Helper to format start value
+fn format_start(f: &mut fmt::Formatter<'_>, start: &Expression) -> fmt::Result {
+    if !matches!(start, Expression::Empty) {
+        write!(f, " = {}", start)?;
+    }
+    Ok(())
+}
+
+/// Helper to format a Statement
+fn format_statement(stmt: &Statement) -> String {
+    match stmt {
+        Statement::Assignment { comp, value } => format!("{} := {}", comp, value),
+        Statement::Return { .. } => "return".to_string(),
+        Statement::Break { .. } => "break".to_string(),
+        Statement::For { indices, equations } => {
+            let idx_str = indices
+                .iter()
+                .map(|i| format!("{} in {}", i.ident.text, i.range))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let eqs_str = equations
+                .iter()
+                .map(format_statement)
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("for {} loop {} end for", idx_str, eqs_str)
+        }
+        Statement::While(block) => {
+            format!("while {} loop ... end while", block.cond)
+        }
+        Statement::When(blocks) => {
+            let mut s = String::new();
+            for (i, block) in blocks.iter().enumerate() {
+                if i == 0 {
+                    s.push_str(&format!("when {} then ...", block.cond));
+                } else {
+                    s.push_str(&format!(" elsewhen {} then ...", block.cond));
+                }
+            }
+            s.push_str(" end when");
+            s
+        }
+        Statement::FunctionCall { comp, args } => {
+            let args_str = args
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}({})", comp, args_str)
+        }
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            let mut s = String::new();
+            for (i, block) in cond_blocks.iter().enumerate() {
+                if i == 0 {
+                    s.push_str(&format!("if {} then ...", block.cond));
+                } else {
+                    s.push_str(&format!(" elseif {} then ...", block.cond));
+                }
+            }
+            if let Some(eb) = else_block
+                && !eb.is_empty()
+            {
+                s.push_str(" else ...");
+            }
+            s.push_str(" end if");
+            s
+        }
+        Statement::Empty => String::new(),
     }
 }

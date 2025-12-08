@@ -28,12 +28,12 @@ impl DerivativeFinder {
 
 impl Visitor for DerivativeFinder {
     fn enter_expression(&mut self, node: &Expression) {
-        if let Expression::FunctionCall { comp, args } = node {
-            if comp.to_string() == "der" && !args.is_empty() {
-                if let Expression::ComponentReference(cref) = &args[0] {
-                    self.derivatives.push(cref.to_string());
-                }
-            }
+        if let Expression::FunctionCall { comp, args } = node
+            && comp.to_string() == "der"
+            && !args.is_empty()
+            && let Expression::ComponentReference(cref) = &args[0]
+        {
+            self.derivatives.push(cref.to_string());
         }
     }
 }
@@ -73,37 +73,39 @@ pub(super) fn normalize_derivative_equation(
     } = lhs
     {
         // Case 1: coeff * der(x)
-        if let Expression::FunctionCall { comp, args } = mult_rhs.as_ref() {
-            if comp.to_string() == "der" && args.len() == 1 {
-                // Extract der(x) and coefficient
-                let der_expr = mult_rhs.as_ref().clone();
-                let coeff = mult_lhs.as_ref().clone();
-                return Some(Equation::Simple {
-                    lhs: der_expr,
-                    rhs: Expression::Binary {
-                        op: OpBinary::Div(Token::default()),
-                        lhs: Box::new(rhs.clone()),
-                        rhs: Box::new(coeff),
-                    },
-                });
-            }
+        if let Expression::FunctionCall { comp, args } = mult_rhs.as_ref()
+            && comp.to_string() == "der"
+            && args.len() == 1
+        {
+            // Extract der(x) and coefficient
+            let der_expr = mult_rhs.as_ref().clone();
+            let coeff = mult_lhs.as_ref().clone();
+            return Some(Equation::Simple {
+                lhs: der_expr,
+                rhs: Expression::Binary {
+                    op: OpBinary::Div(Token::default()),
+                    lhs: Box::new(rhs.clone()),
+                    rhs: Box::new(coeff),
+                },
+            });
         }
 
         // Case 2: der(x) * coeff
-        if let Expression::FunctionCall { comp, args } = mult_lhs.as_ref() {
-            if comp.to_string() == "der" && args.len() == 1 {
-                // Extract der(x) and coefficient
-                let der_expr = mult_lhs.as_ref().clone();
-                let coeff = mult_rhs.as_ref().clone();
-                return Some(Equation::Simple {
-                    lhs: der_expr,
-                    rhs: Expression::Binary {
-                        op: OpBinary::Div(Token::default()),
-                        lhs: Box::new(rhs.clone()),
-                        rhs: Box::new(coeff),
-                    },
-                });
-            }
+        if let Expression::FunctionCall { comp, args } = mult_lhs.as_ref()
+            && comp.to_string() == "der"
+            && args.len() == 1
+        {
+            // Extract der(x) and coefficient
+            let der_expr = mult_lhs.as_ref().clone();
+            let coeff = mult_rhs.as_ref().clone();
+            return Some(Equation::Simple {
+                lhs: der_expr,
+                rhs: Expression::Binary {
+                    op: OpBinary::Div(Token::default()),
+                    lhs: Box::new(rhs.clone()),
+                    rhs: Box::new(coeff),
+                },
+            });
         }
     }
 
@@ -146,21 +148,21 @@ pub(super) fn causalize_equation(
     solve_for: &str,
 ) -> Option<Equation> {
     // Check if LHS is already just the variable we're solving for
-    if let Expression::ComponentReference(cref) = lhs {
-        if cref.to_string() == solve_for {
-            return None; // Already in correct form
-        }
+    if let Expression::ComponentReference(cref) = lhs
+        && cref.to_string() == solve_for
+    {
+        return None; // Already in correct form
     }
 
     // Check if RHS is just the variable we're solving for - swap if so
     // E.g., expr = var => var = expr
-    if let Expression::ComponentReference(cref) = rhs {
-        if cref.to_string() == solve_for {
-            return Some(Equation::Simple {
-                lhs: rhs.clone(),
-                rhs: lhs.clone(),
-            });
-        }
+    if let Expression::ComponentReference(cref) = rhs
+        && cref.to_string() == solve_for
+    {
+        return Some(Equation::Simple {
+            lhs: rhs.clone(),
+            rhs: lhs.clone(),
+        });
     }
 
     // Helper to check if an expression is zero
@@ -245,48 +247,48 @@ pub(super) fn causalize_equation(
     } = lhs
     {
         // Check if solve_for is on the right side of multiplication: coeff * var
-        if let Expression::ComponentReference(cref) = mult_rhs.as_ref() {
-            if cref.to_string() == solve_for {
-                return Some(Equation::Simple {
-                    lhs: Expression::ComponentReference(ComponentReference {
-                        local: false,
-                        parts: vec![ComponentRefPart {
-                            ident: Token {
-                                text: solve_for.to_string(),
-                                ..Default::default()
-                            },
-                            subs: None,
-                        }],
-                    }),
-                    rhs: Expression::Binary {
-                        op: OpBinary::Div(Token::default()),
-                        lhs: Box::new(rhs.clone()),
-                        rhs: mult_lhs.clone(),
-                    },
-                });
-            }
+        if let Expression::ComponentReference(cref) = mult_rhs.as_ref()
+            && cref.to_string() == solve_for
+        {
+            return Some(Equation::Simple {
+                lhs: Expression::ComponentReference(ComponentReference {
+                    local: false,
+                    parts: vec![ComponentRefPart {
+                        ident: Token {
+                            text: solve_for.to_string(),
+                            ..Default::default()
+                        },
+                        subs: None,
+                    }],
+                }),
+                rhs: Expression::Binary {
+                    op: OpBinary::Div(Token::default()),
+                    lhs: Box::new(rhs.clone()),
+                    rhs: mult_lhs.clone(),
+                },
+            });
         }
         // Check if solve_for is on the left side of multiplication: var * coeff
-        if let Expression::ComponentReference(cref) = mult_lhs.as_ref() {
-            if cref.to_string() == solve_for {
-                return Some(Equation::Simple {
-                    lhs: Expression::ComponentReference(ComponentReference {
-                        local: false,
-                        parts: vec![ComponentRefPart {
-                            ident: Token {
-                                text: solve_for.to_string(),
-                                ..Default::default()
-                            },
-                            subs: None,
-                        }],
-                    }),
-                    rhs: Expression::Binary {
-                        op: OpBinary::Div(Token::default()),
-                        lhs: Box::new(rhs.clone()),
-                        rhs: mult_rhs.clone(),
-                    },
-                });
-            }
+        if let Expression::ComponentReference(cref) = mult_lhs.as_ref()
+            && cref.to_string() == solve_for
+        {
+            return Some(Equation::Simple {
+                lhs: Expression::ComponentReference(ComponentReference {
+                    local: false,
+                    parts: vec![ComponentRefPart {
+                        ident: Token {
+                            text: solve_for.to_string(),
+                            ..Default::default()
+                        },
+                        subs: None,
+                    }],
+                }),
+                rhs: Expression::Binary {
+                    op: OpBinary::Div(Token::default()),
+                    lhs: Box::new(rhs.clone()),
+                    rhs: mult_rhs.clone(),
+                },
+            });
         }
     }
 
@@ -456,19 +458,19 @@ fn extract_linear_term(expr: &Expression, var_name: &str) -> Option<(f64, Expres
             rhs,
         } => {
             // -expr: check if rhs is the variable
-            if let Expression::ComponentReference(cref) = rhs.as_ref() {
-                if cref.to_string() == var_name {
-                    return Some((
-                        -1.0,
-                        Expression::Terminal {
-                            terminal_type: TerminalType::UnsignedReal,
-                            token: Token {
-                                text: "0".to_string(),
-                                ..Default::default()
-                            },
+            if let Expression::ComponentReference(cref) = rhs.as_ref()
+                && cref.to_string() == var_name
+            {
+                return Some((
+                    -1.0,
+                    Expression::Terminal {
+                        terminal_type: TerminalType::UnsignedReal,
+                        token: Token {
+                            text: "0".to_string(),
+                            ..Default::default()
                         },
-                    ));
-                }
+                    },
+                ));
             }
             // Recursively check inside the negation
             if let Some((coeff, other)) = extract_linear_term(rhs, var_name) {

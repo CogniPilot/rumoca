@@ -10,16 +10,13 @@ mod modifiers;
 mod scope;
 mod workspace;
 
-use std::collections::HashMap;
-
-use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, InsertTextFormat, Uri,
-};
-
 use crate::ir::transform::constants::get_builtin_functions;
 use crate::lsp::data::keywords::get_keyword_completions;
 use crate::lsp::utils::{get_text_before_cursor, parse_document};
 use crate::lsp::workspace::WorkspaceState;
+use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, InsertTextFormat,
+};
 
 use members::get_member_completions;
 use modifiers::get_modifier_completions;
@@ -27,6 +24,9 @@ use scope::get_scoped_completions;
 use workspace::{
     get_workspace_completions, get_workspace_member_completions, is_in_import_context,
 };
+
+// Re-export is_in_import_context for use in library completion
+pub use workspace::is_in_import_context as check_import_context;
 
 /// Handle completion request with workspace support
 ///
@@ -56,7 +56,8 @@ pub fn handle_completion_workspace(
     // Try parsing for class lookup (for class instance member modifiers)
     let ast_for_modifiers =
         parse_document(text, path).or_else(|| workspace.get_cached_ast(uri).cloned());
-    if let Some(modifier_items) = get_modifier_completions(&text_before, ast_for_modifiers.as_ref())
+    if let Some(modifier_items) =
+        get_modifier_completions(&text_before, ast_for_modifiers.as_ref(), Some(workspace))
     {
         return Some(CompletionResponse::Array(modifier_items));
     }
@@ -85,6 +86,7 @@ pub fn handle_completion_workspace(
                     &ast,
                     &format!("{}.", prefix),
                     position,
+                    Some(workspace),
                 ));
             }
 
@@ -108,77 +110,41 @@ pub fn handle_completion_workspace(
         return Some(CompletionResponse::Array(items));
     }
 
-    // Get scoped completions from the AST
-    if let Some(ast) = parse_document(text, path) {
-        items.extend(get_scoped_completions(&ast, position));
-    }
+    // Get scoped completions from the AST (fall back to cached AST on parse failure)
+    let fresh_parse = parse_document(text, path);
+    let ast_for_scope = fresh_parse
+        .as_ref()
+        .or_else(|| workspace.get_cached_ast(uri));
 
-    // Add workspace symbols (classes, models from other files)
-    items.extend(get_workspace_completions(workspace, false));
-
-    // Add built-in functions with snippets
-    items.extend(get_builtin_function_completions());
-
-    // Modelica keywords
-    items.extend(get_keyword_completions());
-
-    Some(CompletionResponse::Array(items))
-}
-
-/// Handle completion request (non-workspace version for backwards compatibility)
-pub fn handle_completion(
-    documents: &HashMap<Uri, String>,
-    params: CompletionParams,
-) -> Option<CompletionResponse> {
-    let uri = &params.text_document_position.text_document.uri;
-    let position = params.text_document_position.position;
-    let text = documents.get(uri)?;
-    let path = uri.path().as_str();
-
-    let mut items = Vec::new();
-
-    // Check if we're doing dot completion
-    let text_before = get_text_before_cursor(text, position)?;
-    let is_dot_completion = text_before.ends_with('.');
-
-    // Check if we're in a modifier context (inside parentheses after type declaration)
-    let ast_for_modifiers = parse_document(text, path);
-    if let Some(modifier_items) = get_modifier_completions(&text_before, ast_for_modifiers.as_ref())
+    #[cfg(target_arch = "wasm32")]
     {
-        return Some(CompletionResponse::Array(modifier_items));
+        let parse_ok = fresh_parse.is_some();
+        let cached_ok = workspace.get_cached_ast(uri).is_some();
+        web_sys::console::log_1(
+            &format!(
+                "[completion] scoped: fresh_parse={}, cached={}, position=({}, {})",
+                parse_ok, cached_ok, position.line, position.character
+            )
+            .into(),
+        );
     }
 
-    if is_dot_completion {
-        let before_dot = &text_before[..text_before.len() - 1];
-        let prefix: String = before_dot
-            .chars()
-            .rev()
-            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
+    if let Some(ast) = ast_for_scope {
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[completion] scoped: ast has {} classes",
+                ast.class_list.len()
+            )
+            .into(),
+        );
 
-        if !prefix.is_empty() {
-            if let Some(ast) = parse_document(text, path) {
-                items.extend(get_member_completions(
-                    &ast,
-                    &format!("{}.", prefix),
-                    position,
-                ));
-            }
-        }
+        let scoped = get_scoped_completions(ast, position);
 
-        if items.is_empty() {
-            return Some(CompletionResponse::Array(vec![]));
-        }
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&format!("[completion] scoped: got {} items", scoped.len()).into());
 
-        return Some(CompletionResponse::Array(items));
-    }
-
-    // Get scoped completions from the AST
-    if let Some(ast) = parse_document(text, path) {
-        items.extend(get_scoped_completions(&ast, position));
+        items.extend(scoped);
     }
 
     // Add built-in functions with snippets

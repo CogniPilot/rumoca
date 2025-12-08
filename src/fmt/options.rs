@@ -80,12 +80,11 @@ impl FormatOptions {
         loop {
             for config_name in CONFIG_FILE_NAMES {
                 let config_path = current.join(config_name);
-                if config_path.exists() {
-                    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-                        if let Ok(options) = toml::from_str::<FormatOptions>(&contents) {
-                            return Some(options);
-                        }
-                    }
+                if config_path.exists()
+                    && let Ok(contents) = std::fs::read_to_string(&config_path)
+                    && let Ok(options) = toml::from_str::<FormatOptions>(&contents)
+                {
+                    return Some(options);
                 }
             }
 

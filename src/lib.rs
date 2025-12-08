@@ -4,10 +4,14 @@ pub mod fmt;
 pub mod ir;
 pub mod lint;
 
+// LSP module is available with lsp-core feature (used by both native LSP and WASM)
+#[cfg(feature = "lsp-core")]
 pub mod lsp;
 pub mod modelica_grammar;
 #[cfg(feature = "python")]
 mod python;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 // Re-export generated modules from modelica_grammar::generated for backward compatibility
 pub use modelica_grammar::generated::modelica_grammar_trait;

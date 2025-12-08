@@ -206,10 +206,10 @@ fn convert_algorithms_to_equations(
         // Create one equation per assigned variable
         for var_name in assigned_vars {
             // Skip if it's an input (inputs don't need equations)
-            if let Some(comp) = components.get(&var_name) {
-                if matches!(comp.causality, crate::ir::ast::Causality::Input(..)) {
-                    continue;
-                }
+            if let Some(comp) = components.get(&var_name)
+                && matches!(comp.causality, crate::ir::ast::Causality::Input(..))
+            {
+                continue;
             }
 
             // Create a placeholder equation: var = var (self-assignment)
@@ -343,14 +343,14 @@ fn find_der_vars_in_equation(eq: &Equation, states: &mut std::collections::HashS
 fn find_der_vars_in_expr(expr: &Expression, states: &mut std::collections::HashSet<String>) {
     match expr {
         Expression::FunctionCall { comp, args } => {
-            if let Some(first_part) = comp.parts.first() {
-                if first_part.ident.text == "der" {
-                    // This is a der() call - extract the variable name
-                    if let Some(Expression::ComponentReference(comp_ref)) = args.first() {
-                        if let Some(part) = comp_ref.parts.first() {
-                            states.insert(part.ident.text.clone());
-                        }
-                    }
+            if let Some(first_part) = comp.parts.first()
+                && first_part.ident.text == "der"
+            {
+                // This is a der() call - extract the variable name
+                if let Some(Expression::ComponentReference(comp_ref)) = args.first()
+                    && let Some(part) = comp_ref.parts.first()
+                {
+                    states.insert(part.ident.text.clone());
                 }
             }
             // Also check arguments recursively
@@ -817,35 +817,34 @@ fn eval_integer_with_params(
         }
         Expression::FunctionCall { comp, args } => {
             // Handle size(array, dim) function
-            if let Some(first_part) = comp.parts.first() {
-                if first_part.ident.text == "size" && !args.is_empty() {
-                    // Get the array argument
-                    if let Expression::ComponentReference(array_ref) = &args[0] {
-                        if array_ref.parts.len() == 1 && array_ref.parts[0].subs.is_none() {
-                            let array_name = &array_ref.parts[0].ident.text;
-                            if let Some(array_comp) = components.get(array_name) {
-                                // Get the dimension index (default to 1)
-                                let dim_index = if args.len() >= 2 {
-                                    eval_integer_with_params(&args[1], components).unwrap_or(1)
-                                        as usize
-                                } else {
-                                    1
-                                };
+            if let Some(first_part) = comp.parts.first()
+                && first_part.ident.text == "size"
+                && !args.is_empty()
+            {
+                // Get the array argument
+                if let Expression::ComponentReference(array_ref) = &args[0]
+                    && array_ref.parts.len() == 1
+                    && array_ref.parts[0].subs.is_none()
+                {
+                    let array_name = &array_ref.parts[0].ident.text;
+                    if let Some(array_comp) = components.get(array_name) {
+                        // Get the dimension index (default to 1)
+                        let dim_index = if args.len() >= 2 {
+                            eval_integer_with_params(&args[1], components).unwrap_or(1) as usize
+                        } else {
+                            1
+                        };
 
-                                // First check evaluated shape
-                                if !array_comp.shape.is_empty()
-                                    && dim_index <= array_comp.shape.len()
-                                {
-                                    return Some(array_comp.shape[dim_index - 1] as i64);
-                                }
+                        // First check evaluated shape
+                        if !array_comp.shape.is_empty() && dim_index <= array_comp.shape.len() {
+                            return Some(array_comp.shape[dim_index - 1] as i64);
+                        }
 
-                                // Check if it's an array literal in start
-                                if let Expression::Array { elements } = &array_comp.start {
-                                    if dim_index == 1 {
-                                        return Some(elements.len() as i64);
-                                    }
-                                }
-                            }
+                        // Check if it's an array literal in start
+                        if let Expression::Array { elements } = &array_comp.start
+                            && dim_index == 1
+                        {
+                            return Some(elements.len() as i64);
                         }
                     }
                 }
@@ -1071,12 +1070,11 @@ fn get_equation_array_size(
         }
         Expression::FunctionCall { comp, args } => {
             // Handle der(x) - get size from argument
-            if let Some(first_part) = comp.parts.first() {
-                if first_part.ident.text == "der" {
-                    if let Some(arg) = args.first() {
-                        return get_equation_array_size(arg, components);
-                    }
-                }
+            if let Some(first_part) = comp.parts.first()
+                && first_part.ident.text == "der"
+                && let Some(arg) = args.first()
+            {
+                return get_equation_array_size(arg, components);
             }
             Some(1)
         }
@@ -1170,13 +1168,14 @@ fn subscript_expr(expr: Expression, indices: &[usize]) -> Expression {
         }
         Expression::FunctionCall { comp, args } => {
             // Handle der(x) -> der(x[i])
-            if let Some(first_part) = comp.parts.first() {
-                if first_part.ident.text == "der" && args.len() == 1 {
-                    return Expression::FunctionCall {
-                        comp,
-                        args: vec![subscript_expr(args[0].clone(), indices)],
-                    };
-                }
+            if let Some(first_part) = comp.parts.first()
+                && first_part.ident.text == "der"
+                && args.len() == 1
+            {
+                return Expression::FunctionCall {
+                    comp,
+                    args: vec![subscript_expr(args[0].clone(), indices)],
+                };
             }
             // For other functions, subscript the whole result
             Expression::FunctionCall { comp, args }
@@ -1234,11 +1233,11 @@ fn flatten_and_subscript(
             // Subscript the component reference
             if let Some(first_part) = comp_ref.parts.first() {
                 let name = &first_part.ident.text;
-                if let Some(comp) = components.get(name) {
-                    if !comp.shape.is_empty() {
-                        // It's an array - subscript it
-                        return subscript_expr(expr.clone(), &[flat_index]);
-                    }
+                if let Some(comp) = components.get(name)
+                    && !comp.shape.is_empty()
+                {
+                    // It's an array - subscript it
+                    return subscript_expr(expr.clone(), &[flat_index]);
                 }
             }
             // Scalar - return as-is

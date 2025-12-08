@@ -4,128 +4,17 @@
 // lost after next build.
 // ---------------------------------------------------------
 
-use parol_runtime::once_cell::sync::Lazy;
-use parol_runtime::parser::parse_tree_type::TreeConstruct;
-#[allow(unused_imports)]
-use parol_runtime::parser::{LLKParser, LookaheadDFA, ParseType, Production, Trans};
-use parol_runtime::{ParolError, ParseTree, TerminalIndex};
-use parol_runtime::{ScannerConfig, TokenStream, Tokenizer};
+use parol_runtime::{
+    ParolError, ParseTree, TokenStream,
+    parser::{
+        LLKParser, LookaheadDFA, ParseType, Production, Trans, parse_tree_type::TreeConstruct,
+    },
+};
+use scnr2::scanner;
 use std::path::Path;
 
 use crate::modelica_grammar::ModelicaGrammar;
 use crate::modelica_grammar_trait::ModelicaGrammarAuto;
-
-use parol_runtime::lexer::tokenizer::{
-    ERROR_TOKEN, NEW_LINE_TOKEN, UNMATCHABLE_TOKEN, WHITESPACE_TOKEN,
-};
-
-pub const TERMINALS: &[(&str, Option<(bool, &str)>); 101] = &[
-    /*   0 */ (UNMATCHABLE_TOKEN, None),
-    /*   1 */ (UNMATCHABLE_TOKEN, None),
-    /*   2 */ (UNMATCHABLE_TOKEN, None),
-    /*   3 */ (UNMATCHABLE_TOKEN, None),
-    /*   4 */ (UNMATCHABLE_TOKEN, None),
-    /*   5 */ (r"algorithm", None),
-    /*   6 */ (r"and", None),
-    /*   7 */ (r"annotation", None),
-    /*   8 */ (r"block", None),
-    /*   9 */ (r"break", None),
-    /*  10 */ (r"class", None),
-    /*  11 */ (r"connect", None),
-    /*  12 */ (r"connector", None),
-    /*  13 */ (r"constant", None),
-    /*  14 */ (r"constrainedby", None),
-    /*  15 */ (r"der", None),
-    /*  16 */ (r"discrete", None),
-    /*  17 */ (r"each", None),
-    /*  18 */ (r"else", None),
-    /*  19 */ (r"elseif", None),
-    /*  20 */ (r"elsewhen", None),
-    /*  21 */ (r"encapsulated", None),
-    /*  22 */ (r"end", None),
-    /*  23 */ (r"enumeration", None),
-    /*  24 */ (r"equation", None),
-    /*  25 */ (r"expandable", None),
-    /*  26 */ (r"extends", None),
-    /*  27 */ (r"external", None),
-    /*  28 */ (r"false", None),
-    /*  29 */ (r"final", None),
-    /*  30 */ (r"flow", None),
-    /*  31 */ (r"for", None),
-    /*  32 */ (r"function", None),
-    /*  33 */ (r"if", None),
-    /*  34 */ (r"import", None),
-    /*  35 */ (r"impure", None),
-    /*  36 */ (r"in", None),
-    /*  37 */ (r"initial", None),
-    /*  38 */ (r"inner", None),
-    /*  39 */ (r"input", None),
-    /*  40 */ (r"loop", None),
-    /*  41 */ (r"model", None),
-    /*  42 */ (r"not", None),
-    /*  43 */ (r"operator", None),
-    /*  44 */ (r"or", None),
-    /*  45 */ (r"outer", None),
-    /*  46 */ (r"output", None),
-    /*  47 */ (r"package", None),
-    /*  48 */ (r"parameter", None),
-    /*  49 */ (r"partial", None),
-    /*  50 */ (r"protected", None),
-    /*  51 */ (r"public", None),
-    /*  52 */ (r"pure", None),
-    /*  53 */ (r"record", None),
-    /*  54 */ (r"redeclare", None),
-    /*  55 */ (r"replaceable", None),
-    /*  56 */ (r"return", None),
-    /*  57 */ (r"stream", None),
-    /*  58 */ (r"then", None),
-    /*  59 */ (r"true", None),
-    /*  60 */ (r"type", None),
-    /*  61 */ (r"when", None),
-    /*  62 */ (r"while", None),
-    /*  63 */ (r"within", None),
-    /*  64 */ (r"[_a-zA-Z][_a-zA-Z0-9]*", None),
-    /*  65 */
-    (
-        r#"\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'"#,
-        None,
-    ),
-    /*  66 */ (r#""([^"\\]|\\.)*""#, None),
-    /*  67 */ (r"[0-9]+", None),
-    /*  68 */ (r"[0-9]+\.[0-9]+", None),
-    /*  69 */ (r"[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?", None),
-    /*  70 */ (r"\.[0-9]+([eE][+-]?[0-9]+)?", None),
-    /*  71 */ (r"[0-9]+[eE][+-]?[0-9]+", None),
-    /*  72 */ (r";", None),
-    /*  73 */ (r"=", None),
-    /*  74 */ (r"\(", None),
-    /*  75 */ (r"\)", None),
-    /*  76 */ (r":", None),
-    /*  77 */ (r",", None),
-    /*  78 */ (r"\.\*", None),
-    /*  79 */ (r"\.", None),
-    /*  80 */ (r"\*", None),
-    /*  81 */ (r"\{", None),
-    /*  82 */ (r"\}", None),
-    /*  83 */ (r":=", None),
-    /*  84 */ (r"<", None),
-    /*  85 */ (r"<=", None),
-    /*  86 */ (r">", None),
-    /*  87 */ (r">=", None),
-    /*  88 */ (r"==", None),
-    /*  89 */ (r"<>", None),
-    /*  90 */ (r"\+", None),
-    /*  91 */ (r"\-", None),
-    /*  92 */ (r"\.\+", None),
-    /*  93 */ (r"\.\-", None),
-    /*  94 */ (r"/", None),
-    /*  95 */ (r"\./", None),
-    /*  96 */ (r"\^", None),
-    /*  97 */ (r"\.\^", None),
-    /*  98 */ (r"\[", None),
-    /*  99 */ (r"\]", None),
-    /* 100 */ (ERROR_TOKEN, None),
-];
 
 pub const TERMINAL_NAMES: &[&str; 101] = &[
     /*   0 */ "EndOfInput",
@@ -236,113 +125,112 @@ pub const TERMINAL_NAMES: &[&str; 101] = &[
     /* 100 */ "Error",
 ];
 
-/* SCANNER_0: "INITIAL" */
-const SCANNER_0: (&[&str; 5], &[TerminalIndex; 95]) = (
-    &[
-        /*   0 */ UNMATCHABLE_TOKEN,
-        /*   1 */ NEW_LINE_TOKEN,
-        /*   2 */ WHITESPACE_TOKEN,
-        /*   3 */ r"//.*(\r\n|\r|\n)?",
-        /*   4 */ r"/\*([^*]|\*[^/])*\*/",
-    ],
-    &[
-        5,  /* Algorithm */
-        6,  /* And */
-        7,  /* Annotation */
-        8,  /* Block */
-        9,  /* Break */
-        10, /* Class */
-        11, /* Connect */
-        12, /* Connector */
-        13, /* Constant */
-        14, /* Constrainedby */
-        15, /* Der */
-        16, /* Discrete */
-        17, /* Each */
-        18, /* Else */
-        19, /* Elseif */
-        20, /* Elsewhen */
-        21, /* Encapsulated */
-        22, /* End */
-        23, /* Enumeration */
-        24, /* Equation */
-        25, /* Expandable */
-        26, /* Extends */
-        27, /* External */
-        28, /* False */
-        29, /* Final */
-        30, /* Flow */
-        31, /* For */
-        32, /* Function */
-        33, /* If */
-        34, /* Import */
-        35, /* Impure */
-        36, /* In */
-        37, /* Initial */
-        38, /* Inner */
-        39, /* Input */
-        40, /* Loop */
-        41, /* Model */
-        42, /* Not */
-        43, /* Operator */
-        44, /* Or */
-        45, /* Outer */
-        46, /* Output */
-        47, /* Package */
-        48, /* Parameter */
-        49, /* Partial */
-        50, /* Protected */
-        51, /* Public */
-        52, /* Pure */
-        53, /* Record */
-        54, /* Redeclare */
-        55, /* Replaceable */
-        56, /* Return */
-        57, /* Stream */
-        58, /* Then */
-        59, /* True */
-        60, /* Type */
-        61, /* When */
-        62, /* While */
-        63, /* Within */
-        64, /* LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar */
-        65, /* TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick */
-        66, /* String */
-        67, /* UnsignedInteger */
-        68, /* LBracket0Minus9RBracketPlusDotLBracket0Minus9RBracketPlus */
-        69, /* LBracket0Minus9RBracketPlusDotLParenLBracket0Minus9RBracketPlusRParenQuestLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest */
-        70, /* DotLBracket0Minus9RBracketPlusLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest */
-        71, /* LBracket0Minus9RBracketPlusLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlus */
-        72, /* Semicolon */
-        73, /* Equ */
-        74, /* LParen */
-        75, /* RParen */
-        76, /* Colon */
-        77, /* Comma */
-        78, /* DotStar */
-        79, /* Dot */
-        80, /* Star */
-        81, /* LBrace */
-        82, /* RBrace */
-        83, /* ColonEqu */
-        84, /* LT */
-        85, /* LTEqu */
-        86, /* GT */
-        87, /* GTEqu */
-        88, /* EquEqu */
-        89, /* LTGT */
-        90, /* Plus */
-        91, /* Minus */
-        92, /* DotPlus */
-        93, /* DotMinus */
-        94, /* Slash */
-        95, /* DotSlash */
-        96, /* Circumflex */
-        97, /* DotCircumflex */
-        98, /* LBracket */
-        99, /* RBracket */
-    ],
-);
+scanner! {
+    ModelicaGrammarScanner {
+        mode INITIAL {
+            token r"\r\n|\r|\n" => 1; // "Newline"
+            token r"[\s--\r\n]+" => 2; // "Whitespace"
+            token r"//.*(\r\n|\r|\n)?" => 3; // "LineComment"
+            token r"/\*/?([^/]|[^*]/)*\*/" => 4; // "BlockComment"
+            token r"algorithm" => 5; // "Algorithm"
+            token r"and" => 6; // "And"
+            token r"annotation" => 7; // "Annotation"
+            token r"block" => 8; // "Block"
+            token r"break" => 9; // "Break"
+            token r"class" => 10; // "Class"
+            token r"connect" => 11; // "Connect"
+            token r"connector" => 12; // "Connector"
+            token r"constant" => 13; // "Constant"
+            token r"constrainedby" => 14; // "Constrainedby"
+            token r"der" => 15; // "Der"
+            token r"discrete" => 16; // "Discrete"
+            token r"each" => 17; // "Each"
+            token r"else" => 18; // "Else"
+            token r"elseif" => 19; // "Elseif"
+            token r"elsewhen" => 20; // "Elsewhen"
+            token r"encapsulated" => 21; // "Encapsulated"
+            token r"end" => 22; // "End"
+            token r"enumeration" => 23; // "Enumeration"
+            token r"equation" => 24; // "Equation"
+            token r"expandable" => 25; // "Expandable"
+            token r"extends" => 26; // "Extends"
+            token r"external" => 27; // "External"
+            token r"false" => 28; // "False"
+            token r"final" => 29; // "Final"
+            token r"flow" => 30; // "Flow"
+            token r"for" => 31; // "For"
+            token r"function" => 32; // "Function"
+            token r"if" => 33; // "If"
+            token r"import" => 34; // "Import"
+            token r"impure" => 35; // "Impure"
+            token r"in" => 36; // "In"
+            token r"initial" => 37; // "Initial"
+            token r"inner" => 38; // "Inner"
+            token r"input" => 39; // "Input"
+            token r"loop" => 40; // "Loop"
+            token r"model" => 41; // "Model"
+            token r"not" => 42; // "Not"
+            token r"operator" => 43; // "Operator"
+            token r"or" => 44; // "Or"
+            token r"outer" => 45; // "Outer"
+            token r"output" => 46; // "Output"
+            token r"package" => 47; // "Package"
+            token r"parameter" => 48; // "Parameter"
+            token r"partial" => 49; // "Partial"
+            token r"protected" => 50; // "Protected"
+            token r"public" => 51; // "Public"
+            token r"pure" => 52; // "Pure"
+            token r"record" => 53; // "Record"
+            token r"redeclare" => 54; // "Redeclare"
+            token r"replaceable" => 55; // "Replaceable"
+            token r"return" => 56; // "Return"
+            token r"stream" => 57; // "Stream"
+            token r"then" => 58; // "Then"
+            token r"true" => 59; // "True"
+            token r"type" => 60; // "Type"
+            token r"when" => 61; // "When"
+            token r"while" => 62; // "While"
+            token r"within" => 63; // "Within"
+            token r"[_a-zA-Z][_a-zA-Z0-9]*" => 64; // "LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar"
+            token r#"\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'"# => 65; // "TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick"
+            token r#""([^"\\]|\\.)*""# => 66; // "String"
+            token r"[0-9]+" => 67; // "UnsignedInteger"
+            token r"[0-9]+\.[0-9]+" => 68; // "LBracket0Minus9RBracketPlusDotLBracket0Minus9RBracketPlus"
+            token r"[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?" => 69; // "LBracket0Minus9RBracketPlusDotLParenLBracket0Minus9RBracketPlusRParenQuestLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest"
+            token r"\.[0-9]+([eE][+-]?[0-9]+)?" => 70; // "DotLBracket0Minus9RBracketPlusLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest"
+            token r"[0-9]+[eE][+-]?[0-9]+" => 71; // "LBracket0Minus9RBracketPlusLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlus"
+            token r";" => 72; // "Semicolon"
+            token r"=" => 73; // "Equ"
+            token r"\(" => 74; // "LParen"
+            token r"\)" => 75; // "RParen"
+            token r":" => 76; // "Colon"
+            token r"," => 77; // "Comma"
+            token r"\.\*" => 78; // "DotStar"
+            token r"\." => 79; // "Dot"
+            token r"\*" => 80; // "Star"
+            token r"\{" => 81; // "LBrace"
+            token r"\}" => 82; // "RBrace"
+            token r":=" => 83; // "ColonEqu"
+            token r"<" => 84; // "LT"
+            token r"<=" => 85; // "LTEqu"
+            token r">" => 86; // "GT"
+            token r">=" => 87; // "GTEqu"
+            token r"==" => 88; // "EquEqu"
+            token r"<>" => 89; // "LTGT"
+            token r"\+" => 90; // "Plus"
+            token r"\-" => 91; // "Minus"
+            token r"\.\+" => 92; // "DotPlus"
+            token r"\.\-" => 93; // "DotMinus"
+            token r"/" => 94; // "Slash"
+            token r"\./" => 95; // "DotSlash"
+            token r"\^" => 96; // "Circumflex"
+            token r"\.\^" => 97; // "DotCircumflex"
+            token r"\[" => 98; // "LBracket"
+            token r"\]" => 99; // "RBracket"
+            token r"." => 100; // "Error"
+        }
+    }
+}
 
 const MAX_K: usize = 3;
 
@@ -8938,14 +8826,6 @@ pub const PRODUCTIONS: &[Production; 505] = &[
     },
 ];
 
-static SCANNERS: Lazy<Vec<ScannerConfig>> = Lazy::new(|| {
-    vec![ScannerConfig::new(
-        "INITIAL",
-        Tokenizer::build(TERMINALS, SCANNER_0.0, SCANNER_0.1).unwrap(),
-        &[],
-    )]
-});
-
 pub fn parse<T>(
     input: &str,
     file_name: T,
@@ -8954,9 +8834,10 @@ pub fn parse<T>(
 where
     T: AsRef<Path>,
 {
-    use parol_runtime::parser::parse_tree_type::SynTree;
-    use parol_runtime::parser::parser_types::SynTreeFlavor;
-    use parol_runtime::syntree::Builder;
+    use parol_runtime::{
+        parser::{parse_tree_type::SynTree, parser_types::SynTreeFlavor},
+        syntree::Builder,
+    };
     let mut builder = Builder::<SynTree, SynTreeFlavor>::new_with();
     parse_into(input, &mut builder, file_name, user_actions)?;
     Ok(builder.build()?)
@@ -8971,6 +8852,7 @@ pub fn parse_into<'t, T: TreeConstruct<'t>>(
 where
     ParolError: From<T::Error>,
 {
+    use modelica_grammar_scanner::ModelicaGrammarScanner;
     let mut llk_parser = LLKParser::new(
         268,
         LOOKAHEAD_AUTOMATA,
@@ -8979,12 +8861,19 @@ where
         NON_TERMINALS,
     );
     llk_parser.trim_parse_tree();
-
+    let scanner = ModelicaGrammarScanner::new();
     // Initialize wrapper
     let mut user_actions = ModelicaGrammarAuto::new(user_actions);
-    llk_parser.parse_into::<T>(
+    llk_parser.parse_into(
         tree_builder,
-        TokenStream::new(input, file_name, &SCANNERS, MAX_K).unwrap(),
+        TokenStream::new(
+            input,
+            file_name,
+            scanner.scanner_impl.clone(),
+            &ModelicaGrammarScanner::match_function,
+            MAX_K,
+        )
+        .unwrap(),
         &mut user_actions,
     )
 }

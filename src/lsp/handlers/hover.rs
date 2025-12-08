@@ -1,13 +1,19 @@
 //! Hover information handler for Modelica files.
+//!
+//! This module uses canonical scope resolution functions from
+//! `crate::ir::transform::scope_resolver` to avoid duplication.
 
 use std::collections::HashMap;
 
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind, Position, Uri};
 
 use crate::fmt::{format_equation, format_expression};
-use crate::ir::ast::{Causality, ClassType, Component, Expression, StoredDefinition, Variability};
+use crate::ir::ast::{
+    Causality, ClassDefinition, ClassType, Component, Expression, Import, StoredDefinition,
+    Variability,
+};
 use crate::ir::transform::constants::get_builtin_functions;
-use crate::ir::transform::scope_resolver::{ResolvedSymbol, ScopeResolver};
+use crate::ir::transform::scope_resolver::{ResolvedSymbol, ScopeResolver, find_class_in_ast};
 
 use crate::lsp::data::keywords::get_keyword_hover;
 use crate::lsp::utils::{get_qualified_name_at_position, get_word_at_position, parse_document};
@@ -24,16 +30,16 @@ pub fn handle_hover(documents: &HashMap<Uri, String>, params: HoverParams) -> Op
     let word = get_word_at_position(text, position)?;
 
     // First check for hover info from the AST
-    if let Some(ast) = parse_document(text, path) {
-        if let Some(hover_text) = get_ast_hover_info(&ast, &word, position) {
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: hover_text,
-                }),
-                range: None,
-            });
-        }
+    if let Some(ast) = parse_document(text, path)
+        && let Some(hover_text) = get_ast_hover_info(&ast, &word, position)
+    {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: hover_text,
+            }),
+            range: None,
+        });
     }
 
     // Check built-in functions
@@ -74,7 +80,10 @@ pub fn handle_hover(documents: &HashMap<Uri, String>, params: HoverParams) -> Op
 }
 
 /// Handle hover request with workspace support for cross-file lookups
-pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -> Option<Hover> {
+pub fn handle_hover_workspace(
+    workspace: &mut WorkspaceState,
+    params: HoverParams,
+) -> Option<Hover> {
     let uri = &params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -87,38 +96,34 @@ pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -
 
     // Parse the document and use unified scope resolver with workspace lookup
     if let Some(ast) = parse_document(text, path) {
-        let resolver = ScopeResolver::with_lookup(&ast, workspace);
-
-        // Try qualified name first (e.g., SI.Mass, Interfaces.DiscreteSISO)
-        // Note: resolve_qualified uses 1-indexed positions
-        if let Some(ref qn) = qualified_name {
-            if let Some(resolved) =
-                resolver.resolve_qualified(qn, position.line + 1, position.character + 1)
-            {
-                if let Some(hover_text) = format_resolved_symbol_unified(&resolved, workspace, &ast)
-                {
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: hover_text,
-                        }),
-                        range: None,
-                    });
-                }
+        // Pre-index: Check if word matches an import alias and ensure package is indexed
+        // This is needed because resolve() returns None if the imported symbol isn't indexed yet
+        for class in ast.class_list.values() {
+            if let Some(import_path) = find_import_path_for_name(class, &word) {
+                workspace.ensure_package_indexed(&import_path);
             }
         }
 
-        // Fall back to simple word resolution (resolve uses 1-indexed positions)
-        if let Some(resolved) = resolver.resolve(&word, position.line + 1, position.character + 1) {
-            if let Some(hover_text) = format_resolved_symbol_unified(&resolved, workspace, &ast) {
-                return Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: hover_text,
-                    }),
-                    range: None,
-                });
-            }
+        // Resolve with indexed symbols
+        let resolver = ScopeResolver::with_lookup(&ast, workspace as &WorkspaceState);
+        let mut resolved = None;
+        if let Some(ref qn) = qualified_name {
+            resolved = resolver.resolve_qualified(qn, position.line + 1, position.character + 1);
+        }
+        if resolved.is_none() {
+            resolved = resolver.resolve(&word, position.line + 1, position.character + 1);
+        }
+
+        if let Some(ref resolved) = resolved
+            && let Some(hover_text) = format_resolved_symbol_unified(resolved, workspace, &ast)
+        {
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: hover_text,
+                }),
+                range: None,
+            });
         }
     }
 
@@ -163,7 +168,7 @@ pub fn handle_hover_workspace(workspace: &WorkspaceState, params: HoverParams) -
 fn format_resolved_symbol_unified(
     resolved: &ResolvedSymbol,
     workspace: &WorkspaceState,
-    _ast: &StoredDefinition,
+    ast: &StoredDefinition,
 ) -> Option<String> {
     match resolved {
         ResolvedSymbol::Component {
@@ -190,7 +195,14 @@ fn format_resolved_symbol_unified(
             Some(info)
         }
         ResolvedSymbol::Class(class_def) => {
-            Some(format_class_hover(class_def, &class_def.name.text))
+            // Try to flatten the class to show inherited content
+            let class_name = &class_def.name.text;
+            if let Ok(flattened) = crate::ir::transform::flatten::flatten(ast, Some(class_name)) {
+                Some(format_class_hover(&flattened, class_name))
+            } else {
+                // Fall back to unflattened view
+                Some(format_class_hover(class_def, class_name))
+            }
         }
         ResolvedSymbol::External(sym_info) => Some(format_symbol_info_hover(sym_info, workspace)),
     }
@@ -235,8 +247,8 @@ fn get_ast_hover_info(ast: &StoredDefinition, word: &str, position: Position) ->
                 defined_in,
                 inherited_via,
             } => {
-                // Look up the class definition for this component's type
-                let type_class = find_class_definition(ast, &component.type_name.to_string());
+                // Look up the class definition for this component's type (using canonical function)
+                let type_class = find_class_in_ast(ast, &component.type_name.to_string());
                 let mut info = format_component_hover_with_class(component, type_class);
 
                 // Add inheritance info if applicable
@@ -250,6 +262,12 @@ fn get_ast_hover_info(ast: &StoredDefinition, word: &str, position: Position) ->
                 return Some(info);
             }
             ResolvedSymbol::Class(class_def) => {
+                // Try to flatten the class to show inherited content
+                let class_name = &class_def.name.text;
+                if let Ok(flattened) = crate::ir::transform::flatten::flatten(ast, Some(class_name))
+                {
+                    return Some(format_class_hover(&flattened, class_name));
+                }
                 return Some(format_class_hover(class_def, word));
             }
             ResolvedSymbol::External(sym_info) => {
@@ -266,12 +284,23 @@ fn get_ast_hover_info(ast: &StoredDefinition, word: &str, position: Position) ->
 
     // Fall back: check if word is a class name anywhere
     if let Some(class_def) = ast.class_list.get(word) {
+        // Try to flatten the class to show inherited content
+        if let Ok(flattened) = crate::ir::transform::flatten::flatten(ast, Some(word)) {
+            return Some(format_class_hover(&flattened, word));
+        }
         return Some(format_class_hover(class_def, word));
     }
 
     // Check nested classes in all top-level classes
     for class in ast.class_list.values() {
         if let Some(nested) = class.classes.get(word) {
+            // For nested classes, try to flatten with qualified name
+            let qualified_name = format!("{}.{}", class.name.text, word);
+            if let Ok(flattened) =
+                crate::ir::transform::flatten::flatten(ast, Some(&qualified_name))
+            {
+                return Some(format_class_hover(&flattened, word));
+            }
             return Some(format_class_hover(nested, word));
         }
     }
@@ -284,42 +313,7 @@ fn format_expr(expr: &Expression) -> String {
     format_expression(expr)
 }
 
-/// Find a class definition by name in the AST
-fn find_class_definition<'a>(
-    ast: &'a StoredDefinition,
-    type_name: &str,
-) -> Option<&'a crate::ir::ast::ClassDefinition> {
-    // Handle qualified names like "SO2.SO2LieGroupElement"
-    let parts: Vec<&str> = type_name.split('.').collect();
-
-    if parts.len() == 1 {
-        // Simple name - check top-level classes
-        if let Some(class) = ast.class_list.get(type_name) {
-            return Some(class);
-        }
-        // Check nested classes in all top-level classes
-        for class in ast.class_list.values() {
-            if let Some(nested) = class.classes.get(type_name) {
-                return Some(nested);
-            }
-        }
-    } else if parts.len() >= 2 {
-        // Qualified name - navigate through the hierarchy
-        let first = parts[0];
-        if let Some(mut current) = ast.class_list.get(first) {
-            for part in &parts[1..] {
-                if let Some(nested) = current.classes.get(*part) {
-                    current = nested;
-                } else {
-                    return None;
-                }
-            }
-            return Some(current);
-        }
-    }
-
-    None
-}
+// Note: find_class_definition is replaced by find_class_in_ast from canonical module
 
 /// Format hover info for a component with optional class definition
 fn format_component_hover_with_class(
@@ -565,16 +559,14 @@ fn extract_documentation_info(annotation: &[Expression]) -> Option<String> {
                 for arg in args {
                     if let Expression::Binary { op, lhs, rhs } = arg {
                         // Named arguments use Eq operator (name = value)
-                        if matches!(op, crate::ir::ast::OpBinary::Eq(_)) {
-                            if let Expression::ComponentReference(comp_ref) = lhs.as_ref() {
-                                if comp_ref.to_string() == "info" {
-                                    if let Expression::Terminal { token, .. } = rhs.as_ref() {
-                                        // Extract the HTML content from the string
-                                        let html = token.text.trim_matches('"');
-                                        return Some(html.to_string());
-                                    }
-                                }
-                            }
+                        if matches!(op, crate::ir::ast::OpBinary::Eq(_))
+                            && let Expression::ComponentReference(comp_ref) = lhs.as_ref()
+                            && comp_ref.to_string() == "info"
+                            && let Expression::Terminal { token, .. } = rhs.as_ref()
+                        {
+                            // Extract the HTML content from the string
+                            let html = token.text.trim_matches('"');
+                            return Some(html.to_string());
                         }
                     }
                 }
@@ -880,4 +872,46 @@ fn format_class_hover(class_def: &crate::ir::ast::ClassDefinition, name: &str) -
     }
 
     info
+}
+
+/// Find the import path for a name if it matches an import in the class
+fn find_import_path_for_name(class: &ClassDefinition, name: &str) -> Option<String> {
+    for import in &class.imports {
+        match import {
+            Import::Renamed { alias, path, .. } => {
+                if alias.text == name {
+                    return Some(path.to_string());
+                }
+            }
+            Import::Qualified { path, .. } => {
+                // For `import A.B.C;`, the alias is "C"
+                if let Some(last) = path.name.last()
+                    && last.text == name
+                {
+                    return Some(path.to_string());
+                }
+            }
+            Import::Unqualified { path, .. } => {
+                // For `import A.B.*;`, try path.name
+                return Some(format!("{}.{}", path, name));
+            }
+            Import::Selective { path, names, .. } => {
+                // For `import A.B.{C, D};`, check if name matches
+                for n in names {
+                    if n.text == name {
+                        return Some(format!("{}.{}", path, name));
+                    }
+                }
+            }
+        }
+    }
+
+    // Check nested classes
+    for nested in class.classes.values() {
+        if let Some(path) = find_import_path_for_name(nested, name) {
+            return Some(path);
+        }
+    }
+
+    None
 }
