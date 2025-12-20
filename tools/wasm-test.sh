@@ -1,11 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # WASM build and test script for Rumoca
 #
 # Usage:
-#   ./scripts/wasm-test.sh          # Build and serve
-#   ./scripts/wasm-test.sh build    # Build only
-#   ./scripts/wasm-test.sh serve    # Serve only (assumes already built)
-#   ./scripts/wasm-test.sh clean    # Clean WASM build artifacts
+#   ./tools/wasm-test.sh          # Build and serve
+#   ./tools/wasm-test.sh build    # Build only
+#   ./tools/wasm-test.sh serve    # Serve only (assumes already built)
+#   ./tools/wasm-test.sh clean    # Clean WASM build artifacts
 
 set -e
 

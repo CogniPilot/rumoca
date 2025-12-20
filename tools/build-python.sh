@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build and install the rumoca Python package via maturin.
 #
 # Usage:

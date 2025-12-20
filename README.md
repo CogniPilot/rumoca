@@ -275,40 +275,8 @@ The demo provides a Monaco-based editor with:
 - DAE IR JSON export
 - Autocomplete for template variables (`dae.x`, `dae.u`, etc.)
 
-**Building WASM:**
+[**Building WASM:**](./wasm/README.md)
 
-```bash
-# Install wasm-pack
-cargo install wasm-pack
-
-# Build WASM package (outputs to pkg/)
-wasm-pack build --target web --release
-```
-
-**Using in JavaScript:**
-
-```javascript
-import init, { compile, render_template } from './pkg/rumoca.js';
-
-await init();
-
-const modelica = `
-  model Test
-    Real x(start=0);
-  equation
-    der(x) = 1;
-  end Test;
-`;
-
-// Compile to DAE IR JSON
-const result = compile(modelica, "Test");
-console.log(result);
-
-// Render custom template
-const template = "Model: {{ dae.model_name }}";
-const output = render_template(modelica, "Test", template);
-console.log(output);
-```
 
 ## Integration with Cyecca
 
