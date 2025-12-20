@@ -2,13 +2,20 @@
 //!
 //! This module provides unified symbol collection and analysis functionality
 //! used by linting, diagnostics, and semantic analysis.
+//!
+//! ## Visitor-based Symbol Collection
+//!
+//! The [`SymbolCollectorVisitor`] provides a clean, visitor-based approach to
+//! collecting symbol references from the AST. It uses the standard [`Visitor`]
+//! trait from [`crate::ir::visitor`].
 
 use std::collections::{HashMap, HashSet};
 
 use crate::ir::ast::{
-    Causality, ClassDefinition, ClassType, Component, ComponentReference, Equation, Expression,
-    Statement, Variability,
+    Causality, ClassDefinition, ClassType, Component, ComponentReference, Expression, ForIndex,
+    Variability,
 };
+use crate::ir::visitor::{Visitable, Visitor};
 
 /// Information about a defined symbol for analysis.
 ///
@@ -119,6 +126,26 @@ impl DefinedSymbol {
     }
 }
 
+/// Add loop index variables to a defined symbols map.
+///
+/// This is a helper function to avoid code duplication when handling for loops
+/// in the linter and LSP diagnostics. Each loop index is added as a locally
+/// defined Integer variable.
+pub fn add_loop_indices_to_defined(
+    indices: &[ForIndex],
+    defined: &mut HashMap<String, DefinedSymbol>,
+) {
+    for index in indices {
+        defined.insert(
+            index.ident.text.clone(),
+            DefinedSymbol::loop_index(
+                index.ident.location.start_line,
+                index.ident.location.start_column,
+            ),
+        );
+    }
+}
+
 /// Check if a type name represents a class instance (not a primitive type).
 ///
 /// Returns `false` for built-in types like Real, Integer, Boolean, String,
@@ -154,213 +181,172 @@ pub fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, Defin
 }
 
 /// Collect all symbols used in a class (referenced in expressions, equations, etc.)
+///
+/// This function uses the [`SymbolCollectorVisitor`] internally for a clean,
+/// maintainable implementation that leverages the visitor pattern.
 pub fn collect_used_symbols(class: &ClassDefinition) -> HashSet<String> {
-    let mut used = HashSet::new();
-
-    // From component start expressions
-    for comp in class.components.values() {
-        collect_expr_symbols(&comp.start, &mut used);
-    }
-
-    // From equations
-    for eq in &class.equations {
-        collect_equation_symbols(eq, &mut used);
-    }
-
-    // From initial equations
-    for eq in &class.initial_equations {
-        collect_equation_symbols(eq, &mut used);
-    }
-
-    // From algorithms
-    for algo in &class.algorithms {
-        for stmt in algo {
-            collect_statement_symbols(stmt, &mut used);
-        }
-    }
-
-    // From initial algorithms
-    for algo in &class.initial_algorithms {
-        for stmt in algo {
-            collect_statement_symbols(stmt, &mut used);
-        }
-    }
-
-    used
+    let mut collector = SymbolCollectorVisitor::new();
+    class.accept(&mut collector);
+    collector.into_symbols()
 }
 
-/// Collect symbols from an expression
-pub fn collect_expr_symbols(expr: &Expression, used: &mut HashSet<String>) {
-    match expr {
-        Expression::Empty => {}
-        Expression::ComponentReference(comp_ref) => {
-            collect_comp_ref_symbols(comp_ref, used);
+// =============================================================================
+// Visitor-based Symbol Collection
+// =============================================================================
+
+/// A visitor that collects all symbol references from the AST.
+///
+/// This visitor implements the [`Visitor`] trait and collects the first
+/// identifier from every component reference encountered during traversal.
+/// It provides a cleaner, more maintainable alternative to manual AST traversal.
+///
+/// ## Example
+///
+/// ```
+/// use rumoca::ir::visitor::Visitable;
+/// use rumoca::ir::analysis::symbols::SymbolCollectorVisitor;
+/// use std::collections::HashSet;
+///
+/// // Create a collector and visit an AST node
+/// let collector = SymbolCollectorVisitor::new();
+/// // After calling: class_definition.accept(&mut collector);
+/// let used_symbols: HashSet<String> = collector.into_symbols();
+/// ```
+pub struct SymbolCollectorVisitor {
+    /// Collected symbol names
+    symbols: HashSet<String>,
+}
+
+impl SymbolCollectorVisitor {
+    /// Create a new symbol collector.
+    pub fn new() -> Self {
+        Self {
+            symbols: HashSet::new(),
         }
-        Expression::Terminal { .. } => {}
-        Expression::FunctionCall { comp, args } => {
-            collect_comp_ref_symbols(comp, used);
-            for arg in args {
-                collect_expr_symbols(arg, used);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_expr_symbols(lhs, used);
-            collect_expr_symbols(rhs, used);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_expr_symbols(rhs, used);
-        }
-        Expression::Array { elements } => {
-            for elem in elements {
-                collect_expr_symbols(elem, used);
-            }
-        }
-        Expression::Tuple { elements } => {
-            for elem in elements {
-                collect_expr_symbols(elem, used);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_expr_symbols(cond, used);
-                collect_expr_symbols(then_expr, used);
-            }
-            collect_expr_symbols(else_branch, used);
-        }
-        Expression::Range { start, step, end } => {
-            collect_expr_symbols(start, used);
-            if let Some(s) = step {
-                collect_expr_symbols(s, used);
-            }
-            collect_expr_symbols(end, used);
-        }
-        Expression::Parenthesized { inner } => {
-            collect_expr_symbols(inner, used);
-        }
-        Expression::ArrayComprehension { expr, indices } => {
-            collect_expr_symbols(expr, used);
-            for idx in indices {
-                collect_expr_symbols(&idx.range, used);
-            }
+    }
+
+    /// Get the collected symbols as a reference.
+    pub fn symbols(&self) -> &HashSet<String> {
+        &self.symbols
+    }
+
+    /// Consume the visitor and return the collected symbols.
+    pub fn into_symbols(self) -> HashSet<String> {
+        self.symbols
+    }
+}
+
+impl Default for SymbolCollectorVisitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Visitor for SymbolCollectorVisitor {
+    fn enter_component_reference(&mut self, node: &ComponentReference) {
+        // Collect the first identifier from the component reference
+        if let Some(first) = node.parts.first() {
+            self.symbols.insert(first.ident.text.clone());
         }
     }
 }
 
-/// Collect symbols from an equation
-pub fn collect_equation_symbols(eq: &Equation, used: &mut HashSet<String>) {
-    match eq {
-        Equation::Empty => {}
-        Equation::Simple { lhs, rhs } => {
-            collect_expr_symbols(lhs, used);
-            collect_expr_symbols(rhs, used);
-        }
-        Equation::Connect { lhs, rhs } => {
-            collect_comp_ref_symbols(lhs, used);
-            collect_comp_ref_symbols(rhs, used);
-        }
-        Equation::For { indices, equations } => {
-            for index in indices {
-                collect_expr_symbols(&index.range, used);
-            }
-            for sub_eq in equations {
-                collect_equation_symbols(sub_eq, used);
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                collect_expr_symbols(&block.cond, used);
-                for sub_eq in &block.eqs {
-                    collect_equation_symbols(sub_eq, used);
-                }
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_expr_symbols(&block.cond, used);
-                for sub_eq in &block.eqs {
-                    collect_equation_symbols(sub_eq, used);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for sub_eq in else_eqs {
-                    collect_equation_symbols(sub_eq, used);
-                }
-            }
-        }
-        Equation::FunctionCall { comp, args } => {
-            collect_comp_ref_symbols(comp, used);
-            for arg in args {
-                collect_expr_symbols(arg, used);
-            }
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modelica_grammar::ModelicaGrammar;
+    use crate::modelica_parser::parse;
 
-/// Collect symbols from a statement
-pub fn collect_statement_symbols(stmt: &Statement, used: &mut HashSet<String>) {
-    match stmt {
-        Statement::Empty => {}
-        Statement::Assignment { comp, value } => {
-            collect_comp_ref_symbols(comp, used);
-            collect_expr_symbols(value, used);
-        }
-        Statement::FunctionCall { comp, args } => {
-            collect_comp_ref_symbols(comp, used);
-            for arg in args {
-                collect_expr_symbols(arg, used);
-            }
-        }
-        Statement::For { indices, equations } => {
-            for index in indices {
-                collect_expr_symbols(&index.range, used);
-            }
-            for sub_stmt in equations {
-                collect_statement_symbols(sub_stmt, used);
-            }
-        }
-        Statement::While(block) => {
-            collect_expr_symbols(&block.cond, used);
-            for sub_stmt in &block.stmts {
-                collect_statement_symbols(sub_stmt, used);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_expr_symbols(&block.cond, used);
-                for sub_stmt in &block.stmts {
-                    collect_statement_symbols(sub_stmt, used);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for sub_stmt in else_stmts {
-                    collect_statement_symbols(sub_stmt, used);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                collect_expr_symbols(&block.cond, used);
-                for sub_stmt in &block.stmts {
-                    collect_statement_symbols(sub_stmt, used);
-                }
-            }
-        }
-        Statement::Return { .. } | Statement::Break { .. } => {}
+    fn parse_test_code(code: &str) -> crate::ir::ast::StoredDefinition {
+        let mut grammar = ModelicaGrammar::new();
+        parse(code, "test.mo", &mut grammar).expect("Failed to parse test code");
+        grammar.modelica.expect("No AST produced")
     }
-}
 
-/// Collect the first identifier from a component reference
-pub fn collect_comp_ref_symbols(comp_ref: &ComponentReference, used: &mut HashSet<String>) {
-    if let Some(first) = comp_ref.parts.first() {
-        used.insert(first.ident.text.clone());
+    #[test]
+    fn test_collect_used_symbols_basic() {
+        let code = r#"
+model Test
+  Real x;
+  Real y;
+equation
+  x = y + 1.0;
+  y = x * 2.0;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        let symbols = collect_used_symbols(class);
+
+        assert!(symbols.contains("x"));
+        assert!(symbols.contains("y"));
+    }
+
+    #[test]
+    fn test_collect_used_symbols_with_for_loop() {
+        let code = r#"
+model Test
+  Real x[10];
+equation
+  for i in 1:10 loop
+    x[i] = i * 2.0;
+  end for;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        let symbols = collect_used_symbols(class);
+
+        assert!(symbols.contains("x"));
+        assert!(symbols.contains("i"));
+    }
+
+    #[test]
+    fn test_collect_used_symbols_with_function_call() {
+        let code = r#"
+model Test
+  Real x;
+  Real y;
+equation
+  x = sin(y);
+  y = cos(x + 1.0);
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        let symbols = collect_used_symbols(class);
+
+        assert!(symbols.contains("x"));
+        assert!(symbols.contains("y"));
+        assert!(symbols.contains("sin"));
+        assert!(symbols.contains("cos"));
+    }
+
+    #[test]
+    fn test_symbol_collector_visitor_directly() {
+        let code = r#"
+model Test
+  Real x;
+  Real y;
+equation
+  x = y + 1.0;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        // Use the visitor directly
+        let mut collector = SymbolCollectorVisitor::new();
+        class.accept(&mut collector);
+
+        assert!(collector.symbols().contains("x"));
+        assert!(collector.symbols().contains("y"));
+
+        let symbols = collector.into_symbols();
+        assert!(symbols.contains("x"));
+        assert!(symbols.contains("y"));
     }
 }

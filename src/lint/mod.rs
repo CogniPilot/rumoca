@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition};
-use crate::ir::transform::constants::global_builtins;
+use crate::ir::analysis::symbol_table::SymbolTable;
+use crate::ir::ast::{ClassDefinition, ClassType, StoredDefinition, Variability};
 use crate::ir::transform::flatten::flatten;
 
 /// Severity level for lint messages
@@ -308,13 +308,29 @@ fn lint_ast(
     config: &LintConfig,
     result: &mut LintResult,
 ) {
+    // Build initial scope with peer class names (for cross-class type references)
+    let mut base_scope = SymbolTable::new();
+    for class_name in ast.class_list.keys() {
+        base_scope.add_global(class_name);
+    }
+
     // Run lints on each top-level class
     for (class_name, class) in &ast.class_list {
-        lint_class(class, class_name, ast, source, file_path, config, result);
+        lint_class(
+            class,
+            class_name,
+            ast,
+            source,
+            file_path,
+            config,
+            result,
+            &base_scope, // Start with builtins + peer class names
+        );
     }
 }
 
 /// Lint a class definition
+#[allow(clippy::too_many_arguments)]
 fn lint_class(
     class: &ClassDefinition,
     class_path: &str,
@@ -323,8 +339,10 @@ fn lint_class(
     file_path: &str,
     config: &LintConfig,
     result: &mut LintResult,
+    parent_scope: &SymbolTable,
 ) {
-    let globals: HashSet<String> = global_builtins().into_iter().collect();
+    // Clone parent scope to build current scope (includes builtins from SymbolTable::new())
+    let mut scope = parent_scope.clone();
 
     // Try to flatten for inherited symbol analysis
     let flattened = match flatten(ast, Some(class_path)) {
@@ -347,6 +365,16 @@ fn lint_class(
     };
     let analysis_class = flattened.as_ref().unwrap_or(class);
 
+    // Add symbols from the flattened class to the scope using SymbolTable's add_symbol
+    for (name, comp) in &analysis_class.components {
+        let is_parameter = matches!(comp.variability, Variability::Parameter(_));
+        scope.add_symbol(name, name, &comp.type_name.to_string(), is_parameter);
+    }
+    // Add nested class names as global symbols (they're callable/usable)
+    for nested_name in analysis_class.classes.keys() {
+        scope.add_global(nested_name);
+    }
+
     // Run individual lint rules
     if config.should_run("naming-convention") {
         lint_naming_conventions(class, file_path, result);
@@ -360,12 +388,12 @@ fn lint_class(
         // Skip unused variable checking for records and connectors
         // since their fields are accessed externally
         if !matches!(class.class_type, ClassType::Record | ClassType::Connector) {
-            lint_unused_variables(analysis_class, file_path, &globals, result);
+            lint_unused_variables(analysis_class, file_path, &scope, result);
         }
     }
 
     if config.should_run("undefined-reference") {
-        lint_undefined_references(analysis_class, file_path, &globals, result);
+        lint_undefined_references(analysis_class, file_path, &scope, result);
     }
 
     if config.should_run("parameter-no-default") {
@@ -392,7 +420,7 @@ fn lint_class(
         lint_redundant_extends(class, file_path, result);
     }
 
-    // Recursively lint nested classes
+    // Recursively lint nested classes, passing current scope
     for (nested_name, nested_class) in &class.classes {
         let nested_path = format!("{}.{}", class_path, nested_name);
         lint_class(
@@ -403,6 +431,7 @@ fn lint_class(
             file_path,
             config,
             result,
+            &scope,
         );
     }
 }

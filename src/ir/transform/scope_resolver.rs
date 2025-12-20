@@ -554,8 +554,9 @@ impl<'a, L: SymbolLookup + ?Sized> ScopeResolver<'a, L> {
 /// The class definition if found, or None.
 ///
 /// # Example
-/// ```ignore
-/// // Find "Modelica.Blocks.Continuous.PID" in an AST with "within Modelica.Blocks.Continuous"
+///
+/// To find "Modelica.Blocks.Continuous.PID" in an AST with `within Modelica.Blocks.Continuous`:
+/// ```text
 /// let class = find_class_in_ast(&ast, "Modelica.Blocks.Continuous.PID");
 /// ```
 pub fn find_class_in_ast<'a>(
@@ -670,13 +671,16 @@ pub fn resolve_type_candidates(current_qualified: &str, type_name: &str) -> Vec<
 /// the import declarations in a class.
 ///
 /// # Example
-/// ```ignore
-/// // Given: import Modelica.Blocks.Continuous.PID;
-/// //        import SI = Modelica.Units.SI;
-/// let resolver = ImportResolver::from_imports(&class.imports);
-/// assert_eq!(resolver.resolve("PID"), Some("Modelica.Blocks.Continuous.PID"));
-/// assert_eq!(resolver.resolve("SI"), Some("Modelica.Units.SI"));
+///
+/// Given the following imports:
+/// ```text
+/// import Modelica.Blocks.Continuous.PID;
+/// import SI = Modelica.Units.SI;
 /// ```
+///
+/// The resolver maps aliases to their fully qualified paths:
+/// - `"PID"` → `"Modelica.Blocks.Continuous.PID"`
+/// - `"SI"` → `"Modelica.Units.SI"`
 #[derive(Debug, Default)]
 pub struct ImportResolver {
     /// Maps alias name -> fully qualified path

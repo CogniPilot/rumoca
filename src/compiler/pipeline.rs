@@ -250,8 +250,11 @@ pub fn compile_from_ast_ref(
     let should_validate = !matches!(fclass.class_type, ClassType::Package) && !has_nested_functions;
 
     if should_validate {
-        // Validate variable references (passing function names so they're recognized)
-        let mut validator = VarValidator::with_functions(&fclass, &function_names);
+        // Collect peer class names for cross-class type references
+        let peer_class_names: Vec<String> = def.class_list.keys().cloned().collect();
+
+        // Validate variable references (passing function names and peer class names)
+        let mut validator = VarValidator::with_context(&fclass, &function_names, &peer_class_names);
         fclass.accept_mut(&mut validator);
 
         if !validator.undefined_vars.is_empty() {
