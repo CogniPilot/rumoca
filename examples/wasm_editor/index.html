@@ -846,11 +846,6 @@
             }
         }
 
-        // Legacy alias for backwards compatibility
-        function setOutput(text) {
-            setTerminalOutput(text);
-        }
-
         // Pretty print DAE IR for human-readable display
         function formatExpr(expr) {
             if (!expr) return '?';
@@ -1126,7 +1121,7 @@
 
             try {
                 const fetchUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-                setOutput(`Fetching via CORS proxy: ${url}`);
+                setTerminalOutput(`Fetching via CORS proxy: ${url}`);
 
                 const response = await fetch(fetchUrl);
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1136,7 +1131,7 @@
 
                 if (isZip) {
                     status.textContent = 'Extracting...';
-                    setOutput('Downloading and extracting ZIP file...');
+                    setTerminalOutput('Downloading and extracting ZIP file...');
 
                     const arrayBuffer = await response.arrayBuffer();
                     const zip = await JSZip.loadAsync(arrayBuffer);
@@ -1153,7 +1148,7 @@
                         }
                     });
 
-                    setOutput(`Found ${moFiles.length} .mo files, extracting...`);
+                    setTerminalOutput(`Found ${moFiles.length} .mo files, extracting...`);
 
                     for (const { path, file } of moFiles) {
                         const content = await file.async('string');
@@ -1174,21 +1169,21 @@
                 status.textContent = `${fileCount} files`;
                 status.className = 'library-status loaded';
 
-                setOutput(`Loaded ${fileCount} .mo files from ${url}\n\nParsing libraries...`);
+                setTerminalOutput(`Loaded ${fileCount} .mo files from ${url}\n\nParsing libraries...`);
 
                 try {
                     const librariesJson = JSON.stringify(loadedLibraries);
                     const cachedCount = await sendRequest('loadLibraries', { libraries: librariesJson });
-                    setOutput(`Loaded and parsed ${cachedCount} library files.\nLibraries are now cached!`);
+                    setTerminalOutput(`Loaded and parsed ${cachedCount} library files.\nLibraries are now cached!`);
                     updateLibraryCount(cachedCount);
                 } catch (e) {
-                    setOutput(`Loaded ${fileCount} files but failed to parse: ${e.message}`);
+                    setTerminalOutput(`Loaded ${fileCount} files but failed to parse: ${e.message}`);
                     updateLibraryCount();
                 }
             } catch (e) {
                 status.textContent = 'Error';
                 status.className = 'library-status error';
-                setOutput(`Failed to load library: ${e.message}\n\nURL: ${url}`);
+                setTerminalOutput(`Failed to load library: ${e.message}\n\nURL: ${url}`);
             }
         };
 
@@ -1328,11 +1323,11 @@
                     status.textContent = 'Ready';
                     status.className = 'status ready';
                     workerReady = true;
-                    setOutput('WASM initialized!\n\nEdit code - auto-compiles as you type.\nClick Libraries tab to load MSL.');
+                    setTerminalOutput('WASM initialized!\n\nEdit code - auto-compiles as you type.\nClick Libraries tab to load MSL.');
                 } else {
                     status.textContent = 'Error';
                     status.className = 'status error';
-                    setOutput('Failed to initialize WASM worker.');
+                    setTerminalOutput('Failed to initialize WASM worker.');
                 }
                 return;
             }

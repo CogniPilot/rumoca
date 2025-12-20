@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::ir::ast::{Equation, Expression, Location, Statement};
 
 use super::symbols::DefinedSymbol;
-use super::type_inference::{InferredType, infer_expression_type};
+use super::type_inference::{SymbolType, infer_expression_type};
 
 /// Severity of a type error
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,9 +28,9 @@ pub struct TypeError {
     /// Location in the source code
     pub location: Location,
     /// The expected type (or the LHS type in an equation)
-    pub expected: InferredType,
+    pub expected: SymbolType,
     /// The actual type found (or the RHS type in an equation)
-    pub actual: InferredType,
+    pub actual: SymbolType,
     /// Human-readable error message
     pub message: String,
     /// Severity of the error
@@ -41,8 +41,8 @@ impl TypeError {
     /// Create a new type error
     pub fn new(
         location: Location,
-        expected: InferredType,
-        actual: InferredType,
+        expected: SymbolType,
+        actual: SymbolType,
         message: String,
         severity: TypeErrorSeverity,
     ) -> Self {
@@ -56,7 +56,7 @@ impl TypeError {
     }
 
     /// Create a type mismatch warning
-    pub fn mismatch(location: Location, lhs: InferredType, rhs: InferredType) -> Self {
+    pub fn mismatch(location: Location, lhs: SymbolType, rhs: SymbolType) -> Self {
         Self {
             location,
             expected: lhs.clone(),
@@ -70,7 +70,7 @@ impl TypeError {
     }
 
     /// Create a Boolean/numeric mixing error
-    pub fn boolean_numeric_mix(location: Location, lhs: InferredType, rhs: InferredType) -> Self {
+    pub fn boolean_numeric_mix(location: Location, lhs: SymbolType, rhs: SymbolType) -> Self {
         Self {
             location,
             expected: lhs,
@@ -182,6 +182,7 @@ fn check_equation_impl(
                 local_defined.insert(
                     index.ident.text.clone(),
                     DefinedSymbol::loop_index(
+                        &index.ident.text,
                         index.ident.location.start_line,
                         index.ident.location.start_column,
                     ),
@@ -197,12 +198,12 @@ fn check_equation_impl(
                 let cond_type = infer_expression_type(&block.cond, defined);
                 if !matches!(
                     cond_type.base_type(),
-                    InferredType::Boolean | InferredType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(
                         loc.clone(),
-                        InferredType::Boolean,
+                        SymbolType::Boolean,
                         cond_type,
                         "When condition must be Boolean".to_string(),
                         TypeErrorSeverity::Error,
@@ -222,12 +223,12 @@ fn check_equation_impl(
                 let cond_type = infer_expression_type(&block.cond, defined);
                 if !matches!(
                     cond_type.base_type(),
-                    InferredType::Boolean | InferredType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(
                         loc.clone(),
-                        InferredType::Boolean,
+                        SymbolType::Boolean,
                         cond_type,
                         "If condition must be Boolean".to_string(),
                         TypeErrorSeverity::Error,
@@ -262,7 +263,7 @@ fn check_statement_impl(
             if let Some(first) = comp.parts.first()
                 && let Some(sym) = defined.get(&first.ident.text)
             {
-                let target_type = super::type_inference::type_from_name(&sym.type_name);
+                let target_type = sym.declared_type.clone();
                 let value_type = infer_expression_type(value, defined);
 
                 if !target_type.is_compatible_with(&value_type)
@@ -281,6 +282,7 @@ fn check_statement_impl(
                 local_defined.insert(
                     index.ident.text.clone(),
                     DefinedSymbol::loop_index(
+                        &index.ident.text,
                         index.ident.location.start_line,
                         index.ident.location.start_column,
                     ),
@@ -295,12 +297,12 @@ fn check_statement_impl(
             let cond_type = infer_expression_type(&block.cond, defined);
             if !matches!(
                 cond_type.base_type(),
-                InferredType::Boolean | InferredType::Unknown
+                SymbolType::Boolean | SymbolType::Unknown
             ) && let Some(loc) = block.cond.get_location()
             {
                 result.add_error(TypeError::new(
                     loc.clone(),
-                    InferredType::Boolean,
+                    SymbolType::Boolean,
                     cond_type,
                     "While condition must be Boolean".to_string(),
                     TypeErrorSeverity::Error,
@@ -318,12 +320,12 @@ fn check_statement_impl(
                 let cond_type = infer_expression_type(&block.cond, defined);
                 if !matches!(
                     cond_type.base_type(),
-                    InferredType::Boolean | InferredType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(
                         loc.clone(),
-                        InferredType::Boolean,
+                        SymbolType::Boolean,
                         cond_type,
                         "If condition must be Boolean".to_string(),
                         TypeErrorSeverity::Error,
@@ -344,12 +346,12 @@ fn check_statement_impl(
                 let cond_type = infer_expression_type(&block.cond, defined);
                 if !matches!(
                     cond_type.base_type(),
-                    InferredType::Boolean | InferredType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(
                         loc.clone(),
-                        InferredType::Boolean,
+                        SymbolType::Boolean,
                         cond_type,
                         "When condition must be Boolean".to_string(),
                         TypeErrorSeverity::Error,
@@ -375,8 +377,8 @@ fn check_expression_pair(
     let rhs_type = infer_expression_type(rhs, defined);
 
     // Check for Boolean/numeric mixing (more severe)
-    if (matches!(lhs_type.base_type(), InferredType::Boolean) && rhs_type.is_numeric())
-        || (lhs_type.is_numeric() && matches!(rhs_type.base_type(), InferredType::Boolean))
+    if (matches!(lhs_type.base_type(), SymbolType::Boolean) && rhs_type.is_numeric())
+        || (lhs_type.is_numeric() && matches!(rhs_type.base_type(), SymbolType::Boolean))
     {
         if let Some(loc) = lhs.get_location() {
             result.add_error(TypeError::boolean_numeric_mix(
@@ -406,8 +408,8 @@ mod tests {
 
         result.add_error(TypeError::new(
             Location::default(),
-            InferredType::Real,
-            InferredType::Boolean,
+            SymbolType::Real,
+            SymbolType::Boolean,
             "Test warning".to_string(),
             TypeErrorSeverity::Warning,
         ));
@@ -416,8 +418,8 @@ mod tests {
 
         result.add_error(TypeError::new(
             Location::default(),
-            InferredType::Real,
-            InferredType::Boolean,
+            SymbolType::Real,
+            SymbolType::Boolean,
             "Test error".to_string(),
             TypeErrorSeverity::Error,
         ));

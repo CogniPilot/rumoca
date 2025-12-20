@@ -13,76 +13,102 @@ use super::symbols::DefinedSymbol;
 ///
 /// Used for semantic analysis and type checking of Modelica code.
 #[derive(Clone, Debug, PartialEq)]
-pub enum InferredType {
+pub enum SymbolType {
     Real,
     Integer,
     Boolean,
     String,
     /// Array type with element type and optional size
-    Array(Box<InferredType>, Option<usize>),
+    Array(Box<SymbolType>, Option<usize>),
+    /// User-defined class, record, model, or block type
+    Class(std::string::String),
+    /// Enumeration type
+    Enumeration(std::string::String),
     Unknown,
 }
 
-impl InferredType {
+impl SymbolType {
     /// Get the base (scalar) type, stripping array dimensions
-    pub fn base_type(&self) -> &InferredType {
+    pub fn base_type(&self) -> &SymbolType {
         match self {
-            InferredType::Array(inner, _) => inner.base_type(),
+            SymbolType::Array(inner, _) => inner.base_type(),
             other => other,
         }
     }
 
     /// Check if this is a numeric type (Real or Integer)
     pub fn is_numeric(&self) -> bool {
-        matches!(self.base_type(), InferredType::Real | InferredType::Integer)
+        matches!(self.base_type(), SymbolType::Real | SymbolType::Integer)
     }
 
     /// Check if two types are compatible for assignment/equations
-    pub fn is_compatible_with(&self, other: &InferredType) -> bool {
+    pub fn is_compatible_with(&self, other: &SymbolType) -> bool {
         match (self, other) {
-            (InferredType::Unknown, _) | (_, InferredType::Unknown) => true,
-            (InferredType::Real, InferredType::Real) => true,
-            (InferredType::Integer, InferredType::Integer) => true,
-            (InferredType::Boolean, InferredType::Boolean) => true,
-            (InferredType::String, InferredType::String) => true,
+            (SymbolType::Unknown, _) | (_, SymbolType::Unknown) => true,
+            (SymbolType::Real, SymbolType::Real) => true,
+            (SymbolType::Integer, SymbolType::Integer) => true,
+            (SymbolType::Boolean, SymbolType::Boolean) => true,
+            (SymbolType::String, SymbolType::String) => true,
             // Real and Integer are compatible (Integer can be promoted to Real)
-            (InferredType::Real, InferredType::Integer)
-            | (InferredType::Integer, InferredType::Real) => true,
+            (SymbolType::Real, SymbolType::Integer) | (SymbolType::Integer, SymbolType::Real) => {
+                true
+            }
             // Arrays are compatible if element types are compatible
-            (InferredType::Array(t1, _), InferredType::Array(t2, _)) => t1.is_compatible_with(t2),
+            (SymbolType::Array(t1, _), SymbolType::Array(t2, _)) => t1.is_compatible_with(t2),
+            // Class types are compatible if they have the same name
+            (SymbolType::Class(n1), SymbolType::Class(n2)) => n1 == n2,
+            // Enumeration types are compatible if they have the same name
+            (SymbolType::Enumeration(n1), SymbolType::Enumeration(n2)) => n1 == n2,
             // Scalar and array are not compatible
             _ => false,
         }
     }
 }
 
-impl std::fmt::Display for InferredType {
+impl std::fmt::Display for SymbolType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InferredType::Real => write!(f, "Real"),
-            InferredType::Integer => write!(f, "Integer"),
-            InferredType::Boolean => write!(f, "Boolean"),
-            InferredType::String => write!(f, "String"),
-            InferredType::Array(inner, size) => {
+            SymbolType::Real => write!(f, "Real"),
+            SymbolType::Integer => write!(f, "Integer"),
+            SymbolType::Boolean => write!(f, "Boolean"),
+            SymbolType::String => write!(f, "String"),
+            SymbolType::Array(inner, size) => {
                 if let Some(s) = size {
                     write!(f, "{}[{}]", inner, s)
                 } else {
                     write!(f, "{}[:]", inner)
                 }
             }
-            InferredType::Unknown => write!(f, "Unknown"),
+            SymbolType::Class(name) => write!(f, "{}", name),
+            SymbolType::Enumeration(name) => write!(f, "{}", name),
+            SymbolType::Unknown => write!(f, "Unknown"),
         }
     }
 }
 
-/// Convert a type name string to an InferredType
-pub fn type_from_name(name: &str) -> InferredType {
+/// Convert a type name string to an SymbolType
+pub fn type_from_name(name: &str) -> SymbolType {
     match name {
-        "Real" => InferredType::Real,
-        "Integer" => InferredType::Integer,
-        "Boolean" => InferredType::Boolean,
-        "String" => InferredType::String,
-        _ => InferredType::Unknown, // User-defined types
+        "Real" => SymbolType::Real,
+        "Integer" => SymbolType::Integer,
+        "Boolean" | "Bool" => SymbolType::Boolean,
+        "String" => SymbolType::String,
+        // User-defined types are treated as Class types
+        // Enumerations would need additional context to distinguish
+        "" => SymbolType::Unknown,
+        _ => SymbolType::Class(name.to_string()),
+    }
+}
+
+impl SymbolType {
+    /// Check if this type represents a user-defined class (not a primitive)
+    pub fn is_class_type(&self) -> bool {
+        matches!(self, SymbolType::Class(_) | SymbolType::Enumeration(_))
+    }
+
+    /// Get the type name as a string
+    pub fn type_name(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -90,20 +116,20 @@ pub fn type_from_name(name: &str) -> InferredType {
 pub fn infer_expression_type(
     expr: &Expression,
     defined: &HashMap<String, DefinedSymbol>,
-) -> InferredType {
+) -> SymbolType {
     match expr {
-        Expression::Empty => InferredType::Unknown,
+        Expression::Empty => SymbolType::Unknown,
         Expression::ComponentReference(comp_ref) => {
             if let Some(first) = comp_ref.parts.first() {
                 if let Some(sym) = defined.get(&first.ident.text) {
-                    let base = type_from_name(&sym.type_name);
+                    let base = sym.declared_type.clone();
                     if sym.shape.is_empty() {
                         base
                     } else {
                         // Build array type from innermost to outermost
                         let mut result = base;
                         for &dim in sym.shape.iter().rev() {
-                            result = InferredType::Array(Box::new(result), Some(dim));
+                            result = SymbolType::Array(Box::new(result), Some(dim));
                         }
                         // Account for subscripts - each index reduces one dimension
                         // e.g., q[3] where q is Real[4] becomes Real (scalar)
@@ -111,7 +137,7 @@ pub fn infer_expression_type(
                         if let Some(subs) = &first.subs {
                             for _sub in subs {
                                 // Each subscript strips one array dimension
-                                if let InferredType::Array(inner, _) = result {
+                                if let SymbolType::Array(inner, _) = result {
                                     result = *inner;
                                 }
                             }
@@ -121,24 +147,24 @@ pub fn infer_expression_type(
                 } else {
                     // Check if it's 'time' (global Real)
                     if first.ident.text == "time" {
-                        InferredType::Real
+                        SymbolType::Real
                     } else {
-                        InferredType::Unknown
+                        SymbolType::Unknown
                     }
                 }
             } else {
-                InferredType::Unknown
+                SymbolType::Unknown
             }
         }
         Expression::Terminal {
             terminal_type,
             token: _,
         } => match terminal_type {
-            TerminalType::UnsignedInteger => InferredType::Integer,
-            TerminalType::UnsignedReal => InferredType::Real,
-            TerminalType::String => InferredType::String,
-            TerminalType::Bool => InferredType::Boolean,
-            _ => InferredType::Unknown,
+            TerminalType::UnsignedInteger => SymbolType::Integer,
+            TerminalType::UnsignedReal => SymbolType::Real,
+            TerminalType::String => SymbolType::String,
+            TerminalType::Bool => SymbolType::Boolean,
+            _ => SymbolType::Unknown,
         },
         Expression::FunctionCall { comp, args } => infer_function_call_type(comp, args, defined),
         Expression::Binary { lhs, op, rhs } => {
@@ -150,12 +176,12 @@ pub fn infer_expression_type(
         Expression::Array { elements } => {
             if let Some(first) = elements.first() {
                 let elem_type = infer_expression_type(first, defined);
-                InferredType::Array(Box::new(elem_type), Some(elements.len()))
+                SymbolType::Array(Box::new(elem_type), Some(elements.len()))
             } else {
-                InferredType::Unknown
+                SymbolType::Unknown
             }
         }
-        Expression::Tuple { elements: _ } => InferredType::Unknown,
+        Expression::Tuple { elements: _ } => SymbolType::Unknown,
         Expression::If {
             branches,
             else_branch,
@@ -169,13 +195,13 @@ pub fn infer_expression_type(
         }
         Expression::Range { .. } => {
             // Range produces an array of integers or reals
-            InferredType::Array(Box::new(InferredType::Integer), None)
+            SymbolType::Array(Box::new(SymbolType::Integer), None)
         }
         Expression::Parenthesized { inner } => infer_expression_type(inner, defined),
         Expression::ArrayComprehension { expr, .. } => {
             // Array comprehension produces an array of the expression type
             let elem_type = infer_expression_type(expr, defined);
-            InferredType::Array(Box::new(elem_type), None)
+            SymbolType::Array(Box::new(elem_type), None)
         }
     }
 }
@@ -185,87 +211,82 @@ fn infer_function_call_type(
     comp: &crate::ir::ast::ComponentReference,
     args: &[Expression],
     defined: &HashMap<String, DefinedSymbol>,
-) -> InferredType {
+) -> SymbolType {
     if let Some(first) = comp.parts.first() {
         match first.ident.text.as_str() {
             // Trigonometric and math functions return Real
             "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "sinh" | "cosh"
             | "tanh" | "exp" | "log" | "log10" | "sqrt" | "abs" | "sign" | "floor" | "ceil"
-            | "mod" | "rem" | "max" | "min" | "sum" | "product" => InferredType::Real,
+            | "mod" | "rem" | "max" | "min" | "sum" | "product" => SymbolType::Real,
 
             // der returns the same type as its argument (preserves array dimensions)
             "der" | "pre" | "delay" => {
                 if let Some(arg) = args.first() {
                     infer_expression_type(arg, defined)
                 } else {
-                    InferredType::Real
+                    SymbolType::Real
                 }
             }
 
             // cross(a, b) returns a 3-vector
-            "cross" => InferredType::Array(Box::new(InferredType::Real), Some(3)),
+            "cross" => SymbolType::Array(Box::new(SymbolType::Real), Some(3)),
 
             // transpose, symmetric, skew return matrices (preserve first arg type)
             "transpose" | "symmetric" | "skew" => {
                 if let Some(arg) = args.first() {
                     infer_expression_type(arg, defined)
                 } else {
-                    InferredType::Unknown
+                    SymbolType::Unknown
                 }
             }
 
             // identity, zeros, ones, fill, diagonal return arrays
             "identity" | "diagonal" => {
                 // identity(n) returns Real[n,n], diagonal(v) returns Real[n,n]
-                InferredType::Array(
-                    Box::new(InferredType::Array(Box::new(InferredType::Real), None)),
+                SymbolType::Array(
+                    Box::new(SymbolType::Array(Box::new(SymbolType::Real), None)),
                     None,
                 )
             }
             "zeros" | "ones" | "fill" => {
                 // These return arrays, but we don't know the dimensions statically
-                InferredType::Array(Box::new(InferredType::Real), None)
+                SymbolType::Array(Box::new(SymbolType::Real), None)
             }
 
             // Boolean functions
-            "initial" | "terminal" | "edge" | "change" | "sample" => InferredType::Boolean,
+            "initial" | "terminal" | "edge" | "change" | "sample" => SymbolType::Boolean,
 
             // Size returns Integer
-            "size" | "ndims" => InferredType::Integer,
+            "size" | "ndims" => SymbolType::Integer,
 
             // User-defined functions - look up in defined symbols
             name => {
                 if let Some(sym) = defined.get(name) {
                     if let Some((ret_type, ret_shape)) = &sym.function_return {
-                        let base = type_from_name(ret_type);
                         if ret_shape.is_empty() {
-                            base
+                            ret_type.clone()
                         } else {
-                            let mut result = base;
+                            let mut result = ret_type.clone();
                             for &dim in ret_shape.iter().rev() {
-                                result = InferredType::Array(Box::new(result), Some(dim));
+                                result = SymbolType::Array(Box::new(result), Some(dim));
                             }
                             result
                         }
                     } else {
-                        InferredType::Unknown
+                        SymbolType::Unknown
                     }
                 } else {
-                    InferredType::Unknown
+                    SymbolType::Unknown
                 }
             }
         }
     } else {
-        InferredType::Unknown
+        SymbolType::Unknown
     }
 }
 
 /// Infer the result type of a binary operation
-fn infer_binary_op_type(
-    op: &OpBinary,
-    lhs_type: &InferredType,
-    rhs_type: &InferredType,
-) -> InferredType {
+fn infer_binary_op_type(op: &OpBinary, lhs_type: &SymbolType, rhs_type: &SymbolType) -> SymbolType {
     match op {
         // Comparison operators return Boolean
         OpBinary::Lt(_)
@@ -273,113 +294,113 @@ fn infer_binary_op_type(
         | OpBinary::Gt(_)
         | OpBinary::Ge(_)
         | OpBinary::Eq(_)
-        | OpBinary::Neq(_) => InferredType::Boolean,
+        | OpBinary::Neq(_) => SymbolType::Boolean,
 
         // Logical operators return Boolean
-        OpBinary::And(_) | OpBinary::Or(_) => InferredType::Boolean,
+        OpBinary::And(_) | OpBinary::Or(_) => SymbolType::Boolean,
 
         // Arithmetic operators
         OpBinary::Add(_) | OpBinary::Sub(_) => infer_arithmetic_result(lhs_type, rhs_type, false),
         OpBinary::Mul(_) => infer_multiplication_result(lhs_type, rhs_type),
         OpBinary::Div(_) => infer_division_result(lhs_type, rhs_type),
         OpBinary::Exp(_) => infer_exponentiation_result(lhs_type, rhs_type),
-        _ => InferredType::Unknown,
+        _ => SymbolType::Unknown,
     }
 }
 
 /// Infer result type for addition/subtraction
 fn infer_arithmetic_result(
-    lhs_type: &InferredType,
-    rhs_type: &InferredType,
+    lhs_type: &SymbolType,
+    rhs_type: &SymbolType,
     _is_mul: bool,
-) -> InferredType {
+) -> SymbolType {
     match (lhs_type, rhs_type) {
-        (InferredType::Array(_, _), _) => lhs_type.clone(),
-        (_, InferredType::Array(_, _)) => rhs_type.clone(),
+        (SymbolType::Array(_, _), _) => lhs_type.clone(),
+        (_, SymbolType::Array(_, _)) => rhs_type.clone(),
         _ => {
-            if matches!(lhs_type.base_type(), InferredType::Real)
-                || matches!(rhs_type.base_type(), InferredType::Real)
+            if matches!(lhs_type.base_type(), SymbolType::Real)
+                || matches!(rhs_type.base_type(), SymbolType::Real)
             {
-                InferredType::Real
-            } else if matches!(lhs_type.base_type(), InferredType::Integer)
-                && matches!(rhs_type.base_type(), InferredType::Integer)
+                SymbolType::Real
+            } else if matches!(lhs_type.base_type(), SymbolType::Integer)
+                && matches!(rhs_type.base_type(), SymbolType::Integer)
             {
-                InferredType::Integer
+                SymbolType::Integer
             } else {
-                InferredType::Unknown
+                SymbolType::Unknown
             }
         }
     }
 }
 
 /// Infer result type for multiplication
-fn infer_multiplication_result(lhs_type: &InferredType, rhs_type: &InferredType) -> InferredType {
+fn infer_multiplication_result(lhs_type: &SymbolType, rhs_type: &SymbolType) -> SymbolType {
     match (lhs_type, rhs_type) {
         // Scalar * Array -> Array
-        (InferredType::Real | InferredType::Integer, InferredType::Array(_, _)) => rhs_type.clone(),
+        (SymbolType::Real | SymbolType::Integer, SymbolType::Array(_, _)) => rhs_type.clone(),
         // Array * Scalar -> Array
-        (InferredType::Array(_, _), InferredType::Real | InferredType::Integer) => lhs_type.clone(),
+        (SymbolType::Array(_, _), SymbolType::Real | SymbolType::Integer) => lhs_type.clone(),
         // Matrix[m,n] * Vector[n] -> Vector[m]
-        (InferredType::Array(inner_lhs, Some(m)), InferredType::Array(inner_rhs, _)) => {
-            if let InferredType::Array(_, _) = inner_lhs.as_ref() {
+        (SymbolType::Array(inner_lhs, Some(m)), SymbolType::Array(inner_rhs, _)) => {
+            if let SymbolType::Array(_, _) = inner_lhs.as_ref() {
                 // Matrix * Vector -> Vector
-                InferredType::Array(Box::new(inner_rhs.base_type().clone()), Some(*m))
+                SymbolType::Array(Box::new(inner_rhs.base_type().clone()), Some(*m))
             } else {
-                InferredType::Unknown
+                SymbolType::Unknown
             }
         }
         // Both scalars
         _ => {
-            if matches!(lhs_type.base_type(), InferredType::Real)
-                || matches!(rhs_type.base_type(), InferredType::Real)
+            if matches!(lhs_type.base_type(), SymbolType::Real)
+                || matches!(rhs_type.base_type(), SymbolType::Real)
             {
-                InferredType::Real
-            } else if matches!(lhs_type.base_type(), InferredType::Integer)
-                && matches!(rhs_type.base_type(), InferredType::Integer)
+                SymbolType::Real
+            } else if matches!(lhs_type.base_type(), SymbolType::Integer)
+                && matches!(rhs_type.base_type(), SymbolType::Integer)
             {
-                InferredType::Integer
+                SymbolType::Integer
             } else {
-                InferredType::Unknown
+                SymbolType::Unknown
             }
         }
     }
 }
 
 /// Infer result type for division
-fn infer_division_result(lhs_type: &InferredType, rhs_type: &InferredType) -> InferredType {
+fn infer_division_result(lhs_type: &SymbolType, rhs_type: &SymbolType) -> SymbolType {
     match (lhs_type, rhs_type) {
         // Array / Scalar -> Array
-        (InferredType::Array(_, _), InferredType::Real | InferredType::Integer) => lhs_type.clone(),
+        (SymbolType::Array(_, _), SymbolType::Real | SymbolType::Integer) => lhs_type.clone(),
         // Scalar / Array -> Array (element-wise)
-        (InferredType::Real | InferredType::Integer, InferredType::Array(_, _)) => rhs_type.clone(),
+        (SymbolType::Real | SymbolType::Integer, SymbolType::Array(_, _)) => rhs_type.clone(),
         // Both scalars
         _ => {
-            if matches!(lhs_type.base_type(), InferredType::Real)
-                || matches!(rhs_type.base_type(), InferredType::Real)
+            if matches!(lhs_type.base_type(), SymbolType::Real)
+                || matches!(rhs_type.base_type(), SymbolType::Real)
             {
-                InferredType::Real
+                SymbolType::Real
             } else {
-                InferredType::Unknown
+                SymbolType::Unknown
             }
         }
     }
 }
 
 /// Infer result type for exponentiation
-fn infer_exponentiation_result(lhs_type: &InferredType, rhs_type: &InferredType) -> InferredType {
+fn infer_exponentiation_result(lhs_type: &SymbolType, rhs_type: &SymbolType) -> SymbolType {
     match (lhs_type, rhs_type) {
-        (InferredType::Array(_, _), InferredType::Real | InferredType::Integer) => lhs_type.clone(),
+        (SymbolType::Array(_, _), SymbolType::Real | SymbolType::Integer) => lhs_type.clone(),
         _ => {
-            if matches!(lhs_type.base_type(), InferredType::Real)
-                || matches!(rhs_type.base_type(), InferredType::Real)
+            if matches!(lhs_type.base_type(), SymbolType::Real)
+                || matches!(rhs_type.base_type(), SymbolType::Real)
             {
-                InferredType::Real
-            } else if matches!(lhs_type.base_type(), InferredType::Integer)
-                && matches!(rhs_type.base_type(), InferredType::Integer)
+                SymbolType::Real
+            } else if matches!(lhs_type.base_type(), SymbolType::Integer)
+                && matches!(rhs_type.base_type(), SymbolType::Integer)
             {
-                InferredType::Integer
+                SymbolType::Integer
             } else {
-                InferredType::Unknown
+                SymbolType::Unknown
             }
         }
     }

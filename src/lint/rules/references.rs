@@ -28,7 +28,7 @@ pub fn lint_unused_variables(
             || sym.is_parameter
             || sym.is_constant
             || sym.is_class
-            || is_class_instance_type(&sym.type_name)
+            || is_class_instance_type(&sym.type_name())
         {
             continue;
         }

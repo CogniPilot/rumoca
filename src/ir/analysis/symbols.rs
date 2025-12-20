@@ -11,6 +11,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::ir::analysis::symbol_trait::SymbolInfo;
+use crate::ir::analysis::type_inference::{SymbolType, type_from_name};
 use crate::ir::ast::{
     Causality, ClassDefinition, ClassType, Component, ComponentReference, Expression, ForIndex,
     Variability,
@@ -23,6 +25,8 @@ use crate::ir::visitor::{Visitable, Visitor};
 /// (variable, parameter, constant, or nested class) for use in semantic analysis.
 #[derive(Clone, Debug)]
 pub struct DefinedSymbol {
+    /// The symbol's local name
+    pub name: String,
     /// Source line number (1-based)
     pub line: u32,
     /// Source column number (1-based)
@@ -35,13 +39,20 @@ pub struct DefinedSymbol {
     pub is_class: bool,
     /// Whether this symbol has a default/start value
     pub has_default: bool,
-    /// The type name (Real, Integer, Boolean, String, or user-defined)
-    pub type_name: String,
+    /// The type of the symbol (parsed from declaration or computed)
+    pub declared_type: SymbolType,
     /// Array dimensions (empty for scalars)
     pub shape: Vec<usize>,
     /// For functions: the return type (output variable type and shape)
     /// None for non-functions
-    pub function_return: Option<(String, Vec<usize>)>,
+    pub function_return: Option<(SymbolType, Vec<usize>)>,
+}
+
+impl DefinedSymbol {
+    /// Get the type name as a string.
+    pub fn type_name(&self) -> String {
+        self.declared_type.to_string()
+    }
 }
 
 impl DefinedSymbol {
@@ -63,18 +74,19 @@ impl DefinedSymbol {
         let has_start = !matches!(comp.start, Expression::Empty);
         let is_parameter = matches!(comp.variability, Variability::Parameter(_));
         let is_constant = matches!(comp.variability, Variability::Constant(_));
-        let type_name = comp.type_name.to_string();
+        let declared_type = type_from_name(&comp.type_name.to_string());
 
         (
             name.to_string(),
             Self {
+                name: name.to_string(),
                 line,
                 col,
                 is_parameter,
                 is_constant,
                 is_class: false,
                 has_default: has_start,
-                type_name,
+                declared_type,
                 shape: comp.shape.clone(),
                 function_return: None,
             },
@@ -89,7 +101,12 @@ impl DefinedSymbol {
                 .components
                 .values()
                 .find(|c| matches!(c.causality, Causality::Output(_)))
-                .map(|output| (output.type_name.to_string(), output.shape.clone()))
+                .map(|output| {
+                    (
+                        type_from_name(&output.type_name.to_string()),
+                        output.shape.clone(),
+                    )
+                })
         } else {
             None
         };
@@ -97,13 +114,14 @@ impl DefinedSymbol {
         (
             name.to_string(),
             Self {
+                name: name.to_string(),
                 line: class.name.location.start_line,
                 col: class.name.location.start_column,
                 is_parameter: false,
                 is_constant: false,
                 is_class: true,
                 has_default: true,
-                type_name: name.to_string(),
+                declared_type: SymbolType::Class(name.to_string()),
                 shape: vec![],
                 function_return,
             },
@@ -111,15 +129,16 @@ impl DefinedSymbol {
     }
 
     /// Create a symbol for a loop index variable
-    pub fn loop_index(line: u32, col: u32) -> Self {
+    pub fn loop_index(name: &str, line: u32, col: u32) -> Self {
         Self {
+            name: name.to_string(),
             line,
             col,
             is_parameter: false,
             is_constant: false,
             is_class: false,
             has_default: true,
-            type_name: "Integer".to_string(),
+            declared_type: SymbolType::Integer,
             shape: vec![],
             function_return: None,
         }
@@ -139,6 +158,7 @@ pub fn add_loop_indices_to_defined(
         defined.insert(
             index.ident.text.clone(),
             DefinedSymbol::loop_index(
+                &index.ident.text,
                 index.ident.location.start_line,
                 index.ident.location.start_column,
             ),
@@ -157,6 +177,52 @@ pub fn is_class_instance_type(type_name: &str) -> bool {
     )
 }
 
+/// Check if a SymbolType represents a class instance (not a primitive type).
+///
+/// Returns `true` for Class and Enumeration types, `false` for primitives.
+pub fn is_class_instance(symbol_type: &SymbolType) -> bool {
+    match symbol_type {
+        SymbolType::Class(name) => {
+            // Exclude special built-in types that aren't real class instances
+            !matches!(name.as_str(), "StateSelect" | "ExternalObject")
+        }
+        SymbolType::Enumeration(_) => true,
+        SymbolType::Array(inner, _) => is_class_instance(inner),
+        _ => false,
+    }
+}
+
+// Implement SymbolInfo trait for DefinedSymbol
+impl SymbolInfo for DefinedSymbol {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn symbol_type(&self) -> SymbolType {
+        self.declared_type.clone()
+    }
+
+    fn line(&self) -> u32 {
+        self.line
+    }
+
+    fn column(&self) -> u32 {
+        self.col
+    }
+
+    fn is_parameter(&self) -> bool {
+        self.is_parameter
+    }
+
+    fn is_constant(&self) -> bool {
+        self.is_constant
+    }
+
+    fn is_class(&self) -> bool {
+        self.is_class
+    }
+}
+
 /// Collect all defined symbols in a class.
 ///
 /// This includes:
@@ -166,13 +232,13 @@ pub fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, Defin
     let mut defined = HashMap::new();
 
     // Collect component declarations
-    for (name, comp) in &class.components {
+    for (name, comp) in class.iter_components() {
         let (sym_name, symbol) = DefinedSymbol::from_component(name, comp);
         defined.insert(sym_name, symbol);
     }
 
     // Collect nested class definitions
-    for (name, nested_class) in &class.classes {
+    for (name, nested_class) in class.iter_classes() {
         let (sym_name, symbol) = DefinedSymbol::from_class(name, nested_class);
         defined.insert(sym_name, symbol);
     }
@@ -184,10 +250,30 @@ pub fn collect_defined_symbols(class: &ClassDefinition) -> HashMap<String, Defin
 ///
 /// This function uses the [`SymbolCollectorVisitor`] internally for a clean,
 /// maintainable implementation that leverages the visitor pattern.
+///
+/// For a simpler alternative using the generic collector, see [`collect_used_symbols_simple`].
 pub fn collect_used_symbols(class: &ClassDefinition) -> HashSet<String> {
     let mut collector = SymbolCollectorVisitor::new();
     class.accept(&mut collector);
     collector.into_symbols()
+}
+
+/// Collect all symbols used in a class using the generic collector.
+///
+/// This is an alternative to [`collect_used_symbols`] that uses the generic
+/// [`Collector`](crate::ir::visitor::Collector) from the visitor module.
+/// Both functions produce the same result.
+///
+/// ## Example
+///
+/// ```
+/// use rumoca::ir::analysis::symbols::collect_used_symbols_simple;
+/// use rumoca::ir::visitor::Visitable;
+/// ```
+pub fn collect_used_symbols_simple(class: &ClassDefinition) -> HashSet<String> {
+    crate::ir::visitor::collect_component_refs(class, |cref| {
+        cref.parts.first().map(|p| p.ident.text.clone())
+    })
 }
 
 // =============================================================================
@@ -348,5 +434,34 @@ end Test;
         let symbols = collector.into_symbols();
         assert!(symbols.contains("x"));
         assert!(symbols.contains("y"));
+    }
+
+    #[test]
+    fn test_collect_used_symbols_simple_matches_regular() {
+        let code = r#"
+model Test
+  Real x;
+  Real y;
+  Real z;
+equation
+  x = y + z;
+  y = sin(x);
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        // Both functions should return the same result
+        let regular = collect_used_symbols(class);
+        let simple = collect_used_symbols_simple(class);
+
+        assert_eq!(
+            regular, simple,
+            "Both collection methods should return same symbols"
+        );
+        assert!(regular.contains("x"));
+        assert!(regular.contains("y"));
+        assert!(regular.contains("z"));
+        assert!(regular.contains("sin"));
     }
 }

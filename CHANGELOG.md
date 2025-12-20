@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.23] - 2025-12-19
+
+### Changed
+- **Simplified DAE IR format** - Removed custom `dae_ir` module; `to_dae_ir_json()` now directly serializes the `Dae` struct using serde for better maintainability
+- **Renamed `inferred_type` to `declared_type`** in `DefinedSymbol` for clarity (the type is parsed from declarations, not inferred)
+- **Unified symbol resolution** - LSP and linter now share `ReferenceCheckConfig` for consistent undefined variable detection
+
+### Removed
+- Removed `src/dae/dae_ir/` module (5 files) - replaced with direct serde serialization
+- Removed legacy/backward compatibility code and misleading comments
+- Removed redundant `is_balanced` field from `BalanceResult` (replaced with `is_balanced()` method)
+- Removed unused `as_map()` method from `ScopeResolver`
+
+### Fixed
+- Fixed 3 ignored doc tests by using proper `rumoca::` imports instead of `crate::`
+- Fixed VSCode extension icon location
+- Fixed misleading MODELICAPATH warning when compiling standalone model files
+
 ## [0.7.22] - 2025-12-08
 
 ### Changed

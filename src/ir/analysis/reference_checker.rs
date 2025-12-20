@@ -1,16 +1,107 @@
 //! Reference checking for Modelica code.
 //!
 //! This module provides unified reference checking functionality used by
-//! both the linter and LSP diagnostics. It checks for undefined variable
-//! references while properly handling scoped constructs like for-loops.
+//! both the linter, LSP diagnostics, and the compiler's VarValidator. It checks
+//! for undefined variable references while properly handling scoped constructs
+//! like for-loops and array comprehensions.
+//!
+//! ## Configuration
+//!
+//! Use [`ReferenceCheckConfig`] to customize reference checking behavior:
+//! - `imported_packages`: Package roots that should be considered valid (e.g., "Modelica")
+//! - `additional_globals`: Extra global symbols beyond what's in the SymbolTable
 
 use std::collections::{HashMap, HashSet};
 
 use crate::ir::analysis::symbol_table::SymbolTable;
 use crate::ir::analysis::symbols::{DefinedSymbol, add_loop_indices_to_defined};
 use crate::ir::ast::{
-    ClassDefinition, ComponentReference, Equation, Expression, Statement, Subscript,
+    ClassDefinition, ComponentReference, Equation, Expression, Import, Statement, Subscript,
 };
+
+/// Configuration for reference checking.
+///
+/// This allows customizing how reference checking behaves, particularly for
+/// handling imports and additional global symbols.
+#[derive(Clone, Debug, Default)]
+pub struct ReferenceCheckConfig {
+    /// Imported package root names (e.g., "Modelica" from "import Modelica.Math.*;")
+    /// References starting with these names are considered valid.
+    pub imported_packages: HashSet<String>,
+    /// Additional global symbols that should be considered valid.
+    /// Useful for peer class names, external function names, etc.
+    pub additional_globals: HashSet<String>,
+}
+
+impl ReferenceCheckConfig {
+    /// Create a new empty configuration.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a configuration from a class's imports.
+    ///
+    /// Extracts the root package names from all imports in the class.
+    pub fn from_imports(imports: &[Import]) -> Self {
+        Self {
+            imported_packages: collect_imported_packages(imports),
+            additional_globals: HashSet::new(),
+        }
+    }
+
+    /// Add imported package roots.
+    pub fn with_imported_packages(mut self, packages: HashSet<String>) -> Self {
+        self.imported_packages = packages;
+        self
+    }
+
+    /// Add additional global symbols.
+    pub fn with_additional_globals(mut self, globals: HashSet<String>) -> Self {
+        self.additional_globals = globals;
+        self
+    }
+}
+
+/// Collect the root package names from imports.
+///
+/// For example:
+/// - `import Modelica;` -> "Modelica"
+/// - `import Modelica.Math.*;` -> "Modelica"
+/// - `import SI = Modelica.Units.SI;` -> "Modelica" (the actual package root)
+pub fn collect_imported_packages(imports: &[Import]) -> HashSet<String> {
+    let mut packages = HashSet::new();
+
+    for import in imports {
+        match import {
+            Import::Qualified { path, .. } => {
+                // import A.B.C; -> root is "A"
+                if let Some(first) = path.name.first() {
+                    packages.insert(first.text.clone());
+                }
+            }
+            Import::Renamed { path, .. } => {
+                // import D = A.B.C; -> root is "A"
+                if let Some(first) = path.name.first() {
+                    packages.insert(first.text.clone());
+                }
+            }
+            Import::Unqualified { path, .. } => {
+                // import A.B.*; -> root is "A"
+                if let Some(first) = path.name.first() {
+                    packages.insert(first.text.clone());
+                }
+            }
+            Import::Selective { path, .. } => {
+                // import A.B.{C, D}; -> root is "A"
+                if let Some(first) = path.name.first() {
+                    packages.insert(first.text.clone());
+                }
+            }
+        }
+    }
+
+    packages
+}
 
 /// A reference error found during checking.
 #[derive(Clone, Debug)]
@@ -62,35 +153,44 @@ pub fn check_class_references(
     defined: &HashMap<String, DefinedSymbol>,
     scope: &SymbolTable,
 ) -> ReferenceCheckResult {
+    check_class_references_with_config(class, defined, scope, &ReferenceCheckConfig::default())
+}
+
+/// Check a class for undefined references with custom configuration.
+///
+/// This function checks all equations, statements, and component start
+/// expressions for references to undefined variables, using the provided
+/// configuration for import handling and additional globals.
+///
+/// # Arguments
+/// * `class` - The class definition to check
+/// * `defined` - Map of locally defined symbols
+/// * `scope` - Symbol table for global/parent scope resolution
+/// * `config` - Configuration for reference checking behavior
+///
+/// # Returns
+/// A `ReferenceCheckResult` containing any errors and the set of used symbols.
+pub fn check_class_references_with_config(
+    class: &ClassDefinition,
+    defined: &HashMap<String, DefinedSymbol>,
+    scope: &SymbolTable,
+    config: &ReferenceCheckConfig,
+) -> ReferenceCheckResult {
     let mut result = ReferenceCheckResult::default();
 
-    // Check equations
-    for eq in &class.equations {
-        check_equation(eq, defined, scope, &mut result);
+    // Check all equations (regular + initial)
+    for eq in class.iter_all_equations() {
+        check_equation(eq, defined, scope, config, &mut result);
     }
 
-    // Check initial equations
-    for eq in &class.initial_equations {
-        check_equation(eq, defined, scope, &mut result);
-    }
-
-    // Check algorithms
-    for algo in &class.algorithms {
-        for stmt in algo {
-            check_statement(stmt, defined, scope, &mut result);
-        }
-    }
-
-    // Check initial algorithms
-    for algo in &class.initial_algorithms {
-        for stmt in algo {
-            check_statement(stmt, defined, scope, &mut result);
-        }
+    // Check all statements (algorithms + initial algorithms)
+    for stmt in class.iter_all_statements() {
+        check_statement(stmt, defined, scope, config, &mut result);
     }
 
     // Check component start expressions
-    for comp in class.components.values() {
-        check_expression(&comp.start, defined, scope, &mut result);
+    for (_, comp) in class.iter_components() {
+        check_expression(&comp.start, defined, scope, config, &mut result);
     }
 
     result
@@ -100,17 +200,18 @@ fn check_equation(
     eq: &Equation,
     defined: &HashMap<String, DefinedSymbol>,
     scope: &SymbolTable,
+    config: &ReferenceCheckConfig,
     result: &mut ReferenceCheckResult,
 ) {
     match eq {
         Equation::Empty => {}
         Equation::Simple { lhs, rhs } => {
-            check_expression(lhs, defined, scope, result);
-            check_expression(rhs, defined, scope, result);
+            check_expression(lhs, defined, scope, config, result);
+            check_expression(rhs, defined, scope, config, result);
         }
         Equation::Connect { lhs, rhs } => {
-            check_component_ref(lhs, defined, scope, result);
-            check_component_ref(rhs, defined, scope, result);
+            check_component_ref(lhs, defined, scope, config, result);
+            check_component_ref(rhs, defined, scope, config, result);
         }
         Equation::For { indices, equations } => {
             // Add loop indices as locally defined
@@ -119,19 +220,19 @@ fn check_equation(
 
             // Check range expressions
             for index in indices {
-                check_expression(&index.range, &local_defined, scope, result);
+                check_expression(&index.range, &local_defined, scope, config, result);
             }
 
             // Check nested equations with extended scope
             for sub_eq in equations {
-                check_equation(sub_eq, &local_defined, scope, result);
+                check_equation(sub_eq, &local_defined, scope, config, result);
             }
         }
         Equation::When(blocks) => {
             for block in blocks {
-                check_expression(&block.cond, defined, scope, result);
+                check_expression(&block.cond, defined, scope, config, result);
                 for sub_eq in &block.eqs {
-                    check_equation(sub_eq, defined, scope, result);
+                    check_equation(sub_eq, defined, scope, config, result);
                 }
             }
         }
@@ -140,21 +241,21 @@ fn check_equation(
             else_block,
         } => {
             for block in cond_blocks {
-                check_expression(&block.cond, defined, scope, result);
+                check_expression(&block.cond, defined, scope, config, result);
                 for sub_eq in &block.eqs {
-                    check_equation(sub_eq, defined, scope, result);
+                    check_equation(sub_eq, defined, scope, config, result);
                 }
             }
             if let Some(else_eqs) = else_block {
                 for sub_eq in else_eqs {
-                    check_equation(sub_eq, defined, scope, result);
+                    check_equation(sub_eq, defined, scope, config, result);
                 }
             }
         }
         Equation::FunctionCall { comp: _, args } => {
             // Don't check function name - it might be external
             for arg in args {
-                check_expression(arg, defined, scope, result);
+                check_expression(arg, defined, scope, config, result);
             }
         }
     }
@@ -164,18 +265,19 @@ fn check_statement(
     stmt: &Statement,
     defined: &HashMap<String, DefinedSymbol>,
     scope: &SymbolTable,
+    config: &ReferenceCheckConfig,
     result: &mut ReferenceCheckResult,
 ) {
     match stmt {
         Statement::Empty => {}
         Statement::Assignment { comp, value } => {
-            check_component_ref(comp, defined, scope, result);
-            check_expression(value, defined, scope, result);
+            check_component_ref(comp, defined, scope, config, result);
+            check_expression(value, defined, scope, config, result);
         }
         Statement::FunctionCall { comp: _, args } => {
             // Don't check function name - it might be external
             for arg in args {
-                check_expression(arg, defined, scope, result);
+                check_expression(arg, defined, scope, config, result);
             }
         }
         Statement::For { indices, equations } => {
@@ -185,18 +287,18 @@ fn check_statement(
 
             // Check range expressions
             for index in indices {
-                check_expression(&index.range, &local_defined, scope, result);
+                check_expression(&index.range, &local_defined, scope, config, result);
             }
 
             // Check nested statements with extended scope
             for sub_stmt in equations {
-                check_statement(sub_stmt, &local_defined, scope, result);
+                check_statement(sub_stmt, &local_defined, scope, config, result);
             }
         }
         Statement::While(block) => {
-            check_expression(&block.cond, defined, scope, result);
+            check_expression(&block.cond, defined, scope, config, result);
             for sub_stmt in &block.stmts {
-                check_statement(sub_stmt, defined, scope, result);
+                check_statement(sub_stmt, defined, scope, config, result);
             }
         }
         Statement::If {
@@ -204,22 +306,22 @@ fn check_statement(
             else_block,
         } => {
             for block in cond_blocks {
-                check_expression(&block.cond, defined, scope, result);
+                check_expression(&block.cond, defined, scope, config, result);
                 for sub_stmt in &block.stmts {
-                    check_statement(sub_stmt, defined, scope, result);
+                    check_statement(sub_stmt, defined, scope, config, result);
                 }
             }
             if let Some(else_stmts) = else_block {
                 for sub_stmt in else_stmts {
-                    check_statement(sub_stmt, defined, scope, result);
+                    check_statement(sub_stmt, defined, scope, config, result);
                 }
             }
         }
         Statement::When(blocks) => {
             for block in blocks {
-                check_expression(&block.cond, defined, scope, result);
+                check_expression(&block.cond, defined, scope, config, result);
                 for sub_stmt in &block.stmts {
-                    check_statement(sub_stmt, defined, scope, result);
+                    check_statement(sub_stmt, defined, scope, config, result);
                 }
             }
         }
@@ -231,12 +333,13 @@ fn check_expression(
     expr: &Expression,
     defined: &HashMap<String, DefinedSymbol>,
     scope: &SymbolTable,
+    config: &ReferenceCheckConfig,
     result: &mut ReferenceCheckResult,
 ) {
     match expr {
         Expression::Empty => {}
         Expression::ComponentReference(comp_ref) => {
-            check_component_ref(comp_ref, defined, scope, result);
+            check_component_ref(comp_ref, defined, scope, config, result);
         }
         Expression::Terminal { .. } => {}
         Expression::FunctionCall { comp, args } => {
@@ -245,30 +348,30 @@ fn check_expression(
                 if let Some(subs) = &part.subs {
                     for sub in subs {
                         if let Subscript::Expression(sub_expr) = sub {
-                            check_expression(sub_expr, defined, scope, result);
+                            check_expression(sub_expr, defined, scope, config, result);
                         }
                     }
                 }
             }
             for arg in args {
-                check_expression(arg, defined, scope, result);
+                check_expression(arg, defined, scope, config, result);
             }
         }
         Expression::Binary { lhs, rhs, .. } => {
-            check_expression(lhs, defined, scope, result);
-            check_expression(rhs, defined, scope, result);
+            check_expression(lhs, defined, scope, config, result);
+            check_expression(rhs, defined, scope, config, result);
         }
         Expression::Unary { rhs, .. } => {
-            check_expression(rhs, defined, scope, result);
+            check_expression(rhs, defined, scope, config, result);
         }
         Expression::Array { elements } => {
             for elem in elements {
-                check_expression(elem, defined, scope, result);
+                check_expression(elem, defined, scope, config, result);
             }
         }
         Expression::Tuple { elements } => {
             for elem in elements {
-                check_expression(elem, defined, scope, result);
+                check_expression(elem, defined, scope, config, result);
             }
         }
         Expression::If {
@@ -276,29 +379,29 @@ fn check_expression(
             else_branch,
         } => {
             for (cond, then_expr) in branches {
-                check_expression(cond, defined, scope, result);
-                check_expression(then_expr, defined, scope, result);
+                check_expression(cond, defined, scope, config, result);
+                check_expression(then_expr, defined, scope, config, result);
             }
-            check_expression(else_branch, defined, scope, result);
+            check_expression(else_branch, defined, scope, config, result);
         }
         Expression::Range { start, step, end } => {
-            check_expression(start, defined, scope, result);
+            check_expression(start, defined, scope, config, result);
             if let Some(s) = step {
-                check_expression(s, defined, scope, result);
+                check_expression(s, defined, scope, config, result);
             }
-            check_expression(end, defined, scope, result);
+            check_expression(end, defined, scope, config, result);
         }
         Expression::Parenthesized { inner } => {
-            check_expression(inner, defined, scope, result);
+            check_expression(inner, defined, scope, config, result);
         }
         Expression::ArrayComprehension { expr, indices } => {
             // Array comprehension indices are locally defined
             let mut local_defined = defined.clone();
             add_loop_indices_to_defined(indices, &mut local_defined);
 
-            check_expression(expr, &local_defined, scope, result);
+            check_expression(expr, &local_defined, scope, config, result);
             for idx in indices {
-                check_expression(&idx.range, &local_defined, scope, result);
+                check_expression(&idx.range, &local_defined, scope, config, result);
             }
         }
     }
@@ -308,6 +411,7 @@ fn check_component_ref(
     comp_ref: &ComponentReference,
     defined: &HashMap<String, DefinedSymbol>,
     scope: &SymbolTable,
+    config: &ReferenceCheckConfig,
     result: &mut ReferenceCheckResult,
 ) {
     if let Some(first) = comp_ref.parts.first() {
@@ -316,8 +420,13 @@ fn check_component_ref(
         // Track as used
         result.used_symbols.insert(name.clone());
 
-        // Check if defined locally or globally
-        if !defined.contains_key(name) && !scope.contains(name) {
+        // Check if defined locally, globally, in imported packages, or in additional globals
+        let is_defined = defined.contains_key(name)
+            || scope.contains(name)
+            || config.imported_packages.contains(name)
+            || config.additional_globals.contains(name);
+
+        if !is_defined {
             result.errors.push(ReferenceError::undefined_variable(
                 name,
                 first.ident.location.start_line,
@@ -329,7 +438,7 @@ fn check_component_ref(
         if let Some(subs) = &first.subs {
             for sub in subs {
                 if let Subscript::Expression(sub_expr) = sub {
-                    check_expression(sub_expr, defined, scope, result);
+                    check_expression(sub_expr, defined, scope, config, result);
                 }
             }
         }
@@ -340,7 +449,7 @@ fn check_component_ref(
         if let Some(subs) = &part.subs {
             for sub in subs {
                 if let Subscript::Expression(sub_expr) = sub {
-                    check_expression(sub_expr, defined, scope, result);
+                    check_expression(sub_expr, defined, scope, config, result);
                 }
             }
         }
@@ -449,6 +558,68 @@ end Test;
         assert!(
             result.errors.is_empty(),
             "Expected no errors, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_imported_package_reference() {
+        let code = r#"
+model Test
+  Real x;
+equation
+  x = Modelica.Constants.pi;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        let defined = collect_defined_symbols(class);
+        let scope = SymbolTable::new();
+
+        // Without config, "Modelica" should be undefined
+        let result = check_class_references(class, &defined, &scope);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].name, "Modelica");
+
+        // With config including "Modelica" as imported package, no error
+        let config = ReferenceCheckConfig::new()
+            .with_imported_packages(["Modelica".to_string()].into_iter().collect());
+        let result = check_class_references_with_config(class, &defined, &scope, &config);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors with imported package, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn test_additional_globals_reference() {
+        // Test with a variable reference (function calls don't check function names)
+        let code = r#"
+model Test
+  Real x;
+equation
+  x = PeerClass.value;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+        let defined = collect_defined_symbols(class);
+        let scope = SymbolTable::new();
+
+        // Without config, "PeerClass" should be undefined
+        let result = check_class_references(class, &defined, &scope);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].name, "PeerClass");
+
+        // With config including "PeerClass" as additional global, no error
+        let config = ReferenceCheckConfig::new()
+            .with_additional_globals(["PeerClass".to_string()].into_iter().collect());
+        let result = check_class_references_with_config(class, &defined, &scope, &config);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors with additional global, got: {:?}",
             result.errors
         );
     }

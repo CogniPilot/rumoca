@@ -97,10 +97,11 @@ fn main() -> Result<()> {
 
     // Auto-include packages from MODELICAPATH
     // Include root package from model name (e.g., "Modelica.Blocks.PID" -> "Modelica")
-    // Also include "Modelica" if not already included (for user files with MSL imports)
+    // Only try to load as a package if the model name is qualified (contains a dot)
     let root_package = args.model.split('.').next().unwrap_or("");
+    let is_qualified_name = args.model.contains('.');
 
-    if !root_package.is_empty() {
+    if is_qualified_name && !root_package.is_empty() {
         match compiler.clone().include_from_modelica_path(root_package) {
             Ok(c) => compiler = c,
             Err(e) => {

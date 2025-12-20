@@ -13,11 +13,13 @@ use lsp_types::Uri;
 use rayon::prelude::*;
 
 use crate::dae::balance::BalanceResult;
+use crate::ir::analysis::symbol_trait::SymbolInfo;
+use crate::ir::analysis::type_inference::SymbolType;
 use crate::ir::ast::{ClassDefinition, ClassType, Import, StoredDefinition};
 use crate::ir::transform::multi_file::{
     discover_modelica_files, get_modelica_path, is_modelica_package, should_ignore_directory,
 };
-use crate::ir::transform::scope_resolver::{SymbolCategory, SymbolInfo, SymbolLookup};
+use crate::ir::transform::scope_resolver::{ExternalSymbol, SymbolCategory, SymbolLookup};
 
 use super::utils::{parse_document, parse_file_cached};
 
@@ -68,6 +70,71 @@ impl From<&ClassType> for SymbolKind {
             ClassType::Function => SymbolKind::Function,
             ClassType::Operator => SymbolKind::Operator,
         }
+    }
+}
+
+impl SymbolInfo for WorkspaceSymbol {
+    fn name(&self) -> &str {
+        // Return the simple name (last part of qualified name)
+        self.qualified_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(&self.qualified_name)
+    }
+
+    fn qualified_name(&self) -> &str {
+        &self.qualified_name
+    }
+
+    fn symbol_type(&self) -> SymbolType {
+        // WorkspaceSymbol tracks class kinds, so return Class type for class-like symbols
+        match self.kind {
+            SymbolKind::Package
+            | SymbolKind::Model
+            | SymbolKind::Class
+            | SymbolKind::Block
+            | SymbolKind::Connector
+            | SymbolKind::Record
+            | SymbolKind::Type
+            | SymbolKind::Function
+            | SymbolKind::Operator => SymbolType::Class(self.qualified_name.clone()),
+            SymbolKind::Component | SymbolKind::Parameter | SymbolKind::Constant => {
+                SymbolType::Unknown
+            }
+        }
+    }
+
+    fn line(&self) -> u32 {
+        // Convert from 0-based to 1-based
+        self.line + 1
+    }
+
+    fn column(&self) -> u32 {
+        // Convert from 0-based to 1-based
+        self.column + 1
+    }
+
+    fn is_parameter(&self) -> bool {
+        matches!(self.kind, SymbolKind::Parameter)
+    }
+
+    fn is_constant(&self) -> bool {
+        matches!(self.kind, SymbolKind::Constant)
+    }
+
+    fn is_class(&self) -> bool {
+        matches!(
+            self.kind,
+            SymbolKind::Package
+                | SymbolKind::Model
+                | SymbolKind::Class
+                | SymbolKind::Block
+                | SymbolKind::Connector
+                | SymbolKind::Record
+                | SymbolKind::Type
+                | SymbolKind::Function
+                | SymbolKind::Operator
+        )
     }
 }
 
@@ -915,7 +982,7 @@ impl From<SymbolKind> for SymbolCategory {
 }
 
 impl SymbolLookup for WorkspaceState {
-    fn lookup_symbol(&self, name: &str) -> Option<SymbolInfo> {
+    fn lookup_symbol(&self, name: &str) -> Option<ExternalSymbol> {
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(
             &format!(
@@ -931,7 +998,7 @@ impl SymbolLookup for WorkspaceState {
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&format!("[workspace] found symbol: {:?}", ws_sym.kind).into());
 
-        Some(SymbolInfo {
+        Some(ExternalSymbol {
             qualified_name: ws_sym.qualified_name.clone(),
             location: ws_sym.uri.to_string(),
             line: ws_sym.line,

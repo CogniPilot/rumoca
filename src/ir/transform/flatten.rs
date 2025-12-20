@@ -1709,7 +1709,7 @@ fn lookup_class(
         return Some(Arc::clone(class));
     }
 
-    // Try to navigate the path manually for backwards compatibility
+    // Fallback: navigate nested class path manually
     let parts: Vec<&str> = path.split('.').collect();
     if parts.is_empty() {
         return None;

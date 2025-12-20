@@ -584,6 +584,152 @@ impl MutVisitable for ir::ast::ComponentReference {
     }
 }
 
+// =============================================================================
+// Generic Collector Visitors
+// =============================================================================
+
+/// A generic collector that extracts items from ComponentReferences.
+///
+/// This provides a reusable pattern for collecting data from the AST
+/// using a closure-based API.
+///
+/// # Example
+///
+/// ```
+/// use rumoca::ir::visitor::{Collector, Visitable};
+/// use rumoca::ir::ast::ComponentReference;
+///
+/// // Collect all component reference names
+/// let collector: Collector<String, _> = Collector::new(|cref: &ComponentReference| {
+///     cref.parts.first().map(|p| p.ident.text.clone())
+/// });
+/// // Then call: class.accept(&mut collector);
+/// // let names: Vec<String> = collector.into_collected();
+/// ```
+pub struct Collector<T, F>
+where
+    F: FnMut(&ir::ast::ComponentReference) -> Option<T>,
+{
+    extractor: F,
+    collected: Vec<T>,
+}
+
+impl<T, F> Collector<T, F>
+where
+    F: FnMut(&ir::ast::ComponentReference) -> Option<T>,
+{
+    /// Create a new collector with the given extractor function.
+    pub fn new(extractor: F) -> Self {
+        Self {
+            extractor,
+            collected: Vec::new(),
+        }
+    }
+
+    /// Get the collected items as a reference.
+    pub fn collected(&self) -> &[T] {
+        &self.collected
+    }
+
+    /// Consume the collector and return the collected items.
+    pub fn into_collected(self) -> Vec<T> {
+        self.collected
+    }
+}
+
+impl<T, F> Visitor for Collector<T, F>
+where
+    F: FnMut(&ir::ast::ComponentReference) -> Option<T>,
+{
+    fn enter_component_reference(&mut self, node: &ir::ast::ComponentReference) {
+        if let Some(item) = (self.extractor)(node) {
+            self.collected.push(item);
+        }
+    }
+}
+
+/// A generic collector that extracts items from Expressions.
+///
+/// Useful for collecting data from function calls, literals, etc.
+pub struct ExpressionCollector<T, F>
+where
+    F: FnMut(&ir::ast::Expression) -> Option<T>,
+{
+    extractor: F,
+    collected: Vec<T>,
+}
+
+impl<T, F> ExpressionCollector<T, F>
+where
+    F: FnMut(&ir::ast::Expression) -> Option<T>,
+{
+    /// Create a new expression collector with the given extractor function.
+    pub fn new(extractor: F) -> Self {
+        Self {
+            extractor,
+            collected: Vec::new(),
+        }
+    }
+
+    /// Get the collected items as a reference.
+    pub fn collected(&self) -> &[T] {
+        &self.collected
+    }
+
+    /// Consume the collector and return the collected items.
+    pub fn into_collected(self) -> Vec<T> {
+        self.collected
+    }
+}
+
+impl<T, F> Visitor for ExpressionCollector<T, F>
+where
+    F: FnMut(&ir::ast::Expression) -> Option<T>,
+{
+    fn enter_expression(&mut self, node: &ir::ast::Expression) {
+        if let Some(item) = (self.extractor)(node) {
+            self.collected.push(item);
+        }
+    }
+}
+
+/// Collect strings from component references in an AST node.
+///
+/// This is a convenience function for the common case of collecting
+/// component reference names.
+///
+/// # Example
+///
+/// ```
+/// use rumoca::ir::visitor::{collect_component_refs, Visitable};
+/// use rumoca::ir::ast::ClassDefinition;
+///
+/// let class = ClassDefinition::default();
+/// let names = collect_component_refs(&class, |cref| {
+///     cref.parts.first().map(|p| p.ident.text.clone())
+/// });
+/// ```
+pub fn collect_component_refs<V: Visitable>(
+    node: &V,
+    mut extractor: impl FnMut(&ir::ast::ComponentReference) -> Option<String>,
+) -> std::collections::HashSet<String> {
+    let mut collector = Collector::new(|cref| extractor(cref));
+    node.accept(&mut collector);
+    collector.into_collected().into_iter().collect()
+}
+
+/// Collect strings from expressions in an AST node.
+///
+/// This is a convenience function for collecting data from expressions.
+pub fn collect_from_expressions<V: Visitable>(
+    node: &V,
+    mut extractor: impl FnMut(&ir::ast::Expression) -> Option<String>,
+) -> std::collections::HashSet<String> {
+    let mut collector = ExpressionCollector::new(|expr| extractor(expr));
+    node.accept(&mut collector);
+    collector.into_collected().into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,5 +822,51 @@ end Outer;
             visitor.components, 2,
             "Should have 2 components (x in Outer, y in Inner)"
         );
+    }
+
+    #[test]
+    fn test_generic_collector() {
+        let code = r#"
+model Test
+  Real x;
+  Real y;
+equation
+  x = y + 1.0;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        // Use the generic collector to collect component reference names
+        let names = collect_component_refs(class, |cref| {
+            cref.parts.first().map(|p| p.ident.text.clone())
+        });
+
+        assert!(names.contains("x"), "Should contain 'x'");
+        assert!(names.contains("y"), "Should contain 'y'");
+    }
+
+    #[test]
+    fn test_collector_struct_directly() {
+        let code = r#"
+model Test
+  Real a;
+  Real b;
+equation
+  a = b * 2.0;
+end Test;
+"#;
+        let ast = parse_test_code(code);
+        let class = ast.class_list.get("Test").expect("Test class not found");
+
+        // Use the Collector struct directly
+        let mut collector = Collector::new(|cref: &ComponentReference| {
+            cref.parts.first().map(|p| p.ident.text.clone())
+        });
+        class.accept(&mut collector);
+
+        let names: Vec<String> = collector.into_collected();
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
     }
 }
