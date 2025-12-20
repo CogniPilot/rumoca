@@ -20,11 +20,20 @@ pub struct VarValidator {
 
 impl VarValidator {
     pub fn new(class: &ClassDefinition) -> Self {
-        Self::with_functions(class, &[])
+        Self::with_context(class, &[], &[])
     }
 
     /// Create a validator with additional function names that should be considered valid
     pub fn with_functions(class: &ClassDefinition, function_names: &[String]) -> Self {
+        Self::with_context(class, function_names, &[])
+    }
+
+    /// Create a validator with both function names and peer class names
+    pub fn with_context(
+        class: &ClassDefinition,
+        function_names: &[String],
+        peer_class_names: &[String],
+    ) -> Self {
         let mut symbol_table = SymbolTable::new();
 
         // Add function names as global symbols
@@ -32,10 +41,22 @@ impl VarValidator {
             symbol_table.add_global(name);
         }
 
+        // Add peer class names as global symbols (for cross-class type references)
+        // This allows references like `SwitchController.SwitchState` from another class
+        for name in peer_class_names {
+            symbol_table.add_global(name);
+        }
+
         // Collect all declared component names
         for (name, comp) in &class.components {
             let is_parameter = matches!(comp.variability, Variability::Parameter(_));
             symbol_table.add_symbol(name, name, &comp.type_name.to_string(), is_parameter);
+        }
+
+        // Add nested class names as global symbols (includes types and enumerations)
+        // This allows references like `State.Off` where `State` is a nested type definition
+        for name in class.classes.keys() {
+            symbol_table.add_global(name);
         }
 
         // Collect imported package root names from the class's imports

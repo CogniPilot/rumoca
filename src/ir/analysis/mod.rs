@@ -4,6 +4,7 @@
 //! without modifying it, as well as supporting data structures.
 
 pub mod condition_finder;
+pub mod reference_checker;
 pub mod state_finder;
 pub mod symbol_table;
 pub mod symbols;
