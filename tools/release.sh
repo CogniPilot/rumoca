@@ -88,11 +88,13 @@ fi
 # Get current versions
 CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 PYTHON_VERSION=$(grep -E '^version = ' bindings/python/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+PYTHON_RUNTIME_VERSION=$(grep -E '^__version__' bindings/python/rumoca/version.py | sed 's/__version__ = "\(.*\)"/\1/')
 VSCODE_VERSION=$(grep -E '"version"' editors/vscode/package.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/')
 
 info "Current versions:"
 echo "  Cargo.toml:       $CARGO_VERSION"
 echo "  pyproject.toml:   $PYTHON_VERSION"
+echo "  version.py:       $PYTHON_RUNTIME_VERSION"
 echo "  package.json:     $VSCODE_VERSION"
 echo ""
 info "New version: $VERSION"
@@ -113,6 +115,12 @@ fi
 step "Updating bindings/python/pyproject.toml..."
 if [[ -z "$DRY_RUN" ]]; then
     sed -i "s/^version = \"$PYTHON_VERSION\"/version = \"$VERSION\"/" bindings/python/pyproject.toml
+fi
+
+# Update version.py (runtime version)
+step "Updating bindings/python/rumoca/version.py..."
+if [[ -z "$DRY_RUN" ]]; then
+    sed -i "s/^__version__ = \"$PYTHON_RUNTIME_VERSION\"/__version__ = \"$VERSION\"/" bindings/python/rumoca/version.py
 fi
 
 # Update package.json
@@ -138,7 +146,7 @@ fi
 # Commit
 step "Committing version bump..."
 if [[ -z "$DRY_RUN" ]]; then
-    git add Cargo.toml Cargo.lock bindings/python/pyproject.toml editors/vscode/package.json
+    git add Cargo.toml Cargo.lock bindings/python/pyproject.toml bindings/python/rumoca/version.py editors/vscode/package.json
     git commit -m "Release v$VERSION"
 fi
 
@@ -165,7 +173,7 @@ if [[ -z "$DRY_RUN" ]]; then
         git push origin "v$VERSION"
         echo ""
         info "Release v$VERSION pushed!"
-        info "Monitor the workflow at: https://github.com/jgoppert/rumoca/actions"
+        info "Monitor the workflow at: https://github.com/cognipilot/rumoca/actions"
     else
         info "Skipped push. Run the commands above when ready."
     fi
