@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.23] - 2025-12-19
 
 ### Changed
-- **Simplified DAE IR format** - Removed custom `dae_ir` module; `to_dae_ir_json()` now directly serializes the `Dae` struct using serde for better maintainability
+- **Simplified DAE IR format** - Removed custom `dae_ir` module; `to_dae_ir_json()` now directly serializes the `Dae` struct using serde for better maintainability, this should also allow array output mode
 - **Renamed `inferred_type` to `declared_type`** in `DefinedSymbol` for clarity (the type is parsed from declarations, not inferred)
 - **Unified symbol resolution** - LSP and linter now share `ReferenceCheckConfig` for consistent undefined variable detection
 
