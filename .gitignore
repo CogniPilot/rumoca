@@ -10,3 +10,7 @@ dist/
 *.egg-info/
 _native.cpython*
 *.so
+
+# direnv artifacts
+*.direnv
+*.envrc
