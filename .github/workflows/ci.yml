@@ -2,11 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     tags:
       - 'v*'
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -536,6 +536,16 @@ jobs:
       url: https://pypi.org/p/rumoca
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
+            echo "::error::Tag must point to a commit on the main branch"
+            exit 1
+          fi
+          echo "✓ Tag points to a commit on main"
 
       - name: Get tag name
         id: tag
