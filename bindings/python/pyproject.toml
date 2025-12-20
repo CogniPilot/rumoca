@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rumoca"
-version = "0.7.23"
+version = "0.7.24"
 description = "Python interface for the Rumoca Modelica compiler"
 license = {text = "Apache-2.0"}
 authors = [{name = "Rumoca Contributors"}]
