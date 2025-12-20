@@ -29,8 +29,12 @@ use crate::ir::ast::{ClassDefinition, Component, Import, Location, StoredDefinit
 ///
 /// This is a simplified view of a symbol that doesn't require owning the AST.
 /// Used by `SymbolLookup` trait to provide cross-file symbol information.
+///
+/// Note: This is distinct from `SymbolInfo` trait in `ir::analysis::symbol_trait`
+/// which is for type analysis. This struct is specifically for workspace/cross-file
+/// symbol discovery.
 #[derive(Debug, Clone)]
-pub struct SymbolInfo {
+pub struct ExternalSymbol {
     /// Fully qualified name (e.g., "MyPackage.SubPackage.MyModel")
     pub qualified_name: String,
     /// File path or URI string
@@ -68,7 +72,7 @@ pub enum SymbolCategory {
 /// The LSP's `WorkspaceState` implements this trait.
 pub trait SymbolLookup {
     /// Look up a symbol by its qualified name.
-    fn lookup_symbol(&self, name: &str) -> Option<SymbolInfo>;
+    fn lookup_symbol(&self, name: &str) -> Option<ExternalSymbol>;
 
     /// Get the parsed AST for a symbol's containing file.
     ///
@@ -90,7 +94,7 @@ pub enum ResolvedSymbol<'a> {
     /// A class definition
     Class(&'a ClassDefinition),
     /// A symbol resolved from cross-file workspace lookup
-    External(SymbolInfo),
+    External(ExternalSymbol),
 }
 
 /// Scope resolver for querying the AST at specific positions.
@@ -736,11 +740,6 @@ impl ImportResolver {
     /// Get all aliases as an iterator.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.aliases.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
-
-    /// Get the underlying hashmap (for compatibility with existing code).
-    pub fn as_map(&self) -> &HashMap<String, String> {
-        &self.aliases
     }
 }
 

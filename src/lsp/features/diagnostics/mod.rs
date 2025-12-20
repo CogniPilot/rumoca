@@ -26,6 +26,7 @@ use crate::dae::balance::{BalanceResult, BalanceStatus};
 use crate::ir::analysis::reference_checker::check_class_references;
 use crate::ir::analysis::symbol_table::SymbolTable;
 use crate::ir::analysis::symbols::{DefinedSymbol, is_class_instance_type};
+use crate::ir::analysis::type_inference::type_from_name;
 use crate::ir::ast::{Causality, ClassDefinition, ClassType, Variability};
 use crate::ir::transform::scope_resolver::collect_inherited_components;
 
@@ -110,18 +111,24 @@ fn analyze_class_with_scope(
                 .components
                 .values()
                 .find(|c| matches!(c.causality, Causality::Output(_)))
-                .map(|output| (output.type_name.to_string(), output.shape.clone()));
+                .map(|output| {
+                    (
+                        type_from_name(&output.type_name.to_string()),
+                        output.shape.clone(),
+                    )
+                });
 
             defined.insert(
                 peer_name.clone(),
                 DefinedSymbol {
+                    name: peer_name.clone(),
                     line: peer_class.name.location.start_line,
                     col: peer_class.name.location.start_column,
                     is_parameter: false,
                     is_constant: false,
                     is_class: true,
                     has_default: true,
-                    type_name: peer_name.clone(),
+                    declared_type: type_from_name(peer_name),
                     shape: vec![],
                     function_return,
                 },
@@ -132,7 +139,7 @@ fn analyze_class_with_scope(
     }
 
     // Collect component declarations
-    for (comp_name, comp) in &class.components {
+    for (comp_name, comp) in class.iter_components() {
         let (name, symbol) = DefinedSymbol::from_component(comp_name, comp);
         defined.insert(name.clone(), symbol);
         // Add to scope using SymbolTable
@@ -168,7 +175,7 @@ fn analyze_class_with_scope(
 
     // Add nested class names as defined (these are types, not variables)
     // For functions, extract the return type from output components
-    for (nested_name, nested_class) in &class.classes {
+    for (nested_name, nested_class) in class.iter_classes() {
         let (name, symbol) = DefinedSymbol::from_class(nested_name, nested_class);
         defined.insert(name, symbol);
         // Add to scope as global
@@ -228,7 +235,7 @@ fn analyze_class_with_scope(
                 if !sym.is_parameter
                     && !sym.is_constant
                     && !sym.is_class
-                    && !is_class_instance_type(&sym.type_name)
+                    && !is_class_instance_type(&sym.type_name())
                     && !inherited_names.contains(name)
                 {
                     diagnostics.push(create_diagnostic(
@@ -357,7 +364,7 @@ fn compile_and_analyze_classes(
                     // Get balance result from compilation
                     let mut balance = result.balance;
                     let is_connector = matches!(class_type, ClassType::Connector);
-                    if (*is_partial || is_connector) && !balance.is_balanced {
+                    if (*is_partial || is_connector) && !balance.is_balanced() {
                         balance.status = BalanceStatus::Partial;
                     }
 
@@ -391,7 +398,7 @@ fn collect_balance_classes(
     ));
 
     // Recursively collect nested classes
-    for (nested_name, nested_class) in &class.classes {
+    for (nested_name, nested_class) in class.iter_classes() {
         let nested_path = format!("{}.{}", class_path, nested_name);
         collect_balance_classes(nested_class, &nested_path, result);
     }

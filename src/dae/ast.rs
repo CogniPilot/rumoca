@@ -80,15 +80,14 @@ pub struct Dae {
 }
 
 impl Dae {
-    /// Export to DAE IR JSON format using native serde_json serialization.
+    /// Export to DAE IR JSON format using serde serialization.
     ///
-    /// This is the recommended way to export DAE IR, providing fast,
-    /// type-safe serialization with explicit variable classification matching
-    /// the Modelica specification's DAE formalism (Appendix B).
+    /// Serializes the DAE structure directly to JSON, providing a complete
+    /// representation matching the Modelica specification's DAE formalism (Appendix B).
     ///
     /// # Returns
     ///
-    /// A pretty-printed JSON string conforming to the DAE IR schema (dae-0.1.0).
+    /// A pretty-printed JSON string of the DAE structure.
     ///
     /// # Errors
     ///
@@ -106,10 +105,7 @@ impl Dae {
     /// # }
     /// ```
     pub fn to_dae_ir_json(&self) -> Result<String, serde_json::Error> {
-        use crate::dae::dae_ir::DaeIR;
-
-        let ir = DaeIR::from_dae(self);
-        serde_json::to_string_pretty(&ir)
+        serde_json::to_string_pretty(self)
     }
 
     /// Export to a human-readable pretty-printed text format.

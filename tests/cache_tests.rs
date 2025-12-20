@@ -38,7 +38,7 @@ end TestModel;
 
     // First call - should compute and cache
     let result1 = check_balance_only(&def1, Some("TestModel")).expect("First balance check failed");
-    assert!(result1.is_balanced, "Initial model should be balanced");
+    assert!(result1.is_balanced(), "Initial model should be balanced");
     assert_eq!(result1.num_states, 1, "Should have 1 state");
     assert_eq!(result1.num_equations, 1, "Should have 1 equation");
 
@@ -73,7 +73,7 @@ end TestModel;
     // This should NOT use the old cache because the file changed
     let result3 = check_balance_only(&def2, Some("TestModel")).expect("Third balance check failed");
 
-    assert!(result3.is_balanced, "Modified model should be balanced");
+    assert!(result3.is_balanced(), "Modified model should be balanced");
     assert_eq!(
         result3.num_states, 2,
         "Modified model should have 2 states, got {}",
