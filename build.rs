@@ -100,4 +100,6 @@ fn main() {
             .unwrap_or_default();
         process::exit(1);
     }
+
+    println!("cargo:warning=Parser regeneration completed successfully.");
 }
