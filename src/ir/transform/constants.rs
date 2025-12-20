@@ -875,10 +875,19 @@ pub fn is_builtin_function(name: &str) -> bool {
 }
 
 /// Check if a type name is a primitive/built-in type
+/// Includes built-in enumerations that don't need class expansion
 pub fn is_primitive_type(name: &str) -> bool {
     matches!(
         name,
-        TYPE_REAL | TYPE_BOOL | TYPE_INTEGER | TYPE_STRING | "Boolean"
+        TYPE_REAL
+            | TYPE_BOOL
+            | TYPE_INTEGER
+            | TYPE_STRING
+            | "Boolean"
+            | "StateSelect"
+            | "AssertionLevel"
+            | "ExternalObject"
+            | "Clock" // Clocked library type
     )
 }
 

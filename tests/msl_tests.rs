@@ -29,7 +29,7 @@ use rayon::prelude::*;
 use rumoca::Compiler;
 use rumoca::dae::balance::BalanceStatus;
 use rumoca::ir::ast::StoredDefinition;
-use rumoca::ir::transform::flatten::prewarm_class_cache;
+use rumoca::ir::transform::flatten::{enable_cache, prewarm_class_cache};
 use rumoca::ir::transform::multi_file::merge_stored_definitions;
 use rumoca::modelica_grammar::ModelicaGrammar;
 use rumoca::modelica_parser::parse;
@@ -472,6 +472,9 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
     println!("\n============================================================");
     println!("                    PHASE 2.5: PRE-WARMING CACHE");
     println!("============================================================");
+
+    // Enable caching for MSL - this significantly speeds up type resolution
+    enable_cache();
 
     let prewarm_start = Instant::now();
     let classes_prewarmed = prewarm_class_cache(&merged_def);
@@ -1567,4 +1570,193 @@ fn test_constants_in_class_dict() {
         path_exists_in_dict("Modelica.Constants.pi", &class_dict),
         "Modelica.Constants.pi should exist"
     );
+}
+
+/// Focused MSL test - runs only on models that failed in the last test run.
+/// Reads model names from target/failed_models.json and tests just those.
+/// Much faster iteration when debugging specific failures (~30s vs ~5min).
+///
+/// Usage:
+/// ```bash
+/// # First run full test to generate failed_models.json:
+/// cargo test test_msl_balance_all -- --ignored --nocapture
+///
+/// # Then iterate quickly on failures:
+/// cargo test test_msl_focused -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn test_msl_focused() {
+    // Read failed models from previous run
+    let failed_models_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("failed_models.json");
+
+    if !failed_models_path.exists() {
+        println!("No failed_models.json found. Run test_msl_balance_all first.");
+        println!("  cargo test test_msl_balance_all -- --ignored --nocapture");
+        return;
+    }
+
+    let json_content =
+        fs::read_to_string(&failed_models_path).expect("Failed to read failed_models.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&json_content).expect("Failed to parse failed_models.json");
+
+    // Extract compile error model names
+    let failures = json["failures"]
+        .as_array()
+        .expect("Expected 'failures' array in JSON");
+
+    let compile_error_models: Vec<String> = failures
+        .iter()
+        .filter(|f| f["failure_type"].as_str() == Some("compile"))
+        .filter_map(|f| f["model_name"].as_str().map(|s| s.to_string()))
+        .collect();
+
+    if compile_error_models.is_empty() {
+        println!("No compile errors found in failed_models.json!");
+        println!("All models are compiling successfully.");
+        return;
+    }
+
+    println!("============================================================");
+    println!("              FOCUSED MSL TEST");
+    println!("============================================================");
+    println!();
+    println!(
+        "Testing {} models with compile errors from last run",
+        compile_error_models.len()
+    );
+    println!();
+
+    // Get MSL path and parse all files (needed for context)
+    let msl_path = get_msl_path().expect("Failed to download MSL");
+    let modelica_dir = msl_path.join("Modelica");
+    let mo_files = find_mo_files(&modelica_dir);
+
+    println!("Parsing {} files...", mo_files.len());
+    let parse_start = Instant::now();
+
+    // Parse all files in parallel
+    let parse_results: Vec<ParseResult> = mo_files
+        .par_iter()
+        .map(|file_path| {
+            let content = match fs::read_to_string(file_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    return ParseResult {
+                        file_path: file_path.clone(),
+                        success: false,
+                        error: Some(format!("Read error: {}", e)),
+                        definition: None,
+                    };
+                }
+            };
+
+            let mut grammar = ModelicaGrammar::new();
+            match parse(&content, file_path.to_string_lossy().as_ref(), &mut grammar) {
+                Ok(_) => ParseResult {
+                    file_path: file_path.clone(),
+                    success: true,
+                    error: None,
+                    definition: grammar.modelica,
+                },
+                Err(e) => ParseResult {
+                    file_path: file_path.clone(),
+                    success: false,
+                    error: Some(format!("{:?}", e)),
+                    definition: None,
+                },
+            }
+        })
+        .collect();
+
+    let parse_time = parse_start.elapsed();
+    println!("Parsed in {:.2}s", parse_time.as_secs_f64());
+
+    // Merge definitions
+    let definitions: Vec<(String, StoredDefinition)> = parse_results
+        .into_iter()
+        .filter_map(|r| {
+            r.definition
+                .map(|def| (r.file_path.to_string_lossy().to_string(), def))
+        })
+        .collect();
+
+    let merged_def = merge_stored_definitions(definitions).expect("Failed to merge definitions");
+
+    // Pre-warm cache
+    println!("Pre-warming class cache...");
+    enable_cache();
+    let prewarm_start = Instant::now();
+    prewarm_class_cache(&merged_def);
+    println!(
+        "Pre-warmed in {:.2}s",
+        prewarm_start.elapsed().as_secs_f64()
+    );
+
+    let merged_def = Arc::new(merged_def);
+
+    // Test the focused models
+    println!();
+    println!(
+        "Testing {} compile error models:",
+        compile_error_models.len()
+    );
+    println!("------------------------------------------------------------");
+
+    let mut fixed = 0;
+    let mut still_failing = 0;
+
+    for model_name in &compile_error_models {
+        let result = Compiler::new().model(model_name).check_balance(&merged_def);
+
+        match result {
+            Ok(balance) => {
+                fixed += 1;
+                let status = if balance.is_balanced() {
+                    format!(
+                        "✓ FIXED (balanced: {} eq, {} unk)",
+                        balance.num_equations, balance.num_unknowns
+                    )
+                } else {
+                    format!(
+                        "✓ FIXED (compiles, {}: {} eq, {} unk)",
+                        balance.status_message(),
+                        balance.num_equations,
+                        balance.num_unknowns
+                    )
+                };
+                println!("  {}: {}", model_name, status);
+            }
+            Err(e) => {
+                still_failing += 1;
+                let err_msg = format!("{:?}", e);
+                // Extract just the relevant part of the error
+                let short_err = err_msg.lines().next().unwrap_or(&err_msg);
+                println!("  {}: ✗ {}", model_name, short_err);
+            }
+        }
+    }
+
+    println!();
+    println!("============================================================");
+    println!("                    RESULTS");
+    println!("============================================================");
+    println!("  Fixed:         {}/{}", fixed, compile_error_models.len());
+    println!(
+        "  Still failing: {}/{}",
+        still_failing,
+        compile_error_models.len()
+    );
+    println!();
+
+    if still_failing == 0 {
+        println!("🎉 All previously failing models now compile!");
+        println!("   Run the full test to verify no regressions:");
+        println!("   cargo test test_msl_balance_all -- --ignored --nocapture");
+    } else {
+        println!("Still have {} compile errors to fix.", still_failing);
+    }
 }

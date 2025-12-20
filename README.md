@@ -103,24 +103,23 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 | Metric | Result |
 |--------|--------|
 | **Parse Rate** | 100% (2551/2551 files) |
-| **Compile Rate** | 92.1% (2102/2283 models) |
+| **Compile Rate** | 100% (2283/2283 models) ✅ |
 
 **Benchmark** (AMD Ryzen 9 7950X, 16 cores):
 
 | Phase | Time | Throughput |
 |-------|------|------------|
-| **Parsing** | 0.99s | 2,586 files/sec |
-| **Balance Check (cold)** | 31.07s | 73.5 models/sec |
-| **Balance Check (warm)** | 0.01s | 263,242 models/sec |
+| **Parsing** | 0.80s | 3,189 files/sec |
+| **Balance Check** | 26s | 87 models/sec |
 
 **Balance Check Results:**
 
 | Status | Count | Percentage | Description |
 |--------|-------|------------|-------------|
-| **Balanced** | 669 | 29.3% | Fully determined (equations = unknowns) |
-| **Partial** | 1177 | 51.6% | Under-determined by design (external connectors) |
-| **Unbalanced** | 256 | 11.2% | Needs further work |
-| **Compile Errors** | 181 | 7.9% | Missing type/class resolution |
+| **Balanced** | 686 | 30.0% | Fully determined (equations = unknowns) |
+| **Partial** | 1147 | 50.2% | Under-determined by design (external connectors) |
+| **Unbalanced** | 450 | 19.7% | Needs further work |
+| **Compile Errors** | 0 | 0% | All models compile successfully |
 
 *Partial models have external connector flow variables that receive equations when connected in a larger system.*
 
@@ -162,29 +161,14 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 | Expandable connectors | Dynamic connector sizing |
 | Overconstrained connectors | `Connections.root`, `branch`, etc. |
 
-**What Works Well** (92% of models compile successfully):
-- Modelica.Thermal (97% success)
-- Modelica.Magnetic (96% success)
-- Modelica.Math (excellent coverage)
+**What Works Well** (100% compile rate achieved):
+- All MSL packages compile successfully
+- Complex type support (operator record)
+- Replaceable package/model resolution (Medium.*, etc.)
+- Deep inheritance chain type lookup
+- ModelicaServices stubs
 
-**Problematic Areas:**
-- Modelica.Fluid (Medium type resolution)
-- Modelica.ComplexBlocks (Complex type)
-- Modelica.Electrical.Digital (algorithm sections)
-- Modelica.Mechanics.MultiBody (StateSelect, algorithm sections)
-- Modelica.Clocked (synchronous features)
-
-**Top Compile Errors** (181 models):
-
-| Count | Missing Type |
-|-------|--------------|
-| 41 | `Complex` |
-| 32 | `StateSelect` |
-| 26 | `Medium.AbsolutePressure` |
-| 17 | `Medium.MassFlowRate` |
-| 16 | `Medium.ThermodynamicState` |
-
-**Known Limitations** (256 unbalanced models):
+**Known Limitations** (450 unbalanced models):
 
 | Category | Notes |
 |----------|-------|

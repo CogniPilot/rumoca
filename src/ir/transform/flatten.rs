@@ -60,6 +60,7 @@ pub fn enable_cache() {
 /// Call this after loading libraries, before compiling user code.
 pub fn disable_cache() {
     *CACHE_ENABLED.write().unwrap() = false;
+    clear_caches();
 }
 
 /// Check if caching is currently enabled
@@ -85,6 +86,14 @@ type ResolvedClassKey = (u64, String);
 /// Global cache for resolved classes.
 /// Only populated when caching is enabled via enable_cache().
 static RESOLVED_CLASS_CACHE: LazyLock<RwLock<HashMap<ResolvedClassKey, ResolvedClassEntry>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Type alias for extends chain cache: (type_name, class_path) -> resolved_path
+type ExtendsChainCache = HashMap<(String, String), Option<String>>;
+
+/// Cache for extends chain type lookups.
+/// This dramatically speeds up type resolution for deep inheritance hierarchies.
+static EXTENDS_CHAIN_CACHE: LazyLock<RwLock<ExtendsChainCache>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 // =============================================================================
@@ -372,6 +381,7 @@ pub fn clear_caches() {
     CLASS_DICT_CACHE.write().unwrap().clear();
     RESOLVED_CLASS_CACHE.write().unwrap().clear();
     FILE_HASH_CACHE.write().unwrap().clear();
+    EXTENDS_CHAIN_CACHE.write().unwrap().clear();
 }
 
 /// Clear all caches (alias for clear_caches)
@@ -513,23 +523,129 @@ fn validate_imports(imports: &[Import], class_dict: &ClassDict) -> Result<()> {
     Ok(())
 }
 
+/// Extracts package/model aliases from nested class definitions.
+///
+/// Replaceable packages like `replaceable package Medium = Modelica.Media.Interfaces.PartialMedium`
+/// are represented as nested classes with an extends clause. This function extracts these as aliases
+/// so that `Medium.X` can be resolved to `Modelica.Media.Interfaces.PartialMedium.X`.
+///
+/// Note: Type aliases (like `type MassFraction = Real` or `type AbsolutePressure = SI.AbsolutePressure`)
+/// are NOT included. These are types that should be looked up in the class dictionary directly,
+/// not used as package prefixes for resolving other names.
+fn build_package_aliases(class: &ir::ast::ClassDefinition) -> IndexMap<String, String> {
+    let mut aliases = IndexMap::new();
+
+    for (name, nested_class) in &class.classes {
+        // Skip type definitions - they should be resolved as types in the class dictionary,
+        // not as package prefixes
+        if nested_class.class_type == ir::ast::ClassType::Type {
+            continue;
+        }
+
+        // Check if this is a short class definition (alias):
+        // - Has exactly one extends clause
+        // - Has no components or equations (just an alias)
+        // This handles: package Medium = ..., model FlowModel = ..., etc.
+        if nested_class.extends.len() == 1
+            && nested_class.components.is_empty()
+            && nested_class.equations.is_empty()
+        {
+            let target = nested_class.extends[0].comp.to_string();
+            aliases.insert(name.clone(), target);
+        }
+    }
+
+    aliases
+}
+
+/// Recursively collects package aliases from a class and all its extended classes.
+fn collect_package_aliases_recursive(
+    class: &ir::ast::ClassDefinition,
+    class_path: &str,
+    class_dict: &ClassDict,
+    visited: &mut IndexSet<String>,
+) -> IndexMap<String, String> {
+    let mut aliases = IndexMap::new();
+
+    // Prevent infinite recursion
+    if visited.contains(class_path) {
+        return aliases;
+    }
+    visited.insert(class_path.to_string());
+
+    // Add this class's package aliases, resolving relative paths to full paths
+    let pkg_aliases = build_package_aliases(class);
+    for (alias, target) in pkg_aliases {
+        // Resolve the target path relative to this class's scope
+        // e.g., "Air.MoistAir" in "Modelica.Media.Examples.MoistAir" -> "Modelica.Media.Air.MoistAir"
+        let resolved_target =
+            resolve_relative_to_package(&target, class_path, class_dict).unwrap_or(target);
+        aliases.entry(alias).or_insert(resolved_target);
+    }
+
+    // Recursively collect from extended classes
+    for extend in &class.extends {
+        let parent_name = extend.comp.to_string();
+        if is_primitive_type(&parent_name) {
+            continue;
+        }
+
+        // Resolve the parent name in the context of this class
+        let parent_parts: Vec<&str> = class_path.split('.').collect();
+        let mut resolved_parent = None;
+        for i in (0..=parent_parts.len()).rev() {
+            let prefix = parent_parts[..i].join(".");
+            let candidate = if prefix.is_empty() {
+                parent_name.clone()
+            } else {
+                format!("{}.{}", prefix, parent_name)
+            };
+            if class_dict.contains_key(&candidate) {
+                resolved_parent = Some(candidate);
+                break;
+            }
+        }
+
+        if let Some(parent_class) = resolved_parent.as_ref().and_then(|p| class_dict.get(p)) {
+            let parent_path = resolved_parent.unwrap();
+            let parent_aliases =
+                collect_package_aliases_recursive(parent_class, &parent_path, class_dict, visited);
+            for (alias, target) in parent_aliases {
+                aliases.entry(alias).or_insert(target);
+            }
+        }
+    }
+
+    aliases
+}
+
 /// Builds a combined import alias map from a class and all its enclosing scopes.
 ///
 /// This collects imports from the class itself and all parent packages up to the root.
+/// It also includes local package type aliases (replaceable packages), including
+/// those inherited from extended classes.
 fn build_import_aliases_for_class(
     class_path: &str,
     class_dict: &ClassDict,
 ) -> IndexMap<String, String> {
     let mut all_aliases = IndexMap::new();
 
-    // Collect imports from each level of the class hierarchy (most specific first)
+    // Collect imports and package aliases from each level of the class hierarchy (most specific first)
     let parts: Vec<&str> = class_path.split('.').collect();
     for i in (1..=parts.len()).rev() {
         let path = parts[..i].join(".");
         if let Some(class) = class_dict.get(&path) {
+            // Add import aliases
             let aliases = build_import_aliases(&class.imports);
-            // Earlier (more specific) imports take precedence
             for (alias, target) in aliases {
+                all_aliases.entry(alias).or_insert(target);
+            }
+
+            // Add package type aliases (replaceable packages), including from extended classes
+            let mut visited = IndexSet::new();
+            let pkg_aliases =
+                collect_package_aliases_recursive(class, &path, class_dict, &mut visited);
+            for (alias, target) in pkg_aliases {
                 all_aliases.entry(alias).or_insert(target);
             }
         }
@@ -563,12 +679,144 @@ fn apply_import_aliases(name: &str, aliases: &IndexMap<String, String>) -> Strin
     }
 }
 
+/// Resolves a relative type name in the context of a package.
+///
+/// For example, if `parent_name` is "Types" and `package_context` is
+/// "Modelica.Media.Interfaces.PartialMedium", it will try:
+/// - "Modelica.Media.Interfaces.PartialMedium.Types"
+/// - "Modelica.Media.Interfaces.Types" (found!)
+/// - "Modelica.Media.Types"
+/// - "Modelica.Types"
+/// - "Types"
+fn resolve_relative_to_package(
+    parent_name: &str,
+    package_context: &str,
+    class_dict: &ClassDict,
+) -> Option<String> {
+    // If already fully qualified and exists, return it
+    if class_dict.contains_key(parent_name) {
+        return Some(parent_name.to_string());
+    }
+
+    // Try in enclosing scopes of the package context
+    let parts: Vec<&str> = package_context.split('.').collect();
+    for i in (0..=parts.len()).rev() {
+        let prefix = parts[..i].join(".");
+        let candidate = if prefix.is_empty() {
+            parent_name.to_string()
+        } else {
+            format!("{}.{}", prefix, parent_name)
+        };
+        if class_dict.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+/// Recursively searches for a type in a class's extends chain.
+///
+/// This walks the inheritance hierarchy looking for the type at each level:
+/// 1. Check if type exists directly in the class
+/// 2. Check parent scopes of the class
+/// 3. Recursively search each extended class
+///
+/// Returns the fully qualified path to the type if found.
+fn find_type_in_extends_chain(
+    type_name: &str,
+    class_path: &str,
+    class_dict: &ClassDict,
+    visited: &mut IndexSet<String>,
+) -> Option<String> {
+    // Check cache first (only for top-level calls, not recursive ones)
+    if visited.is_empty() && is_cache_enabled() {
+        let cache_key = (type_name.to_string(), class_path.to_string());
+        if let Some(result) = EXTENDS_CHAIN_CACHE
+            .read()
+            .ok()
+            .and_then(|cache| cache.get(&cache_key).cloned())
+        {
+            return result;
+        }
+    }
+
+    let result = find_type_in_extends_chain_uncached(type_name, class_path, class_dict, visited);
+
+    // Store in cache (only for top-level calls)
+    if visited.len() == 1 && is_cache_enabled() {
+        // visited.len() == 1 means we just added this class_path (top-level call)
+        let cache_key = (type_name.to_string(), class_path.to_string());
+        if let Ok(mut cache) = EXTENDS_CHAIN_CACHE.write() {
+            cache.insert(cache_key, result.clone());
+        }
+    }
+
+    result
+}
+
+fn find_type_in_extends_chain_uncached(
+    type_name: &str,
+    class_path: &str,
+    class_dict: &ClassDict,
+    visited: &mut IndexSet<String>,
+) -> Option<String> {
+    // Prevent infinite recursion
+    if visited.contains(class_path) {
+        return None;
+    }
+    visited.insert(class_path.to_string());
+
+    // 1. Check if type exists directly in this class
+    let candidate = format!("{}.{}", class_path, type_name);
+    if class_dict.contains_key(&candidate) {
+        return Some(candidate);
+    }
+
+    // 2. Check parent scopes of this class
+    let parts: Vec<&str> = class_path.split('.').collect();
+    for i in (0..parts.len()).rev() {
+        let prefix = parts[..i].join(".");
+        let candidate = if prefix.is_empty() {
+            type_name.to_string()
+        } else {
+            format!("{}.{}", prefix, type_name)
+        };
+        if class_dict.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    // 3. Recursively search extended classes
+    if let Some(class_def) = class_dict.get(class_path) {
+        for extend in &class_def.extends {
+            let parent_name = extend.comp.to_string();
+            // Resolve the parent name relative to this class's scope and search recursively
+            if let Some(found) = resolve_relative_to_package(&parent_name, class_path, class_dict)
+                .and_then(|parent_path| {
+                    find_type_in_extends_chain_uncached(
+                        type_name,
+                        &parent_path,
+                        class_dict,
+                        visited,
+                    )
+                })
+            {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
 /// Resolves a class name by searching the enclosing scope hierarchy.
 ///
 /// This function implements Modelica's name lookup rules for extends clauses:
 /// 1. First applies import aliases to resolve aliased names
 /// 2. Then tries an exact match (for fully qualified names)
 /// 3. Then tries prepending enclosing package prefixes from most specific to least
+/// 4. For package aliases (Medium.X), also searches parent scopes of the aliased package
 ///
 /// For example, if `current_class_path` is `Modelica.Blocks.Continuous.Derivative`
 /// and `name` is `Interfaces.SISO`, it will try:
@@ -591,6 +839,45 @@ fn resolve_class_name_with_imports(
         return Some(resolved_name);
     }
 
+    // 1.5. For package aliases like Medium.X where Medium -> Pkg.SubPkg.PartialMedium,
+    // we need to search:
+    // 1. The target package itself: PartialMedium.X
+    // 2. Recursively search through extends chain for the type
+    // 3. Parent scopes of the target: Pkg.SubPkg.X, Pkg.X, X
+    let name_parts: Vec<&str> = name.split('.').collect();
+    if name_parts.len() >= 2 {
+        let first = name_parts[0];
+        if let Some(target) = import_aliases.get(first) {
+            let remainder = &name_parts[1..].join(".");
+
+            // 1.5.1. Recursively search the target package and its entire extends chain
+            // This handles cases like Medium.SpecificHeatCapacity where Medium extends
+            // MixtureGasNasa extends PartialMixtureMedium extends PartialMedium,
+            // and SpecificHeatCapacity is defined in PartialMedium.
+            let mut visited = IndexSet::new();
+            if let Some(found) =
+                find_type_in_extends_chain(remainder, target, class_dict, &mut visited)
+            {
+                return Some(found);
+            }
+
+            // 1.5.2. Try parent scopes of the target (fallback for types defined
+            // in sibling or parent packages, not through extends)
+            let target_parts: Vec<&str> = target.split('.').collect();
+            for i in (0..target_parts.len()).rev() {
+                let prefix = target_parts[..i].join(".");
+                let candidate = if prefix.is_empty() {
+                    remainder.to_string()
+                } else {
+                    format!("{}.{}", prefix, remainder)
+                };
+                if class_dict.contains_key(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
     // 2. Try prepending enclosing scope prefixes (including current class)
     // For a class path like "SwitchController", we need to try:
     //   - "SwitchController.SwitchState" (nested type in current class)
@@ -611,6 +898,22 @@ fn resolve_class_name_with_imports(
         };
         if class_dict.contains_key(&candidate) {
             return Some(candidate);
+        }
+    }
+
+    // 2.5. Recursively search the extends chain of enclosing classes
+    // This handles cases like MoistAir.BaseProperties using MassFraction,
+    // where MassFraction is defined deep in the inheritance chain:
+    // MoistAir extends PartialCondensingGases extends PartialMixtureMedium extends PartialMedium
+    // and MassFraction is defined in PartialMedium.
+    for i in (1..=parts.len()).rev() {
+        let class_path = parts[..i].join(".");
+        // Use the recursive helper to search through the entire extends chain
+        let mut visited = IndexSet::new();
+        if let Some(found) =
+            find_type_in_extends_chain(&resolved_name, &class_path, class_dict, &mut visited)
+        {
+            return Some(found);
         }
     }
 
@@ -1678,11 +1981,22 @@ fn get_or_build_class_dict(def: &ir::ast::StoredDefinition, def_hash: u64) -> Ar
         return Arc::clone(dict);
     }
 
-    // Build the dictionary
+    // Build the dictionary from user-provided definitions
     let mut dict = ClassDict::new();
     for (_name, class) in &def.class_list {
         build_class_dict_internal(class, "", &mut dict);
     }
+
+    // Inject built-in types (Complex, etc.) from the builtins module
+    // Only add types that aren't already defined by the user
+    if let Some(builtin_defs) = crate::ir::transform::builtins::get_builtin_definitions() {
+        for (name, class) in &builtin_defs.class_list {
+            if !dict.contains_key(name) {
+                build_class_dict_internal(class, "", &mut dict);
+            }
+        }
+    }
+
     let dict = Arc::new(dict);
 
     // Store in cache (only if caching is enabled)
@@ -1817,4 +2131,480 @@ pub fn flatten_with_deps(
         class: fclass,
         dependencies: deps,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modelica_grammar::ModelicaGrammar;
+    use crate::modelica_parser::parse;
+
+    fn parse_test_code(code: &str) -> ir::ast::StoredDefinition {
+        let mut grammar = ModelicaGrammar::new();
+        parse(code, "test.mo", &mut grammar).expect("Failed to parse test code");
+        grammar.modelica.expect("No AST produced")
+    }
+
+    #[test]
+    fn test_replaceable_package_simple() {
+        // Test that Medium.nXi resolves when Medium is a replaceable package
+        let code = r#"
+package MyMedia
+    partial package PartialMedium
+        constant Integer nXi = 2;
+    end PartialMedium;
+end MyMedia;
+
+model TestModel
+    replaceable package Medium = MyMedia.PartialMedium;
+    Real x[Medium.nXi];
+equation
+    x = {1, 2};
+end TestModel;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("TestModel"));
+        assert!(
+            result.is_ok(),
+            "Should flatten successfully: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        // x should be flattened as an array with size 2
+        assert!(flat.components.contains_key("x"), "Should have component x");
+    }
+
+    #[test]
+    fn test_replaceable_package_parent_scope_type() {
+        // Test that Medium.MassFraction resolves when MassFraction is defined
+        // in the parent package of PartialMedium, not in PartialMedium itself
+        let code = r#"
+package Media
+    package Interfaces
+        type MassFraction = Real(min=0, max=1);
+        type AbsolutePressure = Real(min=0);
+
+        partial package PartialMedium
+            constant Integer nXi = 2;
+        end PartialMedium;
+    end Interfaces;
+end Media;
+
+model TankWithMedium
+    replaceable package Medium = Media.Interfaces.PartialMedium;
+
+    Medium.MassFraction Xi[Medium.nXi];
+    Medium.AbsolutePressure p;
+equation
+    Xi = {0.5, 0.5};
+    p = 101325;
+end TankWithMedium;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("TankWithMedium"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with parent scope types: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("Xi"),
+            "Should have component Xi"
+        );
+        assert!(flat.components.contains_key("p"), "Should have component p");
+    }
+
+    #[test]
+    fn test_replaceable_package_deeply_nested() {
+        // Test deeply nested package structure similar to MSL
+        let code = r#"
+package Media
+    package Interfaces
+        type MassFraction = Real(min=0, max=1);
+        type AbsolutePressure = Real(min=0);
+        type Temperature = Real(min=0);
+
+        partial package PartialMedium
+            constant Integer nXi = 2;
+        end PartialMedium;
+    end Interfaces;
+end Media;
+
+package Fluid
+    package Examples
+        package BatchPlant
+            package BaseClasses
+                model TankWithMedium
+                    replaceable package Medium = Media.Interfaces.PartialMedium;
+
+                    Medium.MassFraction Xi[Medium.nXi];
+                    Medium.AbsolutePressure p;
+                    Medium.Temperature T;
+                equation
+                    Xi = {0.5, 0.5};
+                    p = 101325;
+                    T = 300;
+                end TankWithMedium;
+            end BaseClasses;
+        end BatchPlant;
+    end Examples;
+end Fluid;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(
+            &ast,
+            Some("Fluid.Examples.BatchPlant.BaseClasses.TankWithMedium"),
+        );
+        assert!(
+            result.is_ok(),
+            "Should flatten deeply nested model: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("Xi"),
+            "Should have component Xi"
+        );
+        assert!(flat.components.contains_key("p"), "Should have component p");
+        assert!(flat.components.contains_key("T"), "Should have component T");
+    }
+
+    #[test]
+    fn test_replaceable_package_with_extends() {
+        // Test that Medium.AbsolutePressure resolves when AbsolutePressure is inherited
+        // via extends in PartialMedium (like MSL where PartialMedium extends Types)
+        let code = r#"
+package Modelica
+    package Media
+        package Interfaces
+            package Types
+                type AbsolutePressure = Real(min=0);
+                type MassFraction = Real(min=0, max=1);
+                type Temperature = Real(min=0);
+            end Types;
+
+            partial package PartialMedium
+                extends Modelica.Media.Interfaces.Types;
+                constant Integer nXi = 2;
+            end PartialMedium;
+        end Interfaces;
+    end Media;
+
+    package Fluid
+        model Pump
+            replaceable package Medium = Modelica.Media.Interfaces.PartialMedium;
+
+            Medium.AbsolutePressure p;
+            Medium.MassFraction Xi[Medium.nXi];
+            Medium.Temperature T;
+        equation
+            p = 101325;
+            Xi = {0.5, 0.5};
+            T = 300;
+        end Pump;
+    end Fluid;
+end Modelica;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("Modelica.Fluid.Pump"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with inherited types: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(flat.components.contains_key("p"), "Should have component p");
+        assert!(
+            flat.components.contains_key("Xi"),
+            "Should have component Xi"
+        );
+        assert!(flat.components.contains_key("T"), "Should have component T");
+    }
+
+    #[test]
+    fn test_replaceable_package_inherited_through_extends() {
+        // Test that Medium.AbsolutePressure resolves when Medium is defined
+        // in a parent class via extends (like MSL Fluid components)
+        // FluidPort -> PartialTwoPort -> ActualComponent
+        let code = r#"
+package Modelica
+    package Media
+        package Interfaces
+            package Types
+                type AbsolutePressure = Real(min=0);
+                type MassFlowRate = Real;
+            end Types;
+
+            partial package PartialMedium
+                extends Modelica.Media.Interfaces.Types;
+            end PartialMedium;
+        end Interfaces;
+    end Media;
+
+    package Fluid
+        package Interfaces
+            connector FluidPort
+                replaceable package Medium = Modelica.Media.Interfaces.PartialMedium;
+                flow Medium.MassFlowRate m_flow;
+                Medium.AbsolutePressure p;
+            end FluidPort;
+
+            partial model PartialTwoPort
+                replaceable package Medium = Modelica.Media.Interfaces.PartialMedium;
+                FluidPort port_a(redeclare package Medium = Medium);
+            end PartialTwoPort;
+        end Interfaces;
+
+        package Fittings
+            model Valve
+                extends Modelica.Fluid.Interfaces.PartialTwoPort;
+                Medium.AbsolutePressure dp;
+            equation
+                dp = 1000;
+            end Valve;
+        end Fittings;
+    end Fluid;
+end Modelica;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("Modelica.Fluid.Fittings.Valve"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with inherited Medium package: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("dp"),
+            "Should have component dp"
+        );
+    }
+
+    #[test]
+    fn test_model_alias() {
+        // Test that model aliases like `replaceable model FlowModel = SomeModel` work
+        let code = r#"
+model BaseFlowModel
+    Real dp;
+equation
+    dp = 100;
+end BaseFlowModel;
+
+model Pipe
+    replaceable model FlowModel = BaseFlowModel;
+    FlowModel flowModel;
+end Pipe;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("Pipe"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with model alias: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("flowModel.dp"),
+            "Should have component flowModel.dp from expanded FlowModel"
+        );
+    }
+
+    #[test]
+    fn test_numbered_package_aliases() {
+        // Test numbered package aliases like Medium1, Medium2
+        let code = r#"
+package Media
+    package Interfaces
+        type SpecificHeatCapacity = Real;
+        type Temperature = Real;
+        partial package PartialMedium
+            constant Integer n = 1;
+        end PartialMedium;
+    end Interfaces;
+end Media;
+
+model MixtureTest
+    package Medium1 = Media.Interfaces.PartialMedium;
+    package Medium2 = Media.Interfaces.PartialMedium;
+    Medium1.SpecificHeatCapacity cp1;
+    Medium2.Temperature T2;
+equation
+    cp1 = 1000;
+    T2 = 300;
+end MixtureTest;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("MixtureTest"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with numbered package aliases: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("cp1"),
+            "Should have component cp1"
+        );
+        assert!(
+            flat.components.contains_key("T2"),
+            "Should have component T2"
+        );
+    }
+
+    #[test]
+    fn test_non_replaceable_package_alias() {
+        // Test that non-replaceable package aliases work the same as replaceable ones
+        let code = r#"
+package MyMedia
+    type MolarMass = Real(min=0);
+    partial package PartialMedium
+        constant Integer nX = 2;
+    end PartialMedium;
+end MyMedia;
+
+model TestModel
+    package Medium = MyMedia.PartialMedium;  // Note: no 'replaceable' keyword
+    Medium.MolarMass MM;
+    Real x[Medium.nX];
+equation
+    MM = 0.018;
+    x = {1, 2};
+end TestModel;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("TestModel"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with non-replaceable package alias: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("MM"),
+            "Should have component MM"
+        );
+        assert!(flat.components.contains_key("x"), "Should have component x");
+    }
+
+    #[test]
+    fn test_standalone_type_from_parent_scope() {
+        // Test that types can be resolved from parent package scope when
+        // a class extends another class from a different package.
+        // This is the pattern used in MoistAir.BaseProperties -> MassFraction
+        let code = r#"
+package Modelica
+    package Media
+        package Interfaces
+            type MassFraction = Real(min=0, max=1);
+            type AbsolutePressure = Real(min=0);
+
+            partial package PartialMedium
+                constant Integer nX = 2;
+            end PartialMedium;
+        end Interfaces;
+
+        package Air
+            package MoistAir
+                extends Modelica.Media.Interfaces.PartialMedium;
+
+                model BaseProperties
+                    // MassFraction should resolve to Modelica.Media.Interfaces.MassFraction
+                    // because MoistAir extends from PartialMedium which is in Interfaces
+                    MassFraction x_water;
+                    AbsolutePressure p;
+                equation
+                    x_water = 0.5;
+                    p = 101325;
+                end BaseProperties;
+            end MoistAir;
+        end Air;
+    end Media;
+end Modelica;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("Modelica.Media.Air.MoistAir.BaseProperties"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with standalone types from parent scope: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("x_water"),
+            "Should have component x_water"
+        );
+        assert!(flat.components.contains_key("p"), "Should have component p");
+    }
+
+    #[test]
+    fn test_standalone_type_inside_parent_class() {
+        // Test the actual MSL pattern where MassFraction is defined INSIDE PartialMedium,
+        // not in the enclosing Interfaces package.
+        // MoistAir extends PartialCondensingGases extends PartialMixtureMedium extends PartialMedium
+        // MassFraction is defined in PartialMedium
+        // BaseProperties in MoistAir should be able to use MassFraction
+        let code = r#"
+package Modelica
+    package Media
+        package Interfaces
+            partial package PartialMedium
+                type MassFraction = Real(min=0, max=1);
+                type DynamicViscosity = Real(min=0);
+                constant Integer nX = 2;
+            end PartialMedium;
+
+            partial package PartialMixtureMedium
+                extends PartialMedium;
+            end PartialMixtureMedium;
+
+            partial package PartialCondensingGases
+                extends PartialMixtureMedium;
+            end PartialCondensingGases;
+        end Interfaces;
+
+        package Air
+            package MoistAir
+                extends Modelica.Media.Interfaces.PartialCondensingGases;
+
+                model BaseProperties
+                    // MassFraction should be found in PartialMedium through the extends chain
+                    MassFraction x_water;
+                    DynamicViscosity eta;
+                equation
+                    x_water = 0.5;
+                    eta = 0.001;
+                end BaseProperties;
+            end MoistAir;
+        end Air;
+    end Media;
+end Modelica;
+"#;
+        let ast = parse_test_code(code);
+        let result = flatten(&ast, Some("Modelica.Media.Air.MoistAir.BaseProperties"));
+        assert!(
+            result.is_ok(),
+            "Should flatten model with types from extends chain: {:?}",
+            result.err()
+        );
+
+        let flat = result.unwrap();
+        assert!(
+            flat.components.contains_key("x_water"),
+            "Should have component x_water"
+        );
+        assert!(
+            flat.components.contains_key("eta"),
+            "Should have component eta"
+        );
+    }
 }
