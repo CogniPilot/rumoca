@@ -1,9 +1,0 @@
-{
-  "name": "rumoca-npm-tools",
-  "private": true,
-  "scripts": {
-    "build": "wasm-pack build .. --release --target web --no-default-features --features wasm",
-    "postbuild": "node ./patch-wasm-pkg.mjs && npm pack ../pkg",
-    "publish": "npm run build && cd ../pkg && npm publish"
-  }
-}

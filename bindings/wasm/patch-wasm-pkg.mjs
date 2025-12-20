@@ -7,10 +7,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // pkg/package.json is at <root>/pkg/package.json
-const pkgJsonPath = path.join(__dirname, "..", "pkg", "package.json");
+const pkgJsonPath = path.join(__dirname, "..", "..", "pkg", "package.json");
 
 async function main() {
-  console.log("patch generated package.json for wasm package")
+  console.log("patch generated package.json for wasm package");
   const raw = await fs.readFile(pkgJsonPath, "utf8");
   const pkg = JSON.parse(raw);
 
@@ -29,7 +29,7 @@ async function main() {
   // addFile("rumoca-init.js");
 
   await fs.writeFile(pkgJsonPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
-  console.log("successfully patched package.json for rumoca")
+  console.log("successfully patched package.json for rumoca");
 }
 
 main().catch((err) => {
