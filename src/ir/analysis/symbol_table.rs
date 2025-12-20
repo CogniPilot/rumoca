@@ -5,6 +5,8 @@
 //! (as they appear in expressions) to their qualified names (as they should
 //! appear in the flattened output).
 
+use crate::ir::analysis::symbol_trait::SymbolInfo;
+use crate::ir::analysis::type_inference::{SymbolType, type_from_name};
 use crate::ir::transform::constants::global_builtins;
 use indexmap::IndexMap;
 use std::collections::HashSet;
@@ -12,12 +14,40 @@ use std::collections::HashSet;
 /// Represents a symbol in the symbol table
 #[derive(Debug, Clone, PartialEq)]
 pub struct Symbol {
+    /// The local name (as it appears in expressions)
+    pub local_name: String,
     /// The fully qualified name (e.g., "e1_x" for component e1's variable x)
     pub qualified_name: String,
     /// The type name of the symbol
     pub type_name: String,
     /// Whether this symbol is a parameter
     pub is_parameter: bool,
+}
+
+impl SymbolInfo for Symbol {
+    fn name(&self) -> &str {
+        &self.local_name
+    }
+
+    fn qualified_name(&self) -> &str {
+        &self.qualified_name
+    }
+
+    fn symbol_type(&self) -> SymbolType {
+        type_from_name(&self.type_name)
+    }
+
+    fn line(&self) -> u32 {
+        0 // Symbol doesn't track line information
+    }
+
+    fn column(&self) -> u32 {
+        0 // Symbol doesn't track column information
+    }
+
+    fn is_parameter(&self) -> bool {
+        self.is_parameter
+    }
 }
 
 /// Symbol table for tracking variable scopes during flattening
@@ -58,6 +88,7 @@ impl SymbolTable {
         self.symbols.insert(
             local_name.to_string(),
             Symbol {
+                local_name: local_name.to_string(),
                 qualified_name: qualified_name.to_string(),
                 type_name: type_name.to_string(),
                 is_parameter,

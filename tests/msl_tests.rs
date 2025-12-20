@@ -533,7 +533,7 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
                     num_unknowns: balance.num_unknowns,
                     num_external_connectors: balance.num_external_connectors,
                     status: balance.status.clone(),
-                    is_balanced: balance.is_balanced,
+                    is_balanced: balance.is_balanced(),
                     error: None,
                 },
                 Err(e) => BalanceResult {
@@ -1202,7 +1202,7 @@ fn test_msl_balance_with_json_export() {
 
                     (
                         model_name.clone(),
-                        balance.is_balanced,
+                        balance.is_balanced(),
                         balance.num_equations,
                         balance.num_unknowns,
                         None,
@@ -1364,7 +1364,7 @@ fn test_nonlinear_blocks_balance() {
         print!("{}: ", model);
         match Compiler::new().model(model).check_balance(&merged) {
             Ok(balance) => {
-                if balance.is_balanced {
+                if balance.is_balanced() {
                     println!(
                         "✓ balanced ({} eq, {} unk)",
                         balance.num_equations, balance.num_unknowns

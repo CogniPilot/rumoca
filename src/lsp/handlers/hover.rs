@@ -208,9 +208,9 @@ fn format_resolved_symbol_unified(
     }
 }
 
-/// Format hover info for an external symbol (from workspace lookup via SymbolInfo)
+/// Format hover info for an external symbol (from workspace lookup via ExternalSymbol)
 fn format_symbol_info_hover(
-    sym_info: &crate::ir::transform::scope_resolver::SymbolInfo,
+    sym_info: &crate::ir::transform::scope_resolver::ExternalSymbol,
     workspace: &WorkspaceState,
 ) -> String {
     // Try to get the actual AST for richer information
@@ -226,7 +226,7 @@ fn format_symbol_info_hover(
         }
     }
 
-    // Fall back to basic info from SymbolInfo
+    // Fall back to basic info from ExternalSymbol
     let kind = format!("{:?}", sym_info.kind);
     let mut info = format!("**{}** ({})\n\n", sym_info.qualified_name, kind);
     if let Some(detail) = &sym_info.detail {

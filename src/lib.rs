@@ -13,7 +13,7 @@ mod python;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
-// Re-export generated modules from modelica_grammar::generated for backward compatibility
+// Re-export generated parser modules for convenience
 pub use modelica_grammar::generated::modelica_grammar_trait;
 pub use modelica_grammar::generated::modelica_parser;
 

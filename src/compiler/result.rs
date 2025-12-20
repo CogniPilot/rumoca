@@ -175,7 +175,7 @@ impl CompilationResult {
     /// A balanced model has exactly as many equations as unknown variables.
     /// Models that are not balanced cannot be simulated.
     pub fn is_balanced(&self) -> bool {
-        self.balance.is_balanced
+        self.balance.is_balanced()
     }
 
     /// Returns a human-readable description of the model's balance status.

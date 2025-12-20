@@ -260,7 +260,7 @@ pub fn get_library_count() -> u32 {
 pub fn compile_with_libraries(
     source: &str,
     model_name: &str,
-    _libraries_json: &str, // Kept for API compatibility but ignored if cache is available
+    libraries_json: &str, // Used as fallback when no pre-parsed cache is available
 ) -> Result<String, JsError> {
     log("[WASM] compile_with_libraries: starting");
 
@@ -275,7 +275,7 @@ pub fn compile_with_libraries(
         compile_with_cached_libraries(source, model_name)
     } else {
         log("[WASM] compile_with_libraries: no cache, parsing libraries");
-        compile_with_libraries_uncached(source, model_name, _libraries_json)
+        compile_with_libraries_uncached(source, model_name, libraries_json)
     }
 }
 

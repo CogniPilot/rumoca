@@ -80,7 +80,7 @@ impl AnalyzeResult {
     pub fn is_balanced(&self) -> bool {
         self.balance
             .as_ref()
-            .map(|b| b.is_balanced)
+            .map(|b| b.is_balanced())
             .unwrap_or(false)
     }
 }
@@ -180,7 +180,6 @@ mod tests {
             num_parameters: 1,
             num_inputs: 0,
             num_external_connectors: 0,
-            is_balanced: true,
             status: BalanceStatus::Balanced,
         };
         let result = AnalyzeResult::success("Test".to_string(), balance);

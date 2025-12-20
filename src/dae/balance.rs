@@ -43,8 +43,6 @@ pub struct BalanceResult {
     pub num_external_connectors: usize,
     /// Balance status category
     pub status: BalanceStatus,
-    /// Whether the model is balanced (for backwards compatibility)
-    pub is_balanced: bool,
 }
 
 impl BalanceResult {
@@ -59,8 +57,12 @@ impl BalanceResult {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::CompileError(message),
-            is_balanced: false,
         }
+    }
+
+    /// Check if the model is balanced (equations == unknowns)
+    pub fn is_balanced(&self) -> bool {
+        matches!(self.status, BalanceStatus::Balanced)
     }
 
     /// Get the difference between equations and unknowns
@@ -129,10 +131,9 @@ impl Dae {
             + count_external_connectors(&self.m);
 
         // Determine balance status
-        let is_balanced = num_equations == num_unknowns;
         let diff = num_equations as i64 - num_unknowns as i64;
 
-        let status = if is_balanced {
+        let status = if diff == 0 {
             BalanceStatus::Balanced
         } else if diff > 0 {
             // Over-determined is always unbalanced (a bug)
@@ -156,7 +157,6 @@ impl Dae {
             num_inputs,
             num_external_connectors,
             status,
-            is_balanced,
         }
     }
 }
@@ -235,11 +235,11 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::Balanced,
-            is_balanced: true,
         };
         assert!(balanced.status_message().contains("balanced"));
         assert_eq!(balanced.difference(), 0);
         assert_eq!(balanced.status, BalanceStatus::Balanced);
+        assert!(balanced.is_balanced());
 
         // Over-determined (unbalanced - always a bug)
         let over = BalanceResult {
@@ -251,11 +251,11 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::Unbalanced,
-            is_balanced: false,
         };
         assert!(over.status_message().contains("over-determined"));
         assert_eq!(over.difference(), 2);
         assert_eq!(over.status, BalanceStatus::Unbalanced);
+        assert!(!over.is_balanced());
 
         // Under-determined without external connectors (unbalanced - a bug)
         let under_bug = BalanceResult {
@@ -267,11 +267,11 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::Unbalanced,
-            is_balanced: false,
         };
         assert!(under_bug.status_message().contains("under-determined"));
         assert_eq!(under_bug.difference(), -2);
         assert_eq!(under_bug.status, BalanceStatus::Unbalanced);
+        assert!(!under_bug.is_balanced());
 
         // Under-determined with external connectors (partial - by design)
         let partial = BalanceResult {
@@ -283,10 +283,10 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 2,
             status: BalanceStatus::Partial,
-            is_balanced: false,
         };
         assert!(partial.status_message().contains("partial"));
         assert_eq!(partial.difference(), -2);
         assert_eq!(partial.status, BalanceStatus::Partial);
+        assert!(!partial.is_balanced());
     }
 }

@@ -366,12 +366,12 @@ fn lint_class(
     let analysis_class = flattened.as_ref().unwrap_or(class);
 
     // Add symbols from the flattened class to the scope using SymbolTable's add_symbol
-    for (name, comp) in &analysis_class.components {
+    for (name, comp) in analysis_class.iter_components() {
         let is_parameter = matches!(comp.variability, Variability::Parameter(_));
         scope.add_symbol(name, name, &comp.type_name.to_string(), is_parameter);
     }
     // Add nested class names as global symbols (they're callable/usable)
-    for nested_name in analysis_class.classes.keys() {
+    for (nested_name, _) in analysis_class.iter_classes() {
         scope.add_global(nested_name);
     }
 
@@ -421,7 +421,7 @@ fn lint_class(
     }
 
     // Recursively lint nested classes, passing current scope
-    for (nested_name, nested_class) in &class.classes {
+    for (nested_name, nested_class) in class.iter_classes() {
         let nested_path = format!("{}.{}", class_path, nested_name);
         lint_class(
             nested_class,
