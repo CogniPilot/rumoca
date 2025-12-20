@@ -5,13 +5,16 @@
 //! - Import aliases (import SI = Modelica.Units.SI)
 //! - Cross-file definitions (via workspace state)
 //! - Type references in component declarations
+//!
+//! This module uses canonical scope resolution functions from
+//! `crate::ir::transform::scope_resolver` to avoid duplication.
 
 use std::collections::HashMap;
 
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, Uri};
 
-use crate::ir::ast::{ClassDefinition, Import, Name, StoredDefinition, Token};
-use crate::ir::transform::scope_resolver::ScopeResolver;
+use crate::ir::ast::{ClassDefinition, Name, StoredDefinition, Token};
+use crate::ir::transform::scope_resolver::{ImportResolver, ScopeResolver};
 use crate::lsp::utils::{
     get_qualified_name_at_position, get_word_at_position, parse_document, token_to_range,
 };
@@ -229,58 +232,12 @@ fn try_resolve_qualified_name(
     let first_part = parts[0];
     let rest_parts = &parts[1..];
 
-    // Look for import aliases in all classes
+    // Look for import aliases in all classes using canonical ImportResolver
     for class in ast.class_list.values() {
-        if let Some(resolved_path) = resolve_import_alias_in_class(class, first_part) {
-            // Build the full qualified name by replacing the alias with the resolved path
-            let full_qualified = if rest_parts.is_empty() {
-                resolved_path
-            } else {
-                format!("{}.{}", resolved_path, rest_parts.join("."))
-            };
-
-            // Ensure package is indexed and look up in workspace
-            workspace.ensure_package_indexed(&full_qualified);
-            if let Some(sym) = workspace.lookup_symbol(&full_qualified) {
-                return Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: sym.uri.clone(),
-                    range: Range {
-                        start: Position {
-                            line: sym.line,
-                            character: sym.column,
-                        },
-                        end: Position {
-                            line: sym.line,
-                            character: sym.column
-                                + full_qualified
-                                    .rsplit('.')
-                                    .next()
-                                    .unwrap_or(&full_qualified)
-                                    .len() as u32,
-                        },
-                    },
-                }));
-            }
-
-            // Try simple name lookup as fallback
-            let simple = full_qualified.rsplit('.').next().unwrap_or(&full_qualified);
-            let matches = workspace.lookup_by_simple_name(simple);
-            if matches.len() == 1 {
-                let sym = matches[0];
-                return Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: sym.uri.clone(),
-                    range: Range {
-                        start: Position {
-                            line: sym.line,
-                            character: sym.column,
-                        },
-                        end: Position {
-                            line: sym.line,
-                            character: sym.column + simple.len() as u32,
-                        },
-                    },
-                }));
-            }
+        if let Some(response) =
+            try_resolve_import_in_class(class, first_part, rest_parts, workspace)
+        {
+            return Some(response);
         }
     }
 
@@ -309,42 +266,81 @@ fn try_resolve_qualified_name(
     None
 }
 
-/// Resolve an import alias in a class, returning the full path
-fn resolve_import_alias_in_class(class: &ClassDefinition, alias: &str) -> Option<String> {
-    for import in &class.imports {
-        match import {
-            Import::Renamed {
-                alias: alias_token,
-                path,
-                ..
-            } => {
-                if alias_token.text == alias {
-                    return Some(path.to_string());
-                }
-            }
-            Import::Qualified { path, .. } => {
-                // For `import A.B.C;`, the alias is "C"
-                if let Some(last) = path.name.last()
-                    && last.text == alias
-                {
-                    return Some(path.to_string());
-                }
-            }
-            _ => {}
+/// Helper to try resolving an import alias in a class and its nested classes
+fn try_resolve_import_in_class(
+    class: &ClassDefinition,
+    first_part: &str,
+    rest_parts: &[&str],
+    workspace: &mut WorkspaceState,
+) -> Option<GotoDefinitionResponse> {
+    // Use canonical ImportResolver
+    let import_resolver = ImportResolver::from_imports(&class.imports);
+
+    if let Some(resolved_path) = import_resolver.resolve(first_part) {
+        // Build the full qualified name by replacing the alias with the resolved path
+        let full_qualified = if rest_parts.is_empty() {
+            resolved_path.to_string()
+        } else {
+            format!("{}.{}", resolved_path, rest_parts.join("."))
+        };
+
+        // Ensure package is indexed and look up in workspace
+        workspace.ensure_package_indexed(&full_qualified);
+        if let Some(sym) = workspace.lookup_symbol(&full_qualified) {
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: sym.uri.clone(),
+                range: Range {
+                    start: Position {
+                        line: sym.line,
+                        character: sym.column,
+                    },
+                    end: Position {
+                        line: sym.line,
+                        character: sym.column
+                            + full_qualified
+                                .rsplit('.')
+                                .next()
+                                .unwrap_or(&full_qualified)
+                                .len() as u32,
+                    },
+                },
+            }));
+        }
+
+        // Try simple name lookup as fallback
+        let simple = full_qualified.rsplit('.').next().unwrap_or(&full_qualified);
+        let matches = workspace.lookup_by_simple_name(simple);
+        if matches.len() == 1 {
+            let sym = matches[0];
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: sym.uri.clone(),
+                range: Range {
+                    start: Position {
+                        line: sym.line,
+                        character: sym.column,
+                    },
+                    end: Position {
+                        line: sym.line,
+                        character: sym.column + simple.len() as u32,
+                    },
+                },
+            }));
         }
     }
 
     // Recursively check nested classes
     for nested in class.classes.values() {
-        if let Some(path) = resolve_import_alias_in_class(nested, alias) {
-            return Some(path);
+        if let Some(response) =
+            try_resolve_import_in_class(nested, first_part, rest_parts, workspace)
+        {
+            return Some(response);
         }
     }
 
     None
 }
 
-/// Try to resolve a type name using imports in the AST
+/// Try to resolve a type name using imports in the AST (uses canonical ImportResolver)
 fn try_resolve_type_with_imports(
     ast: &StoredDefinition,
     word: &str,
@@ -360,103 +356,54 @@ fn try_resolve_type_with_imports(
     None
 }
 
-/// Try to resolve a type name using imports in a specific class
+/// Try to resolve a type name using imports in a specific class (uses canonical ImportResolver)
 fn try_resolve_in_class_imports(
     class: &ClassDefinition,
     word: &str,
     workspace: &mut WorkspaceState,
 ) -> Option<GotoDefinitionResponse> {
+    // Use canonical ImportResolver for qualified/renamed/selective imports
+    let import_resolver = ImportResolver::from_imports(&class.imports);
+
+    if let Some(resolved_path) = import_resolver.resolve(word) {
+        workspace.ensure_package_indexed(resolved_path);
+        if let Some(sym) = workspace.lookup_symbol(resolved_path) {
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: sym.uri.clone(),
+                range: Range {
+                    start: Position {
+                        line: sym.line,
+                        character: sym.column,
+                    },
+                    end: Position {
+                        line: sym.line,
+                        character: sym.column + word.len() as u32,
+                    },
+                },
+            }));
+        }
+    }
+
+    // Handle unqualified imports (import A.B.*;) separately since ImportResolver
+    // can't pre-resolve these without knowing available symbols
     for import in &class.imports {
-        match import {
-            Import::Renamed { alias, path, .. } => {
-                // If the word matches the alias, resolve to the full path
-                if alias.text == word {
-                    let path_str = path.to_string();
-                    workspace.ensure_package_indexed(&path_str);
-                    if let Some(sym) = workspace.lookup_symbol(&path_str) {
-                        return Some(GotoDefinitionResponse::Scalar(Location {
-                            uri: sym.uri.clone(),
-                            range: Range {
-                                start: Position {
-                                    line: sym.line,
-                                    character: sym.column,
-                                },
-                                end: Position {
-                                    line: sym.line,
-                                    character: sym.column + word.len() as u32,
-                                },
-                            },
-                        }));
-                    }
-                }
-            }
-            Import::Qualified { path, .. } => {
-                // For `import A.B.C;`, check if word matches C
-                if let Some(last) = path.name.last()
-                    && last.text == word
-                {
-                    let path_str = path.to_string();
-                    workspace.ensure_package_indexed(&path_str);
-                    if let Some(sym) = workspace.lookup_symbol(&path_str) {
-                        return Some(GotoDefinitionResponse::Scalar(Location {
-                            uri: sym.uri.clone(),
-                            range: Range {
-                                start: Position {
-                                    line: sym.line,
-                                    character: sym.column,
-                                },
-                                end: Position {
-                                    line: sym.line,
-                                    character: sym.column + word.len() as u32,
-                                },
-                            },
-                        }));
-                    }
-                }
-            }
-            Import::Unqualified { path, .. } => {
-                // For `import A.B.*;`, check if path.word exists in workspace
-                let qualified = format!("{}.{}", path, word);
-                workspace.ensure_package_indexed(&qualified);
-                if let Some(sym) = workspace.lookup_symbol(&qualified) {
-                    return Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: sym.uri.clone(),
-                        range: Range {
-                            start: Position {
-                                line: sym.line,
-                                character: sym.column,
-                            },
-                            end: Position {
-                                line: sym.line,
-                                character: sym.column + word.len() as u32,
-                            },
+        if let crate::ir::ast::Import::Unqualified { path, .. } = import {
+            let qualified = format!("{}.{}", path, word);
+            workspace.ensure_package_indexed(&qualified);
+            if let Some(sym) = workspace.lookup_symbol(&qualified) {
+                return Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: sym.uri.clone(),
+                    range: Range {
+                        start: Position {
+                            line: sym.line,
+                            character: sym.column,
                         },
-                    }));
-                }
-            }
-            Import::Selective { path, names, .. } => {
-                // For `import A.B.{C, D};`, check if word matches any name
-                for name in names {
-                    if name.text == word {
-                        let qualified = format!("{}.{}", path, word);
-                        workspace.ensure_package_indexed(&qualified);
-                        if let Some(sym) = workspace.lookup_symbol(&qualified) {
-                            return Some(GotoDefinitionResponse::Scalar(Location {
-                                uri: sym.uri.clone(),
-                                range: Range {
-                                    start: Position {
-                                        line: sym.line,
-                                        character: sym.column,
-                                    },
-                                    end: Position {
-                                        line: sym.line,
-                                        character: sym.column + word.len() as u32,
-                                    },
-                                },
-                            }));
-                        }
-                    }
-                }
+                        end: Position {
+                            line: sym.line,
+                            character: sym.column + word.len() as u32,
+                        },
+                    },
+                }));
             }
         }
     }
@@ -502,7 +449,7 @@ fn find_definition_in_class<'a>(class: &'a ClassDefinition, name: &str) -> Optio
     None
 }
 
-/// Find an import alias in the AST and return the path it resolves to
+/// Find an import alias in the AST and return the path it resolves to (uses canonical ImportResolver)
 fn find_import_alias_in_ast(def: &StoredDefinition, alias: &str) -> Option<String> {
     for class in def.class_list.values() {
         if let Some(path) = find_import_alias_in_class(class, alias) {
@@ -512,30 +459,12 @@ fn find_import_alias_in_ast(def: &StoredDefinition, alias: &str) -> Option<Strin
     None
 }
 
-/// Recursively search for an import alias in a class
+/// Recursively search for an import alias in a class (uses canonical ImportResolver)
 fn find_import_alias_in_class(class: &ClassDefinition, alias: &str) -> Option<String> {
-    // Check imports in this class
-    for import in &class.imports {
-        match import {
-            Import::Renamed {
-                alias: alias_token,
-                path,
-                ..
-            } => {
-                if alias_token.text == alias {
-                    return Some(path.to_string());
-                }
-            }
-            Import::Qualified { path, .. } => {
-                // For `import A.B.C;`, the alias is "C"
-                if let Some(last) = path.name.last()
-                    && last.text == alias
-                {
-                    return Some(path.to_string());
-                }
-            }
-            _ => {}
-        }
+    // Use canonical ImportResolver
+    let import_resolver = ImportResolver::from_imports(&class.imports);
+    if let Some(path) = import_resolver.resolve(alias) {
+        return Some(path.to_string());
     }
 
     // Check nested classes

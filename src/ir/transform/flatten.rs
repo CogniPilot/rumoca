@@ -591,9 +591,18 @@ fn resolve_class_name_with_imports(
         return Some(resolved_name);
     }
 
-    // 2. Try prepending enclosing package prefixes
+    // 2. Try prepending enclosing scope prefixes (including current class)
+    // For a class path like "SwitchController", we need to try:
+    //   - "SwitchController.SwitchState" (nested type in current class)
+    //   - "SwitchState" (at root level)
+    // For a path like "Modelica.Blocks.Continuous.PID", we try:
+    //   - "Modelica.Blocks.Continuous.PID.TypeName"
+    //   - "Modelica.Blocks.Continuous.TypeName"
+    //   - "Modelica.Blocks.TypeName"
+    //   - "Modelica.TypeName"
+    //   - "TypeName"
     let parts: Vec<&str> = current_class_path.split('.').collect();
-    for i in (0..parts.len()).rev() {
+    for i in (0..=parts.len()).rev() {
         let prefix = parts[..i].join(".");
         let candidate = if prefix.is_empty() {
             resolved_name.clone()
@@ -611,7 +620,7 @@ fn resolve_class_name_with_imports(
         if class_dict.contains_key(name) {
             return Some(name.to_string());
         }
-        for i in (0..parts.len()).rev() {
+        for i in (0..=parts.len()).rev() {
             let prefix = parts[..i].join(".");
             let candidate = if prefix.is_empty() {
                 name.to_string()
