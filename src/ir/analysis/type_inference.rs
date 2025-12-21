@@ -53,8 +53,19 @@ impl SymbolType {
             (SymbolType::Real, SymbolType::Integer) | (SymbolType::Integer, SymbolType::Real) => {
                 true
             }
-            // Arrays are compatible if element types are compatible
-            (SymbolType::Array(t1, _), SymbolType::Array(t2, _)) => t1.is_compatible_with(t2),
+            // Arrays are compatible if element types and sizes are compatible
+            (SymbolType::Array(t1, s1), SymbolType::Array(t2, s2)) => {
+                // Element types must be compatible
+                if !t1.is_compatible_with(t2) {
+                    return false;
+                }
+                // Sizes must match if both are known
+                match (s1, s2) {
+                    (Some(a), Some(b)) => a == b,
+                    // Unknown size (None) is compatible with any size
+                    _ => true,
+                }
+            }
             // Class types are compatible if they have the same name
             (SymbolType::Class(n1), SymbolType::Class(n2)) => n1 == n2,
             // Enumeration types are compatible if they have the same name
@@ -93,11 +104,19 @@ pub fn type_from_name(name: &str) -> SymbolType {
         "Integer" => SymbolType::Integer,
         "Boolean" | "Bool" => SymbolType::Boolean,
         "String" => SymbolType::String,
+        // Built-in enumerations
+        "AssertionLevel" => SymbolType::Enumeration("AssertionLevel".to_string()),
+        "StateSelect" => SymbolType::Enumeration("StateSelect".to_string()),
         // User-defined types are treated as Class types
         // Enumerations would need additional context to distinguish
         "" => SymbolType::Unknown,
         _ => SymbolType::Class(name.to_string()),
     }
+}
+
+/// Check if a name is a built-in Modelica enumeration
+pub fn is_builtin_enum(name: &str) -> bool {
+    matches!(name, "AssertionLevel" | "StateSelect")
 }
 
 impl SymbolType {
@@ -148,6 +167,9 @@ pub fn infer_expression_type(
                     // Check if it's 'time' (global Real)
                     if first.ident.text == "time" {
                         SymbolType::Real
+                    } else if is_builtin_enum(&first.ident.text) {
+                        // Built-in enumeration literal (e.g., AssertionLevel.warning)
+                        SymbolType::Enumeration(first.ident.text.clone())
                     } else {
                         SymbolType::Unknown
                     }
@@ -173,7 +195,7 @@ pub fn infer_expression_type(
             infer_binary_op_type(op, &lhs_type, &rhs_type)
         }
         Expression::Unary { op: _, rhs } => infer_expression_type(rhs, defined),
-        Expression::Array { elements } => {
+        Expression::Array { elements, .. } => {
             if let Some(first) = elements.first() {
                 let elem_type = infer_expression_type(first, defined);
                 SymbolType::Array(Box::new(elem_type), Some(elements.len()))

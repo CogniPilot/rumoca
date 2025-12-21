@@ -16,7 +16,7 @@ impl FormatVisitor {
                 let lhs_str = self.format_expression(lhs);
 
                 // Check if RHS is a multi-line array
-                if let Expression::Array { elements } = rhs
+                if let Expression::Array { elements, .. } = rhs
                     && self.should_format_array_multiline(elements, level)
                 {
                     return format!(
@@ -128,15 +128,31 @@ impl FormatVisitor {
                     self.format_expression(value)
                 )
             }
-            Statement::FunctionCall { comp, args } => {
+            Statement::FunctionCall {
+                comp,
+                args,
+                outputs,
+            } => {
                 let args_str: Vec<String> =
                     args.iter().map(|a| self.format_expression(a)).collect();
-                format!(
-                    "{}{}({});\n",
-                    indent,
-                    self.format_comp_ref(comp),
-                    args_str.join(", ")
-                )
+                if outputs.is_empty() {
+                    format!(
+                        "{}{}({});\n",
+                        indent,
+                        self.format_comp_ref(comp),
+                        args_str.join(", ")
+                    )
+                } else {
+                    let outputs_str: Vec<String> =
+                        outputs.iter().map(|o| self.format_expression(o)).collect();
+                    format!(
+                        "{}({}) := {}({});\n",
+                        indent,
+                        outputs_str.join(", "),
+                        self.format_comp_ref(comp),
+                        args_str.join(", ")
+                    )
+                }
             }
             Statement::For { indices, equations } => {
                 let idx_str = self.format_for_indices(indices);

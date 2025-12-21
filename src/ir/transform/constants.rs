@@ -86,6 +86,7 @@ pub const BUILTIN_MAX: &str = "max";
 
 /// Built-in math functions - Integer conversion
 pub const BUILTIN_INTEGER: &str = "integer";
+pub const BUILTIN_INTEGER_TYPE: &str = "Integer"; // Type conversion for enums
 pub const BUILTIN_DIV: &str = "div";
 
 /// Built-in array functions - Construction
@@ -815,6 +816,7 @@ pub fn global_builtins() -> Vec<String> {
         BUILTIN_MAX.to_string(),
         // Integer conversion
         BUILTIN_INTEGER.to_string(),
+        BUILTIN_INTEGER_TYPE.to_string(),
         BUILTIN_DIV.to_string(),
         // Array construction
         BUILTIN_ZEROS.to_string(),

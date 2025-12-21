@@ -6,6 +6,12 @@
 use super::function_collector::collect_all_functions;
 use super::result::CompilationResult;
 use crate::dae::balance::BalanceResult;
+use crate::ir::analysis::type_checker::{
+    check_algorithm_assignments_with_types, check_array_bounds, check_assert_arguments,
+    check_break_return_context, check_builtin_attribute_modifiers, check_cardinality_arguments,
+    check_cardinality_context, check_class_member_access, check_component_bindings,
+    check_scalar_subscripts, check_start_modification_dimensions,
+};
 use crate::ir::analysis::var_validator::VarValidator;
 use crate::ir::ast::{ClassType, StoredDefinition};
 use crate::ir::structural::create_dae::create_dae;
@@ -18,6 +24,9 @@ use crate::ir::transform::flatten::{
 };
 use crate::ir::transform::function_inliner::FunctionInliner;
 use crate::ir::transform::import_resolver::ImportResolver;
+use crate::ir::transform::operator_expand::{
+    build_operator_record_map, build_type_map, expand_complex_equations,
+};
 use crate::ir::transform::tuple_expander::expand_tuple_equations;
 use crate::ir::visitor::MutVisitable;
 use anyhow::Result;
@@ -50,9 +59,27 @@ static DAE_CACHE: LazyLock<RwLock<HashMap<String, (BalanceResult, FileDependenci
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Compute cache key for DAE result based on model name and StoredDefinition
+/// Cache format version - increment when transformation logic changes
+/// to invalidate stale cached results.
+///
+/// History:
+/// - v1: Initial cache format
+/// - v2: Fixed Complex binding equation expansion (operator_expand, function_inliner)
+const DAE_CACHE_VERSION: u32 = 2;
+
+/// Rumoca version at compile time - used for automatic cache invalidation
+const RUMOCA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Git version at compile time - includes commit hash for automatic invalidation on code changes
+const GIT_VERSION: &str = env!("RUMOCA_GIT_VERSION");
+
 fn compute_dae_cache_key(model_name: &str, def: &StoredDefinition) -> String {
     use std::collections::hash_map::DefaultHasher;
     let mut hasher = DefaultHasher::new();
+    // Include version info to invalidate cache on compiler updates
+    DAE_CACHE_VERSION.hash(&mut hasher);
+    RUMOCA_VERSION.hash(&mut hasher);
+    GIT_VERSION.hash(&mut hasher);
     model_name.hash(&mut hasher);
     // Hash actual content of the definition including component names and equations
     for (name, class) in &def.class_list {
@@ -78,6 +105,8 @@ fn hash_class_for_cache(
         std::mem::discriminant(&comp.variability).hash(hasher);
         std::mem::discriminant(&comp.causality).hash(hasher);
         comp.shape.hash(hasher);
+        // Hash start value - critical for parameter-dependent array sizing
+        format!("{:?}", comp.start).hash(hasher);
     }
 
     // Hash extends clauses
@@ -107,9 +136,46 @@ mod disk_cache {
         dirs::cache_dir().map(|d| d.join("rumoca").join("dae"))
     }
 
+    /// Check and update the cache version marker.
+    /// Returns true if the cache is valid, false if it was cleared due to version mismatch.
+    fn check_and_update_version_marker(cache_dir: &std::path::Path) -> bool {
+        let version_file = cache_dir.join(".version");
+        let current_version = format!(
+            "{}:{}:{}",
+            super::DAE_CACHE_VERSION,
+            super::RUMOCA_VERSION,
+            super::GIT_VERSION
+        );
+
+        if version_file.exists()
+            && let Ok(stored_version) = std::fs::read_to_string(&version_file)
+            && stored_version.trim() == current_version
+        {
+            return true;
+        }
+
+        // Version mismatch - clear the cache directory
+        if cache_dir.exists() {
+            let _ = std::fs::remove_dir_all(cache_dir);
+        }
+
+        // Recreate with new version marker
+        if std::fs::create_dir_all(cache_dir).is_ok() {
+            let _ = std::fs::write(&version_file, &current_version);
+        }
+
+        false
+    }
+
     /// Try to load DAE result from disk cache
     pub fn load_dae_from_disk(cache_key: &str) -> Option<BalanceResult> {
         let cache_dir = dae_cache_dir()?;
+
+        // Check version marker - clears cache if version changed
+        if !check_and_update_version_marker(&cache_dir) {
+            return None;
+        }
+
         let cache_file = cache_dir.join(format!("{}.bin", cache_key));
 
         if !cache_file.exists() {
@@ -138,6 +204,9 @@ mod disk_cache {
             return;
         };
 
+        // Ensure version marker is up to date
+        check_and_update_version_marker(&cache_dir);
+
         if std::fs::create_dir_all(&cache_dir).is_err() {
             return;
         }
@@ -164,7 +233,7 @@ mod disk_cache {
 
 /// Clear the DAE cache (memory and disk)
 pub fn clear_dae_cache() {
-    DAE_CACHE.write().unwrap().clear();
+    DAE_CACHE.write().expect("DAE cache lock poisoned").clear();
     #[cfg(feature = "cache")]
     disk_cache::clear_disk_cache();
 }
@@ -266,6 +335,133 @@ pub fn compile_from_ast_ref(
                 context
             ));
         }
+
+        // Check component binding types (e.g., Real x = "wrong" should fail)
+        // Use expanded_class which is captured before enum substitution, so enum
+        // literals like AssertionLevel.warning are still typed correctly
+        let type_check_result = check_component_bindings(&expanded_class);
+        if type_check_result.has_errors() {
+            let first_error = &type_check_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for invalid assignments in algorithm sections
+        // (e.g., assigning to constant, input, model, or package variables)
+        // Build peer class types from file-level classes
+        let peer_class_types: std::collections::HashMap<String, ClassType> = def
+            .class_list
+            .iter()
+            .map(|(name, class)| (name.clone(), class.class_type.clone()))
+            .collect();
+        // Also build original component types from the target model (before flattening)
+        // This is needed because composite components like `a1` of type `A` are expanded
+        // to `a1.x` after flattening, but the algorithm still references `a1`
+        let original_comp_types: std::collections::HashMap<String, String> = if let Some(name) =
+            model_name
+        {
+            def.class_list
+                .get(name)
+                .map(|class| {
+                    class
+                        .components
+                        .iter()
+                        .map(|(comp_name, comp)| (comp_name.clone(), comp.type_name.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            std::collections::HashMap::new()
+        };
+        let assign_check_result = check_algorithm_assignments_with_types(
+            &expanded_class,
+            &peer_class_types,
+            &original_comp_types,
+        );
+        if assign_check_result.has_errors() {
+            let first_error = &assign_check_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+        // Also check file-level functions for input assignment violations
+        // Only check functions (not models/connectors) to avoid false positives
+        for (_, file_class) in &def.class_list {
+            if file_class.class_type == ClassType::Function {
+                let file_assign_result = check_algorithm_assignments_with_types(
+                    file_class,
+                    &peer_class_types,
+                    &std::collections::HashMap::new(),
+                );
+                if file_assign_result.has_errors() {
+                    let first_error = &file_assign_result.errors[0];
+                    return Err(anyhow::anyhow!("{}", first_error.message));
+                }
+            }
+        }
+
+        // Check assert() function argument types
+        let assert_check_result = check_assert_arguments(&expanded_class);
+        if assert_check_result.has_errors() {
+            let first_error = &assert_check_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check builtin attribute modifiers (e.g., Real x(y=1) is invalid)
+        let modifier_check_result = check_builtin_attribute_modifiers(&expanded_class);
+        if modifier_check_result.has_errors() {
+            let first_error = &modifier_check_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check start modification dimension mismatches
+        // E.g., `Real x[3](start = x_start)` where x_start is a 2-element array
+        let start_dim_result = check_start_modification_dimensions(&expanded_class);
+        if start_dim_result.has_errors() {
+            let first_error = &start_dim_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for break/return statements outside proper context
+        // Check both the model and all file-level classes (including functions)
+        let break_check_result = check_break_return_context(&expanded_class);
+        if break_check_result.has_errors() {
+            let first_error = &break_check_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+        // Also check file-level functions
+        for (_, class) in &def.class_list {
+            let file_break_result = check_break_return_context(class);
+            if file_break_result.has_errors() {
+                let first_error = &file_break_result.errors[0];
+                return Err(anyhow::anyhow!("{}", first_error.message));
+            }
+        }
+
+        // Check for subscripting scalar variables (like time[2])
+        let scalar_subscript_result = check_scalar_subscripts(&expanded_class);
+        if scalar_subscript_result.has_errors() {
+            let first_error = &scalar_subscript_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for cardinality() used outside valid contexts
+        let cardinality_result = check_cardinality_context(&expanded_class);
+        if cardinality_result.has_errors() {
+            let first_error = &cardinality_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for invalid cardinality() arguments
+        let cardinality_args_result = check_cardinality_arguments(&expanded_class);
+        if cardinality_args_result.has_errors() {
+            let first_error = &cardinality_args_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for class member access without instance (e.g., Boolean.x where Boolean is a class)
+        let class_member_result = check_class_member_access(&expanded_class);
+        if class_member_result.has_errors() {
+            let first_error = &class_member_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
     }
 
     // Inline user-defined function calls
@@ -285,7 +481,43 @@ pub fn compile_from_ast_ref(
     // - Binding equations converted to regular equations
     expand_equations(&mut fclass);
 
+    // Check for array subscript out of bounds errors
+    // This must happen after expand_equations so shapes are evaluated
+    if should_validate {
+        let bounds_check_result = check_array_bounds(&fclass);
+        if bounds_check_result.has_errors() {
+            let first_error = &bounds_check_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+    }
+
+    // Expand Complex arithmetic equations to scalar form:
+    // - y = a + b  =>  y.re = a.re + b.re; y.im = a.im + b.im
+    // - y = a * b  =>  y.re = a.re*b.re - a.im*b.im; y.im = a.re*b.im + a.im*b.re
+    let operator_records = build_operator_record_map(&def.class_list);
+    let type_map = build_type_map(&fclass, &def.class_list);
+
     if verbose {
+        println!("=== Complex expansion debug ===");
+        println!(
+            "Operator records: {:?}",
+            operator_records.keys().collect::<Vec<_>>()
+        );
+        println!(
+            "Type map entries: {:?}",
+            type_map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    let eq_count_before = fclass.equations.len();
+    fclass.equations = expand_complex_equations(&fclass.equations, &type_map, &operator_records);
+
+    if verbose {
+        println!(
+            "Equations: {} -> {}",
+            eq_count_before,
+            fclass.equations.len()
+        );
         println!(
             "After function inlining, tuple expansion, array comprehension, and equation expansion:\n{:#?}\n",
             fclass
@@ -332,11 +564,12 @@ pub fn check_balance_only(
     model_name: Option<&str>,
 ) -> Result<crate::dae::balance::BalanceResult> {
     let model_name_str = model_name.unwrap_or("");
+
     let cache_key = compute_dae_cache_key(model_name_str, def);
 
     // Check in-memory cache first (only if caching is enabled)
     if is_cache_enabled() {
-        let cache = DAE_CACHE.read().unwrap();
+        let cache = DAE_CACHE.read().expect("DAE cache lock poisoned");
         if let Some((result, _deps)) = cache.get(&cache_key) {
             return Ok(result.clone());
         }
@@ -351,7 +584,7 @@ pub fn check_balance_only(
         let deps = FileDependencies::default(); // We validated deps during load
         DAE_CACHE
             .write()
-            .unwrap()
+            .expect("DAE cache lock poisoned")
             .insert(cache_key, (result.clone(), deps));
         return Ok(result);
     }
@@ -390,6 +623,12 @@ pub fn check_balance_only(
     // Expand structured equations to scalar form
     expand_equations(&mut fclass.class);
 
+    // Expand Complex arithmetic equations to scalar form
+    let operator_records = build_operator_record_map(&def.class_list);
+    let type_map = build_type_map(&fclass.class, &def.class_list);
+    fclass.class.equations =
+        expand_complex_equations(&fclass.class.equations, &type_map, &operator_records);
+
     // Create DAE
     let dae = create_dae(&mut fclass.class)?;
 
@@ -403,7 +642,7 @@ pub fn check_balance_only(
 
         DAE_CACHE
             .write()
-            .unwrap()
+            .expect("DAE cache lock poisoned")
             .insert(cache_key, (result.clone(), fclass.dependencies));
     }
 

@@ -92,3 +92,22 @@ equation
   sum_val = add(x, y);
   scaled = scale(2, sum_val);
 end MultiImportTest;
+
+// Enumeration package for testing import alias with enum literals
+package Digital
+  package Interfaces
+    // Logic type similar to MSL Digital library
+    type Logic = enumeration('U' "Uninitialized", 'X' "Forcing Unknown", '0' "Forcing 0", '1' "Forcing 1", 'Z' "High Impedance", 'W' "Weak Unknown", 'L' "Weak 0", 'H' "Weak 1", '-' "Don't care");
+  end Interfaces;
+end Digital;
+
+// Test import alias for enumeration literal (L.'U' pattern)
+model EnumImportAliasTest
+  import L = Digital.Interfaces.Logic;
+  // Use the import alias to reference enumeration literals
+  L state(start = L.'U');
+  Real value;
+equation
+  // Use enum literal via import alias
+  value = if state == L.'1' then 1.0 else 0.0;
+end EnumImportAliasTest;

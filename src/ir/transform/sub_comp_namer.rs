@@ -9,10 +9,15 @@
 //!
 //! # Fields
 //! - `comp`: The name of the component to match and use as a prefix for renaming.
+//! - `is_operator_record`: If true, subscripts from the first part are moved to the
+//!   new flattened name (e.g., `u[1].re` -> `u.re[1]` for Complex arrays).
 //!
 //! # Example
 //! Given a component reference like `comp.subcomp`, if `comp` is set to `"comp"`,
 //! the visitor will transform it into `comp.subcomp` (flattened with dot separator).
+//!
+//! For operator records like Complex with `is_operator_record=true`:
+//! Given `comp[1].subcomp`, it transforms to `comp.subcomp[1]`.
 //!
 //! # Trait Implementations
 //! Implements the `Visitor` trait, specifically overriding the
@@ -27,6 +32,10 @@ use crate::ir::visitor::MutVisitor;
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubCompNamer {
     pub comp: String,
+    /// If true, subscripts from the component are moved to its subcomponents.
+    /// This is needed for operator records like Complex where `u[1].re` should
+    /// become `u.re[1]` (because `u.re` is an array after flattening).
+    pub is_operator_record: bool,
 }
 
 impl MutVisitor for SubCompNamer {
@@ -34,8 +43,21 @@ impl MutVisitor for SubCompNamer {
         // Only transform if there are at least 2 parts (e.g., comp.subcomp)
         // A single-part reference doesn't need transformation
         if node.parts.len() >= 2 && node.parts[0].ident.text == self.comp {
+            // For operator records (like Complex), move subscripts from the first part
+            // to the flattened subcomponent. This transforms `u[1].re` to `u.re[1]`.
+            let first_part_subs = if self.is_operator_record {
+                node.parts[0].subs.take()
+            } else {
+                None
+            };
+
             node.parts.remove(0);
             node.parts[0].ident.text = format!("{}.{}", self.comp, node.parts[0].ident.text);
+
+            // Move subscripts to the new first part if it doesn't already have subscripts
+            if self.is_operator_record && node.parts[0].subs.is_none() {
+                node.parts[0].subs = first_part_subs;
+            }
         }
     }
 }

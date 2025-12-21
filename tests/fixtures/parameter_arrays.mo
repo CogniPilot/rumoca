@@ -52,4 +52,22 @@ package ParameterArrays
       end for;
     end for;
   end NestedForLoop;
+
+  // Inner model for testing parameter propagation
+  model InnerForLoop
+    parameter Integer order = 2 "Default order";
+    parameter Integer na = integer((order + 1) / 2) "Computed from order";
+    Real x[na];
+  equation
+    for i in 1:na loop
+      der(x[i]) = -x[i];
+    end for;
+  end InnerForLoop;
+
+  // Outer model that instantiates inner with different order
+  // Tests that order=3 propagates to sub.order, making na=2, x[2], 2 equations
+  model OuterWithInner
+    parameter Integer order = 3;
+    InnerForLoop sub(order = order);
+  end OuterWithInner;
 end ParameterArrays;

@@ -11,15 +11,52 @@ use crate::ir::ast::{
     ClassDefinition, Component, ComponentRefPart, ComponentReference, Expression, ForIndex,
     OpBinary, OpUnary, Subscript, TerminalType, Token,
 };
+use crate::ir::visitor::{MutVisitable, MutVisitor};
 use indexmap::IndexMap;
 
 /// Maximum recursion depth for evaluation to prevent stack overflow
 const MAX_EVAL_DEPTH: usize = 100;
 
+// =============================================================================
+// Array Comprehension Expander Visitor
+// =============================================================================
+
+/// Visitor that expands array comprehensions into explicit arrays.
+///
+/// This replaces manual recursion through equations and expressions with
+/// the standard MutVisitor pattern for cleaner, more maintainable code.
+struct ComprehensionExpander<'a> {
+    params: &'a IndexMap<String, Component>,
+}
+
+impl<'a> ComprehensionExpander<'a> {
+    fn new(params: &'a IndexMap<String, Component>) -> Self {
+        Self { params }
+    }
+}
+
+impl MutVisitor for ComprehensionExpander<'_> {
+    fn exit_expression(&mut self, expr: &mut Expression) {
+        // After children have been processed, check if this is an ArrayComprehension
+        // that can be expanded
+        let expanded = match expr {
+            Expression::ArrayComprehension {
+                expr: inner_expr,
+                indices,
+            } => try_expand_comprehension(inner_expr, indices, self.params),
+            _ => None,
+        };
+        if let Some(expanded) = expanded {
+            *expr = expanded;
+        }
+    }
+}
+
 /// Expand all array comprehensions in a class definition.
 ///
-/// This function recursively walks through all expressions in the class and
-/// replaces ArrayComprehension expressions with expanded Array expressions.
+/// This function uses the visitor pattern to walk through all expressions
+/// in the class and replace ArrayComprehension expressions with expanded
+/// Array expressions.
 pub fn expand_array_comprehensions(class: &mut ClassDefinition) {
     // Build parameter map for evaluation
     let params: IndexMap<String, Component> = class
@@ -29,129 +66,9 @@ pub fn expand_array_comprehensions(class: &mut ClassDefinition) {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
-    // Expand in equations
-    for eq in &mut class.equations {
-        expand_in_equation(eq, &params);
-    }
-
-    // Expand in initial equations
-    for eq in &mut class.initial_equations {
-        expand_in_equation(eq, &params);
-    }
-
-    // Expand in component start values
-    for (_, comp) in &mut class.components {
-        expand_in_expression(&mut comp.start, &params);
-    }
-}
-
-/// Expand array comprehensions in an equation
-fn expand_in_equation(eq: &mut crate::ir::ast::Equation, params: &IndexMap<String, Component>) {
-    use crate::ir::ast::Equation;
-
-    match eq {
-        Equation::Simple { lhs, rhs } => {
-            expand_in_expression(lhs, params);
-            expand_in_expression(rhs, params);
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                expand_in_expression(&mut block.cond, params);
-                for eq in &mut block.eqs {
-                    expand_in_equation(eq, params);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for eq in else_eqs {
-                    expand_in_equation(eq, params);
-                }
-            }
-        }
-        Equation::For {
-            indices: _,
-            equations,
-        } => {
-            for eq in equations {
-                expand_in_equation(eq, params);
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                expand_in_expression(&mut block.cond, params);
-                for eq in &mut block.eqs {
-                    expand_in_equation(eq, params);
-                }
-            }
-        }
-        Equation::Connect { .. } | Equation::FunctionCall { .. } | Equation::Empty => {}
-    }
-}
-
-/// Expand array comprehensions in an expression (modifies in place)
-fn expand_in_expression(expr: &mut Expression, params: &IndexMap<String, Component>) {
-    // First, recursively process child expressions
-    match expr {
-        Expression::Binary { lhs, rhs, .. } => {
-            expand_in_expression(lhs, params);
-            expand_in_expression(rhs, params);
-        }
-        Expression::Unary { rhs, .. } => {
-            expand_in_expression(rhs, params);
-        }
-        Expression::Array { elements } => {
-            for elem in elements {
-                expand_in_expression(elem, params);
-            }
-        }
-        Expression::Tuple { elements } => {
-            for elem in elements {
-                expand_in_expression(elem, params);
-            }
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                expand_in_expression(arg, params);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                expand_in_expression(cond, params);
-                expand_in_expression(then_expr, params);
-            }
-            expand_in_expression(else_branch, params);
-        }
-        Expression::Range { start, step, end } => {
-            expand_in_expression(start, params);
-            if let Some(s) = step {
-                expand_in_expression(s, params);
-            }
-            expand_in_expression(end, params);
-        }
-        Expression::Parenthesized { inner } => {
-            expand_in_expression(inner, params);
-        }
-        Expression::ArrayComprehension { expr: inner, .. } => {
-            expand_in_expression(inner, params);
-        }
-        Expression::ComponentReference { .. } | Expression::Terminal { .. } | Expression::Empty => {
-        }
-    }
-
-    // Now check if this is an array comprehension that can be expanded
-    if let Expression::ArrayComprehension {
-        expr: inner_expr,
-        indices,
-    } = expr
-        && let Some(expanded) = try_expand_comprehension(inner_expr, indices, params)
-    {
-        *expr = expanded;
-    }
+    // Use visitor pattern to expand comprehensions
+    let mut expander = ComprehensionExpander::new(&params);
+    class.accept_mut(&mut expander);
 }
 
 /// Try to expand an array comprehension into an explicit array
@@ -181,7 +98,10 @@ fn try_expand_comprehension(
             elements.push(substituted);
         }
 
-        Some(Expression::Array { elements })
+        Some(Expression::Array {
+            elements,
+            is_matrix: false,
+        })
     } else {
         // Multi-index comprehension: expand nested
         // {expr for i in 1:n, j in 1:m} becomes
@@ -210,7 +130,10 @@ fn try_expand_comprehension(
             }
         }
 
-        Some(Expression::Array { elements })
+        Some(Expression::Array {
+            elements,
+            is_matrix: false,
+        })
     }
 }
 
@@ -305,7 +228,7 @@ fn try_evaluate_integer(
                         }
                         // Subscript::Range (`:`) can't be evaluated directly
                         // Try to infer from start expression (array literal)
-                        if let Expression::Array { elements } = &array_comp.start
+                        if let Expression::Array { elements, .. } = &array_comp.start
                             && dim_index == 1
                         {
                             return Some(elements.len() as i64);
@@ -372,11 +295,15 @@ fn substitute_variable(expr: &Expression, var_name: &str, value: i64) -> Express
                 .map(|a| substitute_variable(a, var_name, value))
                 .collect(),
         },
-        Expression::Array { elements } => Expression::Array {
+        Expression::Array {
+            elements,
+            is_matrix,
+        } => Expression::Array {
             elements: elements
                 .iter()
                 .map(|e| substitute_variable(e, var_name, value))
                 .collect(),
+            is_matrix: *is_matrix,
         },
         Expression::Tuple { elements } => Expression::Tuple {
             elements: elements

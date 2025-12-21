@@ -145,6 +145,22 @@ impl FormatVisitor {
         self.output.push('\n');
     }
 
+    /// Write a pre-formatted string that may end with newline, inserting trailing comments
+    /// before the final newline. Used for equations/statements that already include formatting.
+    pub fn write_with_trailing(&mut self, formatted: &str, source_line: u32) {
+        // Check if the formatted string ends with newline
+        if let Some(without_newline) = formatted.strip_suffix('\n') {
+            self.output.push_str(without_newline);
+            let trailing = self.get_trailing_comments(source_line);
+            self.output.push_str(&trailing);
+            self.output.push('\n');
+        } else {
+            self.output.push_str(formatted);
+            let trailing = self.get_trailing_comments(source_line);
+            self.output.push_str(&trailing);
+        }
+    }
+
     pub fn format_import(&self, import: &Import) -> String {
         match import {
             Import::Qualified { path, .. } => format!("import {};", path),
