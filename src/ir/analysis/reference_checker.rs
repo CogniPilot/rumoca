@@ -274,10 +274,18 @@ fn check_statement(
             check_component_ref(comp, defined, scope, config, result);
             check_expression(value, defined, scope, config, result);
         }
-        Statement::FunctionCall { comp: _, args } => {
+        Statement::FunctionCall {
+            comp: _,
+            args,
+            outputs,
+        } => {
             // Don't check function name - it might be external
             for arg in args {
                 check_expression(arg, defined, scope, config, result);
+            }
+            // Check output expressions (the variables being assigned to)
+            for output in outputs {
+                check_expression(output, defined, scope, config, result);
             }
         }
         Statement::For { indices, equations } => {
@@ -364,7 +372,7 @@ fn check_expression(
         Expression::Unary { rhs, .. } => {
             check_expression(rhs, defined, scope, config, result);
         }
-        Expression::Array { elements } => {
+        Expression::Array { elements, .. } => {
             for elem in elements {
                 check_expression(elem, defined, scope, config, result);
             }

@@ -25,7 +25,7 @@ package ConditionalComponents
     RealInput u;
     RealOutput y;
     parameter Boolean use_reset = false "Enable reset functionality";
-    BooleanInput reset "Reset input (conditional)";
+    BooleanInput reset if use_reset "Reset input (conditional)";
   equation
     y = 2 * u;
   end ConditionalInputFalse;
@@ -37,7 +37,7 @@ package ConditionalComponents
     RealInput u;
     RealOutput y;
     parameter Boolean use_reset = true "Enable reset functionality";
-    BooleanInput reset "Reset input (conditional)";
+    BooleanInput reset if use_reset "Reset input (conditional)";
   equation
     y = 2 * u;
   end ConditionalInputTrue;
@@ -50,8 +50,8 @@ package ConditionalComponents
     RealOutput y;
     parameter Boolean use_reset = false;
     parameter Boolean use_set = false;
-    BooleanInput reset;
-    RealInput set;
+    BooleanInput reset if use_reset;
+    RealInput set if use_set;
   equation
     y = 2 * u;
   end MultipleConditionalsFalse;
@@ -63,7 +63,7 @@ package ConditionalComponents
     RealOutput y;
     parameter Boolean use_reset = false;
     parameter Boolean use_set = false;
-    RealInput special;
+    RealInput special if use_reset and use_set;
   equation
     y = 2 * u;
   end ConditionalWithAnd;

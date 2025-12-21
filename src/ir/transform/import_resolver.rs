@@ -87,32 +87,67 @@ fn find_class_by_path<'a>(
 
 impl MutVisitor for ImportResolver {
     fn exit_expression(&mut self, expr: &mut Expression) {
-        if let Expression::FunctionCall { comp, args: _ } = expr {
-            // Get the function name
-            let func_name = comp.to_string();
+        match expr {
+            Expression::FunctionCall { comp, args: _ } => {
+                // Get the function name
+                let func_name = comp.to_string();
 
-            // If this is a simple name (no dots) and we have a mapping, resolve it
-            if !func_name.contains('.')
-                && let Some(full_path) = self.name_map.get(&func_name)
-            {
-                // Rewrite the component reference to use the full path
-                let parts: Vec<&str> = full_path.split('.').collect();
-                let new_parts: Vec<crate::ir::ast::ComponentRefPart> = parts
-                    .iter()
-                    .map(|p| crate::ir::ast::ComponentRefPart {
-                        ident: crate::ir::ast::Token {
-                            text: p.to_string(),
-                            ..Default::default()
-                        },
-                        subs: None,
-                    })
-                    .collect();
+                // If this is a simple name (no dots) and we have a mapping, resolve it
+                if !func_name.contains('.')
+                    && let Some(full_path) = self.name_map.get(&func_name)
+                {
+                    // Rewrite the component reference to use the full path
+                    let parts: Vec<&str> = full_path.split('.').collect();
+                    let new_parts: Vec<crate::ir::ast::ComponentRefPart> = parts
+                        .iter()
+                        .map(|p| crate::ir::ast::ComponentRefPart {
+                            ident: crate::ir::ast::Token {
+                                text: p.to_string(),
+                                ..Default::default()
+                            },
+                            subs: None,
+                        })
+                        .collect();
 
-                *comp = ComponentReference {
-                    local: false,
-                    parts: new_parts,
-                };
+                    *comp = ComponentReference {
+                        local: false,
+                        parts: new_parts,
+                    };
+                }
             }
+            Expression::ComponentReference(comp_ref) => {
+                // Handle import aliases for component references (e.g., L.'U' where L is an import alias)
+                if !comp_ref.parts.is_empty() {
+                    let first_part = &comp_ref.parts[0].ident.text;
+
+                    // Check if the first part is an import alias
+                    if let Some(full_path) = self.name_map.get(first_part).cloned() {
+                        // Build the new parts: full_path + remaining parts from original
+                        let path_parts: Vec<&str> = full_path.split('.').collect();
+                        let mut new_parts: Vec<crate::ir::ast::ComponentRefPart> = path_parts
+                            .iter()
+                            .map(|p| crate::ir::ast::ComponentRefPart {
+                                ident: crate::ir::ast::Token {
+                                    text: p.to_string(),
+                                    ..Default::default()
+                                },
+                                subs: None,
+                            })
+                            .collect();
+
+                        // Add the remaining parts from the original reference (after the alias)
+                        for part in comp_ref.parts.iter().skip(1) {
+                            new_parts.push(part.clone());
+                        }
+
+                        *comp_ref = ComponentReference {
+                            local: false,
+                            parts: new_parts,
+                        };
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -120,6 +155,70 @@ impl MutVisitor for ImportResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::ast::{ComponentRefPart, Token};
+    use crate::ir::visitor::MutVisitable;
+
+    fn make_comp_ref(name: &str) -> Expression {
+        let parts: Vec<ComponentRefPart> = name
+            .split('.')
+            .map(|p| ComponentRefPart {
+                ident: Token {
+                    text: p.to_string(),
+                    ..Default::default()
+                },
+                subs: None,
+            })
+            .collect();
+
+        Expression::ComponentReference(ComponentReference {
+            local: false,
+            parts,
+        })
+    }
+
+    #[test]
+    fn test_resolve_component_reference_with_import_alias() {
+        // Create a resolver with an import alias: L = Modelica.Logic
+        let mut resolver = ImportResolver {
+            name_map: IndexMap::new(),
+        };
+        resolver
+            .name_map
+            .insert("L".to_string(), "Modelica.Logic".to_string());
+
+        // Test that L.'U' becomes Modelica.Logic.'U'
+        let mut expr = make_comp_ref("L.'U'");
+        expr.accept_mut(&mut resolver);
+
+        if let Expression::ComponentReference(comp_ref) = &expr {
+            let resolved = comp_ref.to_string();
+            assert_eq!(resolved, "Modelica.Logic.'U'");
+        } else {
+            panic!("Expected ComponentReference expression");
+        }
+    }
+
+    #[test]
+    fn test_resolve_component_reference_no_alias() {
+        // Create a resolver with an unrelated import alias
+        let mut resolver = ImportResolver {
+            name_map: IndexMap::new(),
+        };
+        resolver
+            .name_map
+            .insert("X".to_string(), "Modelica.Other".to_string());
+
+        // Test that L.'U' stays unchanged (no alias for L)
+        let mut expr = make_comp_ref("L.'U'");
+        expr.accept_mut(&mut resolver);
+
+        if let Expression::ComponentReference(comp_ref) = &expr {
+            let resolved = comp_ref.to_string();
+            assert_eq!(resolved, "L.'U'");
+        } else {
+            panic!("Expected ComponentReference expression");
+        }
+    }
 
     #[test]
     fn test_find_class_by_path() {

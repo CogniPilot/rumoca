@@ -106,6 +106,17 @@ impl SymbolTable {
         self.global_symbols.insert(name.to_string());
     }
 
+    /// Remove a global symbol (e.g., when exiting a for loop scope)
+    pub fn remove_global(&mut self, name: &str) {
+        self.global_symbols.remove(name);
+    }
+
+    /// Remove a symbol by name (from either local or global symbols)
+    pub fn remove(&mut self, name: &str) {
+        self.symbols.shift_remove(name);
+        self.global_symbols.remove(name);
+    }
+
     /// Look up a symbol by its local name
     pub fn lookup(&self, name: &str) -> Option<&Symbol> {
         self.symbols.get(name)

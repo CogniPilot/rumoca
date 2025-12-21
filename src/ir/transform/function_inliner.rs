@@ -30,6 +30,20 @@ impl<'a> FunctionInliner<'a> {
         Self { functions }
     }
 
+    /// Check if a function name is known (for debugging)
+    pub fn has_function(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
+    }
+
+    /// Get all function names containing a pattern (for debugging)
+    pub fn functions_matching(&self, pattern: &str) -> Vec<String> {
+        self.functions
+            .keys()
+            .filter(|k| k.contains(pattern))
+            .cloned()
+            .collect()
+    }
+
     /// Recursively collect functions from a class and its nested classes
     fn collect_functions_recursive(
         class: &'a ClassDefinition,
@@ -168,11 +182,29 @@ fn substitute_vars(expr: &Expression, substitutions: &IndexMap<String, Expressio
     match expr {
         Expression::ComponentReference(comp_ref) => {
             let var_name = comp_ref.to_string();
+            // First try exact match
             if let Some(replacement) = substitutions.get(&var_name) {
-                replacement.clone()
-            } else {
-                expr.clone()
+                return replacement.clone();
             }
+
+            // If no exact match, try to substitute the base component
+            // e.g., if substituting c1 -> u1, then c1.re should become u1.re
+            if !comp_ref.parts.is_empty() {
+                let base_name = &comp_ref.parts[0].ident.text;
+                if let Some(Expression::ComponentReference(repl_ref)) = substitutions.get(base_name)
+                    && comp_ref.parts.len() > 1
+                {
+                    // Append the remaining parts (field accesses) to the replacement
+                    let mut new_parts = repl_ref.parts.clone();
+                    new_parts.extend(comp_ref.parts[1..].iter().cloned());
+                    return Expression::ComponentReference(crate::ir::ast::ComponentReference {
+                        local: repl_ref.local,
+                        parts: new_parts,
+                    });
+                }
+            }
+
+            expr.clone()
         }
         Expression::Binary { op, lhs, rhs } => Expression::Binary {
             op: op.clone(),
@@ -190,11 +222,15 @@ fn substitute_vars(expr: &Expression, substitutions: &IndexMap<String, Expressio
                 .map(|a| substitute_vars(a, substitutions))
                 .collect(),
         },
-        Expression::Array { elements } => Expression::Array {
+        Expression::Array {
+            elements,
+            is_matrix,
+        } => Expression::Array {
             elements: elements
                 .iter()
                 .map(|e| substitute_vars(e, substitutions))
                 .collect(),
+            is_matrix: *is_matrix,
         },
         Expression::Tuple { elements } => Expression::Tuple {
             elements: elements

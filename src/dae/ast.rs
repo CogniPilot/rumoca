@@ -361,13 +361,26 @@ fn format_statement(stmt: &Statement) -> String {
             s.push_str(" end when");
             s
         }
-        Statement::FunctionCall { comp, args } => {
+        Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+        } => {
             let args_str = args
                 .iter()
                 .map(|a| a.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{}({})", comp, args_str)
+            if outputs.is_empty() {
+                format!("{}({})", comp, args_str)
+            } else {
+                let outputs_str = outputs
+                    .iter()
+                    .map(|o| o.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({}) := {}({})", outputs_str, comp, args_str)
+            }
         }
         Statement::If {
             cond_blocks,

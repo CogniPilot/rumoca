@@ -24,7 +24,9 @@ pub fn render_template(dae: &Dae, template_file: &str) -> Result<()> {
     env.add_function("warn", warn);
     env.add_template("template", &template_txt)?;
     let tmpl = env.get_template("template")?;
-    let txt = tmpl.render(context!(dae => dae)).unwrap();
+    let txt = tmpl
+        .render(context!(dae => dae))
+        .expect("template rendering failed");
     println!("{}", txt);
     Ok(())
 }

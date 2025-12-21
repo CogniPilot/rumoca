@@ -84,6 +84,29 @@ pub fn compile_source(
         .map_err(|e| anyhow::anyhow!("Failed to compile source: {}", e))
 }
 
+/// Compile an MSL model (requires MODELICAPATH to be set)
+///
+/// This compiles a model from the Modelica Standard Library by:
+/// 1. Including the Modelica package from MODELICAPATH
+/// 2. Compiling a minimal "within;" file with the specified model
+pub fn compile_msl_model(model_name: &str) -> Result<rumoca::compiler::CompilationResult> {
+    rumoca::Compiler::new()
+        .model(model_name)
+        .include_from_modelica_path("Modelica")?
+        .compile_str("within;", "<msl_entry>")
+        .map_err(|e| anyhow::anyhow!("Failed to compile MSL model {}: {}", model_name, e))
+}
+
+/// Flatten a fixture file and return the flat class for inspection
+pub fn flatten_fixture(
+    fixture_name: &str,
+    model_name: &str,
+) -> Result<rumoca::ir::ast::ClassDefinition> {
+    use rumoca::ir::transform::flatten::flatten;
+    let def = parse_test_file(fixture_name)?;
+    flatten(&def, Some(model_name)).map_err(|e| anyhow::anyhow!("Flatten failed: {}", e))
+}
+
 // =============================================================================
 // DAE Helpers
 // =============================================================================

@@ -57,6 +57,8 @@ pub struct ExpressionList {
     pub args: Vec<ir::ast::Expression>,
     /// Parallel to args - true if the corresponding arg has `each` modifier prefix
     pub each_flags: Vec<bool>,
+    /// Parallel to args - true if the corresponding arg has `final` modifier prefix
+    pub final_flags: Vec<bool>,
 }
 
 /// Convert a NamedArgument to an Expression representing `name = value`
@@ -171,12 +173,14 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                             return Ok(ExpressionList {
                                 args: vec![comprehension],
                                 each_flags: vec![false],
+                                final_flags: vec![false],
                             });
                         }
                     }
                 }
                 let each_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags })
+                let final_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags, final_flags })
             }
             modelica_grammar_trait::FunctionArguments::FunctionPartialApplicationFunctionArgumentsOpt0(fpa) => {
                 // Convert 'function Foo.Bar(arg=val)' to a function call expression
@@ -217,12 +221,14 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                 }
 
                 let each_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags })
+                let final_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags, final_flags })
             }
             modelica_grammar_trait::FunctionArguments::NamedArguments(named) => {
                 let args = collect_named_arguments(&named.named_arguments);
                 let each_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags })
+                let final_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags, final_flags })
             }
         }
     }
@@ -241,12 +247,14 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
                     args.append(&mut opt.function_arguments_non_first.args.clone());
                 }
                 let each_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags })
+                let final_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags, final_flags })
             }
             modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(named) => {
                 let args = collect_named_arguments(&named.named_arguments);
                 let each_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags })
+                let final_flags = vec![false; args.len()];
+                Ok(ExpressionList { args, each_flags, final_flags })
             }
         }
     }
@@ -260,14 +268,20 @@ impl TryFrom<&modelica_grammar_trait::ArgumentList> for ExpressionList {
         ast: &modelica_grammar_trait::ArgumentList,
     ) -> std::result::Result<Self, Self::Error> {
         // After grammar change, ast.argument is ModificationArg
-        // Extract expressions and each_flags from ModificationArgs
+        // Extract expressions, each_flags, and final_flags from ModificationArgs
         let mut args = vec![ast.argument.expression.clone()];
         let mut each_flags = vec![ast.argument.each];
+        let mut final_flags = vec![ast.argument.r#final];
         for arg in &ast.argument_list_list {
             args.push(arg.argument.expression.clone());
             each_flags.push(arg.argument.each);
+            final_flags.push(arg.argument.r#final);
         }
-        Ok(ExpressionList { args, each_flags })
+        Ok(ExpressionList {
+            args,
+            each_flags,
+            final_flags,
+        })
     }
 }
 
@@ -329,11 +343,9 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                                         rhs: Box::new(expr.expression.clone()),
                                                     })
                                                 }
-                                                modelica_grammar_trait::ModificationExpression::Break(brk) => {
-                                                    anyhow::bail!(
-                                                        "'break' in modification expression is not yet supported{}",
-                                                        loc_info(&brk.r#break.r#break)
-                                                    )
+                                                modelica_grammar_trait::ModificationExpression::Break(_) => {
+                                                    // 'break' means remove inherited binding - return just the call without assignment
+                                                    Ok(call_expr)
                                                 }
                                             }
                                         } else {
@@ -342,11 +354,9 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                     }
                                     modelica_grammar_trait::Modification::EquModificationExpression(modif) => {
                                         match &modif.modification_expression {
-                                            modelica_grammar_trait::ModificationExpression::Break(brk) => {
-                                                anyhow::bail!(
-                                                    "'break' in modification expression is not yet supported{}",
-                                                    loc_info(&brk.r#break.r#break)
-                                                )
+                                            modelica_grammar_trait::ModificationExpression::Break(_) => {
+                                                // 'break' means remove inherited binding - return Empty to skip this modification
+                                                Ok(ir::ast::Expression::Empty)
                                             }
                                             modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                                                 // Create a Binary expression to preserve the name=value structure
@@ -456,6 +466,30 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                             .component_clause1
                             .component_declaration1
                             .declaration;
+
+                        // Check if trying to redeclare a builtin attribute
+                        // Builtin attributes (start, fixed, etc.) cannot be redeclared
+                        let redecl_name = &decl.ident.text;
+                        const ALL_BUILTIN_ATTRS: &[&str] = &[
+                            "start",
+                            "fixed",
+                            "min",
+                            "max",
+                            "nominal",
+                            "unit",
+                            "displayUnit",
+                            "quantity",
+                            "stateSelect",
+                            "unbounded",
+                        ];
+                        if ALL_BUILTIN_ATTRS.contains(&redecl_name.as_str()) {
+                            anyhow::bail!(
+                                "Invalid redeclaration of {}, attributes of basic types may not be redeclared{}",
+                                redecl_name,
+                                loc_info(&decl.ident)
+                            );
+                        }
+
                         let name_ref = ir::ast::ComponentReference {
                             local: false,
                             parts: vec![ir::ast::ComponentRefPart {
@@ -671,9 +705,11 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
             }
         }
         let each_flags = vec![false; v.len()];
+        let final_flags = vec![false; v.len()];
         Ok(ExpressionList {
             args: v,
             each_flags,
+            final_flags,
         })
     }
 }
@@ -687,11 +723,17 @@ impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
         if let Some(opt) = &ast.function_call_args_opt {
             let args = opt.function_arguments.args.clone();
             let each_flags = opt.function_arguments.each_flags.clone();
-            Ok(ExpressionList { args, each_flags })
+            let final_flags = opt.function_arguments.final_flags.clone();
+            Ok(ExpressionList {
+                args,
+                each_flags,
+                final_flags,
+            })
         } else {
             Ok(ExpressionList {
                 args: vec![],
                 each_flags: vec![],
+                final_flags: vec![],
             })
         }
     }
@@ -769,20 +811,28 @@ impl TryFrom<&modelica_grammar_trait::Primary> for ir::ast::Expression {
 
                 // Check if there are additional rows (semicolons)
                 if rp.range_primary_list.is_empty() {
-                    // Single row: [1, 2, 3] - just return as Array
+                    // Single row: [1, 2, 3] - just return as matrix Array
                     Ok(ir::ast::Expression::Array {
                         elements: first_row,
+                        is_matrix: true,
                     })
                 } else {
                     // Multiple rows: [1, 2; 3, 4] - create array of row arrays
                     let mut rows = vec![ir::ast::Expression::Array {
                         elements: first_row,
+                        is_matrix: true,
                     }];
                     for row_item in &rp.range_primary_list {
                         let row = expr_list_to_vec(&row_item.expression_list);
-                        rows.push(ir::ast::Expression::Array { elements: row });
+                        rows.push(ir::ast::Expression::Array {
+                            elements: row,
+                            is_matrix: true,
+                        });
                     }
-                    Ok(ir::ast::Expression::Array { elements: rows })
+                    Ok(ir::ast::Expression::Array {
+                        elements: rows,
+                        is_matrix: true,
+                    })
                 }
             }
             modelica_grammar_trait::Primary::OutputPrimary(output) => {

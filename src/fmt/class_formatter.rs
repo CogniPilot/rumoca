@@ -73,6 +73,39 @@ pub fn format_class_with_comments(
     // Emit any comments that should appear before this class
     visitor.emit_comments_before_line(class_line);
 
+    // Check for enumeration type definition
+    if !class.enum_literals.is_empty() {
+        let literals: Vec<String> = class
+            .enum_literals
+            .iter()
+            .map(|lit| {
+                if lit.description.is_empty() {
+                    lit.ident.text.clone()
+                } else {
+                    let desc_strs: Vec<String> = lit
+                        .description
+                        .iter()
+                        .map(|t| format!("\"{}\"", t.text))
+                        .collect();
+                    format!("{} {}", lit.ident.text, desc_strs.join(" "))
+                }
+            })
+            .collect();
+        visitor.writeln(&format!(
+            "type {} = enumeration({});",
+            class.name.text,
+            literals.join(", ")
+        ));
+
+        // Add blank lines after this class if requested
+        if add_trailing_blanks {
+            for _ in 0..visitor.options.blank_lines_between_classes {
+                visitor.write("\n");
+            }
+        }
+        return;
+    }
+
     // Check for short class definition (type alias) like `connector RealInput = input Real;`
     if is_short_class_definition(class) {
         let class_keyword = match class.class_type {
@@ -169,54 +202,78 @@ pub fn format_class_with_comments(
         visitor.writeln(&visitor.format_import(import));
     }
 
-    // Components - group by source line to preserve combined declarations like "Real x, y, z;"
-    let components: Vec<&Component> = class.components.values().collect();
-    let mut i = 0;
-    while i < components.len() {
-        let comp = components[i];
-        let comp_line = comp.location.start_line;
-        visitor.emit_comments_before_line(comp_line);
+    // Components - separate into public and protected, group by source line
+    let public_components: Vec<&Component> = class
+        .components
+        .values()
+        .filter(|c| !c.is_protected)
+        .collect();
+    let protected_components: Vec<&Component> = class
+        .components
+        .values()
+        .filter(|c| c.is_protected)
+        .collect();
 
-        // Check if this component can be grouped with following ones
-        // Components can be grouped if:
-        // 1. They're on the same source line
-        // 2. They have the same type, variability, causality, and connection
-        // 3. None of them have individual attributes (descriptions, annotations, start values, modifications)
-        if !visitor.component_has_individual_attrs(comp) {
-            let mut group: Vec<&Component> = vec![comp];
-            let mut j = i + 1;
-            while j < components.len() {
-                let next = components[j];
-                if next.location.start_line == comp_line
-                    && next.type_name == comp.type_name
-                    && std::mem::discriminant(&next.variability)
-                        == std::mem::discriminant(&comp.variability)
-                    && std::mem::discriminant(&next.causality)
-                        == std::mem::discriminant(&comp.causality)
-                    && std::mem::discriminant(&next.connection)
-                        == std::mem::discriminant(&comp.connection)
-                    && !visitor.component_has_individual_attrs(next)
-                {
-                    group.push(next);
-                    j += 1;
-                } else {
-                    break;
+    // Helper function to format a list of components with grouping
+    fn format_component_list(visitor: &mut FormatVisitor, components: &[&Component]) {
+        let mut i = 0;
+        while i < components.len() {
+            let comp = components[i];
+            let comp_line = comp.location.start_line;
+            visitor.emit_comments_before_line(comp_line);
+
+            // Check if this component can be grouped with following ones
+            // Components can be grouped if:
+            // 1. They're on the same source line
+            // 2. They have the same type, variability, causality, and connection
+            // 3. None of them have individual attributes (descriptions, annotations, start values, modifications)
+            if !visitor.component_has_individual_attrs(comp) {
+                let mut group: Vec<&Component> = vec![comp];
+                let mut j = i + 1;
+                while j < components.len() {
+                    let next = components[j];
+                    if next.location.start_line == comp_line
+                        && next.type_name == comp.type_name
+                        && std::mem::discriminant(&next.variability)
+                            == std::mem::discriminant(&comp.variability)
+                        && std::mem::discriminant(&next.causality)
+                            == std::mem::discriminant(&comp.causality)
+                        && std::mem::discriminant(&next.connection)
+                            == std::mem::discriminant(&comp.connection)
+                        && !visitor.component_has_individual_attrs(next)
+                    {
+                        group.push(next);
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                if group.len() > 1 {
+                    // Output as a grouped declaration with trailing comments
+                    let formatted = visitor.format_component_group(&group);
+                    visitor.writeln_with_trailing(&formatted, comp_line);
+                    i = j;
+                    continue;
                 }
             }
 
-            if group.len() > 1 {
-                // Output as a grouped declaration with trailing comments
-                let formatted = visitor.format_component_group(&group);
-                visitor.writeln_with_trailing(&formatted, comp_line);
-                i = j;
-                continue;
-            }
+            // Output as individual declaration with trailing comments
+            let formatted = visitor.format_component(comp);
+            visitor.writeln_with_trailing(&formatted, comp_line);
+            i += 1;
         }
+    }
 
-        // Output as individual declaration with trailing comments
-        let formatted = visitor.format_component(comp);
-        visitor.writeln_with_trailing(&formatted, comp_line);
-        i += 1;
+    // Format public components
+    format_component_list(visitor, &public_components);
+
+    // Format protected components (if any)
+    if !protected_components.is_empty() {
+        visitor.indent_level -= 1;
+        visitor.writeln("protected");
+        visitor.indent_level += 1;
+        format_component_list(visitor, &protected_components);
     }
 
     // Nested classes
@@ -241,9 +298,12 @@ pub fn format_class_with_comments(
         for eq in &class.equations {
             if let Some(eq_line) = get_equation_location(eq) {
                 visitor.emit_comments_before_line(eq_line);
+                let formatted = visitor.format_equation(eq, visitor.indent_level);
+                visitor.write_with_trailing(&formatted, eq_line);
+            } else {
+                let formatted = visitor.format_equation(eq, visitor.indent_level);
+                visitor.write(&formatted);
             }
-            let formatted = visitor.format_equation(eq, visitor.indent_level);
-            visitor.write(&formatted);
         }
     }
 
@@ -260,9 +320,12 @@ pub fn format_class_with_comments(
         for eq in &class.initial_equations {
             if let Some(eq_line) = get_equation_location(eq) {
                 visitor.emit_comments_before_line(eq_line);
+                let formatted = visitor.format_equation(eq, visitor.indent_level);
+                visitor.write_with_trailing(&formatted, eq_line);
+            } else {
+                let formatted = visitor.format_equation(eq, visitor.indent_level);
+                visitor.write(&formatted);
             }
-            let formatted = visitor.format_equation(eq, visitor.indent_level);
-            visitor.write(&formatted);
         }
     }
 
@@ -274,9 +337,12 @@ pub fn format_class_with_comments(
         for stmt in algo {
             if let Some(stmt_line) = get_statement_location(stmt) {
                 visitor.emit_comments_before_line(stmt_line);
+                let formatted = visitor.format_statement(stmt, visitor.indent_level);
+                visitor.write_with_trailing(&formatted, stmt_line);
+            } else {
+                let formatted = visitor.format_statement(stmt, visitor.indent_level);
+                visitor.write(&formatted);
             }
-            let formatted = visitor.format_statement(stmt, visitor.indent_level);
-            visitor.write(&formatted);
         }
     }
 
@@ -288,9 +354,12 @@ pub fn format_class_with_comments(
         for stmt in algo {
             if let Some(stmt_line) = get_statement_location(stmt) {
                 visitor.emit_comments_before_line(stmt_line);
+                let formatted = visitor.format_statement(stmt, visitor.indent_level);
+                visitor.write_with_trailing(&formatted, stmt_line);
+            } else {
+                let formatted = visitor.format_statement(stmt, visitor.indent_level);
+                visitor.write(&formatted);
             }
-            let formatted = visitor.format_statement(stmt, visitor.indent_level);
-            visitor.write(&formatted);
         }
     }
 

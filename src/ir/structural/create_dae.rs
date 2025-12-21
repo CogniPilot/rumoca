@@ -11,61 +11,121 @@ use crate::ir::ast::{
 };
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::BUILTIN_REINIT;
-use crate::ir::visitor::MutVisitable;
+use crate::ir::transform::eval::eval_boolean;
+use crate::ir::visitor::{MutVisitable, Visitable, Visitor};
 use git_version::git_version;
+use indexmap::IndexMap;
 use std::collections::HashSet;
 
 use anyhow::Result;
+
+// =============================================================================
+// Defined Variable Collector Visitor
+// =============================================================================
+
+/// Visitor that collects variable names from LHS of simple equations.
+struct DefinedVariableCollector {
+    defined: HashSet<String>,
+}
+
+impl DefinedVariableCollector {
+    fn new() -> Self {
+        Self {
+            defined: HashSet::new(),
+        }
+    }
+
+    fn into_defined(self) -> HashSet<String> {
+        self.defined
+    }
+}
+
+impl Visitor for DefinedVariableCollector {
+    fn enter_equation(&mut self, node: &Equation) {
+        if let Equation::Simple {
+            lhs: Expression::ComponentReference(cref),
+            ..
+        } = node
+        {
+            self.defined.insert(cref.to_string());
+        }
+    }
+}
 
 const GIT_VERSION: &str = git_version!(
     args = ["--tags", "--always", "--dirty=-dirty"],
     fallback = "unknown"
 );
 
-/// Collect variable names that appear on the left-hand side of simple equations.
-/// These variables have defining equations and should not be treated as external inputs
-/// even if they have Input causality (e.g., signal connector inputs with connect equations).
-fn collect_defined_variables(equations: &[Equation]) -> HashSet<String> {
-    let mut defined = HashSet::new();
-    collect_defined_variables_recursive(equations, &mut defined);
-    defined
+/// Check if an equation assigns to a filtered component (on the LHS).
+/// Used to filter out equations that define variables that were removed due to false conditions.
+fn equation_assigns_to_filtered(eq: &Equation, filtered: &HashSet<String>) -> bool {
+    match eq {
+        Equation::Simple { lhs, .. } => {
+            if let Expression::ComponentReference(cref) = lhs {
+                // Get the base component name (first part of the reference)
+                if let Some(first_part) = cref.parts.first() {
+                    return filtered.contains(&first_part.ident.text);
+                }
+            }
+            false
+        }
+        // For other equation types, don't filter (they may have multiple LHS or complex structure)
+        _ => false,
+    }
 }
 
-/// Recursively collect defined variables from equations, handling nested structures.
-fn collect_defined_variables_recursive(equations: &[Equation], defined: &mut HashSet<String>) {
-    for eq in equations {
-        match eq {
-            Equation::Simple {
-                lhs: Expression::ComponentReference(cref),
-                ..
-            } => {
-                defined.insert(cref.to_string());
-            }
-            Equation::Simple { .. } => {}
-            Equation::For {
-                equations: inner, ..
-            } => {
-                collect_defined_variables_recursive(inner, defined);
-            }
+/// Recursively filter equations, removing those that assign to filtered components.
+fn filter_equations(equations: Vec<Equation>, filtered: &HashSet<String>) -> Vec<Equation> {
+    equations
+        .into_iter()
+        .filter(|eq| !equation_assigns_to_filtered(eq, filtered))
+        .map(|eq| match eq {
             Equation::If {
                 cond_blocks,
                 else_block,
-            } => {
-                for block in cond_blocks {
-                    collect_defined_variables_recursive(&block.eqs, defined);
-                }
-                if let Some(else_eqs) = else_block {
-                    collect_defined_variables_recursive(else_eqs, defined);
-                }
-            }
-            Equation::When(blocks) => {
-                for block in blocks {
-                    collect_defined_variables_recursive(&block.eqs, defined);
-                }
-            }
-            _ => {}
-        }
+            } => Equation::If {
+                cond_blocks: cond_blocks
+                    .into_iter()
+                    .map(|mut block| {
+                        block.eqs = filter_equations(block.eqs, filtered);
+                        block
+                    })
+                    .collect(),
+                else_block: else_block.map(|eqs| filter_equations(eqs, filtered)),
+            },
+            Equation::For {
+                indices,
+                equations: inner,
+            } => Equation::For {
+                indices,
+                equations: filter_equations(inner, filtered),
+            },
+            Equation::When(blocks) => Equation::When(
+                blocks
+                    .into_iter()
+                    .map(|mut block| {
+                        block.eqs = filter_equations(block.eqs, filtered);
+                        block
+                    })
+                    .collect(),
+            ),
+            other => other,
+        })
+        .collect()
+}
+
+/// Collect variable names that appear on the left-hand side of simple equations.
+/// These variables have defining equations and should not be treated as external inputs
+/// even if they have Input causality (e.g., signal connector inputs with connect equations).
+///
+/// Uses the visitor pattern for clean, maintainable traversal.
+fn collect_defined_variables(equations: &[Equation]) -> HashSet<String> {
+    let mut collector = DefinedVariableCollector::new();
+    for eq in equations {
+        eq.accept(&mut collector);
     }
+    collector.into_defined()
 }
 
 /// Expand an array component into individual scalar components.
@@ -150,7 +210,7 @@ fn extract_array_element(expr: &Expression, indices: &[usize]) -> Expression {
     }
 
     match expr {
-        Expression::Array { elements } => {
+        Expression::Array { elements, .. } => {
             let idx = indices[0];
             if idx > 0 && idx <= elements.len() {
                 if indices.len() == 1 {
@@ -229,8 +289,46 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // These should be treated as algebraic variables, not inputs, even if they have Input causality
     let defined_variables = collect_defined_variables(&fclass.equations);
 
+    // First pass: Collect all parameters for condition evaluation
+    // Parameters are needed to evaluate conditional component expressions like `if use_reset`
+    let mut all_params: IndexMap<String, Component> = IndexMap::new();
+    for (_, comp) in &fclass.components {
+        if matches!(
+            comp.variability,
+            Variability::Parameter(..) | Variability::Constant(..)
+        ) {
+            let expanded = expand_array_component(comp);
+            for (name, c) in expanded {
+                all_params.insert(name, c);
+            }
+        }
+    }
+
+    // Track components that are filtered out due to false conditions
+    // These will be used to filter equations that assign to them
+    let mut filtered_components: HashSet<String> = HashSet::new();
+
     // handle components - expand arrays to scalar components
     for (_, comp) in &fclass.components {
+        // Check conditional component: if condition evaluates to false, skip this component
+        if let Some(ref cond_expr) = comp.condition {
+            match eval_boolean(cond_expr, &all_params) {
+                Some(false) => {
+                    // Condition is false - skip this component entirely
+                    // Track the component name so we can filter equations that assign to it
+                    filtered_components.insert(comp.name.clone());
+                    continue;
+                }
+                Some(true) => {
+                    // Condition is true - include the component
+                }
+                None => {
+                    // Condition can't be evaluated at compile time - include the component
+                    // This is the conservative approach (same as before)
+                }
+            }
+        }
+
         // Expand array components to individual scalars
         let expanded = expand_array_component(comp);
 
@@ -249,13 +347,28 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                     // Check causality, but also check if the variable has a defining equation
                     match scalar_comp.causality {
                         Causality::Input(..) => {
-                            // Input causality variables are only true "inputs" if they have no defining equation
-                            // If they have a defining equation (e.g., from connect), they're algebraic variables
-                            if defined_variables.contains(&scalar_name) {
-                                // Has a defining equation - treat as algebraic variable
+                            // Determine if this is a top-level input or a sub-component input.
+                            // Top-level inputs are declared directly in the model (no dot in base name).
+                            // Sub-component inputs are from instantiated components (dot in base name).
+                            //
+                            // Per Modelica spec: "the input prefix defines that values for such a
+                            // variable have to be provided from the simulation environment."
+                            // This means top-level inputs are ALWAYS external inputs, even if they
+                            // appear on the LHS of equations (like in DeMultiplex: [u] = [y1; y2]).
+                            //
+                            // Sub-component inputs that have connect equations become internal signals
+                            // (algebraic variables) because they are connected within the model.
+                            let base_name = &comp.name; // Original name before array expansion
+                            let is_top_level = !base_name.contains('.');
+
+                            if is_top_level {
+                                // Top-level input - always external input per Modelica spec
+                                dae.u.insert(scalar_name, scalar_comp);
+                            } else if defined_variables.contains(&scalar_name) {
+                                // Sub-component input with defining equation - algebraic variable
                                 dae.y.insert(scalar_name, scalar_comp);
                             } else {
-                                // No defining equation - true external input
+                                // Sub-component input without defining equation - external input
                                 dae.u.insert(scalar_name, scalar_comp);
                             }
                         }
@@ -304,8 +417,15 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     let transformed_equations =
         crate::ir::structural::blt_transform(fclass.equations.clone(), &exclude_from_matching);
 
+    // Filter out equations that assign to conditional components that were removed
+    let filtered_equations = if filtered_components.is_empty() {
+        transformed_equations
+    } else {
+        filter_equations(transformed_equations, &filtered_components)
+    };
+
     // handle equations
-    for eq in &transformed_equations {
+    for eq in &filtered_equations {
         match &eq {
             Equation::Simple { .. } => {
                 dae.fx.push(eq.clone());
@@ -407,9 +527,8 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                     }
                                     Expression::Tuple { elements } => {
                                         // Handle tuple assignments like (a, b) = func()
-                                        // Add as event update equation
-                                        dae.fz.push(eq.clone());
-                                        // Also add individual assignments for simple tuple elements
+                                        // Each tuple element gets its own assignment in fr.
+                                        // Do NOT add to fz as that would double-count equations.
                                         for (i, elem) in elements.iter().enumerate() {
                                             if let Expression::ComponentReference(cref) = elem {
                                                 // Create indexed access to RHS if it's a tuple result

@@ -212,9 +212,11 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::ast::Statement {
                         })
                     }
                     modelica_grammar_trait::ComponentStatementGroup::FunctionCallArgs(args) => {
+                        // Simple function call without output assignments
                         Ok(ir::ast::Statement::FunctionCall {
                             comp: stmt.component_statement.component_reference.clone(),
                             args: args.function_call_args.args.clone(),
+                            outputs: vec![],
                         })
                     }
                 }
@@ -318,13 +320,12 @@ impl TryFrom<&modelica_grammar_trait::Statement> for ir::ast::Statement {
             }
             modelica_grammar_trait::StatementOption::FunctionCallOutputStatement(stmt) => {
                 // Handle '(a, b) := func(x)' - multi-output function call
-                // For now, we convert this to a function call statement
-                // (the output bindings are preserved in the args for later processing)
                 let fcall = &stmt.function_call_output_statement;
 
                 Ok(ir::ast::Statement::FunctionCall {
                     comp: fcall.component_reference.clone(),
                     args: fcall.function_call_args.args.clone(),
+                    outputs: fcall.output_expression_list.args.clone(),
                 })
             }
         }

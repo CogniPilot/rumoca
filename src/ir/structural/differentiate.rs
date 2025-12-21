@@ -168,10 +168,14 @@ pub fn differentiate_expression(expr: &Expression) -> Expression {
                 rhs: Box::new(differentiate_expression(rhs)),
             }
         }
-        Expression::Array { elements } => {
+        Expression::Array {
+            elements,
+            is_matrix,
+        } => {
             // Differentiate each element
             Expression::Array {
                 elements: elements.iter().map(differentiate_expression).collect(),
+                is_matrix: *is_matrix,
             }
         }
         Expression::Tuple { elements } => {

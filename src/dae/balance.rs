@@ -2,11 +2,12 @@
 //!
 //! Simple balance check: count equations vs unknowns from the DAE structure.
 //!
-//! Note: This assumes equations have been expanded to scalar form by the
-//! equation_expander pass before DAE creation.
+//! Note: For loops are counted by evaluating their range when possible,
+//! or by counting inner equations if the range cannot be determined.
 
 use super::ast::Dae;
-use crate::ir::ast::{Component, Connection, Statement};
+use crate::ir::ast::{Component, Connection, Equation, Expression, Statement, TerminalType};
+use crate::ir::transform::eval::{eval_boolean, eval_integer};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -103,9 +104,9 @@ impl Dae {
     /// - Partial: under-determined but has external connectors (by design)
     /// - Unbalanced: over-determined OR under-determined without external connectors
     ///
-    /// Note: This assumes equations have been expanded to scalar form by the
-    /// equation_expander pass. Each equation in fx/fz represents one scalar equation.
-    /// Event equations in fr (from when blocks) are also counted by unique variable.
+    /// Note: For loops that couldn't be expanded are counted by evaluating their range
+    /// from parameters when possible. Event equations from when blocks are counted
+    /// by unique variable assignment.
     pub fn check_balance(&self) -> BalanceResult {
         // Count scalar elements in each variable category
         let num_states = count_scalars(&self.x);
@@ -113,12 +114,27 @@ impl Dae {
             count_scalars(&self.y) + count_scalars(&self.z) + count_scalars(&self.m);
         let num_unknowns = num_states + num_algebraic;
 
-        // Count equations - after expansion, each equation in the Vec is one scalar equation
+        // Merge all parameters and condition variables for equation counting
+        // Include: p (parameters), cp (computed parameters), c (condition variables)
+        // The condition variables (c) contain evaluated boolean values like c0=false
+        // that control which if-equation branch is active.
+        let all_params: IndexMap<String, Component> = self
+            .p
+            .iter()
+            .chain(self.cp.iter())
+            .chain(self.c.iter())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        // Count equations recursively, handling For loops
+        let fx_count = count_equations(&self.fx, &all_params);
+        let fz_count = count_equations(&self.fz, &all_params);
+
         // For event equations (fr), count unique variables assigned, not total assignments.
         // A when/elsewhen chain assigns to the same variable multiple times but is 1 equation.
         // Exclude state variables - reinit(state, expr) is an event action, not an equation.
         let num_event_equations = count_unique_event_variables(&self.fr, &self.x);
-        let num_equations = self.fx.len() + self.fz.len() + num_event_equations;
+        let num_equations = fx_count + fz_count + num_event_equations;
 
         // Count parameters and inputs for reporting
         let num_parameters = count_scalars(&self.p) + count_scalars(&self.cp);
@@ -158,6 +174,166 @@ impl Dae {
             num_external_connectors,
             status,
         }
+    }
+}
+
+/// Count equations recursively, handling For loops and If equations
+fn count_equations(equations: &[Equation], params: &IndexMap<String, Component>) -> usize {
+    equations
+        .iter()
+        .map(|eq| count_single_equation(eq, params))
+        .sum()
+}
+
+/// Count a single equation, recursing into For/If blocks
+fn count_single_equation(eq: &Equation, params: &IndexMap<String, Component>) -> usize {
+    match eq {
+        Equation::Simple { .. } | Equation::Connect { .. } | Equation::FunctionCall { .. } => 1,
+        Equation::Empty => 0,
+
+        Equation::For { indices, equations } => {
+            // Try to evaluate the For loop range from parameters
+            if let Some(range_size) = evaluate_for_range(indices, params) {
+                // Inner equations * range size
+                let inner_count = count_equations(equations, params);
+                inner_count * range_size
+            } else {
+                // Can't evaluate range - just count inner equations
+                // This is a conservative estimate
+                count_equations(equations, params)
+            }
+        }
+
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
+            // Try to evaluate conditions at compile time using known parameter values.
+            // If a condition evaluates to true, count only that branch.
+            // If all conditions evaluate to false, count only the else branch.
+            // If conditions can't be evaluated, fall back to MAX rule.
+
+            // First, try to find an active branch
+            for block in cond_blocks {
+                match eval_boolean(&block.cond, params) {
+                    Some(true) => {
+                        // This branch is active - count only its equations
+                        return count_equations(&block.eqs, params);
+                    }
+                    Some(false) => {
+                        // This condition is false, continue to next branch
+                        continue;
+                    }
+                    None => {
+                        // Condition can't be evaluated - fall back to MAX rule
+                        break;
+                    }
+                }
+            }
+
+            // Check if all conditions evaluated to false (use else branch)
+            let all_false = cond_blocks
+                .iter()
+                .all(|block| matches!(eval_boolean(&block.cond, params), Some(false)));
+
+            if all_false {
+                // All conditions are false, use else branch
+                return else_block
+                    .as_ref()
+                    .map(|eqs| count_equations(eqs, params))
+                    .unwrap_or(0);
+            }
+
+            // Fall back to MAX rule when conditions can't be fully evaluated
+            let branch_counts: Vec<usize> = cond_blocks
+                .iter()
+                .map(|block| count_equations(&block.eqs, params))
+                .collect();
+
+            let else_count = else_block
+                .as_ref()
+                .map(|eqs| count_equations(eqs, params))
+                .unwrap_or(0);
+
+            branch_counts.into_iter().max().unwrap_or(0).max(else_count)
+        }
+
+        Equation::When(blocks) => {
+            // When equations - count equations in each block (they add up)
+            blocks
+                .iter()
+                .map(|block| count_equations(&block.eqs, params))
+                .sum()
+        }
+    }
+}
+
+/// Evaluate the size of a For loop range from its indices
+fn evaluate_for_range(
+    indices: &[crate::ir::ast::ForIndex],
+    params: &IndexMap<String, Component>,
+) -> Option<usize> {
+    if indices.is_empty() {
+        return Some(1);
+    }
+
+    // Evaluate the first index range
+    let first = &indices[0];
+    let range_size = evaluate_range_size(&first.range, params)?;
+
+    if indices.len() == 1 {
+        Some(range_size)
+    } else {
+        // Nested For loops - multiply ranges
+        let rest_size = evaluate_for_range(&indices[1..], params)?;
+        Some(range_size * rest_size)
+    }
+}
+
+/// Evaluate the size of a range expression (end - start + 1) / step
+fn evaluate_range_size(expr: &Expression, params: &IndexMap<String, Component>) -> Option<usize> {
+    match expr {
+        Expression::Range { start, step, end } => {
+            let start_val = eval_integer(start, params)?;
+            let end_val = eval_integer(end, params)?;
+            let step_val = step
+                .as_ref()
+                .map(|s| eval_integer(s, params))
+                .unwrap_or(Some(1))?;
+
+            if step_val == 0 {
+                return None;
+            }
+
+            // Count iterations
+            let count = if step_val > 0 {
+                if end_val >= start_val {
+                    ((end_val - start_val) / step_val + 1) as usize
+                } else {
+                    0
+                }
+            } else if start_val >= end_val {
+                ((start_val - end_val) / (-step_val) + 1) as usize
+            } else {
+                0
+            };
+
+            Some(count)
+        }
+        Expression::Terminal {
+            terminal_type: TerminalType::UnsignedInteger,
+            token,
+        } => {
+            // Single value means 1:value
+            let n: usize = token.text.parse().ok()?;
+            Some(n)
+        }
+        Expression::ComponentReference(_) => {
+            // Could be a parameter reference like `n` meaning 1:n
+            let val = eval_integer(expr, params)?;
+            if val > 0 { Some(val as usize) } else { Some(0) }
+        }
+        _ => None,
     }
 }
 
