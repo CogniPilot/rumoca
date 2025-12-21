@@ -52,6 +52,9 @@ pub trait Visitor {
 
     fn enter_component_reference(&mut self, _node: &ir::ast::ComponentReference) {}
     fn exit_component_reference(&mut self, _node: &ir::ast::ComponentReference) {}
+
+    fn enter_for_index(&mut self, _node: &ir::ast::ForIndex) {}
+    fn exit_for_index(&mut self, _node: &ir::ast::ForIndex) {}
 }
 
 /// Trait for AST nodes that can accept an immutable visitor.
@@ -87,6 +90,9 @@ pub trait MutVisitor {
 
     fn enter_component_reference(&mut self, _node: &mut ir::ast::ComponentReference) {}
     fn exit_component_reference(&mut self, _node: &mut ir::ast::ComponentReference) {}
+
+    fn enter_for_index(&mut self, _node: &mut ir::ast::ForIndex) {}
+    fn exit_for_index(&mut self, _node: &mut ir::ast::ForIndex) {}
 }
 
 /// Trait for AST nodes that can accept a mutable visitor.
@@ -162,7 +168,9 @@ impl Visitable for ir::ast::Equation {
             }
             ir::ast::Equation::For { indices, equations } => {
                 for index in indices {
+                    visitor.enter_for_index(index);
                     index.range.accept(visitor);
+                    visitor.exit_for_index(index);
                 }
                 for eq in equations {
                     eq.accept(visitor);
@@ -214,7 +222,9 @@ impl Visitable for ir::ast::Statement {
             ir::ast::Statement::Return { .. } | ir::ast::Statement::Break { .. } => {}
             ir::ast::Statement::For { indices, equations } => {
                 for index in indices {
+                    visitor.enter_for_index(index);
                     index.range.accept(visitor);
+                    visitor.exit_for_index(index);
                 }
                 for stmt in equations {
                     stmt.accept(visitor);
@@ -250,10 +260,17 @@ impl Visitable for ir::ast::Statement {
                     }
                 }
             }
-            ir::ast::Statement::FunctionCall { comp, args } => {
+            ir::ast::Statement::FunctionCall {
+                comp,
+                args,
+                outputs,
+            } => {
                 comp.accept(visitor);
                 for arg in args {
                     arg.accept(visitor);
+                }
+                for output in outputs {
+                    output.accept(visitor);
                 }
             }
         }
@@ -281,7 +298,7 @@ impl Visitable for ir::ast::Expression {
                     arg.accept(visitor);
                 }
             }
-            ir::ast::Expression::Array { elements } => {
+            ir::ast::Expression::Array { elements, .. } => {
                 for element in elements {
                     element.accept(visitor);
                 }
@@ -316,7 +333,9 @@ impl Visitable for ir::ast::Expression {
             ir::ast::Expression::ArrayComprehension { expr, indices } => {
                 expr.accept(visitor);
                 for idx in indices {
+                    visitor.enter_for_index(idx);
                     idx.range.accept(visitor);
+                    visitor.exit_for_index(idx);
                 }
             }
         }
@@ -407,7 +426,9 @@ impl MutVisitable for ir::ast::Equation {
             }
             ir::ast::Equation::For { indices, equations } => {
                 for index in indices {
+                    visitor.enter_for_index(index);
                     index.range.accept_mut(visitor);
+                    visitor.exit_for_index(index);
                 }
                 for eq in equations {
                     eq.accept_mut(visitor);
@@ -459,7 +480,9 @@ impl MutVisitable for ir::ast::Statement {
             ir::ast::Statement::Return { .. } | ir::ast::Statement::Break { .. } => {}
             ir::ast::Statement::For { indices, equations } => {
                 for index in indices {
+                    visitor.enter_for_index(index);
                     index.range.accept_mut(visitor);
+                    visitor.exit_for_index(index);
                 }
                 for stmt in equations {
                     stmt.accept_mut(visitor);
@@ -495,10 +518,17 @@ impl MutVisitable for ir::ast::Statement {
                     }
                 }
             }
-            ir::ast::Statement::FunctionCall { comp, args } => {
+            ir::ast::Statement::FunctionCall {
+                comp,
+                args,
+                outputs,
+            } => {
                 comp.accept_mut(visitor);
                 for arg in args {
                     arg.accept_mut(visitor);
+                }
+                for output in outputs {
+                    output.accept_mut(visitor);
                 }
             }
         }
@@ -513,8 +543,13 @@ impl MutVisitable for ir::ast::Expression {
             ir::ast::Expression::Unary { rhs, .. } => {
                 rhs.accept_mut(visitor);
             }
-            ir::ast::Expression::Binary { lhs, rhs, .. } => {
-                lhs.accept_mut(visitor);
+            ir::ast::Expression::Binary { op, lhs, rhs } => {
+                // For Assign expressions (named arguments like `actual=expr`),
+                // skip the LHS since it's an argument name, not a component reference.
+                // The LHS should not be renamed during flattening.
+                if !matches!(op, ir::ast::OpBinary::Assign(_)) {
+                    lhs.accept_mut(visitor);
+                }
                 rhs.accept_mut(visitor);
             }
             ir::ast::Expression::ComponentReference(cref) => {
@@ -526,7 +561,7 @@ impl MutVisitable for ir::ast::Expression {
                     arg.accept_mut(visitor);
                 }
             }
-            ir::ast::Expression::Array { elements } => {
+            ir::ast::Expression::Array { elements, .. } => {
                 for element in elements {
                     element.accept_mut(visitor);
                 }
@@ -561,7 +596,9 @@ impl MutVisitable for ir::ast::Expression {
             ir::ast::Expression::ArrayComprehension { expr, indices } => {
                 expr.accept_mut(visitor);
                 for idx in indices {
+                    visitor.enter_for_index(idx);
                     idx.range.accept_mut(visitor);
+                    visitor.exit_for_index(idx);
                 }
             }
         }

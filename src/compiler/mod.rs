@@ -515,7 +515,10 @@ impl Compiler {
             anyhow::bail!("No Modelica files found in package: {}", path);
         }
 
-        let file_strs: Vec<&str> = files.iter().map(|p| p.to_str().unwrap()).collect();
+        let file_strs: Vec<&str> = files
+            .iter()
+            .map(|p| p.to_str().expect("path contains invalid UTF-8"))
+            .collect();
         self.compile_files(&file_strs)
     }
 
@@ -715,8 +718,8 @@ impl Compiler {
             .iter()
             .map(|(path, def, _)| (path.clone(), def.clone()))
             .collect();
-        let main_source = &results.last().unwrap().2;
-        let main_path = &results.last().unwrap().0;
+        let main_source = &results.last().expect("no files were compiled").2;
+        let main_path = &results.last().expect("no files were compiled").0;
 
         self.compile_definitions(all_definitions, main_source, main_path)
     }
@@ -759,7 +762,11 @@ impl Compiler {
 
         // Merge all definitions
         let def = if definitions.len() == 1 {
-            definitions.into_iter().next().unwrap().1
+            definitions
+                .into_iter()
+                .next()
+                .expect("definitions is non-empty")
+                .1
         } else {
             if self.verbose {
                 println!("Merging {} files...", definitions.len());

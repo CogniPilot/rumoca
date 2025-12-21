@@ -28,11 +28,11 @@ package ArrayBalance
   equation
     // n equations for states
     for i in 1:n loop
-      der(x[i]) = sum({ A[i, j] * x[j] for j in 1:n }) + B[i, 1] * u;
+      der(x[i]) = sum(A[i, j] * x[j] for j in 1:n) + B[i, 1] * u;
     end for;
     // p equations for outputs
     for i in 1:p loop
-      y[i] = sum({ C[i, j] * x[j] for j in 1:n }) + D[i, 1] * u;
+      y[i] = sum(C[i, j] * x[j] for j in 1:n) + D[i, 1] * u;
     end for;
   end SimpleStateSpace;
 

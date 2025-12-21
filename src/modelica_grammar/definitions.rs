@@ -227,14 +227,30 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                     modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(spec) => {
                         let enum_spec = &spec.enum_class_specifier;
 
-                        // Extract enumeration literals
+                        // Extract enumeration literals with their descriptions
                         let enum_literals = match &enum_spec.enum_class_specifier_group {
                             modelica_grammar_trait::EnumClassSpecifierGroup::EnumClassSpecifierOpt(opt) => {
                                 if let Some(list_opt) = &opt.enum_class_specifier_opt {
                                     let list = &list_opt.enum_list;
-                                    let mut literals = vec![list.enumeration_literal.ident.clone()];
+                                    let mut literals = vec![ir::ast::EnumLiteral {
+                                        ident: list.enumeration_literal.ident.clone(),
+                                        description: list
+                                            .enumeration_literal
+                                            .description
+                                            .description_string
+                                            .tokens
+                                            .clone(),
+                                    }];
                                     for item in &list.enum_list_list {
-                                        literals.push(item.enumeration_literal.ident.clone());
+                                        literals.push(ir::ast::EnumLiteral {
+                                            ident: item.enumeration_literal.ident.clone(),
+                                            description: item
+                                                .enumeration_literal
+                                                .description
+                                                .description_string
+                                                .tokens
+                                                .clone(),
+                                        });
                                     }
                                     literals
                                 } else {
@@ -400,10 +416,11 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                     comp.imports.extend(elem_list.element_list.imports.clone());
                 }
                 modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
-                    // Merge protected elements into composition
-                    // Note: For now, we treat protected same as public (visibility not enforced)
-                    comp.components
-                        .extend(elem_list.element_list.components.clone());
+                    // Merge protected elements into composition, marking them as protected
+                    for (name, mut component) in elem_list.element_list.components.clone() {
+                        component.is_protected = true;
+                        comp.components.insert(name, component);
+                    }
                     comp.classes.extend(elem_list.element_list.classes.clone());
                     comp.extends.extend(elem_list.element_list.extends.clone());
                     comp.imports.extend(elem_list.element_list.imports.clone());
@@ -631,6 +648,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     condition,
                                     inner: is_inner,
                                     outer: is_outer,
+                                    final_attributes: std::collections::HashSet::new(),
+                                    is_protected: false,
                                 };
 
                                 // set default start value
@@ -685,18 +704,52 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             if let Some(opt) = &modif.class_modification_opt {
                                                 // Look for start=, shape=, and other parameter modifications
                                                 for (idx, arg) in opt.argument_list.args.iter().enumerate() {
-                                                    if let ir::ast::Expression::Binary { op, lhs, rhs } = arg
+                                                    // Check for sub-modifications on builtin attributes like start(y=1)
+                                                    // These are parsed as FunctionCall expressions
+                                                    if let ir::ast::Expression::FunctionCall { comp, args: _ } = arg {
+                                                        let func_name = comp.to_string();
+                                                        // Valid built-in type attributes that cannot have sub-modifications
+                                                        const ALL_BUILTIN_ATTRS: &[&str] = &[
+                                                            "start", "fixed", "min", "max", "nominal",
+                                                            "unit", "displayUnit", "quantity", "stateSelect",
+                                                            "unbounded"
+                                                        ];
+                                                        let type_name_str = value.type_name.to_string();
+                                                        let is_builtin = matches!(
+                                                            type_name_str.as_str(),
+                                                            "Real" | "Integer" | "Boolean" | "String"
+                                                        );
+                                                        if is_builtin && ALL_BUILTIN_ATTRS.contains(&func_name.as_str()) {
+                                                            // Get location info for error message
+                                                            let loc = if let Some(first) = comp.parts.first() {
+                                                                loc_info(&first.ident)
+                                                            } else {
+                                                                String::new()
+                                                            };
+                                                            anyhow::bail!(
+                                                                "Modified element {}.y not found in class {}{}",
+                                                                func_name,
+                                                                type_name_str,
+                                                                loc
+                                                            );
+                                                        }
+                                                    } else if let ir::ast::Expression::Binary { op, lhs, rhs } = arg
                                                         && matches!(op, ir::ast::OpBinary::Assign(_)) {
                                                             // This is a named argument like start=2.5, shape=(3), or R=10
                                                             if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
                                                                 let param_name = comp.to_string();
                                                                 // Check if this argument has the `each` modifier
                                                                 let has_each = opt.argument_list.each_flags.get(idx).copied().unwrap_or(false);
+                                                                // Check if this argument has the `final` modifier
+                                                                let has_final = opt.argument_list.final_flags.get(idx).copied().unwrap_or(false);
                                                                 match param_name.as_str() {
                                                                     "start" => {
                                                                         value.start = (**rhs).clone();
                                                                         value.start_is_modification = true;
                                                                         value.start_has_each = has_each;
+                                                                        if has_final {
+                                                                            value.final_attributes.insert("start".to_string());
+                                                                        }
                                                                     }
                                                                     "shape" => {
                                                                         // Extract shape from expression like (3) or {3, 2}
@@ -721,7 +774,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                                     }
                                                                             }
                                                                             // Handle shape={3, 2} - multi-dimensional with array syntax
-                                                                            ir::ast::Expression::Array { elements } => {
+                                                                            ir::ast::Expression::Array { elements, .. } => {
                                                                                 value.shape.clear();
                                                                                 for elem in elements {
                                                                                     if let ir::ast::Expression::Terminal {
@@ -754,7 +807,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                         const REAL_ATTRS: &[&str] = &[
                                                                             "start", "fixed", "min", "max", "nominal",
                                                                             "unit", "displayUnit", "quantity", "stateSelect",
-                                                                            "each", "final"
+                                                                            "unbounded", "each", "final"
                                                                         ];
                                                                         const INTEGER_ATTRS: &[&str] = &[
                                                                             "start", "fixed", "min", "max", "quantity",
@@ -764,7 +817,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                             "start", "fixed", "quantity", "each", "final"
                                                                         ];
                                                                         const STRING_ATTRS: &[&str] = &[
-                                                                            "start", "each", "final"
+                                                                            "start", "fixed", "quantity", "each", "final"
                                                                         ];
 
                                                                         let type_name_str = value.type_name.to_string();
@@ -804,11 +857,29 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                                         }
 
                                                                         // Store modification (for user-defined types or valid built-in attrs)
-                                                                        value.modifications.insert(param_name, (**rhs).clone());
+                                                                        value.modifications.insert(param_name.clone(), (**rhs).clone());
+                                                                        // Track if this attribute is marked as final
+                                                                        if has_final {
+                                                                            value.final_attributes.insert(param_name);
+                                                                        }
                                                                     }
                                                                 }
                                                             }
                                                         }
+                                                }
+                                            }
+                                            // Also check for binding expression after class modification
+                                            // e.g., parameter Integer m(min=1) = 3
+                                            // The "= 3" part is in modification_opt
+                                            if let Some(mod_opt) = &class_mod.modification_opt {
+                                                match &mod_opt.modification_expression {
+                                                    modelica_grammar_trait::ModificationExpression::Expression(expr) => {
+                                                        value.start = expr.expression.clone();
+                                                    }
+                                                    modelica_grammar_trait::ModificationExpression::Break(_) => {
+                                                        // 'break' means remove any inherited binding - do nothing
+                                                        // The variable will have no binding equation
+                                                    }
                                                 }
                                             }
                                         }
@@ -819,11 +890,9 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                 modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                                                     value.start = expr.expression.clone();
                                                 }
-                                                modelica_grammar_trait::ModificationExpression::Break(brk) => {
-                                                    anyhow::bail!(
-                                                        "'break' in modification expression is not yet supported{}",
-                                                        loc_info(&brk.r#break.r#break)
-                                                    )
+                                                modelica_grammar_trait::ModificationExpression::Break(_) => {
+                                                    // 'break' means remove any inherited binding - do nothing
+                                                    // The variable will have no binding equation
                                                 }
                                             }
                                         }
@@ -884,6 +953,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             condition,
                                             inner: is_inner_repl,
                                             outer: is_outer_repl,
+                                            final_attributes: std::collections::HashSet::new(),
+                                            is_protected: false,
                                         };
 
                                         def.components.insert(c.declaration.ident.text.clone(), value);

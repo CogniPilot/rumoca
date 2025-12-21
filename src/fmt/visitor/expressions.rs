@@ -106,14 +106,75 @@ impl FormatVisitor {
                 result
             }
             Expression::FunctionCall { comp, args } => {
+                // Special case: reduction expressions like sum(expr for i in 1:n)
+                // When there's a single ArrayComprehension argument, format without braces
+                if args.len() == 1
+                    && let Expression::ArrayComprehension { expr, indices } = &args[0]
+                {
+                    let indices_str: Vec<String> = indices
+                        .iter()
+                        .map(|idx| {
+                            format!(
+                                "{} in {}",
+                                idx.ident.text,
+                                self.format_expression(&idx.range)
+                            )
+                        })
+                        .collect();
+                    return format!(
+                        "{}({} for {})",
+                        self.format_comp_ref(comp),
+                        self.format_expression(expr),
+                        indices_str.join(", ")
+                    );
+                }
                 let args_str: Vec<String> =
                     args.iter().map(|a| self.format_expression(a)).collect();
                 format!("{}({})", self.format_comp_ref(comp), args_str.join(", "))
             }
-            Expression::Array { elements } => {
-                let elem_str: Vec<String> =
-                    elements.iter().map(|e| self.format_expression(e)).collect();
-                format!("{{{}}}", elem_str.join(", "))
+            Expression::Array {
+                elements,
+                is_matrix,
+            } => {
+                if *is_matrix {
+                    // Matrix notation: [a, b; c, d] or [a, b, c]
+                    // Check if this is a 2D matrix (array of arrays)
+                    let is_2d = elements
+                        .first()
+                        .is_some_and(|e| matches!(e, Expression::Array { .. }));
+                    if is_2d {
+                        // Multi-row matrix: [row1; row2; ...]
+                        let row_strs: Vec<String> = elements
+                            .iter()
+                            .map(|row| {
+                                if let Expression::Array {
+                                    elements: row_elems,
+                                    ..
+                                } = row
+                                {
+                                    row_elems
+                                        .iter()
+                                        .map(|e| self.format_expression(e))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                } else {
+                                    self.format_expression(row)
+                                }
+                            })
+                            .collect();
+                        format!("[{}]", row_strs.join("; "))
+                    } else {
+                        // Single-row matrix: [a, b, c]
+                        let elem_str: Vec<String> =
+                            elements.iter().map(|e| self.format_expression(e)).collect();
+                        format!("[{}]", elem_str.join(", "))
+                    }
+                } else {
+                    // Array notation: {a, b, c}
+                    let elem_str: Vec<String> =
+                        elements.iter().map(|e| self.format_expression(e)).collect();
+                    format!("{{{}}}", elem_str.join(", "))
+                }
             }
             Expression::Tuple { elements } => {
                 let elem_str: Vec<String> =

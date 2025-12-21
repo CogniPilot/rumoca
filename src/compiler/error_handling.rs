@@ -15,30 +15,6 @@ use thiserror::Error;
 // Error Types
 // =============================================================================
 
-/// Error for undefined variable references in Modelica code
-#[derive(Error, Debug, Diagnostic)]
-#[error("Undefined variable {var_name}", var_name = self.var_name.cyan().bold())]
-#[diagnostic(
-    code(rumoca::undefined_variable),
-    help("Check for {typos} or make sure the variable is {declared} before use",
-         typos = "typos".yellow(),
-         declared = "declared".green())
-)]
-#[allow(dead_code)] // Defined for future semantic analysis
-#[allow(unused_assignments)] // False positive from miette derive macro
-pub struct UndefinedVariableError {
-    /// The source code being compiled
-    #[source_code]
-    pub src: String,
-
-    /// Name of the undefined variable
-    pub var_name: String,
-
-    /// Location in source where the variable appears
-    #[label("undefined variable here")]
-    pub span: SourceSpan,
-}
-
 /// Error for parse/syntax errors in Modelica code
 #[derive(Error, Debug, Diagnostic)]
 #[error("Syntax error")]

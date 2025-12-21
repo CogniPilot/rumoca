@@ -13,19 +13,120 @@ use crate::ir::ast::{
     ClassDefinition, Component, ComponentRefPart, ComponentReference, Equation, Expression,
     ForIndex, Statement, Subscript, TerminalType, Token,
 };
+use crate::ir::transform::eval::{eval_boolean, eval_integer, eval_real};
+use crate::ir::visitor::{Visitable, Visitor};
 use indexmap::IndexMap;
 use std::collections::HashSet;
+
+// =============================================================================
+// Visitor-based Variable Finders
+// =============================================================================
+
+/// Visitor that finds variables inside der() calls (state variables).
+///
+/// This replaces manual recursion through equations and expressions with
+/// the standard Visitor pattern for cleaner, more maintainable code.
+struct DerVarFinder {
+    states: HashSet<String>,
+}
+
+impl DerVarFinder {
+    fn new() -> Self {
+        Self {
+            states: HashSet::new(),
+        }
+    }
+
+    fn into_states(self) -> HashSet<String> {
+        self.states
+    }
+}
+
+impl Visitor for DerVarFinder {
+    fn enter_expression(&mut self, node: &Expression) {
+        let Expression::FunctionCall { comp, args } = node else {
+            return;
+        };
+
+        // Check if this is a der() call and extract the variable name
+        if comp.parts.first().is_none_or(|p| p.ident.text != "der") {
+            return;
+        }
+
+        if let Some(name) = args.first().and_then(|arg| {
+            if let Expression::ComponentReference(comp_ref) = arg {
+                comp_ref.parts.first().map(|p| p.ident.text.clone())
+            } else {
+                None
+            }
+        }) {
+            self.states.insert(name);
+        }
+    }
+}
+
+/// Visitor that finds variables assigned in statements.
+///
+/// This replaces manual recursion through statements with the standard
+/// Visitor pattern.
+struct AssignedVarFinder {
+    assigned: HashSet<String>,
+}
+
+impl AssignedVarFinder {
+    fn new() -> Self {
+        Self {
+            assigned: HashSet::new(),
+        }
+    }
+
+    fn into_assigned(self) -> HashSet<String> {
+        self.assigned
+    }
+}
+
+impl Visitor for AssignedVarFinder {
+    fn enter_statement(&mut self, node: &Statement) {
+        match node {
+            Statement::Assignment { comp, .. } => {
+                // Get the base variable name (first part of component reference)
+                if let Some(first_part) = comp.parts.first() {
+                    self.assigned.insert(first_part.ident.text.clone());
+                }
+            }
+            Statement::FunctionCall { outputs, .. } => {
+                // Extract assigned variable names from output expressions
+                // For `(a, b) := func(x)`, the outputs are [a, b]
+                for name in outputs.iter().filter_map(|o| {
+                    if let Expression::ComponentReference(comp_ref) = o {
+                        comp_ref.parts.first().map(|p| p.ident.text.clone())
+                    } else {
+                        None
+                    }
+                }) {
+                    self.assigned.insert(name);
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Expand all equations in a class definition to scalar form.
 ///
 /// This includes:
+/// - Evaluating computed parameters from initial equations
 /// - Evaluating parameter-dependent array shapes
 /// - Expanding for-loops to individual equations
 /// - Expanding array equations to scalar equations
 /// - Converting binding equations to regular equations
 /// - Converting algorithm sections to equations
 pub fn expand_equations(class: &mut ClassDefinition) {
-    // First, evaluate any parameter-dependent array shapes
+    // First, evaluate computed parameters from initial equations
+    // This handles cases like: na = integer((order+1)/2)
+    evaluate_computed_parameters(&mut class.components, &class.initial_equations);
+
+    // Then, evaluate any parameter-dependent array shapes
     evaluate_array_shapes(&mut class.components);
 
     // Expand structured equations first
@@ -55,28 +156,112 @@ pub fn expand_equations(class: &mut ClassDefinition) {
     class.initial_equations = expanded_init;
 }
 
+/// Evaluate computed parameters from initial equations.
+///
+/// Some parameters have their values defined by binding equations in initial_equations,
+/// like `na = integer((order+1)/2)`. This function tries to evaluate these expressions
+/// using known parameter values and sets the parameter's start value.
+fn evaluate_computed_parameters(
+    components: &mut IndexMap<String, Component>,
+    initial_equations: &[Equation],
+) {
+    // Iterate multiple times to handle transitive dependencies.
+    // For example: na depends on order, and nx depends on na.
+    const MAX_ITERATIONS: usize = 10;
+
+    for _iteration in 0..MAX_ITERATIONS {
+        // Collect updates first to avoid cloning the entire IndexMap
+        let mut updates: Vec<(String, Expression)> = Vec::new();
+
+        for eq in initial_equations {
+            if let Equation::Simple {
+                lhs: Expression::ComponentReference(comp_ref),
+                rhs,
+            } = eq
+                && comp_ref.parts.iter().all(|p| p.subs.is_none())
+            {
+                let name = comp_ref
+                    .parts
+                    .iter()
+                    .map(|p| p.ident.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+
+                // Check if this component exists and has Empty start
+                if let Some(comp) = components.get(&name)
+                    && matches!(comp.start, Expression::Empty)
+                {
+                    // Try to evaluate the RHS as integer first
+                    if let Some(val) = eval_integer(rhs, components) {
+                        updates.push((
+                            name,
+                            Expression::Terminal {
+                                terminal_type: TerminalType::UnsignedInteger,
+                                token: Token {
+                                    text: val.to_string(),
+                                    ..Default::default()
+                                },
+                            },
+                        ));
+                    } else if let Some(val) = eval_real(rhs, components) {
+                        updates.push((
+                            name,
+                            Expression::Terminal {
+                                terminal_type: TerminalType::UnsignedReal,
+                                token: Token {
+                                    text: val.to_string(),
+                                    ..Default::default()
+                                },
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Stop if no progress was made
+        if updates.is_empty() {
+            break;
+        }
+
+        // Apply updates
+        for (name, value) in updates {
+            if let Some(comp) = components.get_mut(&name) {
+                comp.start = value;
+            }
+        }
+    }
+}
+
 /// Evaluate parameter-dependent array shapes.
 ///
 /// For components with `shape_expr` but empty `shape`, try to evaluate
 /// the expressions to get the actual array dimensions.
 fn evaluate_array_shapes(components: &mut IndexMap<String, Component>) {
-    // First, collect parameter values we can look up
-    let params: IndexMap<String, Component> = components
-        .iter()
-        .filter(|(_, c)| matches!(c.variability, crate::ir::ast::Variability::Parameter(_)))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    // Iterate multiple times to handle transitive dependencies.
+    // For example: x_scaled[size(x, 1)] depends on x[size(a, 1) - 1]
+    // which depends on a's size. We need to evaluate in dependency order.
+    const MAX_ITERATIONS: usize = 10;
 
-    // Now evaluate shapes
-    for (_name, comp) in components.iter_mut() {
-        if comp.shape.is_empty() && !comp.shape_expr.is_empty() {
+    for _iteration in 0..MAX_ITERATIONS {
+        // Collect only the shape expressions that need evaluation (avoid cloning entire IndexMap)
+        let to_evaluate: Vec<(String, Vec<Subscript>)> = components
+            .iter()
+            .filter(|(_, comp)| comp.shape.is_empty() && !comp.shape_expr.is_empty())
+            .map(|(name, comp)| (name.clone(), comp.shape_expr.clone()))
+            .collect();
+
+        let mut updates: Vec<(String, Vec<usize>)> = Vec::new();
+
+        for (name, shape_expr) in to_evaluate {
             let mut evaluated_shape = Vec::new();
             let mut all_evaluated = true;
 
-            for sub in &comp.shape_expr {
+            for sub in &shape_expr {
                 match sub {
                     Subscript::Expression(expr) => {
-                        if let Some(val) = eval_integer_with_params(expr, &params) {
+                        // Pass all components (not just params) so size(array, dim) works
+                        if let Some(val) = eval_integer(expr, components) {
                             // Allow val >= 0 (including 0 for empty arrays)
                             if val >= 0 {
                                 evaluated_shape.push(val as usize);
@@ -97,9 +282,21 @@ fn evaluate_array_shapes(components: &mut IndexMap<String, Component>) {
                 }
             }
 
-            // Set the shape if all dimensions were evaluated (even if result is empty array [0])
+            // Collect the update if all dimensions were evaluated
             if all_evaluated {
-                comp.shape = evaluated_shape;
+                updates.push((name, evaluated_shape));
+            }
+        }
+
+        // Stop if no progress was made (all remaining shapes depend on runtime values)
+        if updates.is_empty() {
+            break;
+        }
+
+        // Apply updates
+        for (name, shape) in updates {
+            if let Some(comp) = components.get_mut(&name) {
+                comp.shape = shape;
             }
         }
     }
@@ -236,162 +433,51 @@ fn convert_algorithms_to_equations(
 }
 
 /// Find all unique variable names assigned in an algorithm section.
+///
+/// Uses the visitor pattern for clean, maintainable traversal.
 fn find_assigned_variables(statements: &[Statement]) -> HashSet<String> {
-    let mut assigned = HashSet::new();
-
+    let mut finder = AssignedVarFinder::new();
     for stmt in statements {
-        collect_assigned_variables(stmt, &mut assigned);
+        stmt.accept(&mut finder);
     }
-
-    assigned
-}
-
-/// Recursively collect assigned variable names from a statement.
-fn collect_assigned_variables(stmt: &Statement, assigned: &mut HashSet<String>) {
-    match stmt {
-        Statement::Assignment { comp, .. } => {
-            // Get the base variable name (first part of component reference)
-            if let Some(first_part) = comp.parts.first() {
-                assigned.insert(first_part.ident.text.clone());
-            }
-        }
-        Statement::For { equations, .. } => {
-            for inner in equations {
-                collect_assigned_variables(inner, assigned);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                for inner in &block.stmts {
-                    collect_assigned_variables(inner, assigned);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    collect_assigned_variables(inner, assigned);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                for inner in &block.stmts {
-                    collect_assigned_variables(inner, assigned);
-                }
-            }
-        }
-        Statement::While(block) => {
-            for inner in &block.stmts {
-                collect_assigned_variables(inner, assigned);
-            }
-        }
-        Statement::Empty
-        | Statement::Return { .. }
-        | Statement::Break { .. }
-        | Statement::FunctionCall { .. } => {}
-    }
+    finder.into_assigned()
 }
 
 /// Find all variables that appear inside der() calls (state variables).
-fn find_differentiated_variables(equations: &[Equation]) -> std::collections::HashSet<String> {
-    let mut states = std::collections::HashSet::new();
+///
+/// Uses the visitor pattern for clean, maintainable traversal.
+fn find_differentiated_variables(equations: &[Equation]) -> HashSet<String> {
+    let mut finder = DerVarFinder::new();
     for eq in equations {
-        find_der_vars_in_equation(eq, &mut states);
+        eq.accept(&mut finder);
     }
-    states
+    finder.into_states()
 }
 
-fn find_der_vars_in_equation(eq: &Equation, states: &mut std::collections::HashSet<String>) {
-    match eq {
-        Equation::Simple { lhs, rhs } => {
-            find_der_vars_in_expr(lhs, states);
-            find_der_vars_in_expr(rhs, states);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                find_der_vars_in_equation(inner, states);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    find_der_vars_in_equation(inner, states);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    find_der_vars_in_equation(inner, states);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    find_der_vars_in_equation(inner, states);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn find_der_vars_in_expr(expr: &Expression, states: &mut std::collections::HashSet<String>) {
-    match expr {
-        Expression::FunctionCall { comp, args } => {
-            if let Some(first_part) = comp.parts.first()
-                && first_part.ident.text == "der"
-            {
-                // This is a der() call - extract the variable name
-                if let Some(Expression::ComponentReference(comp_ref)) = args.first()
-                    && let Some(part) = comp_ref.parts.first()
-                {
-                    states.insert(part.ident.text.clone());
-                }
-            }
-            // Also check arguments recursively
-            for arg in args {
-                find_der_vars_in_expr(arg, states);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            find_der_vars_in_expr(lhs, states);
-            find_der_vars_in_expr(rhs, states);
-        }
-        Expression::Unary { rhs, .. } => {
-            find_der_vars_in_expr(rhs, states);
-        }
-        Expression::Array { elements } => {
-            for e in elements {
-                find_der_vars_in_expr(e, states);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, expr) in branches {
-                find_der_vars_in_expr(cond, states);
-                find_der_vars_in_expr(expr, states);
-            }
-            find_der_vars_in_expr(else_branch, states);
-        }
-        _ => {}
-    }
-}
-
-/// Check if an expression is a default/trivial value (0, 0.0, false)
-/// that should not be treated as a binding equation.
+/// Check if an expression is a parser-generated default value that should not
+/// be treated as a binding equation.
+///
+/// Returns true only if:
+/// 1. The value is a default (0, 0.0, false), AND
+/// 2. The token has no source location (empty file_name), indicating it was
+///    generated by the parser as a default, not written explicitly in source.
+///
+/// This allows us to distinguish:
+/// - `output Real y = 0.0;` (explicit binding → creates equation)
+/// - `output Real y;` with parser default (no binding → no equation)
 fn is_default_value(expr: &Expression) -> bool {
     match expr {
         Expression::Terminal {
             terminal_type,
             token,
         } => {
+            // If the token has a source location (non-empty file_name), it's an
+            // explicit value in the source code, not a parser default
+            if !token.location.file_name.is_empty() {
+                return false;
+            }
+
+            // Check if the value itself is a default
             match terminal_type {
                 TerminalType::UnsignedInteger => token.text == "0",
                 TerminalType::UnsignedReal => {
@@ -426,7 +512,7 @@ fn expand_array_binding(
             // If RHS is an array literal, extract the corresponding element
             // Otherwise, subscript the RHS as well
             let rhs_elem = match rhs {
-                Expression::Array { elements } => {
+                Expression::Array { elements, .. } => {
                     if i <= elements.len() {
                         elements[i - 1].clone()
                     } else {
@@ -629,11 +715,11 @@ fn get_iteration_range(
 ) -> Option<(i64, i64, i64)> {
     match expr {
         Expression::Range { start, step, end } => {
-            let start_val = eval_integer_with_params(start, components)?;
-            let end_val = eval_integer_with_params(end, components)?;
+            let start_val = eval_integer(start, components)?;
+            let end_val = eval_integer(end, components)?;
             let step_val = step
                 .as_ref()
-                .map(|s| eval_integer_with_params(s, components))
+                .map(|s| eval_integer(s, components))
                 .unwrap_or(Some(1))?;
             Some((start_val, end_val, step_val))
         }
@@ -647,228 +733,8 @@ fn get_iteration_range(
         }
         Expression::ComponentReference(_) => {
             // Could be a parameter reference like `n`
-            let val = eval_integer_with_params(expr, components)?;
+            let val = eval_integer(expr, components)?;
             Some((1, val, 1))
-        }
-        _ => None,
-    }
-}
-
-/// Evaluate a boolean expression if possible (for parameter conditions).
-fn eval_boolean(expr: &Expression, components: &IndexMap<String, Component>) -> Option<bool> {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::Bool,
-            token,
-        } => Some(token.text == "true"),
-
-        Expression::ComponentReference(comp_ref) => {
-            // Look up the component to see if it's a parameter with a known value
-            if comp_ref.parts.len() == 1 && comp_ref.parts[0].subs.is_none() {
-                let name = &comp_ref.parts[0].ident.text;
-                if let Some(comp) = components.get(name) {
-                    // Only evaluate parameters with known values
-                    if matches!(comp.variability, crate::ir::ast::Variability::Parameter(_)) {
-                        return eval_boolean(&comp.start, components);
-                    }
-                }
-            }
-            None
-        }
-
-        Expression::Unary { op, rhs } => {
-            let val = eval_boolean(rhs, components)?;
-            match op {
-                crate::ir::ast::OpUnary::Not(_) => Some(!val),
-                _ => None,
-            }
-        }
-
-        Expression::Binary { op, lhs, rhs } => {
-            // Try boolean operators first
-            match op {
-                crate::ir::ast::OpBinary::And(_) => {
-                    let l = eval_boolean(lhs, components)?;
-                    let r = eval_boolean(rhs, components)?;
-                    Some(l && r)
-                }
-                crate::ir::ast::OpBinary::Or(_) => {
-                    let l = eval_boolean(lhs, components)?;
-                    let r = eval_boolean(rhs, components)?;
-                    Some(l || r)
-                }
-                // Comparison operators - use eval_integer_with_params to handle parameter references
-                crate::ir::ast::OpBinary::Eq(_) => {
-                    // Try integer comparison with parameter lookup
-                    if let (Some(l), Some(r)) = (
-                        eval_integer_with_params(lhs, components),
-                        eval_integer_with_params(rhs, components),
-                    ) {
-                        return Some(l == r);
-                    }
-                    // Try boolean comparison
-                    if let (Some(l), Some(r)) =
-                        (eval_boolean(lhs, components), eval_boolean(rhs, components))
-                    {
-                        return Some(l == r);
-                    }
-                    None
-                }
-                crate::ir::ast::OpBinary::Neq(_) => {
-                    if let (Some(l), Some(r)) = (
-                        eval_integer_with_params(lhs, components),
-                        eval_integer_with_params(rhs, components),
-                    ) {
-                        return Some(l != r);
-                    }
-                    if let (Some(l), Some(r)) =
-                        (eval_boolean(lhs, components), eval_boolean(rhs, components))
-                    {
-                        return Some(l != r);
-                    }
-                    None
-                }
-                crate::ir::ast::OpBinary::Lt(_) => {
-                    let l = eval_integer_with_params(lhs, components)?;
-                    let r = eval_integer_with_params(rhs, components)?;
-                    Some(l < r)
-                }
-                crate::ir::ast::OpBinary::Le(_) => {
-                    let l = eval_integer_with_params(lhs, components)?;
-                    let r = eval_integer_with_params(rhs, components)?;
-                    Some(l <= r)
-                }
-                crate::ir::ast::OpBinary::Gt(_) => {
-                    let l = eval_integer_with_params(lhs, components)?;
-                    let r = eval_integer_with_params(rhs, components)?;
-                    Some(l > r)
-                }
-                crate::ir::ast::OpBinary::Ge(_) => {
-                    let l = eval_integer_with_params(lhs, components)?;
-                    let r = eval_integer_with_params(rhs, components)?;
-                    Some(l >= r)
-                }
-                _ => None,
-            }
-        }
-
-        _ => None,
-    }
-}
-
-/// Evaluate an expression to an integer, with parameter lookup support.
-fn eval_integer_with_params(
-    expr: &Expression,
-    components: &IndexMap<String, Component>,
-) -> Option<i64> {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger,
-            token,
-        } => token.text.parse().ok(),
-        Expression::Terminal {
-            terminal_type: TerminalType::UnsignedReal,
-            token,
-        } => {
-            let f: f64 = token.text.parse().ok()?;
-            if f.fract() == 0.0 {
-                Some(f as i64)
-            } else {
-                None
-            }
-        }
-        Expression::ComponentReference(comp_ref) => {
-            // Look up the component to see if it's a parameter with a known value
-            if comp_ref.parts.len() == 1 && comp_ref.parts[0].subs.is_none() {
-                let name = &comp_ref.parts[0].ident.text;
-                if let Some(comp) = components.get(name) {
-                    // Only evaluate parameters with known values
-                    if matches!(comp.variability, crate::ir::ast::Variability::Parameter(_)) {
-                        return eval_integer_with_params(&comp.start, components);
-                    }
-                }
-            }
-            None
-        }
-        Expression::Unary { op, rhs } => {
-            let val = eval_integer_with_params(rhs, components)?;
-            match op {
-                crate::ir::ast::OpUnary::Minus(_) => Some(-val),
-                crate::ir::ast::OpUnary::Plus(_) => Some(val),
-                _ => None,
-            }
-        }
-        Expression::Binary { op, lhs, rhs } => {
-            let l = eval_integer_with_params(lhs, components)?;
-            let r = eval_integer_with_params(rhs, components)?;
-            match op {
-                crate::ir::ast::OpBinary::Add(_) => Some(l + r),
-                crate::ir::ast::OpBinary::Sub(_) => Some(l - r),
-                crate::ir::ast::OpBinary::Mul(_) => Some(l * r),
-                crate::ir::ast::OpBinary::Div(_) => {
-                    if r != 0 {
-                        Some(l / r)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }
-        }
-        Expression::FunctionCall { comp, args } => {
-            // Handle size(array, dim) function
-            if let Some(first_part) = comp.parts.first()
-                && first_part.ident.text == "size"
-                && !args.is_empty()
-            {
-                // Get the array argument
-                if let Expression::ComponentReference(array_ref) = &args[0]
-                    && array_ref.parts.len() == 1
-                    && array_ref.parts[0].subs.is_none()
-                {
-                    let array_name = &array_ref.parts[0].ident.text;
-                    if let Some(array_comp) = components.get(array_name) {
-                        // Get the dimension index (default to 1)
-                        let dim_index = if args.len() >= 2 {
-                            eval_integer_with_params(&args[1], components).unwrap_or(1) as usize
-                        } else {
-                            1
-                        };
-
-                        // First check evaluated shape
-                        if !array_comp.shape.is_empty() && dim_index <= array_comp.shape.len() {
-                            return Some(array_comp.shape[dim_index - 1] as i64);
-                        }
-
-                        // Check if it's an array literal in start
-                        if let Expression::Array { elements } = &array_comp.start
-                            && dim_index == 1
-                        {
-                            return Some(elements.len() as i64);
-                        }
-                    }
-                }
-            }
-            None
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            // Evaluate if-then-else expression for conditional array sizes
-            // e.g., if filterType == LowPass then 0 else na
-            for (condition, result) in branches {
-                if let Some(cond_val) = eval_boolean(condition, components) {
-                    if cond_val {
-                        return eval_integer_with_params(result, components);
-                    }
-                } else {
-                    // Condition can't be evaluated at compile time
-                    return None;
-                }
-            }
-            // All conditions were false, evaluate else branch
-            eval_integer_with_params(else_branch, components)
         }
         _ => None,
     }
@@ -997,11 +863,15 @@ fn substitute_in_expr(expr: &Expression, index_name: &str, value: i64) -> Expres
                 .collect(),
         },
 
-        Expression::Array { elements } => Expression::Array {
+        Expression::Array {
+            elements,
+            is_matrix,
+        } => Expression::Array {
             elements: elements
                 .iter()
                 .map(|e| substitute_in_expr(e, index_name, value))
                 .collect(),
+            is_matrix: *is_matrix,
         },
 
         Expression::If {
@@ -1078,7 +948,7 @@ fn get_equation_array_size(
             }
             Some(1)
         }
-        Expression::Array { elements } => {
+        Expression::Array { elements, .. } => {
             // Array literal like [y] or [u1; u2]
             // Sum up the sizes of all elements (handles concatenation)
             let mut total = 0;
@@ -1184,7 +1054,7 @@ fn subscript_expr(expr: Expression, indices: &[usize]) -> Expression {
             op,
             rhs: Box::new(subscript_expr(*rhs, indices)),
         },
-        Expression::Array { ref elements } => {
+        Expression::Array { ref elements, .. } => {
             // For array literals, extract the element
             if elements.is_empty() {
                 // Empty array - return unchanged
@@ -1208,7 +1078,7 @@ fn flatten_and_subscript(
     components: &IndexMap<String, Component>,
 ) -> Expression {
     match expr {
-        Expression::Array { elements } => {
+        Expression::Array { elements, .. } => {
             // Track cumulative size as we go through elements
             let mut cumulative = 0;
             for elem in elements {
@@ -1217,7 +1087,20 @@ fn flatten_and_subscript(
                     // The index falls within this element
                     let local_index = flat_index - cumulative;
                     if elem_size == 1 {
-                        // Scalar element - return as-is
+                        // Size 1 element - but we still need to check if it's a size-1 array
+                        // that needs subscripting (e.g., y1[1] where n1=1)
+                        if let Expression::ComponentReference(comp_ref) = elem
+                            && let Some(first_part) = comp_ref.parts.first()
+                        {
+                            let name = &first_part.ident.text;
+                            if let Some(comp) = components.get(name)
+                                && !comp.shape.is_empty()
+                            {
+                                // It's an array (even if size 1) - subscript it
+                                return subscript_expr(elem.clone(), &[1]);
+                            }
+                        }
+                        // Truly scalar element - return as-is
                         return elem.clone();
                     } else {
                         // Array element - recurse or subscript
@@ -1257,7 +1140,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_eval_integer_with_params() {
+    fn test_eval_integer() {
         let components = IndexMap::new();
 
         // Test simple integer
@@ -1268,7 +1151,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        assert_eq!(eval_integer_with_params(&expr, &components), Some(3));
+        assert_eq!(eval_integer(&expr, &components), Some(3));
 
         // Test negative
         let expr = Expression::Unary {
@@ -1281,7 +1164,7 @@ mod tests {
                 },
             }),
         };
-        assert_eq!(eval_integer_with_params(&expr, &components), Some(-5));
+        assert_eq!(eval_integer(&expr, &components), Some(-5));
     }
 
     #[test]
