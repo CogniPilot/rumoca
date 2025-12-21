@@ -25,19 +25,6 @@ pub fn span_location(start: &ir::ast::Token, end: &ir::ast::Token) -> ir::ast::L
     }
 }
 
-/// Helper to format location info from an expression
-#[allow(dead_code)]
-pub fn expr_loc_info(expr: &ir::ast::Expression) -> String {
-    expr.get_location()
-        .map(|loc| {
-            format!(
-                " at {}:{}:{}",
-                loc.file_name, loc.start_line, loc.start_column
-            )
-        })
-        .unwrap_or_default()
-}
-
 /// Helper to collect elements from array_arguments into an Expression
 /// Handles both simple arrays like {1, 2, 3} and array comprehensions like {i for i in 1:10}
 pub fn collect_array_elements(
@@ -52,7 +39,10 @@ pub fn collect_array_elements(
                 // Simple array: collect all elements
                 let mut elements = vec![args.expression.clone()];
                 collect_array_non_first(&comma_args.array_arguments_non_first, &mut elements);
-                Ok(ir::ast::Expression::Array { elements })
+                Ok(ir::ast::Expression::Array {
+                    elements,
+                    is_matrix: false,
+                })
             }
             modelica_grammar_trait::ArrayArgumentsOptGroup::ForForIndices(for_indices) => {
                 // Array comprehension: {expr for i in range, j in range2, ...}
@@ -67,6 +57,7 @@ pub fn collect_array_elements(
         // Single element array
         Ok(ir::ast::Expression::Array {
             elements: vec![args.expression.clone()],
+            is_matrix: false,
         })
     }
 }

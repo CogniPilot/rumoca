@@ -21,6 +21,14 @@ impl FormatVisitor {
         if !comp.annotation.is_empty() {
             return true;
         }
+        // Has conditional component (if condition)
+        if comp.condition.is_some() {
+            return true;
+        }
+        // Has inner/outer prefix
+        if comp.inner || comp.outer {
+            return true;
+        }
         // Has start value as modification (start=x)
         if comp.start_is_modification && !matches!(comp.start, Expression::Empty) {
             return true;
@@ -104,6 +112,14 @@ impl FormatVisitor {
     pub fn format_component(&self, comp: &Component) -> String {
         let mut result = String::new();
 
+        // Inner/outer prefix (must come first)
+        if comp.inner {
+            result.push_str("inner ");
+        }
+        if comp.outer {
+            result.push_str("outer ");
+        }
+
         // Variability prefix
         match &comp.variability {
             Variability::Constant(_) => result.push_str("constant "),
@@ -179,6 +195,11 @@ impl FormatVisitor {
                     result.push_str(&format!(" = {}", self.format_expression(&comp.start)));
                 }
             }
+        }
+
+        // Conditional component (if condition) - comes before description per Modelica spec
+        if let Some(cond) = &comp.condition {
+            result.push_str(&format!(" if {}", self.format_expression(cond)));
         }
 
         // Description string

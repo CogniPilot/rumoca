@@ -96,32 +96,40 @@ fn main() -> anyhow::Result<()> {
 | `rumoca-lint` | Linter for Modelica files (like `clippy`) |
 | `rumoca-lsp` | Language Server Protocol server for editor integration |
 
-## MSL Compatibility & Performance
+## MSL Compatibility
 
 Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.com/modelica/ModelicaStandardLibrary).
 
-| Metric | Result |
-|--------|--------|
-| **Parse Rate** | 100% (2551/2551 files) |
-| **Compile Rate** | 100% (2283/2283 models) ✅ |
+| Status | Count | Percentage | Description |
+|--------|-------|------------|-------------|
+| **Parsed** | 2551/2551 | 100% | All .mo files parse successfully |
+| **Compiled** | 2283/2283 | 100% | All models compile to DAE ✅ |
+| **Balanced** | 791 | 34.6% | Fully determined (equations = unknowns) |
+| **Partial** | 1280 | 56.1% | Under-determined by design (external connectors) |
+| **Unbalanced** | 212 | 9.3% | Needs further work |
+
+*Partial models have external connector flow variables that receive equations when connected in a larger system.*
 
 **Benchmark** (AMD Ryzen 9 7950X, 16 cores):
 
-| Phase | Time | Throughput |
-|-------|------|------------|
-| **Parsing** | 0.80s | 3,189 files/sec |
-| **Balance Check** | 26s | 87 models/sec |
+| Phase | Cold | Warm | Rate |
+|-------|------|------|------|
+| Parse (2551 files) | 0.80s | 0.80s | 3,189 files/sec |
+| Flatten (6491 classes) | 1.51s | 1.50s | 4,311 classes/sec |
+| Compile (2283 models) | 22.75s | 3.68s | 100 / 620 models/sec |
+| **Total** | **25.06s** | **5.98s** | **4.2x speedup** |
 
-**Balance Check Results:**
+**Caching:**
+- **In-memory caches** (extends chain, resolved classes): Built during flatten phase (~1.5s), reset between runs
+- **DAE disk cache** (`~/.cache/rumoca/dae/`): Stores compiled model results, provides 6x speedup on balance phase
 
-| Status | Count | Percentage | Description |
-|--------|-------|------------|-------------|
-| **Balanced** | 686 | 30.0% | Fully determined (equations = unknowns) |
-| **Partial** | 1147 | 50.2% | Under-determined by design (external connectors) |
-| **Unbalanced** | 450 | 19.7% | Needs further work |
-| **Compile Errors** | 0 | 0% | All models compile successfully |
+```bash
+# Run the MSL balance test
+cargo test --release test_msl_balance_all -- --ignored --nocapture
 
-*Partial models have external connector flow variables that receive equations when connected in a larger system.*
+# Clear disk caches for cold-start benchmark
+rm -rf ~/.cache/rumoca/ast ~/.cache/rumoca/dae
+```
 
 <details>
 <summary><strong>Detailed Compatibility Notes</strong></summary>
@@ -168,7 +176,7 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 - Deep inheritance chain type lookup
 - ModelicaServices stubs
 
-**Known Limitations** (450 unbalanced models):
+**Known Limitations** (212 unbalanced models):
 
 | Category | Notes |
 |----------|-------|

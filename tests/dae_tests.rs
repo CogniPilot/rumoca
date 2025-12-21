@@ -316,7 +316,7 @@ fn extract_variables(expr: &rumoca::ir::ast::Expression) -> Vec<String> {
             }
             vars.extend(extract_variables(else_branch));
         }
-        Expression::Array { elements } | Expression::Tuple { elements } => {
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
             for elem in elements {
                 vars.extend(extract_variables(elem));
             }

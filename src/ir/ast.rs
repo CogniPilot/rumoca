@@ -141,6 +141,11 @@ pub struct Component {
     pub inner: bool,
     /// True if declared with 'outer' prefix (references an inner instance from enclosing scope)
     pub outer: bool,
+    /// Set of attribute names that are marked as final (e.g., "start" if `final start = 1.0`)
+    /// When a derived class tries to override these attributes, an error should be raised
+    pub final_attributes: std::collections::HashSet<String>,
+    /// True if this component is declared in a protected section
+    pub is_protected: bool,
 }
 
 impl Debug for Component {
@@ -182,8 +187,23 @@ impl Debug for Component {
         if self.outer {
             builder.field("outer", &self.outer);
         }
+        if !self.final_attributes.is_empty() {
+            builder.field("final_attributes", &self.final_attributes);
+        }
+        if self.is_protected {
+            builder.field("is_protected", &self.is_protected);
+        }
         builder.finish()
     }
+}
+
+/// Enumeration literal with optional description
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnumLiteral {
+    /// The literal identifier (e.g., 'U' or Red)
+    pub ident: Token,
+    /// Optional description strings (e.g., "Uninitialized")
+    pub description: Vec<Token>,
 }
 
 /// Type of class (model, function, connector, etc.)
@@ -237,8 +257,8 @@ pub struct ClassDefinition {
     pub initial_algorithm_keyword: Option<Token>,
     /// Token for the class name in "end ClassName;" (for rename support)
     pub end_name_token: Option<Token>,
-    /// Enumeration literals for enum types (e.g., `type MyEnum = enumeration(A, B, C)`)
-    pub enum_literals: Vec<Token>,
+    /// Enumeration literals for enum types (e.g., `type MyEnum = enumeration(A "desc", B, C)`)
+    pub enum_literals: Vec<EnumLiteral>,
     /// Annotation clause for this class (e.g., Documentation, Icon, Diagram)
     pub annotation: Vec<Expression>,
 }
@@ -348,18 +368,25 @@ pub struct ComponentRefPart {
 
 impl Debug for ComponentRefPart {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = self.ident.text.clone();
-        match &self.subs {
-            None => {}
-            Some(subs) => {
-                let mut v = Vec::new();
-                for sub in subs {
-                    v.push(format!("{:?}", sub));
+        // Use Display for debug to keep formatting consistent
+        write!(f, "{}", self)
+    }
+}
+
+impl Display for ComponentRefPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.ident.text)?;
+        if let Some(subs) = &self.subs {
+            write!(f, "[")?;
+            for (i, sub) in subs.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
                 }
-                s += &format!("[{:?}]", v.join(", "));
+                write!(f, "{}", sub)?;
             }
+            write!(f, "]")?;
         }
-        write!(f, "{}", s)
+        Ok(())
     }
 }
 
@@ -372,21 +399,20 @@ pub struct ComponentReference {
 
 impl Display for ComponentReference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = Vec::new();
-        for part in &self.parts {
-            s.push(format!("{:?}", part));
+        for (i, part) in self.parts.iter().enumerate() {
+            if i > 0 {
+                write!(f, ".")?;
+            }
+            write!(f, "{}", part)?;
         }
-        write!(f, "{}", s.join("."))
+        Ok(())
     }
 }
 
 impl Debug for ComponentReference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = Vec::new();
-        for part in &self.parts {
-            s.push(format!("{:?}", part));
-        }
-        write!(f, "{:?}", s.join("."))
+        // Use Display for debug to keep formatting consistent
+        write!(f, "{}", self)
     }
 }
 
@@ -490,6 +516,32 @@ pub enum OpBinary {
     Assign(Token),
 }
 
+impl Display for OpBinary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpBinary::Empty => write!(f, ""),
+            OpBinary::Add(_) => write!(f, "+"),
+            OpBinary::Sub(_) => write!(f, "-"),
+            OpBinary::Mul(_) => write!(f, "*"),
+            OpBinary::Div(_) => write!(f, "/"),
+            OpBinary::Eq(_) => write!(f, "=="),
+            OpBinary::Neq(_) => write!(f, "<>"),
+            OpBinary::Lt(_) => write!(f, "<"),
+            OpBinary::Le(_) => write!(f, "<="),
+            OpBinary::Gt(_) => write!(f, ">"),
+            OpBinary::Ge(_) => write!(f, ">="),
+            OpBinary::And(_) => write!(f, "and"),
+            OpBinary::Or(_) => write!(f, "or"),
+            OpBinary::Exp(_) => write!(f, "^"),
+            OpBinary::AddElem(_) => write!(f, ".+"),
+            OpBinary::SubElem(_) => write!(f, ".-"),
+            OpBinary::MulElem(_) => write!(f, ".*"),
+            OpBinary::DivElem(_) => write!(f, "./"),
+            OpBinary::Assign(_) => write!(f, "="),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpUnary {
     #[default]
@@ -499,6 +551,19 @@ pub enum OpUnary {
     DotMinus(Token),
     DotPlus(Token),
     Not(Token),
+}
+
+impl Display for OpUnary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpUnary::Empty => write!(f, ""),
+            OpUnary::Minus(_) => write!(f, "-"),
+            OpUnary::Plus(_) => write!(f, "+"),
+            OpUnary::DotMinus(_) => write!(f, ".-"),
+            OpUnary::DotPlus(_) => write!(f, ".+"),
+            OpUnary::Not(_) => write!(f, "not "),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -542,6 +607,8 @@ pub enum Expression {
     },
     Array {
         elements: Vec<Expression>,
+        /// True if original syntax was `[a;b]` matrix notation, false for `{a,b}` array notation
+        is_matrix: bool,
     },
     /// Tuple expression for multi-output function calls: (a, b) = func()
     Tuple {
@@ -594,7 +661,7 @@ impl Debug for Expression {
                 terminal_type,
                 token,
             } => write!(f, "{:?}({:?})", terminal_type, token),
-            Expression::Array { elements } => f.debug_list().entries(elements.iter()).finish(),
+            Expression::Array { elements, .. } => f.debug_list().entries(elements.iter()).finish(),
             Expression::Tuple { elements } => {
                 write!(f, "(")?;
                 for (i, e) in elements.iter().enumerate() {
@@ -644,7 +711,7 @@ impl Expression {
             Expression::FunctionCall { comp, .. } => {
                 comp.parts.first().map(|part| &part.ident.location)
             }
-            Expression::Array { elements } => elements.first().and_then(|e| e.get_location()),
+            Expression::Array { elements, .. } => elements.first().and_then(|e| e.get_location()),
             Expression::Tuple { elements } => elements.first().and_then(|e| e.get_location()),
             Expression::If { branches, .. } => {
                 branches.first().and_then(|(cond, _)| cond.get_location())
@@ -720,7 +787,7 @@ impl std::fmt::Display for Expression {
                 }
                 write!(f, ")")
             }
-            Expression::Array { elements } => {
+            Expression::Array { elements, .. } => {
                 write!(f, "{{")?;
                 for (i, e) in elements.iter().enumerate() {
                     if i > 0 {
@@ -864,9 +931,13 @@ pub enum Statement {
     },
     /// When statement: when cond then stmts elsewhen cond2 then stmts2
     When(Vec<StatementBlock>),
+    /// Function call statement, optionally with output assignments
+    /// For `(a, b) := func(x)`, outputs contains [a, b]
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
+        /// Output variables being assigned (for `(a, b) := func(x)` style calls)
+        outputs: Vec<Expression>,
     },
 }
 
@@ -879,6 +950,16 @@ pub enum Subscript {
     Range {
         token: Token,
     },
+}
+
+impl Display for Subscript {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Subscript::Empty => write!(f, ""),
+            Subscript::Expression(expr) => write!(f, "{}", expr),
+            Subscript::Range { .. } => write!(f, ":"),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

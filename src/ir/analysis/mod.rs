@@ -3,6 +3,7 @@
 //! This module contains read-only analysis passes that examine the IR
 //! without modifying it, as well as supporting data structures.
 
+pub mod check_visitor;
 pub mod condition_finder;
 pub mod reference_checker;
 pub mod state_finder;
@@ -15,3 +16,6 @@ pub mod var_validator;
 
 // Re-export the SymbolInfo trait for convenience
 pub use symbol_trait::SymbolInfo;
+
+// Re-export semantic checking utilities
+pub use check_visitor::{CheckConfig, check_semantic, check_semantic_with_types};

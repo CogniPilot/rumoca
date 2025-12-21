@@ -5,7 +5,9 @@
 
 use crate::ir::analysis::reference_checker::collect_imported_packages;
 use crate::ir::analysis::symbol_table::SymbolTable;
-use crate::ir::ast::{ClassDefinition, ComponentReference, Expression, Variability};
+use crate::ir::ast::{
+    ClassDefinition, ComponentReference, Equation, Expression, Statement, Variability,
+};
 use crate::ir::visitor::MutVisitor;
 
 /// Visitor that validates all variable references exist
@@ -16,6 +18,8 @@ pub struct VarValidator {
     imported_packages: std::collections::HashSet<String>,
     /// Undefined variables found
     pub undefined_vars: Vec<(String, String)>, // (var_name, context)
+    /// Stack of loop index names for scoping (for/array comprehension)
+    loop_index_stack: Vec<Vec<String>>,
 }
 
 impl VarValidator {
@@ -67,6 +71,25 @@ impl VarValidator {
             symbol_table,
             imported_packages,
             undefined_vars: Vec::new(),
+            loop_index_stack: Vec::new(),
+        }
+    }
+
+    /// Push loop indices onto the stack (entering a for loop or array comprehension)
+    fn push_loop_indices(&mut self, indices: &[crate::ir::ast::ForIndex]) {
+        let names: Vec<String> = indices.iter().map(|i| i.ident.text.clone()).collect();
+        for name in &names {
+            self.symbol_table.add_global(name);
+        }
+        self.loop_index_stack.push(names);
+    }
+
+    /// Pop loop indices from the stack (exiting a for loop or array comprehension)
+    fn pop_loop_indices(&mut self) {
+        if let Some(names) = self.loop_index_stack.pop() {
+            for name in &names {
+                self.symbol_table.remove(name);
+            }
         }
     }
 
@@ -98,8 +121,35 @@ impl VarValidator {
 }
 
 impl MutVisitor for VarValidator {
+    fn enter_statement(&mut self, stmt: &mut Statement) {
+        if let Statement::For { indices, .. } = stmt {
+            self.push_loop_indices(indices);
+        }
+    }
+
+    fn exit_statement(&mut self, stmt: &mut Statement) {
+        if let Statement::For { .. } = stmt {
+            self.pop_loop_indices();
+        }
+    }
+
+    fn enter_equation(&mut self, eq: &mut Equation) {
+        if let Equation::For { indices, .. } = eq {
+            self.push_loop_indices(indices);
+        }
+    }
+
+    fn exit_equation(&mut self, eq: &mut Equation) {
+        if let Equation::For { .. } = eq {
+            self.pop_loop_indices();
+        }
+    }
+
     fn enter_expression(&mut self, expr: &mut Expression) {
         match expr {
+            Expression::ArrayComprehension { indices, .. } => {
+                self.push_loop_indices(indices);
+            }
             Expression::ComponentReference(comp_ref) => {
                 self.check_component_ref(comp_ref, "expression");
             }
@@ -107,6 +157,12 @@ impl MutVisitor for VarValidator {
                 self.check_component_ref(comp, "function call");
             }
             _ => {}
+        }
+    }
+
+    fn exit_expression(&mut self, expr: &mut Expression) {
+        if let Expression::ArrayComprehension { .. } = expr {
+            self.pop_loop_indices();
         }
     }
 }

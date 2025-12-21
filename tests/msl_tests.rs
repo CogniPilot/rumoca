@@ -169,15 +169,6 @@ fn get_msl_path() -> Result<PathBuf> {
 // Tests
 // =============================================================================
 
-#[test]
-#[ignore] // Requires MSL download - run with --ignored
-fn test_msl_path_detection() {
-    match get_msl_path() {
-        Ok(path) => println!("MSL {} available at: {:?}", MSL_VERSION, path),
-        Err(e) => println!("MSL download failed: {:?}", e),
-    }
-}
-
 /// Result of balance check for a model
 #[derive(Debug, Clone, Serialize)]
 struct BalanceResult {
@@ -321,7 +312,10 @@ fn collect_models_recursive(
 
 /// Run combined MSL test: parse all files, then balance check all models
 /// Returns results with both parse and balance statistics
-fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> CombinedTestResults {
+fn run_combined_msl_test(
+    msl_path: &Path,
+    model_limit: Option<usize>,
+) -> (CombinedTestResults, rumoca::ir::ast::StoredDefinition) {
     // Configure rayon to use num_cpus - 1 threads, leaving one core for the user
     let num_threads = std::cmp::max(1, num_cpus::get().saturating_sub(1));
     ThreadPoolBuilder::new()
@@ -430,22 +424,25 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
         Ok(def) => def,
         Err(e) => {
             eprintln!("Failed to merge definitions: {:?}", e);
-            return CombinedTestResults {
-                total_files,
-                parse_passed,
-                parse_failed,
-                parse_time,
-                total_models: 0,
-                balanced: 0,
-                partial: 0,
-                unbalanced: 0,
-                compile_errors: 0,
-                balance_time: Duration::ZERO,
-                parse_failures,
-                partial_models: vec![],
-                unbalanced_models: vec![],
-                compile_error_models: vec![],
-            };
+            return (
+                CombinedTestResults {
+                    total_files,
+                    parse_passed,
+                    parse_failed,
+                    parse_time,
+                    total_models: 0,
+                    balanced: 0,
+                    partial: 0,
+                    unbalanced: 0,
+                    compile_errors: 0,
+                    balance_time: Duration::ZERO,
+                    parse_failures,
+                    partial_models: vec![],
+                    unbalanced_models: vec![],
+                    compile_error_models: vec![],
+                },
+                rumoca::ir::ast::StoredDefinition::default(),
+            );
         }
     };
 
@@ -575,7 +572,7 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
         .cloned()
         .collect();
 
-    CombinedTestResults {
+    let results = CombinedTestResults {
         total_files,
         parse_passed,
         parse_failed,
@@ -590,7 +587,12 @@ fn run_combined_msl_test(msl_path: &Path, model_limit: Option<usize>) -> Combine
         partial_models,
         unbalanced_models,
         compile_error_models,
-    }
+    };
+
+    // Unwrap Arc to return the StoredDefinition
+    let merged_def = Arc::try_unwrap(merged_def).unwrap_or_else(|arc| (*arc).clone());
+
+    (results, merged_def)
 }
 
 /// Export compilation failures to a JSON file for analysis
@@ -786,6 +788,61 @@ fn export_failed_models_to_json(results: &CombinedTestResults, output_path: &Pat
     Ok(())
 }
 
+/// Export full DAE JSON for unbalanced models for detailed analysis
+fn export_unbalanced_dae_jsons(
+    results: &CombinedTestResults,
+    merged_def: &rumoca::ir::ast::StoredDefinition,
+    output_dir: &Path,
+    max_models: usize,
+) -> Result<()> {
+    // Create output directory
+    if output_dir.exists() {
+        fs::remove_dir_all(output_dir)?;
+    }
+    fs::create_dir_all(output_dir)?;
+
+    // Compile and export first N unbalanced models
+    let models_to_export: Vec<_> = results.unbalanced_models.iter().take(max_models).collect();
+
+    println!(
+        "\nExporting DAE JSON for {} unbalanced models to {:?}...",
+        models_to_export.len(),
+        output_dir
+    );
+
+    for result in &models_to_export {
+        let model_name = &result.model_name;
+
+        // Full compile to get DAE
+        match Compiler::new()
+            .model(model_name)
+            .compile_parsed_ref(merged_def, "")
+        {
+            Ok(compilation_result) => {
+                // Export full DAE JSON
+                match compilation_result.to_dae_ir_json() {
+                    Ok(json) => {
+                        let safe_name = model_name.replace(['.', ':'], "_");
+                        let file_path = output_dir.join(format!("{}.json", safe_name));
+                        if let Err(e) = fs::write(&file_path, json) {
+                            eprintln!("  Warning: Failed to write {}: {:?}", model_name, e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  Warning: Failed to serialize {}: {:?}", model_name, e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("  Warning: Failed to compile {}: {:?}", model_name, e);
+            }
+        }
+    }
+
+    println!("  Exported {} DAE JSON files", models_to_export.len());
+    Ok(())
+}
+
 /// Print detailed results summary
 fn print_combined_results(results: &CombinedTestResults) {
     println!("\n");
@@ -924,15 +981,6 @@ fn print_combined_results(results: &CombinedTestResults) {
     }
 }
 
-/// Sample MSL balance test - parses all files, balance checks 20 models
-#[test]
-#[ignore] // Requires MSL download - run with --ignored
-fn test_msl_balance_sample() {
-    let msl_path = get_msl_path().expect("Failed to download MSL");
-    let results = run_combined_msl_test(&msl_path, Some(20));
-    print_combined_results(&results);
-}
-
 /// Full MSL balance test - parses all files, balance checks all models
 /// Exports detailed failure report to JSON for analysis
 #[test]
@@ -950,10 +998,12 @@ fn test_msl_balance_all() {
     println!("  - msl_failures.json   : Summary of all failures with stats");
     println!("  - failed_models.json  : Detailed list of failed models with");
     println!("                          error summary grouped by error type");
+    println!("  - unbalanced_daes/    : Full DAE JSON for first 20 unbalanced models");
     println!();
     println!("Quick analysis commands:");
     println!("  jq '.summary' target/msl_failures.json");
     println!("  jq '.error_summary' target/failed_models.json");
+    println!("  jq '.x | keys' target/unbalanced_daes/Modelica_*.json  # List states");
     println!("============================================================");
     println!();
 
@@ -962,7 +1012,7 @@ fn test_msl_balance_all() {
     // Record overall start time for profiling
     let overall_start = Instant::now();
 
-    let results = run_combined_msl_test(&msl_path, None);
+    let (results, merged_def) = run_combined_msl_test(&msl_path, None);
     print_combined_results(&results);
 
     // Export failures to JSON for analysis
@@ -979,6 +1029,14 @@ fn test_msl_balance_all() {
         .join("failed_models.json");
     if let Err(e) = export_failed_models_to_json(&results, &failed_models_path) {
         eprintln!("Warning: Failed to export failed models: {:?}", e);
+    }
+
+    // Export full DAE JSON for first 20 unbalanced models for analysis
+    let dae_output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("unbalanced_daes");
+    if let Err(e) = export_unbalanced_dae_jsons(&results, &merged_def, &dae_output_dir, 20) {
+        eprintln!("Warning: Failed to export DAE JSONs: {:?}", e);
     }
 
     // Print profiling summary
@@ -1033,730 +1091,4 @@ fn test_msl_balance_all() {
         results.compile_success_rate(),
         MIN_COMPILE_RATE
     );
-}
-
-/// MSL test with JSON export for every compiled model
-/// Exports DAE JSON to /tmp/msl_json/ for analysis
-#[test]
-#[ignore] // Requires MSL download - run with --ignored
-fn test_msl_balance_with_json_export() {
-    let msl_path = get_msl_path().expect("Failed to download MSL");
-
-    // Create output directory
-    let output_dir = PathBuf::from("/tmp/msl_json");
-    if output_dir.exists() {
-        fs::remove_dir_all(&output_dir).ok();
-    }
-    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
-
-    let modelica_dir = msl_path.join("Modelica");
-
-    // =========================================================================
-    // PHASE 1: Parse all files
-    // =========================================================================
-    println!("============================================================");
-    println!("           PHASE 1: PARSING (with JSON export)");
-    println!("============================================================");
-
-    let mo_files = find_mo_files(&modelica_dir);
-    let total_files = mo_files.len();
-    println!("Found {} .mo files", total_files);
-
-    let parse_start = Instant::now();
-
-    // Parse all files in parallel
-    let parse_results: Vec<ParseResult> = mo_files
-        .par_iter()
-        .map(|file_path| {
-            let content = match fs::read_to_string(file_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    return ParseResult {
-                        file_path: file_path.clone(),
-                        success: false,
-                        error: Some(format!("Read error: {}", e)),
-                        definition: None,
-                    };
-                }
-            };
-
-            let mut grammar = ModelicaGrammar::new();
-            match parse(&content, file_path.to_string_lossy().as_ref(), &mut grammar) {
-                Ok(_) => ParseResult {
-                    file_path: file_path.clone(),
-                    success: true,
-                    error: None,
-                    definition: grammar.modelica,
-                },
-                Err(e) => ParseResult {
-                    file_path: file_path.clone(),
-                    success: false,
-                    error: Some(format!("{:?}", e)),
-                    definition: None,
-                },
-            }
-        })
-        .collect();
-
-    let parse_time = parse_start.elapsed();
-    let parse_passed = parse_results.iter().filter(|r| r.success).count();
-    let avg_parse_time_ms = if total_files > 0 {
-        parse_time.as_secs_f64() * 1000.0 / total_files as f64
-    } else {
-        0.0
-    };
-    println!(
-        "\nParse Results: {}/{} passed ({:.1}%) in {:.2}s ({:.2}ms/file)",
-        parse_passed,
-        total_files,
-        if total_files > 0 {
-            parse_passed as f64 / total_files as f64 * 100.0
-        } else {
-            0.0
-        },
-        parse_time.as_secs_f64(),
-        avg_parse_time_ms
-    );
-
-    // =========================================================================
-    // PHASE 2: Merge definitions
-    // =========================================================================
-    println!("\n============================================================");
-    println!("                    PHASE 2: MERGING");
-    println!("============================================================");
-
-    let definitions: Vec<(String, StoredDefinition)> = parse_results
-        .into_iter()
-        .filter_map(|r| {
-            r.definition
-                .map(|def| (r.file_path.to_string_lossy().to_string(), def))
-        })
-        .collect();
-
-    println!("Merging {} parsed definitions...", definitions.len());
-    let merged_def = match merge_stored_definitions(definitions) {
-        Ok(def) => def,
-        Err(e) => {
-            eprintln!("Failed to merge definitions: {:?}", e);
-            return;
-        }
-    };
-
-    // Collect all model/block names
-    let mut model_names = Vec::new();
-    for (name, class) in &merged_def.class_list {
-        collect_models_recursive(class, name, &mut model_names);
-    }
-    model_names.sort();
-
-    println!("Found {} simulatable models/blocks", model_names.len());
-
-    // =========================================================================
-    // PHASE 3: Full compile with JSON export
-    // =========================================================================
-    println!("\n============================================================");
-    println!("       PHASE 3: FULL COMPILE WITH JSON EXPORT");
-    println!("============================================================");
-
-    let total_models = model_names.len();
-    let checked_count = AtomicUsize::new(0);
-    let compile_start = Instant::now();
-
-    println!(
-        "Compiling {} models and exporting JSON to {:?}...",
-        total_models, output_dir
-    );
-
-    let merged_def = Arc::new(merged_def);
-
-    // Compile all models and export JSON
-    let results: Vec<(String, bool, usize, usize, Option<String>)> = model_names
-        .par_iter()
-        .map(|model_name| {
-            let count = checked_count.fetch_add(1, Ordering::Relaxed);
-            let pct = (count + 1) as f64 / total_models as f64 * 100.0;
-            eprintln!(
-                "[{:4}/{} {:5.1}%] {}",
-                count + 1,
-                total_models,
-                pct,
-                model_name
-            );
-
-            // Full compile
-            let compile_result = Compiler::new()
-                .model(model_name)
-                .compile_parsed_ref(&merged_def, "");
-
-            match compile_result {
-                Ok(result) => {
-                    // Check balance using DAE
-                    let balance = result.dae.check_balance();
-
-                    // Export DAE to JSON
-                    let safe_name = model_name.replace(".", "_").replace("/", "_");
-                    let json_path = output_dir.join(format!("{}.json", safe_name));
-
-                    if let Ok(json) = result.dae.to_dae_ir_json()
-                        && let Err(e) = fs::write(&json_path, &json)
-                    {
-                        eprintln!("  Warning: Failed to write JSON for {}: {}", model_name, e);
-                    }
-
-                    (
-                        model_name.clone(),
-                        balance.is_balanced(),
-                        balance.num_equations,
-                        balance.num_unknowns,
-                        None,
-                    )
-                }
-                Err(e) => (model_name.clone(), false, 0, 0, Some(format!("{:?}", e))),
-            }
-        })
-        .collect();
-
-    let compile_time = compile_start.elapsed();
-
-    // =========================================================================
-    // SUMMARY
-    // =========================================================================
-    println!("\n============================================================");
-    println!("                    SUMMARY");
-    println!("============================================================");
-
-    let balanced = results
-        .iter()
-        .filter(|(_, is_bal, _, _, err)| *is_bal && err.is_none())
-        .count();
-    let unbalanced: Vec<_> = results
-        .iter()
-        .filter(|(_, is_bal, _, _, err)| !*is_bal && err.is_none())
-        .collect();
-    let compile_errors: Vec<_> = results
-        .iter()
-        .filter(|(_, _, _, _, err)| err.is_some())
-        .collect();
-
-    println!("BALANCE CHECK:");
-    let avg_compile_time_ms = if total_models > 0 {
-        compile_time.as_secs_f64() * 1000.0 / total_models as f64
-    } else {
-        0.0
-    };
-    println!("  Total Models:     {}", total_models);
-    println!(
-        "  Compile Success:  {} ({:.1}%)",
-        total_models - compile_errors.len(),
-        (total_models - compile_errors.len()) as f64 / total_models as f64 * 100.0
-    );
-    println!(
-        "  Balanced:         {} ({:.1}%)",
-        balanced,
-        balanced as f64 / total_models as f64 * 100.0
-    );
-    println!("  Unbalanced:       {}", unbalanced.len());
-    println!("  Compile Errors:   {}", compile_errors.len());
-    println!(
-        "  Compile Time:     {:.2}s ({:.2}ms/model)",
-        compile_time.as_secs_f64(),
-        avg_compile_time_ms
-    );
-    println!(
-        "  Parse Time:       {:.2}s ({:.2}ms/file)",
-        parse_time.as_secs_f64(),
-        avg_parse_time_ms
-    );
-    println!();
-    println!("JSON files exported to: {:?}", output_dir);
-
-    // Print first 20 unbalanced models
-    println!("\nFirst 20 Unbalanced Models:");
-    println!("------------------------------------------------------------");
-    for (name, _, num_eq, num_unk, _) in unbalanced.iter().take(20) {
-        let diff = *num_eq as i64 - *num_unk as i64;
-        let status = if diff > 0 {
-            format!("over by {}", diff)
-        } else {
-            format!("under by {}", -diff)
-        };
-        println!("  {} ({} eq, {} unk) - {}", name, num_eq, num_unk, status);
-    }
-    if unbalanced.len() > 20 {
-        println!("  ... and {} more", unbalanced.len() - 20);
-    }
-
-    // Save summary to JSON
-    let summary_path = output_dir.join("_summary.json");
-    let summary = serde_json::json!({
-        "total_files": total_files,
-        "total_models": total_models,
-        "balanced": balanced,
-        "unbalanced": unbalanced.len(),
-        "compile_errors": compile_errors.len(),
-        "parse_time_secs": parse_time.as_secs_f64(),
-        "parse_time_ms_per_file": avg_parse_time_ms,
-        "compile_time_secs": compile_time.as_secs_f64(),
-        "compile_time_ms_per_model": avg_compile_time_ms,
-        "unbalanced_models": unbalanced.iter().map(|(name, _, eq, unk, _)| {
-            serde_json::json!({
-                "name": name,
-                "equations": eq,
-                "unknowns": unk,
-                "diff": *eq as i64 - *unk as i64
-            })
-        }).collect::<Vec<_>>(),
-        "compile_error_models": compile_errors.iter().map(|(name, _, _, _, err)| {
-            serde_json::json!({
-                "name": name,
-                "error": err
-            })
-        }).collect::<Vec<_>>()
-    });
-
-    if let Ok(summary_json) = serde_json::to_string_pretty(&summary) {
-        fs::write(&summary_path, summary_json).ok();
-        println!("\nSummary saved to: {:?}", summary_path);
-    }
-}
-
-/// Test Nonlinear blocks balance
-#[test]
-#[ignore]
-fn test_nonlinear_blocks_balance() {
-    let msl_path = get_msl_path().expect("Failed to download MSL");
-
-    // Find and parse all needed files
-    let modelica_dir = msl_path.join("Modelica");
-    let mo_files = find_mo_files(&modelica_dir);
-
-    println!("Parsing {} files...", mo_files.len());
-
-    let definitions: Vec<_> = mo_files
-        .iter()
-        .filter_map(|path| {
-            let content = std::fs::read_to_string(path).ok()?;
-            let mut grammar = ModelicaGrammar::new();
-            if parse(&content, path.to_string_lossy().as_ref(), &mut grammar).is_ok() {
-                grammar
-                    .modelica
-                    .map(|def| (path.to_string_lossy().to_string(), def))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let merged = merge_stored_definitions(definitions).expect("Merge failed");
-    let merged = Arc::new(merged);
-
-    let models = [
-        "Modelica.Blocks.Nonlinear.Limiter",
-        "Modelica.Blocks.Nonlinear.VariableLimiter",
-        "Modelica.Blocks.Nonlinear.SlewRateLimiter",
-        "Modelica.Blocks.Nonlinear.DeadZone",
-        "Modelica.Blocks.Nonlinear.FixedDelay",
-        "Modelica.Blocks.Nonlinear.PadeDelay",
-        "Modelica.Blocks.Nonlinear.VariableDelay",
-    ];
-
-    println!("\nNonlinear Blocks Balance Check:");
-    println!("============================================================");
-
-    for model in &models {
-        print!("{}: ", model);
-        match Compiler::new().model(model).check_balance(&merged) {
-            Ok(balance) => {
-                if balance.is_balanced() {
-                    println!(
-                        "✓ balanced ({} eq, {} unk)",
-                        balance.num_equations, balance.num_unknowns
-                    );
-                } else {
-                    println!(
-                        "✗ {} ({} eq, {} unk, {} states)",
-                        balance.status_message(),
-                        balance.num_equations,
-                        balance.num_unknowns,
-                        balance.num_states
-                    );
-                }
-            }
-            Err(e) => {
-                let msg = format!("{:?}", e);
-                println!("✗ Error: {}", msg.lines().next().unwrap_or("unknown"));
-            }
-        }
-    }
-}
-
-#[test]
-fn test_constants_components() {
-    let msl_path = match ensure_msl_downloaded() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Skipping test: {}", e);
-            return;
-        }
-    };
-
-    let constants_file = msl_path.join("Modelica/Constants.mo");
-    let content = std::fs::read_to_string(&constants_file).unwrap();
-
-    let mut grammar = ModelicaGrammar::new();
-    parse(&content, "Constants.mo", &mut grammar).unwrap();
-
-    let def = grammar.modelica.as_ref().unwrap();
-    println!("=== RAW PARSED ===");
-    println!("Within: {:?}", def.within.as_ref().map(|w| w.to_string()));
-
-    for (name, class) in &def.class_list {
-        println!("Class: {} has {} components", name, class.components.len());
-        for (comp_name, _) in class.components.iter().take(5) {
-            println!("  - {}", comp_name);
-        }
-    }
-
-    // Assert that Constants class has pi component
-    let constants = def
-        .class_list
-        .get("Constants")
-        .expect("Constants not found");
-    assert!(
-        constants.components.contains_key("pi"),
-        "pi not in components"
-    );
-    assert!(
-        constants.components.contains_key("e"),
-        "e not in components"
-    );
-
-    // Now test merging
-    let merged = merge_stored_definitions(vec![("Constants.mo".to_string(), def.clone())]).unwrap();
-
-    println!("\n=== AFTER MERGING ===");
-    let modelica = merged
-        .class_list
-        .get("Modelica")
-        .expect("Modelica package not found after merge");
-    let constants_merged = modelica
-        .classes
-        .get("Constants")
-        .expect("Constants not in Modelica.classes");
-
-    println!(
-        "Modelica.Constants has {} components",
-        constants_merged.components.len()
-    );
-    for (comp_name, _) in constants_merged.components.iter().take(5) {
-        println!("  - {}", comp_name);
-    }
-
-    assert!(
-        constants_merged.components.contains_key("pi"),
-        "pi not in Modelica.Constants after merge"
-    );
-}
-
-#[test]
-fn test_constants_in_class_dict() {
-    use indexmap::IndexMap;
-    use rumoca::ir::ast::ClassDefinition;
-
-    let msl_path = match ensure_msl_downloaded() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Skipping test: {}", e);
-            return;
-        }
-    };
-
-    let constants_file = msl_path.join("Modelica/Constants.mo");
-    let content = std::fs::read_to_string(&constants_file).unwrap();
-
-    let mut grammar = ModelicaGrammar::new();
-    parse(&content, "Constants.mo", &mut grammar).unwrap();
-
-    let def = grammar.modelica.as_ref().unwrap();
-
-    // Merge
-    let merged = merge_stored_definitions(vec![("Constants.mo".to_string(), def.clone())]).unwrap();
-
-    // Build class_dict similar to what flatten does
-    fn build_class_dict(
-        class: &ClassDefinition,
-        prefix: &str,
-        dict: &mut IndexMap<String, ClassDefinition>,
-    ) {
-        let full_name = if prefix.is_empty() {
-            class.name.text.clone()
-        } else {
-            format!("{}.{}", prefix, class.name.text)
-        };
-        dict.insert(full_name.clone(), class.clone());
-
-        for (_name, nested_class) in &class.classes {
-            build_class_dict(nested_class, &full_name, dict);
-        }
-    }
-
-    let mut class_dict = IndexMap::new();
-    for (_class_name, class) in &merged.class_list {
-        build_class_dict(class, "", &mut class_dict);
-    }
-
-    println!("=== CLASS DICT ===");
-    for key in class_dict.keys() {
-        println!("  {}", key);
-    }
-
-    // Check if Modelica.Constants exists
-    assert!(
-        class_dict.contains_key("Modelica"),
-        "Modelica not in class_dict"
-    );
-    assert!(
-        class_dict.contains_key("Modelica.Constants"),
-        "Modelica.Constants not in class_dict"
-    );
-
-    // Check if Modelica.Constants has pi component
-    let constants = class_dict.get("Modelica.Constants").unwrap();
-    println!(
-        "\nModelica.Constants components: {}",
-        constants.components.len()
-    );
-    for (name, _) in constants.components.iter().take(5) {
-        println!("  - {}", name);
-    }
-
-    assert!(
-        constants.components.contains_key("pi"),
-        "pi not in Modelica.Constants.components in class_dict"
-    );
-
-    // Test path_exists_in_dict logic
-    fn path_exists_in_dict(path: &str, class_dict: &IndexMap<String, ClassDefinition>) -> bool {
-        if class_dict.contains_key(path) {
-            return true;
-        }
-        if let Some(dot_pos) = path.rfind('.') {
-            let parent_path = &path[..dot_pos];
-            let component_name = &path[dot_pos + 1..];
-            if let Some(parent_class) = class_dict.get(parent_path) {
-                if parent_class.components.contains_key(component_name) {
-                    return true;
-                }
-                if parent_class.classes.contains_key(component_name) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    println!("\n=== PATH EXISTS TESTS ===");
-    println!("Modelica: {}", path_exists_in_dict("Modelica", &class_dict));
-    println!(
-        "Modelica.Constants: {}",
-        path_exists_in_dict("Modelica.Constants", &class_dict)
-    );
-    println!(
-        "Modelica.Constants.pi: {}",
-        path_exists_in_dict("Modelica.Constants.pi", &class_dict)
-    );
-
-    assert!(
-        path_exists_in_dict("Modelica.Constants.pi", &class_dict),
-        "Modelica.Constants.pi should exist"
-    );
-}
-
-/// Focused MSL test - runs only on models that failed in the last test run.
-/// Reads model names from target/failed_models.json and tests just those.
-/// Much faster iteration when debugging specific failures (~30s vs ~5min).
-///
-/// Usage:
-/// ```bash
-/// # First run full test to generate failed_models.json:
-/// cargo test test_msl_balance_all -- --ignored --nocapture
-///
-/// # Then iterate quickly on failures:
-/// cargo test test_msl_focused -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore]
-fn test_msl_focused() {
-    // Read failed models from previous run
-    let failed_models_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("failed_models.json");
-
-    if !failed_models_path.exists() {
-        println!("No failed_models.json found. Run test_msl_balance_all first.");
-        println!("  cargo test test_msl_balance_all -- --ignored --nocapture");
-        return;
-    }
-
-    let json_content =
-        fs::read_to_string(&failed_models_path).expect("Failed to read failed_models.json");
-    let json: serde_json::Value =
-        serde_json::from_str(&json_content).expect("Failed to parse failed_models.json");
-
-    // Extract compile error model names
-    let failures = json["failures"]
-        .as_array()
-        .expect("Expected 'failures' array in JSON");
-
-    let compile_error_models: Vec<String> = failures
-        .iter()
-        .filter(|f| f["failure_type"].as_str() == Some("compile"))
-        .filter_map(|f| f["model_name"].as_str().map(|s| s.to_string()))
-        .collect();
-
-    if compile_error_models.is_empty() {
-        println!("No compile errors found in failed_models.json!");
-        println!("All models are compiling successfully.");
-        return;
-    }
-
-    println!("============================================================");
-    println!("              FOCUSED MSL TEST");
-    println!("============================================================");
-    println!();
-    println!(
-        "Testing {} models with compile errors from last run",
-        compile_error_models.len()
-    );
-    println!();
-
-    // Get MSL path and parse all files (needed for context)
-    let msl_path = get_msl_path().expect("Failed to download MSL");
-    let modelica_dir = msl_path.join("Modelica");
-    let mo_files = find_mo_files(&modelica_dir);
-
-    println!("Parsing {} files...", mo_files.len());
-    let parse_start = Instant::now();
-
-    // Parse all files in parallel
-    let parse_results: Vec<ParseResult> = mo_files
-        .par_iter()
-        .map(|file_path| {
-            let content = match fs::read_to_string(file_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    return ParseResult {
-                        file_path: file_path.clone(),
-                        success: false,
-                        error: Some(format!("Read error: {}", e)),
-                        definition: None,
-                    };
-                }
-            };
-
-            let mut grammar = ModelicaGrammar::new();
-            match parse(&content, file_path.to_string_lossy().as_ref(), &mut grammar) {
-                Ok(_) => ParseResult {
-                    file_path: file_path.clone(),
-                    success: true,
-                    error: None,
-                    definition: grammar.modelica,
-                },
-                Err(e) => ParseResult {
-                    file_path: file_path.clone(),
-                    success: false,
-                    error: Some(format!("{:?}", e)),
-                    definition: None,
-                },
-            }
-        })
-        .collect();
-
-    let parse_time = parse_start.elapsed();
-    println!("Parsed in {:.2}s", parse_time.as_secs_f64());
-
-    // Merge definitions
-    let definitions: Vec<(String, StoredDefinition)> = parse_results
-        .into_iter()
-        .filter_map(|r| {
-            r.definition
-                .map(|def| (r.file_path.to_string_lossy().to_string(), def))
-        })
-        .collect();
-
-    let merged_def = merge_stored_definitions(definitions).expect("Failed to merge definitions");
-
-    // Pre-warm cache
-    println!("Pre-warming class cache...");
-    enable_cache();
-    let prewarm_start = Instant::now();
-    prewarm_class_cache(&merged_def);
-    println!(
-        "Pre-warmed in {:.2}s",
-        prewarm_start.elapsed().as_secs_f64()
-    );
-
-    let merged_def = Arc::new(merged_def);
-
-    // Test the focused models
-    println!();
-    println!(
-        "Testing {} compile error models:",
-        compile_error_models.len()
-    );
-    println!("------------------------------------------------------------");
-
-    let mut fixed = 0;
-    let mut still_failing = 0;
-
-    for model_name in &compile_error_models {
-        let result = Compiler::new().model(model_name).check_balance(&merged_def);
-
-        match result {
-            Ok(balance) => {
-                fixed += 1;
-                let status = if balance.is_balanced() {
-                    format!(
-                        "✓ FIXED (balanced: {} eq, {} unk)",
-                        balance.num_equations, balance.num_unknowns
-                    )
-                } else {
-                    format!(
-                        "✓ FIXED (compiles, {}: {} eq, {} unk)",
-                        balance.status_message(),
-                        balance.num_equations,
-                        balance.num_unknowns
-                    )
-                };
-                println!("  {}: {}", model_name, status);
-            }
-            Err(e) => {
-                still_failing += 1;
-                let err_msg = format!("{:?}", e);
-                // Extract just the relevant part of the error
-                let short_err = err_msg.lines().next().unwrap_or(&err_msg);
-                println!("  {}: ✗ {}", model_name, short_err);
-            }
-        }
-    }
-
-    println!();
-    println!("============================================================");
-    println!("                    RESULTS");
-    println!("============================================================");
-    println!("  Fixed:         {}/{}", fixed, compile_error_models.len());
-    println!(
-        "  Still failing: {}/{}",
-        still_failing,
-        compile_error_models.len()
-    );
-    println!();
-
-    if still_failing == 0 {
-        println!("🎉 All previously failing models now compile!");
-        println!("   Run the full test to verify no regressions:");
-        println!("   cargo test test_msl_balance_all -- --ignored --nocapture");
-    } else {
-        println!("Still have {} compile errors to fix.", still_failing);
-    }
 }
