@@ -1,6 +1,6 @@
 [package]
 name = "rumoca"
-version = "0.7.26"
+version = "0.7.27"
 edition = "2024"
 description = "Modelica compiler written in RUST"
 license = "Apache-2.0"
