@@ -2,10 +2,12 @@
 
 use std::collections::HashMap;
 
-use crate::ir::ast::{Equation, Expression, Statement};
+use crate::ir::ast::{ClassDefinition, Equation, Expression, Statement};
 
 use crate::ir::analysis::symbols::DefinedSymbol;
-use crate::ir::analysis::type_inference::{SymbolType, infer_expression_type};
+use crate::ir::analysis::type_inference::{
+    ClassLookup, SymbolType, infer_expression_type_with_classes,
+};
 
 use super::{TypeCheckResult, TypeError, TypeErrorSeverity};
 
@@ -14,8 +16,17 @@ use super::{TypeCheckResult, TypeError, TypeErrorSeverity};
 /// Returns a list of type errors found. The `defined` map should contain
 /// all symbols defined in the current scope.
 pub fn check_equation(eq: &Equation, defined: &HashMap<String, DefinedSymbol>) -> TypeCheckResult {
+    check_equation_with_classes::<HashMap<String, ClassDefinition>>(eq, defined, None)
+}
+
+/// Check types in an equation with class lookup for member access resolution.
+pub fn check_equation_with_classes<C: ClassLookup>(
+    eq: &Equation,
+    defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
+) -> TypeCheckResult {
     let mut result = TypeCheckResult::new();
-    check_equation_impl(eq, defined, &mut result);
+    check_equation_impl(eq, defined, classes, &mut result);
     result
 }
 
@@ -24,9 +35,18 @@ pub fn check_equations(
     equations: &[Equation],
     defined: &HashMap<String, DefinedSymbol>,
 ) -> TypeCheckResult {
+    check_equations_with_classes::<HashMap<String, ClassDefinition>>(equations, defined, None)
+}
+
+/// Check types in a list of equations with class lookup.
+pub fn check_equations_with_classes<C: ClassLookup>(
+    equations: &[Equation],
+    defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
+) -> TypeCheckResult {
     let mut result = TypeCheckResult::new();
     for eq in equations {
-        check_equation_impl(eq, defined, &mut result);
+        check_equation_impl(eq, defined, classes, &mut result);
     }
     result
 }
@@ -36,8 +56,17 @@ pub fn check_statement(
     stmt: &Statement,
     defined: &HashMap<String, DefinedSymbol>,
 ) -> TypeCheckResult {
+    check_statement_with_classes::<HashMap<String, ClassDefinition>>(stmt, defined, None)
+}
+
+/// Check types in a statement with class lookup.
+pub fn check_statement_with_classes<C: ClassLookup>(
+    stmt: &Statement,
+    defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
+) -> TypeCheckResult {
     let mut result = TypeCheckResult::new();
-    check_statement_impl(stmt, defined, &mut result);
+    check_statement_impl(stmt, defined, classes, &mut result);
     result
 }
 
@@ -46,23 +75,33 @@ pub fn check_statements(
     statements: &[Statement],
     defined: &HashMap<String, DefinedSymbol>,
 ) -> TypeCheckResult {
+    check_statements_with_classes::<HashMap<String, ClassDefinition>>(statements, defined, None)
+}
+
+/// Check types in a list of statements with class lookup.
+pub fn check_statements_with_classes<C: ClassLookup>(
+    statements: &[Statement],
+    defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
+) -> TypeCheckResult {
     let mut result = TypeCheckResult::new();
     for stmt in statements {
-        check_statement_impl(stmt, defined, &mut result);
+        check_statement_impl(stmt, defined, classes, &mut result);
     }
     result
 }
 
 /// Internal implementation for checking an equation
-fn check_equation_impl(
+fn check_equation_impl<C: ClassLookup>(
     eq: &Equation,
     defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
     result: &mut TypeCheckResult,
 ) {
     match eq {
         Equation::Empty => {}
         Equation::Simple { lhs, rhs } => {
-            check_expression_pair(lhs, rhs, defined, result);
+            check_expression_pair(lhs, rhs, defined, classes, result);
         }
         Equation::Connect { .. } => {
             // Connect equations have special typing rules not yet implemented
@@ -81,13 +120,13 @@ fn check_equation_impl(
                 );
             }
             for sub_eq in equations {
-                check_equation_impl(sub_eq, &local_defined, result);
+                check_equation_impl(sub_eq, &local_defined, classes, result);
             }
         }
         Equation::When(blocks) => {
             for block in blocks {
                 // Check the condition is Boolean
-                let cond_type = infer_expression_type(&block.cond, defined);
+                let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
                     SymbolType::Boolean | SymbolType::Unknown
@@ -102,7 +141,7 @@ fn check_equation_impl(
                     ));
                 }
                 for sub_eq in &block.eqs {
-                    check_equation_impl(sub_eq, defined, result);
+                    check_equation_impl(sub_eq, defined, classes, result);
                 }
             }
         }
@@ -112,7 +151,7 @@ fn check_equation_impl(
         } => {
             for block in cond_blocks {
                 // Check the condition is Boolean
-                let cond_type = infer_expression_type(&block.cond, defined);
+                let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
                     SymbolType::Boolean | SymbolType::Unknown
@@ -127,12 +166,12 @@ fn check_equation_impl(
                     ));
                 }
                 for sub_eq in &block.eqs {
-                    check_equation_impl(sub_eq, defined, result);
+                    check_equation_impl(sub_eq, defined, classes, result);
                 }
             }
             if let Some(else_eqs) = else_block {
                 for sub_eq in else_eqs {
-                    check_equation_impl(sub_eq, defined, result);
+                    check_equation_impl(sub_eq, defined, classes, result);
                 }
             }
         }
@@ -143,9 +182,10 @@ fn check_equation_impl(
 }
 
 /// Internal implementation for checking a statement
-fn check_statement_impl(
+fn check_statement_impl<C: ClassLookup>(
     stmt: &Statement,
     defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
     result: &mut TypeCheckResult,
 ) {
     match stmt {
@@ -156,7 +196,7 @@ fn check_statement_impl(
                 && let Some(sym) = defined.get(&first.ident.text)
             {
                 let target_type = sym.declared_type.clone();
-                let value_type = infer_expression_type(value, defined);
+                let value_type = infer_expression_type_with_classes(value, defined, classes);
 
                 if !target_type.is_compatible_with(&value_type)
                     && let Some(loc) = value.get_location()
@@ -181,12 +221,12 @@ fn check_statement_impl(
                 );
             }
             for sub_stmt in equations {
-                check_statement_impl(sub_stmt, &local_defined, result);
+                check_statement_impl(sub_stmt, &local_defined, classes, result);
             }
         }
         Statement::While(block) => {
             // Check the condition is Boolean
-            let cond_type = infer_expression_type(&block.cond, defined);
+            let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
             if !matches!(
                 cond_type.base_type(),
                 SymbolType::Boolean | SymbolType::Unknown
@@ -201,7 +241,7 @@ fn check_statement_impl(
                 ));
             }
             for sub_stmt in &block.stmts {
-                check_statement_impl(sub_stmt, defined, result);
+                check_statement_impl(sub_stmt, defined, classes, result);
             }
         }
         Statement::If {
@@ -209,7 +249,7 @@ fn check_statement_impl(
             else_block,
         } => {
             for block in cond_blocks {
-                let cond_type = infer_expression_type(&block.cond, defined);
+                let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
                     SymbolType::Boolean | SymbolType::Unknown
@@ -224,18 +264,18 @@ fn check_statement_impl(
                     ));
                 }
                 for sub_stmt in &block.stmts {
-                    check_statement_impl(sub_stmt, defined, result);
+                    check_statement_impl(sub_stmt, defined, classes, result);
                 }
             }
             if let Some(else_stmts) = else_block {
                 for sub_stmt in else_stmts {
-                    check_statement_impl(sub_stmt, defined, result);
+                    check_statement_impl(sub_stmt, defined, classes, result);
                 }
             }
         }
         Statement::When(blocks) => {
             for block in blocks {
-                let cond_type = infer_expression_type(&block.cond, defined);
+                let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
                     SymbolType::Boolean | SymbolType::Unknown
@@ -250,7 +290,7 @@ fn check_statement_impl(
                     ));
                 }
                 for sub_stmt in &block.stmts {
-                    check_statement_impl(sub_stmt, defined, result);
+                    check_statement_impl(sub_stmt, defined, classes, result);
                 }
             }
         }
@@ -259,14 +299,15 @@ fn check_statement_impl(
 }
 
 /// Check that two expressions have compatible types (for equation LHS = RHS)
-fn check_expression_pair(
+fn check_expression_pair<C: ClassLookup>(
     lhs: &Expression,
     rhs: &Expression,
     defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
     result: &mut TypeCheckResult,
 ) {
-    let lhs_type = infer_expression_type(lhs, defined);
-    let rhs_type = infer_expression_type(rhs, defined);
+    let lhs_type = infer_expression_type_with_classes(lhs, defined, classes);
+    let rhs_type = infer_expression_type_with_classes(rhs, defined, classes);
 
     // Check for Boolean/numeric mixing (more severe)
     if (matches!(lhs_type.base_type(), SymbolType::Boolean) && rhs_type.is_numeric())

@@ -195,22 +195,25 @@ fn analyze_class_with_scope(
         ));
     }
 
-    // Run type checking on equations
+    // Run type checking on equations (with class lookup for member access resolution)
     for eq in &class.equations {
-        let type_result = type_checker::check_equation(eq, &defined);
+        let type_result =
+            type_checker::check_equation_with_classes(eq, &defined, Some(peer_classes));
         diagnostics.extend(type_errors_to_diagnostics(&type_result));
     }
 
     // Run type checking on initial equations
     for eq in &class.initial_equations {
-        let type_result = type_checker::check_equation(eq, &defined);
+        let type_result =
+            type_checker::check_equation_with_classes(eq, &defined, Some(peer_classes));
         diagnostics.extend(type_errors_to_diagnostics(&type_result));
     }
 
     // Run type checking on algorithms
     for algo in &class.algorithms {
         for stmt in algo {
-            let type_result = type_checker::check_statement(stmt, &defined);
+            let type_result =
+                type_checker::check_statement_with_classes(stmt, &defined, Some(peer_classes));
             diagnostics.extend(type_errors_to_diagnostics(&type_result));
         }
     }
@@ -218,7 +221,8 @@ fn analyze_class_with_scope(
     // Run type checking on initial algorithms
     for algo in &class.initial_algorithms {
         for stmt in algo {
-            let type_result = type_checker::check_statement(stmt, &defined);
+            let type_result =
+                type_checker::check_statement_with_classes(stmt, &defined, Some(peer_classes));
             diagnostics.extend(type_errors_to_diagnostics(&type_result));
         }
     }

@@ -26,7 +26,7 @@ pub enum BalanceStatus {
 }
 
 /// Result of checking DAE balance
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BalanceResult {
     /// Number of equations
     pub num_equations: usize,
@@ -44,6 +44,27 @@ pub struct BalanceResult {
     pub num_external_connectors: usize,
     /// Balance status category
     pub status: BalanceStatus,
+}
+
+// Custom Serialize to include computed `is_balanced` field for WASM/JSON consumers
+impl Serialize for BalanceResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("BalanceResult", 9)?;
+        state.serialize_field("num_equations", &self.num_equations)?;
+        state.serialize_field("num_unknowns", &self.num_unknowns)?;
+        state.serialize_field("num_states", &self.num_states)?;
+        state.serialize_field("num_algebraic", &self.num_algebraic)?;
+        state.serialize_field("num_parameters", &self.num_parameters)?;
+        state.serialize_field("num_inputs", &self.num_inputs)?;
+        state.serialize_field("num_external_connectors", &self.num_external_connectors)?;
+        state.serialize_field("status", &self.status)?;
+        state.serialize_field("is_balanced", &self.is_balanced())?;
+        state.end()
+    }
 }
 
 impl BalanceResult {
