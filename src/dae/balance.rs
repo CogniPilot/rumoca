@@ -44,6 +44,9 @@ pub struct BalanceResult {
     pub num_external_connectors: usize,
     /// Balance status category
     pub status: BalanceStatus,
+    /// Compilation time in milliseconds (for performance display)
+    #[serde(default)]
+    pub compile_time_ms: u64,
 }
 
 // Custom Serialize to include computed `is_balanced` field for WASM/JSON consumers
@@ -53,7 +56,7 @@ impl Serialize for BalanceResult {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("BalanceResult", 9)?;
+        let mut state = serializer.serialize_struct("BalanceResult", 10)?;
         state.serialize_field("num_equations", &self.num_equations)?;
         state.serialize_field("num_unknowns", &self.num_unknowns)?;
         state.serialize_field("num_states", &self.num_states)?;
@@ -63,6 +66,7 @@ impl Serialize for BalanceResult {
         state.serialize_field("num_external_connectors", &self.num_external_connectors)?;
         state.serialize_field("status", &self.status)?;
         state.serialize_field("is_balanced", &self.is_balanced())?;
+        state.serialize_field("compile_time_ms", &self.compile_time_ms)?;
         state.end()
     }
 }
@@ -79,6 +83,7 @@ impl BalanceResult {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::CompileError(message),
+            compile_time_ms: 0,
         }
     }
 
@@ -194,6 +199,7 @@ impl Dae {
             num_inputs,
             num_external_connectors,
             status,
+            compile_time_ms: 0, // Set by caller if timing is tracked
         }
     }
 }
@@ -432,6 +438,7 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::Balanced,
+            compile_time_ms: 0,
         };
         assert!(balanced.status_message().contains("balanced"));
         assert_eq!(balanced.difference(), 0);
@@ -448,6 +455,7 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::Unbalanced,
+            compile_time_ms: 0,
         };
         assert!(over.status_message().contains("over-determined"));
         assert_eq!(over.difference(), 2);
@@ -464,6 +472,7 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::Unbalanced,
+            compile_time_ms: 0,
         };
         assert!(under_bug.status_message().contains("under-determined"));
         assert_eq!(under_bug.difference(), -2);
@@ -480,6 +489,7 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 2,
             status: BalanceStatus::Partial,
+            compile_time_ms: 0,
         };
         assert!(partial.status_message().contains("partial"));
         assert_eq!(partial.difference(), -2);

@@ -1,7 +1,3 @@
-// Allow mutable_key_type for HashMap<Uri, _> - Uri's hash is based on its immutable string
-// representation, making it safe to use as a key despite interior mutability in auth data.
-#![allow(clippy::mutable_key_type)]
-
 //! Rumoca Language Server Protocol (LSP) binary.
 //!
 //! This binary provides LSP support for Modelica files, including:
@@ -24,6 +20,15 @@
 //! - Code lenses
 //! - Call hierarchy
 //! - Document links
+
+// Allow mutable_key_type for HashMap<Uri, _> - Uri's hash is based on its immutable string
+// representation, making it safe to use as a key despite interior mutability in auth data.
+#![allow(clippy::mutable_key_type)]
+
+// Use mimalloc as the global allocator for better performance with heavy allocation
+#[cfg(feature = "allocator")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use crossbeam_channel::{Select, unbounded};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
@@ -339,6 +344,8 @@ fn main_loop(
                 if let Err(e) = publish_diagnostics(&connection, uri, diagnostics) {
                     debug_log!("[rumoca-lsp] Failed to publish diagnostics: {}", e);
                 }
+                // Request CodeLens refresh so balance info is updated in the overlay
+                let _ = refresh_code_lenses(&connection);
             }
         }
     }
@@ -821,5 +828,23 @@ fn publish_diagnostics(
         params,
     );
     connection.sender.send(Message::Notification(notif))?;
+    Ok(())
+}
+
+/// Request the client to refresh code lenses for all documents.
+/// This is called after diagnostics are computed to update the balance display.
+fn refresh_code_lenses(connection: &Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
+    // Send workspace/codeLens/refresh request to client
+    // Note: This requires client support (workspace.codeLens.refreshSupport capability)
+    // If client doesn't support it, the request will be ignored
+    use lsp_server::Request;
+
+    let req = Request::new(
+        lsp_server::RequestId::from("codelens-refresh".to_string()),
+        "workspace/codeLens/refresh".to_string(),
+        serde_json::Value::Null,
+    );
+    // Send as a request - client may respond with error if not supported, which is fine
+    let _ = connection.sender.send(Message::Request(req));
     Ok(())
 }

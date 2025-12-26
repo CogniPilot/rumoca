@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lsp_types::Uri;
 use rayon::prelude::*;
@@ -17,7 +18,8 @@ use crate::ir::analysis::symbol_trait::SymbolInfo;
 use crate::ir::analysis::type_inference::SymbolType;
 use crate::ir::ast::{ClassDefinition, ClassType, Import, StoredDefinition};
 use crate::ir::transform::multi_file::{
-    discover_modelica_files, get_modelica_path, is_modelica_package, should_ignore_directory,
+    discover_modelica_files, extract_package_name, get_modelica_path, is_modelica_package,
+    should_ignore_directory,
 };
 use crate::ir::transform::scope_resolver::{ExternalSymbol, SymbolCategory, SymbolLookup};
 
@@ -160,6 +162,11 @@ pub struct WorkspaceState {
     /// Cache of balance check results per class name (computed during diagnostics)
     /// Key is (Uri, class_name) to support multiple classes per file
     balance_cache: HashMap<(Uri, String), BalanceResult>,
+    /// In-memory cache of pre-merged library ASTs (e.g., MSL)
+    /// Key is library name (e.g., "Modelica"), value is Arc-wrapped merged StoredDefinition
+    /// Pre-merging at load time avoids expensive merging on every compile
+    /// Using Arc avoids cloning the large library on every compile
+    library_cache: HashMap<String, Arc<StoredDefinition>>,
     /// Debug mode flag for verbose logging
     debug: bool,
 }
@@ -183,6 +190,7 @@ impl WorkspaceState {
             discovered_files: HashSet::new(),
             cached_asts: HashMap::new(),
             balance_cache: HashMap::new(),
+            library_cache: HashMap::new(),
             debug: false,
         }
     }
@@ -295,16 +303,132 @@ impl WorkspaceState {
         self.balance_cache.retain(|(u, _), _| u != uri);
     }
 
+    /// Get cached pre-merged library AST by name
+    /// Returns an Arc to avoid cloning the large library on every compile
+    pub fn get_library(&self, name: &str) -> Option<Arc<StoredDefinition>> {
+        self.library_cache.get(name).cloned()
+    }
+
+    /// Check if a library is cached
+    pub fn has_library(&self, name: &str) -> bool {
+        self.library_cache.contains_key(name)
+    }
+
+    /// Get a pre-built class dictionary for a library.
+    ///
+    /// This is more efficient than `get_library()` for compilation because
+    /// it returns the class dictionary directly, which can be combined
+    /// with user code without cloning class definitions.
+    ///
+    /// The class dictionary is cached in `LIBRARY_DICT_CACHE` so subsequent
+    /// calls return the cached dictionary in O(1) time.
+    ///
+    /// # Performance
+    ///
+    /// - First call: ~1 second (builds dictionary from ~50,000 MSL classes)
+    /// - Subsequent calls: ~1ms (returns cached Arc reference)
+    pub fn get_library_dict(
+        &self,
+        name: &str,
+    ) -> Option<Arc<crate::ir::transform::flatten::ClassDict>> {
+        use crate::ir::transform::flatten::get_or_build_library_dict;
+
+        // Get the cached library StoredDefinition
+        let lib = self.library_cache.get(name)?;
+
+        // Build (or get cached) class dictionary from it
+        Some(get_or_build_library_dict(name, lib))
+    }
+
+    /// Load a library into the in-memory cache
+    ///
+    /// This parses all files in the library package, merges them into a single
+    /// StoredDefinition wrapped in Arc, and caches the result. Pre-merging at
+    /// load time avoids expensive merging on every compile. Using Arc avoids
+    /// cloning the large library on every access.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_library(&mut self, name: &str) -> Option<Arc<StoredDefinition>> {
+        use crate::compiler::parse_file_cached;
+        use crate::ir::transform::multi_file::{
+            discover_modelica_files, find_package_in_paths, merge_stored_definitions,
+        };
+
+        // Already cached?
+        if let Some(cached) = self.library_cache.get(name) {
+            return Some(Arc::clone(cached));
+        }
+
+        // Find the package in our library paths
+        let package_path = find_package_in_paths(name, &self.package_roots)?;
+
+        self.debug_log(&format!(
+            "[workspace] Loading library '{}' from {:?}",
+            name, package_path
+        ));
+
+        let start = std::time::Instant::now();
+
+        // Discover all files
+        let files = discover_modelica_files(&package_path).ok()?;
+
+        // Parse all files in parallel using rayon and disk cache
+        use rayon::prelude::*;
+        let definitions: Vec<(String, StoredDefinition)> = files
+            .par_iter()
+            .filter_map(|path| {
+                let path_str = path.to_string_lossy().to_string();
+                parse_file_cached(path).map(|ast| (path_str, ast))
+            })
+            .collect();
+
+        let parse_time = start.elapsed();
+
+        // Pre-merge all definitions into one StoredDefinition
+        let merge_start = std::time::Instant::now();
+        let merged = match merge_stored_definitions(definitions) {
+            Ok(m) => m,
+            Err(e) => {
+                self.debug_log(&format!(
+                    "[workspace] Failed to merge library '{}': {}",
+                    name, e
+                ));
+                return None;
+            }
+        };
+        let merge_time = merge_start.elapsed();
+
+        self.debug_log(&format!(
+            "[workspace] Loaded library '{}': parsed in {:?}, merged in {:?}",
+            name, parse_time, merge_time
+        ));
+
+        let arc = Arc::new(merged);
+        self.library_cache
+            .insert(name.to_string(), Arc::clone(&arc));
+        Some(arc)
+    }
+
     /// Initialize workspace with root folders and optional additional library paths
     ///
     /// # Arguments
     /// * `workspace_folders` - Folders opened in the editor
     /// * `extra_library_paths` - Additional library paths (from settings, added to MODELICAPATH)
+    ///
+    /// # Cache Invalidation
+    ///
+    /// This clears both the local `library_cache` and the global `LIBRARY_DICT_CACHE`
+    /// to ensure each workspace session starts fresh. This prevents stale library
+    /// data from being used when switching between projects with different library versions.
     pub fn initialize(
         &mut self,
         workspace_folders: Vec<PathBuf>,
         extra_library_paths: Vec<PathBuf>,
     ) {
+        // Clear caches to ensure fresh library loading for this workspace
+        // This handles the case where different projects use different library versions
+        self.library_cache.clear();
+        crate::ir::transform::flatten::clear_library_dict_cache();
+
         self.debug_log(&format!(
             "[workspace] initialize() called with {} folders, {} extra library paths",
             workspace_folders.len(),
@@ -455,7 +579,10 @@ impl WorkspaceState {
             self.package_roots.push(folder.to_path_buf());
 
             // Register the package name as a symbol for import autocompletion
-            if let Some(package_name) = folder.file_name().and_then(|n| n.to_str()) {
+            // Use extract_package_name to handle versioned directory names (Modelica Spec 13.4)
+            // e.g., "Modelica 4.1.0" should be registered as "Modelica"
+            if let Some(folder_name) = folder.file_name().and_then(|n| n.to_str()) {
+                let package_name = extract_package_name(folder_name);
                 let package_mo = folder.join("package.mo");
                 if let Some(path_str) = package_mo.to_str() {
                     let uri_str = format!("file://{}", path_str);
@@ -822,12 +949,13 @@ impl WorkspaceState {
         }
 
         // Find the package root that matches the first component
+        // Use extract_package_name to handle versioned directory names (Modelica Spec 13.4)
         let top_level = components[0];
         let mut package_path: Option<PathBuf> = None;
 
         for root in &self.package_roots {
             if let Some(name) = root.file_name().and_then(|n| n.to_str())
-                && name == top_level
+                && extract_package_name(name) == top_level
             {
                 package_path = Some(root.clone());
                 break;
