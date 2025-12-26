@@ -37,10 +37,23 @@ pub fn render_template_str(dae: &Dae, template_str: &str) -> Result<String> {
     let mut env = Environment::new();
     env.add_function("panic", panic);
     env.add_function("warn", warn);
-    env.add_template("template", template_str)?;
+
+    // Add template with detailed error on syntax issues
+    env.add_template("template", template_str)
+        .with_context(|| "Template syntax error in template".to_string())?;
+
     let tmpl = env.get_template("template")?;
-    let txt = tmpl
-        .render(context!(dae => dae))
-        .with_context(|| "Template rendering failed")?;
+
+    // Render with detailed error context
+    let txt = tmpl.render(context!(dae => dae)).map_err(|e| {
+        // Include line/column info if available
+        let detail = if let Some(line) = e.line() {
+            format!("Line {}: {}", line, e)
+        } else {
+            format!("{}", e)
+        };
+        anyhow::anyhow!("Template error: {}", detail)
+    })?;
+
     Ok(txt)
 }
