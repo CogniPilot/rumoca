@@ -26,7 +26,10 @@ pub use assertions::check_assert_arguments;
 pub use attributes::check_builtin_attribute_modifiers;
 pub use bindings::check_component_bindings;
 pub use cardinality::{check_cardinality_arguments, check_cardinality_context};
-pub use equations::{check_equation, check_equations, check_statement, check_statements};
+pub use equations::{
+    check_equation, check_equation_with_classes, check_equations, check_equations_with_classes,
+    check_statement, check_statement_with_classes, check_statements, check_statements_with_classes,
+};
 pub use member_access::check_class_member_access;
 pub use validation::{
     check_array_bounds, check_break_return_context, check_scalar_subscripts,

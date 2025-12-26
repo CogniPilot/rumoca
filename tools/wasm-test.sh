@@ -89,11 +89,14 @@ serve() {
     echo ""
 
     # Python server with COOP/COEP headers for SharedArrayBuffer
+    # Also includes a /proxy/ endpoint to fetch external URLs (avoids CORS issues)
     python3 << 'EOF'
 import http.server
 import mimetypes
 import os
 import sys
+import urllib.request
+import urllib.parse
 
 PORT = int(os.environ.get('PORT', 8080))
 
@@ -115,6 +118,38 @@ class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
         '.jpg': 'image/jpeg',
         '.svg': 'image/svg+xml',
     }
+
+    def do_GET(self):
+        # Handle /proxy/ requests - fetch external URLs
+        if self.path.startswith('/proxy/'):
+            self.handle_proxy()
+        else:
+            super().do_GET()
+
+    def handle_proxy(self):
+        # Extract the URL to fetch (everything after /proxy/)
+        target_url = self.path[7:]  # Remove '/proxy/'
+        target_url = urllib.parse.unquote(target_url)
+
+        try:
+            print(f"\033[33m[proxy]\033[0m Fetching: {target_url}")
+            req = urllib.request.Request(target_url, headers={'User-Agent': 'Rumoca-WASM-Editor/1.0'})
+            with urllib.request.urlopen(req) as response:
+                content = response.read()
+                content_type = response.headers.get('Content-Type', 'application/octet-stream')
+
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', len(content))
+                self.end_headers()
+                self.wfile.write(content)
+                print(f"\033[32m[proxy]\033[0m Sent {len(content)} bytes")
+        except Exception as e:
+            print(f"\033[31m[proxy]\033[0m Error: {e}")
+            self.send_response(500)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(str(e).encode())
 
     def end_headers(self):
         # Required for SharedArrayBuffer (WASM threading)

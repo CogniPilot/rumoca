@@ -5,9 +5,32 @@
 
 use std::collections::HashMap;
 
-use crate::ir::ast::{Expression, OpBinary, TerminalType};
+use crate::ir::ast::{ClassDefinition, Expression, OpBinary, TerminalType};
 
 use super::symbols::DefinedSymbol;
+
+/// Trait for looking up class definitions by type name.
+///
+/// Implement this to provide class hierarchy lookup for type inference.
+/// This enables resolving member types like `pid1.u` where `pid1` is of type `PID`.
+pub trait ClassLookup {
+    /// Look up a class definition by its type name.
+    fn lookup_class(&self, type_name: &str) -> Option<&ClassDefinition>;
+}
+
+/// Simple implementation using a HashMap of class definitions.
+impl ClassLookup for HashMap<String, ClassDefinition> {
+    fn lookup_class(&self, type_name: &str) -> Option<&ClassDefinition> {
+        self.get(type_name)
+    }
+}
+
+/// Implementation for IndexMap (used by StoredDefinition.class_list).
+impl ClassLookup for indexmap::IndexMap<String, ClassDefinition> {
+    fn lookup_class(&self, type_name: &str) -> Option<&ClassDefinition> {
+        self.get(type_name)
+    }
+}
 
 /// Inferred type for an expression.
 ///
@@ -131,10 +154,82 @@ impl SymbolType {
     }
 }
 
-/// Infer the type of an expression given the defined symbols
+/// Resolve the type of a member access path within a class.
+///
+/// Given a class name and remaining path parts (e.g., ["u"] for `pid1.u`),
+/// looks up the member in the class definition and returns its type.
+fn resolve_member_type<C: ClassLookup>(
+    classes: &C,
+    class_name: &str,
+    path: &[crate::ir::ast::ComponentRefPart],
+) -> SymbolType {
+    if path.is_empty() {
+        return SymbolType::Unknown;
+    }
+
+    // Look up the class definition
+    let class_def = match classes.lookup_class(class_name) {
+        Some(c) => c,
+        None => return SymbolType::Unknown,
+    };
+
+    // Find the first member in the path
+    let member_name = &path[0].ident.text;
+    let component = match class_def.components.get(member_name) {
+        Some(c) => c,
+        None => return SymbolType::Unknown,
+    };
+
+    // Get the member's type
+    let member_type = type_from_name(&component.type_name.to_string());
+
+    // If there are more parts in the path, recurse into the member's type
+    if path.len() > 1 {
+        if let SymbolType::Class(nested_class) = &member_type {
+            return resolve_member_type(classes, nested_class, &path[1..]);
+        }
+        return SymbolType::Unknown;
+    }
+
+    // Build array type if the component has dimensions
+    if component.shape.is_empty() {
+        member_type
+    } else {
+        let mut result = member_type;
+        for &dim in component.shape.iter().rev() {
+            result = SymbolType::Array(Box::new(result), Some(dim));
+        }
+        // Account for subscripts in the path
+        if let Some(subs) = &path[0].subs {
+            for _sub in subs {
+                if let SymbolType::Array(inner, _) = result {
+                    result = *inner;
+                }
+            }
+        }
+        result
+    }
+}
+
+/// Infer the type of an expression given the defined symbols.
+///
+/// This is the simple version without class hierarchy lookup.
+/// For member access like `pid1.u` where `pid1` is a class type, this will return Unknown.
 pub fn infer_expression_type(
     expr: &Expression,
     defined: &HashMap<String, DefinedSymbol>,
+) -> SymbolType {
+    infer_expression_type_with_classes::<HashMap<String, ClassDefinition>>(expr, defined, None)
+}
+
+/// Infer the type of an expression with optional class hierarchy lookup.
+///
+/// When `classes` is provided, this can resolve member types like `pid1.u` by
+/// looking up `u` within the class definition of `pid1`'s type.
+pub fn infer_expression_type_with_classes<C: ClassLookup>(
+    expr: &Expression,
+    defined: &HashMap<String, DefinedSymbol>,
+    classes: Option<&C>,
 ) -> SymbolType {
     match expr {
         Expression::Empty => SymbolType::Unknown,
@@ -142,6 +237,23 @@ pub fn infer_expression_type(
             if let Some(first) = comp_ref.parts.first() {
                 if let Some(sym) = defined.get(&first.ident.text) {
                     let base = sym.declared_type.clone();
+
+                    // Handle multi-part references (e.g., pid1.u)
+                    if comp_ref.parts.len() > 1 {
+                        if let SymbolType::Class(class_name) = &base {
+                            // Try to resolve member type through class lookup
+                            if let Some(class_lookup) = classes {
+                                return resolve_member_type(
+                                    class_lookup,
+                                    class_name,
+                                    &comp_ref.parts[1..],
+                                );
+                            }
+                        }
+                        // Can't resolve - return Unknown to avoid false positives
+                        return SymbolType::Unknown;
+                    }
+
                     if sym.shape.is_empty() {
                         base
                     } else {

@@ -316,6 +316,98 @@ mod modification_edge_cases {
             "Conditional",
         );
     }
+
+    /// Critical: Dot-notation hierarchical modification
+    /// Tests modifications like `sub.param = value` syntax (MLS §7.2)
+    /// This is equivalent to `sub(param = value)` but uses hierarchical name syntax
+    #[test]
+    fn mls_7_2_dot_notation_modification() {
+        use rumoca::Compiler;
+
+        let source = r#"
+            model Inner
+                parameter Boolean flag = false;
+                parameter Real value = 1.0;
+            end Inner;
+
+            model Outer
+                Inner sub;
+            end Outer;
+
+            model Test
+                // Dot-notation modification: sub.flag instead of sub(flag = true)
+                Outer o(sub.flag = true, sub.value = 42.0);
+            equation
+            end Test;
+        "#;
+
+        let result = Compiler::new()
+            .model("Test")
+            .compile_str(source, "test.mo")
+            .expect("Should compile successfully");
+
+        // Verify the modifications propagated correctly
+        let flag = result
+            .dae
+            .p
+            .get("o.sub.flag")
+            .expect("Should have o.sub.flag");
+        let value = result
+            .dae
+            .p
+            .get("o.sub.value")
+            .expect("Should have o.sub.value");
+
+        // Check start values were set from modifications
+        assert!(
+            flag.start_is_modification,
+            "flag should be from modification"
+        );
+        assert!(
+            value.start_is_modification,
+            "value should be from modification"
+        );
+    }
+
+    /// Critical: Deep dot-notation hierarchical modification
+    /// Tests multi-level modifications like `a.b.c = value`
+    #[test]
+    fn mls_7_2_deep_dot_notation_modification() {
+        use rumoca::Compiler;
+
+        let source = r#"
+            model Level1
+                parameter Real x = 0.0;
+            end Level1;
+
+            model Level2
+                Level1 l1;
+            end Level2;
+
+            model Level3
+                Level2 l2;
+            end Level3;
+
+            model Test
+                // Three-level deep modification
+                Level3 l3(l2.l1.x = 99.0);
+            equation
+            end Test;
+        "#;
+
+        let result = Compiler::new()
+            .model("Test")
+            .compile_str(source, "test.mo")
+            .expect("Should compile successfully");
+
+        // Verify the 3-level deep modification propagated
+        let x = result
+            .dae
+            .p
+            .get("l3.l2.l1.x")
+            .expect("Should have l3.l2.l1.x");
+        assert!(x.start_is_modification, "x should be from modification");
+    }
 }
 
 // ============================================================================

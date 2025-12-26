@@ -348,6 +348,20 @@ impl<'a> ExpansionContext<'a> {
                 self.inner_map.insert(key, name.clone());
             }
 
+            // Propagate hierarchical modifications from parent to subcomponent.
+            // For example, if parent `o` has modification `sub.flag = true`, and we're
+            // expanding subcomponent `sub`, add `flag = true` to sub's modifications.
+            // This allows dot-notation modifications like `o(sub.flag = true)` to work.
+            let prefix = format!("{}.", subcomp_name);
+            for (mod_key, mod_expr) in &comp.modifications {
+                if let Some(rest) = mod_key.strip_prefix(&prefix) {
+                    // Found a hierarchical modification targeting this subcomponent
+                    scomp
+                        .modifications
+                        .insert(rest.to_string(), mod_expr.clone());
+                }
+            }
+
             // Apply modifications from parent component
             // For simple literals or evaluable expressions, use as start value
             // For complex expressions, generate binding equations

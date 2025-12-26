@@ -10,10 +10,10 @@ dist/
 *.egg-info/
 _native.cpython*
 *.so
+.claude/
+.vscode/
+pkg/
 
 # direnv artifacts
 *.direnv
 *.envrc
-
-# ai
-.claude
