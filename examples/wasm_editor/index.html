@@ -50,7 +50,7 @@
             display: flex;
             flex-direction: column;
             flex: 1;
-            min-width: 300px;
+            min-width: 200px;
             overflow: hidden;
         }
         .editor-panel {
@@ -124,14 +124,11 @@
         .middle-panel {
             display: flex;
             flex-direction: column;
-            width: 350px;
-            min-width: 50px;
-            max-width: 40vw;
+            flex: 1;
+            min-width: 150px;
             background: #1e1e1e;
-            flex-shrink: 0;
             overflow: hidden;
             border-left: 1px solid #3c3c3c;
-            transition: width 0.15s ease-out;
         }
         .middle-panel.collapsed {
             width: 36px !important;
@@ -173,14 +170,11 @@
         .right-panel {
             display: flex;
             flex-direction: column;
-            width: 400px;
-            min-width: 50px;
-            max-width: 40vw;
+            flex: 1;
+            min-width: 150px;
             background: #1e1e1e;
-            flex-shrink: 0;
             overflow: hidden;
             border-left: 1px solid #3c3c3c;
-            transition: width 0.15s ease-out;
         }
         .right-panel.collapsed {
             width: 36px !important;
@@ -502,15 +496,12 @@
         <div class="resize-handle-h" id="resizeHandleTemplate"></div>
         <div class="middle-panel" id="templatePanel">
             <div class="panel-header-middle">
-                <button class="collapse-btn" onclick="toggleTemplatePanel()" title="Collapse Template">
+                <button class="collapse-btn" onclick="toggleTemplatePanel()" title="Toggle template panel visibility">
                     <span class="section-arrow" id="templateArrow">&#9664;</span>
                 </button>
                 <span class="section-title" title="Jinja2 template for code generation. Access DAE via: dae.x, dae.p, dae.fx, etc.">Template</span>
             </div>
             <div class="panel-content-middle">
-                <div style="flex-shrink: 0; margin-bottom: 8px;">
-                    <label style="font-size: 11px; color: #888;">Jinja Template (use <code>dae</code> variable):</label>
-                </div>
                 <div id="templateEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
             </div>
         </div>
@@ -551,46 +542,46 @@
         const resizeHandleTemplate = document.getElementById('resizeHandleTemplate');
         const rightPanel = document.getElementById('rightPanel');
         const templatePanel = document.getElementById('templatePanel');
-        let isResizingH = false;
-        let isResizingTemplate = false;
-        let lastRightPanelWidth = 400;
-        let lastTemplatePanelWidth = 350;
+        const leftArea = document.querySelector('.left-area');
+        let isResizingLeft = false;   // Left separator (between editor and template)
+        let isResizingRight = false;  // Right separator (between template and output)
 
-        // Right panel resize
-        resizeHandleH.addEventListener('mousedown', (e) => {
-            isResizingH = true;
+        // Left separator - resizes left panel
+        resizeHandleTemplate.addEventListener('mousedown', (e) => {
+            isResizingLeft = true;
             document.body.style.cursor = 'ew-resize';
             document.body.style.userSelect = 'none';
         });
 
-        // Template panel resize
-        resizeHandleTemplate.addEventListener('mousedown', (e) => {
-            isResizingTemplate = true;
+        // Right separator - resizes template panel
+        resizeHandleH.addEventListener('mousedown', (e) => {
+            isResizingRight = true;
             document.body.style.cursor = 'ew-resize';
             document.body.style.userSelect = 'none';
         });
 
         document.addEventListener('mousemove', (e) => {
-            if (isResizingH) {
-                const containerRect = document.querySelector('.main-container').getBoundingClientRect();
-                const newWidth = containerRect.right - e.clientX;
-                const clampedWidth = Math.max(200, Math.min(newWidth, window.innerWidth * 0.4));
-                rightPanel.style.width = clampedWidth + 'px';
-                lastRightPanelWidth = clampedWidth;
+            const containerRect = document.querySelector('.main-container').getBoundingClientRect();
+            const layoutEditors = () => {
                 if (window.editor) window.editor.layout();
                 if (window.templateEditor) window.templateEditor.layout();
                 if (window.outputEditor) window.outputEditor.layout();
+            };
+
+            if (isResizingLeft) {
+                // Set left panel width based on cursor position
+                const newWidth = e.clientX - containerRect.left;
+                leftArea.style.flex = 'none';
+                leftArea.style.width = Math.max(200, newWidth) + 'px';
+                layoutEditors();
             }
-            if (isResizingTemplate) {
-                // Template panel width is from handle to the right of template panel
-                const templateRect = templatePanel.getBoundingClientRect();
-                const newWidth = templateRect.right - e.clientX;
-                const clampedWidth = Math.max(200, Math.min(newWidth, window.innerWidth * 0.4));
-                templatePanel.style.width = clampedWidth + 'px';
-                lastTemplatePanelWidth = clampedWidth;
-                if (window.editor) window.editor.layout();
-                if (window.templateEditor) window.templateEditor.layout();
-                if (window.outputEditor) window.outputEditor.layout();
+            if (isResizingRight) {
+                // Set template panel width based on cursor position relative to left panel
+                const leftWidth = leftArea.getBoundingClientRect().right;
+                const newWidth = e.clientX - leftWidth - 4; // 4px for handle
+                templatePanel.style.flex = 'none';
+                templatePanel.style.width = Math.max(150, newWidth) + 'px';
+                layoutEditors();
             }
             if (isResizingV) {
                 const leftArea = document.querySelector('.left-area');
@@ -604,10 +595,10 @@
         });
 
         document.addEventListener('mouseup', () => {
-            if (isResizingH || isResizingV || isResizingTemplate) {
-                isResizingH = false;
+            if (isResizingLeft || isResizingRight || isResizingV) {
+                isResizingLeft = false;
+                isResizingRight = false;
                 isResizingV = false;
-                isResizingTemplate = false;
                 document.body.style.cursor = '';
                 document.body.style.userSelect = '';
                 if (window.editor) window.editor.layout();
@@ -1666,13 +1657,20 @@
                             21: monaco.languages.CompletionItemKind.Constant,
                         };
                         return {
-                            suggestions: items.map(item => ({
-                                label: item.label,
-                                kind: kindMap[item.kind] || monaco.languages.CompletionItemKind.Text,
-                                insertText: item.insertText || item.label,
-                                detail: item.detail,
-                                documentation: item.documentation
-                            }))
+                            suggestions: items.map(item => {
+                                const suggestion = {
+                                    label: item.label,
+                                    kind: kindMap[item.kind] || monaco.languages.CompletionItemKind.Text,
+                                    insertText: item.insertText || item.label,
+                                    detail: item.detail,
+                                    documentation: item.documentation
+                                };
+                                // If insertTextFormat is 2 (Snippet), tell Monaco to interpret as snippet
+                                if (item.insertTextFormat === 2) {
+                                    suggestion.insertTextRules = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
+                                }
+                                return suggestion;
+                            })
                         };
                     } catch (e) { console.warn('Completion error:', e); }
                     return { suggestions: [] };
@@ -1703,11 +1701,172 @@ end Ball;`,
             window.editor = editor;
 
             // Create template editor with Jinja2 highlighting
+            // Default template: CasADi (from examples/templates/casadi.jinja)
+            const defaultTemplate = `{%- macro render_dae(dae) -%}
+    {%- set vars_vects = ['u', 'p', 'cp', 'x', 'y', 'z'] -%}
+"""
+Generated by Rumoca
+    rumoca pkg version : {{ dae.rumoca_version }} - {{ dae.git_version }}
+    model hash : {{ dae.model_hash }}
+    template hash : {{ dae.template_hash }}
+"""
+
+import casadi as ca
+import numpy as np
+
+cos = ca.cos
+sin = ca.sin
+tan = ca.tan
+
+
+class Model:
+    """
+    Flattened Modelica Model
+    """
+
+    def __init__(self):
+        pass
+
+    def __repr__(self):
+        return repr(self.__dict__)
+
+    def simulate(self, t=None, u=None):
+        """
+        Simulate the modelica model
+        """
+        if t is None:
+            t = np.arange(0, 1, 0.01)
+        if u is None:
+            u = 0
+
+        # ============================================
+        # Declare time
+        time = ca.SX.sym('time')
+
+        {%- for var in vars_vects %}
+
+        # ============================================
+        # Declare {{ var }}
+
+        {% for name, comp in dae[var] | items -%}
+        {{ name }} = ca.SX.sym('{{ name }}')
+        {% endfor -%}
+
+        self.{{var }} {{ "= ca.vertcat(" }}{%- for name, comp in dae[var] | items %}
+            {{ name }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {% endfor -%} {{ ")" }}
+
+        self.{{ var }}0 = {{ "{" }} {% for name, comp in dae[var] | items %}
+            '{{ name }}': {{ render_expression(comp.start) }} {%- if not loop.last -%}{{ ", " }}{%- endif -%}
+        {%- endfor -%}{{ "}" }}
+        {{ var }}0 = np.array([self.{{ var }}0[k] for k in self.{{ var }}0.keys()])
+
+
+        {%- endfor %}
+
+        # ============================================
+        # Define Continous Update Function: fx
+        {% for eq in dae.fx -%}
+        {{ render_equation(eq) }}
+        {% endfor%}
+
+        # ============================================
+        # Create Integrator
+        F = ca.integrator(
+            'F', 'idas',
+            {'x': self.x, 'z': self.z, 'p': self.p, 'u': self.u, 'ode': self.ode, 'alg': self.alg},
+            t[0], t)
+
+        res = F(x0=x0, z0=z0, p=p0, u=u)
+        return {
+            't': t,
+            'x': res['xf'].T
+        }
+
+    def linearize(self):
+        """
+        Linearize the model
+        """
+        A = ca.jacobian(self.ode, self.x)
+        B = ca.jacobian(self.ode, self.u)
+        C = ca.jacobian(self.y, self.x)
+        D = ca.jacobian(self.y, self.u)
+        return (A, B, C, D)
+
+
+def cat(axis, *args):
+    return ca.vertcat(*args)
+{%- endmacro -%}
+
+{%- macro render_expression(expr) -%}
+    {%- if "Terminal" in expr -%}
+        {{- expr.Terminal.token.text -}}
+    {%- elif "FunctionCall" in expr -%}
+        {{- render_function(expr.FunctionCall) -}}
+    {%- elif "ComponentReference" in expr -%}
+        {{- render_component_reference(expr.ComponentReference) -}}
+    {%- elif "Binary" in expr -%}
+        {{- render_binary(expr.Binary) -}}
+    {%- elif "Unary" in expr -%}
+        {{- render_unary(expr.Unary) -}}
+    {%- else -%}
+        UNHANDLED EXPRESSION: {{ expr }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_equation(eq) -%}
+    {%- if "Simple" in eq -%}
+        {{- render_expression(eq.Simple.lhs) -}} {{- " = " -}}
+        {{- render_expression(eq.Simple.rhs) -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_terminal(term) -%}
+    {% if term.terimanal_type == "UnsignedInteger" %}
+    {{ term.token.text | float }}
+    {% elif term.terimanal_type == "UnsignedReal" %}
+    {{ term.token.text | float }}
+    {% endif %}
+{%- endmacro -%}
+
+{%- macro render_binary(expr) -%}
+    {{- render_expression(expr.lhs) -}} {{- " " -}}
+    {%- if "Add" in expr.op -%}
+        {{ "+" }}
+    {%- elif "Sub" in expr.op -%}
+        {{ "-" }}
+    {%- elif "Mul" in expr.op -%}
+        {{ "*" }}
+    {%- elif "Div" in expr.op -%}
+        {{ "/" }}
+    {%- else -%}
+        UNHANDLED OP: {{ expr.op }}
+    {%- endif -%}
+    {{- " " -}} {{- render_expression(expr.rhs) -}}
+{%- endmacro -%}
+
+
+{%- macro render_unary(expr) -%}
+    {{ expr.op.text }} {{ render_expression(expr.rhs) }}
+{%- endmacro -%}
+
+{%- macro render_component_reference(comp) -%}
+    {%- for part in comp.parts -%}
+        {{ part.ident.text }}{% if not loop.last %}.{% endif %}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_function(func) -%}
+    {{ render_component_reference(func.comp) }} {{- "(" -}}{%- for arg in func.args -%}
+        {{- render_expression(arg) -}} {%- if not loop.last -%}, {%- endif -%}
+    {%- endfor -%}{{ ")" }}
+{%- endmacro -%}
+
+{{ render_dae(dae) }}
+`;
+
             const templateEditor = monaco.editor.create(document.getElementById('templateEditor'), {
-                value: `{# Simple example template #}
-Model: {{ dae.model_name }}
-Version: {{ dae.rumoca_version }}
-`,
+                value: defaultTemplate,
                 language: 'jinja2',
                 theme: 'vs-dark',
                 minimap: { enabled: false },
