@@ -1120,14 +1120,34 @@
 
             try {
                 // Use local proxy when running on localhost (fast, no external deps)
-                // Fall back to external CORS proxy for GitHub Pages
+                // Fall back to external CORS proxy for GitHub Pages (try multiple)
                 const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-                const fetchUrl = isLocalhost
-                    ? `/proxy/${encodeURIComponent(url)}`
-                    : `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-                setTerminalOutput(`Fetching${isLocalhost ? ' via local proxy' : ' via CORS proxy'}: ${url}`);
 
-                const response = await fetch(fetchUrl);
+                let response;
+                if (isLocalhost) {
+                    const fetchUrl = `/proxy/${encodeURIComponent(url)}`;
+                    setTerminalOutput(`Fetching via local proxy: ${url}`);
+                    response = await fetch(fetchUrl);
+                } else {
+                    // Try multiple CORS proxies in order of reliability
+                    const corsProxies = [
+                        (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+                        (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+                    ];
+
+                    for (let i = 0; i < corsProxies.length; i++) {
+                        const proxyUrl = corsProxies[i](url);
+                        const proxyName = i === 0 ? 'corsproxy.io' : 'allorigins.win';
+                        setTerminalOutput(`Fetching via ${proxyName}: ${url}`);
+                        try {
+                            response = await fetch(proxyUrl);
+                            if (response.ok) break;
+                        } catch (e) {
+                            if (i === corsProxies.length - 1) throw e;
+                            setTerminalOutput(`${proxyName} failed, trying next proxy...`);
+                        }
+                    }
+                }
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
                 const isZip = url.endsWith('.zip') || response.headers.get('content-type')?.includes('application/zip');
