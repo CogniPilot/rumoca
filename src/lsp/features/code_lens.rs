@@ -66,14 +66,21 @@ fn collect_class_lenses(
         ClassType::Model | ClassType::Block | ClassType::Class | ClassType::Connector
     ) && let Some(balance) = workspace.get_balance(uri, &class_path)
     {
+        // Format compile time nicely
+        let time_str = if balance.compile_time_ms > 0 {
+            format!(" ({}ms)", balance.compile_time_ms)
+        } else {
+            String::new()
+        };
+
         let title = match &balance.status {
             BalanceStatus::Balanced => format!(
-                "{} states, {} unknowns, {} equations [✓]",
-                balance.num_states, balance.num_unknowns, balance.num_equations
+                "{} states, {} unknowns, {} equations [✓]{}",
+                balance.num_states, balance.num_unknowns, balance.num_equations, time_str
             ),
             BalanceStatus::Partial => format!(
-                "{} states, {} unknowns, {} equations [◐ partial]",
-                balance.num_states, balance.num_unknowns, balance.num_equations
+                "{} states, {} unknowns, {} equations [◐ partial]{}",
+                balance.num_states, balance.num_unknowns, balance.num_equations, time_str
             ),
             BalanceStatus::Unbalanced => {
                 let icon = if balance.difference() > 0 {
@@ -82,11 +89,11 @@ fn collect_class_lenses(
                     "⚠ under"
                 };
                 format!(
-                    "{} states, {} unknowns, {} equations [{}]",
-                    balance.num_states, balance.num_unknowns, balance.num_equations, icon
+                    "{} states, {} unknowns, {} equations [{}]{}",
+                    balance.num_states, balance.num_unknowns, balance.num_equations, icon, time_str
                 )
             }
-            BalanceStatus::CompileError(msg) => format!("✗ compile error: {}", msg),
+            BalanceStatus::CompileError(msg) => format!("✗ compile error: {}{}", msg, time_str),
         };
 
         lenses.push(CodeLens {

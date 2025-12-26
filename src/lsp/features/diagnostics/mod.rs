@@ -52,8 +52,9 @@ pub fn compute_diagnostics(
         let mut grammar = ModelicaGrammar::new();
         match parse(text, path, &mut grammar) {
             Ok(_) => {
-                // Parsing succeeded - clear stale balance cache since document changed
-                workspace.clear_balances(uri);
+                // Parsing succeeded - compute new balances (old ones will be overwritten)
+                // Note: We don't clear balances here to avoid race conditions with CodeLens
+                // which might request balance info during computation
 
                 if let Some(ref ast) = grammar.modelica {
                     // Compile each class using the full Compiler pipeline (with library access)
@@ -62,7 +63,7 @@ pub fn compute_diagnostics(
                 }
             }
             Err(e) => {
-                // Clear cached balance on parse error
+                // Clear cached balance on parse error (model is invalid)
                 workspace.clear_balances(uri);
                 // Use compiler's error extraction for consistent error messages
                 let (line, col, message) = extract_parse_error(&e, text);
@@ -295,8 +296,8 @@ fn collect_import_roots(class: &ClassDefinition, roots: &mut std::collections::H
 /// Compilation is used for balance checking (post-flattening).
 fn compile_and_analyze_classes(
     uri: &Uri,
-    text: &str,
-    path: &str,
+    _text: &str,
+    _path: &str,
     ast: &crate::ir::ast::StoredDefinition,
     workspace: &mut WorkspaceState,
     diagnostics: &mut Vec<Diagnostic>,
@@ -324,18 +325,26 @@ fn compile_and_analyze_classes(
     }
 
     let uri_clone = uri.clone();
-    let text_owned = text.to_string();
-    let path_owned = path.to_string();
 
-    // Get library paths from workspace for import resolution
-    let library_paths: Vec<String> = workspace
-        .package_roots()
+    // Load required libraries into workspace cache (single-threaded, before parallel section)
+    // This is the key optimization - libraries are pre-merged once and reused
+    for pkg_name in &import_roots {
+        if !workspace.has_library(pkg_name) {
+            workspace.load_library(pkg_name);
+        }
+    }
+
+    // Collect pre-built library class dictionaries
+    // This is much more efficient than collecting StoredDefinitions because:
+    // 1. Class dictionaries contain Arc<ClassDefinition> entries that can be shared
+    // 2. Building the combined dictionary only clones Arc references, not the classes
+    let library_dicts: Vec<std::sync::Arc<crate::ir::transform::flatten::ClassDict>> = import_roots
         .iter()
-        .filter_map(|p| p.to_str().map(String::from))
+        .filter_map(|pkg_name| workspace.get_library_dict(pkg_name))
         .collect();
 
-    // Convert to Vec for use in closure
-    let import_roots_vec: Vec<String> = import_roots.into_iter().collect();
+    // Use the already-parsed AST directly instead of re-parsing
+    let user_ast = Some(ast.clone());
 
     // Compile all classes in parallel for balance checking only
     let results: Vec<_> = class_paths
@@ -349,24 +358,21 @@ fn compile_and_analyze_classes(
                 return None;
             }
 
-            let path_refs: Vec<&str> = library_paths.iter().map(|s| s.as_str()).collect();
+            // Get user's parsed AST (returns None if parse failed)
+            let user_def = user_ast.as_ref()?;
 
-            // Build compiler and include required packages
-            let mut compiler = crate::Compiler::new()
-                .model(class_path)
-                .modelica_path(&path_refs)
-                .threads(1);
+            // Time the compilation using class dictionary method (avoids cloning libraries)
+            let start = std::time::Instant::now();
+            let compile_result = crate::compiler::pipeline::check_balance_with_library_dicts(
+                user_def,
+                &library_dicts,
+                Some(class_path),
+            );
+            let compile_time_ms = start.elapsed().as_millis() as u64;
 
-            for pkg_name in &import_roots_vec {
-                if let Ok(c) = compiler.clone().include_from_modelica_path(pkg_name) {
-                    compiler = c;
-                }
-            }
-
-            match compiler.compile_str(&text_owned, &path_owned) {
-                Ok(result) => {
-                    // Get balance result from compilation
-                    let mut balance = result.balance;
+            match compile_result {
+                Ok(mut balance) => {
+                    balance.compile_time_ms = compile_time_ms;
                     let is_connector = matches!(class_type, ClassType::Connector);
                     if (*is_partial || is_connector) && !balance.is_balanced() {
                         balance.status = BalanceStatus::Partial;
@@ -376,7 +382,8 @@ fn compile_and_analyze_classes(
                 }
                 Err(e) => {
                     // Errors are now raw (no miette formatting), just use the message directly
-                    let balance = BalanceResult::compile_error(e.to_string());
+                    let mut balance = BalanceResult::compile_error(e.to_string());
+                    balance.compile_time_ms = compile_time_ms;
                     Some((class_path.clone(), balance))
                 }
             }

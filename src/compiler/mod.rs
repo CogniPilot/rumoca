@@ -68,6 +68,7 @@ use indexmap::IndexSet;
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // Use web_time on WASM for Instant::now() polyfill
 #[cfg(not(target_arch = "wasm32"))]
@@ -986,6 +987,122 @@ impl Compiler {
         def: &StoredDefinition,
     ) -> Result<crate::dae::balance::BalanceResult> {
         pipeline::check_balance_only(def, self.model_name.as_deref())
+    }
+
+    /// Compile with pre-parsed library definitions.
+    ///
+    /// This is the fastest way to compile when you have cached library ASTs.
+    /// The library definitions are cloned and merged with the main source.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The main Modelica source code
+    /// * `file_name` - Name for the main source file (for error messages)
+    /// * `libraries` - Pre-parsed library definitions (filename, AST pairs)
+    ///
+    /// # Returns
+    ///
+    /// A [`CompilationResult`] containing the DAE and metadata
+    pub fn compile_str_with_definitions(
+        &self,
+        source: &str,
+        file_name: &str,
+        libraries: &[(String, StoredDefinition)],
+    ) -> Result<CompilationResult> {
+        // Parse the main source
+        let main_def = self.parse_source(source, file_name)?;
+
+        // Clone library definitions and add main source
+        let mut all_definitions: Vec<(String, StoredDefinition)> = libraries.to_vec();
+        all_definitions.push((file_name.to_string(), main_def));
+
+        self.compile_definitions(all_definitions, source, file_name)
+    }
+
+    /// Compile with pre-merged library ASTs.
+    ///
+    /// This is the fastest way to compile when libraries are pre-merged at load time.
+    /// Instead of merging 2500+ files on every compile, we only merge a few
+    /// pre-merged library ASTs with the user's source.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The main Modelica source code
+    /// * `file_name` - Name for the main source file (for error messages)
+    /// * `libraries` - Pre-merged library ASTs (references, not cloned)
+    ///
+    /// # Returns
+    ///
+    /// A [`CompilationResult`] containing the DAE and metadata
+    pub fn compile_str_with_merged_libraries(
+        &self,
+        source: &str,
+        file_name: &str,
+        libraries: &[&StoredDefinition],
+    ) -> Result<CompilationResult> {
+        // Parse the main source
+        let main_def = self.parse_source(source, file_name)?;
+
+        // Collect all definitions: pre-merged libraries + main source
+        // We clone libraries here but since they're pre-merged, there are only a few
+        let mut all_definitions: Vec<(String, StoredDefinition)> = libraries
+            .iter()
+            .enumerate()
+            .map(|(i, lib)| (format!("<library-{}>", i), (*lib).clone()))
+            .collect();
+        all_definitions.push((file_name.to_string(), main_def));
+
+        self.compile_definitions(all_definitions, source, file_name)
+    }
+
+    /// Compile with Arc-wrapped pre-merged library ASTs.
+    ///
+    /// This is the most efficient way to compile for the LSP use case.
+    /// Libraries are stored in Arc to avoid cloning the large library data
+    /// structure on every compile. The merge operation clones individual
+    /// class definitions, but the Arc itself is not cloned.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The main Modelica source code
+    /// * `file_name` - Name for the main source file (for error messages)
+    /// * `libraries` - Arc-wrapped pre-merged library ASTs
+    ///
+    /// # Returns
+    ///
+    /// A [`CompilationResult`] containing the DAE and metadata
+    pub fn compile_str_with_arc_libraries(
+        &self,
+        source: &str,
+        file_name: &str,
+        libraries: &[Arc<StoredDefinition>],
+    ) -> Result<CompilationResult> {
+        use crate::ir::transform::multi_file::merge_with_arc_libraries;
+
+        // Parse the main source
+        let main_def = self.parse_source(source, file_name)?;
+
+        let start = Instant::now();
+
+        // Merge libraries with user source using Arc-aware merge
+        let def = merge_with_arc_libraries(libraries, main_def, file_name)?;
+
+        let model_hash = format!("{:x}", chksum_md5::hash(source));
+        let parse_time = start.elapsed();
+
+        if self.verbose {
+            println!("Parsing and merging took {} ms", parse_time.as_millis());
+            println!("AST:\n{:#?}\n", def);
+        }
+
+        // Run the compilation pipeline
+        pipeline::compile_from_ast_ref(
+            &def,
+            self.model_name.as_deref(),
+            model_hash,
+            parse_time,
+            self.verbose,
+        )
     }
 
     /// Compile with additional library sources provided as strings.

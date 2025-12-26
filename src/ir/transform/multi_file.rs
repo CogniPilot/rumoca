@@ -12,6 +12,7 @@
 use crate::ir::ast::{ClassDefinition, StoredDefinition};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Directories to skip when discovering Modelica files.
 /// These are common directories that should never contain Modelica code.
@@ -104,6 +105,57 @@ pub fn merge_stored_definitions(
     for (file_path, def) in definitions {
         merge_single_definition(&mut merged, def, &file_path)?;
     }
+
+    Ok(merged)
+}
+
+/// Merge Arc-wrapped library definitions with a user's source definition.
+///
+/// This is optimized for the LSP use case where we have pre-merged library
+/// ASTs stored in Arc and want to avoid cloning them on every compile.
+/// We clone the library class_list entries into the result, but since
+/// IndexMap entries are cloned by reference for large nested structures,
+/// this is more efficient than cloning the entire library AST.
+///
+/// # Arguments
+///
+/// * `libraries` - Arc-wrapped pre-merged library definitions
+/// * `user_source` - The user's source definition (small, gets moved)
+/// * `source_path` - Path to the user's source file
+///
+/// # Returns
+///
+/// A merged StoredDefinition containing library classes and user's classes
+pub fn merge_with_arc_libraries(
+    libraries: &[Arc<StoredDefinition>],
+    user_source: StoredDefinition,
+    source_path: &str,
+) -> Result<StoredDefinition> {
+    let mut merged = StoredDefinition::default();
+
+    // Merge library classes into the result
+    // We clone entries from the Arc, but the library Arc itself is not cloned
+    for lib in libraries {
+        for (class_name, class_def) in &lib.class_list {
+            if merged.class_list.contains_key(class_name) {
+                // Merge packages if both are packages
+                let existing = merged.class_list.get_mut(class_name).unwrap();
+                if matches!(existing.class_type, crate::ir::ast::ClassType::Package)
+                    && matches!(class_def.class_type, crate::ir::ast::ClassType::Package)
+                {
+                    merge_package_contents(existing, class_def.clone())?;
+                }
+                // Otherwise skip - first library takes precedence
+            } else {
+                merged
+                    .class_list
+                    .insert(class_name.clone(), class_def.clone());
+            }
+        }
+    }
+
+    // Merge user's source (takes precedence over library)
+    merge_single_definition(&mut merged, user_source, source_path)?;
 
     Ok(merged)
 }
@@ -427,6 +479,34 @@ pub fn get_modelica_path() -> Vec<PathBuf> {
 /// - A directory named `package_name` containing `package.mo`
 /// - A file named `package_name.mo`
 ///
+/// Extract the package name from a directory name that may include a version suffix.
+///
+/// According to Modelica Spec 13.4, a directory can be named either exactly as
+/// the package (e.g., "Modelica") or with a version suffix (e.g., "Modelica 4.1.0").
+///
+/// # Arguments
+///
+/// * `dir_name` - The directory name to parse
+///
+/// # Returns
+///
+/// The package name without the version suffix
+pub fn extract_package_name(dir_name: &str) -> &str {
+    // Check for pattern: "PackageName X.Y.Z" where X.Y.Z is a version number
+    // Version pattern: space followed by digits and dots (e.g., " 4.1.0", " 3.2.3")
+    if let Some(space_idx) = dir_name.rfind(' ') {
+        let suffix = &dir_name[space_idx + 1..];
+        // Check if suffix looks like a version (starts with digit, contains only digits and dots)
+        if !suffix.is_empty()
+            && suffix.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && suffix.chars().all(|c| c.is_ascii_digit() || c == '.')
+        {
+            return &dir_name[..space_idx];
+        }
+    }
+    dir_name
+}
+
 /// # Arguments
 ///
 /// * `package_name` - The name of the top-level package to find
@@ -437,7 +517,7 @@ pub fn get_modelica_path() -> Vec<PathBuf> {
 /// The path to the package directory or file, if found
 pub fn find_package_in_paths(package_name: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
     for base_path in search_paths {
-        // Check for directory-based package
+        // Check for directory-based package (exact name match)
         let dir_path = base_path.join(package_name);
         if is_modelica_package(&dir_path) {
             return Some(dir_path);
@@ -447,6 +527,22 @@ pub fn find_package_in_paths(package_name: &str, search_paths: &[PathBuf]) -> Op
         let file_path = base_path.join(format!("{}.mo", package_name));
         if file_path.is_file() {
             return Some(file_path);
+        }
+
+        // Check for versioned directory names (Modelica Spec 13.4)
+        // e.g., looking for "Modelica" should also find "Modelica 4.1.0"
+        if let Ok(entries) = std::fs::read_dir(base_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir()
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                {
+                    // Check if this directory's package name (without version) matches
+                    if extract_package_name(name) == package_name && is_modelica_package(&path) {
+                        return Some(path);
+                    }
+                }
+            }
         }
     }
     None
@@ -766,5 +862,40 @@ mod tests {
     fn test_find_package_not_found() {
         let result = find_package_in_modelica_path("NonExistentPackage12345");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_package_name_no_version() {
+        // Simple package name without version suffix
+        assert_eq!(extract_package_name("Modelica"), "Modelica");
+        assert_eq!(extract_package_name("MyPackage"), "MyPackage");
+        assert_eq!(extract_package_name("Some_Package"), "Some_Package");
+    }
+
+    #[test]
+    fn test_extract_package_name_with_version() {
+        // Package names with version suffixes (Modelica Spec 13.4)
+        assert_eq!(extract_package_name("Modelica 4.1.0"), "Modelica");
+        assert_eq!(extract_package_name("Modelica 3.2.3"), "Modelica");
+        assert_eq!(
+            extract_package_name("ModelicaServices 4.0.0"),
+            "ModelicaServices"
+        );
+        assert_eq!(extract_package_name("Complex 4.1.0"), "Complex");
+        assert_eq!(extract_package_name("MyLibrary 1.0"), "MyLibrary");
+        assert_eq!(extract_package_name("SomePackage 2.0.0.1"), "SomePackage");
+    }
+
+    #[test]
+    fn test_extract_package_name_non_version_suffix() {
+        // Space followed by non-version text should not be stripped
+        assert_eq!(extract_package_name("My Package Name"), "My Package Name");
+        assert_eq!(
+            extract_package_name("Package With Suffix"),
+            "Package With Suffix"
+        );
+        // Text after space that doesn't start with a digit
+        assert_eq!(extract_package_name("Modelica dev"), "Modelica dev");
+        assert_eq!(extract_package_name("Package beta1"), "Package beta1");
     }
 }
