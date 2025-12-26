@@ -72,6 +72,27 @@ pub fn get_modifier_completions(
     // 2. Just after ',' - current part is empty or whitespace only
     // 3. Typing a modifier name - no '=' in current part yet
     // 4. After a complete modifier value - ends with a value (not '=')
+    // Check for hierarchical member access (e.g., "I." in "pid1(I.")
+    // This happens when the user is typing a dot-notation modification like "I.use_reset = true"
+    if let Some(member_path) = current_trimmed.strip_suffix('.') {
+        if let Some(items) =
+            get_hierarchical_modifier_completions(&type_name, member_path, ast, workspace)
+        {
+            return Some(items);
+        }
+        // If hierarchical lookup failed, return empty to prevent fallback to general completions
+        // This happens when we can't resolve the nested component's type
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[modifiers] hierarchical lookup failed for '{}.', returning empty",
+                member_path
+            )
+            .into(),
+        );
+        return Some(Vec::new());
+    }
+
     let should_show = after_paren.is_empty()                           // Just typed '('
         || current_trimmed.is_empty()                                   // Just typed ',' (with optional space)
         || !current_trimmed.contains('=')                               // Typing modifier name
@@ -465,4 +486,213 @@ fn get_modifier_items() -> Vec<CompletionItem> {
             ..Default::default()
         })
         .collect()
+}
+
+/// Get completion items for hierarchical modifier access (e.g., "I." in "pid1(I.")
+///
+/// This handles dot-notation modifications like `pid1(I.use_reset = true)` where
+/// we need to complete members of a nested component (`I`) rather than the parent class (`PID`).
+fn get_hierarchical_modifier_completions(
+    parent_type: &str,
+    member_path: &str,
+    ast: Option<&StoredDefinition>,
+    workspace: Option<&dyn SymbolLookup>,
+) -> Option<Vec<CompletionItem>> {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[modifiers] hierarchical: parent='{}', path='{}'",
+            parent_type, member_path
+        )
+        .into(),
+    );
+
+    // Split the member path for nested access (e.g., "I" or "I.limiter")
+    let path_parts: Vec<&str> = member_path.split('.').collect();
+
+    // Find the parent class - first resolve via imports to get full path
+    let resolved_parent = resolve_type_via_imports(parent_type, ast);
+    let parent_qualified = resolved_parent
+        .first()
+        .cloned()
+        .unwrap_or_else(|| parent_type.to_string());
+
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[modifiers] hierarchical: resolved parent '{}' -> '{}'",
+            parent_type, parent_qualified
+        )
+        .into(),
+    );
+
+    let parent_class = find_class_with_fallback(&parent_qualified, ast, workspace)?;
+
+    // Get the package context for resolving relative type names (as owned String)
+    let mut current_package: Option<String> = parent_qualified
+        .rsplit_once('.')
+        .map(|(pkg, _)| pkg.to_string());
+
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[modifiers] hierarchical: parent package = {:?}",
+            current_package
+        )
+        .into(),
+    );
+
+    // Follow the path to find the target component's type
+    let mut current_class = parent_class;
+
+    for part in &path_parts {
+        // Find the component with this name in current class
+        let component = current_class.components.get(*part)?;
+
+        // Get the type of this component
+        let component_type = component.type_name.to_string();
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[modifiers] hierarchical: component '{}' has type '{}' (package: {:?})",
+                part, component_type, current_package
+            )
+            .into(),
+        );
+
+        // Look up the component's type class, trying multiple resolution strategies
+        current_class =
+            find_class_in_context(&component_type, current_package.as_deref(), ast, workspace)?;
+
+        // Update package context for nested lookups
+        if component_type.contains('.') {
+            current_package = component_type
+                .rsplit_once('.')
+                .map(|(pkg, _)| pkg.to_string());
+        }
+    }
+
+    // Return completions for the target class's members
+    let items = get_class_modifier_completions(current_class);
+
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[modifiers] hierarchical: returning {} items for nested type",
+            items.len()
+        )
+        .into(),
+    );
+
+    if items.is_empty() { None } else { Some(items) }
+}
+
+/// Find a class, trying multiple resolution strategies including package context
+fn find_class_in_context<'a>(
+    type_name: &str,
+    package_context: Option<&str>,
+    ast: Option<&'a StoredDefinition>,
+    workspace: Option<&'a dyn SymbolLookup>,
+) -> Option<&'a crate::ir::ast::ClassDefinition> {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[modifiers] find_class_in_context: type='{}', pkg={:?}",
+            type_name, package_context
+        )
+        .into(),
+    );
+
+    // 1. Try the type name as-is (might already be fully qualified)
+    if let Some(class) = find_class_with_fallback(type_name, ast, workspace) {
+        return Some(class);
+    }
+
+    // 2. Try with "Modelica." prefix if type starts with known MSL packages
+    // Types in libraries are often stored as "Blocks.Continuous.X" without "Modelica." prefix
+    if type_name.starts_with("Blocks.")
+        || type_name.starts_with("Mechanics.")
+        || type_name.starts_with("Electrical.")
+        || type_name.starts_with("Thermal.")
+        || type_name.starts_with("Fluid.")
+        || type_name.starts_with("Media.")
+        || type_name.starts_with("Math.")
+        || type_name.starts_with("Constants.")
+        || type_name.starts_with("Icons.")
+        || type_name.starts_with("Units.")
+        || type_name.starts_with("Utilities.")
+    {
+        let with_modelica = format!("Modelica.{}", type_name);
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!(
+                "[modifiers] trying with Modelica prefix: '{}'",
+                with_modelica
+            )
+            .into(),
+        );
+        if let Some(class) = find_class_with_fallback(&with_modelica, ast, workspace) {
+            return Some(class);
+        }
+    }
+
+    // 3. Try resolving in the package context (for relative type names like "LimIntegrator")
+    if let Some(pkg) = package_context {
+        let qualified = format!("{}.{}", pkg, type_name);
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!("[modifiers] trying qualified name: '{}'", qualified).into(),
+        );
+        if let Some(class) = find_class_with_fallback(&qualified, ast, workspace) {
+            return Some(class);
+        }
+    }
+
+    // 4. For Modelica stdlib, some types might be in sub-packages
+    // Try direct workspace lookup
+    if let Some(ws) = workspace
+        && let Some(lib_ast) = ws.get_ast_for_symbol(type_name)
+        && let Some(class) = find_class_in_ast(lib_ast, type_name)
+    {
+        return Some(class);
+    }
+
+    None
+}
+
+/// Helper to find a class, trying local AST first, then workspace with import resolution
+fn find_class_with_fallback<'a>(
+    type_name: &str,
+    ast: Option<&'a StoredDefinition>,
+    workspace: Option<&'a dyn SymbolLookup>,
+) -> Option<&'a crate::ir::ast::ClassDefinition> {
+    // Try local AST first
+    if let Some(ast) = ast
+        && let Some(class) = find_class_in_ast(ast, type_name)
+    {
+        return Some(class);
+    }
+
+    // Try workspace with import resolution
+    if let Some(ws) = workspace {
+        // First resolve via imports
+        let qualified_names = resolve_type_via_imports(type_name, ast);
+        for qname in &qualified_names {
+            if let Some(lib_ast) = ws.get_ast_for_symbol(qname)
+                && let Some(class) = find_class_in_ast(lib_ast, qname)
+            {
+                return Some(class);
+            }
+        }
+
+        // Try direct lookup
+        if let Some(lib_ast) = ws.get_ast_for_symbol(type_name)
+            && let Some(class) = find_class_in_ast(lib_ast, type_name)
+        {
+            return Some(class);
+        }
+    }
+
+    None
 }
