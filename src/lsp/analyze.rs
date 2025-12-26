@@ -181,6 +181,7 @@ mod tests {
             num_inputs: 0,
             num_external_connectors: 0,
             status: BalanceStatus::Balanced,
+            compile_time_ms: 0,
         };
         let result = AnalyzeResult::success("Test".to_string(), balance);
         assert!(result.is_balanced());
