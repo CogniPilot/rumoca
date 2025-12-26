@@ -3,6 +3,7 @@
 
 import init, {
     wasm_init,
+    get_version,
     compile_to_json,
     compile_with_libraries,
     load_libraries,
@@ -71,6 +72,9 @@ self.onmessage = async (e) => {
                 break;
             case 'getLibraryCount':
                 result = get_library_count();
+                break;
+            case 'getVersion':
+                result = get_version();
                 break;
             case 'diagnostics':
                 result = lsp_diagnostics(source);

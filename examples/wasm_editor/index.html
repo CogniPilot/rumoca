@@ -379,17 +379,29 @@
             align-items: center;
             flex-wrap: wrap;
         }
-        .library-row input {
+        .library-row input[type="file"] {
             flex: 1;
             min-width: 200px;
-            padding: 6px 8px;
+            padding: 4px;
             background: #3c3c3c;
             border: 1px solid #555;
             border-radius: 4px;
             color: #d4d4d4;
             font-size: 12px;
+            cursor: pointer;
         }
-        .library-row input:focus { outline: 1px solid #569cd6; }
+        .library-row input[type="file"]::-webkit-file-upload-button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-right: 8px;
+        }
+        .library-row input[type="file"]::-webkit-file-upload-button:hover {
+            background: #1177bb;
+        }
         .library-status {
             font-size: 11px;
             padding: 3px 6px;
@@ -432,10 +444,10 @@
         <div class="left-area">
             <div class="editor-panel">
                 <div class="editor-toolbar">
-                    <h3>Modelica Source</h3>
+                    <h3 title="Write Modelica code. Auto-compiles as you type. Hover over symbols for type info.">Modelica Source</h3>
                     <span id="autoCompileStatus" style="font-size: 11px; color: #888;"></span>
                     <div class="editor-toolbar-right">
-                        <button class="small" onclick="saveFile()">Save .mo</button>
+                        <button class="small" onclick="saveFile()" title="Save Modelica source to a .mo file">Save .mo</button>
                     </div>
                 </div>
                 <div id="editor"></div>
@@ -448,14 +460,14 @@
                     <button class="collapse-btn" onclick="toggleBottomPanel()" title="Collapse">
                         <span class="section-arrow" id="bottomArrow">&#9660;</span>
                     </button>
-                    <button class="bottom-tab active" data-tab="output" onclick="switchBottomTab('output')">
+                    <button class="bottom-tab active" data-tab="output" onclick="switchBottomTab('output')" title="Compilation status and messages">
                         <span>Output</span>
                     </button>
-                    <button class="bottom-tab" data-tab="errors" onclick="switchBottomTab('errors')">
+                    <button class="bottom-tab" data-tab="errors" onclick="switchBottomTab('errors')" title="Syntax and type errors from the compiler">
                         <span>Errors</span>
                         <span class="section-badge" id="diagnosticsCount"></span>
                     </button>
-                    <button class="bottom-tab" data-tab="libraries" onclick="switchBottomTab('libraries')">
+                    <button class="bottom-tab" data-tab="libraries" onclick="switchBottomTab('libraries')" title="Load Modelica libraries from ZIP files (e.g., MSL)">
                         <span>Libraries</span>
                         <span class="section-badge" id="libCount">(0)</span>
                     </button>
@@ -470,17 +482,16 @@
                     <div class="bottom-section" id="librariesSection">
                         <div id="libraryList">
                             <div class="library-row" data-index="0">
-                                <input type="text" placeholder="Enter library URL (.zip)" value="https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.zip">
-                                <button class="small" onclick="fetchLibrary(0)">Fetch</button>
-                                <span class="library-status pending">Not loaded</span>
+                                <input type="file" accept=".zip" onchange="loadLibraryFile(0, this)" title="Select a ZIP file containing .mo library files">
+                                <span class="library-status pending">No file selected</span>
                             </div>
                         </div>
                         <div class="library-buttons">
-                            <button class="small" onclick="addLibraryRow()">+ Add Library</button>
-                            <button class="small danger" onclick="clearLibraries()">Clear All</button>
+                            <button class="small" onclick="addLibraryRow()" title="Add another library ZIP file">+ Add Library</button>
+                            <button class="small danger" onclick="clearLibraries()" title="Remove all loaded libraries">Clear All</button>
                         </div>
                         <div class="library-info">
-                            Supports ZIP archives containing .mo files (like MSL from GitHub).
+                            Load ZIP archives containing .mo files (e.g., <a href="https://github.com/modelica/ModelicaStandardLibrary/releases" target="_blank">MSL releases</a>).
                         </div>
                     </div>
                 </div>
@@ -494,7 +505,7 @@
                 <button class="collapse-btn" onclick="toggleTemplatePanel()" title="Collapse Template">
                     <span class="section-arrow" id="templateArrow">&#9664;</span>
                 </button>
-                <span class="section-title">Template</span>
+                <span class="section-title" title="Jinja2 template for code generation. Access DAE via: dae.x, dae.p, dae.fx, etc.">Template</span>
             </div>
             <div class="panel-content-middle">
                 <div style="flex-shrink: 0; margin-bottom: 8px;">
@@ -512,20 +523,20 @@
                 <button class="collapse-btn" onclick="toggleRightPanel()" title="Collapse">
                     <span class="section-arrow" id="rightArrow">&#9654;</span>
                 </button>
-                <span class="section-title">Rendered Model</span>
+                <span class="section-title" title="Compilation output in different formats">Rendered Model</span>
             </div>
             <div class="panel-content-right">
                 <div style="flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; margin-bottom: 8px; gap: 8px;">
                     <label style="font-size: 11px; color: #888;">Model:</label>
-                    <select id="modelSelect" onchange="updateSelectedModel()" style="flex: 1; min-width: 100px; padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;">
+                    <select id="modelSelect" onchange="updateSelectedModel()" style="flex: 1; min-width: 100px; padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="Select which model to display">
                         <option value="">-- No models --</option>
                     </select>
-                    <select id="formatSelect" onchange="updateOutputFormat()" style="padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;">
-                        <option value="pretty" selected>Pretty</option>
-                        <option value="json">DAE JSON</option>
-                        <option value="template">Template</option>
+                    <select id="formatSelect" onchange="updateOutputFormat()" style="padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="Output format">
+                        <option value="pretty" title="Human-readable DAE summary">Pretty</option>
+                        <option value="json" title="Full DAE in JSON format">DAE JSON</option>
+                        <option value="template" title="Rendered output from Jinja2 template">Template</option>
                     </select>
-                    <button class="small" onclick="saveOutput()">Save</button>
+                    <button class="small" onclick="saveOutput()" title="Save current output to a file">Save</button>
                 </div>
                 <div id="outputEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
             </div>
@@ -1089,10 +1100,9 @@
             row.className = 'library-row';
             row.dataset.index = index;
             row.innerHTML = `
-                <input type="text" placeholder="Enter library URL (.zip)" value="">
-                <button class="small" onclick="fetchLibrary(${index})">Fetch</button>
-                <button class="small danger" onclick="removeLibraryRow(${index})">X</button>
-                <span class="library-status pending">Not loaded</span>
+                <input type="file" accept=".zip" onchange="loadLibraryFile(${index}, this)" title="Select a ZIP file containing .mo library files">
+                <button class="small danger" onclick="removeLibraryRow(${index})" title="Remove this library">X</button>
+                <span class="library-status pending">No file selected</span>
             `;
             list.appendChild(row);
         };
@@ -1103,15 +1113,14 @@
             updateLibraryCount();
         };
 
-        window.fetchLibrary = async function(index) {
+        window.loadLibraryFile = async function(index, input) {
             const row = document.querySelector(`.library-row[data-index="${index}"]`);
-            const input = row.querySelector('input');
             const status = row.querySelector('.library-status');
-            const url = input.value.trim();
+            const file = input.files[0];
 
-            if (!url) {
-                status.textContent = 'No URL';
-                status.className = 'library-status error';
+            if (!file) {
+                status.textContent = 'No file selected';
+                status.className = 'library-status pending';
                 return;
             }
 
@@ -1119,102 +1128,73 @@
             status.className = 'library-status loading';
 
             try {
-                // Use local proxy when running on localhost (fast, no external deps)
-                // Fall back to external CORS proxy for GitHub Pages (try multiple)
-                const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+                setTerminalOutput(`Loading ${file.name}...`);
 
-                let response;
-                if (isLocalhost) {
-                    const fetchUrl = `/proxy/${encodeURIComponent(url)}`;
-                    setTerminalOutput(`Fetching via local proxy: ${url}`);
-                    response = await fetch(fetchUrl);
-                } else {
-                    // Try multiple CORS proxies in order of reliability
-                    const corsProxies = [
-                        (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-                        (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-                    ];
+                const arrayBuffer = await file.arrayBuffer();
+                const zip = await JSZip.loadAsync(arrayBuffer);
 
-                    for (let i = 0; i < corsProxies.length; i++) {
-                        const proxyUrl = corsProxies[i](url);
-                        const proxyName = i === 0 ? 'corsproxy.io' : 'allorigins.win';
-                        setTerminalOutput(`Fetching via ${proxyName}: ${url}`);
-                        try {
-                            response = await fetch(proxyUrl);
-                            if (response.ok) break;
-                        } catch (e) {
-                            if (i === corsProxies.length - 1) throw e;
-                            setTerminalOutput(`${proxyName} failed, trying next proxy...`);
+                status.textContent = 'Extracting...';
+                setTerminalOutput(`Extracting ${file.name}...`);
+
+                const data = {};
+                let processedCount = 0;
+                const moFiles = [];
+
+                zip.forEach((relativePath, zipFile) => {
+                    if (relativePath.endsWith('.mo') && !zipFile.dir) {
+                        if (!relativePath.includes('Test') && !relativePath.includes('Obsolete')) {
+                            moFiles.push({ path: relativePath, file: zipFile });
                         }
                     }
-                }
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                });
 
-                const isZip = url.endsWith('.zip') || response.headers.get('content-type')?.includes('application/zip');
-                let data, fileCount;
+                setTerminalOutput(`Found ${moFiles.length} .mo files, extracting...`);
 
-                if (isZip) {
-                    status.textContent = 'Extracting...';
-                    setTerminalOutput('Downloading and extracting ZIP file...');
-
-                    const arrayBuffer = await response.arrayBuffer();
-                    const zip = await JSZip.loadAsync(arrayBuffer);
-
-                    data = {};
-                    let processedCount = 0;
-                    const moFiles = [];
-
-                    zip.forEach((relativePath, file) => {
-                        if (relativePath.endsWith('.mo') && !file.dir) {
-                            if (!relativePath.includes('Test') && !relativePath.includes('Obsolete')) {
-                                moFiles.push({ path: relativePath, file });
-                            }
-                        }
-                    });
-
-                    setTerminalOutput(`Found ${moFiles.length} .mo files, extracting...`);
-
-                    for (const { path, file } of moFiles) {
-                        const content = await file.async('string');
-                        const normalizedPath = path.replace(/^[^\/]+\//, '');
-                        data[normalizedPath] = content;
-                        processedCount++;
-                        if (processedCount % 100 === 0) {
-                            status.textContent = `${processedCount}/${moFiles.length}`;
-                        }
+                for (const { path, file: zipFile } of moFiles) {
+                    const content = await zipFile.async('string');
+                    const normalizedPath = path.replace(/^[^\/]+\//, '');
+                    data[normalizedPath] = content;
+                    processedCount++;
+                    if (processedCount % 100 === 0) {
+                        status.textContent = `${processedCount}/${moFiles.length}`;
                     }
-                    fileCount = Object.keys(data).length;
-                } else {
-                    data = await response.json();
-                    fileCount = Object.keys(data).length;
                 }
+                const fileCount = Object.keys(data).length;
 
                 Object.assign(loadedLibraries, data);
-                status.textContent = `${fileCount} files`;
-                status.className = 'library-status loaded';
+                status.textContent = `Parsing ${fileCount}...`;
+                status.className = 'library-status loading';
 
-                setTerminalOutput(`Loaded ${fileCount} .mo files from ${url}\n\nParsing libraries...`);
+                setTerminalOutput(`Loaded ${fileCount} .mo files from ${file.name}\n\nParsing libraries...`);
 
                 try {
                     const librariesJson = JSON.stringify(loadedLibraries);
                     const cachedCount = await sendRequest('loadLibraries', { libraries: librariesJson });
-                    setTerminalOutput(`Loaded and parsed ${cachedCount} library files.\nLibraries are now cached!`);
+                    status.textContent = `${cachedCount} files`;
+                    status.className = 'library-status loaded';
+                    setTerminalOutput(`Parsed ${cachedCount} library files. Libraries cached!`);
                     updateLibraryCount(cachedCount);
                 } catch (e) {
+                    status.textContent = 'Parse error';
+                    status.className = 'library-status error';
                     setTerminalOutput(`Loaded ${fileCount} files but failed to parse: ${e.message}`);
                     updateLibraryCount();
                 }
             } catch (e) {
                 status.textContent = 'Error';
                 status.className = 'library-status error';
-                setTerminalOutput(`Failed to load library: ${e.message}\n\nURL: ${url}`);
+                setTerminalOutput(`Failed to load library: ${e.message}`);
             }
         };
 
         window.clearLibraries = async function() {
             loadedLibraries = {};
+            // Reset file inputs and status
+            document.querySelectorAll('.library-row input[type="file"]').forEach(input => {
+                input.value = '';
+            });
             document.querySelectorAll('.library-status').forEach(s => {
-                s.textContent = 'Not loaded';
+                s.textContent = 'No file selected';
                 s.className = 'library-status pending';
             });
             try {
@@ -1223,6 +1203,7 @@
                 console.warn('Failed to clear library cache:', e);
             }
             updateLibraryCount(0);
+            setTerminalOutput('Libraries cleared.');
         };
 
         function updateLibraryCount(count) {
@@ -1347,7 +1328,12 @@
                     status.textContent = 'Ready';
                     status.className = 'status ready';
                     workerReady = true;
-                    setTerminalOutput('WASM initialized!\n\nEdit code - auto-compiles as you type.\nClick Libraries tab to load MSL.');
+                    // Fetch version and show welcome message
+                    sendRequest('getVersion', {}).then(version => {
+                        setTerminalOutput(`Rumoca v${version} - Modelica Compiler\nHover over tabs/buttons for help.`);
+                    }).catch(() => {
+                        setTerminalOutput('WASM initialized! Edit code to compile.');
+                    });
                 } else {
                     status.textContent = 'Error';
                     status.className = 'status error';
