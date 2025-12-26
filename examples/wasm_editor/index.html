@@ -481,7 +481,6 @@
                         </div>
                         <div class="library-info">
                             Supports ZIP archives containing .mo files (like MSL from GitHub).
-                            URLs are fetched via CORS proxy (corsproxy.io).
                         </div>
                     </div>
                 </div>
@@ -1120,8 +1119,13 @@
             status.className = 'library-status loading';
 
             try {
-                const fetchUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-                setTerminalOutput(`Fetching via CORS proxy: ${url}`);
+                // Use local proxy when running on localhost (fast, no external deps)
+                // Fall back to external CORS proxy for GitHub Pages
+                const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+                const fetchUrl = isLocalhost
+                    ? `/proxy/${encodeURIComponent(url)}`
+                    : `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+                setTerminalOutput(`Fetching${isLocalhost ? ' via local proxy' : ' via CORS proxy'}: ${url}`);
 
                 const response = await fetch(fetchUrl);
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
