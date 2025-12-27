@@ -45,8 +45,8 @@ use web_time::Instant;
 // DAE Result Cache
 // =============================================================================
 
-/// Disk cache entry for a DAE result (only needed with cache feature)
-#[cfg(feature = "cache")]
+/// Disk cache entry for a DAE result (only needed with cache feature on native)
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DaeCacheEntry {
     result: BalanceResult,
@@ -127,8 +127,8 @@ fn hash_class_for_cache(
     }
 }
 
-// Disk cache functions (require filesystem access)
-#[cfg(feature = "cache")]
+// Disk cache functions (require filesystem access, not available on WASM)
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 mod disk_cache {
     use super::*;
 
@@ -235,7 +235,7 @@ mod disk_cache {
 /// Clear the DAE cache (memory and disk)
 pub fn clear_dae_cache() {
     DAE_CACHE.write().expect("DAE cache lock poisoned").clear();
-    #[cfg(feature = "cache")]
+    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
     disk_cache::clear_disk_cache();
 }
 

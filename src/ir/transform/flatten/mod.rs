@@ -579,8 +579,9 @@ pub fn flatten_with_library_dicts(
     // Build combined class dictionary (reuses Arc refs from libraries)
     let class_dict = class_dict::build_combined_class_dict(user_def, library_dicts);
 
-    // Use a simple hash for now (we're not using the cache for this path)
-    let def_hash = 0;
+    // Compute hash of user definition for cache key
+    // This ensures cache is invalidated when user code changes
+    let def_hash = compute_def_hash(user_def);
 
     // Determine main class name - model name is required
     let main_class_name = model_name.ok_or(IrError::ModelNameRequired)?.to_string();

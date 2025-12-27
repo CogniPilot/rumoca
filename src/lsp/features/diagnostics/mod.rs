@@ -328,6 +328,8 @@ fn compile_and_analyze_classes(
 
     // Load required libraries into workspace cache (single-threaded, before parallel section)
     // This is the key optimization - libraries are pre-merged once and reused
+    // Note: Library loading is not available on WASM targets
+    #[cfg(not(target_arch = "wasm32"))]
     for pkg_name in &import_roots {
         if !workspace.has_library(pkg_name) {
             workspace.load_library(pkg_name);

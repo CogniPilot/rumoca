@@ -2066,7 +2066,11 @@ def cat(axis, *args):
                     const diagJson = await sendRequest('diagnostics', { source });
                     const diagnostics = JSON.parse(diagJson);
                     updateDiagnostics(diagnostics);
-                } catch (e) { console.warn('Live diagnostics error:', e); }
+                } catch (e) {
+                    console.warn('Live diagnostics error:', e);
+                    // Clear old diagnostics on error to avoid showing stale errors
+                    updateDiagnostics([]);
+                }
 
                 // Detect all models in source
                 const models = detectModels(source);
