@@ -432,7 +432,6 @@ mod connector_errors {
 
     /// Error: Connect connector to non-connector
     #[test]
-    #[ignore = "Connector vs non-connector validation not yet implemented"]
     fn error_connect_non_connector() {
         expect_failure(
             r#"

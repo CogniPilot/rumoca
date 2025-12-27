@@ -142,7 +142,6 @@ mod string_continuation {
 
     /// MLS: "String continuation with backslash at end of line"
     #[test]
-    #[ignore = "String line continuation not yet supported"]
     fn mls_2_4_string_continuation() {
         expect_parse_success(
             r#"
@@ -157,7 +156,6 @@ continues on the next line";
 
     /// MLS: "Multiple line continuation"
     #[test]
-    #[ignore = "String line continuation not yet supported"]
     fn mls_2_4_string_multi_continuation() {
         expect_parse_success(
             r#"

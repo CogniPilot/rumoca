@@ -68,21 +68,18 @@ mod qident_escapes {
 
     /// MLS: "Q-IDENT can contain backslash escape"
     #[test]
-    #[ignore = "Q-IDENT backslash escape not yet supported"]
     fn mls_2_3_1_qident_backslash() {
         expect_parse_success("model Test Real 'path\\\\file'; end Test;");
     }
 
     /// MLS: "Q-IDENT can contain single quote escape"
     #[test]
-    #[ignore = "Q-IDENT single quote escape not yet supported"]
     fn mls_2_3_1_qident_single_quote_escape() {
         expect_parse_success("model Test Real 'it\\'s'; end Test;");
     }
 
     /// MLS: Q-IDENT with newline escape
     #[test]
-    #[ignore = "Q-IDENT newline escape not yet supported"]
     fn mls_2_3_1_qident_newline_escape() {
         expect_parse_success("model Test Real 'line1\\nline2'; end Test;");
     }
@@ -208,7 +205,6 @@ mod unicode_handling {
 
     /// MLS: "Modelica source uses Unicode"
     #[test]
-    #[ignore = "Unicode identifiers not yet supported"]
     fn mls_2_1_unicode_identifier() {
         expect_parse_success("model Test Real α; end Test;");
     }
@@ -224,14 +220,12 @@ mod unicode_handling {
 
     /// MLS: "Unicode Greek letters"
     #[test]
-    #[ignore = "Unicode Greek letter identifiers not yet supported"]
     fn mls_2_1_unicode_greek() {
         expect_parse_success("model Test Real Δx; Real θ; end Test;");
     }
 
     /// MLS: "Unicode subscripts/superscripts"
     #[test]
-    #[ignore = "Unicode subscript/superscript identifiers not yet supported"]
     fn mls_2_1_unicode_subscript() {
         expect_parse_success("model Test Real x₁; Real x₂; end Test;");
     }

@@ -10,13 +10,16 @@ use crate::ir::transform::constants::is_primitive_type;
 use crate::ir::transform::sub_comp_namer::SubCompNamer;
 use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use super::hash::FileDependencies;
 use super::helpers::{
     is_operator_record_type, is_simple_literal, make_binding_eq, try_evaluate_modification,
 };
-use super::imports::{build_import_aliases_for_class, resolve_class_name_with_imports};
+use super::imports::{
+    build_import_aliases_for_class, extract_package_modifications_from_component,
+    find_type_in_extends_chain, resolve_class_name_with_imports,
+};
 use super::validation::check_nested_component_subscripts;
 use super::{ClassDict, ScopeRenamer, SymbolTable, resolve_class};
 
@@ -178,6 +181,16 @@ impl<'a> ExpansionContext<'a> {
             None => return Ok(()), // Should not happen after resolve_class_name succeeded
         };
 
+        // Check that we're not instantiating a partial class (MLS §4.5)
+        if comp_class_raw.partial {
+            return Err(anyhow::anyhow!(
+                "Cannot instantiate partial class '{}' as component '{}' at line {}",
+                resolved_type_name,
+                comp_name,
+                comp.name_token.location.start_line
+            ));
+        }
+
         // Resolve the component class (handle its extends clauses)
         let (comp_class, comp_deps) = resolve_class(
             comp_class_raw,
@@ -270,6 +283,95 @@ impl<'a> ExpansionContext<'a> {
             is_operator_record,
         });
 
+        // Extract package modifications from the parent component.
+        // For example, if the parent has `tank(redeclare package Medium = AirData)`,
+        // we need to resolve types like `Medium.BaseProperties` inside the tank
+        // to `AirData.BaseProperties` instead of `PartialMedium.BaseProperties`.
+        let package_mods = extract_package_modifications_from_component(&comp.modifications);
+
+        // Build augmented import aliases that include resolved package modifications.
+        // These are used to resolve subcomponent types.
+        let comp_class_import_aliases =
+            build_import_aliases_for_class(&resolved_type_name, self.class_dict);
+        let mut augmented_aliases = comp_class_import_aliases.clone();
+
+        // Also build a mapping from the original fully qualified package names to new types.
+        // This is needed because component types may already be fully qualified, e.g.,
+        // Medium.BaseProperties was resolved to Modelica.Media.Interfaces.PartialMedium.BaseProperties
+        // before this expansion. We need to map that back to the new package.
+        let mut fq_package_replacements: IndexMap<String, String> = IndexMap::new();
+
+        for (pkg_name, new_type) in &package_mods {
+            // Resolve the new type in the context of the parent's scope (current_class_path)
+            let resolved_new_type = resolve_class_name_with_imports(
+                new_type,
+                current_class_path,
+                self.class_dict,
+                &import_aliases,
+            )
+            .unwrap_or_else(|| new_type.clone());
+            augmented_aliases.insert(pkg_name.clone(), resolved_new_type.clone());
+
+            // Also look up the original package definition in the component's class
+            // and add its fully qualified name as a replacement target.
+            // For example, if the class has "replaceable package Medium = PartialMedium",
+            // we need to also add "Modelica.Media.Interfaces.PartialMedium" -> resolved_new_type
+
+            // First try the local class definitions
+            if let Some(nested_class) = comp_class.classes.get(pkg_name) {
+                // If this nested class extends another package, get the original
+                if let Some(ext) = nested_class.extends.first() {
+                    let original_pkg = ext.comp.to_string();
+                    // Resolve the original package to fully qualified name
+                    if let Some(fq_original) = resolve_class_name_with_imports(
+                        &original_pkg,
+                        &resolved_type_name,
+                        self.class_dict,
+                        &comp_class_import_aliases,
+                    ) {
+                        fq_package_replacements.insert(fq_original, resolved_new_type.clone());
+                    }
+                }
+            } else {
+                // If not found locally, search the extends chain to find the inherited package.
+                // For example, TeeJunctionVolume extends PartialLumpedVolume, and Medium is
+                // defined in PartialLumpedVolume. We need to find PartialLumpedVolume.Medium
+                // and add it to the replacement map.
+                let mut search_visited = IndexSet::new();
+                if let Some(found_pkg_path) = find_type_in_extends_chain(
+                    pkg_name,
+                    &resolved_type_name,
+                    self.class_dict,
+                    &mut search_visited,
+                ) {
+                    // found_pkg_path is like "Modelica.Fluid.Interfaces.PartialLumpedVolume.Medium"
+                    // Get the original package this aliases to
+                    if let Some(class_def) = self.class_dict.get(&found_pkg_path)
+                        && let Some(ext) = class_def.extends.first()
+                    {
+                        let original_pkg = ext.comp.to_string();
+                        // Resolve the original package to fully qualified name
+                        // We need to use the context of where the package was found
+                        let pkg_context = found_pkg_path
+                            .rsplit_once('.')
+                            .map(|(prefix, _)| prefix.to_string())
+                            .unwrap_or_default();
+                        let pkg_context_aliases =
+                            build_import_aliases_for_class(&pkg_context, self.class_dict);
+
+                        if let Some(fq_original) = resolve_class_name_with_imports(
+                            &original_pkg,
+                            &pkg_context,
+                            self.class_dict,
+                            &pkg_context_aliases,
+                        ) {
+                            fq_package_replacements.insert(fq_original, resolved_new_type.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         // Collect subcomponents, handling inner/outer
         let mut subcomponents: Vec<(String, ir::ast::Component)> = Vec::new();
         for (subcomp_name, subcomp) in &comp_class.components {
@@ -292,6 +394,54 @@ impl<'a> ExpansionContext<'a> {
             let mut scomp = subcomp.clone();
             let name = format!("{}.{}", comp_name, subcomp_name);
             scomp.name = name.clone();
+
+            // If there are package modifications, resolve the subcomponent's type using
+            // the augmented aliases and update the type_name to the fully resolved path.
+            // This ensures that when we recursively expand the subcomponent, it uses
+            // the concrete type (e.g., AirData.BaseProperties) instead of the partial
+            // type (e.g., PartialMedium.BaseProperties).
+            if !package_mods.is_empty() {
+                let original_type = scomp.type_name.to_string();
+                let mut resolved_type = original_type.clone();
+
+                // First, check if the type starts with any of the fully qualified original packages
+                // that we're replacing. This handles cases where types were already fully qualified
+                // during class resolution (e.g., Modelica.Media.Interfaces.PartialMedium.BaseProperties)
+                for (fq_original, fq_new) in &fq_package_replacements {
+                    if original_type.starts_with(fq_original) {
+                        // Replace the prefix with the new package
+                        let suffix = &original_type[fq_original.len()..];
+                        resolved_type = format!("{}{}", fq_new, suffix);
+                        break;
+                    }
+                }
+
+                // If no fully-qualified replacement matched, try the standard alias resolution
+                if resolved_type == original_type
+                    && let Some(alias_resolved) = resolve_class_name_with_imports(
+                        &original_type,
+                        &resolved_type_name,
+                        self.class_dict,
+                        &augmented_aliases,
+                    )
+                {
+                    resolved_type = alias_resolved;
+                }
+
+                // Only update if the resolved type is different and not primitive
+                if resolved_type != original_type && !is_primitive_type(&resolved_type) {
+                    // Convert the resolved type string to a Name struct
+                    scomp.type_name = ir::ast::Name {
+                        name: resolved_type
+                            .split('.')
+                            .map(|part| ir::ast::Token {
+                                text: part.to_string(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    };
+                }
+            }
 
             // Propagate causality from parent component to subcomponents.
             // For example, if `u` is a ComplexInput, then `u.re` and `u.im`
@@ -475,17 +625,16 @@ impl<'a> ExpansionContext<'a> {
         // Remove the parent component from flat class (it's been expanded into subcomponents)
         self.fclass.components.swap_remove(comp_name);
 
-        // Recursively expand any subcomponents that are also class types
-        // Build import aliases for the resolved component class for subcomponent resolution
-        let subcomp_import_aliases =
-            build_import_aliases_for_class(&resolved_type_name, self.class_dict);
+        // Recursively expand any subcomponents that are also class types.
+        // Use the augmented_aliases (which include package modifications) to check
+        // if subcomponent types can be resolved.
         for (subcomp_name, subcomp) in &subcomponents {
             // Use resolved_type_name as context for resolving nested component types
             if resolve_class_name_with_imports(
                 &subcomp.type_name.to_string(),
                 &resolved_type_name,
                 self.class_dict,
-                &subcomp_import_aliases,
+                &augmented_aliases,
             )
             .is_some()
             {

@@ -89,8 +89,20 @@ impl SymbolType {
                     _ => true,
                 }
             }
-            // Class types are compatible if they have the same name
-            (SymbolType::Class(n1), SymbolType::Class(n2)) => n1 == n2,
+            // Class types are compatible with primitive types because connector type aliases
+            // like `connector RealInput = input Real` ARE Real types.
+            // Without full type resolution we can't know if a Class is an alias, so we allow it.
+            // The compiler will catch actual type errors during flattening.
+            (SymbolType::Class(_), SymbolType::Real)
+            | (SymbolType::Real, SymbolType::Class(_))
+            | (SymbolType::Class(_), SymbolType::Integer)
+            | (SymbolType::Integer, SymbolType::Class(_))
+            | (SymbolType::Class(_), SymbolType::Boolean)
+            | (SymbolType::Boolean, SymbolType::Class(_))
+            | (SymbolType::Class(_), SymbolType::String)
+            | (SymbolType::String, SymbolType::Class(_)) => true,
+            // Two different Class types are also considered compatible (may be related via extends)
+            (SymbolType::Class(_), SymbolType::Class(_)) => true,
             // Enumeration types are compatible if they have the same name
             (SymbolType::Enumeration(n1), SymbolType::Enumeration(n2)) => n1 == n2,
             // Scalar and array are not compatible

@@ -4,6 +4,7 @@
 //! to use their fully qualified names based on the imports in scope.
 
 use crate::ir::ast::{ClassDefinition, ComponentReference, Expression, Import, StoredDefinition};
+use crate::ir::transform::scope_resolver::find_nested_class;
 use crate::ir::visitor::MutVisitor;
 use indexmap::IndexMap;
 
@@ -64,7 +65,8 @@ impl ImportResolver {
     }
 }
 
-/// Find a class by its dot-separated path in the stored definition
+/// Find a class by its dot-separated path in the stored definition.
+/// Uses canonical find_nested_class for the nested traversal.
 fn find_class_by_path<'a>(
     stored_def: &'a StoredDefinition,
     path: &str,
@@ -74,15 +76,9 @@ fn find_class_by_path<'a>(
         return None;
     }
 
-    // Start with the first part at the top level
-    let mut current = stored_def.class_list.get(parts[0])?;
-
-    // Navigate through the remaining parts
-    for part in parts.iter().skip(1) {
-        current = current.classes.get(*part)?;
-    }
-
-    Some(current)
+    // Get the top-level class, then use canonical function for nested navigation
+    let root = stored_def.class_list.get(parts[0])?;
+    find_nested_class(root, &parts[1..])
 }
 
 impl MutVisitor for ImportResolver {
