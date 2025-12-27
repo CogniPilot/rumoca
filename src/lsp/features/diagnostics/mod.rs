@@ -49,9 +49,23 @@ pub fn compute_diagnostics(
         use crate::modelica_grammar::ModelicaGrammar;
         use crate::modelica_parser::parse;
 
+        #[cfg(target_arch = "wasm32")]
+        let start = web_time::Instant::now();
+
         let mut grammar = ModelicaGrammar::new();
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(
+            &format!("[diagnostics] grammar creation: {:?}", start.elapsed()).into(),
+        );
+
         match parse(text, path, &mut grammar) {
             Ok(_) => {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(
+                    &format!("[diagnostics] parsing: {:?}", start.elapsed()).into(),
+                );
+
                 // Parsing succeeded - compute new balances (old ones will be overwritten)
                 // Note: We don't clear balances here to avoid race conditions with CodeLens
                 // which might request balance info during computation
@@ -60,6 +74,11 @@ pub fn compute_diagnostics(
                     // Compile each class using the full Compiler pipeline (with library access)
                     // This gives us both the flattened class (for semantic analysis) and balance
                     compile_and_analyze_classes(uri, text, path, ast, workspace, &mut diagnostics);
+
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::log_1(
+                        &format!("[diagnostics] compile_and_analyze: {:?}", start.elapsed()).into(),
+                    );
                 }
             }
             Err(e) => {
@@ -276,20 +295,7 @@ fn analyze_class_with_scope(
 }
 
 // Note: collect_inherited_components is now imported from canonical module
-
-/// Collect root package names from imports in a class (recursively)
-fn collect_import_roots(class: &ClassDefinition, roots: &mut std::collections::HashSet<String>) {
-    for import in &class.imports {
-        let path = import.base_path();
-        if let Some(first) = path.name.first() {
-            roots.insert(first.text.clone());
-        }
-    }
-    // Recurse into nested classes
-    for nested in class.classes.values() {
-        collect_import_roots(nested, roots);
-    }
-}
+// Note: collect_import_roots_from_def is imported from crate::lsp::workspace
 
 /// Compile and analyze all classes in the document.
 /// Semantic analysis runs on original AST classes (pre-flattening) to match source code.
@@ -302,27 +308,47 @@ fn compile_and_analyze_classes(
     workspace: &mut WorkspaceState,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    let analyze_start = web_time::Instant::now();
+
     // First, run semantic analysis on original AST classes (pre-flattening)
     // This checks for undefined/unused variables against what the user wrote
     for class in ast.class_list.values() {
         analyze_class(class, &ast.class_list, diagnostics);
     }
 
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[diagnostics] semantic analysis: {:?}",
+            analyze_start.elapsed()
+        )
+        .into(),
+    );
+
     // Note: Import validation is deferred to the compiler, which has access to
     // the full library cache. The workspace symbol index may not have all
     // library symbols indexed, leading to false positives.
 
     // Collect all class paths that need compilation for balance checking
-    let mut class_paths: Vec<(String, bool, ClassType)> = Vec::new();
+    // Tuple: (class_path, is_partial, class_type, start_line, start_col)
+    let mut class_paths: Vec<(String, bool, ClassType, u32, u32)> = Vec::new();
     for (class_name, class) in &ast.class_list {
         collect_balance_classes(class, class_name, &mut class_paths);
     }
 
     // Collect all root package names from imports across all classes
-    let mut import_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for class in ast.class_list.values() {
-        collect_import_roots(class, &mut import_roots);
-    }
+    let import_roots = crate::lsp::workspace::collect_import_roots_from_def(ast);
+
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[diagnostics] import_roots: {:?}, workspace has {} libraries",
+            import_roots,
+            workspace.library_count()
+        )
+        .into(),
+    );
 
     let uri_clone = uri.clone();
 
@@ -342,16 +368,40 @@ fn compile_and_analyze_classes(
     // 2. Building the combined dictionary only clones Arc references, not the classes
     let library_dicts: Vec<std::sync::Arc<crate::ir::transform::flatten::ClassDict>> = import_roots
         .iter()
-        .filter_map(|pkg_name| workspace.get_library_dict(pkg_name))
+        .filter_map(|pkg_name| {
+            let dict = workspace.get_library_dict(pkg_name);
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(
+                &format!(
+                    "[diagnostics] get_library_dict('{}') -> {}",
+                    pkg_name,
+                    if dict.is_some() { "found" } else { "NOT FOUND" }
+                )
+                .into(),
+            );
+            dict
+        })
         .collect();
 
     // Use the already-parsed AST directly instead of re-parsing
     let user_ast = Some(ast.clone());
 
+    #[cfg(target_arch = "wasm32")]
+    let balance_start = web_time::Instant::now();
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[diagnostics] starting balance check for {} classes",
+            class_paths.len()
+        )
+        .into(),
+    );
+
     // Compile all classes in parallel for balance checking only
+    // Returns: (class_path, balance, optional_error_diagnostic)
     let results: Vec<_> = class_paths
         .par_iter()
-        .filter_map(|(class_path, is_partial, class_type)| {
+        .filter_map(|(class_path, is_partial, class_type, line, col)| {
             // Only compile models, blocks, classes, and connectors
             if !matches!(
                 class_type,
@@ -364,7 +414,11 @@ fn compile_and_analyze_classes(
             let user_def = user_ast.as_ref()?;
 
             // Time the compilation using class dictionary method (avoids cloning libraries)
+            #[cfg(target_arch = "wasm32")]
+            let start = web_time::Instant::now();
+            #[cfg(not(target_arch = "wasm32"))]
             let start = std::time::Instant::now();
+
             let compile_result = crate::compiler::pipeline::check_balance_with_library_dicts(
                 user_def,
                 &library_dicts,
@@ -380,34 +434,57 @@ fn compile_and_analyze_classes(
                         balance.status = BalanceStatus::Partial;
                     }
 
-                    Some((class_path.clone(), balance))
+                    Some((class_path.clone(), balance, None))
                 }
                 Err(e) => {
-                    // Errors are now raw (no miette formatting), just use the message directly
-                    let mut balance = BalanceResult::compile_error(e.to_string());
+                    // Create error diagnostic at the class location
+                    let error_msg = e.to_string();
+                    let diagnostic = create_diagnostic(
+                        *line,
+                        *col,
+                        format!("Compile error in {}: {}", class_path, error_msg),
+                        DiagnosticSeverity::ERROR,
+                    );
+
+                    let mut balance = BalanceResult::compile_error(error_msg);
                     balance.compile_time_ms = compile_time_ms;
-                    Some((class_path.clone(), balance))
+                    Some((class_path.clone(), balance, Some(diagnostic)))
                 }
             }
         })
         .collect();
 
-    // Merge balance results (single-threaded)
-    for (class_path, balance) in results {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!(
+            "[diagnostics] balance check completed: {:?}",
+            balance_start.elapsed()
+        )
+        .into(),
+    );
+
+    // Merge balance results and collect error diagnostics (single-threaded)
+    for (class_path, balance, error_diag) in results {
         workspace.set_balance(uri_clone.clone(), class_path, balance);
+        if let Some(diag) = error_diag {
+            diagnostics.push(diag);
+        }
     }
 }
 
 /// Recursively collect all class paths that need balance computation
+/// Returns: (class_path, is_partial, class_type, start_line, start_col)
 fn collect_balance_classes(
     class: &ClassDefinition,
     class_path: &str,
-    result: &mut Vec<(String, bool, ClassType)>,
+    result: &mut Vec<(String, bool, ClassType, u32, u32)>,
 ) {
     result.push((
         class_path.to_string(),
         class.partial,
         class.class_type.clone(),
+        class.name.location.start_line,
+        class.name.location.start_column,
     ));
 
     // Recursively collect nested classes

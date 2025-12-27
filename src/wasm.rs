@@ -27,8 +27,8 @@ use std::str::FromStr;
 use std::sync::RwLock;
 use wasm_bindgen::prelude::*;
 use web_sys::console;
+use web_time::Instant;
 
-use crate::ir::ast::StoredDefinition;
 // Note: enable_cache/disable_cache are available from crate::ir::transform::flatten
 // if needed for batch compilation with libraries
 use crate::lsp::{
@@ -39,10 +39,8 @@ use crate::lsp::{
 use crate::{Compiler, parse_source, parse_source_simple};
 use lsp_types::Uri;
 
-// Global cache for parsed library definitions
-static LIBRARY_CACHE: RwLock<Option<Vec<(String, StoredDefinition)>>> = RwLock::new(None);
-
-// Persistent workspace state for WASM (maintains document cache, symbol index, etc.)
+// Persistent workspace state for WASM (maintains document cache, symbol index, library cache, etc.)
+// This is the single source of truth - all library and document state lives here.
 static WORKSPACE: RwLock<Option<WorkspaceState>> = RwLock::new(None);
 
 fn log(msg: &str) {
@@ -59,6 +57,17 @@ fn log(msg: &str) {
 /// - Cross-Origin-Embedder-Policy: require-corp
 #[wasm_bindgen]
 pub fn wasm_init(num_threads: usize) -> js_sys::Promise {
+    // Limit thread count to 8 max to prevent hangs with large workloads
+    let num_threads = num_threads.min(8);
+
+    // Enable flatten cache for WASM - helps with repeated compiles
+    // The cache uses def_hash as key, so it auto-invalidates when code changes
+    crate::ir::transform::flatten::enable_cache();
+    log(&format!(
+        "[WASM] Flatten cache enabled, initializing thread pool with {} threads",
+        num_threads
+    ));
+
     wasm_bindgen_rayon::init_thread_pool(num_threads)
 }
 
@@ -155,16 +164,26 @@ pub fn compile_to_json(source: &str, model_name: &str) -> Result<String, JsError
     handle_compile_result(result)
 }
 
-/// Load and parse library sources into the cache.
+/// Load and parse library sources into the cache using parallel parsing.
 ///
-/// Call this once after fetching library files. The parsed ASTs are cached
-/// and reused for subsequent compile calls, avoiding re-parsing on every compile.
+/// Call this once after fetching library files. The sources are parsed in
+/// parallel using rayon's thread pool, then merged and indexed.
 ///
 /// Returns the number of successfully parsed library files.
 ///
 /// **Note**: Must be called from a Web Worker, not the main thread.
+/// Result from load_libraries containing counts, library names, conflicts, and skipped files
+#[derive(serde::Serialize)]
+struct LoadLibrariesResult {
+    parsed_count: usize,
+    error_count: usize,
+    library_names: Vec<String>,
+    conflicts: Vec<String>,
+    skipped_files: Vec<String>,
+}
+
 #[wasm_bindgen]
-pub fn load_libraries(libraries_json: &str) -> Result<u32, JsError> {
+pub fn load_libraries(libraries_json: &str) -> Result<String, JsError> {
     log("[WASM] load_libraries: starting");
 
     // Parse the libraries JSON
@@ -172,64 +191,142 @@ pub fn load_libraries(libraries_json: &str) -> Result<u32, JsError> {
         .map_err(|e| JsError::new(&format!("Failed to parse libraries JSON: {}", e)))?;
 
     log(&format!(
-        "[WASM] load_libraries: parsing {} library files...",
+        "[WASM] load_libraries: {} files to parse",
         libraries.len()
     ));
 
-    let start = web_time::Instant::now();
+    let start = Instant::now();
 
-    // Parse all library sources
-    let mut parsed: Vec<(String, StoredDefinition)> = Vec::with_capacity(libraries.len());
-    let mut errors: Vec<String> = Vec::new();
-
-    for (lib_name, lib_source) in &libraries {
-        match parse_source(lib_source, lib_name) {
-            Ok(def) => {
-                parsed.push((lib_name.clone(), def));
-            }
-            Err(e) => {
-                errors.push(format!("{}: {}", lib_name, e));
-            }
-        }
-    }
+    // Use WorkspaceState's parallel parsing method
+    // This handles parsing, grouping, merging, and indexing - same logic as native LSP
+    let mut workspace = WorkspaceState::new();
+    let result = workspace.load_library_sources(libraries);
 
     let elapsed = start.elapsed();
-    let count = parsed.len() as u32;
 
     log(&format!(
-        "[WASM] load_libraries: parsed {} files in {:.2}s ({} errors)",
-        count,
+        "[WASM] load_libraries: parsed {} files in {:.2}s ({} errors, {} skipped, libraries: {:?})",
+        result.parsed_count,
         elapsed.as_secs_f64(),
-        errors.len()
+        result.error_count,
+        result.skipped_files.len(),
+        result.library_names
     ));
 
-    if !errors.is_empty() && errors.len() <= 5 {
-        for err in &errors {
-            log(&format!("[WASM] load_libraries error: {}", err));
-        }
+    // Debug: log library contents
+    for (lib_name, lib) in workspace.libraries() {
+        let class_names: Vec<_> = lib.class_list.keys().take(10).collect();
+        log(&format!(
+            "[WASM] Library '{}' has {} classes, first 10: {:?}",
+            lib_name,
+            lib.class_list.len(),
+            class_names
+        ));
     }
 
-    // Store in cache
-    let mut cache = LIBRARY_CACHE
-        .write()
-        .map_err(|e| JsError::new(&format!("Failed to acquire cache lock: {}", e)))?;
-    *cache = Some(parsed.clone());
-
-    // Also initialize the persistent workspace with these libraries
-    let library_refs: Vec<&StoredDefinition> = parsed.iter().map(|(_, ast)| ast).collect();
-    let workspace = WorkspaceState::from_library_asts(&library_refs);
-
+    // Store workspace for LSP functions
     let mut ws_lock = WORKSPACE
         .write()
         .map_err(|e| JsError::new(&format!("Failed to acquire workspace lock: {}", e)))?;
     *ws_lock = Some(workspace);
 
+    // Return JSON with all result info
+    let json_result = LoadLibrariesResult {
+        parsed_count: result.parsed_count,
+        error_count: result.error_count,
+        library_names: result.library_names,
+        conflicts: result.conflicts,
+        skipped_files: result.skipped_files,
+    };
+    serde_json::to_string(&json_result)
+        .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
+}
+
+/// Parse a single library file and return serialized AST.
+///
+/// This is designed for JavaScript-based parallel parsing where multiple
+/// Web Workers each parse a subset of files, then results are merged.
+///
+/// Returns JSON-serialized StoredDefinition on success.
+#[wasm_bindgen]
+pub fn parse_library_file(source: &str, filename: &str) -> Result<String, JsError> {
+    match parse_source(source, filename) {
+        Ok(def) => serde_json::to_string(&def)
+            .map_err(|e| JsError::new(&format!("Serialization error: {}", e))),
+        Err(e) => Err(JsError::new(&format!("Parse error: {}", e))),
+    }
+}
+
+/// Merge pre-parsed library definitions into the workspace.
+///
+/// Takes a JSON array of [filename, ast_json] pairs where ast_json is the
+/// output from parse_library_file. This allows JavaScript to parse files
+/// in parallel using multiple Web Workers, then merge the results here.
+///
+/// Returns the number of successfully merged library packages.
+#[wasm_bindgen]
+pub fn merge_parsed_libraries(definitions_json: &str) -> Result<u32, JsError> {
+    log("[WASM] merge_parsed_libraries: starting");
+
+    // Parse the definitions array: [[filename, ast_json], ...]
+    let definitions_array: Vec<(String, String)> = serde_json::from_str(definitions_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse definitions JSON: {}", e)))?;
+
     log(&format!(
-        "[WASM] load_libraries: workspace initialized with {} libraries",
-        count
+        "[WASM] merge_parsed_libraries: {} definitions to merge",
+        definitions_array.len()
     ));
 
-    Ok(count)
+    let start = Instant::now();
+
+    // Deserialize each AST
+    let mut parsed: Vec<(String, crate::ir::ast::StoredDefinition)> = Vec::new();
+    let mut errors = 0;
+
+    for (filename, ast_json) in definitions_array {
+        match serde_json::from_str(&ast_json) {
+            Ok(def) => parsed.push((filename, def)),
+            Err(e) => {
+                log(&format!(
+                    "[WASM] merge_parsed_libraries: failed to deserialize {}: {}",
+                    filename, e
+                ));
+                errors += 1;
+            }
+        }
+    }
+
+    log(&format!(
+        "[WASM] merge_parsed_libraries: deserialized {} definitions ({} errors)",
+        parsed.len(),
+        errors
+    ));
+
+    // Use workspace to merge and index
+    let mut workspace = WorkspaceState::new();
+    let (library_names, conflicts) = workspace.load_library_definitions(parsed);
+
+    let elapsed = start.elapsed();
+
+    log(&format!(
+        "[WASM] merge_parsed_libraries: merged {} libraries ({:?}) in {:.2}s{}",
+        library_names.len(),
+        library_names,
+        elapsed.as_secs_f64(),
+        if conflicts.is_empty() {
+            String::new()
+        } else {
+            format!(" (conflicts: {:?})", conflicts)
+        }
+    ));
+
+    // Store workspace for LSP functions
+    let mut ws_lock = WORKSPACE
+        .write()
+        .map_err(|e| JsError::new(&format!("Failed to acquire workspace lock: {}", e)))?;
+    *ws_lock = Some(workspace);
+
+    Ok(library_names.len() as u32)
 }
 
 /// Clear the library cache and workspace.
@@ -238,21 +335,18 @@ pub fn load_libraries(libraries_json: &str) -> Result<u32, JsError> {
 #[wasm_bindgen]
 pub fn clear_library_cache() {
     log("[WASM] clear_library_cache: clearing");
-    if let Ok(mut cache) = LIBRARY_CACHE.write() {
-        *cache = None;
-    }
     if let Ok(mut ws) = WORKSPACE.write() {
         *ws = None;
     }
 }
 
-/// Get the number of libraries currently cached.
+/// Get the number of library packages currently cached in the workspace.
 #[wasm_bindgen]
 pub fn get_library_count() -> u32 {
-    LIBRARY_CACHE
+    WORKSPACE
         .read()
         .ok()
-        .and_then(|cache| cache.as_ref().map(|v| v.len() as u32))
+        .and_then(|ws| ws.as_ref().map(|w| w.library_count() as u32))
         .unwrap_or(0)
 }
 
@@ -285,7 +379,10 @@ pub fn compile_with_libraries(
     }
 }
 
-/// Compile using the cached library definitions.
+/// Compile using the workspace's pre-built library dictionaries.
+///
+/// This delegates to the LSP workspace's compile method, which uses pre-built
+/// ClassDicts for efficient compilation without re-parsing or re-merging libraries.
 fn compile_with_cached_libraries(source: &str, model_name: &str) -> Result<String, JsError> {
     // Log first 200 chars of source to verify correct content is being compiled
     let source_preview: String = source.chars().take(200).collect();
@@ -294,30 +391,26 @@ fn compile_with_cached_libraries(source: &str, model_name: &str) -> Result<Strin
         source_preview
     ));
 
-    let compiler = Compiler::new().model(model_name).cache(false);
-
     // Parse the main source
     let main_def = parse_source(source, "<wasm>").map_err(|e| JsError::new(&e.to_string()))?;
 
-    // Get cached libraries and clone them
-    let cache = LIBRARY_CACHE
+    // Get workspace for compilation
+    let ws_lock = WORKSPACE
         .read()
-        .map_err(|e| JsError::new(&format!("Failed to acquire cache lock: {}", e)))?;
+        .map_err(|e| JsError::new(&format!("Failed to acquire workspace lock: {}", e)))?;
 
-    let mut all_definitions: Vec<(String, StoredDefinition)> =
-        cache.as_ref().map(|libs| libs.clone()).unwrap_or_default();
-
-    // Add main source last (so its classes take precedence)
-    all_definitions.push(("<wasm>".to_string(), main_def));
+    let workspace = ws_lock
+        .as_ref()
+        .ok_or_else(|| JsError::new("Workspace not initialized"))?;
 
     log(&format!(
-        "[WASM] compile_with_cached_libraries: {} total definitions",
-        all_definitions.len()
+        "[WASM] compile_with_cached_libraries: using workspace with {} libraries",
+        workspace.library_count()
     ));
 
     // Use catch_unwind to capture panics
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compiler.compile_definitions(all_definitions, source, "<wasm>")
+        workspace.compile(&main_def, model_name)
     }));
 
     handle_compile_result(result)
@@ -451,21 +544,44 @@ fn handle_compile_result(
 /// This uses the same diagnostic logic as the native LSP server.
 #[wasm_bindgen]
 pub fn lsp_diagnostics(source: &str) -> Result<String, JsError> {
+    let start = Instant::now();
     log("[WASM] lsp_diagnostics: starting");
-
-    // Create a minimal workspace state for single-document analysis
-    let mut workspace = WorkspaceState::new();
 
     // Create a URI for the document
     let uri = Uri::from_str("file:///wasm/model.mo")
         .map_err(|e| JsError::new(&format!("Invalid URI: {}", e)))?;
 
+    // Use persistent workspace if available (has library cache), otherwise create new
+    let mut ws_lock = WORKSPACE
+        .write()
+        .map_err(|e| JsError::new(&format!("Failed to acquire workspace lock: {}", e)))?;
+
+    let workspace = ws_lock.get_or_insert_with(WorkspaceState::new);
+
+    // Update document in workspace
+    workspace.add_document(uri.clone(), source.to_string());
+
+    // Debug: log library state
+    let lib_names: Vec<_> = workspace
+        .libraries()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    log(&format!(
+        "[WASM] lsp_diagnostics: setup took {:?}, has {} libraries: {:?}",
+        start.elapsed(),
+        workspace.library_count(),
+        lib_names
+    ));
+
     // Compute diagnostics using the existing LSP logic
-    let diagnostics = compute_diagnostics(&uri, source, &mut workspace);
+    let diag_start = Instant::now();
+    let diagnostics = compute_diagnostics(&uri, source, workspace);
 
     log(&format!(
-        "[WASM] lsp_diagnostics: found {} diagnostics",
-        diagnostics.len()
+        "[WASM] lsp_diagnostics: found {} diagnostics in {:?} (total {:?})",
+        diagnostics.len(),
+        diag_start.elapsed(),
+        start.elapsed()
     ));
 
     // Serialize to JSON

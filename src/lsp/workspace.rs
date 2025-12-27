@@ -42,6 +42,16 @@ pub struct WorkspaceSymbol {
     pub detail: Option<String>,
 }
 
+/// Result from loading library sources
+#[derive(Debug, Default, Clone)]
+pub struct LoadLibraryResult {
+    pub parsed_count: usize,
+    pub error_count: usize,
+    pub library_names: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub skipped_files: Vec<String>,
+}
+
 /// Kind of workspace symbol
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -195,78 +205,6 @@ impl WorkspaceState {
         }
     }
 
-    /// Create a workspace state from in-memory library ASTs.
-    ///
-    /// This is useful for WASM where there's no file system access.
-    /// The library ASTs are indexed and made available for completion, hover, etc.
-    pub fn from_library_asts(library_asts: &[&StoredDefinition]) -> Self {
-        let mut ws = Self::new();
-
-        #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(
-            &format!(
-                "[workspace] from_library_asts: indexing {} library ASTs",
-                library_asts.len()
-            )
-            .into(),
-        );
-
-        // Index each library AST
-        for (i, ast) in library_asts.iter().enumerate() {
-            // Create a synthetic URI for each library file
-            let uri: Uri = format!("memory:///library_{}.mo", i)
-                .parse()
-                .expect("valid URI");
-
-            #[cfg(target_arch = "wasm32")]
-            {
-                let within_str = ast
-                    .within
-                    .as_ref()
-                    .map(|w| w.to_string())
-                    .unwrap_or_else(|| "<none>".to_string());
-                let classes: Vec<_> = ast.class_list.keys().collect();
-                if i < 10 || ast.class_list.keys().any(|k| k.contains("PID")) {
-                    web_sys::console::log_1(
-                        &format!(
-                            "[workspace] AST {}: within='{}', classes={:?}",
-                            i, within_str, classes
-                        )
-                        .into(),
-                    );
-                }
-            }
-
-            // Index the symbols from this AST
-            ws.index_stored_definition(&uri, ast);
-
-            // Store the AST for lookups
-            ws.parsed_asts.insert(uri.clone(), (*ast).clone());
-            ws.cached_asts.insert(uri, (*ast).clone());
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            // Log some sample indexed symbols
-            let pid_symbols: Vec<_> = ws
-                .symbol_index
-                .keys()
-                .filter(|k| k.contains("PID"))
-                .take(10)
-                .collect();
-            web_sys::console::log_1(
-                &format!(
-                    "[workspace] indexed {} symbols, PID-related: {:?}",
-                    ws.symbol_index.len(),
-                    pid_symbols
-                )
-                .into(),
-            );
-        }
-
-        ws
-    }
-
     /// Add a document to the workspace (for WASM use).
     ///
     /// This parses the document and indexes its symbols.
@@ -282,6 +220,11 @@ impl WorkspaceState {
 
     /// Log a debug message if debug mode is enabled
     fn debug_log(&self, msg: &str) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_sys::console::log_1(&msg.into());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         if self.debug {
             eprintln!("{}", msg);
         }
@@ -312,6 +255,314 @@ impl WorkspaceState {
     /// Check if a library is cached
     pub fn has_library(&self, name: &str) -> bool {
         self.library_cache.contains_key(name)
+    }
+
+    /// Get the number of libraries loaded in the cache.
+    pub fn library_count(&self) -> usize {
+        self.library_cache.len()
+    }
+
+    /// Iterate over all loaded libraries.
+    pub fn libraries(&self) -> impl Iterator<Item = (&String, &Arc<StoredDefinition>)> {
+        self.library_cache.iter()
+    }
+
+    /// Load library sources and parse them.
+    ///
+    /// This is the primary entry point for WASM library loading. It:
+    /// 1. Parses all source files (parallel on native, sequential on WASM)
+    /// 2. Groups them by library name
+    /// 3. Merges into complete packages
+    /// 4. Indexes symbols for completion/hover
+    ///
+    /// Note: WASM uses sequential parsing because rayon's work-stealing
+    /// doesn't work reliably with wasm-bindgen-rayon for this workload.
+    ///
+    /// # Arguments
+    /// * `sources` - HashMap of file_path -> source_code
+    ///
+    /// # Returns
+    /// LoadLibraryResult with parsed_count, error_count, library_names, conflicts, skipped_files
+    pub fn load_library_sources(
+        &mut self,
+        sources: std::collections::HashMap<String, String>,
+    ) -> LoadLibraryResult {
+        let total = sources.len();
+        self.debug_log(&format!("[workspace] Starting parse of {} files...", total));
+
+        #[cfg(target_arch = "wasm32")]
+        let start = web_time::Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        let start = std::time::Instant::now();
+
+        // Group files by library name first to detect duplicates early
+        let mut files_by_lib: std::collections::HashMap<String, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+        for (file_name, source) in sources {
+            // Extract library name from path (first component)
+            // For "Modelica/Blocks/Continuous.mo" -> "Modelica"
+            // For "Complex.mo" (single-file lib) -> "Complex"
+            let first_part = file_name.split('/').next().unwrap_or(&file_name);
+            let lib_name = first_part
+                .strip_suffix(".mo")
+                .unwrap_or(first_part)
+                .to_string();
+            files_by_lib
+                .entry(lib_name)
+                .or_default()
+                .push((file_name, source));
+        }
+
+        // Check for already-loaded libraries and skip them
+        let mut skipped_files: Vec<String> = Vec::new();
+        let mut sources_to_parse: Vec<(String, String)> = Vec::new();
+
+        for (lib_name, files) in files_by_lib {
+            if self.library_cache.contains_key(&lib_name) {
+                self.debug_log(&format!(
+                    "[workspace] Skipping {} files for already-loaded library '{}'",
+                    files.len(),
+                    lib_name
+                ));
+                for (file_name, _) in files {
+                    skipped_files.push(file_name);
+                }
+            } else {
+                sources_to_parse.extend(files);
+            }
+        }
+
+        let sources_vec = sources_to_parse;
+        self.debug_log(&format!(
+            "[workspace] Parsing {} files ({} skipped)",
+            sources_vec.len(),
+            skipped_files.len()
+        ));
+
+        // Use sequential parsing for WASM - rayon parallel has too much overhead
+        // (coordination via SharedArrayBuffer + Web Workers is slower than native threads)
+        #[cfg(target_arch = "wasm32")]
+        let results: Vec<_> = {
+            let total = sources_vec.len();
+            web_sys::console::log_1(
+                &format!("[WASM] load_libraries: parsing {} files...", total).into(),
+            );
+
+            let results: Vec<_> = sources_vec
+                .iter()
+                .enumerate()
+                .map(|(i, (file_name, source))| {
+                    // Log progress every 50 files
+                    if i % 50 == 0 {
+                        let percent = (i * 100) / total;
+                        web_sys::console::log_1(
+                            &format!(
+                                "[WASM] load_libraries: parsing {}/{} ({}%)",
+                                i, total, percent
+                            )
+                            .into(),
+                        );
+                    }
+                    match crate::parse_source(source, file_name) {
+                        Ok(def) => Ok((file_name.clone(), def)),
+                        Err(e) => Err(format!("{}: {}", file_name, e)),
+                    }
+                })
+                .collect();
+
+            web_sys::console::log_1(
+                &format!("[WASM] load_libraries: parsing {}/{} (100%)", total, total).into(),
+            );
+
+            results
+        };
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let results: Vec<_> = {
+            self.debug_log(&format!(
+                "[workspace] Using parallel parsing ({} files)...",
+                sources_vec.len()
+            ));
+            sources_vec
+                .into_par_iter()
+                .map(
+                    |(file_name, source)| match crate::parse_source(&source, &file_name) {
+                        Ok(def) => Ok((file_name, def)),
+                        Err(e) => Err(format!("{}: {}", file_name, e)),
+                    },
+                )
+                .collect()
+        };
+
+        self.debug_log(&format!(
+            "[workspace] Parse complete, {} results",
+            results.len()
+        ));
+
+        // Separate successes and errors
+        let mut parsed = Vec::with_capacity(results.len());
+        let mut errors = Vec::new();
+
+        for result in results {
+            match result {
+                Ok(pair) => parsed.push(pair),
+                Err(e) => errors.push(e),
+            }
+        }
+
+        let parse_time = start.elapsed();
+        self.debug_log(&format!(
+            "[workspace] Parsed {} files in {:.2}s ({} errors)",
+            parsed.len(),
+            parse_time.as_secs_f64(),
+            errors.len()
+        ));
+
+        // Log first few errors
+        for (i, err) in errors.iter().take(5).enumerate() {
+            self.debug_log(&format!("[workspace] Parse error {}: {}", i + 1, err));
+        }
+
+        let parsed_count = parsed.len();
+        let error_count = errors.len();
+
+        self.debug_log("[workspace] Starting library merge...");
+
+        // Load the parsed definitions
+        let (library_names, conflicts) = self.load_library_definitions(parsed);
+
+        self.debug_log(&format!(
+            "[workspace] Done! {} libraries loaded: {:?}{}{}",
+            library_names.len(),
+            library_names,
+            if conflicts.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} conflicts: {:?})", conflicts.len(), conflicts)
+            },
+            if skipped_files.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} files skipped)", skipped_files.len())
+            }
+        ));
+
+        LoadLibraryResult {
+            parsed_count,
+            error_count,
+            library_names,
+            conflicts,
+            skipped_files,
+        }
+    }
+
+    /// Load pre-parsed library definitions into the workspace.
+    ///
+    /// This is the primary method for loading libraries from pre-parsed sources
+    /// (e.g., from WASM where files are loaded via JavaScript).
+    ///
+    /// # Arguments
+    /// * `definitions` - List of (filename, StoredDefinition) tuples
+    ///
+    /// # Returns
+    /// Number of library packages successfully loaded
+    ///
+    /// # Example
+    /// ```ignore
+    /// let definitions = vec![
+    ///     ("Modelica/Blocks/Continuous.mo".to_string(), ast1),
+    ///     ("Modelica/Blocks/Math.mo".to_string(), ast2),
+    /// ];
+    /// workspace.load_library_definitions(definitions);
+    /// ```
+    /// Returns (library_names, conflicts) where conflicts are libraries that were replaced
+    pub fn load_library_definitions(
+        &mut self,
+        definitions: Vec<(String, StoredDefinition)>,
+    ) -> (Vec<String>, Vec<String>) {
+        use crate::ir::transform::multi_file::merge_stored_definitions;
+        use std::collections::HashMap as StdHashMap;
+
+        // Group definitions by library name (root package from file path)
+        // e.g., "Modelica/Blocks/Continuous.mo" -> "Modelica"
+        let mut libs_by_name: StdHashMap<String, Vec<(String, StoredDefinition)>> =
+            StdHashMap::new();
+
+        for (file_name, def) in definitions.iter() {
+            // Extract root package name from file path
+            let lib_name = file_name.split('/').next().unwrap_or(file_name).to_string();
+            libs_by_name
+                .entry(lib_name)
+                .or_default()
+                .push((file_name.clone(), def.clone()));
+        }
+
+        // Log detected library names
+        let lib_names: Vec<_> = libs_by_name.keys().collect();
+        self.debug_log(&format!(
+            "[workspace] Detected {} library packages: {:?}",
+            lib_names.len(),
+            lib_names
+        ));
+
+        let mut loaded_names: Vec<String> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
+
+        // Merge each library's definitions and store in library_cache
+        for (lib_name, lib_defs) in libs_by_name {
+            // Check for conflicts - warn if library already exists
+            if self.library_cache.contains_key(&lib_name) {
+                self.debug_log(&format!(
+                    "[workspace] WARNING: Library '{}' already loaded, will be replaced",
+                    lib_name
+                ));
+                conflicts.push(lib_name.clone());
+            }
+
+            match merge_stored_definitions(lib_defs) {
+                Ok(merged) => {
+                    self.library_cache
+                        .insert(lib_name.clone(), Arc::new(merged));
+                    loaded_names.push(lib_name.clone());
+                    self.debug_log(&format!(
+                        "[workspace] Loaded library '{}' into cache{}",
+                        lib_name,
+                        if conflicts.contains(&lib_name) {
+                            " (replaced)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+                Err(e) => {
+                    self.debug_log(&format!(
+                        "[workspace] Failed to merge library '{}': {}",
+                        lib_name, e
+                    ));
+                }
+            }
+        }
+
+        // Index symbols from all definitions for completion/hover
+        for (i, (_, ast)) in definitions.iter().enumerate() {
+            let uri: Uri = format!("memory:///library_{}.mo", i)
+                .parse()
+                .expect("valid URI");
+            self.index_stored_definition(&uri, ast);
+            self.parsed_asts.insert(uri.clone(), ast.clone());
+            self.cached_asts.insert(uri, ast.clone());
+        }
+
+        // Log conflicts if any
+        if !conflicts.is_empty() {
+            self.debug_log(&format!(
+                "[workspace] WARNING: {} library conflicts detected: {:?}",
+                conflicts.len(),
+                conflicts
+            ));
+        }
+
+        (loaded_names, conflicts)
     }
 
     /// Get a pre-built class dictionary for a library.
@@ -1106,6 +1357,110 @@ impl From<SymbolKind> for SymbolCategory {
             SymbolKind::Parameter => SymbolCategory::Parameter,
             SymbolKind::Constant => SymbolCategory::Constant,
         }
+    }
+}
+
+// ============================================================================
+// Compilation support
+// ============================================================================
+
+impl WorkspaceState {
+    /// Compile a model using pre-built library dictionaries from the workspace.
+    ///
+    /// This is the primary compilation entry point for WASM and LSP contexts.
+    /// It uses the workspace's pre-cached library dictionaries for efficient
+    /// compilation without re-parsing or re-merging library files.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_def` - The user's parsed model
+    /// * `model_name` - Name of the model to compile
+    ///
+    /// # Returns
+    ///
+    /// A `CompilationResult` containing the DAE and timing information
+    pub fn compile(
+        &self,
+        user_def: &StoredDefinition,
+        model_name: &str,
+    ) -> anyhow::Result<crate::CompilationResult> {
+        // Collect import roots from the user's model
+        let import_roots = collect_import_roots_from_def(user_def);
+
+        // Get pre-built library dicts for required libraries
+        let library_dicts: Vec<std::sync::Arc<crate::ir::transform::flatten::ClassDict>> =
+            import_roots
+                .iter()
+                .filter_map(|pkg_name| self.get_library_dict(pkg_name))
+                .collect();
+
+        // Use the pipeline function that accepts pre-built library dicts
+        crate::compiler::pipeline::compile_with_library_dicts(user_def, &library_dicts, model_name)
+    }
+
+    /// Check balance for a model using pre-built library dictionaries.
+    ///
+    /// This is a lightweight version that only returns balance information,
+    /// skipping the full compilation pipeline. Used by diagnostics.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_def` - The user's parsed model
+    /// * `model_name` - Name of the model to check (None for first class)
+    ///
+    /// # Returns
+    ///
+    /// A `BalanceResult` indicating whether the model has matching equations/unknowns
+    pub fn check_balance(
+        &self,
+        user_def: &StoredDefinition,
+        model_name: Option<&str>,
+    ) -> anyhow::Result<BalanceResult> {
+        // Collect import roots from the user's model
+        let import_roots = collect_import_roots_from_def(user_def);
+
+        // Get pre-built library dicts for required libraries
+        let library_dicts: Vec<std::sync::Arc<crate::ir::transform::flatten::ClassDict>> =
+            import_roots
+                .iter()
+                .filter_map(|pkg_name| self.get_library_dict(pkg_name))
+                .collect();
+
+        // Use the pipeline function that accepts pre-built library dicts
+        crate::compiler::pipeline::check_balance_with_library_dicts(
+            user_def,
+            &library_dicts,
+            model_name,
+        )
+    }
+}
+
+/// Collect root package names from imports in a StoredDefinition.
+///
+/// This extracts the first component of each import path (e.g., "Modelica" from
+/// "Modelica.Blocks.Continuous.PID") to determine which libraries need to be loaded.
+pub fn collect_import_roots_from_def(def: &StoredDefinition) -> std::collections::HashSet<String> {
+    let mut roots = std::collections::HashSet::new();
+    for class in def.class_list.values() {
+        collect_import_roots_from_class(class, &mut roots);
+    }
+    roots
+}
+
+/// Collect root package names from imports in a class (recursively).
+fn collect_import_roots_from_class(
+    class: &ClassDefinition,
+    roots: &mut std::collections::HashSet<String>,
+) {
+    for import in &class.imports {
+        let path = import.base_path();
+        if let Some(first) = path.name.first() {
+            roots.insert(first.text.clone());
+        }
+    }
+    // Recurse into nested classes
+    for nested in class.classes.values() {
+        collect_import_roots_from_class(nested, roots);
     }
 }
 
