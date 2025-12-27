@@ -12,6 +12,7 @@ mod attributes;
 mod bindings;
 mod cardinality;
 mod equations;
+mod expressions;
 mod member_access;
 mod types;
 mod validation;
@@ -30,10 +31,16 @@ pub use equations::{
     check_equation, check_equation_with_classes, check_equations, check_equations_with_classes,
     check_statement, check_statement_with_classes, check_statements, check_statements_with_classes,
 };
+pub use expressions::validate_expression;
 pub use member_access::check_class_member_access;
 pub use validation::{
-    check_array_bounds, check_break_return_context, check_scalar_subscripts,
-    check_start_modification_dimensions,
+    check_array_bounds, check_break_return_context, check_clock_restrictions, check_connect_types,
+    check_constant_bindings, check_expandable_no_flow, check_flow_compatibility,
+    check_function_forbidden_operators, check_operator_record_cannot_be_extended,
+    check_operator_record_no_extends, check_operator_record_no_partial, check_scalar_subscripts,
+    check_self_connections, check_single_initial_state, check_start_modification_dimensions,
+    check_state_is_block_or_model, check_stream_only_in_connector, check_stream_requires_flow,
+    check_transition_priority_unique, check_variability_dependencies, check_when_restrictions,
 };
 
 /// Severity of a type error

@@ -202,18 +202,10 @@ fn analyze_class_with_scope(
         scope.add_global(nested_name);
     }
 
-    // Use unified reference checker for undefined variable detection
+    // Use reference checker to track used symbols (for unused variable warnings)
+    // Note: We don't report reference errors here - the compiler handles those
+    // with full library context during balance checking (see compile_and_analyze_classes)
     let ref_result = check_class_references(class, &defined, &scope);
-
-    // Convert reference errors to diagnostics
-    for error in &ref_result.errors {
-        diagnostics.push(create_diagnostic(
-            error.line,
-            error.col,
-            error.message.clone(),
-            DiagnosticSeverity::ERROR,
-        ));
-    }
 
     // Run type checking on equations (with class lookup for member access resolution)
     for eq in &class.equations {
@@ -332,13 +324,28 @@ fn compile_and_analyze_classes(
 
     // Collect all class paths that need compilation for balance checking
     // Tuple: (class_path, is_partial, class_type, start_line, start_col)
+    // IMPORTANT: Use the `within` clause to build fully-qualified paths.
+    // This is critical for files inside libraries (e.g., Continuous.mo with "within Modelica.Blocks;")
+    // so that import resolution can walk up the package hierarchy to find inherited imports.
+    let within_prefix = ast.within.as_ref().map(|w| w.to_string());
     let mut class_paths: Vec<(String, bool, ClassType, u32, u32)> = Vec::new();
     for (class_name, class) in &ast.class_list {
-        collect_balance_classes(class, class_name, &mut class_paths);
+        let full_path = match &within_prefix {
+            Some(prefix) => format!("{}.{}", prefix, class_name),
+            None => class_name.clone(),
+        };
+        collect_balance_classes(class, &full_path, &mut class_paths);
     }
 
     // Collect all root package names from imports across all classes
-    let import_roots = crate::lsp::workspace::collect_import_roots_from_def(ast);
+    // Also include the root of the `within` clause to load parent package imports
+    let mut import_roots = crate::lsp::workspace::collect_import_roots_from_def(ast);
+    if let Some(ref prefix) = within_prefix {
+        // Extract the root package (first component) from the within clause
+        if let Some(root) = prefix.split('.').next() {
+            import_roots.insert(root.to_string());
+        }
+    }
 
     #[cfg(target_arch = "wasm32")]
     web_sys::console::log_1(

@@ -664,9 +664,11 @@ mod complex_scenarios {
     }
 
     /// For-equation generating when-equations
+    /// MLS §8.3.5: "A when-equation shall not be used within a for-equation"
+    /// Even though this pattern is sometimes useful, it's explicitly forbidden
     #[test]
     fn complex_for_generating_when() {
-        expect_success(
+        expect_failure(
             r#"
             model Test
                 Real x(start = 0);

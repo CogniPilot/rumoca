@@ -22,7 +22,6 @@ mod double_declaration_restriction {
 
     /// MLS: "Each component name shall be distinct from other component names"
     #[test]
-    #[ignore = "Double declaration detection not yet implemented"]
     fn mls_4_2_duplicate_real_variable() {
         expect_failure(
             r#"
@@ -38,7 +37,6 @@ mod double_declaration_restriction {
 
     /// MLS: "Each component name shall be distinct"
     #[test]
-    #[ignore = "Double declaration detection not yet implemented"]
     fn mls_4_2_duplicate_integer_variable() {
         expect_failure(
             r#"
@@ -54,7 +52,6 @@ mod double_declaration_restriction {
 
     /// MLS: "Component and class names share the same namespace"
     #[test]
-    #[ignore = "Component/class namespace collision not yet detected"]
     fn mls_4_2_component_class_same_name() {
         expect_failure(
             r#"
@@ -72,7 +69,6 @@ mod double_declaration_restriction {
 
     /// MLS: Duplicate parameter names forbidden
     #[test]
-    #[ignore = "Double declaration detection not yet implemented"]
     fn mls_4_2_duplicate_parameter() {
         expect_failure(
             r#"
@@ -88,7 +84,6 @@ mod double_declaration_restriction {
 
     /// MLS: Duplicate constant names forbidden
     #[test]
-    #[ignore = "Double declaration detection not yet implemented"]
     fn mls_4_2_duplicate_constant() {
         expect_failure(
             r#"
@@ -104,7 +99,6 @@ mod double_declaration_restriction {
 
     /// MLS: Duplicate in different visibility sections still forbidden
     #[test]
-    #[ignore = "Double declaration detection not yet implemented"]
     fn mls_4_2_duplicate_across_visibility() {
         expect_failure(
             r#"
@@ -169,7 +163,6 @@ mod constant_binding_requirement {
 
     /// MLS: "A constant shall have a declaration equation"
     #[test]
-    #[ignore = "Constant binding requirement not yet enforced"]
     fn mls_4_4_constant_without_binding() {
         expect_failure(
             r#"
@@ -184,7 +177,6 @@ mod constant_binding_requirement {
 
     /// MLS: "A constant shall have a declaration equation"
     #[test]
-    #[ignore = "Constant binding requirement not yet enforced"]
     fn mls_4_4_constant_integer_without_binding() {
         expect_failure(
             r#"
@@ -199,7 +191,6 @@ mod constant_binding_requirement {
 
     /// MLS: "A constant shall have a declaration equation"
     #[test]
-    #[ignore = "Constant binding requirement not yet enforced"]
     fn mls_4_4_constant_string_without_binding() {
         expect_failure(
             r#"
@@ -214,7 +205,6 @@ mod constant_binding_requirement {
 
     /// MLS: "A constant shall have a declaration equation"
     #[test]
-    #[ignore = "Constant binding requirement not yet enforced"]
     fn mls_4_4_constant_boolean_without_binding() {
         expect_failure(
             r#"
@@ -229,7 +219,6 @@ mod constant_binding_requirement {
 
     /// MLS: "A constant shall have a declaration equation" - array case
     #[test]
-    #[ignore = "Constant binding requirement not yet enforced"]
     fn mls_4_4_constant_array_without_binding() {
         expect_failure(
             r#"
@@ -299,7 +288,6 @@ mod variability_dependency {
 
     /// MLS: "A parameter binding cannot depend on a variable"
     #[test]
-    #[ignore = "Parameter variability dependency not yet checked"]
     fn mls_4_5_parameter_depends_on_variable() {
         expect_failure(
             r#"
@@ -316,7 +304,6 @@ mod variability_dependency {
 
     /// MLS: "A constant binding cannot depend on a parameter"
     #[test]
-    #[ignore = "Constant variability dependency not yet checked"]
     fn mls_4_5_constant_depends_on_parameter() {
         expect_failure(
             r#"
@@ -332,7 +319,6 @@ mod variability_dependency {
 
     /// MLS: "A constant binding cannot depend on a variable"
     #[test]
-    #[ignore = "Constant variability dependency not yet checked"]
     fn mls_4_5_constant_depends_on_variable() {
         expect_failure(
             r#"
@@ -389,7 +375,6 @@ mod record_restrictions {
 
     /// MLS: "A record shall not have equation sections"
     #[test]
-    #[ignore = "Record equation restriction not yet enforced"]
     fn mls_4_6_record_with_equation() {
         expect_failure(
             r#"
@@ -406,7 +391,6 @@ mod record_restrictions {
 
     /// MLS: "A record shall not have algorithm sections"
     #[test]
-    #[ignore = "Record algorithm restriction not yet enforced"]
     fn mls_4_6_record_with_algorithm() {
         expect_failure(
             r#"
@@ -423,7 +407,6 @@ mod record_restrictions {
 
     /// MLS: "A record shall not have initial equation sections"
     #[test]
-    #[ignore = "Record initial equation restriction not yet enforced"]
     fn mls_4_6_record_with_initial_equation() {
         expect_failure(
             r#"
@@ -471,7 +454,6 @@ mod package_restrictions {
 
     /// MLS: "A package shall not have equation sections"
     #[test]
-    #[ignore = "Package equation restriction not yet enforced"]
     fn mls_4_6_package_with_equation() {
         expect_parse_failure(
             r#"
@@ -486,7 +468,6 @@ mod package_restrictions {
 
     /// MLS: "A package shall not have algorithm sections"
     #[test]
-    #[ignore = "Package algorithm restriction not yet enforced"]
     fn mls_4_6_package_with_algorithm() {
         expect_parse_failure(
             r#"
@@ -501,7 +482,6 @@ mod package_restrictions {
 
     /// MLS: "A package shall contain only class definitions and constants"
     #[test]
-    #[ignore = "Package variable restriction not yet enforced"]
     fn mls_4_6_package_with_variable() {
         expect_failure(
             r#"
@@ -515,7 +495,6 @@ mod package_restrictions {
 
     /// MLS: "A package shall contain only class definitions and constants"
     #[test]
-    #[ignore = "Package parameter restriction not yet enforced"]
     fn mls_4_6_package_with_parameter() {
         expect_failure(
             r#"
@@ -568,7 +547,6 @@ mod connector_restrictions {
 
     /// MLS: "All elements of a connector shall be public"
     #[test]
-    #[ignore = "Connector visibility restriction not yet enforced"]
     fn mls_4_6_connector_with_protected() {
         expect_failure(
             r#"
@@ -584,7 +562,6 @@ mod connector_restrictions {
 
     /// MLS: "A connector shall not contain equation sections"
     #[test]
-    #[ignore = "Connector equation restriction not yet enforced"]
     fn mls_4_6_connector_with_equation() {
         expect_parse_failure(
             r#"
@@ -600,7 +577,6 @@ mod connector_restrictions {
 
     /// MLS: "A connector shall not contain algorithm sections"
     #[test]
-    #[ignore = "Connector algorithm restriction not yet enforced"]
     fn mls_4_6_connector_with_algorithm() {
         expect_parse_failure(
             r#"
@@ -634,7 +610,6 @@ mod function_restrictions {
 
     /// MLS: "A function shall not have equation sections"
     #[test]
-    #[ignore = "Function equation restriction not yet enforced"]
     fn mls_4_6_function_with_equation() {
         expect_parse_failure(
             r#"
@@ -699,7 +674,6 @@ mod partial_class_restrictions {
 
     /// MLS: "A partial class cannot be instantiated"
     #[test]
-    #[ignore = "Partial class instantiation check not yet implemented"]
     fn mls_4_5_instantiate_partial_model() {
         expect_failure(
             r#"
@@ -719,7 +693,6 @@ mod partial_class_restrictions {
 
     /// MLS: "A partial class cannot be instantiated"
     #[test]
-    #[ignore = "Partial class instantiation check not yet implemented"]
     fn mls_4_5_instantiate_partial_block() {
         expect_failure(
             r#"
@@ -769,7 +742,6 @@ mod predefined_type_restrictions {
 
     /// MLS: Cannot redeclare Real
     #[test]
-    #[ignore = "Predefined type redeclaration check not yet implemented"]
     fn mls_4_8_cannot_redeclare_real() {
         expect_parse_failure(
             r#"
@@ -780,7 +752,6 @@ mod predefined_type_restrictions {
 
     /// MLS: Cannot redeclare Integer
     #[test]
-    #[ignore = "Predefined type redeclaration check not yet implemented"]
     fn mls_4_8_cannot_redeclare_integer() {
         expect_parse_failure(
             r#"
@@ -791,7 +762,6 @@ mod predefined_type_restrictions {
 
     /// MLS: Cannot redeclare Boolean
     #[test]
-    #[ignore = "Predefined type redeclaration check not yet implemented"]
     fn mls_4_8_cannot_redeclare_boolean() {
         expect_parse_failure(
             r#"
@@ -802,7 +772,6 @@ mod predefined_type_restrictions {
 
     /// MLS: Cannot redeclare String
     #[test]
-    #[ignore = "Predefined type redeclaration check not yet implemented"]
     fn mls_4_8_cannot_redeclare_string() {
         expect_parse_failure(
             r#"

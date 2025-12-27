@@ -135,7 +135,6 @@ mod transition_properties {
 
     /// MLS: "Transitions must have unique priorities"
     #[test]
-    #[ignore = "transition priority uniqueness not yet enforced"]
     fn mls_17_2_transition_priority_unique() {
         expect_failure(
             r#"
@@ -384,7 +383,6 @@ mod state_restrictions {
 
     /// MLS: "State must be a block or model"
     #[test]
-    #[ignore = "state type restriction not yet enforced"]
     fn mls_17_1_state_must_be_block_or_model() {
         expect_failure(
             r#"
@@ -404,7 +402,6 @@ mod state_restrictions {
 
     /// MLS: "initialState must be called exactly once"
     #[test]
-    #[ignore = "single initialState enforcement not yet implemented"]
     fn mls_17_1_single_initial_state() {
         expect_failure(
             r#"

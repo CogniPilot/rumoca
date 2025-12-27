@@ -104,9 +104,9 @@
 /*  56 */ when: 'when';
 /*  57 */ while: 'while';
 /*  58 */ within: 'within';
-/*  59 */ ident: /[_a-zA-Z][_a-zA-Z0-9]*/@basic_ident;
-/*  60 */ ident: /\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'/@q_ident;
-/*  61 */ string: /"([^"\\]|\\.)*"/;
+/*  59 */ ident: /[_\p{L}][_\p{L}\p{N}]*/@basic_ident;
+/*  60 */ ident: /\'([^\'\\]|\\[\'\"\\ntrfabv?])*\'/@q_ident;
+/*  61 */ string: /"([^"\\]|\\[\s\S])*"/;
 /*  62 */ unsigned_integer: /[0-9]+/;
 /*  63 */ unsigned_real: /[0-9]+\.[0-9]+/@decimal;
 /*  64 */ unsigned_real: /[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?/@scientific;

@@ -33,7 +33,6 @@ mod stream_declaration {
 
     /// MLS: "Stream variable must have exactly one associated flow variable"
     #[test]
-    #[ignore = "stream/flow association check not yet implemented"]
     fn mls_15_1_stream_requires_flow() {
         expect_failure(
             r#"
@@ -48,7 +47,6 @@ mod stream_declaration {
 
     /// MLS: "Stream variables only allowed in connector"
     #[test]
-    #[ignore = "stream context check not yet implemented"]
     fn mls_15_1_stream_only_in_connector() {
         expect_failure(
             r#"

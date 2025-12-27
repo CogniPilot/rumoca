@@ -44,6 +44,93 @@ pub(super) fn extract_extends_modifications(
     result
 }
 
+/// Extract component type redeclarations from extends clause modifications.
+///
+/// Component redeclarations in extends clauses like:
+///   extends VoltageSource(redeclare Modelica.Blocks.Sources.Sine signalSource(...))
+///
+/// are stored as Binary expressions:
+///   Binary { op: Assign, lhs: ComponentReference("signalSource"), rhs: FunctionCall { comp: "Sine", args } }
+///
+/// This function extracts these into an IndexMap mapping component name to new type name.
+/// It also returns a separate map with any nested modifications for each redeclared component.
+///
+/// Note: We exclude cases where the RHS is a builtin function call like `fill(0, n)` or `size(A, 1)`.
+/// These are value assignments, not type redeclarations.
+pub(super) fn extract_type_redeclarations(
+    modifications: &[Expression],
+) -> (IndexMap<String, String>, IndexMap<String, Vec<Expression>>) {
+    use crate::ir::transform::constants::is_builtin_function;
+
+    let mut type_changes = IndexMap::new();
+    let mut nested_mods = IndexMap::new();
+
+    for expr in modifications {
+        if let Expression::Binary { op, lhs, rhs } = expr
+            && matches!(op, OpBinary::Assign(_))
+            && let Expression::ComponentReference(comp_ref) = &**lhs
+            && let Expression::FunctionCall {
+                comp: new_type,
+                args,
+            } = &**rhs
+        {
+            let comp_name = comp_ref.to_string();
+            let new_type_name = new_type.to_string();
+
+            // Skip builtin function calls - these are value assignments, not type redeclarations
+            // e.g., T = fill(293.15, m) or n = size(A, 1)
+            if is_builtin_function(&new_type_name) {
+                continue;
+            }
+
+            type_changes.insert(comp_name.clone(), new_type_name);
+            if !args.is_empty() {
+                nested_mods.insert(comp_name, args.clone());
+            }
+        }
+    }
+
+    (type_changes, nested_mods)
+}
+
+/// Extract package/type modifications from component modifications.
+///
+/// Component modifications like `tank(redeclare package Medium = AirData)` are stored
+/// in the modifications IndexMap with the key as the package name ("Medium") and
+/// the value as a FunctionCall expression representing the new type ("AirData").
+///
+/// This function extracts these package redeclarations so they can be used as
+/// import aliases when resolving types inside the component.
+///
+/// Note: We only extract FunctionCall with empty arguments, as those represent
+/// type/package replacements (e.g., `Medium = AirData()`). FunctionCall with
+/// arguments are actual function calls like `start = fill(0, n)` which should
+/// not be treated as type modifications.
+///
+/// Returns a map from package name to the new type name.
+pub(super) fn extract_package_modifications_from_component(
+    modifications: &IndexMap<String, Expression>,
+) -> IndexMap<String, String> {
+    let mut result = IndexMap::new();
+
+    for (name, expr) in modifications {
+        // Package modifications are stored as FunctionCall expressions with no arguments
+        // e.g., Medium = FunctionCall { comp: "AirData", args: [] }
+        // We exclude FunctionCall with arguments as those are actual function calls
+        // like start = fill(0, n) which are not type replacements.
+        if let Expression::FunctionCall {
+            comp: new_type,
+            args,
+        } = expr
+            && args.is_empty()
+        {
+            result.insert(name.clone(), new_type.to_string());
+        }
+    }
+
+    result
+}
+
 // =============================================================================
 // Import Aliases
 // =============================================================================
@@ -290,6 +377,18 @@ pub(super) fn collect_package_aliases_recursive(
         let parent_name = extend.comp.to_string();
         if is_primitive_type(&parent_name) {
             continue;
+        }
+
+        // Extract package redeclarations from extends clause modifications.
+        // For example: extends PartialTestModel(redeclare package Medium = R134a_ph)
+        // should add Medium -> R134a_ph to the aliases.
+        let (extends_type_redecls, _) = extract_type_redeclarations(&extend.modifications);
+        for (pkg_name, new_type) in extends_type_redecls {
+            // Resolve the new type relative to this class's scope
+            let resolved_target =
+                resolve_relative_to_package(&new_type, class_path, class_dict).unwrap_or(new_type);
+            // Insert with higher priority (child class overrides parent)
+            aliases.insert(pkg_name, resolved_target);
         }
 
         // Resolve the parent name in the context of this class

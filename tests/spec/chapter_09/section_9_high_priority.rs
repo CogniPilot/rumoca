@@ -17,7 +17,6 @@ mod connection_critical {
 
     /// Critical: Connection with self
     #[test]
-    #[ignore = "Self-connection detection not yet implemented"]
     fn critical_self_connection() {
         expect_failure(
             r#"
@@ -575,7 +574,6 @@ mod error_critical {
 
     /// Critical: Incompatible flow/non-flow mix
     #[test]
-    #[ignore = "Flow/non-flow validation not yet implemented"]
     fn critical_incompatible_flow_mix() {
         expect_failure(
             r#"
@@ -626,7 +624,6 @@ mod error_critical {
 
     /// Critical: Connect in when (should be invalid)
     #[test]
-    #[ignore = "Connect in when validation not yet implemented"]
     fn critical_connect_in_when_error() {
         expect_failure(
             r#"

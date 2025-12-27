@@ -205,7 +205,6 @@ mod section_12_2_invalid {
 
     /// MLS §12.2: "No equations allowed" - equation section should fail
     #[test]
-    #[ignore = "Semantic validation not yet implemented for function restrictions"]
     fn mls_12_2_no_equations() {
         expect_parse_failure(
             r#"
@@ -244,7 +243,6 @@ mod section_12_2_invalid {
 
     /// MLS §12.2: "No initial algorithms allowed"
     #[test]
-    #[ignore = "Semantic validation not yet implemented for function restrictions"]
     fn mls_12_2_no_initial_algorithm() {
         expect_parse_failure(
             r#"

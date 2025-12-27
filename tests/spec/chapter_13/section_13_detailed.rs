@@ -534,7 +534,6 @@ mod package_restrictions {
 
     /// MLS: "Packages cannot have equations"
     #[test]
-    #[ignore = "Package equation restriction not yet enforced"]
     fn error_package_with_equations() {
         expect_failure(
             r#"
@@ -550,7 +549,6 @@ mod package_restrictions {
 
     /// MLS: "Packages cannot have algorithm sections"
     #[test]
-    #[ignore = "Package algorithm restriction not yet enforced"]
     fn error_package_with_algorithm() {
         expect_failure(
             r#"
