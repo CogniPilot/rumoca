@@ -75,7 +75,6 @@ mod clock_types {
 
     /// MLS: "Clock cannot have flow prefix"
     #[test]
-    #[ignore = "Clock flow restriction not yet implemented"]
     fn mls_16_1_clock_no_flow() {
         expect_failure(
             r#"
@@ -89,7 +88,6 @@ mod clock_types {
 
     /// MLS: "Clock cannot have stream prefix"
     #[test]
-    #[ignore = "Clock stream restriction not yet implemented"]
     fn mls_16_1_clock_no_stream() {
         expect_failure(
             r#"
@@ -103,7 +101,6 @@ mod clock_types {
 
     /// MLS: "Clock cannot have discrete prefix"
     #[test]
-    #[ignore = "Clock discrete restriction not yet implemented"]
     fn mls_16_1_clock_no_discrete() {
         expect_failure(
             r#"

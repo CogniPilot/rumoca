@@ -22,7 +22,6 @@ mod package_restrictions {
 
     /// MLS: "Package cannot have equations"
     #[test]
-    #[ignore = "Package equation restriction not yet implemented"]
     fn mls_13_1_package_no_equations() {
         expect_failure(
             r#"
@@ -38,7 +37,6 @@ mod package_restrictions {
 
     /// MLS: "Package cannot have algorithm sections"
     #[test]
-    #[ignore = "Package algorithm restriction not yet implemented"]
     fn mls_13_1_package_no_algorithm() {
         expect_failure(
             r#"

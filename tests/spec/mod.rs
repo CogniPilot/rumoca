@@ -45,6 +45,7 @@
 #![allow(dead_code)]
 
 use rumoca::Compiler;
+use rumoca::ir::ast::ClassType;
 
 // ============================================================================
 // TEST UTILITIES
@@ -252,6 +253,103 @@ pub fn expect_parse_failure_with_message(source: &str, expected_message: &str) {
             );
         }
     }
+}
+
+// ============================================================================
+// AST VERIFICATION UTILITIES
+// ============================================================================
+
+/// Compile a model and return the result for detailed AST inspection
+pub fn compile(source: &str, model: &str) -> rumoca::compiler::CompilationResult {
+    Compiler::new()
+        .model(model)
+        .compile_str(source, "test.mo")
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to compile '{}'.\nError: {:?}\nSource:\n{}",
+                model, e, source
+            )
+        })
+}
+
+/// Parse source and return the StoredDefinition for AST inspection
+pub fn parse(source: &str) -> rumoca::ir::ast::StoredDefinition {
+    rumoca::parse_source(source, "test.mo").unwrap_or_else(|e| {
+        panic!(
+            "Failed to parse source.\nError: {:?}\nSource:\n{}",
+            e, source
+        )
+    })
+}
+
+/// Compile and verify class type of the top-level class
+pub fn expect_class_type(source: &str, model: &str, expected_type: ClassType) {
+    let def = parse(source);
+    let class = def
+        .class_list
+        .get(model)
+        .unwrap_or_else(|| panic!("Class '{}' not found in parsed AST", model));
+    assert_eq!(
+        class.class_type, expected_type,
+        "Expected class type {:?} but got {:?} for model '{}'",
+        expected_type, class.class_type, model
+    );
+}
+
+/// Compile and verify that a component exists with the expected type
+pub fn expect_component(source: &str, model: &str, component_name: &str, expected_type: &str) {
+    let result = compile(source, model);
+    let class = &result.expanded_class;
+    let component = class.components.get(component_name).unwrap_or_else(|| {
+        panic!(
+            "Component '{}' not found in flattened class '{}'",
+            component_name, model
+        )
+    });
+    assert_eq!(
+        component.type_name.to_string(),
+        expected_type,
+        "Expected component '{}' to have type '{}' but got '{}'",
+        component_name,
+        expected_type,
+        component.type_name
+    );
+}
+
+/// Compile and verify the number of equations
+pub fn expect_equation_count(source: &str, model: &str, expected_count: usize) {
+    let result = compile(source, model);
+    let actual_count = result.expanded_class.equations.len();
+    assert_eq!(
+        actual_count, expected_count,
+        "Expected {} equations but got {} for model '{}'",
+        expected_count, actual_count, model
+    );
+}
+
+/// Compile and verify the number of components
+pub fn expect_component_count(source: &str, model: &str, expected_count: usize) {
+    let result = compile(source, model);
+    let actual_count = result.expanded_class.components.len();
+    assert_eq!(
+        actual_count, expected_count,
+        "Expected {} components but got {} for model '{}'",
+        expected_count, actual_count, model
+    );
+}
+
+/// Compile and verify that a component does NOT exist (for testing removal)
+pub fn expect_no_component(source: &str, model: &str, component_name: &str) {
+    let result = compile(source, model);
+    assert!(
+        !result
+            .expanded_class
+            .components
+            .contains_key(component_name),
+        "Expected component '{}' to NOT exist in flattened class '{}' but it was found",
+        component_name,
+        model
+    );
 }
 
 /// Multi-file test: compile multiple source files together

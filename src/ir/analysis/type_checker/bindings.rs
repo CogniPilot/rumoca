@@ -7,6 +7,7 @@ use crate::ir::ast::{ClassDefinition, Expression};
 use crate::ir::analysis::symbols::DefinedSymbol;
 use crate::ir::analysis::type_inference::{infer_expression_type, type_from_name};
 
+use super::expressions::validate_expression;
 use super::types::{build_array_type, get_array_dimensions, has_inferred_dimensions};
 use super::{TypeCheckResult, TypeError, TypeErrorSeverity};
 
@@ -61,6 +62,10 @@ pub fn check_component_bindings(class: &ClassDefinition) -> TypeCheckResult {
         if is_synthetic {
             continue;
         }
+
+        // Validate the expression itself (check for invalid operator usage)
+        let expr_result = validate_expression(&comp.start, &defined);
+        result.merge(expr_result);
 
         // Build the full declared type including array dimensions
         let base_type = type_from_name(&comp.type_name.to_string());

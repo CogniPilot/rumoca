@@ -17,11 +17,24 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for ir::ast::StoredDefin
             class_list: IndexMap::new(),
             ..Default::default()
         };
+
+        // Predefined types that cannot be redeclared (MLS §4.8)
+        const PREDEFINED_TYPES: &[&str] = &["Real", "Integer", "Boolean", "String"];
+
         for class in &ast.stored_definition_list {
-            def.class_list.insert(
-                class.class_definition.name.text.clone(),
-                class.class_definition.clone(),
-            );
+            let class_name = &class.class_definition.name.text;
+
+            // Check for redeclaration of predefined types
+            if PREDEFINED_TYPES.contains(&class_name.as_str()) {
+                return Err(anyhow::anyhow!(
+                    "Cannot redeclare predefined type '{}' at line {}",
+                    class_name,
+                    class.class_definition.location.start_line
+                ));
+            }
+
+            def.class_list
+                .insert(class_name.clone(), class.class_definition.clone());
         }
         def.within = ast.stored_definition_opt.as_ref().map(|within_clause| {
             within_clause
@@ -63,6 +76,110 @@ impl TryFrom<&Token<'_>> for ir::ast::Token {
     }
 }
 
+/// Validate class-specific restrictions per Modelica spec
+///
+/// - Connectors cannot have equation/algorithm sections or protected elements
+/// - Packages cannot have equation/algorithm sections or non-constant components
+/// - Records cannot have equation/algorithm sections
+/// - Functions cannot have equation sections (only algorithm sections)
+fn validate_class_restrictions(class_def: &ir::ast::ClassDefinition) -> anyhow::Result<()> {
+    match class_def.class_type {
+        ir::ast::ClassType::Connector => {
+            // MLS §4.6: Connectors cannot have equation sections
+            if !class_def.equations.is_empty() || !class_def.initial_equations.is_empty() {
+                anyhow::bail!(
+                    "Connector '{}' cannot have equation sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+            // MLS §4.6: Connectors cannot have algorithm sections
+            if !class_def.algorithms.is_empty() || !class_def.initial_algorithms.is_empty() {
+                anyhow::bail!(
+                    "Connector '{}' cannot have algorithm sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+            // MLS §4.6: Connectors cannot have protected elements
+            if class_def.components.values().any(|c| c.is_protected) {
+                anyhow::bail!(
+                    "Connector '{}' cannot have protected elements (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+        }
+        ir::ast::ClassType::Package => {
+            // MLS §4.6: Packages cannot have equation sections
+            if !class_def.equations.is_empty() || !class_def.initial_equations.is_empty() {
+                anyhow::bail!(
+                    "Package '{}' cannot have equation sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+            // MLS §4.6: Packages cannot have algorithm sections
+            if !class_def.algorithms.is_empty() || !class_def.initial_algorithms.is_empty() {
+                anyhow::bail!(
+                    "Package '{}' cannot have algorithm sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+            // MLS §4.6: Packages can only have constant components (no parameters or variables)
+            for (name, comp) in &class_def.components {
+                if !matches!(comp.variability, ir::ast::Variability::Constant(_)) {
+                    anyhow::bail!(
+                        "Package '{}' can only contain constants, not '{}' (line {})",
+                        class_def.name.text,
+                        name,
+                        class_def.location.start_line
+                    );
+                }
+            }
+        }
+        ir::ast::ClassType::Record => {
+            // MLS §4.6: Records cannot have equation sections
+            if !class_def.equations.is_empty() || !class_def.initial_equations.is_empty() {
+                anyhow::bail!(
+                    "Record '{}' cannot have equation sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+            // MLS §4.6: Records cannot have algorithm sections
+            if !class_def.algorithms.is_empty() || !class_def.initial_algorithms.is_empty() {
+                anyhow::bail!(
+                    "Record '{}' cannot have algorithm sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+        }
+        ir::ast::ClassType::Function => {
+            // MLS §12.2: Functions cannot have equation sections
+            if !class_def.equations.is_empty() || !class_def.initial_equations.is_empty() {
+                anyhow::bail!(
+                    "Function '{}' cannot have equation sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+            // MLS §12.2: Functions cannot have initial algorithm sections
+            if !class_def.initial_algorithms.is_empty() {
+                anyhow::bail!(
+                    "Function '{}' cannot have initial algorithm sections (line {})",
+                    class_def.name.text,
+                    class_def.location.start_line
+                );
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Convert grammar ClassType to IR ClassType
 fn convert_class_type(class_type: &modelica_grammar_trait::ClassType) -> ir::ast::ClassType {
     match class_type {
@@ -79,6 +196,24 @@ fn convert_class_type(class_type: &modelica_grammar_trait::ClassType) -> ir::ast
             ir::ast::ClassType::Function
         }
         modelica_grammar_trait::ClassType::Operator(_) => ir::ast::ClassType::Operator,
+    }
+}
+
+/// Check if the class type is an expandable connector (MLS §9.1.3)
+fn is_expandable_connector(class_type: &modelica_grammar_trait::ClassType) -> bool {
+    if let modelica_grammar_trait::ClassType::ClassTypeOpt0Connector(c) = class_type {
+        c.class_type_opt0.is_some()
+    } else {
+        false
+    }
+}
+
+/// Check if the class type is an operator record (MLS §14)
+fn is_operator_record(class_type: &modelica_grammar_trait::ClassType) -> bool {
+    if let modelica_grammar_trait::ClassType::ClassTypeOptRecord(r) = class_type {
+        r.class_type_opt.is_some()
+    } else {
+        false
     }
 }
 
@@ -117,7 +252,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         class_specifier,
                     ) => {
                         let spec = &class_specifier.standard_class_specifier;
-                        Ok(ir::ast::ClassDefinition {
+                        let class_def = ir::ast::ClassDefinition {
                             name: spec.name.clone(),
                             class_type,
                             class_type_token,
@@ -133,6 +268,8 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             components: spec.composition.components.clone(),
                             encapsulated: ast.class_definition_opt.is_some(),
                             partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            expandable: is_expandable_connector(&ast.class_prefixes.class_type),
+                            operator_record: is_operator_record(&ast.class_prefixes.class_type),
                             causality: ir::ast::Causality::Empty,
                             equation_keyword: spec.composition.equation_keyword.clone(),
                             initial_equation_keyword: spec
@@ -147,7 +284,9 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             end_name_token: Some(spec.ident.clone()),
                             enum_literals: vec![],
                             annotation: spec.composition.annotation.clone(),
-                        })
+                        };
+                        validate_class_restrictions(&class_def)?;
+                        Ok(class_def)
                     }
                     modelica_grammar_trait::LongClassSpecifier::ExtendsClassSpecifier(ext) => {
                         // Handle 'extends IDENT [class_modification] description composition end IDENT'
@@ -182,7 +321,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                         let mut all_extends = vec![inherited_extends];
                         all_extends.extend(spec.composition.extends.clone());
 
-                        Ok(ir::ast::ClassDefinition {
+                        let class_def = ir::ast::ClassDefinition {
                             name: spec.ident.clone(),
                             class_type,
                             class_type_token,
@@ -198,6 +337,8 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             components: spec.composition.components.clone(),
                             encapsulated: ast.class_definition_opt.is_some(),
                             partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            expandable: is_expandable_connector(&ast.class_prefixes.class_type),
+                            operator_record: is_operator_record(&ast.class_prefixes.class_type),
                             causality: ir::ast::Causality::Empty,
                             equation_keyword: spec.composition.equation_keyword.clone(),
                             initial_equation_keyword: spec
@@ -212,7 +353,9 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             end_name_token: Some(spec.ident0.clone()),
                             enum_literals: vec![],
                             annotation: spec.composition.annotation.clone(),
-                        })
+                        };
+                        validate_class_restrictions(&class_def)?;
+                        Ok(class_def)
                     }
                 }
             }
@@ -279,6 +422,8 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             components: IndexMap::new(),
                             encapsulated: ast.class_definition_opt.is_some(),
                             partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            expandable: false, // Enumerations are not connectors
+                            operator_record: false, // Enumerations are not operator records
                             causality: ir::ast::Causality::Empty,
                             equation_keyword: None,
                             initial_equation_keyword: None,
@@ -349,6 +494,8 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for ir::ast::ClassDefinit
                             components: IndexMap::new(),
                             encapsulated: ast.class_definition_opt.is_some(),
                             partial: ast.class_prefixes.class_prefixes_opt.is_some(),
+                            expandable: is_expandable_connector(&ast.class_prefixes.class_type),
+                            operator_record: is_operator_record(&ast.class_prefixes.class_type),
                             causality,
                             equation_keyword: None,
                             initial_equation_keyword: None,
@@ -409,8 +556,18 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                 modelica_grammar_trait::CompositionListGroup::PublicElementList(elem_list) => {
                     // Merge public elements into composition
                     // Note: 'public' is the default visibility, so we just add them
-                    comp.components
-                        .extend(elem_list.element_list.components.clone());
+                    for (name, component) in elem_list.element_list.components.clone() {
+                        // Check for duplicate declaration
+                        if let Some(existing) = comp.components.get(&name) {
+                            return Err(anyhow::anyhow!(
+                                "Duplicate declaration of '{}' at line {} (first declared at line {})",
+                                name,
+                                component.name_token.location.start_line,
+                                existing.name_token.location.start_line
+                            ));
+                        }
+                        comp.components.insert(name, component);
+                    }
                     comp.classes.extend(elem_list.element_list.classes.clone());
                     comp.extends.extend(elem_list.element_list.extends.clone());
                     comp.imports.extend(elem_list.element_list.imports.clone());
@@ -418,6 +575,15 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                 modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
                     // Merge protected elements into composition, marking them as protected
                     for (name, mut component) in elem_list.element_list.components.clone() {
+                        // Check for duplicate declaration
+                        if let Some(existing) = comp.components.get(&name) {
+                            return Err(anyhow::anyhow!(
+                                "Duplicate declaration of '{}' at line {} (first declared at line {})",
+                                name,
+                                component.name_token.location.start_line,
+                                existing.name_token.location.start_line
+                            ));
+                        }
                         component.is_protected = true;
                         comp.components.insert(name, component);
                     }
@@ -515,6 +681,15 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                         modelica_grammar_trait::ElementDefinitionGroup::ClassDefinition(class) => {
                             let nested_class = class.class_definition.clone();
                             let name = nested_class.name.text.clone();
+                            // Check for class/component name collision
+                            if let Some(existing_comp) = def.components.get(&name) {
+                                return Err(anyhow::anyhow!(
+                                    "Class '{}' at line {} conflicts with component of the same name (declared at line {})",
+                                    name,
+                                    nested_class.location.start_line,
+                                    existing_comp.name_token.location.start_line
+                                ));
+                            }
                             def.classes.insert(name, nested_class);
                         }
                         modelica_grammar_trait::ElementDefinitionGroup::ComponentClause(clause) => {
@@ -735,7 +910,8 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                                         }
                                                     } else if let ir::ast::Expression::Binary { op, lhs, rhs } = arg
                                                         && matches!(op, ir::ast::OpBinary::Assign(_)) {
-                                                            // This is a named argument like start=2.5, shape=(3), or R=10
+                                                            // This is a named argument like start=2.5, shape=(3), R=10,
+                                                            // or a redeclare package modification like Medium = SomePackage
                                                             if let ir::ast::Expression::ComponentReference(comp) = &**lhs {
                                                                 let param_name = comp.to_string();
                                                                 // Check if this argument has the `each` modifier
@@ -899,8 +1075,58 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     }
                                 }
 
-                                def.components
-                                    .insert(c.declaration.ident.text.clone(), value);
+                                // Check outer component restrictions (MLS §5.4)
+                                // Outer components shall not have binding equations or modifications
+                                // Exception: inner outer components can have bindings (they provide default values)
+                                if is_outer && !is_inner {
+                                    // Check for binding equation (= expr)
+                                    // Distinguish real binding from synthetic default by checking location
+                                    let has_real_binding = if matches!(value.start, ir::ast::Expression::Empty) {
+                                        false
+                                    } else if let Some(loc) = value.start.get_location() {
+                                        !(loc.start_line == 0 && loc.start_column == 0 && loc.file_name.is_empty())
+                                    } else {
+                                        false
+                                    };
+
+                                    if has_real_binding {
+                                        return Err(anyhow::anyhow!(
+                                            "Outer component '{}' shall not have a binding equation at line {}",
+                                            c.declaration.ident.text,
+                                            c.declaration.ident.location.start_line
+                                        ));
+                                    }
+
+                                    // Check for modifications (start=, fixed=, etc.)
+                                    if !value.modifications.is_empty() || value.start_is_modification {
+                                        return Err(anyhow::anyhow!(
+                                            "Outer component '{}' shall not have modifications at line {}",
+                                            c.declaration.ident.text,
+                                            c.declaration.ident.location.start_line
+                                        ));
+                                    }
+                                }
+
+                                // Check for duplicate component declaration
+                                let comp_name = c.declaration.ident.text.clone();
+                                if let Some(existing) = def.components.get(&comp_name) {
+                                    return Err(anyhow::anyhow!(
+                                        "Duplicate declaration of '{}' at line {} (first declared at line {})",
+                                        comp_name,
+                                        c.declaration.ident.location.start_line,
+                                        existing.name_token.location.start_line
+                                    ));
+                                }
+                                // Check for component/class name collision
+                                if let Some(existing_class) = def.classes.get(&comp_name) {
+                                    return Err(anyhow::anyhow!(
+                                        "Component '{}' at line {} conflicts with class of the same name (declared at line {})",
+                                        comp_name,
+                                        c.declaration.ident.location.start_line,
+                                        existing_class.location.start_line
+                                    ));
+                                }
+                                def.components.insert(comp_name, value);
                             }
                         }
                         modelica_grammar_trait::ElementDefinitionGroup::ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(repl) => {
@@ -916,7 +1142,50 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                     def.classes.insert(name, nested_class);
                                 }
                                 modelica_grammar_trait::ElementDefinitionGroupGroup::ComponentClause(clause) => {
-                                    // Process replaceable component clause - simplified handling
+                                    // Process replaceable component clause - extract variability and other attributes
+                                    let variability = match &clause
+                                        .component_clause
+                                        .type_prefix
+                                        .type_prefix_opt0
+                                    {
+                                        Some(opt) => match &opt.type_prefix_opt0_group {
+                                            modelica_grammar_trait::TypePrefixOpt0Group::Constant(c) => {
+                                                ir::ast::Variability::Constant(c.constant.constant.clone())
+                                            }
+                                            modelica_grammar_trait::TypePrefixOpt0Group::Discrete(c) => {
+                                                ir::ast::Variability::Discrete(c.discrete.discrete.clone())
+                                            }
+                                            modelica_grammar_trait::TypePrefixOpt0Group::Parameter(c) => {
+                                                ir::ast::Variability::Parameter(c.parameter.parameter.clone())
+                                            }
+                                        },
+                                        None => ir::ast::Variability::Empty,
+                                    };
+
+                                    let causality = match &clause.component_clause.type_prefix.type_prefix_opt1 {
+                                        Some(opt) => match &opt.type_prefix_opt1_group {
+                                            modelica_grammar_trait::TypePrefixOpt1Group::Input(c) => {
+                                                ir::ast::Causality::Input(c.input.input.clone())
+                                            }
+                                            modelica_grammar_trait::TypePrefixOpt1Group::Output(c) => {
+                                                ir::ast::Causality::Output(c.output.output.clone())
+                                            }
+                                        },
+                                        None => ir::ast::Causality::Empty,
+                                    };
+
+                                    let connection = match &clause.component_clause.type_prefix.type_prefix_opt {
+                                        Some(opt) => match &opt.type_prefix_opt_group {
+                                            modelica_grammar_trait::TypePrefixOptGroup::Flow(flow) => {
+                                                ir::ast::Connection::Flow(flow.flow.flow.clone())
+                                            }
+                                            modelica_grammar_trait::TypePrefixOptGroup::Stream(stream) => {
+                                                ir::ast::Connection::Stream(stream.stream.stream.clone())
+                                            }
+                                        },
+                                        None => ir::ast::Connection::Empty,
+                                    };
+
                                     for c in &clause.component_clause.component_list.components {
                                         let comp_location = clause
                                             .component_clause
@@ -937,9 +1206,9 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             name: c.declaration.ident.text.clone(),
                                             name_token: c.declaration.ident.clone(),
                                             type_name: clause.component_clause.type_specifier.name.clone(),
-                                            variability: ir::ast::Variability::Empty,
-                                            causality: ir::ast::Causality::Empty,
-                                            connection: ir::ast::Connection::Empty,
+                                            variability: variability.clone(),
+                                            causality: causality.clone(),
+                                            connection: connection.clone(),
                                             description: c.description.description_string.tokens.clone(),
                                             start: ir::ast::Expression::Empty,
                                             start_is_modification: false,
@@ -957,7 +1226,17 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
                                             is_protected: false,
                                         };
 
-                                        def.components.insert(c.declaration.ident.text.clone(), value);
+                                        // Check for duplicate component declaration
+                                        let comp_name = c.declaration.ident.text.clone();
+                                        if let Some(existing) = def.components.get(&comp_name) {
+                                            return Err(anyhow::anyhow!(
+                                                "Duplicate declaration of '{}' at line {} (first declared at line {})",
+                                                comp_name,
+                                                c.declaration.ident.location.start_line,
+                                                existing.name_token.location.start_line
+                                            ));
+                                        }
+                                        def.components.insert(comp_name, value);
                                     }
                                 }
                             }

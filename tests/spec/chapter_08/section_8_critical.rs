@@ -44,7 +44,6 @@ mod when_nesting_restriction {
 
     /// MLS: "A when-equation shall not be used within an if-equation"
     #[test]
-    #[ignore = "When inside if-equation detection not yet implemented"]
     fn mls_8_3_5_when_inside_if() {
         expect_failure(
             r#"
@@ -67,7 +66,6 @@ mod when_nesting_restriction {
 
     /// MLS: "A when-equation shall not be used within a for-equation"
     #[test]
-    #[ignore = "When inside for-equation detection not yet implemented"]
     fn mls_8_3_5_when_inside_for() {
         expect_failure(
             r#"

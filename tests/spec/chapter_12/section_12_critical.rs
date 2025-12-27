@@ -22,7 +22,6 @@ mod function_equation_restriction {
 
     /// MLS: "Functions shall not have equations"
     #[test]
-    #[ignore = "Function equation restriction not yet enforced"]
     fn mls_12_2_function_with_equation_section() {
         expect_parse_failure(
             r#"
@@ -38,7 +37,6 @@ mod function_equation_restriction {
 
     /// MLS: "Functions shall not have initial equations"
     #[test]
-    #[ignore = "Function initial equation restriction not yet enforced"]
     fn mls_12_2_function_with_initial_equation() {
         expect_parse_failure(
             r#"
@@ -56,7 +54,6 @@ mod function_equation_restriction {
 
     /// MLS: "Functions shall not have initial algorithms"
     #[test]
-    #[ignore = "Function initial algorithm restriction not yet enforced"]
     fn mls_12_2_function_with_initial_algorithm() {
         expect_parse_failure(
             r#"
@@ -104,7 +101,6 @@ mod function_when_restriction {
 
     /// MLS: "When-statements are not allowed in functions"
     #[test]
-    #[ignore = "Function when-statement restriction not yet enforced"]
     fn mls_12_2_function_with_when_statement() {
         expect_failure(
             r#"
@@ -124,7 +120,6 @@ mod function_when_restriction {
 
     /// MLS: "When-statements are not allowed in functions" (with elsewhen)
     #[test]
-    #[ignore = "Function when-statement restriction not yet enforced"]
     fn mls_12_2_function_with_when_elsewhen() {
         expect_failure(
             r#"
@@ -179,7 +174,6 @@ mod function_forbidden_operators {
 
     /// MLS: "der is not allowed inside functions"
     #[test]
-    #[ignore = "Function der() restriction not yet enforced"]
     fn mls_12_2_function_with_der() {
         expect_failure(
             r#"
@@ -196,7 +190,6 @@ mod function_forbidden_operators {
 
     /// MLS: "initial is not allowed inside functions"
     #[test]
-    #[ignore = "Function initial() restriction not yet enforced"]
     fn mls_12_2_function_with_initial() {
         expect_failure(
             r#"
@@ -217,7 +210,6 @@ mod function_forbidden_operators {
 
     /// MLS: "terminal is not allowed inside functions"
     #[test]
-    #[ignore = "Function terminal() restriction not yet enforced"]
     fn mls_12_2_function_with_terminal() {
         expect_failure(
             r#"
@@ -238,7 +230,6 @@ mod function_forbidden_operators {
 
     /// MLS: "pre is not allowed inside functions"
     #[test]
-    #[ignore = "Function pre() restriction not yet enforced"]
     fn mls_12_2_function_with_pre() {
         expect_failure(
             r#"
@@ -255,7 +246,6 @@ mod function_forbidden_operators {
 
     /// MLS: "edge is not allowed inside functions"
     #[test]
-    #[ignore = "Function edge() restriction not yet enforced"]
     fn mls_12_2_function_with_edge() {
         expect_failure(
             r#"
@@ -272,7 +262,6 @@ mod function_forbidden_operators {
 
     /// MLS: "change is not allowed inside functions"
     #[test]
-    #[ignore = "Function change() restriction not yet enforced"]
     fn mls_12_2_function_with_change() {
         expect_failure(
             r#"
@@ -289,7 +278,6 @@ mod function_forbidden_operators {
 
     /// MLS: "reinit is not allowed inside functions"
     #[test]
-    #[ignore = "Function reinit() restriction not yet enforced"]
     fn mls_12_2_function_with_reinit() {
         expect_failure(
             r#"
@@ -310,7 +298,6 @@ mod function_forbidden_operators {
 
     /// MLS: "sample is not allowed inside functions"
     #[test]
-    #[ignore = "Function sample() restriction not yet enforced"]
     fn mls_12_2_function_with_sample() {
         expect_failure(
             r#"
@@ -327,7 +314,6 @@ mod function_forbidden_operators {
 
     /// MLS: "delay is not allowed inside functions"
     #[test]
-    #[ignore = "Function delay() restriction not yet enforced"]
     fn mls_12_2_function_with_delay() {
         expect_failure(
             r#"

@@ -20,7 +20,6 @@ mod circular_class_dependencies {
 
     /// Critical: Direct circular extends
     #[test]
-    #[ignore = "Circular dependency detection not yet implemented"]
     fn mls_5_6_circular_class_dependency() {
         expect_failure(
             r#"
@@ -33,7 +32,6 @@ mod circular_class_dependencies {
 
     /// Critical: Self-extending class (simplest cycle)
     #[test]
-    #[ignore = "Circular dependency detection not yet implemented"]
     fn mls_5_6_self_extends() {
         expect_failure(
             r#"
@@ -45,7 +43,6 @@ mod circular_class_dependencies {
 
     /// Critical: Three-way circular extends
     #[test]
-    #[ignore = "Circular dependency detection not yet implemented"]
     fn mls_5_6_three_way_circular() {
         expect_failure(
             r#"
@@ -59,7 +56,6 @@ mod circular_class_dependencies {
 
     /// Critical: Circular through nested classes
     #[test]
-    #[ignore = "Circular dependency detection not yet implemented"]
     fn mls_5_6_circular_through_nested() {
         expect_failure(
             r#"
@@ -74,7 +70,6 @@ mod circular_class_dependencies {
 
     /// Critical: Circular via component type
     #[test]
-    #[ignore = "Circular dependency detection not yet implemented"]
     fn mls_5_6_circular_via_component() {
         // This might be valid in some interpretations (recursive data structures)
         // but for strict inheritance checking, it could be problematic
@@ -450,7 +445,6 @@ mod name_conflicts {
 
     /// Critical: Duplicate component names (should error)
     #[test]
-    #[ignore = "Duplicate name detection not yet implemented"]
     fn mls_5_duplicate_component_names() {
         expect_failure(
             r#"
@@ -465,7 +459,6 @@ mod name_conflicts {
 
     /// Critical: Component and class with same name
     #[test]
-    #[ignore = "Name conflict detection not yet implemented"]
     fn mls_5_component_class_conflict() {
         expect_failure(
             r#"
@@ -499,7 +492,6 @@ mod name_conflicts {
 
     /// Critical: Multiple wildcard imports with overlap
     #[test]
-    #[ignore = "Import ambiguity detection not yet implemented"]
     fn mls_5_wildcard_import_ambiguity() {
         expect_failure(
             r#"

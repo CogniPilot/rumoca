@@ -82,9 +82,9 @@ pub const TERMINAL_NAMES: &[&str; 101] = &[
     /*  62 */ "While",
     /*  63 */ "Within",
     /*  64 */
-    "LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar",
+    "LBracketUnderscorePLBraceLRBraceRBracketLBracketUnderscorePLBraceLRBracePLBraceNRBraceRBracketStar",
     /*  65 */
-    "TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick",
+    "TickLParenLBracketCircumflexTickRBracketOrLBracketTickQuoteNtrfabvQuestRBracketRParenStarTick",
     /*  66 */ "String",
     /*  67 */ "UnsignedInteger",
     /*  68 */ "LBracket0Minus9RBracketPlusDotLBracket0Minus9RBracketPlus",
@@ -191,9 +191,9 @@ scanner! {
             token r"when" => 61; // "When"
             token r"while" => 62; // "While"
             token r"within" => 63; // "Within"
-            token r"[_a-zA-Z][_a-zA-Z0-9]*" => 64; // "LBracketUnderscoreAMinusZAMinusZRBracketLBracketUnderscoreAMinusZAMinusZ0Minus9RBracketStar"
-            token r#"\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'"# => 65; // "TickLBracketUnderscoreAMinusZAMinusZ0Minus9BangHashDollarPercentAmpLParenRParenStarPlusCommaMinusDotSlashColonSemicolonLTGTEquQuestAtLBracketRBracketCircumflexLBraceRBraceOrTilde_QuoteRBracketStarTick"
-            token r#""([^"\\]|\\.)*""# => 66; // "String"
+            token r"[_\p{L}][_\p{L}\p{N}]*" => 64; // "LBracketUnderscorePLBraceLRBraceRBracketLBracketUnderscorePLBraceLRBracePLBraceNRBraceRBracketStar"
+            token r#"\'([^\'\\]|\\[\'\"\\ntrfabv?])*\'"# => 65; // "TickLParenLBracketCircumflexTickRBracketOrLBracketTickQuoteNtrfabvQuestRBracketRParenStarTick"
+            token r#""([^"\\]|\\[\s\S])*""# => 66; // "String"
             token r"[0-9]+" => 67; // "UnsignedInteger"
             token r"[0-9]+\.[0-9]+" => 68; // "LBracket0Minus9RBracketPlusDotLBracket0Minus9RBracketPlus"
             token r"[0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)?" => 69; // "LBracket0Minus9RBracketPlusDotLParenLBracket0Minus9RBracketPlusRParenQuestLParenLBracketEERBracketLBracketPlusMinusRBracketQuestLBracket0Minus9RBracketPlusRParenQuest"
@@ -6409,17 +6409,17 @@ pub const PRODUCTIONS: &[Production; 505] = &[
         lhs: 304,
         production: &[ParseType::T(63)],
     },
-    // 59 - ident: /[_a-zA-Z][_a-zA-Z0-9]*/;
+    // 59 - ident: /[_\p{L}][_\p{L}\p{N}]*/;
     Production {
         lhs: 180,
         production: &[ParseType::T(64)],
     },
-    // 60 - ident: /\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'/;
+    // 60 - ident: /\'([^\'\\]|\\[\'\"\\ntrfabv?])*\'/;
     Production {
         lhs: 180,
         production: &[ParseType::T(65)],
     },
-    // 61 - string: /"([^"\\]|\\.)*"/;
+    // 61 - string: /"([^"\\]|\\[\s\S])*"/;
     Production {
         lhs: 274,
         production: &[ParseType::T(66)],

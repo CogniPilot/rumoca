@@ -417,7 +417,6 @@ mod when_statement_restrictions {
 
     /// MLS: "When-statements cannot be nested"
     #[test]
-    #[ignore = "Nested when-statement detection not yet implemented"]
     fn mls_11_2_7_when_nested_forbidden() {
         expect_failure(
             r#"
@@ -442,7 +441,6 @@ mod when_statement_restrictions {
 
     /// MLS: "When-statements cannot appear in functions"
     #[test]
-    #[ignore = "When in function detection not yet implemented"]
     fn mls_11_2_7_when_in_function_forbidden() {
         expect_failure(
             r#"
@@ -462,7 +460,6 @@ mod when_statement_restrictions {
 
     /// MLS: "When-statements cannot be inside if-statements in algorithms"
     #[test]
-    #[ignore = "When inside if detection not yet implemented"]
     fn mls_11_2_7_when_inside_if_forbidden() {
         expect_failure(
             r#"
