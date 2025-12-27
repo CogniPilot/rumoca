@@ -46,7 +46,7 @@ pub use handlers::{
     handle_workspace_symbol,
 };
 pub use utils::parse_document;
-pub use workspace::WorkspaceState;
+pub use workspace::{WorkspaceState, collect_import_roots_from_def};
 
 use lsp_types::Uri;
 use std::collections::HashMap;

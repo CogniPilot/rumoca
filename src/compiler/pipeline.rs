@@ -723,3 +723,129 @@ pub fn check_balance_with_library_dicts(
     // Check model balance
     Ok(dae.check_balance())
 }
+
+/// Compile a model using pre-built library dictionaries.
+///
+/// This is a more efficient compilation path for WASM where libraries are already
+/// parsed and indexed. It avoids the expensive merge step by using pre-built
+/// ClassDict structures from the library cache.
+///
+/// # Arguments
+///
+/// * `user_def` - The user's parsed model
+/// * `library_dicts` - Pre-built class dictionaries from cached libraries
+/// * `model_name` - Name of the model to compile
+///
+/// # Returns
+///
+/// A `CompilationResult` containing the DAE and timing information
+pub fn compile_with_library_dicts(
+    user_def: &StoredDefinition,
+    library_dicts: &[Arc<ClassDict>],
+    model_name: &str,
+) -> Result<CompilationResult> {
+    let start = Instant::now();
+
+    // Flatten using pre-built library dictionaries (avoids expensive merge)
+    let flatten_result = flatten_with_library_dicts(user_def, library_dicts, Some(model_name));
+
+    let mut fclass_result = match flatten_result {
+        Ok(fr) => fr,
+        Err(e) => {
+            return Err(e);
+        }
+    };
+    let flatten_time = start.elapsed();
+
+    // Resolve imports - rewrite short function names to fully qualified names
+    let mut import_resolver = ImportResolver::new(&fclass_result.class, user_def);
+    fclass_result.class.accept_mut(&mut import_resolver);
+
+    // Clone the expanded class after import resolution for semantic analysis
+    let expanded_class = fclass_result.class.clone();
+
+    // Substitute Modelica.Constants with their literal values
+    let mut const_substitutor = ConstantSubstitutor::new();
+    fclass_result.class.accept_mut(&mut const_substitutor);
+
+    // Substitute built-in enumeration values (StateSelect.prefer -> 4, etc.)
+    let mut enum_substitutor = EnumSubstitutor::new();
+    fclass_result.class.accept_mut(&mut enum_substitutor);
+
+    // Collect all function names from the stored definition
+    let function_names = collect_all_functions(user_def);
+
+    // Skip validation for packages and classes with nested functions
+    let has_nested_functions = fclass_result
+        .class
+        .classes
+        .values()
+        .any(|c| c.class_type == ClassType::Function);
+    let should_validate =
+        !matches!(fclass_result.class.class_type, ClassType::Package) && !has_nested_functions;
+
+    if should_validate {
+        let peer_class_names: Vec<String> = user_def.class_list.keys().cloned().collect();
+        let mut validator =
+            VarValidator::with_context(&fclass_result.class, &function_names, &peer_class_names);
+        fclass_result.class.accept_mut(&mut validator);
+
+        if !validator.undefined_vars.is_empty() {
+            let (var_name, context) = &validator.undefined_vars[0];
+            return Err(anyhow::anyhow!(
+                "Undefined variable '{}' in {}",
+                var_name,
+                context
+            ));
+        }
+
+        let type_check_result = check_component_bindings(&expanded_class);
+        if type_check_result.has_errors() {
+            let first_error = &type_check_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+    }
+
+    // Inline user-defined function calls
+    let mut inliner = FunctionInliner::from_class_list(&user_def.class_list);
+    fclass_result.class.accept_mut(&mut inliner);
+    drop(inliner);
+
+    // Expand tuple equations
+    expand_tuple_equations(&mut fclass_result.class);
+
+    // Expand array comprehensions
+    expand_array_comprehensions(&mut fclass_result.class);
+
+    // Expand structured equations to scalar form
+    expand_equations(&mut fclass_result.class);
+
+    // Expand Complex arithmetic equations
+    let operator_records = build_operator_record_map(&user_def.class_list);
+    let type_map = build_type_map(&fclass_result.class, &user_def.class_list);
+    fclass_result.class.equations =
+        expand_complex_equations(&fclass_result.class.equations, &type_map, &operator_records);
+
+    let dae_start = Instant::now();
+
+    // Create DAE
+    let dae = create_dae(&mut fclass_result.class)?;
+    let dae_time = dae_start.elapsed();
+
+    // Check balance
+    let balance = dae.check_balance();
+
+    // Compute model hash from serialized user definition
+    let model_hash = format!("{:x}", chksum_md5::hash(format!("{:?}", user_def)));
+
+    Ok(CompilationResult {
+        dae,
+        def: user_def.clone(),
+        expanded_class,
+        parse_time: std::time::Duration::ZERO,
+        flatten_time,
+        dae_time,
+        model_hash,
+        balance,
+    })
+}

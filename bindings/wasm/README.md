@@ -50,13 +50,13 @@ You can also build the WASM artifacts directly with `wasm-pack`, targeting diffe
 
 ```sh
 # For the web (native ESM in browsers)
-wasm-pack build . --release --target web --no-default-features --features wasm
+wasm-pack build . --release --target web
 
 # For bundlers (e.g., webpack, Rollup, Vite in bundler mode)
-wasm-pack build . --release --target bundler --no-default-features --features wasm
+wasm-pack build . --release --target bundler
 
 # For Node.js
-wasm-pack build . --release --target nodejs --no-default-features --features wasm
+wasm-pack build . --release --target nodejs
 ```
 
 ## Notes
@@ -70,5 +70,5 @@ wasm-pack build . --release --target nodejs --no-default-features --features was
 To debug Rumoca in the browser, build a development WASM bundle:
 
 ```sh
-wasm-pack build . --dev --target web --no-default-features --features wasm
+wasm-pack build . --dev --target web
 ```
