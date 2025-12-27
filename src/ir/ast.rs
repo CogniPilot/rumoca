@@ -231,6 +231,12 @@ pub struct ClassDefinition {
     pub encapsulated: bool,
     /// True if the class is declared with the `partial` keyword
     pub partial: bool,
+    /// True if the class is declared with the `expandable` keyword (MLS §9.1.3)
+    /// Only meaningful for connector classes
+    pub expandable: bool,
+    /// True if the class is declared with the `operator` keyword (MLS §14)
+    /// Only meaningful for record classes (operator record)
+    pub operator_record: bool,
     /// Causality from type alias definition (e.g., `connector RealInput = input Real`)
     /// Components of this type inherit this causality
     pub causality: Causality,

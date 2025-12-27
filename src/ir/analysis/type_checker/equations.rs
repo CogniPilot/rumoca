@@ -126,10 +126,13 @@ fn check_equation_impl<C: ClassLookup>(
         Equation::When(blocks) => {
             for block in blocks {
                 // Check the condition is Boolean
+                // Note: We also allow Class types because connector aliases like
+                // `connector BooleanInput = input Boolean` are valid Boolean types.
+                // The compiler will catch actual type errors during flattening.
                 let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
-                    SymbolType::Boolean | SymbolType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown | SymbolType::Class(_)
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(
@@ -151,10 +154,12 @@ fn check_equation_impl<C: ClassLookup>(
         } => {
             for block in cond_blocks {
                 // Check the condition is Boolean
+                // Note: We also allow Class types because connector aliases like
+                // `connector BooleanInput = input Boolean` are valid Boolean types.
                 let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
-                    SymbolType::Boolean | SymbolType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown | SymbolType::Class(_)
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(
@@ -226,10 +231,11 @@ fn check_statement_impl<C: ClassLookup>(
         }
         Statement::While(block) => {
             // Check the condition is Boolean
+            // Note: We also allow Class types for connector aliases like BooleanInput = Boolean
             let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
             if !matches!(
                 cond_type.base_type(),
-                SymbolType::Boolean | SymbolType::Unknown
+                SymbolType::Boolean | SymbolType::Unknown | SymbolType::Class(_)
             ) && let Some(loc) = block.cond.get_location()
             {
                 result.add_error(TypeError::new(
@@ -249,10 +255,11 @@ fn check_statement_impl<C: ClassLookup>(
             else_block,
         } => {
             for block in cond_blocks {
+                // Note: We also allow Class types for connector aliases like BooleanInput = Boolean
                 let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
-                    SymbolType::Boolean | SymbolType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown | SymbolType::Class(_)
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(
@@ -275,10 +282,11 @@ fn check_statement_impl<C: ClassLookup>(
         }
         Statement::When(blocks) => {
             for block in blocks {
+                // Note: We also allow Class types for connector aliases like BooleanInput = Boolean
                 let cond_type = infer_expression_type_with_classes(&block.cond, defined, classes);
                 if !matches!(
                     cond_type.base_type(),
-                    SymbolType::Boolean | SymbolType::Unknown
+                    SymbolType::Boolean | SymbolType::Unknown | SymbolType::Class(_)
                 ) && let Some(loc) = block.cond.get_location()
                 {
                     result.add_error(TypeError::new(

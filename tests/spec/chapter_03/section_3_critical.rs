@@ -22,7 +22,6 @@ mod boolean_ordering_restriction {
 
     /// MLS: "Boolean cannot be used with ordering operators"
     #[test]
-    #[ignore = "Boolean ordering restriction not yet enforced"]
     fn mls_3_5_boolean_less_than_forbidden() {
         expect_failure(
             r#"
@@ -39,7 +38,6 @@ mod boolean_ordering_restriction {
 
     /// MLS: "Boolean cannot be used with ordering operators"
     #[test]
-    #[ignore = "Boolean ordering restriction not yet enforced"]
     fn mls_3_5_boolean_less_equal_forbidden() {
         expect_failure(
             r#"
@@ -56,7 +54,6 @@ mod boolean_ordering_restriction {
 
     /// MLS: "Boolean cannot be used with ordering operators"
     #[test]
-    #[ignore = "Boolean ordering restriction not yet enforced"]
     fn mls_3_5_boolean_greater_than_forbidden() {
         expect_failure(
             r#"
@@ -73,7 +70,6 @@ mod boolean_ordering_restriction {
 
     /// MLS: "Boolean cannot be used with ordering operators"
     #[test]
-    #[ignore = "Boolean ordering restriction not yet enforced"]
     fn mls_3_5_boolean_greater_equal_forbidden() {
         expect_failure(
             r#"
@@ -116,7 +112,6 @@ mod logical_operator_type_restriction {
 
     /// MLS: "'and' requires Boolean operands"
     #[test]
-    #[ignore = "Logical operator type restriction not yet enforced"]
     fn mls_3_5_and_with_integer_forbidden() {
         expect_failure(
             r#"
@@ -133,7 +128,6 @@ mod logical_operator_type_restriction {
 
     /// MLS: "'and' requires Boolean operands"
     #[test]
-    #[ignore = "Logical operator type restriction not yet enforced"]
     fn mls_3_5_and_with_real_forbidden() {
         expect_failure(
             r#"
@@ -150,7 +144,6 @@ mod logical_operator_type_restriction {
 
     /// MLS: "'or' requires Boolean operands"
     #[test]
-    #[ignore = "Logical operator type restriction not yet enforced"]
     fn mls_3_5_or_with_integer_forbidden() {
         expect_failure(
             r#"
@@ -167,7 +160,6 @@ mod logical_operator_type_restriction {
 
     /// MLS: "'or' requires Boolean operands"
     #[test]
-    #[ignore = "Logical operator type restriction not yet enforced"]
     fn mls_3_5_or_with_real_forbidden() {
         expect_failure(
             r#"
@@ -214,7 +206,6 @@ mod logical_operator_type_restriction {
 
     /// MLS: "Cannot use 'and' with String"
     #[test]
-    #[ignore = "Logical operator type restriction not yet enforced"]
     fn mls_3_5_and_with_string_forbidden() {
         expect_failure(
             r#"
@@ -258,7 +249,6 @@ mod relational_type_compatibility {
 
     /// MLS: "Cannot compare Real to String"
     #[test]
-    #[ignore = "Relational type compatibility not yet enforced"]
     fn mls_3_5_real_string_comparison_forbidden() {
         expect_failure(
             r#"
@@ -275,7 +265,6 @@ mod relational_type_compatibility {
 
     /// MLS: "Cannot compare Integer to String"
     #[test]
-    #[ignore = "Relational type compatibility not yet enforced"]
     fn mls_3_5_integer_string_comparison_forbidden() {
         expect_failure(
             r#"
@@ -292,7 +281,6 @@ mod relational_type_compatibility {
 
     /// MLS: "Cannot compare Boolean to Integer"
     #[test]
-    #[ignore = "Relational type compatibility not yet enforced"]
     fn mls_3_5_boolean_integer_comparison_forbidden() {
         expect_failure(
             r#"
@@ -309,7 +297,6 @@ mod relational_type_compatibility {
 
     /// MLS: "Cannot compare Boolean to Real"
     #[test]
-    #[ignore = "Relational type compatibility not yet enforced"]
     fn mls_3_5_boolean_real_comparison_forbidden() {
         expect_failure(
             r#"
@@ -372,13 +359,11 @@ mod relational_type_compatibility {
 mod if_expression_type_restriction {
     use super::*;
 
-    /// MLS: "Both branches of if-expression must have same type"
+    /// MLS §6: Integer can be coerced to Real in if-expression branches
     #[test]
-    #[ignore = "If-expression branch type checking not yet enforced"]
-    fn mls_3_6_if_real_vs_integer_forbidden() {
-        // Real and Integer branches - should this be allowed via promotion?
-        // MLS is strict: same type required
-        expect_failure(
+    fn mls_3_6_if_real_vs_integer_allowed() {
+        // Real and Integer branches are allowed via Integer->Real promotion (MLS §6)
+        expect_success(
             r#"
             model Test
                 Boolean c = true;
@@ -392,7 +377,6 @@ mod if_expression_type_restriction {
 
     /// MLS: "Both branches of if-expression must have same type"
     #[test]
-    #[ignore = "If-expression branch type checking not yet enforced"]
     fn mls_3_6_if_real_vs_string_forbidden() {
         expect_failure(
             r#"
@@ -408,7 +392,6 @@ mod if_expression_type_restriction {
 
     /// MLS: "Both branches of if-expression must have same type"
     #[test]
-    #[ignore = "If-expression branch type checking not yet enforced"]
     fn mls_3_6_if_boolean_vs_integer_forbidden() {
         expect_failure(
             r#"
@@ -424,7 +407,6 @@ mod if_expression_type_restriction {
 
     /// MLS: "If-expression condition must be Boolean"
     #[test]
-    #[ignore = "If-expression condition type checking not yet enforced"]
     fn mls_3_6_if_condition_not_boolean_forbidden() {
         expect_failure(
             r#"
@@ -440,7 +422,6 @@ mod if_expression_type_restriction {
 
     /// MLS: "If-expression condition must be Boolean"
     #[test]
-    #[ignore = "If-expression condition type checking not yet enforced"]
     fn mls_3_6_if_condition_real_forbidden() {
         expect_failure(
             r#"
@@ -474,7 +455,6 @@ mod if_expression_type_restriction {
 
     /// MLS: Array branches must have same dimensions
     #[test]
-    #[ignore = "If-expression array dimension checking not yet enforced"]
     fn mls_3_6_if_array_dimension_mismatch_forbidden() {
         expect_failure(
             r#"
@@ -530,7 +510,6 @@ mod arithmetic_type_restriction {
 
     /// MLS: "Cannot subtract Boolean"
     #[test]
-    #[ignore = "Arithmetic type restriction not yet enforced"]
     fn mls_3_4_subtract_boolean_forbidden() {
         expect_failure(
             r#"
@@ -547,7 +526,6 @@ mod arithmetic_type_restriction {
 
     /// MLS: "Cannot multiply Boolean"
     #[test]
-    #[ignore = "Arithmetic type restriction not yet enforced"]
     fn mls_3_4_multiply_boolean_forbidden() {
         expect_failure(
             r#"
@@ -564,7 +542,6 @@ mod arithmetic_type_restriction {
 
     /// MLS: "Cannot divide String"
     #[test]
-    #[ignore = "Arithmetic type restriction not yet enforced"]
     fn mls_3_4_divide_string_forbidden() {
         expect_failure(
             r#"
@@ -581,7 +558,6 @@ mod arithmetic_type_restriction {
 
     /// MLS: "Cannot exponentiate String"
     #[test]
-    #[ignore = "Arithmetic type restriction not yet enforced"]
     fn mls_3_4_power_string_forbidden() {
         expect_failure(
             r#"

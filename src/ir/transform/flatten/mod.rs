@@ -53,7 +53,8 @@ use hash::{
 };
 use imports::{
     build_import_aliases_for_class, collect_imported_packages_for_class,
-    extract_extends_modifications, resolve_class_name_with_imports, validate_imports,
+    extract_extends_modifications, extract_type_redeclarations, resolve_class_name_with_imports,
+    validate_imports,
 };
 use validation::check_cardinality_array_connectors;
 
@@ -320,9 +321,32 @@ fn resolve_class_internal(
             None => continue, // Skip unresolved extends (might be external dependency)
         };
 
-        // Skip if this would create a cycle
+        // Handle self-reference case: when "redeclare model extends X" creates a class X
+        // that tries to extend X, the resolution finds itself. For nested classes (like
+        // BaseProperties inside a package), skip this extends clause as it will be
+        // handled during expansion. For top-level classes, this is a true circular error.
+        if resolved_name == current_class_path {
+            let parts: Vec<&str> = current_class_path.split('.').collect();
+            if parts.len() >= 2 {
+                // Nested class - skip self-reference (handled during expansion with package mods)
+                continue;
+            } else {
+                // Top-level class extending itself (like "class A extends A") - this is always an error
+                return Err(anyhow::anyhow!(
+                    "Circular class inheritance detected: '{}' extends itself",
+                    current_class_path
+                ));
+            }
+        }
+
+        // Check for circular inheritance
         if visited.contains(&resolved_name) {
-            continue;
+            return Err(anyhow::anyhow!(
+                "Circular class inheritance detected: '{}' extends '{}' which eventually extends back to '{}'",
+                current_class_path,
+                resolved_name,
+                current_class_path
+            ));
         }
 
         // Get the parent class
@@ -338,6 +362,10 @@ fn resolve_class_internal(
 
         // Extract modifications from the extends clause (e.g., extends Foo(L=1e-3))
         let extends_mods = extract_extends_modifications(&extend.modifications);
+
+        // Extract type redeclarations from extends clause
+        // e.g., extends VoltageSource(redeclare Modelica.Blocks.Sources.Sine signalSource(...))
+        let (type_redeclarations, redecl_mods) = extract_type_redeclarations(&extend.modifications);
 
         // Check for attempts to override final attributes in parent components
         // This handles extends A(x(start = 2.0)) where x has final start in parent
@@ -368,29 +396,47 @@ fn resolve_class_internal(
         }
 
         // Build import aliases for the parent class (for resolving type names)
-        let parent_import_aliases = build_import_aliases_for_class(&resolved_name, class_dict);
+        let mut parent_import_aliases = build_import_aliases_for_class(&resolved_name, class_dict);
+
+        // Augment parent import aliases with package redeclarations from extends clause.
+        // For example, if we have `extends PartialLumpedVolume(redeclare package Medium = WaterIF97_ph)`,
+        // we need to add Medium -> WaterIF97_ph to the aliases so that inherited component types
+        // like `Medium.BaseProperties` resolve to `WaterIF97_ph.BaseProperties` instead of
+        // `PartialMedium.BaseProperties`.
+        for (pkg_name, new_type) in &type_redeclarations {
+            // Resolve the new type in the current class context
+            let resolved_new_type = resolve_class_name_with_imports(
+                new_type,
+                current_class_path,
+                class_dict,
+                &import_aliases,
+            )
+            .unwrap_or_else(|| new_type.clone());
+            parent_import_aliases.insert(pkg_name.clone(), resolved_new_type);
+        }
 
         // Add parent's components (insert at the beginning to maintain proper order)
         for (comp_name, comp) in resolved_parent.components.iter().rev() {
             if !resolved.components.contains_key(comp_name) {
                 let mut modified_comp = comp.clone();
 
-                // Fully qualify the component's type name using the parent class's context
-                // This is critical when inheriting components - e.g., SISO has "RealInput u"
-                // and when SimpleIntegrator extends SISO, we need to resolve RealInput
-                // in SISO's context (Interfaces package) to get "Interfaces.RealInput"
-                let type_name = comp.type_name.to_string();
-                if !is_primitive_type(&type_name)
-                    && let Some(fq_name) = resolve_class_name_with_imports(
-                        &type_name,
-                        &resolved_name,
+                // Check if there's a type redeclaration for this component
+                // e.g., extends VoltageSource(redeclare Sine signalSource(...))
+                // changes signalSource from SignalSource (partial) to Sine (concrete)
+                if let Some(new_type) = type_redeclarations.get(comp_name) {
+                    // Resolve the new type in the context of the current class
+                    // The new type may be a simple name or a qualified name
+                    let resolved_new_type = resolve_class_name_with_imports(
+                        new_type,
+                        current_class_path,
                         class_dict,
                         &parent_import_aliases,
                     )
-                {
-                    // Update the type name to the fully qualified version
+                    .unwrap_or_else(|| new_type.clone());
+
+                    // Update the component's type to the new type
                     modified_comp.type_name = ir::ast::Name {
-                        name: fq_name
+                        name: resolved_new_type
                             .split('.')
                             .map(|s| ir::ast::Token {
                                 text: s.to_string(),
@@ -398,6 +444,48 @@ fn resolve_class_internal(
                             })
                             .collect(),
                     };
+
+                    // Apply nested modifications from the redeclaration
+                    if let Some(mods) = redecl_mods.get(comp_name) {
+                        for mod_expr in mods {
+                            if let Expression::Binary { op, lhs, rhs } = mod_expr
+                                && matches!(op, OpBinary::Assign(_) | OpBinary::Eq(_))
+                                && let Expression::ComponentReference(attr_ref) = &**lhs
+                            {
+                                let attr_name = attr_ref.to_string();
+                                // Store the modification in the component's modifications
+                                modified_comp
+                                    .modifications
+                                    .insert(attr_name, (**rhs).clone());
+                            }
+                        }
+                    }
+                } else {
+                    // No type redeclaration - use original type name resolution
+                    // Fully qualify the component's type name using the parent class's context
+                    // This is critical when inheriting components - e.g., SISO has "RealInput u"
+                    // and when SimpleIntegrator extends SISO, we need to resolve RealInput
+                    // in SISO's context (Interfaces package) to get "Interfaces.RealInput"
+                    let type_name = comp.type_name.to_string();
+                    if !is_primitive_type(&type_name)
+                        && let Some(fq_name) = resolve_class_name_with_imports(
+                            &type_name,
+                            &resolved_name,
+                            class_dict,
+                            &parent_import_aliases,
+                        )
+                    {
+                        // Update the type name to the fully qualified version
+                        modified_comp.type_name = ir::ast::Name {
+                            name: fq_name
+                                .split('.')
+                                .map(|s| ir::ast::Token {
+                                    text: s.to_string(),
+                                    ..Default::default()
+                                })
+                                .collect(),
+                        };
+                    }
                 }
 
                 // Apply extends modifications to inherited components
@@ -432,6 +520,10 @@ fn resolve_class_internal(
     // e.g., if a component has type RealInput which is defined as "connector RealInput = input Real"
     // then the component should have Input causality
     apply_type_causality(&mut resolved, current_class_path, class_dict);
+
+    // Remove from visited set - this class is now fully resolved
+    // This allows diamond inheritance to work (Base can be extended by both Left and Right)
+    visited.shift_remove(current_class_path);
 
     Ok(resolved)
 }
@@ -554,7 +646,10 @@ pub fn flatten_with_deps(
     let class_dict = get_or_build_class_dict(def, def_hash);
 
     // Determine main class name - model name is required
-    let main_class_name = model_name.ok_or(IrError::ModelNameRequired)?.to_string();
+    let model_name_str = model_name.ok_or(IrError::ModelNameRequired)?;
+
+    // Qualify model name with `within` clause if present and not already qualified
+    let main_class_name = qualify_with_within(model_name_str, def);
 
     flatten_with_class_dict(def, &class_dict, &main_class_name, def_hash)
 }
@@ -584,9 +679,35 @@ pub fn flatten_with_library_dicts(
     let def_hash = compute_def_hash(user_def);
 
     // Determine main class name - model name is required
-    let main_class_name = model_name.ok_or(IrError::ModelNameRequired)?.to_string();
+    let model_name_str = model_name.ok_or(IrError::ModelNameRequired)?;
+
+    // Qualify model name with `within` clause if present and not already qualified.
+    // This is critical for files inside libraries (e.g., Continuous.mo with "within Modelica.Blocks;")
+    // so that import resolution can walk up the package hierarchy to find inherited imports.
+    let main_class_name = qualify_with_within(model_name_str, user_def);
 
     flatten_with_class_dict(user_def, &class_dict, &main_class_name, def_hash)
+}
+
+/// Qualify a model name with the `within` clause prefix if needed.
+///
+/// If the StoredDefinition has a `within` clause and the model name doesn't already
+/// start with that prefix, prepend it. This ensures proper resolution of inherited
+/// imports from parent packages.
+///
+/// # Examples
+/// - `model_name="Integrator"`, `within="Modelica.Blocks.Continuous"` → `"Modelica.Blocks.Continuous.Integrator"`
+/// - `model_name="Modelica.Blocks.Continuous.Integrator"`, `within="Modelica.Blocks.Continuous"` → unchanged
+/// - `model_name="MyModel"`, no `within` → `"MyModel"`
+fn qualify_with_within(model_name: &str, def: &ir::ast::StoredDefinition) -> String {
+    if let Some(ref within) = def.within {
+        let within_str = within.to_string();
+        // Only prepend if model_name doesn't already start with the within prefix
+        if !model_name.starts_with(&within_str) {
+            return format!("{}.{}", within_str, model_name);
+        }
+    }
+    model_name.to_string()
 }
 
 /// Internal flatten implementation that works with a pre-built class dictionary.

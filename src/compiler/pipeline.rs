@@ -9,8 +9,14 @@ use crate::dae::balance::BalanceResult;
 use crate::ir::analysis::type_checker::{
     check_algorithm_assignments_with_types, check_array_bounds, check_assert_arguments,
     check_break_return_context, check_builtin_attribute_modifiers, check_cardinality_arguments,
-    check_cardinality_context, check_class_member_access, check_component_bindings,
-    check_scalar_subscripts, check_start_modification_dimensions,
+    check_cardinality_context, check_class_member_access, check_clock_restrictions,
+    check_component_bindings, check_connect_types, check_constant_bindings,
+    check_expandable_no_flow, check_flow_compatibility, check_function_forbidden_operators,
+    check_operator_record_cannot_be_extended, check_operator_record_no_extends,
+    check_operator_record_no_partial, check_scalar_subscripts, check_self_connections,
+    check_single_initial_state, check_start_modification_dimensions, check_state_is_block_or_model,
+    check_stream_only_in_connector, check_stream_requires_flow, check_transition_priority_unique,
+    check_variability_dependencies, check_when_restrictions,
 };
 use crate::ir::analysis::var_validator::VarValidator;
 use crate::ir::ast::{ClassType, StoredDefinition};
@@ -31,6 +37,7 @@ use crate::ir::transform::operator_expand::{
 use crate::ir::transform::tuple_expander::expand_tuple_equations;
 use crate::ir::visitor::MutVisitable;
 use anyhow::Result;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -272,6 +279,135 @@ pub fn compile_from_ast_ref(
     parse_time: std::time::Duration,
     verbose: bool,
 ) -> Result<CompilationResult> {
+    // Pre-flatten validation: Check for connect restrictions (MLS §9.3)
+    // This must happen BEFORE flatten because connect equations are extracted during flattening
+    if let Some(name) = model_name
+        && let Some(target_class) = def.class_list.get(name)
+    {
+        // Check for connect-in-when (MLS §9.3)
+        let connect_when_result = check_when_restrictions(target_class);
+        if connect_when_result.has_errors() {
+            let first_error = &connect_when_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for self-connections (MLS §9.3)
+        let self_connect_result = check_self_connections(target_class);
+        if self_connect_result.has_errors() {
+            let first_error = &self_connect_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Build set of connector type names for connect validation (MLS §9.1)
+        let connector_types: std::collections::HashSet<String> = def
+            .class_list
+            .iter()
+            .filter(|(_, class)| class.class_type == ClassType::Connector)
+            .map(|(class_name, _)| class_name.clone())
+            .collect();
+
+        // Check that connect arguments are connectors (MLS §9.1)
+        let connect_types_result = check_connect_types(target_class, &connector_types);
+        if connect_types_result.has_errors() {
+            let first_error = &connect_types_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Build IndexMap of connector class definitions for flow validation (MLS §9.3.4)
+        let connector_classes: IndexMap<String, _> = def
+            .class_list
+            .iter()
+            .filter(|(_, class)| class.class_type == ClassType::Connector)
+            .map(|(class_name, class)| (class_name.clone(), class.clone()))
+            .collect();
+
+        // Check for flow/non-flow mixing in connect equations (MLS §9.3.4)
+        let flow_compat_result = check_flow_compatibility(target_class, &connector_classes);
+        if flow_compat_result.has_errors() {
+            let first_error = &flow_compat_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check that stream variables are only in connectors (MLS §15.1)
+        let stream_context_result = check_stream_only_in_connector(target_class);
+        if stream_context_result.has_errors() {
+            let first_error = &stream_context_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check that connectors with stream variables have flow variables (MLS §15.1)
+        for (_, connector_class) in &connector_classes {
+            let stream_flow_result = check_stream_requires_flow(connector_class);
+            if stream_flow_result.has_errors() {
+                let first_error = &stream_flow_result.errors[0];
+                return Err(anyhow::anyhow!("{}", first_error.message));
+            }
+
+            // Check that expandable connectors don't have flow variables (MLS §9.1.3)
+            let expandable_flow_result = check_expandable_no_flow(connector_class);
+            if expandable_flow_result.has_errors() {
+                let first_error = &expandable_flow_result.errors[0];
+                return Err(anyhow::anyhow!("{}", first_error.message));
+            }
+        }
+    }
+
+    // Pre-flatten validation: Check operator record restrictions (MLS §14.3)
+    // These must be checked for all classes in the stored definition
+    for (_, class) in &def.class_list {
+        // Check that operator records do not use extends (MLS §14.3)
+        let no_extends_result = check_operator_record_no_extends(class);
+        if no_extends_result.has_errors() {
+            let first_error = &no_extends_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check that operator records cannot be extended (MLS §14.3)
+        let cannot_be_extended_result =
+            check_operator_record_cannot_be_extended(class, &def.class_list);
+        if cannot_be_extended_result.has_errors() {
+            let first_error = &cannot_be_extended_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check that operator records cannot be partial (MLS §14.3)
+        let no_partial_result = check_operator_record_no_partial(class);
+        if no_partial_result.has_errors() {
+            let first_error = &no_partial_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check state machine restrictions (MLS §17)
+        // Check that initialState is called at most once (MLS §17.1)
+        let single_initial_result = check_single_initial_state(class);
+        if single_initial_result.has_errors() {
+            let first_error = &single_initial_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check that states are blocks or models (MLS §17.1)
+        let state_type_result = check_state_is_block_or_model(class, &def.class_list);
+        if state_type_result.has_errors() {
+            let first_error = &state_type_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check that transition priorities are unique (MLS §17.2)
+        let priority_result = check_transition_priority_unique(class);
+        if priority_result.has_errors() {
+            let first_error = &priority_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check Clock type restrictions (MLS §16.1)
+        // Clock cannot have flow, stream, or discrete prefixes
+        let clock_result = check_clock_restrictions(class);
+        if clock_result.has_errors() {
+            let first_error = &clock_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+    }
+
     // Flatten
     let flatten_start = Instant::now();
     let fclass_result = flatten(def, model_name);
@@ -436,6 +572,22 @@ pub fn compile_from_ast_ref(
             }
         }
 
+        // Check that constants have binding expressions (MLS §4.4)
+        let constant_binding_result = check_constant_bindings(&expanded_class);
+        if constant_binding_result.has_errors() {
+            let first_error = &constant_binding_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check variability dependencies (MLS §4.5)
+        // - Constants cannot depend on parameters or variables
+        // - Parameters cannot depend on variables
+        let variability_result = check_variability_dependencies(&expanded_class);
+        if variability_result.has_errors() {
+            let first_error = &variability_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
         // Check for subscripting scalar variables (like time[2])
         let scalar_subscript_result = check_scalar_subscripts(&expanded_class);
         if scalar_subscript_result.has_errors() {
@@ -462,6 +614,33 @@ pub fn compile_from_ast_ref(
         if class_member_result.has_errors() {
             let first_error = &class_member_result.errors[0];
             return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check when-statement restrictions (MLS §8.3.5, §11.2.7)
+        // - When cannot be nested
+        // - When cannot appear in functions
+        // - When cannot appear inside if-equations/statements
+        let when_result = check_when_restrictions(&expanded_class);
+        if when_result.has_errors() {
+            let first_error = &when_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+        // Also check file-level functions for when restrictions and forbidden operators
+        for (_, class) in &def.class_list {
+            if class.class_type == ClassType::Function {
+                let file_when_result = check_when_restrictions(class);
+                if file_when_result.has_errors() {
+                    let first_error = &file_when_result.errors[0];
+                    return Err(anyhow::anyhow!("{}", first_error.message));
+                }
+
+                // Check for forbidden operators in functions (der, initial, terminal, etc.)
+                let forbidden_ops_result = check_function_forbidden_operators(class);
+                if forbidden_ops_result.has_errors() {
+                    let first_error = &forbidden_ops_result.errors[0];
+                    return Err(anyhow::anyhow!("{}", first_error.message));
+                }
+            }
         }
     }
 

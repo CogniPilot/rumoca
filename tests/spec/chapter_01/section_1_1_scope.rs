@@ -7,7 +7,11 @@
 //!
 //! Reference: https://specification.modelica.org/master/introduction.html#scope-of-the-specification
 
-use crate::spec::{expect_parse_success, expect_success};
+use crate::spec::{
+    expect_class_type, expect_component, expect_equation_count, expect_parse_success,
+    expect_success,
+};
+use rumoca::ir::ast::ClassType;
 
 // ============================================================================
 // §1.1.1 CLASS HIERARCHY
@@ -20,16 +24,25 @@ mod class_hierarchy {
     /// MLS: "model" is the basic class for physical modeling
     #[test]
     fn mls_1_1_model_basic() {
-        expect_success(
-            r#"
+        let source = r#"
             model SimpleModel
                 Real x;
             equation
                 x = 1;
             end SimpleModel;
-            "#,
-            "SimpleModel",
-        );
+        "#;
+
+        // Verify compilation succeeds
+        expect_success(source, "SimpleModel");
+
+        // Verify the class type is Model
+        expect_class_type(source, "SimpleModel", ClassType::Model);
+
+        // Verify the component 'x' exists and is of type Real
+        expect_component(source, "SimpleModel", "x", "Real");
+
+        // Verify there is 1 equation
+        expect_equation_count(source, "SimpleModel", 1);
     }
 
     /// MLS: "block" is a model with fixed causality (input/output)

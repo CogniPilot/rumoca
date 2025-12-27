@@ -891,23 +891,23 @@ pub trait ModelicaGrammarTrait {
 ///
 /// Type derived for production 59
 ///
-/// `ident: /[_a-zA-Z][_a-zA-Z0-9]*/@basic_ident;`
+/// `ident: /[_\p{L}][_\p{L}\p{N}]*/@basic_ident;`
 ///
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IdentBasicIdent {
-    pub basic_ident: crate::ir::ast::Token, /* [_a-zA-Z][_a-zA-Z0-9]* */
+    pub basic_ident: crate::ir::ast::Token, /* [_\p{L}][_\p{L}\p{N}]* */
 }
 
 ///
 /// Type derived for production 60
 ///
-/// `ident: /\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'/@q_ident;`
+/// `ident: /\'([^\'\\]|\\[\'\"\\ntrfabv?])*\'/@q_ident;`
 ///
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IdentQIdent {
-    pub q_ident: crate::ir::ast::Token, /* \'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\' */
+    pub q_ident: crate::ir::ast::Token, /* \'([^\'\\]|\\[\'\"\\ntrfabv?])*\' */
 }
 
 ///
@@ -5074,7 +5074,7 @@ pub struct Stream {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct String {
-    pub string: crate::ir::ast::Token, /* "([^"\\]|\\.)*" */
+    pub string: crate::ir::ast::Token, /* "([^"\\]|\\[\s\S])*" */
 }
 
 ///
@@ -6869,7 +6869,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 59:
     ///
-    /// `ident: /[_a-zA-Z][_a-zA-Z0-9]*/@basic_ident;`
+    /// `ident: /[_\p{L}][_\p{L}\p{N}]*/@basic_ident;`
     ///
     #[parol_runtime::function_name::named]
     fn ident_0(&mut self, basic_ident: &ParseTreeType<'t>) -> Result<()> {
@@ -6889,7 +6889,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 60:
     ///
-    /// `ident: /\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'/@q_ident;`
+    /// `ident: /\'([^\'\\]|\\[\'\"\\ntrfabv?])*\'/@q_ident;`
     ///
     #[parol_runtime::function_name::named]
     fn ident_1(&mut self, q_ident: &ParseTreeType<'t>) -> Result<()> {
@@ -6909,7 +6909,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 61:
     ///
-    /// `string: /"([^"\\]|\\.)*"/;`
+    /// `string: /"([^"\\]|\\[\s\S])*"/;`
     ///
     #[parol_runtime::function_name::named]
     fn string(&mut self, string: &ParseTreeType<'t>) -> Result<()> {

@@ -257,7 +257,6 @@ mod inner_outer_errors {
 
     /// Outer shall not have modifications
     #[test]
-    #[ignore = "Outer modification restriction not yet enforced"]
     fn error_outer_with_modification() {
         expect_failure(
             r#"
@@ -277,7 +276,6 @@ mod inner_outer_errors {
 
     /// Outer shall not have binding equation
     #[test]
-    #[ignore = "Outer binding equation restriction not yet enforced"]
     fn error_outer_with_binding() {
         expect_failure(
             r#"
@@ -317,7 +315,6 @@ mod inner_outer_errors {
 
     /// Outer with array modification
     #[test]
-    #[ignore = "Outer modification restriction not yet enforced"]
     fn error_outer_array_modification() {
         expect_failure(
             r#"

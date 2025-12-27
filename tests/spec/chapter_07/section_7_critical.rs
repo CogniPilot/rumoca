@@ -20,7 +20,6 @@ mod diamond_inheritance {
 
     /// Critical: Classic diamond inheritance
     #[test]
-    #[ignore = "Diamond inheritance handling not yet implemented"]
     fn mls_7_1_diamond_inheritance() {
         expect_success(
             r#"
@@ -77,7 +76,6 @@ mod diamond_inheritance {
 
     /// Critical: Diamond where modifications agree
     #[test]
-    #[ignore = "Diamond inheritance handling not yet implemented"]
     fn mls_7_1_diamond_agreeing_mods() {
         expect_success(
             r#"
@@ -105,7 +103,6 @@ mod diamond_inheritance {
 
     /// Critical: Deep diamond (multiple levels)
     #[test]
-    #[ignore = "Deep diamond inheritance not yet implemented"]
     fn mls_7_1_deep_diamond() {
         expect_success(
             r#"
@@ -303,7 +300,6 @@ mod modification_edge_cases {
 
     /// Critical: Conditional modification
     #[test]
-    #[ignore = "Conditional modifications not yet implemented"]
     fn mls_7_2_conditional_modification() {
         expect_success(
             r#"
@@ -459,7 +455,6 @@ mod redeclaration_edge_cases {
 
     /// Critical: Redeclare non-replaceable (error)
     #[test]
-    #[ignore = "Replaceable check not yet implemented"]
     fn mls_7_3_redeclare_non_replaceable() {
         expect_failure(
             r#"

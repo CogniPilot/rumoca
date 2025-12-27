@@ -6,6 +6,7 @@
 use lsp_types::Uri;
 
 use crate::dae::balance::BalanceResult;
+use crate::ir::transform::scope_resolver::find_class_in_ast;
 
 use super::WorkspaceState;
 use super::utils::parse_document;
@@ -125,7 +126,7 @@ pub fn analyze_class(workspace: &mut WorkspaceState, uri: &Uri, class_name: &str
         }
         Err(e) => {
             // Check if the class exists in the AST but just failed to compile
-            let class_exists = class_exists_in_ast(&ast, class_name);
+            let class_exists = find_class_in_ast(&ast, class_name).is_some();
 
             AnalyzeResult::failed(
                 class_name.to_string(),
@@ -137,32 +138,6 @@ pub fn analyze_class(workspace: &mut WorkspaceState, uri: &Uri, class_name: &str
             )
         }
     }
-}
-
-/// Check if a class exists in the AST (supports dotted paths for nested classes)
-fn class_exists_in_ast(ast: &crate::ir::ast::StoredDefinition, class_name: &str) -> bool {
-    let parts: Vec<&str> = class_name.split('.').collect();
-
-    if parts.is_empty() {
-        return false;
-    }
-
-    // Find the top-level class
-    let top_class = match ast.class_list.get(parts[0]) {
-        Some(c) => c,
-        None => return false,
-    };
-
-    // Navigate to nested classes if path has multiple parts
-    let mut current = top_class;
-    for part in parts.iter().skip(1) {
-        match current.classes.get(*part) {
-            Some(nested) => current = nested,
-            None => return false,
-        }
-    }
-
-    true
 }
 
 #[cfg(test)]

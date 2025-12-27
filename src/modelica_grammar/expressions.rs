@@ -409,13 +409,31 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                             modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(
                                 type_spec,
                             ) => {
-                                // Build component reference from the declared name
+                                // Build component reference from the declared name (what's being redeclared)
+                                // e.g., for "redeclare package Medium = SomePackage", this is "Medium"
                                 let name_ref = ir::ast::ComponentReference {
                                     local: false,
                                     parts: vec![ir::ast::ComponentRefPart {
                                         ident: type_spec.type_class_specifier.ident.clone(),
                                         subs: None,
                                     }],
+                                };
+
+                                // Build component reference from the type_specifier (the new type)
+                                // e.g., for "redeclare package Medium = SomePackage", this is "SomePackage"
+                                let new_type_ref = ir::ast::ComponentReference {
+                                    local: false,
+                                    parts: type_spec
+                                        .type_class_specifier
+                                        .type_specifier
+                                        .name
+                                        .name
+                                        .iter()
+                                        .map(|tok| ir::ast::ComponentRefPart {
+                                            ident: tok.clone(),
+                                            subs: None,
+                                        })
+                                        .collect(),
                                 };
 
                                 // Get class modification arguments if present
@@ -433,10 +451,17 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                     vec![]
                                 };
 
-                                // Create function call expression representing the redeclaration
-                                Ok(ir::ast::Expression::FunctionCall {
-                                    comp: name_ref,
-                                    args,
+                                // Create Binary expression: name = NewType(args)
+                                // This stores the redeclaration as a proper key-value pair
+                                Ok(ir::ast::Expression::Binary {
+                                    op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
+                                    lhs: Box::new(ir::ast::Expression::ComponentReference(
+                                        name_ref,
+                                    )),
+                                    rhs: Box::new(ir::ast::Expression::FunctionCall {
+                                        comp: new_type_ref,
+                                        args,
+                                    }),
                                 })
                             }
                             modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(
@@ -461,7 +486,8 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                         comp_clause,
                     ) => {
                         // Handle component clause redeclaration
-                        // e.g., redeclare Real x = 1.0
+                        // e.g., redeclare NewType componentName(modifications)
+                        // e.g., extends VoltageSource(redeclare Modelica.Blocks.Sources.Sine signalSource(f=f))
                         let decl = &comp_clause
                             .component_clause1
                             .component_declaration1
@@ -490,6 +516,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                             );
                         }
 
+                        // Build component reference for the component name being redeclared
                         let name_ref = ir::ast::ComponentReference {
                             local: false,
                             parts: vec![ir::ast::ComponentRefPart {
@@ -498,50 +525,74 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                             }],
                         };
 
-                        // Get modification if present
-                        if let Some(modif) = &decl.declaration_opt0 {
+                        // Build component reference for the new type from type_specifier
+                        let new_type_ref = ir::ast::ComponentReference {
+                            local: false,
+                            parts: comp_clause
+                                .component_clause1
+                                .type_specifier
+                                .name
+                                .name
+                                .iter()
+                                .map(|tok| ir::ast::ComponentRefPart {
+                                    ident: tok.clone(),
+                                    subs: None,
+                                })
+                                .collect(),
+                        };
+
+                        // Get modification arguments if present
+                        let args = if let Some(modif) = &decl.declaration_opt0 {
                             match &modif.modification {
                                 modelica_grammar_trait::Modification::EquModificationExpression(
                                     eq_mod,
                                 ) => {
+                                    // For simple value modifications like = expr
+                                    // This is unusual for type redeclaration, but handle it
                                     match &eq_mod.modification_expression {
                                         modelica_grammar_trait::ModificationExpression::Expression(
                                             expr,
                                         ) => {
-                                            // Create name = value expression
-                                            Ok(ir::ast::Expression::Binary {
+                                            // Return as Binary expression for simple value assignment
+                                            return Ok(ir::ast::Expression::Binary {
                                                 op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
                                                 lhs: Box::new(ir::ast::Expression::ComponentReference(
                                                     name_ref,
                                                 )),
                                                 rhs: Box::new(expr.expression.clone()),
-                                            })
+                                            });
                                         }
                                         modelica_grammar_trait::ModificationExpression::Break(_) => {
-                                            Ok(ir::ast::Expression::ComponentReference(name_ref))
+                                            vec![]
                                         }
                                     }
                                 }
                                 modelica_grammar_trait::Modification::ClassModificationModificationOpt(
                                     class_mod,
                                 ) => {
-                                    // Get args from class modification
-                                    let args = if let Some(arg_list) =
+                                    // Get args from class modification (e.g., (f=f, amplitude=V))
+                                    if let Some(arg_list) =
                                         &class_mod.class_modification.class_modification_opt
                                     {
                                         arg_list.argument_list.args.clone()
                                     } else {
                                         vec![]
-                                    };
-                                    Ok(ir::ast::Expression::FunctionCall {
-                                        comp: name_ref,
-                                        args,
-                                    })
+                                    }
                                 }
                             }
                         } else {
-                            Ok(ir::ast::Expression::ComponentReference(name_ref))
-                        }
+                            vec![]
+                        };
+
+                        // Create Binary expression: componentName = NewType(args)
+                        Ok(ir::ast::Expression::Binary {
+                            op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
+                            lhs: Box::new(ir::ast::Expression::ComponentReference(name_ref)),
+                            rhs: Box::new(ir::ast::Expression::FunctionCall {
+                                comp: new_type_ref,
+                                args,
+                            }),
+                        })
                     }
                     modelica_grammar_trait::ElementRedeclarationGroup::ElementReplaceable(repl) => {
                         // Handle 'redeclare replaceable ...'
@@ -555,12 +606,29 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                     modelica_grammar_trait::ShortClassSpecifier::TypeClassSpecifier(
                                         type_spec,
                                     ) => {
+                                        // Build component reference from the declared name (what's being redeclared)
                                         let name_ref = ir::ast::ComponentReference {
                                             local: false,
                                             parts: vec![ir::ast::ComponentRefPart {
                                                 ident: type_spec.type_class_specifier.ident.clone(),
                                                 subs: None,
                                             }],
+                                        };
+
+                                        // Build component reference from the type_specifier (the new type)
+                                        let new_type_ref = ir::ast::ComponentReference {
+                                            local: false,
+                                            parts: type_spec
+                                                .type_class_specifier
+                                                .type_specifier
+                                                .name
+                                                .name
+                                                .iter()
+                                                .map(|tok| ir::ast::ComponentRefPart {
+                                                    ident: tok.clone(),
+                                                    subs: None,
+                                                })
+                                                .collect(),
                                         };
 
                                         let args = if let Some(class_mod) =
@@ -577,9 +645,16 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                             vec![]
                                         };
 
-                                        Ok(ir::ast::Expression::FunctionCall {
-                                            comp: name_ref,
-                                            args,
+                                        // Create Binary expression: name = NewType(args)
+                                        Ok(ir::ast::Expression::Binary {
+                                            op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
+                                            lhs: Box::new(ir::ast::Expression::ComponentReference(
+                                                name_ref,
+                                            )),
+                                            rhs: Box::new(ir::ast::Expression::FunctionCall {
+                                                comp: new_type_ref,
+                                                args,
+                                            }),
                                         })
                                     }
                                     modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(
@@ -602,9 +677,11 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                             modelica_grammar_trait::ElementReplaceableGroup::ComponentClause1(
                                 comp_clause,
                             ) => {
-                                // Handle component clause: redeclare replaceable Real x = ...
+                                // Handle component clause: redeclare replaceable NewType componentName(...)
                                 let decl =
                                     &comp_clause.component_clause1.component_declaration1.declaration;
+
+                                // Build component reference for the component name being redeclared
                                 let name_ref = ir::ast::ComponentReference {
                                     local: false,
                                     parts: vec![ir::ast::ComponentRefPart {
@@ -613,43 +690,69 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ir::ast::Expression {
                                     }],
                                 };
 
-                                if let Some(modif) = &decl.declaration_opt0 {
+                                // Build component reference for the new type from type_specifier
+                                let new_type_ref = ir::ast::ComponentReference {
+                                    local: false,
+                                    parts: comp_clause
+                                        .component_clause1
+                                        .type_specifier
+                                        .name
+                                        .name
+                                        .iter()
+                                        .map(|tok| ir::ast::ComponentRefPart {
+                                            ident: tok.clone(),
+                                            subs: None,
+                                        })
+                                        .collect(),
+                                };
+
+                                // Get modification arguments if present
+                                let args = if let Some(modif) = &decl.declaration_opt0 {
                                     match &modif.modification {
                                         modelica_grammar_trait::Modification::EquModificationExpression(
                                             eq_mod,
                                         ) => match &eq_mod.modification_expression {
                                             modelica_grammar_trait::ModificationExpression::Expression(
                                                 expr,
-                                            ) => Ok(ir::ast::Expression::Binary {
-                                                op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
-                                                lhs: Box::new(ir::ast::Expression::ComponentReference(
-                                                    name_ref,
-                                                )),
-                                                rhs: Box::new(expr.expression.clone()),
-                                            }),
+                                            ) => {
+                                                // Return as Binary expression for simple value assignment
+                                                return Ok(ir::ast::Expression::Binary {
+                                                    op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
+                                                    lhs: Box::new(ir::ast::Expression::ComponentReference(
+                                                        name_ref,
+                                                    )),
+                                                    rhs: Box::new(expr.expression.clone()),
+                                                });
+                                            }
                                             modelica_grammar_trait::ModificationExpression::Break(_) => {
-                                                Ok(ir::ast::Expression::ComponentReference(name_ref))
+                                                vec![]
                                             }
                                         },
                                         modelica_grammar_trait::Modification::ClassModificationModificationOpt(
                                             class_mod,
                                         ) => {
-                                            let args = if let Some(arg_list) =
+                                            if let Some(arg_list) =
                                                 &class_mod.class_modification.class_modification_opt
                                             {
                                                 arg_list.argument_list.args.clone()
                                             } else {
                                                 vec![]
-                                            };
-                                            Ok(ir::ast::Expression::FunctionCall {
-                                                comp: name_ref,
-                                                args,
-                                            })
+                                            }
                                         }
                                     }
                                 } else {
-                                    Ok(ir::ast::Expression::ComponentReference(name_ref))
-                                }
+                                    vec![]
+                                };
+
+                                // Create Binary expression: componentName = NewType(args)
+                                Ok(ir::ast::Expression::Binary {
+                                    op: ir::ast::OpBinary::Assign(ir::ast::Token::default()),
+                                    lhs: Box::new(ir::ast::Expression::ComponentReference(name_ref)),
+                                    rhs: Box::new(ir::ast::Expression::FunctionCall {
+                                        comp: new_type_ref,
+                                        args,
+                                    }),
+                                })
                             }
                         }
                     }

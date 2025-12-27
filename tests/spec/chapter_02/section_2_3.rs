@@ -155,16 +155,14 @@ mod section_2_3_1_identifiers {
         expect_parse_success("model Test Real 'a[1]'; end Test;");
     }
 
-    /// TODO: Unicode in quoted identifiers not yet supported
+    /// Unicode in quoted identifiers
     #[test]
-    #[ignore = "Unicode in quoted identifiers not yet supported"]
     fn mls_2_3_1_qident_unicode() {
         expect_parse_success("model Test Real 'αβγ'; end Test;");
     }
 
-    /// TODO: Unicode in quoted identifiers not yet supported
+    /// Unicode symbols in quoted identifiers
     #[test]
-    #[ignore = "Unicode in quoted identifiers not yet supported"]
     fn mls_2_3_1_qident_unicode_symbols() {
         expect_parse_success("model Test Real 'Δx'; end Test;");
     }

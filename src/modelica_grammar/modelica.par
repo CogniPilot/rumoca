@@ -270,9 +270,11 @@ within
 //=============================================================================
 // A.1 Lexical conventions
 // IDENT = NON-DIGIT { DIGIT | NON-DIGIT } | Q-IDENT
+// Unicode support: \p{L} = Unicode letters, \p{N} = Unicode numbers
+// Q-IDENT supports escape sequences: \' \" \\ \n \t \r \a \b \f \v \?
 ident
-    : /[_a-zA-Z][_a-zA-Z0-9]*/@basic_ident
-    | /\'[_a-zA-Z0-9!#\$%&\(\)\*\+,-\.\/:;<>=\?@\[\]\^\{\}\|~ \"]*\'/@q_ident
+    : /[_\p{L}][_\p{L}\p{N}]*/@basic_ident
+    | /\'([^\'\\]|\\[\'\"\\ntrfabv?])*\'/@q_ident
     ;
 
 // 🟨 IDENT = NON-DIGIT { DIGIT | NON-DIGIT } | Q-IDENT
@@ -282,11 +284,12 @@ ident
 // ✅ Q-CHAR = NON-DIGIT | DIGIT | "!" | "#" | "$" | "%" | "&" | "(" | ")"
 //    | "*" | "+" s| "," | "-" | "." | "/" | ":" | ";" | "<" | ">" | "="
 //    | "?" | "@" | "[" | "]" | "^" | "{" | "}" | "|" | "~" | " " | """
-// 🟥 S-ESCAPE = "\'" | "\"" | "\?" | "\\"
+// ✅ S-ESCAPE = "\'" | "\"" | "\?" | "\\"
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
 // ✅ STRING = """ { S-CHAR | S-ESCAPE } """ ;
+// Note: \\[\s\S] allows escape sequences including \<newline> for string continuation
 string
-    : /"([^"\\]|\\.)*"/
+    : /"([^"\\]|\\[\s\S])*"/
     ;
 
 // S-CHAR is any member of the Unicode character set

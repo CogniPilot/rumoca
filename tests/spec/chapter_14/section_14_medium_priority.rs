@@ -235,7 +235,6 @@ mod operator_restrictions {
 
     /// MLS: "Operator record cannot extend another operator record"
     #[test]
-    #[ignore = "operator record extends restriction not yet implemented"]
     fn mls_14_3_operator_record_no_extends() {
         expect_failure(
             r#"
@@ -254,7 +253,6 @@ mod operator_restrictions {
 
     /// MLS: "Operator record cannot be partial"
     #[test]
-    #[ignore = "operator record partial restriction not yet implemented"]
     fn mls_14_3_operator_record_no_partial() {
         expect_failure(
             r#"
