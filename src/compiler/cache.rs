@@ -17,7 +17,7 @@ use std::path::Path;
 // Full disk cache implementation (requires cache feature)
 // =============================================================================
 
-#[cfg(feature = "cache")]
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 mod disk {
     use super::*;
     use anyhow::Context;
@@ -194,68 +194,68 @@ mod disk {
 // =============================================================================
 
 /// Compute MD5 hash of file contents
-#[cfg(feature = "cache")]
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub fn compute_file_hash(path: &Path) -> Result<String> {
     disk::compute_file_hash(path)
 }
 
-#[cfg(not(feature = "cache"))]
+#[cfg(any(not(feature = "cache"), target_arch = "wasm32"))]
 pub fn compute_file_hash(_path: &Path) -> Result<String> {
-    // Without cache feature, just return empty hash (caching disabled)
+    // Without cache feature or on WASM, just return empty hash (caching disabled)
     Ok(String::new())
 }
 
 /// Try to load a cached AST for the given source file.
-#[cfg(feature = "cache")]
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub fn load_cached_ast(path: &Path, source_hash: &str) -> Option<StoredDefinition> {
     disk::load_cached_ast(path, source_hash)
 }
 
-#[cfg(not(feature = "cache"))]
+#[cfg(any(not(feature = "cache"), target_arch = "wasm32"))]
 pub fn load_cached_ast(_path: &Path, _source_hash: &str) -> Option<StoredDefinition> {
     None // Caching disabled
 }
 
 /// Store a parsed AST in the cache.
-#[cfg(feature = "cache")]
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub fn store_cached_ast(path: &Path, source_hash: &str, ast: &StoredDefinition) -> Result<()> {
     disk::store_cached_ast(path, source_hash, ast)
 }
 
-#[cfg(not(feature = "cache"))]
+#[cfg(any(not(feature = "cache"), target_arch = "wasm32"))]
 pub fn store_cached_ast(_path: &Path, _source_hash: &str, _ast: &StoredDefinition) -> Result<()> {
     Ok(()) // No-op when caching disabled
 }
 
 /// Clear the entire AST cache.
-#[cfg(feature = "cache")]
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub fn clear_cache() -> Result<()> {
     disk::clear_cache()
 }
 
-#[cfg(not(feature = "cache"))]
+#[cfg(any(not(feature = "cache"), target_arch = "wasm32"))]
 pub fn clear_cache() -> Result<()> {
     Ok(()) // No-op when caching disabled
 }
 
 /// Get cache statistics (number of files, total size).
-#[cfg(feature = "cache")]
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub fn get_cache_stats() -> Option<(usize, u64)> {
     disk::get_cache_stats()
 }
 
-#[cfg(not(feature = "cache"))]
+#[cfg(any(not(feature = "cache"), target_arch = "wasm32"))]
 pub fn get_cache_stats() -> Option<(usize, u64)> {
     Some((0, 0)) // No cache when disabled
 }
 
 /// Get the cache directory path (~/.cache/rumoca/ast/)
-#[cfg(feature = "cache")]
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub fn get_cache_dir() -> Option<std::path::PathBuf> {
     disk::get_cache_dir()
 }
 
-#[cfg(not(feature = "cache"))]
+#[cfg(any(not(feature = "cache"), target_arch = "wasm32"))]
 pub fn get_cache_dir() -> Option<std::path::PathBuf> {
     None // No cache directory when disabled
 }
