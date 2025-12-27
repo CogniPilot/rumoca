@@ -4,13 +4,13 @@ pub mod fmt;
 pub mod ir;
 pub mod lint;
 
-// LSP module is available with lsp-core feature (used by both native LSP and WASM)
-#[cfg(feature = "lsp-core")]
+// LSP module is available for WASM or when lsp feature is enabled
+#[cfg(any(target_arch = "wasm32", feature = "lsp"))]
 pub mod lsp;
 pub mod modelica_grammar;
 #[cfg(feature = "python")]
 mod python;
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
 // Re-export generated parser modules for convenience

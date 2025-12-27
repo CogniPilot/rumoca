@@ -267,7 +267,7 @@
             flex: 1;
             overflow: auto;
             padding: 10px 12px;
-            min-height: 0;
+            min-height: 150px;
         }
         .bottom-section.active { display: block; }
 
@@ -1143,7 +1143,23 @@
 
                 for (const { path, file: zipFile } of moFiles) {
                     const content = await zipFile.async('string');
-                    const normalizedPath = path.replace(/^[^\/]+\//, '');
+                    // Normalize path to get the actual library name
+                    // Two cases:
+                    // 1. Distribution zip: "ModelicaStandardLibrary-4.1.0/Modelica/..." -> "Modelica/..."
+                    // 2. Library zip: "Modelica 4.0.0/Blocks/..." -> "Modelica/Blocks/..."
+                    const parts = path.split('/');
+                    let normalizedPath;
+                    if (parts.length > 1 && /(?:Standard)?Library|^MSL/i.test(parts[0])) {
+                        // Distribution folder - strip it entirely
+                        normalizedPath = parts.slice(1).join('/');
+                    } else if (parts.length > 0) {
+                        // Library folder - just strip version suffix
+                        // "Modelica 4.0.0" -> "Modelica", "Modelica-4.1.0" -> "Modelica"
+                        parts[0] = parts[0].replace(/[\s-][\d.]+$/, '');
+                        normalizedPath = parts.join('/');
+                    } else {
+                        normalizedPath = path;
+                    }
                     data[normalizedPath] = content;
                     processedCount++;
                     if (processedCount % 100 === 0) {
@@ -1156,15 +1172,31 @@
                 status.textContent = `Parsing ${fileCount}...`;
                 status.className = 'library-status loading';
 
-                setTerminalOutput(`Loaded ${fileCount} .mo files from ${file.name}\n\nParsing libraries...`);
+                setTerminalOutput(`Loaded ${fileCount} .mo files from ${file.name}\n\nParsing libraries with rayon...`);
 
                 try {
+                    // Use rayon-based parallel parsing via load_libraries
+                    const startTime = performance.now();
                     const librariesJson = JSON.stringify(loadedLibraries);
-                    const cachedCount = await sendRequest('loadLibraries', { libraries: librariesJson });
-                    status.textContent = `${cachedCount} files`;
+                    const resultJson = await sendRequest('loadLibraries', { libraries: librariesJson }, 300000);
+                    const result = JSON.parse(resultJson);
+                    const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+                    const libNames = result.library_names.join(', ');
+                    status.textContent = libNames || `${result.parsed_count} files`;
                     status.className = 'library-status loaded';
-                    setTerminalOutput(`Parsed ${cachedCount} library files. Libraries cached!`);
-                    updateLibraryCount(cachedCount);
+
+                    let output = `Parsed ${result.parsed_count} files in ${elapsed}s.\nLibraries: ${libNames}`;
+                    if (result.skipped_files.length > 0) {
+                        output += `\n\nSkipped ${result.skipped_files.length} files (already loaded):`;
+                        result.skipped_files.slice(0, 5).forEach(f => output += `\n  - ${f}`);
+                        if (result.skipped_files.length > 5) output += `\n  ... and ${result.skipped_files.length - 5} more`;
+                    }
+                    if (result.conflicts.length > 0) {
+                        output += `\n\nWARNING: ${result.conflicts.length} library conflicts (replaced): ${result.conflicts.join(', ')}`;
+                    }
+                    output += '\n\nReady for compilation!';
+                    setTerminalOutput(output);
+                    updateLibraryCount(result.library_names.length);
                 } catch (e) {
                     status.textContent = 'Parse error';
                     status.className = 'library-status error';
@@ -1312,7 +1344,17 @@
         let workerReady = false;
 
         worker.onmessage = (e) => {
-            const { id, ready, success, result, error } = e.data;
+            const { id, ready, success, result, error, progress, current, total, percent } = e.data;
+
+            // Handle progress updates for library loading
+            if (progress) {
+                const libraryStatus = document.querySelector('.library-status.loading');
+                if (libraryStatus) {
+                    libraryStatus.textContent = `Parsing ${current}/${total} (${percent}%)`;
+                }
+                return;
+            }
+
             if (ready !== undefined) {
                 const status = document.getElementById('status');
                 if (success) {
@@ -1346,12 +1388,108 @@
             document.getElementById('status').className = 'status error';
         };
 
-        function sendRequest(action, params = {}) {
+        function sendRequest(action, params = {}, timeout = 30000) {
             const id = ++requestId;
             return new Promise((resolve, reject) => {
-                pendingRequests.set(id, { resolve, reject });
+                const timeoutId = setTimeout(() => {
+                    if (pendingRequests.has(id)) {
+                        pendingRequests.delete(id);
+                        console.error(`[sendRequest] timeout for action '${action}' (id=${id})`);
+                        reject(new Error(`Request timeout for ${action}`));
+                    }
+                }, timeout);
+
+                pendingRequests.set(id, {
+                    resolve: (result) => {
+                        clearTimeout(timeoutId);
+                        resolve(result);
+                    },
+                    reject: (error) => {
+                        clearTimeout(timeoutId);
+                        reject(error);
+                    }
+                });
                 worker.postMessage({ id, action, ...params });
             });
+        }
+
+        // Parallel library parsing using multiple Web Workers
+        async function parseLibrariesParallel(libraries, onProgress) {
+            const numWorkers = Math.min(navigator.hardwareConcurrency || 4, 8);
+            const files = Object.entries(libraries); // [[filename, source], ...]
+            const totalFiles = files.length;
+
+            if (totalFiles === 0) return 0;
+
+            console.log(`[Parallel] Parsing ${totalFiles} files with ${numWorkers} workers`);
+
+            // Split files among workers
+            const chunkSize = Math.ceil(totalFiles / numWorkers);
+            const chunks = [];
+            for (let i = 0; i < totalFiles; i += chunkSize) {
+                chunks.push(files.slice(i, i + chunkSize));
+            }
+
+            // Track progress across all workers
+            let completedFiles = 0;
+
+            // Create workers and parse in parallel
+            const workerPromises = chunks.map((chunk, idx) => {
+                return new Promise((resolve, reject) => {
+                    const parseWorker = new Worker('../../pkg/parse_worker.js', { type: 'module' });
+                    let workerReady = false;
+
+                    parseWorker.onmessage = (e) => {
+                        const { ready, success, results, progress, current, total, error } = e.data;
+
+                        if (ready !== undefined) {
+                            if (success) {
+                                workerReady = true;
+                                // Send files to parse
+                                parseWorker.postMessage({ id: idx, files: chunk });
+                            } else {
+                                reject(new Error(`Worker ${idx} failed to initialize`));
+                            }
+                            return;
+                        }
+
+                        if (progress) {
+                            // Update progress
+                            const workerCompleted = current;
+                            const estimatedTotal = Math.floor((completedFiles + workerCompleted) / totalFiles * 100);
+                            onProgress?.(completedFiles + workerCompleted, totalFiles, estimatedTotal);
+                            return;
+                        }
+
+                        if (success) {
+                            completedFiles += chunk.length;
+                            onProgress?.(completedFiles, totalFiles, Math.floor(completedFiles / totalFiles * 100));
+                            parseWorker.terminate();
+                            resolve(results);
+                        } else if (error) {
+                            parseWorker.terminate();
+                            reject(new Error(error));
+                        }
+                    };
+
+                    parseWorker.onerror = (e) => {
+                        parseWorker.terminate();
+                        reject(new Error(`Worker ${idx} error: ${e.message}`));
+                    };
+                });
+            });
+
+            // Wait for all workers to complete
+            const allResults = await Promise.all(workerPromises);
+            const flatResults = allResults.flat();
+
+            console.log(`[Parallel] Parsed ${flatResults.length} files, merging...`);
+
+            // Merge results using main worker
+            const definitionsJson = JSON.stringify(flatResults);
+            const libCount = await sendRequest('mergeParsedLibraries', { definitions: definitionsJson }, 60000);
+
+            return libCount;
         }
 
         // Monaco Editor
@@ -2061,6 +2199,7 @@ def cat(axis, *args):
                 statusSpan.textContent = 'Compiling...';
                 statusSpan.style.color = '#9a6700';
 
+                try {
                 // Run diagnostics
                 try {
                     const diagJson = await sendRequest('diagnostics', { source });
@@ -2187,6 +2326,12 @@ def cat(axis, *args):
 
                 // Refresh CodeLens to show balance for all models
                 if (window.refreshCodeLens) window.refreshCodeLens();
+                } catch (unexpectedError) {
+                    // Catch any unexpected errors to ensure status is always updated
+                    console.error('[runLiveChecks] Unexpected error:', unexpectedError);
+                    statusSpan.textContent = 'Error';
+                    statusSpan.style.color = '#c9184a';
+                }
             }, 500);
 
             editor.onDidChangeModelContent(() => { runLiveChecks(); });

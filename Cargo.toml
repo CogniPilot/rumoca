@@ -42,18 +42,17 @@ rayon = "1.10"
 num_cpus = "1.16"
 
 # LSP types (WASM compatible - used by both native LSP and WASM)
-lsp-types = { version = "0.97", optional = true }
+# Non-optional because it's just types with no runtime cost
+lsp-types = "0.97"
 
-# WASM support (optional)
-wasm-bindgen = { version = "0.2", optional = true }
-wasm-bindgen-rayon = { version = "1.3", optional = true }
-wasm-bindgen-futures = { version = "0.4", optional = true }
-js-sys = { version = "0.3", optional = true }
-web-sys = { version = "0.3", optional = true, features = ["Window", "console"] }
-getrandom = { version = "0.3", optional = true, features = ["wasm_js"] }
-
-# WASM target dependencies (for getrandom 0.2.x pulled by rand)
+# WASM target dependencies (automatically included when targeting wasm32)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-rayon = "1.3"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "console"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 # web-time provides Instant::now() polyfill for WASM
 web-time = "1.1"
@@ -78,15 +77,12 @@ dirs = { version = "5.0", optional = true }
 [features]
 default = ["cli", "lsp", "cache", "allocator"]
 cli = ["clap", "env_logger"]
-# LSP core: just types and logic (WASM compatible)
-lsp-core = ["lsp-types"]
 # Full LSP: includes server protocol (NOT WASM compatible)
-lsp = ["lsp-core", "lsp-server", "notify", "crossbeam-channel"]
+# lsp-types is always available since it's a non-optional dependency
+lsp = ["lsp-server", "notify", "crossbeam-channel"]
 cache = ["bincode", "dirs"]
 allocator = ["mimalloc"]
 python = ["pyo3"]
-# WASM: includes LSP core for diagnostics/hover/completion
-wasm = ["lsp-core", "wasm-bindgen", "wasm-bindgen-rayon", "wasm-bindgen-futures", "js-sys", "web-sys", "getrandom"]
 regen-parser = []
 
 [lib]

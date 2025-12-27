@@ -7,6 +7,8 @@ import init, {
     compile_to_json,
     compile_with_libraries,
     load_libraries,
+    parse_library_file,
+    merge_parsed_libraries,
     clear_library_cache,
     get_library_count,
     lsp_diagnostics,
@@ -19,6 +21,26 @@ import init, {
 } from './rumoca.js';
 
 let initialized = false;
+
+// Intercept console.log to forward progress messages to main thread
+const originalLog = console.log;
+console.log = function(...args) {
+    originalLog.apply(console, args);
+    // Forward WASM progress messages to main thread
+    const message = args.join(' ');
+    if (message.includes('[WASM] load_libraries: parsing')) {
+        // Extract progress info: "[WASM] load_libraries: parsing 50/500 (10%)"
+        const match = message.match(/parsing (\d+)\/(\d+) \((\d+)%\)/);
+        if (match) {
+            self.postMessage({
+                progress: true,
+                current: parseInt(match[1]),
+                total: parseInt(match[2]),
+                percent: parseInt(match[3])
+            });
+        }
+    }
+};
 
 async function initialize() {
     if (initialized) return true;
@@ -65,6 +87,12 @@ self.onmessage = async (e) => {
                 break;
             case 'loadLibraries':
                 result = load_libraries(libraries || '{}');
+                break;
+            case 'parseLibraryFile':
+                result = parse_library_file(source, e.data.filename);
+                break;
+            case 'mergeParsedLibraries':
+                result = merge_parsed_libraries(e.data.definitions);
                 break;
             case 'clearLibraryCache':
                 clear_library_cache();

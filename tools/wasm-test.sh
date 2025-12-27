@@ -54,9 +54,9 @@ build_wasm() {
 
     # Build with nightly for atomics support
     # Note: rustflags and build-std are configured in .cargo/config.toml
+    # WASM deps are auto-included via target-specific dependencies
     cargo +nightly build --lib --release \
-        --target wasm32-unknown-unknown \
-        --no-default-features --features wasm
+        --target wasm32-unknown-unknown
 
     log "Generating JS bindings with wasm-bindgen..."
 

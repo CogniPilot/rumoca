@@ -58,7 +58,7 @@ src/
 ├── lsp/                    # Language Server Protocol
 ├── modelica_grammar/       # Parser and grammar conversion
 ├── python/                 # Python bindings (feature-gated)
-└── wasm/                   # WASM bindings (feature-gated)
+└── wasm/                   # WASM bindings (target-gated for wasm32)
 ```
 
 ### Key Files to Know

@@ -216,10 +216,10 @@ jobs:
 
       - name: Build WASM package
         run: |
-          # Build with only WASM features (excludes cli, lsp-server, cache, mimalloc)
+          # WASM deps are auto-included via target-specific dependencies
+          # Native-only deps (cli, lsp-server, cache, mimalloc) are excluded by target gate
           cargo build --lib --release \
-            --target wasm32-unknown-unknown \
-            --no-default-features --features wasm
+            --target wasm32-unknown-unknown
 
           # Generate JS bindings
           mkdir -p pkg

@@ -213,9 +213,23 @@ fn format_symbol_info_hover(
     sym_info: &crate::ir::transform::scope_resolver::ExternalSymbol,
     workspace: &WorkspaceState,
 ) -> String {
-    // Try to get the actual AST for richer information
+    // For qualified names like "Modelica.Blocks.Continuous.PID", we need to:
+    // 1. Get the root library (e.g., "Modelica") from library_cache
+    // 2. Navigate through the class hierarchy to find PID
+    let parts: Vec<&str> = sym_info.qualified_name.split('.').collect();
+    if !parts.is_empty() {
+        let lib_name = parts[0];
+        if let Some(lib_ast) = workspace.get_library(lib_name) {
+            // Navigate the path: Modelica -> Blocks -> Continuous -> PID
+            // The lib_ast has "Modelica" in class_list, so we start from the root
+            if let Some(class) = navigate_class_path(&lib_ast, lib_name, &parts[1..]) {
+                return format_class_hover(class, &sym_info.qualified_name);
+            }
+        }
+    }
+
+    // Try the old approach as fallback (for non-library symbols)
     if let Some(ast) = workspace.get_parsed_ast_by_name(&sym_info.qualified_name) {
-        // Find the class in the AST
         let simple_name = sym_info
             .qualified_name
             .rsplit('.')
@@ -233,6 +247,35 @@ fn format_symbol_info_hover(
         info += detail;
     }
     info
+}
+
+/// Navigate through nested classes to find a class at the given path
+///
+/// For "Modelica.Blocks.Continuous.PID":
+/// - lib_name = "Modelica"
+/// - path = ["Blocks", "Continuous", "PID"]
+///
+/// The ast.class_list contains "Modelica" as the root package.
+/// We first get Modelica, then navigate Blocks -> Continuous -> PID.
+fn navigate_class_path<'a>(
+    ast: &'a StoredDefinition,
+    lib_name: &str,
+    path: &[&str],
+) -> Option<&'a ClassDefinition> {
+    // Get the root package class from class_list
+    let mut current = ast.class_list.get(lib_name)?;
+
+    // If path is empty, return the root package itself
+    if path.is_empty() {
+        return Some(current);
+    }
+
+    // Navigate through nested classes
+    for &part in path {
+        current = current.classes.get(part)?;
+    }
+
+    Some(current)
 }
 
 /// Get hover info from the AST for user-defined symbols
