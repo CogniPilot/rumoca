@@ -219,34 +219,53 @@ fn extract_connect_equations_recursive(
             cond_blocks,
             else_block,
         } => {
-            let mut new_cond_blocks = Vec::new();
-            for block in cond_blocks {
-                let mut filtered_eqs = Vec::new();
-                for inner_eq in &block.eqs {
-                    if let Some(filtered) =
-                        extract_connect_equations_recursive(inner_eq, connect_eqs)
-                    {
-                        filtered_eqs.push(filtered);
+            // Check if any branch of this If equation contains connects
+            let has_connects_in_if = cond_blocks
+                .iter()
+                .any(|b| b.eqs.iter().any(contains_connects))
+                || else_block
+                    .as_ref()
+                    .is_some_and(|eqs| eqs.iter().any(contains_connects));
+
+            if has_connects_in_if {
+                // Return the If equation as-is - it will be handled separately
+                // by expand_connects_in_equation to preserve the conditional structure.
+                // This is important for patterns like:
+                //   if cond then connect(a, b); else x = 0; end if;
+                // where the connect should only apply when cond is true.
+                Some(eq.clone())
+            } else {
+                // No connects inside - recursively process
+                let mut new_cond_blocks = Vec::new();
+                for block in cond_blocks {
+                    let mut filtered_eqs = Vec::new();
+                    for inner_eq in &block.eqs {
+                        if let Some(filtered) =
+                            extract_connect_equations_recursive(inner_eq, connect_eqs)
+                        {
+                            filtered_eqs.push(filtered);
+                        }
                     }
+                    new_cond_blocks.push(ir::ast::EquationBlock {
+                        cond: block.cond.clone(),
+                        eqs: filtered_eqs,
+                    });
                 }
-                new_cond_blocks.push(ir::ast::EquationBlock {
-                    cond: block.cond.clone(),
-                    eqs: filtered_eqs,
+                let new_else = else_block.as_ref().map(|eqs| {
+                    let mut filtered = Vec::new();
+                    for inner_eq in eqs {
+                        if let Some(f) = extract_connect_equations_recursive(inner_eq, connect_eqs)
+                        {
+                            filtered.push(f);
+                        }
+                    }
+                    filtered
                 });
+                Some(Equation::If {
+                    cond_blocks: new_cond_blocks,
+                    else_block: new_else,
+                })
             }
-            let new_else = else_block.as_ref().map(|eqs| {
-                let mut filtered = Vec::new();
-                for inner_eq in eqs {
-                    if let Some(f) = extract_connect_equations_recursive(inner_eq, connect_eqs) {
-                        filtered.push(f);
-                    }
-                }
-                filtered
-            });
-            Some(Equation::If {
-                cond_blocks: new_cond_blocks,
-                else_block: new_else,
-            })
         }
         Equation::When(blocks) => {
             let mut new_blocks = Vec::new();
@@ -512,9 +531,36 @@ pub(super) fn expand_connect_equations(
         }
     }
 
+    // Filter out connect equations to conditional components that don't exist.
+    // When a connect references a conditional component (e.g., `connect(y1, fder)` where
+    // `fder if use_fder` and `use_fder=false`), the connect should be silently skipped
+    // per MLS §4.5.
+    connect_eqs.retain(|(lhs, rhs)| {
+        let lhs_name = lhs.to_string();
+        let rhs_name = rhs.to_string();
+
+        // Check if both endpoints exist as components or are prefixes of components
+        let lhs_exists = fclass.components.contains_key(&lhs_name)
+            || fclass
+                .components
+                .keys()
+                .any(|k| k.starts_with(&format!("{}.", lhs_name)));
+        let rhs_exists = fclass.components.contains_key(&rhs_name)
+            || fclass
+                .components
+                .keys()
+                .any(|k| k.starts_with(&format!("{}.", rhs_name)));
+
+        lhs_exists && rhs_exists
+    });
+
     // Check if there are any connects to process (either top-level or inside For loops)
     let has_for_connects = other_eqs.iter().any(contains_connects);
     if connect_eqs.is_empty() && !has_for_connects {
+        // Even if there are no connects to process, we still need to update the equations
+        // to remove any Connect equations that were filtered out (e.g., to non-existent
+        // conditional components). The extraction process already removed them from other_eqs.
+        fclass.equations = other_eqs;
         return Ok(());
     }
 

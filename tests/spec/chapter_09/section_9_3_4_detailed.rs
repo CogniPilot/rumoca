@@ -18,7 +18,6 @@ mod connector_restrictions {
 
     /// MLS: "A connector shall not be declared with variability prefix constant"
     #[test]
-    #[ignore = "Connector variability restriction not yet enforced"]
     fn error_constant_connector() {
         expect_failure(
             r#"

@@ -11,6 +11,7 @@ use crate::ir::analysis::reference_checker::collect_imported_packages;
 use crate::ir::ast::{Expression, Import, OpBinary};
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::is_primitive_type;
+use crate::ir::visitor::MutVisitor;
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 
@@ -23,9 +24,11 @@ use super::{ClassDict, EXTENDS_CHAIN_CACHE, is_cache_enabled};
 /// Extract name=value pairs from extends clause modifications.
 ///
 /// Extends modifications are stored as a Vec<Expression> containing Binary expressions
-/// like `L = 1e-3` which are `Binary { op: Eq, lhs: ComponentReference("L"), rhs: value }`.
+/// like `L = 1e-3` which are `Binary { op: Eq/Assign, lhs: ComponentReference("L"), rhs: value }`.
 ///
 /// This function extracts these into an IndexMap for easy lookup.
+/// Note: Modifications can use either `Eq` (from simple expressions) or `Assign` (from
+/// element modifications like `final use_fder=false`).
 pub(super) fn extract_extends_modifications(
     modifications: &[Expression],
 ) -> IndexMap<String, Expression> {
@@ -33,7 +36,7 @@ pub(super) fn extract_extends_modifications(
 
     for expr in modifications {
         if let Expression::Binary { op, lhs, rhs } = expr
-            && matches!(op, OpBinary::Eq(_))
+            && matches!(op, OpBinary::Eq(_) | OpBinary::Assign(_))
             && let Expression::ComponentReference(comp_ref) = &**lhs
         {
             let param_name = comp_ref.to_string();
@@ -196,6 +199,78 @@ pub(super) fn apply_import_aliases(name: &str, aliases: &IndexMap<String, String
         }
     } else {
         name.to_string()
+    }
+}
+
+// =============================================================================
+// Import Alias Resolver Visitor
+// =============================================================================
+
+/// Visitor that resolves import aliases in component references.
+///
+/// This visitor traverses expressions and replaces import aliases in component
+/// references with their fully qualified names. For example, with alias
+/// `L -> Modelica.Electrical.Digital.Interfaces.Logic`:
+/// - `L.'0'` becomes `Modelica.Electrical.Digital.Interfaces.Logic.'0'`
+/// - `L.nmos` becomes `Modelica.Electrical.Digital.Interfaces.Logic.nmos`
+pub(super) struct ImportAliasResolver<'a> {
+    aliases: &'a IndexMap<String, String>,
+}
+
+impl<'a> ImportAliasResolver<'a> {
+    pub fn new(aliases: &'a IndexMap<String, String>) -> Self {
+        Self { aliases }
+    }
+}
+
+impl MutVisitor for ImportAliasResolver<'_> {
+    fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
+        // Only process if there's at least one part
+        if node.parts.is_empty() {
+            return;
+        }
+
+        // Check if the first part is an import alias
+        let first_part = &node.parts[0].ident.text;
+        if let Some(target) = self.aliases.get(first_part) {
+            // Preserve the location from the original first part
+            let original_location = node.parts[0].ident.location.clone();
+
+            // Replace the first part with the full path from the alias
+            let target_parts: Vec<&str> = target.split('.').collect();
+
+            // Create new parts from the target path, preserving the original location
+            // on the first part so that get_location() returns a valid source location
+            let mut new_parts: Vec<ir::ast::ComponentRefPart> = target_parts
+                .iter()
+                .enumerate()
+                .map(|(i, s)| ir::ast::ComponentRefPart {
+                    ident: ir::ast::Token {
+                        text: s.to_string(),
+                        // Use original location for first part to preserve source location info
+                        location: if i == 0 {
+                            original_location.clone()
+                        } else {
+                            Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    subs: None,
+                })
+                .collect();
+
+            // Keep subscripts from the original first part on the last part of the target
+            if let Some(subs) = &node.parts[0].subs
+                && let Some(last) = new_parts.last_mut()
+            {
+                last.subs = Some(subs.clone());
+            }
+
+            // Append remaining parts from original reference
+            new_parts.extend(node.parts.iter().skip(1).cloned());
+
+            node.parts = new_parts;
+        }
     }
 }
 

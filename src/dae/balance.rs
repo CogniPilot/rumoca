@@ -271,7 +271,9 @@ fn count_single_equation(eq: &Equation, params: &IndexMap<String, Component>) ->
                     .unwrap_or(0);
             }
 
-            // Fall back to MAX rule when conditions can't be fully evaluated
+            // Conditions can't be fully evaluated.
+            // Per MLS §8, if all branches have equal counts, use that count
+            // (non-parameter conditions require equal counts in all branches).
             let branch_counts: Vec<usize> = cond_blocks
                 .iter()
                 .map(|block| count_equations(&block.eqs, params))
@@ -282,7 +284,16 @@ fn count_single_equation(eq: &Equation, params: &IndexMap<String, Component>) ->
                 .map(|eqs| count_equations(eqs, params))
                 .unwrap_or(0);
 
-            branch_counts.into_iter().max().unwrap_or(0).max(else_count)
+            // Check if all branches have equal counts
+            let all_equal = branch_counts.iter().all(|&c| c == else_count);
+            if all_equal {
+                // All branches have equal counts - use that count
+                else_count
+            } else {
+                // Branches have different counts - this is a parameter-controlled if-equation
+                // Use MAX as conservative estimate
+                branch_counts.into_iter().max().unwrap_or(0).max(else_count)
+            }
         }
 
         Equation::When(blocks) => {

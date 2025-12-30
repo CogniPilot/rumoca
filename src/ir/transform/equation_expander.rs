@@ -1014,25 +1014,57 @@ fn make_subscripted_ref(name: &str, indices: &[usize]) -> Expression {
 
 /// Add subscripts to an expression.
 /// For flat indexing, use subscript_expr_flat which handles concatenated arrays.
+///
+/// If the expression is a component reference with Range subscripts (`:` slicing),
+/// the new indices replace the Range subscripts rather than replacing all subscripts.
+/// For example: A[1, :] with indices [3] becomes A[1, 3].
 fn subscript_expr(expr: Expression, indices: &[usize]) -> Expression {
     match expr {
         Expression::ComponentReference(mut comp_ref) => {
             // Add subscripts to the first part
             if let Some(first_part) = comp_ref.parts.first_mut() {
-                let new_subs: Vec<Subscript> = indices
-                    .iter()
-                    .map(|&i| {
-                        Subscript::Expression(Expression::Terminal {
-                            terminal_type: TerminalType::UnsignedInteger,
-                            token: Token {
-                                text: i.to_string(),
-                                ..Default::default()
-                            },
-                        })
-                    })
-                    .collect();
+                // Check if existing subscripts contain Range subscripts
+                let has_range_subs = first_part
+                    .subs
+                    .as_ref()
+                    .is_some_and(|subs| subs.iter().any(|s| matches!(s, Subscript::Range { .. })));
 
-                first_part.subs = Some(new_subs);
+                if has_range_subs {
+                    // Replace Range subscripts with new indices
+                    // For example: A[1, :] with indices [3] -> A[1, 3]
+                    if let Some(existing_subs) = &mut first_part.subs {
+                        let mut idx_iter = indices.iter();
+                        for sub in existing_subs.iter_mut() {
+                            if matches!(sub, Subscript::Range { .. })
+                                && let Some(&i) = idx_iter.next()
+                            {
+                                *sub = Subscript::Expression(Expression::Terminal {
+                                    terminal_type: TerminalType::UnsignedInteger,
+                                    token: Token {
+                                        text: i.to_string(),
+                                        ..Default::default()
+                                    },
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    // No existing Range subscripts - replace all subscripts
+                    let new_subs: Vec<Subscript> = indices
+                        .iter()
+                        .map(|&i| {
+                            Subscript::Expression(Expression::Terminal {
+                                terminal_type: TerminalType::UnsignedInteger,
+                                token: Token {
+                                    text: i.to_string(),
+                                    ..Default::default()
+                                },
+                            })
+                        })
+                        .collect();
+
+                    first_part.subs = Some(new_subs);
+                }
             }
             Expression::ComponentReference(comp_ref)
         }

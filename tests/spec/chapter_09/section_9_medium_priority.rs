@@ -196,7 +196,6 @@ mod connection_restrictions {
 
     /// MLS: "Cannot connect flow to non-flow variable"
     #[test]
-    #[ignore = "Flow/non-flow mixing check not yet implemented"]
     fn mls_9_3_no_flow_nonflow_mix() {
         expect_failure(
             r#"
@@ -319,7 +318,6 @@ mod expandable_connectors {
 
     /// MLS: "flow forbidden in expandable connector declaration"
     #[test]
-    #[ignore = "expandable connector flow restriction not yet implemented"]
     fn mls_9_4_expandable_no_flow() {
         expect_failure(
             r#"

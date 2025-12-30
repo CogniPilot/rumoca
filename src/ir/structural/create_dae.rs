@@ -42,14 +42,42 @@ impl DefinedVariableCollector {
 
 impl Visitor for DefinedVariableCollector {
     fn enter_equation(&mut self, node: &Equation) {
+        // LHS component reference is defined (has a defining equation)
         if let Equation::Simple {
             lhs: Expression::ComponentReference(cref),
-            ..
+            rhs: _,
         } = node
         {
             self.defined.insert(cref.to_string());
         }
     }
+}
+
+/// Collects pairs of (lhs_name, rhs_name) from simple equations where:
+/// - LHS is a top-level variable (no dot)
+/// - RHS is a subcomponent (has dot)
+///
+/// This is used to identify subcomponent inputs that are connected to top-level inputs.
+/// For example, in `u = flange.phi`, both u and flange.phi should be algebraic
+/// if u is an input (they're internally connected).
+fn collect_toplevel_to_subcomponent_pairs(equations: &[Equation]) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for eq in equations {
+        if let Equation::Simple { lhs, rhs } = eq
+            && let Expression::ComponentReference(lhs_cref) = lhs
+            && let Expression::ComponentReference(rhs_cref) = rhs
+        {
+            let lhs_name = lhs_cref.to_string();
+            let rhs_name = rhs_cref.to_string();
+            let lhs_is_toplevel = !lhs_name.contains('.');
+            let rhs_is_subcomp = rhs_name.contains('.');
+
+            if lhs_is_toplevel && rhs_is_subcomp {
+                pairs.push((lhs_name, rhs_name));
+            }
+        }
+    }
+    pairs
 }
 
 const GIT_VERSION: &str = git_version!(
@@ -126,6 +154,35 @@ fn collect_defined_variables(equations: &[Equation]) -> HashSet<String> {
         eq.accept(&mut collector);
     }
     collector.into_defined()
+}
+
+/// Collect variables that appear on RHS of simple equations where LHS is a top-level variable.
+/// These are candidates for "connected protected inputs" - protected inputs that receive
+/// values from external sources and should be treated as algebraic variables.
+///
+/// For example, in `pder = u1` where pder is external and u1 is protected,
+/// u1 should be collected so it can be classified as algebraic during DAE creation.
+fn collect_connected_rhs_variables(equations: &[Equation]) -> HashSet<String> {
+    let mut connected = HashSet::new();
+    for eq in equations {
+        if let Equation::Simple { lhs, rhs } = eq
+            && let Expression::ComponentReference(lhs_cref) = lhs
+        {
+            let lhs_name = lhs_cref.to_string();
+            // Only consider equations where LHS is top-level (no dots)
+            if !lhs_name.contains('.')
+                && let Expression::ComponentReference(rhs_cref) = rhs
+            {
+                let rhs_name = rhs_cref.to_string();
+                // Add RHS if it's also top-level (for protected input case)
+                // Subcomponent case is handled in DefinedVariableCollector
+                if !rhs_name.contains('.') {
+                    connected.insert(rhs_name);
+                }
+            }
+        }
+    }
+    connected
 }
 
 /// Expand an array component into individual scalar components.
@@ -289,6 +346,14 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // These should be treated as algebraic variables, not inputs, even if they have Input causality
     let defined_variables = collect_defined_variables(&fclass.equations);
 
+    // Find protected inputs that appear on RHS of equations like `pder = u1`
+    // These are connected to external sources and should be algebraic, not external inputs
+    let connected_rhs_variables = collect_connected_rhs_variables(&fclass.equations);
+
+    // Collect pairs of (top_level, subcomponent) from equations like `u = flange.phi`
+    // Used to identify subcomponent inputs connected to top-level inputs
+    let toplevel_subcomp_pairs = collect_toplevel_to_subcomponent_pairs(&fclass.equations);
+
     // First pass: Collect all parameters for condition evaluation
     // Parameters are needed to evaluate conditional component expressions like `if use_reset`
     let mut all_params: IndexMap<String, Component> = IndexMap::new();
@@ -307,6 +372,18 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
     // Track components that are filtered out due to false conditions
     // These will be used to filter equations that assign to them
     let mut filtered_components: HashSet<String> = HashSet::new();
+
+    // Build a map of component names to their causality for checking pairs
+    // This is used to identify subcomponent inputs connected to top-level inputs
+    let component_causalities: std::collections::HashMap<String, Causality> = fclass
+        .components
+        .iter()
+        .flat_map(|(_, comp)| {
+            expand_array_component(comp)
+                .into_iter()
+                .map(|(name, c)| (name, c.causality.clone()))
+        })
+        .collect();
 
     // handle components - expand arrays to scalar components
     for (_, comp) in &fclass.components {
@@ -353,22 +430,57 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                             //
                             // Per Modelica spec: "the input prefix defines that values for such a
                             // variable have to be provided from the simulation environment."
-                            // This means top-level inputs are ALWAYS external inputs, even if they
-                            // appear on the LHS of equations (like in DeMultiplex: [u] = [y1; y2]).
+                            // This applies to PUBLIC inputs that are part of the interface.
                             //
-                            // Sub-component inputs that have connect equations become internal signals
-                            // (algebraic variables) because they are connected within the model.
-                            let base_name = &comp.name; // Original name before array expansion
-                            let is_top_level = !base_name.contains('.');
+                            // However, PROTECTED inputs that are connected internally (e.g., from
+                            // conditional sources) are NOT part of the external interface and should
+                            // be treated as algebraic variables when they have defining equations.
+                            //
+                            // For example, in Voltage2DutyCycle:
+                            //   protected RealInput vLimInt;
+                            //   connect(vLimInt, vLimConst.y);
+                            // Here vLimInt is protected and connected internally → algebraic.
+                            //
+                            // But in SimplePassthrough:
+                            //   RealInput u;
+                            //   equation u = y;
+                            // Here u is public and part of the interface → external input.
+                            let base_name = &comp.name;
+                            let is_sub_component = base_name.contains('.');
 
-                            if is_top_level {
-                                // Top-level input - always external input per Modelica spec
-                                dae.u.insert(scalar_name, scalar_comp);
-                            } else if defined_variables.contains(&scalar_name) {
+                            if scalar_comp.is_protected && defined_variables.contains(&scalar_name)
+                            {
+                                // Protected input with defining equation - algebraic variable
+                                // (internal connection, not part of public interface)
+                                dae.y.insert(scalar_name, scalar_comp);
+                            } else if scalar_comp.is_protected
+                                && connected_rhs_variables.contains(&scalar_name)
+                            {
+                                // Protected input appearing on RHS of equation like `pder = u1`
+                                // This receives its value from another variable, so it's algebraic
+                                dae.y.insert(scalar_name, scalar_comp);
+                            } else if is_sub_component && defined_variables.contains(&scalar_name) {
                                 // Sub-component input with defining equation - algebraic variable
                                 dae.y.insert(scalar_name, scalar_comp);
+                            } else if is_sub_component {
+                                // Check if this subcomponent input is connected to a top-level input
+                                // For example, in `u = flange.phi` where u is an input, flange.phi
+                                // should also be algebraic because it's internally connected.
+                                let connected_to_toplevel_input =
+                                    toplevel_subcomp_pairs.iter().any(|(lhs, rhs)| {
+                                        rhs == &scalar_name
+                                            && matches!(
+                                                component_causalities.get(lhs),
+                                                Some(Causality::Input(..))
+                                            )
+                                    });
+                                if connected_to_toplevel_input {
+                                    dae.y.insert(scalar_name, scalar_comp);
+                                } else {
+                                    dae.u.insert(scalar_name, scalar_comp);
+                                }
                             } else {
-                                // Sub-component input without defining equation - external input
+                                // Public input or input without defining equation - external input
                                 dae.u.insert(scalar_name, scalar_comp);
                             }
                         }
