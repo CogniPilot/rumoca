@@ -344,7 +344,7 @@ mod circular_dependency {
 
     /// MLS: "Circular inheritance is forbidden"
     #[test]
-    #[ignore = "Circular inheritance detection not yet implemented"]
+
     fn mls_5_6_circular_extends() {
         expect_failure(
             r#"
@@ -362,7 +362,6 @@ mod circular_dependency {
 
     /// MLS: "Self-inheritance is forbidden"
     #[test]
-    #[ignore = "Self-inheritance detection not yet implemented"]
     fn mls_5_6_self_extends() {
         expect_failure(
             r#"

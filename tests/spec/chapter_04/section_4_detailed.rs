@@ -140,7 +140,6 @@ mod double_declaration {
 
     /// MLS: "Each component name must be unique within a class"
     #[test]
-    #[ignore = "Double declaration detection not yet implemented"]
     fn error_duplicate_component() {
         expect_failure(
             r#"
@@ -156,7 +155,6 @@ mod double_declaration {
 
     /// MLS: "Component and class names share the same namespace"
     #[test]
-    #[ignore = "Component/class namespace collision not yet detected"]
     fn error_component_class_collision() {
         expect_failure(
             r#"
@@ -201,7 +199,6 @@ mod variability_semantics {
 
     /// MLS: "A constant must have a binding equation"
     #[test]
-    #[ignore = "Constant binding requirement not yet enforced"]
     fn error_constant_without_binding() {
         expect_failure(
             r#"
@@ -318,7 +315,6 @@ mod variability_semantics {
 
     /// MLS: "Parameter cannot depend on variable"
     #[test]
-    #[ignore = "Parameter variability dependency not yet checked"]
     fn error_parameter_depends_on_variable() {
         expect_failure(
             r#"
@@ -344,7 +340,6 @@ mod specialized_class_restrictions {
 
     /// Record cannot have equations
     #[test]
-    #[ignore = "Record equation restriction not yet enforced"]
     fn error_record_with_equations() {
         expect_failure(
             r#"
@@ -361,7 +356,6 @@ mod specialized_class_restrictions {
 
     /// Record cannot have algorithm sections
     #[test]
-    #[ignore = "Record algorithm restriction not yet enforced"]
     fn error_record_with_algorithm() {
         expect_failure(
             r#"
@@ -407,7 +401,6 @@ mod specialized_class_restrictions {
 
     /// Package cannot have equations
     #[test]
-    #[ignore = "Package equation restriction not yet enforced"]
     fn error_package_with_equations() {
         expect_failure(
             r#"
@@ -452,7 +445,6 @@ mod specialized_class_restrictions {
 
     /// Connector shall have only public elements
     #[test]
-    #[ignore = "Connector visibility restriction not yet enforced"]
     fn error_connector_with_protected() {
         expect_failure(
             r#"

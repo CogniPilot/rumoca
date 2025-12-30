@@ -9,6 +9,26 @@ use crate::ir::ast::{ClassDefinition, Expression, OpBinary, TerminalType};
 
 use super::symbols::DefinedSymbol;
 
+/// Helper to evaluate a constant integer expression for type inference.
+/// Only handles simple cases: integer literals and negation.
+fn eval_const_integer(expr: &Expression) -> Option<i64> {
+    match expr {
+        Expression::Terminal {
+            terminal_type: TerminalType::UnsignedInteger,
+            token,
+        } => token.text.parse().ok(),
+        Expression::Unary { op, rhs } => {
+            if matches!(op, crate::ir::ast::OpUnary::Minus(_)) {
+                eval_const_integer(rhs).map(|v| -v)
+            } else {
+                None
+            }
+        }
+        Expression::Parenthesized { inner } => eval_const_integer(inner),
+        _ => None,
+    }
+}
+
 /// Trait for looking up class definitions by type name.
 ///
 /// Implement this to provide class hierarchy lookup for type inference.
@@ -269,21 +289,74 @@ pub fn infer_expression_type_with_classes<C: ClassLookup>(
                     if sym.shape.is_empty() {
                         base
                     } else {
-                        // Build array type from innermost to outermost
-                        let mut result = base;
-                        for &dim in sym.shape.iter().rev() {
-                            result = SymbolType::Array(Box::new(result), Some(dim));
-                        }
-                        // Account for subscripts - each index reduces one dimension
-                        // e.g., q[3] where q is Real[4] becomes Real (scalar)
-                        // e.g., R[1,2] where R is Real[3,3] becomes Real (scalar)
+                        // Determine which dimensions are preserved based on subscripts
+                        // Range subscripts (`:`) preserve the dimension, integer subscripts strip it
+                        // e.g., A[1, :] where A is Real[2, 3] -> strip dim 0, keep dim 1 -> Real[3]
+                        // e.g., A[:, 1] where A is Real[3, 2] -> keep dim 0, strip dim 1 -> Real[3]
+                        let mut preserved_dims: Vec<usize> = Vec::new();
+
                         if let Some(subs) = &first.subs {
-                            for _sub in subs {
-                                // Each subscript strips one array dimension
-                                if let SymbolType::Array(inner, _) = result {
-                                    result = *inner;
+                            // Match subscripts to dimensions
+                            for (dim_idx, sub) in subs.iter().enumerate() {
+                                if dim_idx >= sym.shape.len() {
+                                    break;
+                                }
+                                match sub {
+                                    crate::ir::ast::Subscript::Range { .. } => {
+                                        // Range subscript preserves this dimension
+                                        preserved_dims.push(sym.shape[dim_idx]);
+                                    }
+                                    crate::ir::ast::Subscript::Expression(expr) => {
+                                        // Check if this is a Range expression (2:4) vs integer
+                                        if let crate::ir::ast::Expression::Range {
+                                            start,
+                                            step,
+                                            end,
+                                        } = expr
+                                        {
+                                            // Range expression like x[2:4] - compute the size
+                                            if let (Some(start_val), Some(end_val)) =
+                                                (eval_const_integer(start), eval_const_integer(end))
+                                            {
+                                                let step_val = step
+                                                    .as_ref()
+                                                    .and_then(|s| eval_const_integer(s))
+                                                    .unwrap_or(1);
+                                                if step_val != 0 {
+                                                    let size = ((end_val - start_val) / step_val
+                                                        + 1)
+                                                    .max(0)
+                                                        as usize;
+                                                    preserved_dims.push(size);
+                                                } else {
+                                                    // Invalid step, fall back to original dimension
+                                                    preserved_dims.push(sym.shape[dim_idx]);
+                                                }
+                                            } else {
+                                                // Can't evaluate statically, fall back to original dimension
+                                                preserved_dims.push(sym.shape[dim_idx]);
+                                            }
+                                        }
+                                        // Integer subscript strips this dimension - don't add to preserved_dims
+                                    }
+                                    crate::ir::ast::Subscript::Empty => {
+                                        // Empty subscript strips dimension
+                                    }
                                 }
                             }
+                            // Any remaining dimensions (if fewer subscripts than dimensions) are preserved
+                            for dim_idx in subs.len()..sym.shape.len() {
+                                preserved_dims.push(sym.shape[dim_idx]);
+                            }
+                        } else {
+                            // No subscripts - preserve all dimensions
+                            preserved_dims = sym.shape.clone();
+                        }
+
+                        // Build result type with preserved dimensions
+                        let mut result = base;
+                        for &dim in preserved_dims.iter().rev() {
+                            result = SymbolType::Array(Box::new(result), Some(dim));
                         }
                         result
                     }

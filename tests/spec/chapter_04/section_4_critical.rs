@@ -625,7 +625,6 @@ mod function_restrictions {
 
     /// MLS: "A function shall not have when-clauses in algorithms"
     #[test]
-    #[ignore = "Function when-clause restriction not yet enforced"]
     fn mls_4_6_function_with_when_in_algorithm() {
         expect_failure(
             r#"

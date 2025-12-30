@@ -138,7 +138,6 @@ mod array_slicing {
 
     /// MLS: "Colon selects entire dimension"
     #[test]
-    #[ignore = "Array slicing with colon not yet fully supported"]
     fn mls_10_3_colon_slice() {
         expect_success(
             r#"
@@ -154,7 +153,6 @@ mod array_slicing {
 
     /// MLS: "Range slice selects subset"
     #[test]
-    #[ignore = "Array slicing with range not yet fully supported"]
     fn mls_10_3_range_slice() {
         expect_success(
             r#"
@@ -170,7 +168,6 @@ mod array_slicing {
 
     /// MLS: "Column extraction"
     #[test]
-    #[ignore = "Array column extraction not yet fully supported"]
     fn mls_10_3_column_slice() {
         expect_success(
             r#"
@@ -186,7 +183,6 @@ mod array_slicing {
 
     /// MLS: "Submatrix extraction"
     #[test]
-    #[ignore = "Submatrix extraction not yet fully supported"]
     fn mls_10_3_submatrix_slice() {
         expect_success(
             r#"
