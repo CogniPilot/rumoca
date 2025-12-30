@@ -594,7 +594,7 @@ mod record_expressions {
 
     /// MLS: Record comparison
     #[test]
-    #[ignore = "Record equality comparison not yet implemented"]
+
     fn mls_6_5_record_comparison() {
         expect_success(
             r#"

@@ -330,7 +330,7 @@ mod redeclaration_restrictions {
 
     /// MLS: "A constant element shall not be redeclared"
     #[test]
-    #[ignore = "Constant redeclaration restriction not yet enforced"]
+
     fn error_redeclare_constant() {
         expect_failure(
             r#"

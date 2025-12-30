@@ -46,7 +46,7 @@ pub use class_dict::{
 };
 use class_dict::{get_or_build_class_dict, lookup_class};
 use connections::expand_connect_equations;
-use expansion::ExpansionContext;
+use expansion::{ExpansionContext, evaluate_if_equations};
 use hash::{
     FILE_HASH_CACHE, build_dependency_graph, compute_def_hash, compute_dependency_levels,
     record_file_dep,
@@ -64,7 +64,7 @@ use crate::ir::analysis::symbol_table::SymbolTable;
 use crate::ir::ast::{Expression, Import, OpBinary};
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::is_primitive_type;
-use crate::ir::visitor::MutVisitor;
+use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 #[cfg(not(target_arch = "wasm32"))]
@@ -155,6 +155,9 @@ struct ScopeRenamer<'a> {
     scope_prefix: String,
     /// Additional global symbols specific to this component (e.g., imported packages)
     component_globals: std::collections::HashSet<String>,
+    /// Stack of for-loop iteration variables that should not be renamed.
+    /// Each entry is a set of variable names for one level of nested array comprehensions.
+    for_loop_vars: Vec<std::collections::HashSet<String>>,
 }
 
 impl<'a> ScopeRenamer<'a> {
@@ -170,27 +173,92 @@ impl<'a> ScopeRenamer<'a> {
             symbol_table,
             scope_prefix: scope_prefix.to_string(),
             component_globals: collect_imported_packages_for_class(class_path, class_dict),
+            for_loop_vars: Vec::new(),
         }
     }
 
     fn is_global(&self, name: &str) -> bool {
         self.symbol_table.is_global(name) || self.component_globals.contains(name)
     }
+
+    fn is_for_loop_var(&self, name: &str) -> bool {
+        self.for_loop_vars.iter().any(|set| set.contains(name))
+    }
 }
 
 impl MutVisitor for ScopeRenamer<'_> {
+    fn enter_expression(&mut self, node: &mut ir::ast::Expression) {
+        // When entering an array comprehension, register the iteration variables
+        // BEFORE the inner expression is processed. This ensures that references
+        // like `k` in `{u[k] for k in 1:n}` are not renamed to `comp.k`.
+        if let ir::ast::Expression::ArrayComprehension { indices, .. } = node {
+            let mut vars = std::collections::HashSet::new();
+            for idx in indices.iter() {
+                vars.insert(idx.ident.text.clone());
+            }
+            self.for_loop_vars.push(vars);
+        }
+    }
+
+    fn exit_expression(&mut self, node: &mut ir::ast::Expression) {
+        // Pop the for-loop variables when exiting the array comprehension
+        if matches!(node, ir::ast::Expression::ArrayComprehension { .. }) {
+            self.for_loop_vars.pop();
+        }
+    }
+
+    fn enter_equation(&mut self, node: &mut ir::ast::Equation) {
+        // When entering a for-loop equation, register the iteration variables
+        // BEFORE the nested equations are processed.
+        if let ir::ast::Equation::For { indices, .. } = node {
+            let mut vars = std::collections::HashSet::new();
+            for idx in indices.iter() {
+                vars.insert(idx.ident.text.clone());
+            }
+            self.for_loop_vars.push(vars);
+        }
+    }
+
+    fn exit_equation(&mut self, node: &mut ir::ast::Equation) {
+        // Pop the for-loop variables when exiting the for-loop equation
+        if matches!(node, ir::ast::Equation::For { .. }) {
+            self.for_loop_vars.pop();
+        }
+    }
+
+    fn enter_statement(&mut self, node: &mut ir::ast::Statement) {
+        // When entering a for-loop statement, register the iteration variables
+        // BEFORE the nested statements are processed.
+        if let ir::ast::Statement::For { indices, .. } = node {
+            let mut vars = std::collections::HashSet::new();
+            for idx in indices.iter() {
+                vars.insert(idx.ident.text.clone());
+            }
+            self.for_loop_vars.push(vars);
+        }
+    }
+
+    fn exit_statement(&mut self, node: &mut ir::ast::Statement) {
+        // Pop the for-loop variables when exiting the for-loop statement
+        if matches!(node, ir::ast::Statement::For { .. }) {
+            self.for_loop_vars.pop();
+        }
+    }
+
     fn exit_component_reference(&mut self, node: &mut ir::ast::ComponentReference) {
         // Check if the first part of the reference is a global symbol.
         // For a reference like "Modelica.Constants.pi", we should check if "Modelica" is global,
         // not the full "Modelica.Constants.pi" string.
-        let first_part_is_global = node
-            .parts
-            .first()
-            .map(|p| self.is_global(&p.ident.text))
-            .unwrap_or(false);
+        let first_part = node.parts.first().map(|p| p.ident.text.as_str());
 
-        // Only prepend scope if the first part is not a global symbol
-        if !first_part_is_global {
+        let first_part_is_global = first_part.map(|p| self.is_global(p)).unwrap_or(false);
+
+        // Also check if this is a for-loop iteration variable
+        let first_part_is_for_loop_var =
+            first_part.map(|p| self.is_for_loop_var(p)).unwrap_or(false);
+
+        // Only prepend scope if the first part is not a global symbol and not a for-loop variable
+        if !first_part_is_global && !first_part_is_for_loop_var {
             node.parts.insert(
                 0,
                 ir::ast::ComponentRefPart {
@@ -415,9 +483,68 @@ fn resolve_class_internal(
             parent_import_aliases.insert(pkg_name.clone(), resolved_new_type);
         }
 
-        // Add parent's components (insert at the beginning to maintain proper order)
+        // First pass: Add parameter/constant components with modifications applied.
+        // This ensures that when we check conditions in the second pass, we have access to
+        // the modified parameter values (e.g., use_fder=false from extends clause).
+        for (comp_name, comp) in resolved_parent.components.iter().rev() {
+            if !resolved.components.contains_key(comp_name)
+                && matches!(
+                    comp.variability,
+                    ir::ast::Variability::Parameter(_) | ir::ast::Variability::Constant(_)
+                )
+            {
+                let mut modified_comp = comp.clone();
+
+                // Resolve the component's type name using parent class's import aliases
+                // This is critical for types like `parameter L y0` where L is an import alias
+                // defined in the parent class (e.g., import L = Pkg.Types.Logic)
+                let type_name = comp.type_name.to_string();
+                if !is_primitive_type(&type_name)
+                    && let Some(fq_name) = resolve_class_name_with_imports(
+                        &type_name,
+                        &resolved_name,
+                        class_dict,
+                        &parent_import_aliases,
+                    )
+                {
+                    modified_comp.type_name = ir::ast::Name {
+                        name: fq_name
+                            .split('.')
+                            .map(|s| ir::ast::Token {
+                                text: s.to_string(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    };
+                }
+
+                // Apply extends modifications to inherited components
+                if let Some(mod_value) = extends_mods.get(comp_name) {
+                    modified_comp.start = mod_value.clone();
+                    modified_comp.start_is_modification = true;
+                }
+
+                resolved.components.insert(comp_name.clone(), modified_comp);
+                resolved
+                    .components
+                    .move_index(resolved.components.len() - 1, 0);
+            }
+        }
+
+        // Second pass: Add non-parameter components, checking conditions against the
+        // now-available parameter values.
         for (comp_name, comp) in resolved_parent.components.iter().rev() {
             if !resolved.components.contains_key(comp_name) {
+                // Check conditional component: skip if condition evaluates to false.
+                // For example: `RealOutput fder if use_fder` - if use_fder=false, skip.
+                if let Some(ref condition) = comp.condition {
+                    use crate::ir::transform::eval::eval_boolean;
+                    if let Some(false) = eval_boolean(condition, &resolved.components) {
+                        // Condition is false - skip this conditional component
+                        continue;
+                    }
+                }
+
                 let mut modified_comp = comp.clone();
 
                 // Check if there's a type redeclaration for this component
@@ -793,8 +920,27 @@ fn flatten_with_class_dict(
         deps.record(&file, &hash);
     }
 
+    // Resolve import aliases in all expressions (equations, component bindings, etc.)
+    // This handles patterns like `L.'0'` where L is an import alias for Logic enum.
+    // Done after ctx is finished so we can borrow fclass mutably again.
+    let import_aliases = imports::build_import_aliases_for_class(&main_class_name, class_dict);
+    if !import_aliases.is_empty() {
+        let mut alias_resolver = imports::ImportAliasResolver::new(&import_aliases);
+        fclass.accept_mut(&mut alias_resolver);
+    }
+
     // Expand connect equations into simple equations
     expand_connect_equations(&mut fclass, class_dict, &pin_types)?;
+
+    // Evaluate if-equations with parameter conditions.
+    // Per MLS §8, if-equations with parameter expression conditions can have different
+    // equation counts in each branch. We evaluate these at flatten time using default
+    // parameter values to select the appropriate branch.
+    let equations = std::mem::take(&mut fclass.equations);
+    fclass.equations = evaluate_if_equations(equations, &fclass.components);
+
+    let initial_equations = std::mem::take(&mut fclass.initial_equations);
+    fclass.initial_equations = evaluate_if_equations(initial_equations, &fclass.components);
 
     Ok(FlattenResult {
         class: fclass,

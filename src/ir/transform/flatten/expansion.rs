@@ -7,6 +7,7 @@ use crate::ir;
 use crate::ir::ast::{ComponentRefPart, Expression, Token};
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::is_primitive_type;
+use crate::ir::transform::eval::eval_boolean;
 use crate::ir::transform::sub_comp_namer::SubCompNamer;
 use crate::ir::visitor::{MutVisitable, MutVisitor};
 use anyhow::Result;
@@ -17,8 +18,9 @@ use super::helpers::{
     is_operator_record_type, is_simple_literal, make_binding_eq, try_evaluate_modification,
 };
 use super::imports::{
-    build_import_aliases_for_class, extract_package_modifications_from_component,
-    find_type_in_extends_chain, resolve_class_name_with_imports,
+    ImportAliasResolver, build_import_aliases_for_class,
+    extract_package_modifications_from_component, find_type_in_extends_chain,
+    resolve_class_name_with_imports,
 };
 use super::validation::check_nested_component_subscripts;
 use super::{ClassDict, ScopeRenamer, SymbolTable, resolve_class};
@@ -182,7 +184,21 @@ impl<'a> ExpansionContext<'a> {
         };
 
         // Check that we're not instantiating a partial class (MLS §4.5)
-        if comp_class_raw.partial {
+        // Exception: Allow partial classes that are clearly meant to be replaceable type defaults.
+        // In MSL, types like `PartialMedium.BaseProperties` are partial because they're defaults
+        // for replaceable packages (e.g., `replaceable package Medium = PartialMedium`).
+        // When compiling models standalone (without redeclaring Medium), we still want to
+        // check equation balance, so we allow these "interface" partial types.
+        // Heuristic to detect MSL-style replaceable type defaults:
+        // - Must be from Modelica.* namespace (MSL pattern)
+        // - Contains ".Partial" as a package segment (not just "Partial" anywhere)
+        // - Or is from an Interfaces/Icons package
+        let is_msl_type = resolved_type_name.starts_with("Modelica.");
+        let is_replaceable_default = is_msl_type
+            && (resolved_type_name.contains(".Partial")
+                || resolved_type_name.contains(".Interfaces.")
+                || resolved_type_name.contains(".Icons."));
+        if comp_class_raw.partial && !is_replaceable_default {
             return Err(anyhow::anyhow!(
                 "Cannot instantiate partial class '{}' as component '{}' at line {}",
                 resolved_type_name,
@@ -222,8 +238,16 @@ impl<'a> ExpansionContext<'a> {
                 &resolved_type_name,
                 self.class_dict,
             );
+            // Build import aliases for the component's class
+            let comp_import_aliases =
+                build_import_aliases_for_class(&resolved_type_name, self.class_dict);
+            let has_aliases = !comp_import_aliases.is_empty();
+
             for eq in &comp_class.equations {
                 let mut feq = eq.clone();
+                if has_aliases {
+                    feq.accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
+                }
                 feq.accept_mut(&mut renamer);
                 self.fclass.equations.push(feq);
             }
@@ -232,6 +256,9 @@ impl<'a> ExpansionContext<'a> {
                 let mut scoped_section = Vec::new();
                 for stmt in algo_section {
                     let mut fstmt = stmt.clone();
+                    if has_aliases {
+                        fstmt.accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
+                    }
                     fstmt.accept_mut(&mut renamer);
                     scoped_section.push(fstmt);
                 }
@@ -249,9 +276,19 @@ impl<'a> ExpansionContext<'a> {
             self.class_dict,
         );
 
+        // Build import aliases for the component's class to resolve references like L.'0'
+        // where L is an import alias defined in the component's class
+        let comp_import_aliases =
+            build_import_aliases_for_class(&resolved_type_name, self.class_dict);
+        let has_aliases = !comp_import_aliases.is_empty();
+
         // Add equations from component class, with scoped variable references
         for eq in &comp_class.equations {
             let mut feq = eq.clone();
+            // First resolve import aliases, then apply scope renaming
+            if has_aliases {
+                feq.accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
+            }
             feq.accept_mut(&mut renamer);
             self.fclass.equations.push(feq);
         }
@@ -261,6 +298,10 @@ impl<'a> ExpansionContext<'a> {
             let mut scoped_section = Vec::new();
             for stmt in algo_section {
                 let mut fstmt = stmt.clone();
+                // First resolve import aliases, then apply scope renaming
+                if has_aliases {
+                    fstmt.accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
+                }
                 fstmt.accept_mut(&mut renamer);
                 scoped_section.push(fstmt);
             }
@@ -389,6 +430,21 @@ impl<'a> ExpansionContext<'a> {
                 }
                 // No matching inner found - could be an error or external dependency
                 // For now, create the component anyway
+            }
+
+            // Handle conditional components: skip if condition evaluates to false.
+            // For example: `RealOutput fder if use_fder` - if use_fder=false, skip this component.
+            // Note: Most conditional filtering happens during class resolution (in resolve_class_internal),
+            // but this check catches cases where conditions involve dynamically inherited parameters.
+            if let Some(ref condition) = subcomp.condition {
+                // Try evaluating against the class being expanded (comp_class.components)
+                if let Some(false) = eval_boolean(condition, &comp_class.components) {
+                    continue;
+                }
+                // Also try against the flattened class components (for inherited parameters)
+                if let Some(false) = eval_boolean(condition, &self.fclass.components) {
+                    continue;
+                }
             }
 
             let mut scomp = subcomp.clone();
@@ -547,13 +603,22 @@ impl<'a> ExpansionContext<'a> {
                 }
             }
 
-            // Apply scope renaming to the component's start expression
-            // This prefixes internal references like `x_start` to `comp.x_start`
+            // Apply import alias resolution and scope renaming to the component's start expression
+            // First resolve import aliases like `L.'0'` to `Modelica.Electrical.Digital.Interfaces.Logic.'0'`
+            // Then prefix internal references like `x_start` to `comp.x_start`
+            if has_aliases {
+                scomp
+                    .start
+                    .accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
+            }
             scomp.start.accept_mut(&mut renamer);
 
-            // Apply scope renaming to the component's modifications
+            // Apply import alias resolution and scope renaming to the component's modifications
             // This prefixes internal references like `unitTime/Ti` to `comp.unitTime/comp.Ti`
             for mod_expr in scomp.modifications.values_mut() {
+                if has_aliases {
+                    mod_expr.accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
+                }
                 mod_expr.accept_mut(&mut renamer);
             }
 
@@ -577,12 +642,11 @@ impl<'a> ExpansionContext<'a> {
             // For parameters with non-simple start expressions (binding equations like
             // `zeroGain = abs(k) < eps`), generate an initial equation if no parent
             // modification was applied. The start expression has already been scope-renamed.
+            // Note: Only do this for Parameters, not Constants. Constants must retain their
+            // binding in `start` for validation (MLS §4.4: constants must have declaration equations).
             let has_parent_mod = comp.modifications.contains_key(subcomp_name);
             if !has_parent_mod
-                && matches!(
-                    scomp.variability,
-                    ir::ast::Variability::Parameter(_) | ir::ast::Variability::Constant(_)
-                )
+                && matches!(scomp.variability, ir::ast::Variability::Parameter(_))
                 && !is_simple_literal(&scomp.start)
                 && !matches!(scomp.start, Expression::Empty)
             {
@@ -644,4 +708,116 @@ impl<'a> ExpansionContext<'a> {
 
         Ok(())
     }
+}
+
+// =============================================================================
+// If-Equation Evaluation
+// =============================================================================
+
+/// Evaluate if-equations with parameter conditions.
+///
+/// Per MLS §8, if-equations with parameter expression conditions can have different
+/// equation counts in each branch because they're evaluated at initialization time.
+/// This function evaluates such if-equations and returns only the selected branch.
+///
+/// # Arguments
+/// * `equations` - The equations to process
+/// * `components` - Component map for evaluating conditions
+///
+/// # Returns
+/// A new vector of equations with if-equations evaluated where possible.
+pub fn evaluate_if_equations(
+    equations: Vec<ir::ast::Equation>,
+    components: &IndexMap<String, ir::ast::Component>,
+) -> Vec<ir::ast::Equation> {
+    let mut result = Vec::new();
+
+    for eq in equations {
+        match eq {
+            ir::ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                // Try to evaluate the if-equation
+                if let Some(selected_eqs) =
+                    evaluate_single_if_equation(&cond_blocks, &else_block, components)
+                {
+                    // Recursively evaluate any nested if-equations in the selected branch
+                    let processed = evaluate_if_equations(selected_eqs, components);
+                    result.extend(processed);
+                } else {
+                    // Can't evaluate - keep the if-equation but recursively process nested equations
+                    let processed_cond_blocks: Vec<ir::ast::EquationBlock> = cond_blocks
+                        .into_iter()
+                        .map(|block| ir::ast::EquationBlock {
+                            cond: block.cond,
+                            eqs: evaluate_if_equations(block.eqs, components),
+                        })
+                        .collect();
+                    let processed_else =
+                        else_block.map(|eqs| evaluate_if_equations(eqs, components));
+                    result.push(ir::ast::Equation::If {
+                        cond_blocks: processed_cond_blocks,
+                        else_block: processed_else,
+                    });
+                }
+            }
+            ir::ast::Equation::For { indices, equations } => {
+                // Recursively process equations inside for-loops
+                result.push(ir::ast::Equation::For {
+                    indices,
+                    equations: evaluate_if_equations(equations, components),
+                });
+            }
+            ir::ast::Equation::When(blocks) => {
+                // Recursively process equations inside when blocks
+                let processed_blocks: Vec<ir::ast::EquationBlock> = blocks
+                    .into_iter()
+                    .map(|block| ir::ast::EquationBlock {
+                        cond: block.cond,
+                        eqs: evaluate_if_equations(block.eqs, components),
+                    })
+                    .collect();
+                result.push(ir::ast::Equation::When(processed_blocks));
+            }
+            other => result.push(other),
+        }
+    }
+
+    result
+}
+
+/// Evaluate a single if-equation and return the selected branch's equations.
+///
+/// Returns `Some(equations)` if a branch was definitively selected (condition evaluated
+/// to true or all conditions evaluated to false), `None` if we can't determine the branch.
+///
+/// When we can't evaluate, we keep the if-equation as-is. The balance checker will
+/// use `count_equations` which handles if-equations by checking branch equality.
+fn evaluate_single_if_equation(
+    cond_blocks: &[ir::ast::EquationBlock],
+    else_block: &Option<Vec<ir::ast::Equation>>,
+    components: &IndexMap<String, ir::ast::Component>,
+) -> Option<Vec<ir::ast::Equation>> {
+    // Try each condition in order
+    for block in cond_blocks {
+        match eval_boolean(&block.cond, components) {
+            Some(true) => {
+                // This condition is true - return this block's equations
+                return Some(block.eqs.clone());
+            }
+            Some(false) => {
+                // This condition is false - continue to next condition
+                continue;
+            }
+            None => {
+                // Can't evaluate this condition at compile time.
+                // Keep the if-equation as-is - balance counting will handle it.
+                return None;
+            }
+        }
+    }
+
+    // All conditions were false - return else block (or empty if no else)
+    Some(else_block.clone().unwrap_or_default())
 }

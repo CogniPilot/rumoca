@@ -462,7 +462,7 @@ mod flattening_errors {
 
     /// Circular inheritance
     #[test]
-    #[ignore = "Circular inheritance detection not yet implemented"]
+
     fn error_circular_inheritance() {
         expect_failure(
             r#"

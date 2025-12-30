@@ -122,7 +122,6 @@ mod array_slicing {
 
     /// Range indexing
     #[test]
-    #[ignore = "Range indexing not yet supported"]
     fn mls_10_5_range_slice() {
         expect_success(
             r#"
@@ -138,7 +137,6 @@ mod array_slicing {
 
     /// Colon for all elements
     #[test]
-    #[ignore = "Colon indexing not yet supported"]
     fn mls_10_5_colon_all() {
         expect_success(
             r#"
@@ -154,7 +152,6 @@ mod array_slicing {
 
     /// Row extraction with colon
     #[test]
-    #[ignore = "Row extraction with colon not yet supported"]
     fn mls_10_5_row_extraction() {
         expect_success(
             r#"
@@ -170,7 +167,6 @@ mod array_slicing {
 
     /// Column extraction with colon
     #[test]
-    #[ignore = "Column extraction with colon not yet supported"]
     fn mls_10_5_column_extraction() {
         expect_success(
             r#"
@@ -186,7 +182,6 @@ mod array_slicing {
 
     /// Submatrix extraction
     #[test]
-    #[ignore = "Submatrix extraction not yet supported"]
     fn mls_10_5_submatrix() {
         expect_success(
             r#"
@@ -202,7 +197,6 @@ mod array_slicing {
 
     /// Range with step
     #[test]
-    #[ignore = "Range with step indexing not yet supported"]
     fn mls_10_5_range_with_step() {
         expect_success(
             r#"
