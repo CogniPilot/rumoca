@@ -215,9 +215,8 @@ mod section_10_5_indexing {
         );
     }
 
-    /// TODO: Array slicing with range indices not yet fully supported
+    /// Array slicing with range indices
     #[test]
-    #[ignore = "Array slicing with range indices not yet fully supported"]
     fn mls_10_5_range_index() {
         expect_success(
             r#"
@@ -231,9 +230,8 @@ mod section_10_5_indexing {
         );
     }
 
-    /// TODO: Array slicing with colon not yet fully supported
+    /// Array slicing with colon
     #[test]
-    #[ignore = "Array slicing with colon not yet fully supported"]
     fn mls_10_5_colon_index() {
         expect_success(
             r#"
@@ -247,9 +245,8 @@ mod section_10_5_indexing {
         );
     }
 
-    /// TODO: Array slicing for row/column extraction not yet fully supported
+    /// Array slicing for row extraction
     #[test]
-    #[ignore = "Array slicing for row/column extraction not yet fully supported"]
     fn mls_10_5_row_extraction() {
         expect_success(
             r#"
@@ -263,9 +260,8 @@ mod section_10_5_indexing {
         );
     }
 
-    /// TODO: Array slicing for row/column extraction not yet fully supported
+    /// Array slicing for column extraction
     #[test]
-    #[ignore = "Array slicing for row/column extraction not yet fully supported"]
     fn mls_10_5_column_extraction() {
         expect_success(
             r#"

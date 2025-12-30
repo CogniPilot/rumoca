@@ -729,7 +729,7 @@ mod error_critical {
 
     /// Critical: Detect circular type definition
     #[test]
-    #[ignore = "Circular type detection not implemented"]
+
     fn error_circular_type() {
         expect_failure(
             r#"

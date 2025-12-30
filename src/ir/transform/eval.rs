@@ -309,9 +309,11 @@ pub fn eval_boolean_with_config(
         } => Some(token.text == "true"),
 
         Expression::ComponentReference(comp_ref) => {
-            if comp_ref.parts.len() == 1 && comp_ref.parts[0].subs.is_none() {
-                let name = &comp_ref.parts[0].ident.text;
-                if let Some(comp) = components.get(name) {
+            // Handle both simple names and dotted names (e.g., "I.use_reset")
+            if comp_ref.parts.iter().all(|p| p.subs.is_none()) {
+                let name = build_component_name(comp_ref);
+
+                if let Some(comp) = components.get(&name) {
                     // Evaluate if it's a parameter or has a boolean start value
                     let should_eval = !config.parameters_only
                         || matches!(comp.variability, Variability::Parameter(_))
@@ -342,14 +344,32 @@ pub fn eval_boolean_with_config(
         Expression::Binary { op, lhs, rhs } => {
             match op {
                 OpBinary::And(_) => {
-                    let l = eval_boolean_with_config(lhs, components, config)?;
-                    let r = eval_boolean_with_config(rhs, components, config)?;
-                    Some(l && r)
+                    // Short-circuit: if left is false, result is false regardless of right
+                    match eval_boolean_with_config(lhs, components, config) {
+                        Some(false) => Some(false),
+                        Some(true) => eval_boolean_with_config(rhs, components, config),
+                        None => {
+                            // Left can't be evaluated, try right - if it's false, result is false
+                            if let Some(false) = eval_boolean_with_config(rhs, components, config) {
+                                return Some(false);
+                            }
+                            None
+                        }
+                    }
                 }
                 OpBinary::Or(_) => {
-                    let l = eval_boolean_with_config(lhs, components, config)?;
-                    let r = eval_boolean_with_config(rhs, components, config)?;
-                    Some(l || r)
+                    // Short-circuit: if left is true, result is true regardless of right
+                    match eval_boolean_with_config(lhs, components, config) {
+                        Some(true) => Some(true),
+                        Some(false) => eval_boolean_with_config(rhs, components, config),
+                        None => {
+                            // Left can't be evaluated, try right - if it's true, result is true
+                            if let Some(true) = eval_boolean_with_config(rhs, components, config) {
+                                return Some(true);
+                            }
+                            None
+                        }
+                    }
                 }
                 // Comparison operators
                 OpBinary::Eq(_) => {
@@ -407,6 +427,8 @@ pub fn eval_boolean_with_config(
                 _ => None,
             }
         }
+
+        Expression::Parenthesized { inner } => eval_boolean_with_config(inner, components, config),
 
         _ => None,
     }

@@ -685,7 +685,7 @@ mod when_statement_restrictions {
 
     /// MLS: "When-statement cannot be nested"
     #[test]
-    #[ignore = "Nested when-statement restriction not yet enforced"]
+
     fn error_nested_when() {
         expect_failure(
             r#"

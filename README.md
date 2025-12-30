@@ -104,9 +104,9 @@ Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.co
 |--------|-------|------------|-------------|
 | **Parsed** | 2551/2551 | 100% | All .mo files parse successfully |
 | **Compiled** | 2283/2283 | 100% | All models compile to DAE ✅ |
-| **Balanced** | 791 | 34.6% | Fully determined (equations = unknowns) |
-| **Partial** | 1280 | 56.1% | Under-determined by design (external connectors) |
-| **Unbalanced** | 212 | 9.3% | Needs further work |
+| **Balanced** | 843 | 36.9% | Fully determined (equations = unknowns) |
+| **Partial** | 1275 | 55.9% | Under-determined by design (external connectors) |
+| **Unbalanced** | 165 | 7.2% | Needs further work |
 
 *Partial models have external connector flow variables that receive equations when connected in a larger system.*
 
@@ -176,7 +176,7 @@ rm -rf ~/.cache/rumoca/ast ~/.cache/rumoca/dae
 - Deep inheritance chain type lookup
 - ModelicaServices stubs
 
-**Known Limitations** (212 unbalanced models):
+**Known Limitations** (165 unbalanced models):
 
 | Category | Notes |
 |----------|-------|

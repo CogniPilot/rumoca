@@ -331,7 +331,6 @@ mod type_restrictions {
 
     /// MLS: "Cannot compare Boolean with <, >, etc"
     #[test]
-    #[ignore = "Boolean ordering restriction not yet enforced"]
     fn error_boolean_ordering() {
         expect_failure(
             r#"
@@ -348,7 +347,6 @@ mod type_restrictions {
 
     /// MLS: "Cannot use 'and' with Real"
     #[test]
-    #[ignore = "Logical operator type restriction not yet enforced"]
     fn error_and_with_real() {
         expect_failure(
             r#"
@@ -437,7 +435,6 @@ mod if_expression_restrictions {
 
     /// MLS: "Both branches must have same type"
     #[test]
-    #[ignore = "If-expression branch type checking not yet enforced"]
     fn error_if_mismatched_types() {
         expect_failure(
             r#"

@@ -601,7 +601,6 @@ mod partial_inheritance {
 
     /// Critical: Cannot instantiate partial
     #[test]
-    #[ignore = "Partial instantiation check not yet implemented"]
     fn mls_7_1_instantiate_partial() {
         expect_failure(
             r#"
