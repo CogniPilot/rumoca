@@ -100,15 +100,13 @@ fn main() -> anyhow::Result<()> {
 
 Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.com/modelica/ModelicaStandardLibrary).
 
-| Status | Count | Percentage | Description |
-|--------|-------|------------|-------------|
-| **Parsed** | 2551/2551 | 100% | All .mo files parse successfully |
-| **Compiled** | 2283/2283 | 100% | All models compile to DAE ✅ |
-| **Balanced** | 843 | 36.9% | Fully determined (equations = unknowns) |
-| **Partial** | 1275 | 55.9% | Under-determined by design (external connectors) |
-| **Unbalanced** | 165 | 7.2% | Needs further work |
+| Metric | Value | Description |
+|--------|-------|-------------|
+| **Parse Rate** | 100% (2551/2551) | All .mo files parse successfully |
+| **Compile Rate** | 100% (2283/2283) | All models compile to DAE |
+| **Balance Rate** | 93.0% (847 balanced, 1275 partial, 161 unbalanced) | 100% − (unbalanced / total) |
 
-*Partial models have external connector flow variables that receive equations when connected in a larger system.*
+*Partial models are under-determined by design—they have external connectors whose flow variables receive equations when connected in a larger system.*
 
 **Benchmark** (AMD Ryzen 9 7950X, 16 cores):
 
@@ -139,33 +137,33 @@ rm -rf ~/.cache/rumoca/ast ~/.cache/rumoca/dae
 | Category | Supported |
 |----------|-----------|
 | Classes | `model`, `class`, `block`, `connector`, `record`, `type`, `package`, `function` |
-| Equations | Simple, connect (flow/potential), if, for, when |
+| Equations | Simple, connect (flow/potential), if, for, when, algorithm sections |
 | Expressions | Binary/unary ops, function calls, if-expressions, arrays |
 | Type prefixes | `flow`, `discrete`, `parameter`, `constant`, `input`, `output` |
 | Packages | Nested packages, `package.mo`/`package.order`, MODELICAPATH |
 | Imports | Qualified, renamed, unqualified (`.*`), selective (`{a,b}`) |
-| Functions | Single/multi-output, tuple equations `(a,b) = func()` |
-| Built-ins | `der`, `pre`, `reinit`, `time`, trig, array functions |
+| Functions | Single/multi-output, tuple equations `(a,b) = func()`, function inlining |
+| Built-ins | `der`, `pre`, `reinit`, `time`, trig, array functions, transpose, etc. |
 | Events | `noEvent`, `smooth`, `sample`, `edge`, `change`, `initial`, `terminal` |
+| Clocked | `previous`, `hold`, `interval`, `sample`, `shiftSample`, `Clock`, etc. |
+| Stream | `inStream`, `actualStream` operators recognized |
 
 **Partial Support:**
 
 | Feature | Status |
 |---------|--------|
-| Algorithm sections | Parsed; assignments not yet counted in balance check |
-| Connect equations | Flow/potential semantics; `stream` not supported |
+| Stream connectors | Operators recognized; balance semantics in progress |
 | External functions | `external` recognized; no linking |
 | Inner/outer | Basic resolution; nested scopes in progress |
-| Complex type | Record expansion; operator overloading in progress |
+| Operator records | Record expansion works; operator overloading in progress |
+| Clocked partitions | Operators work; discrete partition balance semantics in progress |
 
 **Not Yet Implemented:**
 
 | Feature | Notes |
 |---------|-------|
-| Stream connectors | `inStream`, `actualStream` operators |
 | Redeclarations | `redeclare`, `replaceable` parsed only |
 | Overloaded operators | `operator` class prefix recognized only |
-| State machines | Synchronous language elements (Ch. 17) |
 | Expandable connectors | Dynamic connector sizing |
 | Overconstrained connectors | `Connections.root`, `branch`, etc. |
 
@@ -176,14 +174,14 @@ rm -rf ~/.cache/rumoca/ast ~/.cache/rumoca/dae
 - Deep inheritance chain type lookup
 - ModelicaServices stubs
 
-**Known Limitations** (165 unbalanced models):
+**Known Limitations** (161 unbalanced models):
 
 | Category | Notes |
 |----------|-------|
-| Algorithm sections | Assignments not yet counted as equations |
-| Stream connectors | `inStream`/`actualStream` not implemented |
+| Stream connectors | Balance semantics for stream variables |
 | External functions | Functions without equation bodies |
-| Operator records | Operator overloading not implemented |
+| Operator records | Operator overloading not yet implemented |
+| Clocked partitions | Discrete partition equation counting |
 
 </details>
 

@@ -52,7 +52,6 @@ mod array_indexing {
 
     /// 3D array indexing
     #[test]
-    #[ignore = "3D array literal assignment not yet supported"]
     fn mls_10_5_3d_indexing() {
         expect_success(
             r#"
@@ -101,7 +100,6 @@ mod array_indexing {
 
     /// MLS: "Index must be Integer"
     #[test]
-    #[ignore = "Array index type checking not yet implemented"]
     fn error_non_integer_index() {
         expect_failure(
             r#"
@@ -238,7 +236,6 @@ mod matrix_operations {
 
     /// Matrix-matrix multiplication
     #[test]
-    #[ignore = "Matrix multiplication not yet supported"]
     fn mls_10_6_matrix_multiply() {
         expect_success(
             r#"
@@ -358,7 +355,6 @@ mod advanced_array_functions {
 
     /// transpose function
     #[test]
-    #[ignore = "transpose function not yet supported"]
     fn mls_10_3_transpose() {
         expect_success(
             r#"
@@ -554,7 +550,6 @@ mod size_dimension_functions {
 
     /// size with dimension argument
     #[test]
-    #[ignore = "2D fill function in equation not yet supported"]
     fn mls_10_3_size_dim() {
         expect_success(
             r#"
@@ -572,7 +567,6 @@ mod size_dimension_functions {
 
     /// ndims function
     #[test]
-    #[ignore = "3D fill function not yet supported"]
     fn mls_10_3_ndims() {
         expect_success(
             r#"
@@ -691,7 +685,6 @@ mod dimension_errors {
 
     /// Mismatched dimensions in addition
     #[test]
-    #[ignore = "Array dimension mismatch in operations not yet detected"]
     fn error_dimension_mismatch_add() {
         expect_failure(
             r#"
@@ -708,7 +701,6 @@ mod dimension_errors {
 
     /// Mismatched dimensions in assignment
     #[test]
-    #[ignore = "Array dimension mismatch in assignment not yet detected"]
     fn error_dimension_mismatch_assign() {
         expect_failure(
             r#"

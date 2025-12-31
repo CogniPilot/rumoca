@@ -453,7 +453,6 @@ mod connector_errors {
 
     /// Error: Array dimension mismatch in connection
     #[test]
-    #[ignore = "Array dimension validation in connections not yet implemented"]
     fn error_array_dimension_mismatch() {
         expect_failure(
             r#"

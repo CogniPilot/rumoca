@@ -338,7 +338,6 @@ mod dimension_compatibility {
 
     /// MLS: "Array addition requires same dimensions"
     #[test]
-    #[ignore = "Array operation dimension check not yet implemented"]
     fn mls_10_1_dimension_mismatch_add() {
         expect_failure(
             r#"
@@ -414,7 +413,6 @@ mod array_constructors {
 
     /// MLS: "Array elements must have same type"
     #[test]
-    #[ignore = "Array element type checking not yet implemented"]
     fn mls_10_4_mixed_types() {
         expect_failure(
             r#"
@@ -429,7 +427,6 @@ mod array_constructors {
 
     /// MLS: "Nested arrays must have consistent dimensions"
     #[test]
-    #[ignore = "Nested array dimension checking not yet implemented"]
     fn mls_10_4_inconsistent_nested() {
         expect_failure(
             r#"

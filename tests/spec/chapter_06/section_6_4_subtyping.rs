@@ -260,7 +260,6 @@ mod array_subtyping {
 
     /// 2D array compatibility
     #[test]
-    #[ignore = "2D array literal equation not yet supported"]
     fn mls_6_4_2d_array_compatible() {
         expect_success(
             r#"

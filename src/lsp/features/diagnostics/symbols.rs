@@ -2,11 +2,11 @@
 //!
 //! Provides helper functions for converting analysis results to LSP diagnostics.
 //! Reference checking uses the unified `ir::analysis::reference_checker` module.
-//! Type checking is delegated to the shared `ir::analysis::type_checker` module.
+//! Type checking is delegated to the shared `ir::analysis::semantic` module.
 
 use lsp_types::{Diagnostic, DiagnosticSeverity};
 
-use crate::ir::analysis::type_checker::{TypeCheckResult, TypeErrorSeverity};
+use crate::ir::analysis::semantic::{TypeCheckResult, TypeErrorSeverity};
 
 use super::helpers::create_diagnostic;
 

@@ -66,12 +66,114 @@ fn collect_function_names_with_relative_paths(
     }
 }
 
+/// Built-in Modelica function names that should be recognized without explicit definition.
+/// These include mathematical functions, array operations, event operators, and clocked operators.
+pub const BUILTIN_FUNCTIONS: &[&str] = &[
+    // Mathematical functions (MLS §3.7.1.2)
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asinh",
+    "acosh",
+    "atanh",
+    "exp",
+    "log",
+    "log10",
+    "sqrt",
+    "abs",
+    "sign",
+    "min",
+    "max",
+    "sum",
+    "product",
+    "floor",
+    "ceil",
+    "integer",
+    "mod",
+    "rem",
+    "div",
+    // Array functions (MLS §10.3)
+    "size",
+    "ndims",
+    "scalar",
+    "vector",
+    "matrix",
+    "zeros",
+    "ones",
+    "fill",
+    "identity",
+    "diagonal",
+    "linspace",
+    "transpose",
+    "symmetric",
+    "cross",
+    "skew",
+    "outerProduct",
+    "cat",
+    "array",
+    // Event and state functions (MLS §3.7.5)
+    "der",
+    "delay",
+    "cardinality",
+    "homotopy",
+    "semiLinear",
+    "inStream",
+    "actualStream",
+    "pre",
+    "edge",
+    "change",
+    "reinit",
+    "initial",
+    "terminal",
+    "smooth",
+    "noEvent",
+    "sample",
+    "spatialDistribution",
+    "getInstanceName",
+    // Clocked operators (MLS §16.2, §16.3)
+    "previous",
+    "interval",
+    "hold",
+    "shiftSample",
+    "backSample",
+    "noClock",
+    "firstTick",
+    "subSample",
+    "superSample",
+    "Clock",
+    // Type conversion
+    "String",
+    "Integer",
+    "Real",
+    "Boolean",
+    // Assertion and output
+    "assert",
+    "print",
+    // Special
+    "Modelica",
+];
+
 /// Collects all function names from a stored definition.
 ///
 /// Returns a vector of function names (with their full paths for nested functions).
 /// This function is optimized to avoid cloning ClassDefinition objects.
+/// Also includes all built-in Modelica function names.
 pub fn collect_all_functions(def: &StoredDefinition) -> Vec<String> {
     let mut names = IndexSet::new();
+
+    // Add all built-in function names first
+    for &name in BUILTIN_FUNCTIONS {
+        names.insert(name.to_string());
+    }
+
+    // Then add user-defined functions
     for (_class_name, class) in &def.class_list {
         collect_function_names_from_class(class, "", &mut names);
     }

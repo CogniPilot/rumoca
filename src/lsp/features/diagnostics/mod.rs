@@ -32,7 +32,7 @@ use crate::ir::transform::scope_resolver::collect_inherited_components;
 
 use crate::lsp::WorkspaceState;
 
-use crate::ir::analysis::type_checker;
+use crate::ir::analysis::semantic;
 use helpers::create_diagnostic;
 use symbols::type_errors_to_diagnostics;
 
@@ -209,15 +209,13 @@ fn analyze_class_with_scope(
 
     // Run type checking on equations (with class lookup for member access resolution)
     for eq in &class.equations {
-        let type_result =
-            type_checker::check_equation_with_classes(eq, &defined, Some(peer_classes));
+        let type_result = semantic::check_equation_with_classes(eq, &defined, Some(peer_classes));
         diagnostics.extend(type_errors_to_diagnostics(&type_result));
     }
 
     // Run type checking on initial equations
     for eq in &class.initial_equations {
-        let type_result =
-            type_checker::check_equation_with_classes(eq, &defined, Some(peer_classes));
+        let type_result = semantic::check_equation_with_classes(eq, &defined, Some(peer_classes));
         diagnostics.extend(type_errors_to_diagnostics(&type_result));
     }
 
@@ -225,7 +223,7 @@ fn analyze_class_with_scope(
     for algo in &class.algorithms {
         for stmt in algo {
             let type_result =
-                type_checker::check_statement_with_classes(stmt, &defined, Some(peer_classes));
+                semantic::check_statement_with_classes(stmt, &defined, Some(peer_classes));
             diagnostics.extend(type_errors_to_diagnostics(&type_result));
         }
     }
@@ -234,7 +232,7 @@ fn analyze_class_with_scope(
     for algo in &class.initial_algorithms {
         for stmt in algo {
             let type_result =
-                type_checker::check_statement_with_classes(stmt, &defined, Some(peer_classes));
+                semantic::check_statement_with_classes(stmt, &defined, Some(peer_classes));
             diagnostics.extend(type_errors_to_diagnostics(&type_result));
         }
     }
