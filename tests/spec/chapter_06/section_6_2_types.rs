@@ -483,7 +483,6 @@ mod type_coercion {
 
     /// Integer parameter with Real expression
     #[test]
-    #[ignore = "Type checking for Integer with Real expression not implemented"]
     fn mls_6_2_no_real_to_int() {
         expect_failure(
             r#"

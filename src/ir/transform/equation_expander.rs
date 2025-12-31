@@ -985,6 +985,47 @@ fn expand_array_equation(
     }
 }
 
+/// Convert a 1-based flat index to multi-dimensional 1-based indices.
+///
+/// For example, for shape [2, 3] (2 rows, 3 cols):
+/// - flat_index 1 -> [1, 1]
+/// - flat_index 2 -> [1, 2]
+/// - flat_index 3 -> [1, 3]
+/// - flat_index 4 -> [2, 1]
+/// - flat_index 5 -> [2, 2]
+/// - flat_index 6 -> [2, 3]
+///
+/// Uses row-major (C-style) ordering where the last dimension varies fastest.
+fn flat_index_to_nd(shape: &[usize], flat_index: usize) -> Vec<usize> {
+    if shape.is_empty() {
+        return vec![];
+    }
+    if shape.len() == 1 {
+        return vec![flat_index];
+    }
+
+    // Convert to 0-based for calculation
+    let mut remaining = flat_index - 1;
+    let mut indices = Vec::with_capacity(shape.len());
+
+    // Compute strides (product of dimensions to the right)
+    let mut strides: Vec<usize> = Vec::with_capacity(shape.len());
+    let mut stride = 1;
+    for &dim in shape.iter().rev() {
+        strides.push(stride);
+        stride *= dim;
+    }
+    strides.reverse();
+
+    // Extract each index
+    for &s in &strides {
+        indices.push(remaining / s + 1); // +1 for 1-based indexing
+        remaining %= s;
+    }
+
+    indices
+}
+
 /// Create a subscripted component reference.
 fn make_subscripted_ref(name: &str, indices: &[usize]) -> Expression {
     Expression::ComponentReference(ComponentReference {
@@ -1151,8 +1192,9 @@ fn flatten_and_subscript(
                 if let Some(comp) = components.get(name)
                     && !comp.shape.is_empty()
                 {
-                    // It's an array - subscript it
-                    return subscript_expr(expr.clone(), &[flat_index]);
+                    // It's an array - convert flat index to multi-dimensional indices
+                    let indices = flat_index_to_nd(&comp.shape, flat_index);
+                    return subscript_expr(expr.clone(), &indices);
                 }
             }
             // Scalar - return as-is

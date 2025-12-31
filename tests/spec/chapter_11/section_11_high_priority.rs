@@ -125,7 +125,6 @@ mod for_statement_restrictions {
 
     /// MLS: "Loop variable is implicitly declared and read-only"
     #[test]
-    #[ignore = "Loop variable assignment detection not yet implemented"]
     fn mls_11_2_4_loop_variable_assignment_forbidden() {
         expect_failure(
             r#"
@@ -227,7 +226,6 @@ mod while_statement_restrictions {
 
     /// MLS: "While condition must be Boolean expression"
     #[test]
-    #[ignore = "While condition type check not yet implemented"]
     fn mls_11_2_5_while_condition_integer() {
         expect_failure(
             r#"
@@ -246,7 +244,6 @@ mod while_statement_restrictions {
 
     /// MLS: "While condition must be Boolean expression"
     #[test]
-    #[ignore = "While condition type check not yet implemented"]
     fn mls_11_2_5_while_condition_real() {
         expect_failure(
             r#"
@@ -329,7 +326,6 @@ mod break_return_restrictions {
 
     /// MLS: "return can only be used in functions"
     #[test]
-    #[ignore = "Return context restriction not yet implemented"]
     fn mls_11_2_6_return_in_model() {
         expect_failure(
             r#"

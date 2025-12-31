@@ -152,9 +152,24 @@ impl Dae {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        // Merge all components for tuple LHS shape lookup
+        // Tuple equations like (a, b) = f(x) need to know the shapes of a and b
+        let all_components: IndexMap<String, Component> = self
+            .p
+            .iter()
+            .chain(self.cp.iter())
+            .chain(self.c.iter())
+            .chain(self.x.iter())
+            .chain(self.y.iter())
+            .chain(self.z.iter())
+            .chain(self.m.iter())
+            .chain(self.u.iter())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
         // Count equations recursively, handling For loops
-        let fx_count = count_equations(&self.fx, &all_params);
-        let fz_count = count_equations(&self.fz, &all_params);
+        let fx_count = count_equations(&self.fx, &all_params, &all_components);
+        let fz_count = count_equations(&self.fz, &all_params, &all_components);
 
         // For event equations (fr), count unique variables assigned, not total assignments.
         // A when/elsewhen chain assigns to the same variable multiple times but is 1 equation.
@@ -205,29 +220,47 @@ impl Dae {
 }
 
 /// Count equations recursively, handling For loops and If equations
-fn count_equations(equations: &[Equation], params: &IndexMap<String, Component>) -> usize {
+fn count_equations(
+    equations: &[Equation],
+    params: &IndexMap<String, Component>,
+    all_components: &IndexMap<String, Component>,
+) -> usize {
     equations
         .iter()
-        .map(|eq| count_single_equation(eq, params))
+        .map(|eq| count_single_equation(eq, params, all_components))
         .sum()
 }
 
 /// Count a single equation, recursing into For/If blocks
-fn count_single_equation(eq: &Equation, params: &IndexMap<String, Component>) -> usize {
+fn count_single_equation(
+    eq: &Equation,
+    params: &IndexMap<String, Component>,
+    all_components: &IndexMap<String, Component>,
+) -> usize {
     match eq {
-        Equation::Simple { .. } | Equation::Connect { .. } | Equation::FunctionCall { .. } => 1,
+        Equation::Simple { lhs, .. } => {
+            // Only count scalar elements for tuple LHS - these are multi-output function calls
+            // that aren't expanded during equation expansion. Other equations (including
+            // expanded array equations) count as 1.
+            if matches!(lhs, Expression::Tuple { .. }) {
+                count_lhs_scalars(lhs, all_components)
+            } else {
+                1
+            }
+        }
+        Equation::Connect { .. } | Equation::FunctionCall { .. } => 1,
         Equation::Empty => 0,
 
         Equation::For { indices, equations } => {
             // Try to evaluate the For loop range from parameters
             if let Some(range_size) = evaluate_for_range(indices, params) {
                 // Inner equations * range size
-                let inner_count = count_equations(equations, params);
+                let inner_count = count_equations(equations, params, all_components);
                 inner_count * range_size
             } else {
                 // Can't evaluate range - just count inner equations
                 // This is a conservative estimate
-                count_equations(equations, params)
+                count_equations(equations, params, all_components)
             }
         }
 
@@ -245,7 +278,7 @@ fn count_single_equation(eq: &Equation, params: &IndexMap<String, Component>) ->
                 match eval_boolean(&block.cond, params) {
                     Some(true) => {
                         // This branch is active - count only its equations
-                        return count_equations(&block.eqs, params);
+                        return count_equations(&block.eqs, params, all_components);
                     }
                     Some(false) => {
                         // This condition is false, continue to next branch
@@ -267,32 +300,36 @@ fn count_single_equation(eq: &Equation, params: &IndexMap<String, Component>) ->
                 // All conditions are false, use else branch
                 return else_block
                     .as_ref()
-                    .map(|eqs| count_equations(eqs, params))
+                    .map(|eqs| count_equations(eqs, params, all_components))
                     .unwrap_or(0);
             }
 
             // Conditions can't be fully evaluated.
-            // Per MLS §8, if all branches have equal counts, use that count
-            // (non-parameter conditions require equal counts in all branches).
-            let branch_counts: Vec<usize> = cond_blocks
+            // Per MLS §8.3.3, all branches of an if-equation must have the same
+            // number of equations (when conditions are not parameter-controlled).
+            // Collect counts from all branches: if, all elseif, and else.
+            let mut all_branch_counts: Vec<usize> = cond_blocks
                 .iter()
-                .map(|block| count_equations(&block.eqs, params))
+                .map(|block| count_equations(&block.eqs, params, all_components))
                 .collect();
 
             let else_count = else_block
                 .as_ref()
-                .map(|eqs| count_equations(eqs, params))
+                .map(|eqs| count_equations(eqs, params, all_components))
                 .unwrap_or(0);
+            all_branch_counts.push(else_count);
 
-            // Check if all branches have equal counts
-            let all_equal = branch_counts.iter().all(|&c| c == else_count);
+            // Check if all branches (if, elseif, else) have equal counts
+            let first_count = all_branch_counts[0];
+            let all_equal = all_branch_counts.iter().all(|&c| c == first_count);
+
             if all_equal {
                 // All branches have equal counts - use that count
-                else_count
+                first_count
             } else {
                 // Branches have different counts - this is a parameter-controlled if-equation
                 // Use MAX as conservative estimate
-                branch_counts.into_iter().max().unwrap_or(0).max(else_count)
+                all_branch_counts.into_iter().max().unwrap_or(0)
             }
         }
 
@@ -300,9 +337,77 @@ fn count_single_equation(eq: &Equation, params: &IndexMap<String, Component>) ->
             // When equations - count equations in each block (they add up)
             blocks
                 .iter()
-                .map(|block| count_equations(&block.eqs, params))
+                .map(|block| count_equations(&block.eqs, params, all_components))
                 .sum()
         }
+    }
+}
+
+/// Count scalar elements in an equation's LHS expression.
+///
+/// For tuple equations like `(a, b) = f(x)`, this counts the total scalar
+/// elements in all tuple members. For scalar or array LHS, counts appropriately.
+fn count_lhs_scalars(lhs: &Expression, components: &IndexMap<String, Component>) -> usize {
+    match lhs {
+        Expression::Tuple { elements } => {
+            // Sum the scalar count of each tuple element
+            elements
+                .iter()
+                .map(|elem| count_lhs_scalars(elem, components))
+                .sum()
+        }
+        Expression::ComponentReference(comp_ref) => {
+            // Look up the component to get its shape
+            if let Some(first_part) = comp_ref.parts.first() {
+                let name = &first_part.ident.text;
+
+                // If component has subscripts, it's already a scalar access
+                if first_part.subs.as_ref().is_some_and(|s| !s.is_empty()) {
+                    return 1;
+                }
+
+                // First try exact match
+                if let Some(comp) = components.get(name) {
+                    if comp.shape.is_empty() {
+                        return 1;
+                    } else {
+                        return comp.shape.iter().product();
+                    }
+                }
+
+                // If exact match not found, look for scalar-expanded components
+                // (e.g., seedState -> seedState[1], seedState[2], seedState[3])
+                let prefix = format!("{}[", name);
+                let scalar_count = components.keys().filter(|k| k.starts_with(&prefix)).count();
+                if scalar_count > 0 {
+                    return scalar_count;
+                }
+
+                // Unknown component - assume scalar
+                1
+            } else {
+                1
+            }
+        }
+        Expression::FunctionCall { comp, args } => {
+            // Handle der(x) - count based on argument
+            if let Some(first_part) = comp.parts.first()
+                && first_part.ident.text == "der"
+                && let Some(arg) = args.first()
+            {
+                return count_lhs_scalars(arg, components);
+            }
+            // Other function calls on LHS - assume scalar
+            1
+        }
+        Expression::Array { elements, .. } => {
+            // Array literal on LHS - count elements
+            elements
+                .iter()
+                .map(|elem| count_lhs_scalars(elem, components))
+                .sum()
+        }
+        _ => 1,
     }
 }
 

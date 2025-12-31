@@ -425,12 +425,12 @@ The flattening process:
 4. Rename sub-component variables with dot notation
 5. Expand connect equations into equality/flow equations
 
-### Type Checking (`src/ir/analysis/type_checker/`)
+### Type Checking (`src/ir/analysis/semantic/`)
 
 Type checking is split into focused modules:
 
 ```
-src/ir/analysis/type_checker/
+src/ir/analysis/semantic/
 ├── mod.rs           # Public API, TypeError, TypeCheckResult
 ├── types.rs         # Type helper functions
 ├── equations.rs     # Equation/statement type checking
@@ -578,14 +578,14 @@ Split large files into focused submodules. Aim for ~500 lines per file:
 
 ```
 # Good
-type_checker/
+semantic/
 ├── mod.rs       (140 lines)
 ├── bindings.rs  (180 lines)
 ├── equations.rs (286 lines)
 └── ...
 
 # Avoid
-type_checker.rs  (2800 lines)
+semantic.rs  (2800 lines)
 ```
 
 ### 3. Clone Optimization
@@ -671,7 +671,7 @@ pub fn check_my_rule(class: &ClassDefinition) -> Vec<LintWarning> {
 
 ### Adding a New Semantic Check
 
-1. Create the check in `src/ir/analysis/type_checker/`:
+1. Create the check in `src/ir/analysis/semantic/`:
 ```rust
 pub fn check_my_feature(class: &ClassDefinition) -> TypeCheckResult {
     let mut result = TypeCheckResult::new();

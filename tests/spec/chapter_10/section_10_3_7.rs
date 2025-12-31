@@ -64,9 +64,8 @@ mod section_10_6_elementwise_operators {
 mod section_10_6_matrix_operators {
     use super::*;
 
-    /// TODO: Matrix multiplication dimension inference not yet fully supported
+    /// Matrix multiplication A[2,3] * B[3,2] = C[2,2]
     #[test]
-    #[ignore = "Matrix multiplication dimension inference not yet fully supported"]
     fn mls_10_6_matrix_mul() {
         expect_success(
             r#"
@@ -224,9 +223,7 @@ mod section_10_3_array_functions {
     // Transformation functions
     // -------------------------------------------------------------------------
 
-    /// TODO: transpose() function dimension inference not yet fully supported
     #[test]
-    #[ignore = "transpose() function dimension inference not yet fully supported"]
     fn mls_10_3_transpose() {
         expect_success(
             "model Test Real A[2,3]={{1,2,3},{4,5,6}}; Real B[3,2]=transpose(A); equation end Test;",

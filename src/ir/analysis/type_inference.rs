@@ -129,6 +129,51 @@ impl SymbolType {
             _ => false,
         }
     }
+
+    /// Check if a value of type `other` can be assigned to a variable of type `self`.
+    ///
+    /// This is an asymmetric check that handles type coercion:
+    /// - Integer can be assigned to Real (widening)
+    /// - Real CANNOT be assigned to Integer (narrowing would lose precision)
+    /// - All other checks are symmetric
+    pub fn is_assignable_from(&self, other: &SymbolType) -> bool {
+        match (self, other) {
+            (SymbolType::Unknown, _) | (_, SymbolType::Unknown) => true,
+            (SymbolType::Real, SymbolType::Real) => true,
+            (SymbolType::Integer, SymbolType::Integer) => true,
+            (SymbolType::Boolean, SymbolType::Boolean) => true,
+            (SymbolType::String, SymbolType::String) => true,
+            // Integer can be promoted to Real (widening)
+            (SymbolType::Real, SymbolType::Integer) => true,
+            // Real CANNOT be assigned to Integer (narrowing is not allowed)
+            (SymbolType::Integer, SymbolType::Real) => false,
+            // Arrays: check element types with asymmetric rules
+            (SymbolType::Array(t1, s1), SymbolType::Array(t2, s2)) => {
+                // Element types must be assignable
+                if !t1.is_assignable_from(t2) {
+                    return false;
+                }
+                // Sizes must match if both are known
+                match (s1, s2) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                }
+            }
+            // Class types - be lenient as they may be aliases
+            (SymbolType::Class(_), SymbolType::Real)
+            | (SymbolType::Real, SymbolType::Class(_))
+            | (SymbolType::Class(_), SymbolType::Integer)
+            | (SymbolType::Integer, SymbolType::Class(_))
+            | (SymbolType::Class(_), SymbolType::Boolean)
+            | (SymbolType::Boolean, SymbolType::Class(_))
+            | (SymbolType::Class(_), SymbolType::String)
+            | (SymbolType::String, SymbolType::Class(_)) => true,
+            (SymbolType::Class(_), SymbolType::Class(_)) => true,
+            // Enumeration types must match exactly
+            (SymbolType::Enumeration(n1), SymbolType::Enumeration(n2)) => n1 == n2,
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for SymbolType {
@@ -433,10 +478,26 @@ fn infer_function_call_type(
 ) -> SymbolType {
     if let Some(first) = comp.parts.first() {
         match first.ident.text.as_str() {
-            // Trigonometric and math functions return Real
+            // Trigonometric and math functions always return Real
             "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "sinh" | "cosh"
-            | "tanh" | "exp" | "log" | "log10" | "sqrt" | "abs" | "sign" | "floor" | "ceil"
-            | "mod" | "rem" | "max" | "min" | "sum" | "product" => SymbolType::Real,
+            | "tanh" | "exp" | "log" | "log10" | "sqrt" | "sum" | "product" => SymbolType::Real,
+
+            // floor and ceil return Integer
+            "floor" | "ceil" => SymbolType::Integer,
+
+            // These functions preserve the type of their argument(s)
+            // mod(Integer, Integer) -> Integer, mod(Real, Real) -> Real, etc.
+            "mod" | "rem" | "abs" | "sign" | "max" | "min" => {
+                if let Some(arg) = args.first() {
+                    let arg_type = infer_expression_type(arg, defined);
+                    match arg_type.base_type() {
+                        SymbolType::Integer => SymbolType::Integer,
+                        _ => SymbolType::Real,
+                    }
+                } else {
+                    SymbolType::Real
+                }
+            }
 
             // der returns the same type as its argument (preserves array dimensions)
             "der" | "pre" | "delay" => {
@@ -450,8 +511,30 @@ fn infer_function_call_type(
             // cross(a, b) returns a 3-vector
             "cross" => SymbolType::Array(Box::new(SymbolType::Real), Some(3)),
 
-            // transpose, symmetric, skew return matrices (preserve first arg type)
-            "transpose" | "symmetric" | "skew" => {
+            // transpose swaps dimensions for 2D arrays
+            "transpose" => {
+                if let Some(arg) = args.first() {
+                    let arg_type = infer_expression_type(arg, defined);
+                    // For Array(Array(T, n), m) -> Array(Array(T, m), n)
+                    if let SymbolType::Array(inner, outer_size) = arg_type {
+                        if let SymbolType::Array(elem_type, inner_size) = *inner {
+                            // Swap the dimensions
+                            return SymbolType::Array(
+                                Box::new(SymbolType::Array(elem_type, outer_size)),
+                                inner_size,
+                            );
+                        }
+                        // 1D array - transpose doesn't change it (row vector)
+                        return SymbolType::Array(inner, outer_size);
+                    }
+                    arg_type
+                } else {
+                    SymbolType::Unknown
+                }
+            }
+
+            // symmetric, skew return matrices (preserve first arg type)
+            "symmetric" | "skew" => {
                 if let Some(arg) = args.first() {
                     infer_expression_type(arg, defined)
                 } else {
@@ -559,13 +642,41 @@ fn infer_multiplication_result(lhs_type: &SymbolType, rhs_type: &SymbolType) -> 
         (SymbolType::Real | SymbolType::Integer, SymbolType::Array(_, _)) => rhs_type.clone(),
         // Array * Scalar -> Array
         (SymbolType::Array(_, _), SymbolType::Real | SymbolType::Integer) => lhs_type.clone(),
-        // Matrix[m,n] * Vector[n] -> Vector[m]
-        (SymbolType::Array(inner_lhs, Some(m)), SymbolType::Array(inner_rhs, _)) => {
-            if let SymbolType::Array(_, _) = inner_lhs.as_ref() {
-                // Matrix * Vector -> Vector
-                SymbolType::Array(Box::new(inner_rhs.base_type().clone()), Some(*m))
-            } else {
-                SymbolType::Unknown
+        // Matrix/vector operations
+        (SymbolType::Array(inner_lhs, Some(m)), SymbolType::Array(inner_rhs, Some(_n))) => {
+            // Determine dimensions of LHS and RHS
+            let lhs_is_matrix = matches!(inner_lhs.as_ref(), SymbolType::Array(_, _));
+            let rhs_is_matrix = matches!(inner_rhs.as_ref(), SymbolType::Array(_, _));
+
+            match (lhs_is_matrix, rhs_is_matrix) {
+                // Matrix[m,n] * Matrix[n,p] -> Matrix[m,p]
+                (true, true) => {
+                    if let SymbolType::Array(_, Some(p)) = inner_rhs.as_ref() {
+                        SymbolType::Array(
+                            Box::new(SymbolType::Array(
+                                Box::new(lhs_type.base_type().clone()),
+                                Some(*p),
+                            )),
+                            Some(*m),
+                        )
+                    } else {
+                        SymbolType::Unknown
+                    }
+                }
+                // Matrix[m,n] * Vector[n] -> Vector[m]
+                (true, false) => {
+                    SymbolType::Array(Box::new(lhs_type.base_type().clone()), Some(*m))
+                }
+                // Vector[m] * Matrix[m,p] -> Vector[p] (row vector semantics)
+                (false, true) => {
+                    if let SymbolType::Array(_, Some(p)) = inner_rhs.as_ref() {
+                        SymbolType::Array(Box::new(lhs_type.base_type().clone()), Some(*p))
+                    } else {
+                        SymbolType::Unknown
+                    }
+                }
+                // Vector[n] * Vector[n] -> scalar (dot product)
+                (false, false) => lhs_type.base_type().clone(),
             }
         }
         // Both scalars

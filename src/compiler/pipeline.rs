@@ -6,17 +6,23 @@
 use super::function_collector::collect_all_functions;
 use super::result::CompilationResult;
 use crate::dae::balance::BalanceResult;
-use crate::ir::analysis::type_checker::{
-    check_algorithm_assignments_with_types, check_array_bounds, check_assert_arguments,
+use crate::ir::analysis::semantic::{
+    check_algorithm_assignments_with_types, check_algorithm_condition_types, check_array_bounds,
+    check_array_dimension_mismatch, check_array_index_types, check_assert_arguments,
     check_break_return_context, check_builtin_attribute_modifiers, check_cardinality_arguments,
     check_cardinality_context, check_class_member_access, check_clock_restrictions,
-    check_component_bindings, check_connect_types, check_constant_bindings,
-    check_expandable_no_flow, check_flow_compatibility, check_function_forbidden_operators,
-    check_operator_record_cannot_be_extended, check_operator_record_no_extends,
-    check_operator_record_no_partial, check_scalar_subscripts, check_self_connections,
+    check_component_bindings, check_connect_types, check_connector_no_parameter_constant,
+    check_constant_bindings, check_duplicate_reinit, check_edge_argument_type,
+    check_equation_loop_variable_assignments, check_expandable_no_flow, check_flow_compatibility,
+    check_function_component_classes, check_function_forbidden_operators,
+    check_function_no_inner_outer, check_function_public_components,
+    check_function_single_algorithm, check_inconsistent_nested_arrays,
+    check_loop_variable_assignments, check_operator_record_cannot_be_extended,
+    check_operator_record_no_extends, check_operator_record_no_partial, check_reinit_context,
+    check_reinit_variable_type, check_scalar_subscripts, check_self_connections,
     check_single_initial_state, check_start_modification_dimensions, check_state_is_block_or_model,
     check_stream_only_in_connector, check_stream_requires_flow, check_transition_priority_unique,
-    check_variability_dependencies, check_when_restrictions,
+    check_variability_dependencies, check_when_condition_type, check_when_restrictions,
 };
 use crate::ir::analysis::var_validator::VarValidator;
 use crate::ir::ast::{ClassType, StoredDefinition};
@@ -349,6 +355,13 @@ pub fn compile_from_ast_ref(
                 let first_error = &expandable_flow_result.errors[0];
                 return Err(anyhow::anyhow!("{}", first_error.message));
             }
+
+            // Check that connectors don't have parameter or constant components (MLS §9.1)
+            let param_const_result = check_connector_no_parameter_constant(connector_class);
+            if param_const_result.has_errors() {
+                let first_error = &param_const_result.errors[0];
+                return Err(anyhow::anyhow!("{}", first_error.message));
+            }
         }
     }
 
@@ -541,6 +554,43 @@ pub fn compile_from_ast_ref(
             return Err(anyhow::anyhow!("{}", first_error.message));
         }
 
+        // Check for assignments to loop variables in algorithm sections (MLS §11.2.4)
+        let loop_var_result = check_loop_variable_assignments(&expanded_class);
+        if loop_var_result.has_errors() {
+            let first_error = &loop_var_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+        // Also check file-level functions for loop variable assignment violations
+        for (_, file_class) in &def.class_list {
+            let file_loop_result = check_loop_variable_assignments(file_class);
+            if file_loop_result.has_errors() {
+                let first_error = &file_loop_result.errors[0];
+                return Err(anyhow::anyhow!("{}", first_error.message));
+            }
+        }
+
+        // Check for assignments to loop variables in equation sections (MLS §8.3.4)
+        let eq_loop_var_result = check_equation_loop_variable_assignments(&expanded_class);
+        if eq_loop_var_result.has_errors() {
+            let first_error = &eq_loop_var_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check that while/if/when conditions in algorithm sections are Boolean (MLS §11.2.5)
+        let cond_type_result = check_algorithm_condition_types(&expanded_class);
+        if cond_type_result.has_errors() {
+            let first_error = &cond_type_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+        // Also check file-level functions
+        for (_, file_class) in &def.class_list {
+            let file_cond_result = check_algorithm_condition_types(file_class);
+            if file_cond_result.has_errors() {
+                let first_error = &file_cond_result.errors[0];
+                return Err(anyhow::anyhow!("{}", first_error.message));
+            }
+        }
+
         // Check builtin attribute modifiers (e.g., Real x(y=1) is invalid)
         let modifier_check_result = check_builtin_attribute_modifiers(&expanded_class);
         if modifier_check_result.has_errors() {
@@ -595,6 +645,27 @@ pub fn compile_from_ast_ref(
             return Err(anyhow::anyhow!("{}", first_error.message));
         }
 
+        // Check for array dimension mismatches in equations and operations
+        let dimension_mismatch_result = check_array_dimension_mismatch(&expanded_class);
+        if dimension_mismatch_result.has_errors() {
+            let first_error = &dimension_mismatch_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for non-Integer array subscripts (e.g., x[1.5])
+        let index_type_result = check_array_index_types(&expanded_class);
+        if index_type_result.has_errors() {
+            let first_error = &index_type_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for inconsistent nested array dimensions (e.g., {{1,2,3}, {4,5}})
+        let nested_array_result = check_inconsistent_nested_arrays(&expanded_class);
+        if nested_array_result.has_errors() {
+            let first_error = &nested_array_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
         // Check for cardinality() used outside valid contexts
         let cardinality_result = check_cardinality_context(&expanded_class);
         if cardinality_result.has_errors() {
@@ -625,6 +696,47 @@ pub fn compile_from_ast_ref(
             let first_error = &when_result.errors[0];
             return Err(anyhow::anyhow!("{}", first_error.message));
         }
+
+        // Check reinit restrictions (MLS §8.3.5)
+        // - reinit() can only appear in when-equations
+        let reinit_ctx_result = check_reinit_context(&expanded_class);
+        if reinit_ctx_result.has_errors() {
+            let first_error = &reinit_ctx_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check reinit variable type (MLS §8.3.5)
+        // - reinit() can only be applied to continuous state variables
+        let reinit_type_result = check_reinit_variable_type(&expanded_class);
+        if reinit_type_result.has_errors() {
+            let first_error = &reinit_type_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check for duplicate reinit (MLS §8.3.5)
+        // - reinit shall only be applied once to a variable in any when-clause
+        let duplicate_reinit_result = check_duplicate_reinit(&expanded_class);
+        if duplicate_reinit_result.has_errors() {
+            let first_error = &duplicate_reinit_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check when condition type (MLS §8.3.5)
+        // - when condition must be a Boolean expression
+        let when_cond_result = check_when_condition_type(&expanded_class);
+        if when_cond_result.has_errors() {
+            let first_error = &when_cond_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
+        // Check edge() argument type (MLS §3.7.3.2)
+        // - edge(b) requires b to be Boolean
+        let edge_arg_result = check_edge_argument_type(&expanded_class);
+        if edge_arg_result.has_errors() {
+            let first_error = &edge_arg_result.errors[0];
+            return Err(anyhow::anyhow!("{}", first_error.message));
+        }
+
         // Also check file-level functions for when restrictions and forbidden operators
         for (_, class) in &def.class_list {
             if class.class_type == ClassType::Function {
@@ -638,6 +750,34 @@ pub fn compile_from_ast_ref(
                 let forbidden_ops_result = check_function_forbidden_operators(class);
                 if forbidden_ops_result.has_errors() {
                     let first_error = &forbidden_ops_result.errors[0];
+                    return Err(anyhow::anyhow!("{}", first_error.message));
+                }
+
+                // Check for multiple algorithm sections in functions (MLS §12.2)
+                let single_algo_result = check_function_single_algorithm(class);
+                if single_algo_result.has_errors() {
+                    let first_error = &single_algo_result.errors[0];
+                    return Err(anyhow::anyhow!("{}", first_error.message));
+                }
+
+                // Check for forbidden component class types in functions (MLS §12.2)
+                let comp_class_result = check_function_component_classes(class, &peer_class_types);
+                if comp_class_result.has_errors() {
+                    let first_error = &comp_class_result.errors[0];
+                    return Err(anyhow::anyhow!("{}", first_error.message));
+                }
+
+                // Check that public components have input/output causality (MLS §12.2)
+                let public_comp_result = check_function_public_components(class);
+                if public_comp_result.has_errors() {
+                    let first_error = &public_comp_result.errors[0];
+                    return Err(anyhow::anyhow!("{}", first_error.message));
+                }
+
+                // Check that functions don't use inner/outer prefixes (MLS §12.2)
+                let inner_outer_result = check_function_no_inner_outer(class);
+                if inner_outer_result.has_errors() {
+                    let first_error = &inner_outer_result.errors[0];
                     return Err(anyhow::anyhow!("{}", first_error.message));
                 }
             }

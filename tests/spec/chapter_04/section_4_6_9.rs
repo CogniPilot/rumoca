@@ -594,7 +594,6 @@ mod declaration_errors {
     }
 
     #[test]
-    #[ignore = "Parser doesn't validate that end name matches class name"]
     fn error_mismatched_end_name() {
         expect_parse_failure("model Test Real x; end Other;");
     }

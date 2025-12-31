@@ -188,7 +188,6 @@ mod dimension_builtins {
     }
 
     #[test]
-    #[ignore = "2D matrix equation with fill() not yet supported"]
     fn mls_12_5_size_2d() {
         expect_success(
             r#"

@@ -6,7 +6,7 @@ use crate::ir::ast::{ClassDefinition, Equation, Expression, Location, Statement}
 
 use crate::ir::analysis::type_inference::SymbolType;
 
-use super::{TypeCheckResult, TypeError, TypeErrorSeverity};
+use super::super::{TypeCheckResult, TypeError, TypeErrorSeverity};
 
 /// Check for cardinality() used outside valid contexts.
 ///

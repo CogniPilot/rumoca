@@ -61,7 +61,7 @@ use validation::check_cardinality_array_connectors;
 use crate::ir;
 use crate::ir::analysis::reference_checker::collect_imported_packages;
 use crate::ir::analysis::symbol_table::SymbolTable;
-use crate::ir::ast::{Expression, Import, OpBinary};
+use crate::ir::ast::{ClassType, Expression, Import, OpBinary};
 use crate::ir::error::IrError;
 use crate::ir::transform::constants::is_primitive_type;
 use crate::ir::visitor::{MutVisitable, MutVisitor};
@@ -423,6 +423,18 @@ fn resolve_class_internal(
             None => continue, // Skip missing classes
         };
 
+        // Check that the class types are compatible for extends
+        // MLS §7.1.1: A model cannot extend a connector, function, etc.
+        if !is_extends_compatible(&class.class_type, &parent_class.class_type) {
+            return Err(anyhow::anyhow!(
+                "{} '{}' cannot extend {} '{}'",
+                class_type_name(&class.class_type),
+                class.name.text,
+                class_type_name(&parent_class.class_type),
+                resolved_name
+            ));
+        }
+
         // Recursively resolve the parent class first (using resolved name as new context)
         // This also collects dependencies from parent classes
         let resolved_parent =
@@ -460,6 +472,34 @@ fn resolve_class_internal(
                         }
                     }
                 }
+            }
+        }
+
+        // Check that all modifications target existing components in the parent class
+        // MLS §7.2: "A modification shall refer to an element of the class"
+        // Exception: Built-in attributes like start, min, max, fixed, unit are always valid
+        const BUILTIN_ATTRIBUTES: &[&str] = &[
+            "start",
+            "min",
+            "max",
+            "fixed",
+            "unit",
+            "displayUnit",
+            "quantity",
+            "stateSelect",
+            "nominal",
+            "unbounded",
+        ];
+        for mod_name in extends_mods.keys() {
+            if !resolved_parent.components.contains_key(mod_name)
+                && !type_redeclarations.contains_key(mod_name)
+                && !BUILTIN_ATTRIBUTES.contains(&mod_name.as_str())
+            {
+                anyhow::bail!(
+                    "Modification '{}' in extends clause refers to non-existent element in class '{}'",
+                    mod_name,
+                    resolved_name
+                );
             }
         }
 
@@ -946,6 +986,67 @@ fn flatten_with_class_dict(
         class: fclass,
         dependencies: deps,
     })
+}
+
+// =============================================================================
+// Extends Class Type Compatibility
+// =============================================================================
+
+/// Check if a class of type `extending` can extend a class of type `base`.
+///
+/// MLS §7.1.1: Restrictions on class inheritance.
+fn is_extends_compatible(extending: &ClassType, base: &ClassType) -> bool {
+    match (extending, base) {
+        // Same types can always extend each other
+        (a, b) if a == b => true,
+
+        // Model and Block are compatible (both can have equations and components)
+        (ClassType::Model, ClassType::Block) | (ClassType::Block, ClassType::Model) => true,
+
+        // Model can extend Record (composition-like inheritance)
+        (ClassType::Model, ClassType::Record) | (ClassType::Block, ClassType::Record) => true,
+
+        // Connector can extend Record or Type (for type alias patterns in MSL)
+        (ClassType::Connector, ClassType::Record) | (ClassType::Connector, ClassType::Type) => true,
+
+        // Class is the most generic and can extend/be extended by model, block, record
+        (ClassType::Class, ClassType::Model)
+        | (ClassType::Class, ClassType::Block)
+        | (ClassType::Class, ClassType::Record)
+        | (ClassType::Model, ClassType::Class)
+        | (ClassType::Block, ClassType::Class)
+        | (ClassType::Record, ClassType::Class) => true,
+
+        // Function can only extend function
+        (ClassType::Function, ClassType::Function) => true,
+
+        // Connector can only extend connector
+        (ClassType::Connector, ClassType::Connector) => true,
+
+        // Package can only extend package
+        (ClassType::Package, ClassType::Package) => true,
+
+        // Operator can only extend operator
+        (ClassType::Operator, ClassType::Operator) => true,
+
+        // All other combinations are incompatible
+        _ => false,
+    }
+}
+
+/// Get a human-readable name for a class type.
+fn class_type_name(class_type: &ClassType) -> &'static str {
+    match class_type {
+        ClassType::Model => "model",
+        ClassType::Block => "block",
+        ClassType::Class => "class",
+        ClassType::Connector => "connector",
+        ClassType::Record => "record",
+        ClassType::Function => "function",
+        ClassType::Package => "package",
+        ClassType::Type => "type",
+        ClassType::Operator => "operator",
+    }
 }
 
 #[cfg(test)]
