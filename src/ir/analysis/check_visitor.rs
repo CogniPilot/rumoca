@@ -26,8 +26,8 @@ use std::collections::HashMap;
 use crate::ir::ast::{ClassDefinition, Component, Equation, Expression, Location, Statement};
 use crate::ir::visitor::Visitor;
 
+use super::semantic::{TypeCheckResult, TypeError, TypeErrorSeverity};
 use super::symbols::DefinedSymbol;
-use super::type_checker::{TypeCheckResult, TypeError, TypeErrorSeverity};
 use super::type_inference::SymbolType;
 
 // =============================================================================
@@ -449,31 +449,31 @@ pub fn check_semantic(
     class: &ClassDefinition,
     defined: &HashMap<String, DefinedSymbol>,
 ) -> TypeCheckResult {
-    use super::type_checker;
+    use super::semantic;
 
     let mut result = TypeCheckResult::new();
 
     // Cardinality checks
-    result.merge(type_checker::check_cardinality_context(class));
-    result.merge(type_checker::check_cardinality_arguments(class));
+    result.merge(semantic::check_cardinality_context(class));
+    result.merge(semantic::check_cardinality_arguments(class));
 
     // Class and member access checks
-    result.merge(type_checker::check_class_member_access(class));
+    result.merge(semantic::check_class_member_access(class));
 
     // Array and subscript checks
-    result.merge(type_checker::check_scalar_subscripts(class));
-    result.merge(type_checker::check_array_bounds(class));
+    result.merge(semantic::check_scalar_subscripts(class));
+    result.merge(semantic::check_array_bounds(class));
 
     // Component and binding checks
-    result.merge(type_checker::check_component_bindings(class));
-    result.merge(type_checker::check_assert_arguments(class));
-    result.merge(type_checker::check_builtin_attribute_modifiers(class));
+    result.merge(semantic::check_component_bindings(class));
+    result.merge(semantic::check_assert_arguments(class));
+    result.merge(semantic::check_builtin_attribute_modifiers(class));
 
     // Control flow checks
-    result.merge(type_checker::check_break_return_context(class));
+    result.merge(semantic::check_break_return_context(class));
 
     // Start modification dimension checks
-    result.merge(type_checker::check_start_modification_dimensions(class));
+    result.merge(semantic::check_start_modification_dimensions(class));
 
     // Visitor-based checks (for future expansion)
     let visitor_result = check_all(class, defined);
@@ -499,16 +499,16 @@ pub fn check_semantic_with_types(
     class: &ClassDefinition,
     defined: &HashMap<String, DefinedSymbol>,
 ) -> TypeCheckResult {
-    use super::type_checker;
+    use super::semantic;
 
     let mut result = check_semantic(class, defined);
 
     // Type check equations
-    result.merge(type_checker::check_equations(&class.equations, defined));
+    result.merge(semantic::check_equations(&class.equations, defined));
 
     // Type check algorithm sections
     for algorithm_block in &class.algorithms {
-        result.merge(type_checker::check_statements(algorithm_block, defined));
+        result.merge(semantic::check_statements(algorithm_block, defined));
     }
 
     result

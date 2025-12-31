@@ -330,7 +330,6 @@ mod extends_restrictions {
 
     /// MLS: "Cannot extend a connector as a model"
     #[test]
-    #[ignore = "Extends class category check not yet implemented"]
     fn mls_7_1_model_extends_connector() {
         expect_failure(
             r#"
@@ -350,7 +349,6 @@ mod extends_restrictions {
 
     /// MLS: "Cannot extend a function as a model"
     #[test]
-    #[ignore = "Extends class category check not yet implemented"]
     fn mls_7_1_model_extends_function() {
         expect_failure(
             r#"
@@ -454,7 +452,6 @@ mod modification_restrictions {
 
     /// MLS: "Modification must refer to existing element"
     #[test]
-    #[ignore = "Modification target validation not yet implemented"]
     fn mls_7_2_modify_nonexistent() {
         expect_failure(
             r#"

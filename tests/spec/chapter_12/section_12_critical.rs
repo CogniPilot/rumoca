@@ -448,7 +448,6 @@ mod function_public_component_restriction {
 
     /// MLS: "Each public component shall have prefix input or output"
     #[test]
-    #[ignore = "Function public component restriction not yet enforced"]
     fn mls_12_2_public_without_causality() {
         expect_failure(
             r#"
@@ -526,7 +525,6 @@ mod function_component_class_restriction {
 
     /// MLS: "Functions shall not contain components of class model"
     #[test]
-    #[ignore = "Function model component restriction not yet enforced"]
     fn mls_12_2_function_with_model_component() {
         expect_failure(
             r#"
@@ -550,7 +548,6 @@ mod function_component_class_restriction {
 
     /// MLS: "Functions shall not contain components of class block"
     #[test]
-    #[ignore = "Function block component restriction not yet enforced"]
     fn mls_12_2_function_with_block_component() {
         expect_failure(
             r#"
@@ -575,7 +572,6 @@ mod function_component_class_restriction {
 
     /// MLS: "Functions shall not contain components of class connector"
     #[test]
-    #[ignore = "Function connector component restriction not yet enforced"]
     fn mls_12_2_function_with_connector_component() {
         expect_failure(
             r#"
@@ -637,9 +633,8 @@ mod function_single_algorithm_restriction {
 
     /// MLS: "A function shall have at most one algorithm section"
     #[test]
-    #[ignore = "Function multiple algorithm detection not yet implemented"]
     fn mls_12_2_multiple_algorithm_sections() {
-        expect_parse_failure(
+        expect_failure(
             r#"
             function F
                 input Real x;
@@ -650,6 +645,7 @@ mod function_single_algorithm_restriction {
                 y := y * 2;
             end F;
             "#,
+            "F",
         );
     }
 

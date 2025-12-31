@@ -6,7 +6,7 @@
 //!
 //! Reference: https://specification.modelica.org/master/functions.html
 
-use crate::spec::expect_success;
+use crate::spec::{expect_failure, expect_success};
 
 // ============================================================================
 // §12.5 BUILT-IN MATHEMATICAL FUNCTIONS
@@ -393,10 +393,11 @@ mod section_12_5_event_functions {
 mod section_12_5_cardinality {
     use super::*;
 
+    /// MLS §3.7: "cardinality may only be used in the condition of an if-statement or an assert"
+    /// Using cardinality in a binding expression is not allowed.
     #[test]
-    #[ignore = "Cardinality can only be used in if-condition or assert per MLS 3.7"]
-    fn mls_12_5_cardinality() {
-        expect_success(
+    fn mls_12_5_cardinality_invalid_context() {
+        expect_failure(
             r#"
             connector C
                 Real v;
@@ -408,6 +409,32 @@ mod section_12_5_cardinality {
                 Integer n = cardinality(c);
             equation
                 c.v = 0;
+            end Test;
+            "#,
+            "Test",
+        );
+    }
+
+    /// MLS §3.7: cardinality is allowed in if-equation conditions
+    #[test]
+    fn mls_12_5_cardinality_valid_in_if() {
+        expect_success(
+            r#"
+            connector C
+                Real v;
+                flow Real i;
+            end C;
+
+            model Test
+                C c;
+                Real y;
+            equation
+                c.v = 0;
+                if cardinality(c) == 0 then
+                    y = 0;
+                else
+                    y = 1;
+                end if;
             end Test;
             "#,
             "Test",

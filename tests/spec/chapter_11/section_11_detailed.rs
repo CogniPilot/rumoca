@@ -450,7 +450,6 @@ mod for_statement_restrictions {
 
     /// MLS: "Cannot assign to loop variable"
     #[test]
-    #[ignore = "Loop variable assignment restriction not yet enforced"]
     fn error_assign_to_loop_variable() {
         expect_failure(
             r#"
@@ -857,7 +856,6 @@ mod return_statement_restrictions {
 
     /// MLS: "Return only valid in functions"
     #[test]
-    #[ignore = "Return in model not yet detected"]
     fn error_return_in_model() {
         expect_failure(
             r#"

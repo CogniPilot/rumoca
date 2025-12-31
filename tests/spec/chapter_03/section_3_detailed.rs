@@ -188,7 +188,6 @@ mod arithmetic_restrictions {
 
     /// Matrix multiplication
     #[test]
-    #[ignore = "Matrix multiplication dimension inference not yet implemented"]
     fn mls_3_4_matrix_mult() {
         expect_success(
             r#"
@@ -806,7 +805,6 @@ mod array_functions {
 
     /// transpose() function
     #[test]
-    #[ignore = "transpose() function dimension inference not yet implemented"]
     fn mls_3_7_transpose() {
         expect_success(
             r#"

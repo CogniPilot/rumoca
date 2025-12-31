@@ -7,7 +7,7 @@ use crate::ir::ast::{ClassDefinition, Equation, Expression, Variability};
 use crate::ir::analysis::symbols::DefinedSymbol;
 use crate::ir::analysis::type_inference::{SymbolType, infer_expression_type, type_from_name};
 
-use super::{TypeCheckResult, TypeError, TypeErrorSeverity};
+use super::super::{TypeCheckResult, TypeError, TypeErrorSeverity};
 
 /// Check assert() function argument types.
 ///

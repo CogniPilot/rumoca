@@ -5,7 +5,7 @@
 //!
 //! Reference: https://specification.modelica.org/master/functions.html#function-as-a-specialized-class
 
-use crate::spec::{expect_parse_failure, expect_parse_success};
+use crate::spec::{expect_failure, expect_parse_failure, expect_parse_success};
 
 // ============================================================================
 // §12.2 VALID FUNCTION CONSTRUCTS
@@ -260,9 +260,8 @@ mod section_12_2_invalid {
 
     /// MLS §12.2: "Maximum one algorithm section" - multiple should fail
     #[test]
-    #[ignore = "Semantic validation not yet implemented for function restrictions"]
     fn mls_12_2_max_one_algorithm() {
-        expect_parse_failure(
+        expect_failure(
             r#"
             function F
                 input Real x;
@@ -273,14 +272,14 @@ mod section_12_2_invalid {
                 y := y * 2;
             end F;
             "#,
+            "F",
         );
     }
 
     /// MLS §12.2: "No inner/outer prefixes"
     #[test]
-    #[ignore = "Semantic validation not yet implemented for function restrictions"]
     fn mls_12_2_no_inner_outer() {
-        expect_parse_failure(
+        expect_failure(
             r#"
             function F
                 input Real x;
@@ -291,14 +290,14 @@ mod section_12_2_invalid {
                 y := x * globalParam;
             end F;
             "#,
+            "F",
         );
     }
 
     /// MLS §12.2: "Input parameters are read-only" - modification should fail
     #[test]
-    #[ignore = "Semantic validation not yet implemented for function restrictions"]
     fn mls_12_2_input_readonly() {
-        expect_parse_failure(
+        expect_failure(
             r#"
             function F
                 input Real x;
@@ -308,6 +307,7 @@ mod section_12_2_invalid {
                 y := x;
             end F;
             "#,
+            "F",
         );
     }
 
@@ -330,9 +330,8 @@ mod section_12_2_invalid {
 
     /// MLS §12.2: Public component without input/output
     #[test]
-    #[ignore = "Semantic validation not yet implemented for function restrictions"]
     fn mls_12_2_public_must_be_io() {
-        expect_parse_failure(
+        expect_failure(
             r#"
             function F
                 input Real x;
@@ -343,6 +342,7 @@ mod section_12_2_invalid {
                 y := temp;
             end F;
             "#,
+            "F",
         );
     }
 }

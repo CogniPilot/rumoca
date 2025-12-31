@@ -204,7 +204,6 @@ mod modification_edge_cases {
 
     /// Critical: Modification of non-existent component
     #[test]
-    #[ignore = "Invalid modification target detection not yet implemented"]
     fn mls_7_2_modify_nonexistent() {
         expect_failure(
             r#"

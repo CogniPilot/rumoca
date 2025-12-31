@@ -499,7 +499,6 @@ mod coercion_critical {
 
     /// Critical: No Real to Integer coercion
     #[test]
-    #[ignore = "Real to Integer type check not implemented"]
     fn critical_no_real_to_int() {
         expect_failure(
             r#"
@@ -747,7 +746,6 @@ mod error_critical {
 
     /// Critical: Detect incompatible array operations
     #[test]
-    #[ignore = "Array dimension validation in equations not yet implemented"]
     fn error_incompatible_array_ops() {
         expect_failure(
             r#"
