@@ -7,9 +7,9 @@ use crate::ir::ast::{ClassDefinition, Expression};
 use crate::ir::analysis::symbols::DefinedSymbol;
 use crate::ir::analysis::type_inference::{infer_expression_type, type_from_name};
 
-use super::expressions::validate_expression;
-use super::types::{build_array_type, get_array_dimensions, has_inferred_dimensions};
-use super::{TypeCheckResult, TypeError, TypeErrorSeverity};
+use super::super::expressions::validate_expression;
+use super::super::types::{build_array_type, get_array_dimensions, has_inferred_dimensions};
+use super::super::{TypeCheckResult, TypeError, TypeErrorSeverity};
 
 /// Check component binding types in a flattened class.
 ///
@@ -84,9 +84,12 @@ pub fn check_component_bindings(class: &ClassDefinition) -> TypeCheckResult {
             .cloned()
             .unwrap_or_else(|| comp.name_token.location.clone());
 
-        // Check for base type compatibility first
+        // Check for base type assignment compatibility
+        // Use is_assignable_from which handles asymmetric coercion:
+        // - Integer can be assigned to Real (widening)
+        // - Real cannot be assigned to Integer (narrowing)
         // For user-defined types (Class), be lenient - they may be aliases for Real/Integer
-        if !declared_base.is_compatible_with(&binding_base)
+        if !declared_base.is_assignable_from(&binding_base)
             && !matches!(
                 binding_base,
                 crate::ir::analysis::type_inference::SymbolType::Unknown

@@ -142,7 +142,6 @@ mod when_condition_restriction {
 
     /// MLS: "The condition of a when-equation shall be a discrete-time expression"
     #[test]
-    #[ignore = "When condition discrete check not yet implemented"]
     fn mls_8_3_5_when_condition_continuous() {
         // Using a continuous expression directly as when condition
         // This should fail because x is continuous
@@ -164,7 +163,6 @@ mod when_condition_restriction {
 
     /// MLS: "Condition must be Boolean"
     #[test]
-    #[ignore = "When condition Boolean check not yet implemented"]
     fn mls_8_3_5_when_condition_integer() {
         expect_failure(
             r#"
@@ -183,7 +181,6 @@ mod when_condition_restriction {
 
     /// MLS: "Condition must be Boolean"
     #[test]
-    #[ignore = "When condition Boolean check not yet implemented"]
     fn mls_8_3_5_when_condition_real() {
         expect_failure(
             r#"
@@ -368,7 +365,6 @@ mod reinit_restriction {
 
     /// MLS: "reinit can only be used in a when-equation"
     #[test]
-    #[ignore = "reinit context restriction not yet implemented"]
     fn mls_8_3_5_reinit_outside_when() {
         expect_failure(
             r#"
@@ -385,7 +381,6 @@ mod reinit_restriction {
 
     /// MLS: "reinit can only be used in a when-equation"
     #[test]
-    #[ignore = "reinit context restriction not yet implemented"]
     fn mls_8_3_5_reinit_in_if() {
         expect_failure(
             r#"
@@ -405,7 +400,6 @@ mod reinit_restriction {
 
     /// MLS: "reinit can only reinitialize continuous-time variables"
     #[test]
-    #[ignore = "reinit variable type check not yet implemented"]
     fn mls_8_3_5_reinit_discrete_forbidden() {
         expect_failure(
             r#"
@@ -425,7 +419,6 @@ mod reinit_restriction {
 
     /// MLS: "reinit can only reinitialize continuous-time variables"
     #[test]
-    #[ignore = "reinit variable type check not yet implemented"]
     fn mls_8_3_5_reinit_parameter_forbidden() {
         expect_failure(
             r#"
@@ -598,7 +591,6 @@ mod edge_change_restriction {
 
     /// MLS: "edge() requires a Boolean argument"
     #[test]
-    #[ignore = "edge() argument type check not yet implemented"]
     fn mls_8_3_5_edge_integer_forbidden() {
         expect_failure(
             r#"

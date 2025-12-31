@@ -73,7 +73,6 @@ mod for_equation_restrictions {
 
     /// MLS: "The loop-variable shall not be modified within the for-equation"
     #[test]
-    #[ignore = "Loop variable assignment detection not yet implemented"]
     fn error_loop_variable_assigned() {
         expect_failure(
             r#"
@@ -312,7 +311,6 @@ mod when_equation_restrictions {
 
     /// MLS: "When-equations shall not be used in initial equation sections"
     #[test]
-    #[ignore = "When in initial equation detection not yet implemented"]
     fn error_when_in_initial_equation() {
         expect_failure(
             r#"
@@ -402,7 +400,6 @@ mod when_equation_restrictions {
 
     /// MLS: "reinit can only be used in when-equation body"
     #[test]
-    #[ignore = "reinit location check not yet implemented"]
     fn error_reinit_outside_when() {
         expect_failure(
             r#"
@@ -419,7 +416,6 @@ mod when_equation_restrictions {
 
     /// MLS: "reinit shall only be applied once to a variable in any when-clause"
     #[test]
-    #[ignore = "Duplicate reinit detection not yet implemented"]
     fn error_duplicate_reinit() {
         expect_failure(
             r#"

@@ -177,6 +177,19 @@ fn validate_class_restrictions(class_def: &ir::ast::ClassDefinition) -> anyhow::
         }
         _ => {}
     }
+
+    // Check that the end name matches the class name
+    if let Some(end_name) = &class_def.end_name_token
+        && end_name.text != class_def.name.text
+    {
+        anyhow::bail!(
+            "End name '{}' does not match class name '{}' (line {})",
+            end_name.text,
+            class_def.name.text,
+            end_name.location.start_line
+        );
+    }
+
     Ok(())
 }
 

@@ -256,11 +256,19 @@ impl CombinedTestResults {
         }
     }
 
+    /// Calculate the balance rate as a percentage.
+    ///
+    /// Balance rate = 100 - (unbalanced / total_models * 100)
+    ///
+    /// This treats partial models as successes since they are under-determined
+    /// by design (they have external connectors that receive equations when
+    /// connected in a larger system). Only truly unbalanced models count as
+    /// failures.
     fn balance_rate(&self) -> f64 {
         if self.total_models == 0 {
             0.0
         } else {
-            self.balanced as f64 / self.total_models as f64 * 100.0
+            100.0 - (self.unbalanced as f64 / self.total_models as f64 * 100.0)
         }
     }
 
@@ -986,8 +994,9 @@ fn print_combined_results(results: &CombinedTestResults) {
 #[test]
 #[ignore]
 fn test_msl_balance_all() {
-    const MIN_PARSE_RATE: f64 = 99.0;
-    const MIN_COMPILE_RATE: f64 = 25.0; // Lower threshold while working on fixes
+    const MIN_PARSE_RATE: f64 = 100.0;
+    const MIN_COMPILE_RATE: f64 = 100.0;
+    const MIN_BALANCE_RATE: f64 = 92.0;
 
     // Print instructions for where to find output files
     println!("============================================================");
@@ -1079,6 +1088,12 @@ fn test_msl_balance_all() {
         results.compile_success_rate(),
         MIN_COMPILE_RATE
     );
+    assert!(
+        results.balance_rate() >= MIN_BALANCE_RATE,
+        "Balance rate {:.1}% is below minimum {:.1}%",
+        results.balance_rate(),
+        MIN_BALANCE_RATE
+    );
 
     println!("\n✓ All thresholds passed!");
     println!(
@@ -1090,5 +1105,10 @@ fn test_msl_balance_all() {
         "  Compile rate: {:.1}% >= {:.1}%",
         results.compile_success_rate(),
         MIN_COMPILE_RATE
+    );
+    println!(
+        "  Balance rate: {:.1}% >= {:.1}%",
+        results.balance_rate(),
+        MIN_BALANCE_RATE
     );
 }

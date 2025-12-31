@@ -399,7 +399,6 @@ mod array_compatibility {
 
     /// MLS: 2D arrays with same shape
     #[test]
-    #[ignore = "2D array equation assignment not yet supported"]
     fn mls_6_3_2d_same_shape() {
         expect_success(
             r#"

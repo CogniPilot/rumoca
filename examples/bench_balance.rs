@@ -1,14 +1,32 @@
 //! Benchmark for balance checking with MSL
 //!
-//! Run with: cargo run --release --example bench_balance
-//! Profile with: cargo flamegraph --example bench_balance
+//! Run with: MSL_PATH=/path/to/MSL cargo run --release --example bench_balance
+//! Profile with: MSL_PATH=/path/to/MSL cargo flamegraph --example bench_balance
+//!
+//! Set the MSL_PATH environment variable to point to your Modelica Standard Library installation.
 
 use std::sync::Arc;
 
 fn main() {
-    // Setup: Load MSL
-    let msl_path =
-        std::path::PathBuf::from("/home/jgoppert/Downloads/ModelicaStandardLibrary_v4.1.0");
+    // Setup: Load MSL from environment variable
+    let msl_path = match std::env::var("MSL_PATH") {
+        Ok(path) => std::path::PathBuf::from(path),
+        Err(_) => {
+            eprintln!("Error: MSL_PATH environment variable not set.");
+            eprintln!(
+                "Please set MSL_PATH to point to your Modelica Standard Library installation."
+            );
+            eprintln!(
+                "Example: MSL_PATH=/path/to/ModelicaStandardLibrary_v4.1.0 cargo run --release --example bench_balance"
+            );
+            std::process::exit(1);
+        }
+    };
+
+    if !msl_path.exists() {
+        eprintln!("Error: MSL_PATH '{}' does not exist.", msl_path.display());
+        std::process::exit(1);
+    }
 
     println!("Loading MSL...");
     let start = std::time::Instant::now();

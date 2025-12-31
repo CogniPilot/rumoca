@@ -587,7 +587,7 @@ pub fn create_dae(fclass: &mut ClassDefinition) -> Result<Dae> {
                                     match &args[0] {
                                         Expression::ComponentReference(cref) => {
                                             dae.fr.insert(
-                                                cond_name,
+                                                format!("{}_{}", cond_name, cref),
                                                 Statement::Assignment {
                                                     comp: cref.clone(),
                                                     value: args[1].clone(),

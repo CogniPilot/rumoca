@@ -259,7 +259,6 @@ mod connection_restrictions {
 
     /// MLS: "Connected components must have matching dimensions"
     #[test]
-    #[ignore = "Connector dimension matching not yet checked"]
     fn error_dimension_mismatch() {
         expect_failure(
             r#"

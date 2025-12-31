@@ -1,6 +1,6 @@
 //! Basic equation and statement type checking.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ir::ast::{ClassDefinition, Equation, Expression, Statement};
 
@@ -9,7 +9,7 @@ use crate::ir::analysis::type_inference::{
     ClassLookup, SymbolType, infer_expression_type_with_classes,
 };
 
-use super::{TypeCheckResult, TypeError, TypeErrorSeverity};
+use super::super::{TypeCheckResult, TypeError, TypeErrorSeverity};
 
 /// Check types in an equation
 ///
@@ -335,5 +335,99 @@ fn check_expression_pair<C: ClassLookup>(
         && let Some(loc) = lhs.get_location()
     {
         result.add_error(TypeError::mismatch(loc.clone(), lhs_type, rhs_type));
+    }
+}
+
+/// Check for assignments to loop variables in equation sections.
+///
+/// MLS §8.3.4: The loop-variable is read-only.
+/// This check traverses equation sections and reports errors when a loop
+/// variable appears on the LHS of an equation within a for-equation.
+pub fn check_equation_loop_variable_assignments(class: &ClassDefinition) -> TypeCheckResult {
+    let mut result = TypeCheckResult::new();
+
+    // Check all equations
+    for eq in &class.equations {
+        check_loop_var_in_equation(eq, &HashSet::new(), &mut result);
+    }
+
+    // Check initial equations
+    for eq in &class.initial_equations {
+        check_loop_var_in_equation(eq, &HashSet::new(), &mut result);
+    }
+
+    // Recursively check nested classes
+    for (_name, nested_class) in &class.classes {
+        let nested_result = check_equation_loop_variable_assignments(nested_class);
+        for error in nested_result.errors {
+            result.add_error(error);
+        }
+    }
+
+    result
+}
+
+/// Check an equation for loop variable assignments.
+/// `loop_vars` is the set of currently active loop variable names.
+fn check_loop_var_in_equation(
+    eq: &Equation,
+    loop_vars: &HashSet<String>,
+    result: &mut TypeCheckResult,
+) {
+    match eq {
+        Equation::Simple { lhs, .. } => {
+            // Check if the LHS is a loop variable
+            if let Expression::ComponentReference(comp_ref) = lhs
+                && let Some(first) = comp_ref.parts.first()
+            {
+                let var_name = &first.ident.text;
+                if loop_vars.contains(var_name) {
+                    result.add_error(TypeError::new(
+                        first.ident.location.clone(),
+                        SymbolType::Unknown,
+                        SymbolType::Unknown,
+                        format!(
+                            "Cannot assign to loop variable '{}'. Loop variables are read-only.",
+                            var_name
+                        ),
+                        TypeErrorSeverity::Error,
+                    ));
+                }
+            }
+        }
+        Equation::For { indices, equations } => {
+            // Add loop variables to the set
+            let mut new_loop_vars = loop_vars.clone();
+            for index in indices {
+                new_loop_vars.insert(index.ident.text.clone());
+            }
+            // Check equations in the loop body with the extended loop variable set
+            for sub_eq in equations {
+                check_loop_var_in_equation(sub_eq, &new_loop_vars, result);
+            }
+        }
+        Equation::When(blocks) => {
+            for block in blocks {
+                for sub_eq in &block.eqs {
+                    check_loop_var_in_equation(sub_eq, loop_vars, result);
+                }
+            }
+        }
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                for sub_eq in &block.eqs {
+                    check_loop_var_in_equation(sub_eq, loop_vars, result);
+                }
+            }
+            if let Some(else_eqs) = else_block {
+                for sub_eq in else_eqs {
+                    check_loop_var_in_equation(sub_eq, loop_vars, result);
+                }
+            }
+        }
+        _ => {}
     }
 }

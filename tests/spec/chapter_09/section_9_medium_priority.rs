@@ -21,7 +21,6 @@ mod connector_restrictions {
 
     /// MLS: "Connectors cannot have parameter components with flow/potential"
     #[test]
-    #[ignore = "Connector parameter restriction not yet implemented"]
     fn mls_9_1_connector_no_parameter() {
         expect_failure(
             r#"
@@ -37,7 +36,6 @@ mod connector_restrictions {
 
     /// MLS: "Connectors cannot have constant components"
     #[test]
-    #[ignore = "Connector constant restriction not yet implemented"]
     fn mls_9_1_connector_no_constant() {
         expect_failure(
             r#"
