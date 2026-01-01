@@ -10,7 +10,7 @@ use crate::ir;
 use crate::ir::analysis::reference_checker::collect_imported_packages;
 use crate::ir::ast::{Expression, Import, OpBinary};
 use crate::ir::error::IrError;
-use crate::ir::transform::constants::is_primitive_type;
+use crate::ir::transform::constants::{is_builtin_function, is_primitive_type};
 use crate::ir::visitor::MutVisitor;
 use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
@@ -270,6 +270,137 @@ impl MutVisitor for ImportAliasResolver<'_> {
             new_parts.extend(node.parts.iter().skip(1).cloned());
 
             node.parts = new_parts;
+        }
+    }
+}
+
+// =============================================================================
+// Function Call Path Resolver Visitor
+// =============================================================================
+
+/// Visitor that resolves function call paths relative to a source class context.
+///
+/// This is used when inheriting equations from a parent class. Function calls
+/// in the parent's equations (like `Functions.state1(...)`) need to be resolved
+/// relative to the parent class's context, not the child class's context.
+///
+/// For example, if `PotentialToFlowAdaptor` (at `Modelica.Blocks.Interfaces.Adaptors.PotentialToFlowAdaptor`)
+/// has an equation `u = Functions.state2(...)`, and `Functions` is a sibling package
+/// at `Modelica.Blocks.Interfaces.Adaptors.Functions`, this visitor will resolve
+/// the function call to the fully qualified path.
+pub(super) struct FunctionCallResolver<'a> {
+    /// The class path where the equations originated from
+    source_class_path: &'a str,
+    /// The class dictionary for type resolution
+    class_dict: &'a super::ClassDict,
+    /// Import aliases for the source class
+    import_aliases: &'a IndexMap<String, String>,
+}
+
+impl<'a> FunctionCallResolver<'a> {
+    pub fn new(
+        source_class_path: &'a str,
+        class_dict: &'a super::ClassDict,
+        import_aliases: &'a IndexMap<String, String>,
+    ) -> Self {
+        Self {
+            source_class_path,
+            class_dict,
+            import_aliases,
+        }
+    }
+
+    /// Try to resolve a function name to its fully qualified path
+    fn resolve_function_path(&self, name: &str) -> Option<String> {
+        // First try with import aliases
+        let resolved = apply_import_aliases(name, self.import_aliases);
+
+        // Check if it's already fully qualified
+        if self.class_dict.contains_key(&resolved) {
+            return Some(resolved);
+        }
+
+        // Try prepending enclosing scope prefixes from the source class
+        let parts: Vec<&str> = self.source_class_path.split('.').collect();
+        for i in (0..parts.len()).rev() {
+            let prefix = parts[..i].join(".");
+            let candidate = if prefix.is_empty() {
+                resolved.clone()
+            } else {
+                format!("{}.{}", prefix, resolved)
+            };
+            if self.class_dict.contains_key(&candidate) {
+                return Some(candidate);
+            }
+
+            // Also try resolving just the first part (package name) and then append the rest
+            // This handles Functions.state2 where Functions is a sibling package
+            let name_parts: Vec<&str> = resolved.split('.').collect();
+            if name_parts.len() >= 2 {
+                let first = name_parts[0];
+                let rest: String = name_parts[1..].join(".");
+                let pkg_candidate = if prefix.is_empty() {
+                    first.to_string()
+                } else {
+                    format!("{}.{}", prefix, first)
+                };
+                if self.class_dict.contains_key(&pkg_candidate) {
+                    // Found the package, now build the full function path
+                    let func_path = format!("{}.{}", pkg_candidate, rest);
+                    // Don't check if func_path exists - functions may not be in class_dict
+                    // but the package existing is enough to know we should use this path
+                    return Some(func_path);
+                }
+            }
+        }
+
+        // Try the root-level name
+        if self.class_dict.contains_key(&resolved) {
+            return Some(resolved);
+        }
+
+        None
+    }
+}
+
+impl MutVisitor for FunctionCallResolver<'_> {
+    fn exit_expression(&mut self, node: &mut ir::ast::Expression) {
+        if let ir::ast::Expression::FunctionCall { comp, .. } = node {
+            // Skip built-in functions
+            let func_name = comp.to_string();
+            if is_builtin_function(&func_name) {
+                return;
+            }
+
+            // Skip if already resolved (multi-part paths that exist in class_dict)
+            if self.class_dict.contains_key(&func_name) {
+                return;
+            }
+
+            // Try to resolve the function path
+            if let Some(resolved_path) = self.resolve_function_path(&func_name) {
+                // Update the component reference with the resolved path
+                let original_location = comp.parts.first().map(|p| p.ident.location.clone());
+
+                let new_parts: Vec<ir::ast::ComponentRefPart> = resolved_path
+                    .split('.')
+                    .enumerate()
+                    .map(|(i, s)| ir::ast::ComponentRefPart {
+                        ident: ir::ast::Token {
+                            text: s.to_string(),
+                            location: if i == 0 {
+                                original_location.clone().unwrap_or_default()
+                            } else {
+                                Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        subs: None,
+                    })
+                    .collect();
+
+                comp.parts = new_parts;
+            }
         }
     }
 }

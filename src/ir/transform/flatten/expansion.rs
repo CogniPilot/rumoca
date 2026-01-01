@@ -18,7 +18,7 @@ use super::helpers::{
     is_operator_record_type, is_simple_literal, make_binding_eq, try_evaluate_modification,
 };
 use super::imports::{
-    ImportAliasResolver, build_import_aliases_for_class,
+    FunctionCallResolver, ImportAliasResolver, build_import_aliases_for_class,
     extract_package_modifications_from_component, find_type_in_extends_chain,
     resolve_class_name_with_imports,
 };
@@ -285,10 +285,21 @@ impl<'a> ExpansionContext<'a> {
         // Add equations from component class, with scoped variable references
         for eq in &comp_class.equations {
             let mut feq = eq.clone();
-            // First resolve import aliases, then apply scope renaming
+            // First resolve import aliases
             if has_aliases {
                 feq.accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
             }
+            // Then resolve function call paths relative to the component's class context
+            // This handles calls like Functions.state2() where Functions is a sibling package
+            {
+                let mut func_resolver = FunctionCallResolver::new(
+                    &resolved_type_name,
+                    self.class_dict,
+                    &comp_import_aliases,
+                );
+                feq.accept_mut(&mut func_resolver);
+            }
+            // Finally apply scope renaming
             feq.accept_mut(&mut renamer);
             self.fclass.equations.push(feq);
         }
@@ -298,19 +309,31 @@ impl<'a> ExpansionContext<'a> {
             let mut scoped_section = Vec::new();
             for stmt in algo_section {
                 let mut fstmt = stmt.clone();
-                // First resolve import aliases, then apply scope renaming
+                // First resolve import aliases
                 if has_aliases {
                     fstmt.accept_mut(&mut ImportAliasResolver::new(&comp_import_aliases));
                 }
+                // Then resolve function call paths
+                {
+                    let mut func_resolver = FunctionCallResolver::new(
+                        &resolved_type_name,
+                        self.class_dict,
+                        &comp_import_aliases,
+                    );
+                    fstmt.accept_mut(&mut func_resolver);
+                }
+                // Finally apply scope renaming
                 fstmt.accept_mut(&mut renamer);
                 scoped_section.push(fstmt);
             }
             self.fclass.algorithms.push(scoped_section);
         }
 
-        // Check if this is an operator record (like Complex) that needs special subscript handling.
-        // For operator records, array subscripts move from the component to its fields:
-        // u[1].re becomes u.re[1] because after flattening, u.re is an array.
+        // Note: SubCompNamer now always preserves subscripts from the first part,
+        // so is_operator_record is only used to indicate this is an operator record type.
+        // Previously we needed this flag to control subscript handling, but now subscripts
+        // are always moved to preserve correct array indexing for both operator records
+        // (like Complex) and regular array components (like C[dim_vector_lgc]).
         let is_operator_record = is_operator_record_type(&comp_class, &resolved_type_name);
 
         // Check for out-of-bounds subscripts on nested component references BEFORE SubCompNamer
@@ -318,7 +341,9 @@ impl<'a> ExpansionContext<'a> {
         // This handles cases like: A a[2]; Real y = a[3].x[1]; where a[3] is out of bounds.
         check_nested_component_subscripts(self.fclass, comp_name, comp)?;
 
-        // Expand comp.sub_comp names to use dots in existing equations
+        // Expand comp.sub_comp names to use dots in existing equations.
+        // Note: SubCompNamer now always preserves subscripts, so is_operator_record
+        // only indicates the type for any potential type-specific logic.
         self.fclass.accept_mut(&mut SubCompNamer {
             comp: comp_name.to_string(),
             is_operator_record,

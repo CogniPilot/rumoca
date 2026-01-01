@@ -1430,3 +1430,5 @@ fn test_demultiplex_pattern() {
     assert_eq!(result.balance.num_unknowns, 2, "Should have 2 unknowns");
     assert_eq!(result.balance.num_inputs, 2, "Should have 2 inputs");
 }
+
+// Note: test_dffreg_balance_debug was removed as incomplete

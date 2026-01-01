@@ -33,8 +33,10 @@ use crate::ir::visitor::MutVisitor;
 pub struct SubCompNamer {
     pub comp: String,
     /// If true, subscripts from the component are moved to its subcomponents.
-    /// This is needed for operator records like Complex where `u[1].re` should
-    /// become `u.re[1]` (because `u.re` is an array after flattening).
+    /// This is needed for:
+    /// 1. Operator records like Complex where `u[1].re` becomes `u.re[1]`
+    /// 2. Array components where `C[idx].p` becomes `C.p[idx]`
+    /// In both cases, the subcomponent becomes an array after flattening.
     pub is_operator_record: bool,
 }
 
@@ -43,19 +45,19 @@ impl MutVisitor for SubCompNamer {
         // Only transform if there are at least 2 parts (e.g., comp.subcomp)
         // A single-part reference doesn't need transformation
         if node.parts.len() >= 2 && node.parts[0].ident.text == self.comp {
-            // For operator records (like Complex), move subscripts from the first part
-            // to the flattened subcomponent. This transforms `u[1].re` to `u.re[1]`.
-            let first_part_subs = if self.is_operator_record {
-                node.parts[0].subs.take()
-            } else {
-                None
-            };
+            // Always move subscripts from the first part to the flattened subcomponent.
+            // This transforms:
+            // - `u[1].re` to `u.re[1]` for operator records
+            // - `C[idx].p` to `C.p[idx]` for array components
+            // The subscripts must be preserved because after flattening, the subcomponent
+            // becomes an array with the same dimensions as the parent component.
+            let first_part_subs = node.parts[0].subs.take();
 
             node.parts.remove(0);
             node.parts[0].ident.text = format!("{}.{}", self.comp, node.parts[0].ident.text);
 
             // Move subscripts to the new first part if it doesn't already have subscripts
-            if self.is_operator_record && node.parts[0].subs.is_none() {
+            if node.parts[0].subs.is_none() {
                 node.parts[0].subs = first_part_subs;
             }
         }
