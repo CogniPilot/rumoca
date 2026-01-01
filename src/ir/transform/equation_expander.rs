@@ -390,6 +390,10 @@ fn extract_binding_equations(
 /// For balance checking purposes, we create a simple placeholder equation
 /// for each unique assigned variable. The actual algorithm semantics would
 /// need more sophisticated handling for simulation.
+///
+/// IMPORTANT: For array variables, we create one equation per array element
+/// to match the unknown count. The balance check counts scalar unknowns,
+/// so we need scalar equations.
 fn convert_algorithms_to_equations(
     algorithms: &[Vec<Statement>],
     components: &IndexMap<String, Component>,
@@ -400,7 +404,7 @@ fn convert_algorithms_to_equations(
         // Find all unique variables assigned in this algorithm section
         let assigned_vars = find_assigned_variables(algorithm_section);
 
-        // Create one equation per assigned variable
+        // Create equations per assigned variable (accounting for arrays)
         for var_name in assigned_vars {
             // Skip if it's an input (inputs don't need equations)
             if let Some(comp) = components.get(&var_name)
@@ -409,23 +413,63 @@ fn convert_algorithms_to_equations(
                 continue;
             }
 
-            // Create a placeholder equation: var = var (self-assignment)
-            // This is a simplification - the actual algorithm semantics are procedural
-            let comp_ref = ComponentReference {
-                local: false,
-                parts: vec![ComponentRefPart {
-                    ident: Token {
-                        text: var_name.clone(),
-                        ..Default::default()
-                    },
-                    subs: None,
-                }],
+            // Check if this is an array variable
+            let (num_elements, shape) = if let Some(comp) = components.get(&var_name) {
+                if comp.shape.is_empty() {
+                    (1, vec![]) // Scalar
+                } else {
+                    (comp.shape.iter().product(), comp.shape.clone()) // Product of all dimensions
+                }
+            } else {
+                (1, vec![]) // Unknown component, assume scalar
             };
 
-            let lhs = Expression::ComponentReference(comp_ref.clone());
-            let rhs = Expression::ComponentReference(comp_ref);
+            // Create one equation per array element
+            for i in 1..=num_elements {
+                let comp_ref = if num_elements == 1 {
+                    // Scalar variable - no subscript needed
+                    ComponentReference {
+                        local: false,
+                        parts: vec![ComponentRefPart {
+                            ident: Token {
+                                text: var_name.clone(),
+                                ..Default::default()
+                            },
+                            subs: None,
+                        }],
+                    }
+                } else {
+                    // Array variable - convert flat index to N-dimensional indices
+                    let indices = flat_index_to_nd(&shape, i);
+                    let subs: Vec<Subscript> = indices
+                        .iter()
+                        .map(|&idx| {
+                            Subscript::Expression(Expression::Terminal {
+                                terminal_type: TerminalType::UnsignedInteger,
+                                token: Token {
+                                    text: idx.to_string(),
+                                    ..Default::default()
+                                },
+                            })
+                        })
+                        .collect();
+                    ComponentReference {
+                        local: false,
+                        parts: vec![ComponentRefPart {
+                            ident: Token {
+                                text: var_name.clone(),
+                                ..Default::default()
+                            },
+                            subs: Some(subs),
+                        }],
+                    }
+                };
 
-            equations.push(Equation::Simple { lhs, rhs });
+                let lhs = Expression::ComponentReference(comp_ref.clone());
+                let rhs = Expression::ComponentReference(comp_ref);
+
+                equations.push(Equation::Simple { lhs, rhs });
+            }
         }
     }
 
@@ -932,7 +976,19 @@ fn get_equation_array_size(
                         Some(comp.shape.iter().product())
                     }
                 } else {
-                    Some(1)
+                    // Component not found directly - check if this is a flattened Complex type
+                    // After flattening, Complex variable `y` becomes `y.re` and `y.im`
+                    // Check if `y.re` exists to infer the array size
+                    let re_name = format!("{}.re", name);
+                    if let Some(re_comp) = components.get(&re_name) {
+                        if re_comp.shape.is_empty() {
+                            Some(1)
+                        } else {
+                            Some(re_comp.shape.iter().product())
+                        }
+                    } else {
+                        Some(1)
+                    }
                 }
             } else {
                 Some(1)
@@ -1172,6 +1228,14 @@ fn flatten_and_subscript(
                                 // It's an array (even if size 1) - subscript it
                                 return subscript_expr(elem.clone(), &[1]);
                             }
+                            // Check for flattened Complex type
+                            let re_name = format!("{}.re", name);
+                            if let Some(re_comp) = components.get(&re_name)
+                                && !re_comp.shape.is_empty()
+                            {
+                                // It's a Complex array (even if size 1) - subscript it
+                                return subscript_expr(elem.clone(), &[1]);
+                            }
                         }
                         // Truly scalar element - return as-is
                         return elem.clone();
@@ -1194,6 +1258,15 @@ fn flatten_and_subscript(
                 {
                     // It's an array - convert flat index to multi-dimensional indices
                     let indices = flat_index_to_nd(&comp.shape, flat_index);
+                    return subscript_expr(expr.clone(), &indices);
+                }
+                // Check if this is a flattened Complex type (y -> y.re, y.im)
+                let re_name = format!("{}.re", name);
+                if let Some(re_comp) = components.get(&re_name)
+                    && !re_comp.shape.is_empty()
+                {
+                    // It's a Complex array - use the shape of y.re
+                    let indices = flat_index_to_nd(&re_comp.shape, flat_index);
                     return subscript_expr(expr.clone(), &indices);
                 }
             }

@@ -88,12 +88,21 @@ impl Visitor for NestedSubscriptChecker<'_> {
 
             let dim_size = self.shape[dim_idx];
             if idx < 1 || idx > dim_size {
+                // Add debug info about where this subscript came from
+                let location = if token.location.file_name.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    token.location.file_name.clone()
+                };
+                let line = token.location.start_line;
                 self.error = Some(format!(
-                    "Subscript '{}' for dimension {} (size = {}) of {} is out of bounds",
+                    "Subscript '{}' for dimension {} (size = {}) of {} is out of bounds (from {}:{})",
                     idx,
                     dim_idx + 1,
                     dim_size,
-                    self.comp_name
+                    self.comp_name,
+                    location,
+                    line
                 ));
                 return;
             }

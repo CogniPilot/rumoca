@@ -167,9 +167,14 @@ impl Dae {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        // Collect input variable names for filtering
+        // Equations that assign to input variables shouldn't be counted
+        let input_names: HashSet<String> = self.u.keys().cloned().collect();
+
         // Count equations recursively, handling For loops
-        let fx_count = count_equations(&self.fx, &all_params, &all_components);
-        let fz_count = count_equations(&self.fz, &all_params, &all_components);
+        // Exclude equations that assign to input variables (they don't add constraints)
+        let fx_count = count_equations(&self.fx, &all_params, &all_components, &input_names);
+        let fz_count = count_equations(&self.fz, &all_params, &all_components, &input_names);
 
         // For event equations (fr), count unique variables assigned, not total assignments.
         // A when/elsewhen chain assigns to the same variable multiple times but is 1 equation.
@@ -224,10 +229,11 @@ fn count_equations(
     equations: &[Equation],
     params: &IndexMap<String, Component>,
     all_components: &IndexMap<String, Component>,
+    input_names: &HashSet<String>,
 ) -> usize {
     equations
         .iter()
-        .map(|eq| count_single_equation(eq, params, all_components))
+        .map(|eq| count_single_equation(eq, params, all_components, input_names))
         .sum()
 }
 
@@ -236,9 +242,24 @@ fn count_single_equation(
     eq: &Equation,
     params: &IndexMap<String, Component>,
     all_components: &IndexMap<String, Component>,
+    input_names: &HashSet<String>,
 ) -> usize {
     match eq {
-        Equation::Simple { lhs, .. } => {
+        Equation::Simple { lhs, rhs } => {
+            // Check if this is an input-to-input binding equation
+            // Equations like "subComp.x = x" where BOTH sides are inputs
+            // shouldn't be counted as they don't add constraints - they just bind inputs together
+            // But equations like "u = [y1; y2]" where LHS is input but RHS contains outputs
+            // DO provide equations for those outputs, so we count them.
+            if let Some(lhs_name) = get_lhs_variable_name(lhs) {
+                if is_input_variable(&lhs_name, input_names) {
+                    // LHS is an input - check if RHS is also purely inputs
+                    if is_purely_input_expression(rhs, input_names) {
+                        return 0;
+                    }
+                }
+            }
+
             // Only count scalar elements for tuple LHS - these are multi-output function calls
             // that aren't expanded during equation expansion. Other equations (including
             // expanded array equations) count as 1.
@@ -255,12 +276,12 @@ fn count_single_equation(
             // Try to evaluate the For loop range from parameters
             if let Some(range_size) = evaluate_for_range(indices, params) {
                 // Inner equations * range size
-                let inner_count = count_equations(equations, params, all_components);
+                let inner_count = count_equations(equations, params, all_components, input_names);
                 inner_count * range_size
             } else {
                 // Can't evaluate range - just count inner equations
                 // This is a conservative estimate
-                count_equations(equations, params, all_components)
+                count_equations(equations, params, all_components, input_names)
             }
         }
 
@@ -278,7 +299,7 @@ fn count_single_equation(
                 match eval_boolean(&block.cond, params) {
                     Some(true) => {
                         // This branch is active - count only its equations
-                        return count_equations(&block.eqs, params, all_components);
+                        return count_equations(&block.eqs, params, all_components, input_names);
                     }
                     Some(false) => {
                         // This condition is false, continue to next branch
@@ -300,7 +321,7 @@ fn count_single_equation(
                 // All conditions are false, use else branch
                 return else_block
                     .as_ref()
-                    .map(|eqs| count_equations(eqs, params, all_components))
+                    .map(|eqs| count_equations(eqs, params, all_components, input_names))
                     .unwrap_or(0);
             }
 
@@ -310,12 +331,12 @@ fn count_single_equation(
             // Collect counts from all branches: if, all elseif, and else.
             let mut all_branch_counts: Vec<usize> = cond_blocks
                 .iter()
-                .map(|block| count_equations(&block.eqs, params, all_components))
+                .map(|block| count_equations(&block.eqs, params, all_components, input_names))
                 .collect();
 
             let else_count = else_block
                 .as_ref()
-                .map(|eqs| count_equations(eqs, params, all_components))
+                .map(|eqs| count_equations(eqs, params, all_components, input_names))
                 .unwrap_or(0);
             all_branch_counts.push(else_count);
 
@@ -337,7 +358,7 @@ fn count_single_equation(
             // When equations - count equations in each block (they add up)
             blocks
                 .iter()
-                .map(|block| count_equations(&block.eqs, params, all_components))
+                .map(|block| count_equations(&block.eqs, params, all_components, input_names))
                 .sum()
         }
     }
@@ -492,6 +513,73 @@ fn count_scalars(components: &IndexMap<String, Component>) -> usize {
             }
         })
         .sum()
+}
+
+/// Extract the variable name from a LHS expression
+///
+/// For component references like `subComp.x`, returns the full dotted name.
+/// Used to check if an equation assigns to an input variable.
+fn get_lhs_variable_name(lhs: &Expression) -> Option<String> {
+    match lhs {
+        Expression::ComponentReference(comp_ref) => {
+            // Build the full dotted name from all parts
+            let name = comp_ref
+                .parts
+                .iter()
+                .map(|p| p.ident.text.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
+/// Check if a variable name refers to an input
+///
+/// Returns true if:
+/// - The name exactly matches an input, OR
+/// - The name is a base array name and there are scalar-expanded inputs starting with `name[`
+///
+/// This handles the case where equations assign to `subComp.x` but inputs are
+/// stored as `subComp.x[1]`, `subComp.x[2]`, etc.
+fn is_input_variable(name: &str, input_names: &HashSet<String>) -> bool {
+    // Check for exact match first
+    if input_names.contains(name) {
+        return true;
+    }
+
+    // Check if this is a base name for scalar-expanded array inputs
+    // Look for any input that starts with `name[`
+    let prefix = format!("{}[", name);
+    input_names.iter().any(|input| input.starts_with(&prefix))
+}
+
+/// Check if an expression only involves input variables
+///
+/// Returns true if the expression is a single input reference or an array
+/// of purely input references. Returns false if the expression contains
+/// any non-input variables (like outputs or algebraic variables).
+fn is_purely_input_expression(expr: &Expression, input_names: &HashSet<String>) -> bool {
+    match expr {
+        Expression::ComponentReference(comp_ref) => {
+            // Build the variable name
+            let name = comp_ref
+                .parts
+                .iter()
+                .map(|p| p.ident.text.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            is_input_variable(&name, input_names)
+        }
+        Expression::Array { elements, .. } => {
+            // All elements must be purely input expressions
+            elements
+                .iter()
+                .all(|elem| is_purely_input_expression(elem, input_names))
+        }
+        _ => false, // Other expressions (function calls, operations, etc.) are not purely inputs
+    }
 }
 
 /// Count external connector variables (flow variables that need connection equations)
