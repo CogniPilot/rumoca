@@ -213,12 +213,9 @@ fn expand_complex_assignment(
     type_map: &IndexMap<String, String>,
     operator_records: &IndexMap<String, OperatorRecordInfo>,
 ) -> Option<Vec<Equation>> {
-    // Check if the RHS involves Complex values
-    if !expr_involves_complex(rhs, type_map, operator_records) {
-        return None;
-    }
-
-    // Recursively transform the RHS expression to extract .re and .im parts
+    // Always try to expand Complex assignments. The LHS is known to be Complex,
+    // so we extract .re and .im parts from the RHS. For unrecognized expressions,
+    // the transform functions will create field access expressions (e.g., expr.re).
     let re_expr = transform_to_real_part(rhs, subscripts, type_map, operator_records)?;
     let im_expr = transform_to_imag_part(rhs, subscripts, type_map, operator_records)?;
 
@@ -492,7 +489,31 @@ fn transform_to_real_part(
                 inner: Box::new(inner_re),
             })
         }
-        _ => Some(expr.clone()),
+        Expression::Array { elements, is_matrix } => {
+            // Transform each element of the array
+            let transformed: Option<Vec<_>> = elements
+                .iter()
+                .map(|elem| transform_to_real_part(elem, subscripts, type_map, operator_records))
+                .collect();
+            Some(Expression::Array {
+                elements: transformed?,
+                is_matrix: *is_matrix,
+            })
+        }
+        Expression::ArrayComprehension { expr, indices } => {
+            // Transform the comprehension expression
+            let transformed_expr =
+                transform_to_real_part(expr, subscripts, type_map, operator_records)?;
+            Some(Expression::ArrayComprehension {
+                expr: Box::new(transformed_expr),
+                indices: indices.clone(),
+            })
+        }
+        _ => {
+            // For unknown expressions that might be Complex (e.g., user-defined functions),
+            // create a field access expression: expr.re
+            Some(make_field_access(expr, "re"))
+        }
     }
 }
 
@@ -693,7 +714,31 @@ fn transform_to_imag_part(
                 inner: Box::new(inner_im),
             })
         }
-        _ => Some(make_zero()),
+        Expression::Array { elements, is_matrix } => {
+            // Transform each element of the array
+            let transformed: Option<Vec<_>> = elements
+                .iter()
+                .map(|elem| transform_to_imag_part(elem, subscripts, type_map, operator_records))
+                .collect();
+            Some(Expression::Array {
+                elements: transformed?,
+                is_matrix: *is_matrix,
+            })
+        }
+        Expression::ArrayComprehension { expr, indices } => {
+            // Transform the comprehension expression
+            let transformed_expr =
+                transform_to_imag_part(expr, subscripts, type_map, operator_records)?;
+            Some(Expression::ArrayComprehension {
+                expr: Box::new(transformed_expr),
+                indices: indices.clone(),
+            })
+        }
+        _ => {
+            // For unknown expressions that might be Complex (e.g., user-defined functions),
+            // create a field access expression: expr.im
+            Some(make_field_access(expr, "im"))
+        }
     }
 }
 
@@ -707,6 +752,37 @@ fn make_field_ref(name: &str, field: &str, subscripts: Option<&Vec<Subscript>>) 
                 ..Default::default()
             },
             subs: subscripts.cloned(),
+        }],
+    })
+}
+
+/// Create a field access expression from an arbitrary expression: expr.field
+/// This is used for unknown Complex expressions where we need to access .re or .im
+fn make_field_access(expr: &Expression, field: &str) -> Expression {
+    // If the expression is already a component reference, append the field
+    if let Expression::ComponentReference(comp_ref) = expr {
+        let mut new_parts = comp_ref.parts.clone();
+        if let Some(last_part) = new_parts.last_mut() {
+            // Append .field to the last part's name
+            last_part.ident.text = format!("{}.{}", last_part.ident.text, field);
+        }
+        return Expression::ComponentReference(ComponentReference {
+            local: comp_ref.local,
+            parts: new_parts,
+        });
+    }
+
+    // For other expressions, wrap in a component reference with field access
+    // This creates a synthetic component reference that represents expr.field
+    // Note: This is a simplification; proper handling would require more complex AST
+    Expression::ComponentReference(ComponentReference {
+        local: false,
+        parts: vec![ComponentRefPart {
+            ident: Token {
+                text: format!("({}).{}", expr, field),
+                ..Default::default()
+            },
+            subs: None,
         }],
     })
 }
