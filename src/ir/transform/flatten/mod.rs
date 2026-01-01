@@ -169,10 +169,22 @@ impl<'a> ScopeRenamer<'a> {
         class_path: &str,
         class_dict: &ClassDict,
     ) -> Self {
+        let mut globals = collect_imported_packages_for_class(class_path, class_dict);
+
+        // Also add top-level packages from the class dictionary as globals.
+        // This ensures that fully qualified paths like "Modelica.Blocks.Interfaces.Adaptors.Functions.state2"
+        // are not prefixed with the component scope, since "Modelica" is a known top-level package.
+        for key in class_dict.keys() {
+            if !key.contains('.') {
+                // This is a top-level class/package
+                globals.insert(key.clone());
+            }
+        }
+
         Self {
             symbol_table,
             scope_prefix: scope_prefix.to_string(),
-            component_globals: collect_imported_packages_for_class(class_path, class_dict),
+            component_globals: globals,
             for_loop_vars: Vec::new(),
         }
     }
@@ -323,6 +335,55 @@ fn resolve_class(
     Ok((resolved_arc, deps))
 }
 
+/// Find an inherited class in the parent package's extends chain.
+///
+/// This is used to resolve `redeclare model extends X` where X needs to be found
+/// in the inherited packages, not in the local class. We skip the local class
+/// (which would be a self-reference) and only search through the parent's extends.
+fn find_inherited_class_in_parent_extends(
+    class_name: &str,
+    parent_package_path: &str,
+    class_dict: &ClassDict,
+    skip_path: &str, // The class path to skip (self-reference)
+) -> Option<String> {
+    // Get the parent package definition
+    let parent_pkg = class_dict.get(parent_package_path)?;
+
+    // Search through the parent package's extends chain
+    for extend in &parent_pkg.extends {
+        let extended_pkg_name = extend.comp.to_string();
+
+        // Resolve the extended package name relative to the parent
+        let resolved_pkg = imports::resolve_class_name_with_imports(
+            &extended_pkg_name,
+            parent_package_path,
+            class_dict,
+            &indexmap::IndexMap::new(),
+        )?;
+
+        // Look for the class in this extended package
+        let candidate = format!("{}.{}", resolved_pkg, class_name);
+        if class_dict.contains_key(&candidate) && candidate != skip_path {
+            return Some(candidate);
+        }
+
+        // Recursively search the extended package's extends chain
+        let mut visited = indexmap::IndexSet::new();
+        if let Some(found) = imports::find_type_in_extends_chain(
+            class_name,
+            &resolved_pkg,
+            class_dict,
+            &mut visited,
+        ) {
+            if found != skip_path {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
 /// Internal implementation of resolve_class with cycle detection and dependency tracking.
 fn resolve_class_internal(
     class: &ir::ast::ClassDefinition,
@@ -391,13 +452,29 @@ fn resolve_class_internal(
 
         // Handle self-reference case: when "redeclare model extends X" creates a class X
         // that tries to extend X, the resolution finds itself. For nested classes (like
-        // BaseProperties inside a package), skip this extends clause as it will be
-        // handled during expansion. For top-level classes, this is a true circular error.
-        if resolved_name == current_class_path {
+        // BaseProperties inside a package), we need to find the inherited version from
+        // the parent package's extends chain. For top-level classes, this is a circular error.
+        let resolved_name = if resolved_name == current_class_path {
             let parts: Vec<&str> = current_class_path.split('.').collect();
             if parts.len() >= 2 {
-                // Nested class - skip self-reference (handled during expansion with package mods)
-                continue;
+                // Nested class (e.g., Extended.Base extends Base)
+                // Search the parent package's extends chain for the inherited class
+                let parent_package_path = parts[..parts.len() - 1].join(".");
+                let class_simple_name = parts[parts.len() - 1];
+
+                // Find the inherited class by directly searching the parent's extends chain
+                // Skip the local class definition and only look in inherited packages
+                if let Some(inherited_path) = find_inherited_class_in_parent_extends(
+                    class_simple_name,
+                    &parent_package_path,
+                    class_dict,
+                    current_class_path,
+                ) {
+                    inherited_path
+                } else {
+                    // Could not find inherited version, skip this extends
+                    continue;
+                }
             } else {
                 // Top-level class extending itself (like "class A extends A") - this is always an error
                 return Err(anyhow::anyhow!(
@@ -405,7 +482,9 @@ fn resolve_class_internal(
                     current_class_path
                 ));
             }
-        }
+        } else {
+            resolved_name
+        };
 
         // Check for circular inheritance
         if visited.contains(&resolved_name) {
@@ -669,7 +748,20 @@ fn resolve_class_internal(
         }
 
         // Add parent's equations at the beginning
+        // First, resolve function call paths in the parent's equations relative to the parent class
+        // This handles cases like `Functions.state1(...)` where Functions is a sibling package
+        // in the parent class's enclosing scope.
         let mut new_equations = resolved_parent.equations.clone();
+        {
+            let mut func_resolver = imports::FunctionCallResolver::new(
+                &resolved_name,
+                class_dict,
+                &parent_import_aliases,
+            );
+            for eq in &mut new_equations {
+                eq.accept_mut(&mut func_resolver);
+            }
+        }
         new_equations.append(&mut resolved.equations);
         resolved.equations = new_equations;
 
