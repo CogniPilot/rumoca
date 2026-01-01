@@ -489,7 +489,10 @@ fn transform_to_real_part(
                 inner: Box::new(inner_re),
             })
         }
-        Expression::Array { elements, is_matrix } => {
+        Expression::Array {
+            elements,
+            is_matrix,
+        } => {
             // Transform each element of the array
             let transformed: Option<Vec<_>> = elements
                 .iter()
@@ -714,7 +717,10 @@ fn transform_to_imag_part(
                 inner: Box::new(inner_im),
             })
         }
-        Expression::Array { elements, is_matrix } => {
+        Expression::Array {
+            elements,
+            is_matrix,
+        } => {
             // Transform each element of the array
             let transformed: Option<Vec<_>> = elements
                 .iter()

@@ -369,15 +369,11 @@ fn find_inherited_class_in_parent_extends(
 
         // Recursively search the extended package's extends chain
         let mut visited = indexmap::IndexSet::new();
-        if let Some(found) = imports::find_type_in_extends_chain(
-            class_name,
-            &resolved_pkg,
-            class_dict,
-            &mut visited,
-        ) {
-            if found != skip_path {
-                return Some(found);
-            }
+        if let Some(found) =
+            imports::find_type_in_extends_chain(class_name, &resolved_pkg, class_dict, &mut visited)
+            && found != skip_path
+        {
+            return Some(found);
         }
     }
 

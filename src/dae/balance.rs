@@ -251,13 +251,12 @@ fn count_single_equation(
             // shouldn't be counted as they don't add constraints - they just bind inputs together
             // But equations like "u = [y1; y2]" where LHS is input but RHS contains outputs
             // DO provide equations for those outputs, so we count them.
-            if let Some(lhs_name) = get_lhs_variable_name(lhs) {
-                if is_input_variable(&lhs_name, input_names) {
-                    // LHS is an input - check if RHS is also purely inputs
-                    if is_purely_input_expression(rhs, input_names) {
-                        return 0;
-                    }
-                }
+            if let Some(lhs_name) = get_lhs_variable_name(lhs)
+                && is_input_variable(&lhs_name, input_names)
+                // LHS is an input - check if RHS is also purely inputs
+                && is_purely_input_expression(rhs, input_names)
+            {
+                return 0;
             }
 
             // Only count scalar elements for tuple LHS - these are multi-output function calls

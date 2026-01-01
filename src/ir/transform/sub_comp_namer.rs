@@ -36,6 +36,7 @@ pub struct SubCompNamer {
     /// This is needed for:
     /// 1. Operator records like Complex where `u[1].re` becomes `u.re[1]`
     /// 2. Array components where `C[idx].p` becomes `C.p[idx]`
+    ///
     /// In both cases, the subcomponent becomes an array after flattening.
     pub is_operator_record: bool,
 }
