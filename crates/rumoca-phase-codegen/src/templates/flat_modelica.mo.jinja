@@ -1,0 +1,115 @@
+{# Flat Modelica output template — renders Model for OMC comparison. #}
+{%- set cfg = {
+  "power": "^",
+  "and_op": "and",
+  "or_op": "or",
+  "not_op": "not ",
+  "true_val": "true",
+  "false_val": "false",
+  "array_start": "{",
+  "array_end": "}",
+  "if_style": "modelica",
+  "sanitize_dots": false,
+  "one_based_index": true,
+  "modelica_builtins": true
+} -%}
+{#- Macro: variable attributes (unit, min, max, start, fixed, nominal, stateSelect) -#}
+{%- macro var_attrs(var) -%}
+{%- set ns = namespace(parts="") -%}
+{%- if var.quantity -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'quantity = "' ~ var.quantity ~ '"' -%}
+{%- endif -%}
+{%- if var.unit -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'unit = "' ~ var.unit ~ '"' -%}
+{%- endif -%}
+{%- if var.display_unit -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'displayUnit = "' ~ var.display_unit ~ '"' -%}
+{%- endif -%}
+{%- if var.min is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "min = " ~ render_expr(var.min, cfg) -%}
+{%- endif -%}
+{%- if var.max is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "max = " ~ render_expr(var.max, cfg) -%}
+{%- endif -%}
+{%- if var.start is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "start = " ~ render_expr(var.start, cfg) -%}
+{%- endif -%}
+{%- if var.fixed is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "fixed = " ~ ("true" if var.fixed else "false") -%}
+{%- endif -%}
+{%- if var.nominal is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "nominal = " ~ render_expr(var.nominal, cfg) -%}
+{%- endif -%}
+{%- if var.state_select and var.state_select != "Default" -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "stateSelect = StateSelect." ~ var.state_select -%}
+{%- endif -%}
+{%- if ns.parts %}({{ ns.parts }}){% endif -%}
+{%- endmacro -%}
+{#- Macro: optional declaration description string -#}
+{%- macro var_desc(var) -%}
+{%- if var.description %} "{{ var.description }}"{% endif -%}
+{%- endmacro -%}
+{#- Macro: array dimensions -#}
+{%- macro dims(var) -%}
+{%- if var.dims | length > 0 %}[{{ var.dims | join(", ") }}]{% endif -%}
+{%- endmacro -%}
+{#- Macro: Modelica prefix from variability/causality -#}
+{%- macro var_prefix(flat, name, var) -%}
+{%- if flat.variable_final_flags[name] | default(false) %}final {% endif -%}
+{%- if var.variability is mapping and var.variability.Parameter is defined %}parameter {% endif -%}
+{%- if var.variability is mapping and var.variability.Constant is defined %}constant {% endif -%}
+{%- if var.variability is mapping and var.variability.Discrete is defined %}discrete {% endif -%}
+{%- if var.causality is mapping and var.causality.Input is defined %}input {% endif -%}
+{%- if var.causality is mapping and var.causality.Output is defined %}output {% endif -%}
+{%- endmacro -%}
+{#- Macro: binding expression -#}
+{%- macro binding(var) -%}
+{# MLS §4.4.4: parameter/constant default value falls back to start when fixed=true. #}
+{%- set is_param_or_const = var.variability is mapping and (var.variability.Parameter is defined or var.variability.Constant is defined) -%}
+{%- if var.binding is not none %} = {{ render_expr(var.binding, cfg) }}{% elif is_param_or_const and var.start is not none and (var.fixed is none or var.fixed) %} = {{ render_expr(var.start, cfg) }}{% endif -%}
+{%- endmacro -%}
+{#- Macro: declared type name with fallback -#}
+{%- macro var_type(flat, name) -%}
+{{ flat.variable_type_names[name] | default("Real") }}
+{%- endmacro -%}
+{#- Macro: assert-equation statement -#}
+{%- macro render_assert_eq(assert_eq) -%}
+assert({{ render_expr(assert_eq.condition, cfg) }}, {{ render_expr(assert_eq.message, cfg) }}{% if assert_eq.level is not none %}, {{ render_expr(assert_eq.level, cfg) }}{% endif %})
+{%- endmacro -%}
+class {{ model_name }}{% if flat.model_description %} "{{ flat.model_description }}"{% endif %}
+{%- for name, var in flat.variables | items %}
+{%- if not var.is_protected %}
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+{%- endif %}
+{%- endfor %}
+{%- set ns = namespace(has_protected=false) -%}
+{%- for _name, var in flat.variables | items -%}
+{%- if var.is_protected -%}
+{%- set ns.has_protected = true -%}
+{%- endif -%}
+{%- endfor %}
+{%- if ns.has_protected %}
+protected
+{%- for name, var in flat.variables | items %}
+{%- if var.is_protected %}
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+equation
+{%- for eq in flat.equations %}
+  {{ render_flat_equation(eq, cfg) }};
+{%- endfor -%}
+{%- for assert_eq in flat.assert_equations %}
+  {{ render_assert_eq(assert_eq) }};
+{%- endfor -%}
+{%- if flat.initial_equations | length > 0 or flat.initial_assert_equations | length > 0 %}
+initial equation
+{%- for eq in flat.initial_equations %}
+  {{ render_flat_equation(eq, cfg) }};
+{%- endfor -%}
+{%- for assert_eq in flat.initial_assert_equations %}
+  {{ render_assert_eq(assert_eq) }};
+{%- endfor -%}
+{%- endif %}
+end {{ model_name }};

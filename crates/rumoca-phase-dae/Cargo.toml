@@ -1,0 +1,20 @@
+[package]
+name = "rumoca-phase-dae"
+description = "ToDae phase for the Rumoca Modelica compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { path = "../rumoca-core" }
+rumoca-ir-ast = { path = "../rumoca-ir-ast" }
+rumoca-ir-flat = { path = "../rumoca-ir-flat" }
+rumoca-ir-dae = { path = "../rumoca-ir-dae" }
+indexmap = "2.2"
+rustc-hash = { workspace = true }
+thiserror = "2.0"
+miette = "7.4"
+
+[lints]
+workspace = true

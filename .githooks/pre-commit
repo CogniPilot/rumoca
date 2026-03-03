@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Pre-commit hook: fast checks only (format + complexity + clippy/docs for changed crates).
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+required_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1)"
+active_toolchain="$(rustup show active-toolchain 2>/dev/null | awk '{print $1}')"
+if [[ -n "$required_toolchain" && "$active_toolchain" != "$required_toolchain"* ]]; then
+  echo "pre-commit: active toolchain '$active_toolchain' does not match required '$required_toolchain'."
+  echo "pre-commit: run 'rustup override set $required_toolchain' in this repository."
+  exit 1
+fi
+
+echo "pre-commit: checking staged Rust file line counts (SPEC_0021)..."
+cargo run --quiet --bin rum -- check-rust-file-lines
+
+echo "pre-commit: running cargo fmt --check..."
+cargo fmt --all -- --check
+
+mapfile -d '' staged_paths < <(git diff --cached --name-only --diff-filter=ACMR -z)
+if [[ ${#staged_paths[@]} -eq 0 ]]; then
+  echo "pre-commit: no staged files; skipping crate checks."
+  exit 0
+fi
+
+declare -A changed_crates=()
+run_workspace=0
+
+for path in "${staged_paths[@]}"; do
+  case "$path" in
+    crates/*)
+      crate_name="${path#crates/}"
+      crate_name="${crate_name%%/*}"
+      if [[ -n "$crate_name" ]]; then
+        changed_crates["$crate_name"]=1
+      fi
+      ;;
+    Cargo.toml|Cargo.lock|rust-toolchain.toml|clippy.toml|.github/*|.githooks/*)
+      run_workspace=1
+      ;;
+    *.rs)
+      run_workspace=1
+      ;;
+  esac
+done
+
+if [[ $run_workspace -eq 1 || ${#changed_crates[@]} -eq 0 ]]; then
+  echo "pre-commit: running workspace clippy..."
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  echo "pre-commit: running workspace rustdoc warnings gate..."
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --exclude rumoca-bind-python --exclude rumoca-bind-wasm
+else
+  mapfile -t crate_list < <(printf '%s\n' "${!changed_crates[@]}" | sort)
+  for crate in "${crate_list[@]}"; do
+    echo "pre-commit: running clippy for crate '${crate}'..."
+    cargo clippy --package "$crate" --all-targets --all-features -- -D warnings
+  done
+
+  for crate in "${crate_list[@]}"; do
+    echo "pre-commit: running rustdoc warnings gate for crate '${crate}'..."
+    RUSTDOCFLAGS="-D warnings" cargo doc --package "$crate" --no-deps
+  done
+fi
+
+echo "pre-commit checks passed."

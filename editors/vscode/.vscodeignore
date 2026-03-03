@@ -6,8 +6,14 @@ src/**
 tsconfig.json
 eslint.config.*
 .eslintrc*
+!out
+!out/**
+!media
+!media/**
 **/*.ts
 !out/**/*.js
+!bin
+!bin/**
 **/*.map
 node_modules/**
 !bin/**

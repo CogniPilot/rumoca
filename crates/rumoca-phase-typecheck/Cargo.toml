@@ -1,0 +1,21 @@
+[package]
+name = "rumoca-phase-typecheck"
+description = "Type checking for the Rumoca compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+rustc-hash = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+
+[dev-dependencies]
+rumoca-phase-parse = { workspace = true }
+rumoca-phase-resolve = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+[package]
+name = "rumoca-tool-dev"
+description = "Cross-platform developer tooling for rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rum"
+path = "src/main.rs"
+
+[[bin]]
+name = "rumoca-msl-tools"
+path = "src/bin/rumoca-msl-tools.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+mimalloc = { workspace = true }
+rumoca-core = { workspace = true }
+rumoca = { workspace = true }
+rumoca-session = { workspace = true }
+rumoca-sim-diffsol = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+dirs = "5.0"
+flate2 = "1.0"
+rayon = { workspace = true }
+tar = "0.4"
+tempfile = { workspace = true }
+ureq = "2.9"
+walkdir = "2.5"
+
+[lints]
+workspace = true

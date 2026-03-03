@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Rumoca WASM + Monaco Editor</title>
+    <link rel="icon" type="image/png" href="rumoca.png">
+    <!-- coi-serviceworker enables SharedArrayBuffer on GitHub Pages (required for WASM threading) -->
+    <script src="coi-serviceworker.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+            flex-shrink: 0;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        h1 { color: #569cd6; margin: 0; font-size: clamp(1.2rem, 3vw, 1.5rem); }
+        .logo {
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+            object-fit: contain;
+            flex-shrink: 0;
+        }
+        .main-container {
+            display: flex;
+            flex-direction: row;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .activity-shell {
+            display: flex;
+            min-width: 260px;
+            max-width: 260px;
+            border-right: 1px solid #3c3c3c;
+            background: #1b1b1b;
+            overflow: hidden;
+        }
+        .activity-bar {
+            width: 44px;
+            border-right: 1px solid #2f2f2f;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 8px 0;
+            gap: 6px;
+            background: #202020;
+        }
+        .activity-button {
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            border: none;
+            background: transparent;
+            color: #9aa0a6;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .activity-button:hover {
+            background: #2b2b2b;
+            color: #d4d4d4;
+        }
+        .activity-button.active {
+            background: #2d2d2d;
+            color: #ffffff;
+            outline: 1px solid #569cd6;
+        }
+        .sidebar-panel {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .sidebar-view {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+            padding: 10px;
+            gap: 8px;
+        }
+        .sidebar-view.active {
+            display: flex;
+        }
+        .sidebar-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #9aa0a6;
+            letter-spacing: 0.04em;
+        }
+        .sidebar-summary {
+            font-size: 12px;
+            color: #d4d4d4;
+            background: #202020;
+            border: 1px solid #303030;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        .sidebar-tree {
+            flex: 1;
+            overflow: auto;
+            border: 1px solid #2f2f2f;
+            border-radius: 4px;
+            background: #1a1a1a;
+            padding: 4px;
+        }
+        .sidebar-tree-item {
+            width: 100%;
+            border: none;
+            background: transparent;
+            color: #d4d4d4;
+            text-align: left;
+            padding: 4px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .sidebar-tree-item:hover {
+            background: #2a2d2e;
+        }
+        .sidebar-tree-item .sidebar-tree-line {
+            color: #7f848e;
+            margin-left: 8px;
+            font-size: 11px;
+        }
+        @media (max-width: 1100px) {
+            .activity-shell {
+                min-width: 44px;
+                max-width: 44px;
+            }
+            .sidebar-panel {
+                display: none;
+            }
+        }
+        @media (max-width: 980px) {
+            .main-container {
+                flex-direction: column;
+            }
+            .activity-shell {
+                min-width: 100%;
+                max-width: 100%;
+                height: 44px;
+                border-right: none;
+                border-bottom: 1px solid #3c3c3c;
+            }
+            .activity-bar {
+                width: 100%;
+                flex-direction: row;
+                justify-content: flex-start;
+                padding: 6px 8px;
+                border-right: none;
+            }
+            .sidebar-panel {
+                display: none !important;
+            }
+            .left-area {
+                min-width: 0;
+                width: 100% !important;
+                flex: 1 1 auto;
+            }
+            .resize-handle-h {
+                display: none;
+            }
+            .right-panel {
+                width: 100%;
+                min-width: 0;
+                min-height: 220px;
+                max-height: 45vh;
+                border-left: none;
+                border-top: 1px solid #3c3c3c;
+            }
+        }
+        .left-area {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 200px;
+            overflow: hidden;
+        }
+        .editor-panel {
+            display: flex;
+            flex-direction: column;
+            min-height: 150px;
+            flex: 1;
+            overflow: hidden;
+        }
+        .editor-toolbar {
+            display: flex;
+            align-items: center;
+            padding: 8px 15px;
+            gap: 10px;
+            flex-wrap: wrap;
+            background: #252526;
+            border-bottom: 1px solid #3c3c3c;
+            flex-shrink: 0;
+        }
+        .editor-toolbar h3 { margin: 0; color: #9cdcfe; font-size: 13px; white-space: nowrap; }
+        .editor-toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-left: auto;
+        }
+        #editor { flex: 1; min-height: 0; }
+
+        /* Horizontal resize handle (for right panel) */
+        .resize-handle-h {
+            width: 6px;
+            background: #3c3c3c;
+            cursor: ew-resize;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .resize-handle-h:hover { background: #569cd6; }
+        .resize-handle-h::after {
+            content: '';
+            width: 2px;
+            height: 40px;
+            background: #666;
+            border-radius: 1px;
+        }
+        .resize-handle-h:hover::after { background: #fff; }
+
+        /* Vertical resize handle (for bottom panel) */
+        .resize-handle-v {
+            height: 6px;
+            background: #3c3c3c;
+            cursor: ns-resize;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .resize-handle-v:hover { background: #569cd6; }
+        .resize-handle-v::after {
+            content: '';
+            width: 40px;
+            height: 2px;
+            background: #666;
+            border-radius: 1px;
+        }
+        .resize-handle-v:hover::after { background: #fff; }
+
+        /* Right panel - Tabbed output */
+        .right-panel {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 150px;
+            background: #1e1e1e;
+            overflow: hidden;
+            border-left: 1px solid #3c3c3c;
+        }
+        .panel-content-right {
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Right panel tab bar */
+        .right-tab-bar {
+            display: flex;
+            align-items: center;
+            padding: 0 8px;
+            background: #252526;
+            border-bottom: 1px solid #3c3c3c;
+            flex-shrink: 0;
+            gap: 0;
+        }
+        .right-tab {
+            padding: 8px 14px;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            color: #888;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .right-tab:hover { color: #d4d4d4; background: #2d2d2d; }
+        .right-tab.active { color: #569cd6; border-bottom-color: #569cd6; }
+        .right-tab-content {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            overflow: hidden;
+            padding: 10px 12px;
+            min-height: 0;
+        }
+        .right-tab-content.active {
+            display: flex;
+        }
+
+        /* Bottom panel - Diagnostics & Libraries */
+        .bottom-panel {
+            display: flex;
+            flex-direction: column;
+            height: 200px;
+            min-height: 36px;
+            max-height: 50vh;
+            background: #1e1e1e;
+            flex-shrink: 0;
+            overflow: hidden;
+            border-top: 1px solid #3c3c3c;
+            transition: height 0.15s ease-out;
+        }
+        .bottom-panel.collapsed {
+            height: 36px !important;
+            min-height: 36px;
+        }
+        .bottom-panel.collapsed .bottom-sections {
+            display: none;
+        }
+        .panel-header-bottom {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background: #252526;
+            gap: 8px;
+            flex-shrink: 0;
+            user-select: none;
+        }
+        .bottom-tab {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: transparent;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            color: #888;
+            font-size: 12px;
+        }
+        .bottom-tab:hover { color: #d4d4d4; background: #2d2d2d; }
+        .bottom-tab.active { color: #569cd6; background: #1e1e1e; }
+        .bottom-sections {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .bottom-section {
+            display: none;
+            flex: 1;
+            overflow: auto;
+            padding: 10px 12px;
+            min-height: 150px;
+        }
+        .bottom-section.active { display: block; }
+
+        /* Shared styles */
+        .section-arrow {
+            font-size: 10px;
+            transition: transform 0.15s;
+            color: #888;
+        }
+        /* Arrow rotation handled in JavaScript */
+        .section-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: #d4d4d4;
+        }
+        .section-badge {
+            font-size: 11px;
+            color: #888;
+        }
+        .collapse-btn {
+            background: none;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            padding: 4px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .collapse-btn:hover { color: #d4d4d4; }
+
+        /* Buttons */
+        button {
+            padding: 6px 12px;
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        button:hover { background: #1177bb; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.small { padding: 4px 10px; font-size: 11px; }
+        button.danger { background: #c9184a; }
+        button.danger:hover { background: #e02050; }
+
+        /* Status */
+        .status {
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .status.ready { background: #2d6a4f; }
+        .status.loading { background: #9a6700; }
+        .status.error { background: #c9184a; }
+
+        /* Global status bar (VS Code-like) */
+        .status-bar {
+            height: 24px;
+            background: #007acc;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 10px;
+            font-size: 11px;
+            border-top: 1px solid #0569a6;
+            flex-shrink: 0;
+        }
+        .status-bar-item {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 40%;
+            opacity: 0.95;
+        }
+        .status-bar-item-button {
+            background: transparent;
+            border: none;
+            color: inherit;
+            cursor: pointer;
+            padding: 0;
+            font-size: inherit;
+            line-height: 1;
+        }
+        .status-bar-item-button:hover {
+            text-decoration: underline;
+            background: transparent;
+        }
+        .status-bar-spacer {
+            flex: 1;
+        }
+
+        /* Simulation variable tree */
+        .sim-var-leaf {
+            display: block;
+            cursor: pointer;
+            padding: 1px 4px;
+            white-space: nowrap;
+            line-height: 1.6;
+        }
+        .sim-var-leaf:hover { background: #2a2d2e; }
+        .sim-var-group {
+            padding: 1px 4px;
+            white-space: nowrap;
+            line-height: 1.6;
+        }
+        .sim-var-toggle {
+            cursor: pointer;
+            color: #9cdcfe;
+            user-select: none;
+            font-weight: bold;
+        }
+        .sim-var-toggle:hover { color: #4ec9b0; }
+        .sim-var-group.collapsed + .sim-var-group-body { display: none; }
+        .sim-var-group.collapsed .sim-var-toggle::before { content: '\25B8 '; }
+        .sim-var-group:not(.collapsed) .sim-var-toggle::before { content: '\25BE '; }
+
+        /* Output */
+        pre {
+            background: #1e1e1e;
+            margin: 0;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            flex: 1;
+            overflow: auto;
+            min-height: 0;
+        }
+
+        /* ANSI colors */
+        .ansi-bold { font-weight: bold; }
+        .ansi-red { color: #cd3131; }
+        .ansi-green { color: #0dbc79; }
+        .ansi-yellow { color: #e5e510; }
+        .ansi-blue { color: #2472c8; }
+        .ansi-magenta { color: #bc3fbc; }
+        .ansi-cyan { color: #11a8cd; }
+        .ansi-bright-red { color: #f14c4c; }
+        .ansi-bright-green { color: #23d18b; }
+        .ansi-bright-yellow { color: #f5f543; }
+        .ansi-bright-blue { color: #3b8eea; }
+
+        /* Diagnostics */
+        .diagnostic-item {
+            padding: 6px 10px;
+            margin: 4px 0;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .diagnostic-group {
+            margin: 10px 0;
+            border: 1px solid #2f2f2f;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #1c1c1c;
+        }
+        .diagnostic-group-header {
+            font-size: 11px;
+            color: #b0b0b0;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 6px 10px;
+            border-bottom: 1px solid #2f2f2f;
+            background: #252526;
+        }
+        details.diagnostic-item summary {
+            list-style: none;
+            cursor: pointer;
+            outline: none;
+        }
+        details.diagnostic-item summary::-webkit-details-marker {
+            display: none;
+        }
+        .diagnostic-full {
+            margin: 8px 0 0 0;
+            padding: 8px;
+            background: #1a1a1a;
+            border-radius: 3px;
+            border: 1px solid #2f2f2f;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            line-height: 1.35;
+        }
+        .diagnostic-link {
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0;
+            color: #9cdcfe;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            cursor: pointer;
+            font: inherit;
+            font-weight: 600;
+        }
+        .diagnostic-link:hover { color: #6cb6ff; }
+        .diagnostic-link:focus-visible {
+            outline: 1px solid #569cd6;
+            outline-offset: 2px;
+            border-radius: 2px;
+        }
+        .diagnostic-quick-fix {
+            margin-left: 8px;
+            padding: 1px 7px;
+            border-radius: 3px;
+            border: 1px solid #0e639c;
+            background: #0e639c;
+            color: #fff;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .diagnostic-quick-fix:hover {
+            background: #1177bb;
+            border-color: #1177bb;
+        }
+        .diagnostic-quick-fix:disabled,
+        .diagnostic-quick-fix.running {
+            cursor: progress;
+            opacity: 0.75;
+        }
+        .diagnostic-error { background: rgba(255, 0, 0, 0.15); border-left: 3px solid #f44336; }
+        .diagnostic-warning { background: rgba(255, 193, 7, 0.15); border-left: 3px solid #ffc107; }
+        .diagnostic-info { background: rgba(3, 169, 244, 0.15); border-left: 3px solid #03a9f4; }
+        .diagnostic-hint { background: rgba(76, 175, 80, 0.15); border-left: 3px solid #4caf50; }
+
+        /* Libraries */
+        .library-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .library-row input[type="file"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 4px;
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #d4d4d4;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .library-row input[type="file"]::-webkit-file-upload-button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-right: 8px;
+        }
+        .library-row input[type="file"]::-webkit-file-upload-button:hover {
+            background: #1177bb;
+        }
+        .library-status {
+            font-size: 11px;
+            padding: 3px 6px;
+            border-radius: 3px;
+            min-width: 70px;
+            text-align: center;
+        }
+        .library-status.loaded { background: #2d6a4f; }
+        .library-status.loading { background: #9a6700; }
+        .library-status.error { background: #c9184a; }
+        .library-status.pending { background: #3c3c3c; }
+        .library-info { font-size: 11px; color: #888; margin-top: 10px; }
+        .library-buttons { margin-top: 10px; display: flex; gap: 8px; }
+        .library-progress {
+            flex: 1 0 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .library-progress[hidden] {
+            display: none;
+        }
+        .library-progress-track {
+            flex: 1;
+            height: 8px;
+            border-radius: 999px;
+            background: #2b2b2b;
+            border: 1px solid #3c3c3c;
+            overflow: hidden;
+            position: relative;
+        }
+        .library-progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #0e639c, #4ec9b0);
+            transition: width 120ms ease-out;
+        }
+        .library-progress.indeterminate .library-progress-fill {
+            width: 35%;
+            animation: library-progress-indeterminate 1.2s ease-in-out infinite;
+        }
+        @keyframes library-progress-indeterminate {
+            0% { transform: translateX(-120%); }
+            100% { transform: translateX(320%); }
+        }
+        .library-progress-text {
+            font-size: 11px;
+            color: #b0b0b0;
+            min-width: 92px;
+            text-align: right;
+        }
+        .library-loaded-list {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .library-loaded-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            background: #202020;
+            border: 1px solid #2f2f2f;
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-size: 11px;
+        }
+        .library-loaded-meta {
+            color: #b0b0b0;
+            white-space: nowrap;
+        }
+
+        /* Command palette */
+        .command-palette-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 10vh;
+            z-index: 2000;
+        }
+        .command-palette-overlay[hidden] {
+            display: none;
+        }
+        .command-palette {
+            width: min(760px, 92vw);
+            background: #1f1f1f;
+            border: 1px solid #3a3a3a;
+            border-radius: 8px;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+            overflow: hidden;
+        }
+        .command-palette input {
+            width: 100%;
+            box-sizing: border-box;
+            border: none;
+            border-bottom: 1px solid #333;
+            background: #252526;
+            color: #d4d4d4;
+            padding: 12px 14px;
+            font-size: 13px;
+        }
+        .command-palette input:focus {
+            outline: none;
+        }
+        .command-palette-list {
+            max-height: 45vh;
+            overflow-y: auto;
+        }
+        .command-palette-item {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 14px;
+            border-bottom: 1px solid #2b2b2b;
+            font-size: 12px;
+            cursor: pointer;
+            color: #d4d4d4;
+            background: #1f1f1f;
+        }
+        .command-palette-item:hover,
+        .command-palette-item.active {
+            background: #094771;
+        }
+        .command-palette-item:last-child {
+            border-bottom: none;
+        }
+        .command-palette-item kbd {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            color: #a0a0a0;
+            background: #2d2d2d;
+            border: 1px solid #3f3f3f;
+            border-radius: 3px;
+            padding: 1px 4px;
+            white-space: nowrap;
+        }
+        .command-palette-empty {
+            padding: 10px 14px;
+            color: #888;
+            font-size: 12px;
+        }
+
+        /* Package/class browser */
+        .packages-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .packages-toolbar input[type="text"] {
+            flex: 1;
+            min-width: 120px;
+        }
+        .packages-browser {
+            display: flex;
+            gap: 8px;
+            height: calc(100% - 40px);
+            min-height: 0;
+        }
+        .packages-tree {
+            width: 45%;
+            min-width: 160px;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            overflow: auto;
+            padding: 6px;
+            font-size: 12px;
+            background: #171717;
+        }
+        .packages-doc {
+            flex: 1;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            overflow: auto;
+            padding: 8px;
+            font-size: 12px;
+            line-height: 1.45;
+            background: #171717;
+        }
+        .class-tree-row {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            min-height: 22px;
+            white-space: nowrap;
+        }
+        .class-tree-row button {
+            background: none;
+            border: none;
+            color: inherit;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .class-tree-row .tree-toggle {
+            width: 20px;
+            text-align: center;
+            color: #8c8c8c;
+            cursor: pointer;
+        }
+        .class-tree-row .tree-toggle:disabled {
+            opacity: 0.3;
+            cursor: default;
+        }
+        .class-tree-row .tree-item {
+            flex: 1;
+            text-align: left;
+            color: #d4d4d4;
+            cursor: pointer;
+        }
+        .class-tree-row .tree-kind {
+            color: #6cb6ff;
+            font-size: 10px;
+            margin-left: 4px;
+            text-transform: lowercase;
+        }
+        .class-tree-row.selected {
+            background: rgba(86, 156, 214, 0.2);
+            border-radius: 3px;
+        }
+        .class-tree-empty {
+            color: #888;
+            font-size: 12px;
+            padding: 6px;
+        }
+        .class-doc-header {
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #2f2f2f;
+        }
+        .class-doc-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #d4d4d4;
+        }
+        .class-doc-meta {
+            font-size: 11px;
+            color: #888;
+            margin-top: 2px;
+        }
+        .class-doc-section {
+            margin-top: 10px;
+        }
+        .class-doc-section h4 {
+            font-size: 12px;
+            color: #9cdcfe;
+            margin: 0 0 6px 0;
+        }
+        .class-doc-section table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        .class-doc-section th,
+        .class-doc-section td {
+            border: 1px solid #2f2f2f;
+            padding: 4px 6px;
+            text-align: left;
+            vertical-align: top;
+        }
+        .class-doc-section th {
+            color: #888;
+            font-weight: 600;
+            background: #1f1f1f;
+        }
+        .class-source-pane {
+            height: 280px;
+            overflow: hidden;
+            border: 1px solid #2f2f2f;
+            border-radius: 4px;
+            background: #151515;
+        }
+        .class-source-pane.class-source-pane-fallback {
+            overflow: auto;
+            padding: 10px;
+            color: #d4d4d4;
+            font-size: 11px;
+            line-height: 1.4;
+            font-family: 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+            white-space: pre;
+        }
+        .packages-doc a.doc-link-disabled {
+            color: #6cb6ff;
+            text-decoration: underline dashed;
+            cursor: not-allowed;
+        }
+
+        /* Form inputs */
+        input[type="text"] {
+            padding: 4px 8px;
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #d4d4d4;
+            font-size: 12px;
+        }
+        input[type="text"]:focus { outline: 1px solid #569cd6; }
+        label { font-size: 12px; display: flex; align-items: center; gap: 5px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Rumoca WASM Editor</h1>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span>Status: <span id="status" class="status loading">Loading...</span></span>
+            <a href="https://github.com/cognipilot/rumoca" target="_blank" title="Rumoca on GitHub">
+                <img src="rumoca.png" alt="Rumoca" class="logo">
+            </a>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="activity-shell">
+            <div class="activity-bar">
+                <button class="activity-button active" data-sidebar="explorer" onclick="switchSidebarView('explorer')" title="Explorer">E</button>
+                <button class="activity-button" data-sidebar="libraries" onclick="switchSidebarView('libraries')" title="Libraries">L</button>
+                <button class="activity-button" data-sidebar="documentation" onclick="switchSidebarView('documentation')" title="Documentation">D</button>
+            </div>
+            <div class="sidebar-panel" id="sidebarPanel">
+                <div class="sidebar-view active" id="sidebarExplorerView">
+                    <div class="sidebar-title">Explorer</div>
+                    <div class="sidebar-summary">Current source outline (models/classes in this file).</div>
+                    <div class="sidebar-tree" id="sidebarExplorerTree">
+                        <div class="class-tree-empty">No declarations.</div>
+                    </div>
+                </div>
+                <div class="sidebar-view" id="sidebarLibrariesView">
+                    <div class="sidebar-title">Libraries</div>
+                    <div class="sidebar-summary" id="sidebarLibrariesSummary">Libraries loaded: 0</div>
+                    <button class="small" onclick="switchBottomTab('libraries')" title="Open full libraries manager">Open Libraries Manager</button>
+                </div>
+                <div class="sidebar-view" id="sidebarDocumentationView">
+                    <div class="sidebar-title">Documentation</div>
+                    <div class="sidebar-summary" id="sidebarDocumentationSummary">Select a class in Documentation to inspect details.</div>
+                    <button class="small" onclick="switchBottomTab('packages')" title="Open documentation browser">Open Documentation Browser</button>
+                </div>
+            </div>
+        </div>
+        <div class="left-area">
+            <div class="editor-panel">
+                <div class="editor-toolbar">
+                    <h3 title="Write Modelica code. Auto-compiles as you type. Hover over symbols for type info.">Modelica Source</h3>
+                    <span id="autoCompileStatus" style="font-size: 11px; color: #888;"></span>
+                    <span id="problemStatus" style="font-size: 11px; color: #888;" title="Problems: next/previous with F8 / Shift+F8"></span>
+                    <span id="sourceBreadcrumbs" style="font-size: 11px; color: #9aa0a6;" title="Current model/section/symbol"></span>
+                    <div class="editor-toolbar-right">
+                        <button class="small" onclick="saveFile()" title="Save Modelica source to a .mo file">Save .mo</button>
+                    </div>
+                </div>
+                <div id="editor"></div>
+            </div>
+
+            <!-- Bottom Panel - Diagnostics & Libraries -->
+            <div class="resize-handle-v" id="resizeHandleV"></div>
+            <div class="bottom-panel" id="bottomPanel">
+                <div class="panel-header-bottom">
+                    <button class="collapse-btn" onclick="toggleBottomPanel()" title="Collapse">
+                        <span class="section-arrow" id="bottomArrow">&#9660;</span>
+                    </button>
+                    <button class="bottom-tab active" data-tab="output" onclick="switchBottomTab('output')" title="Compilation status and messages">
+                        <span>Output</span>
+                    </button>
+                    <button class="bottom-tab" data-tab="errors" onclick="switchBottomTab('errors')" title="Syntax and type errors from the compiler">
+                        <span>Errors</span>
+                        <span class="section-badge" id="diagnosticsCount"></span>
+                    </button>
+                    <button class="bottom-tab" data-tab="libraries" onclick="switchBottomTab('libraries')" title="Load Modelica libraries from ZIP files (e.g., MSL)">
+                        <span>Libraries</span>
+                        <span class="section-badge" id="libCount">(0)</span>
+                    </button>
+                    <button class="bottom-tab" data-tab="packages" onclick="switchBottomTab('packages')" title="Browse loaded packages/classes and documentation">
+                        <span>Documentation</span>
+                    </button>
+                </div>
+                <div class="bottom-sections">
+                    <div class="bottom-section active" id="outputSection">
+                        <pre id="terminalOutput">Initializing WASM worker...</pre>
+                    </div>
+                    <div class="bottom-section" id="errorsSection">
+                        <div id="diagnosticsPanel"></div>
+                    </div>
+                    <div class="bottom-section" id="librariesSection">
+                        <div id="libraryList">
+                            <div class="library-row" data-index="0">
+                                <input type="file" accept=".zip" onchange="loadLibraryFile(0, this)" title="Select a ZIP file containing .mo library files">
+                                <span class="library-status pending">No file selected</span>
+                                <div class="library-progress" hidden>
+                                    <div class="library-progress-track"><div class="library-progress-fill"></div></div>
+                                    <span class="library-progress-text">0%</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="library-buttons">
+                            <button class="small" onclick="addLibraryRow()" title="Add another library ZIP file">+ Add Library</button>
+                            <button class="small danger" onclick="clearLibraries()" title="Remove all loaded libraries">Clear All</button>
+                        </div>
+                        <div id="loadedLibraryList" class="library-loaded-list"></div>
+                        <div class="library-info">
+                            Load ZIP archives containing .mo files (e.g., <a href="https://github.com/modelica/ModelicaStandardLibrary/releases" target="_blank">MSL releases</a>).
+                        </div>
+                    </div>
+                    <div class="bottom-section" id="packagesSection">
+                        <div class="packages-toolbar">
+                            <input type="text" id="classSearchInput" placeholder="Filter classes (e.g., Modelica.Fluid)" oninput="filterClassTree()" title="Filter package/class names">
+                            <button class="small" onclick="refreshPackageViewer(true)" title="Refresh package/class tree">Refresh</button>
+                        </div>
+                        <div class="packages-browser">
+                            <div id="classTreePanel" class="packages-tree">
+                                <div class="class-tree-empty">No classes loaded.</div>
+                            </div>
+                            <div id="classDocPanel" class="packages-doc">
+                                <div class="class-tree-empty">Select a class to view documentation.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="resize-handle-h" id="resizeHandleH"></div>
+
+        <!-- Right Panel - Tabbed Output -->
+        <div class="right-panel" id="rightPanel">
+            <div class="right-tab-bar">
+                <button class="right-tab active" data-tab="simulate" onclick="switchRightTab('simulate')" title="Simulate and plot results">Simulate</button>
+                <button class="right-tab" data-tab="dae" onclick="switchRightTab('dae')" title="DAE model output">DAE</button>
+                <button class="right-tab" data-tab="codegen" onclick="switchRightTab('codegen')" title="Code generation with Jinja2 templates">Codegen</button>
+                <div style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
+                    <label style="font-size: 11px; color: #888;">Model:</label>
+                    <select id="modelSelect" onchange="updateSelectedModel()" style="min-width: 100px; padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="Select which model to display">
+                        <option value="">-- No models --</option>
+                    </select>
+                </div>
+            </div>
+            <div class="panel-content-right">
+                <!-- Simulate Tab -->
+                <div class="right-tab-content active" id="simTab">
+                    <div style="display: flex; align-items: center; gap: 8px; padding: 6px 0; flex-shrink: 0;">
+                        <label style="font-size: 11px; color: #888;">t_end:</label>
+                        <input type="text" id="simTEnd" value="10.0" style="width: 60px;" title="Simulation end time">
+                        <label style="font-size: 11px; color: #888;">dt:</label>
+                        <input type="text" id="simDt" value="0" style="width: 60px;" title="Output time step (0 = auto)">
+                        <button class="small" onclick="runSimulation()" id="simRunBtn" title="Run simulation">Simulate</button>
+                        <span id="simStatus" style="font-size: 11px; color: #888;"></span>
+                    </div>
+                    <div style="display: flex; flex: 1; min-height: 0; overflow: hidden;">
+                        <div id="simPlot" style="flex: 1; min-height: 200px; overflow: visible;"></div>
+                        <div id="simVarTree" style="width: 180px; min-width: 120px; max-width: 300px; overflow-y: auto; border-left: 1px solid #3c3c3c; padding: 4px 0; font-size: 12px; flex-shrink: 0;"></div>
+                    </div>
+                </div>
+
+                <!-- DAE Tab -->
+                <div class="right-tab-content" id="daeTab">
+                    <div style="flex-shrink: 0; display: flex; align-items: center; margin-bottom: 8px; gap: 8px;">
+                        <select id="daeFormatSelect" onchange="updateDaeFormat()" style="padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="DAE output format">
+                            <option value="pretty" title="Human-readable DAE summary">Pretty</option>
+                            <option value="json" title="Full DAE in JSON format">JSON</option>
+                        </select>
+                        <button class="small" onclick="saveOutput()" title="Save DAE output to a file">Save</button>
+                    </div>
+                    <div id="outputEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
+                </div>
+
+                <!-- Codegen Tab -->
+                <div class="right-tab-content" id="codegenTab">
+                    <div style="flex-shrink: 0; display: flex; align-items: center; margin-bottom: 8px; gap: 8px;">
+                        <label style="font-size: 11px; color: #888;">Preset:</label>
+                        <select id="templatePresetSelect" onchange="loadTemplatePreset()" style="padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="Load a preset template">
+                            <option value="custom">Custom</option>
+                            <option value="casadi_sx" selected>CasADi SX</option>
+                            <option value="julia_mtk">Julia MTK</option>
+                            <option value="c_code">C Code</option>
+                            <option value="jax">JAX</option>
+                        </select>
+                        <button class="small" onclick="saveCodegenOutput()" title="Save rendered codegen output to a file">Save</button>
+                    </div>
+                    <div id="templateEditor" style="flex: 1; min-height: 100px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
+                    <div class="resize-handle-v" id="resizeHandleCodegen" style="margin: 0 -12px; padding: 0 12px;"></div>
+                    <div id="codegenOutputEditor" style="flex: 1; min-height: 100px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="status-bar" id="statusBar">
+        <span class="status-bar-item" id="statusBarModel" title="Currently selected model">Model: --</span>
+        <button class="status-bar-item status-bar-item-button" id="statusBarProblems" onclick="switchBottomTab('errors')" title="Open Problems tab">Problems: 0</button>
+        <span class="status-bar-item" id="statusBarCompile" title="Current compile/live-check state">Compile: idle</span>
+        <div class="status-bar-spacer"></div>
+        <button class="status-bar-item status-bar-item-button" id="statusBarLibraries" onclick="switchBottomTab('libraries')" title="Open Libraries tab">Libraries: 0</button>
+    </div>
+
+    <div id="commandPaletteOverlay" class="command-palette-overlay" hidden>
+        <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command Palette">
+            <input id="commandPaletteInput" type="text" placeholder="Type a command (e.g., compile, simulate, library)" autocomplete="off" spellcheck="false">
+            <div id="commandPaletteList" class="command-palette-list"></div>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+    <script type="module" src="./src/main.js"></script>
+</body>
+</html>

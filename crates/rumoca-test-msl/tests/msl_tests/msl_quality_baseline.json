@@ -1,0 +1,55 @@
+{
+  "git_commit": "2c88021a366d109868374632f42b7d0becb57904",
+  "msl_version": "v4.1.0",
+  "sim_timeout_seconds": 10.0,
+  "simulatable_attempted": 180,
+  "compiled_models": 173,
+  "balanced_models": 171,
+  "unbalanced_models": 2,
+  "partial_models": 0,
+  "balance_denominator": 173,
+  "initial_balanced_models": 172,
+  "initial_unbalanced_models": 1,
+  "sim_target_models": 180,
+  "sim_attempted": 173,
+  "sim_ok": 128,
+  "sim_success_rate": 0.7398843930635838,
+  "runtime_ratio_stats": {
+    "system_ratio_both_success": {
+      "sample_count": 123,
+      "min": 0.00774096346051043,
+      "median": 0.29270137525881773,
+      "mean": 0.6110327222049684,
+      "max": 9.47333658579294
+    },
+    "wall_ratio_both_success": {
+      "sample_count": 123,
+      "min": 0.16783846830376478,
+      "median": 6.5561874944447,
+      "mean": 11.826152236560874,
+      "max": 118.51706690532464
+    }
+  },
+  "trace_accuracy_stats": {
+    "models_compared": 79,
+    "missing_trace_models": 1,
+    "skipped_models": 44,
+    "agreement_high": 36,
+    "agreement_minor": 6,
+    "agreement_deviation": 37,
+    "deviation_score": {
+      "sample_count": 79,
+      "min": 0.0,
+      "median": 0.03033246969022784,
+      "mean": 128.5023558538044,
+      "max": 9999.99961398455
+    },
+    "normalized_rmse": {
+      "sample_count": 79,
+      "min": 0.0,
+      "median": 0.1350859019398865,
+      "mean": 12911.275473748694,
+      "max": 1000000.0747138234
+    }
+  }
+}
