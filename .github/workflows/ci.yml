@@ -324,6 +324,9 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Run rumoca-bind-wasm Rust tests
+        run: cargo test -p rumoca-bind-wasm --verbose
+
       - name: Build WASM package
         run: |
           cargo build -p rumoca-bind-wasm --lib --release \
