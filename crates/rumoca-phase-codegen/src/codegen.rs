@@ -17,8 +17,8 @@ use std::path::Path;
 /// Result type for internal render functions.
 type RenderResult = Result<String, minijinja::Error>;
 
-fn dae_template_value(dae: &dae::Dae) -> Value {
-    Value::from_serialize(json!({
+pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
+    json!({
         // Long-form names used by existing templates.
         "states": &dae.states,
         "algebraics": &dae.algebraics,
@@ -52,7 +52,11 @@ fn dae_template_value(dae: &dae::Dae) -> Value {
         "oc_break_edge_scalar_count": dae.oc_break_edge_scalar_count,
         "is_partial": dae.is_partial,
         "class_type": &dae.class_type,
-    }))
+    })
+}
+
+fn dae_template_value(dae: &dae::Dae) -> Value {
+    Value::from_serialize(dae_template_json(dae))
 }
 
 /// Render a DAE using a template string.
@@ -82,6 +86,24 @@ pub fn render_template(dae: &dae::Dae, template: &str) -> Result<String, Codegen
     env.add_template("inline", template)?;
 
     let dae_value = dae_template_value(dae);
+    let tmpl = env.get_template("inline")?;
+    let result = tmpl.render(minijinja::context! { dae => dae_value })?;
+
+    Ok(result)
+}
+
+/// Render a template using a pre-built `dae` JSON context object.
+///
+/// This is useful when callers need to augment the canonical DAE context with
+/// additional template-only metadata.
+pub fn render_template_with_dae_json(
+    dae_json: &serde_json::Value,
+    template: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+
+    let dae_value = Value::from_serialize(dae_json);
     let tmpl = env.get_template("inline")?;
     let result = tmpl.render(minijinja::context! { dae => dae_value })?;
 

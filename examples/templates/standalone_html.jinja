@@ -1,0 +1,2649 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Rumoca Model UI</title>
+    <style>
+      :root {
+        --bg: #0b0f17;
+        --panel: #121a26;
+        --panel2: #0f1622;
+        --text: #e7eefc;
+        --muted: #9bb0d1;
+        --accent: #6aa6ff;
+        --bad: #ff6a6a;
+        --good: #7dffb2;
+        --border: #24324a;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          Arial,
+          'Noto Sans',
+          'Liberation Sans',
+          sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--panel), var(--panel2));
+      }
+      header .title {
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+      header .subtitle {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      main {
+        padding: 12px 16px;
+        display: grid;
+        grid-template-columns: 420px 1fr;
+        gap: 12px;
+      }
+      @media (max-width: 980px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      input,
+      select,
+      textarea,
+      button {
+        font: inherit;
+      }
+      input,
+      select,
+      button {
+        min-height: 36px;
+      }
+      input,
+      select,
+      textarea {
+        background: #0d1420;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 8px 10px;
+        outline: none;
+      }
+      textarea {
+        width: 100%;
+        min-height: 140px;
+        resize: vertical;
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+          monospace;
+        font-size: 12px;
+        line-height: 1.3;
+      }
+      button {
+        -webkit-appearance: none;
+        appearance: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--accent);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: #05101f;
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin: 0;
+        cursor: pointer;
+        font-weight: 700;
+        line-height: 1;
+        vertical-align: middle;
+      }
+      button.secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      .status {
+        font-size: 12px;
+        white-space: pre-wrap;
+        color: var(--muted);
+      }
+      .status.good {
+        color: var(--good);
+      }
+      .status.bad {
+        color: var(--bad);
+      }
+      .mono {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+          monospace;
+      }
+      svg {
+        width: 100%;
+        height: 420px;
+        display: block;
+        background: #0b1220;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="title">Rumoca Model UI</div>
+      <div class="subtitle mono" id="modelName">Model</div>
+    </header>
+
+    <main>
+      <section class="card">
+        <div class="row">
+          <div style="flex: 1 1 80px">
+            <label for="t0">t0</label>
+            <input id="t0" type="number" step="any" value="0" style="width: 100%" />
+          </div>
+          <div style="flex: 1 1 80px">
+            <label for="tf">tf</label>
+            <input id="tf" type="number" step="any" value="5" style="width: 100%" />
+          </div>
+          <div style="flex: 1 1 80px">
+            <label for="dt">dt</label>
+            <input id="dt" type="number" step="any" value="0.01" style="width: 100%" />
+          </div>
+        </div>
+
+        <div style="margin-top: 10px">
+          <label for="solverOpts">Solver options JSON</label>
+          <textarea id="solverOpts" spellcheck="false">{}</textarea>
+          <div class="hint">
+            Options are merged into the solver defaults. Schema is provided by
+            <span class="mono">simulateModel.optionsSchema</span> if available.
+          </div>
+        </div>
+
+        <div style="margin-top: 10px">
+          <label for="inputFn">Input function body</label>
+          <textarea id="inputFn" spellcheck="false">
+// Called as f_u(t)
+// Return an array matching the model input order
+// Example for 1 input: return [Math.sin(t)]
+
+return [];</textarea
+          >
+          <div class="hint">
+            The function is compiled as <span class="mono">new Function('t', BODY)</span>. It must
+            return an array of length <span class="mono" id="nuCount">0</span>.
+          </div>
+        </div>
+        <div class="row" style="margin-top: 10px">
+          <button id="runBtn">Run simulation</button>
+          <button id="csvBtn" class="secondary" disabled>Download CSV</button>
+        </div>
+
+        <div style="margin-top: 10px">
+          <div class="status" id="status">Ready.</div>
+        </div>
+
+        <div style="margin-top: 12px">
+          <label for="seriesSelect">Plot series</label>
+          <select id="seriesSelect" style="width: 100%"></select>
+          <div class="hint">Plots time versus selected series using a simple SVG polyline.</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <svg
+          id="plot"
+          viewBox="0 0 1000 420"
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="plot"
+        >
+          <rect x="0" y="0" width="1000" height="420" fill="#0b1220"></rect>
+          <g id="grid"></g>
+          <g id="axes"></g>
+          <polyline id="line" fill="none" stroke="#6aa6ff" stroke-width="2" points=""></polyline>
+          <text
+            id="plotLabel"
+            x="12"
+            y="22"
+            fill="#9bb0d1"
+            font-size="14"
+            font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+          ></text>
+        </svg>
+      </section>
+    </main>
+
+    <!--
+      Placeholder slots.
+
+      The editor will assemble:
+      - Generated model JavaScript
+      - Selected solver JavaScript
+      - This UI HTML template
+
+      at run or export time.
+
+      IMPORTANT:
+      - Do not remove these placeholders.
+      - They are replaced by string substitution.
+    -->
+
+    <script>
+      {# -------------------------------------------------------------------------
+ # JS generator for Rumoca DAE JSON.
+ # Supports both legacy and redesign_v3 DAE field naming.
+ # ------------------------------------------------------------------------- #}
+
+{%- set model_name = dae.model_name if dae.model_name is defined else "GeneratedModel" -%}
+{%- set p_map = dae.p if dae.p is defined else {} -%}
+{%- set cp_map = dae.constants if dae.constants is defined else (dae.cp if dae.cp is defined else {}) -%}
+{%- set x_map = dae.x if dae.x is defined else {} -%}
+{%- set y_map = dae.y if dae.y is defined else {} -%}
+{%- if dae.__rumoca_observables is defined -%}
+{%- set obs_list = dae.__rumoca_observables -%}
+{%- else -%}
+{%- set obs_list = [] -%}
+{%- endif -%}
+{%- set u_map = dae.u if dae.u is defined else {} -%}
+{%- set w_map = dae.w if dae.w is defined else {} -%}
+{%- set z_map = dae.z if dae.z is defined else {} -%}
+{%- set m_map = dae.m if dae.m is defined else {} -%}
+{%- set x_dot_alias_map = dae.x_dot_alias if dae.x_dot_alias is defined else {} -%}
+{%- set eqs = dae.f_x if dae.f_x is defined else (dae.fx if dae.fx is defined else []) -%}
+{%- set cond_eqs = dae.f_c if dae.f_c is defined else [] -%}
+{%- set when_clauses = dae.when_clauses if dae.when_clauses is defined else [] -%}
+
+{%- macro render_cref(cr) -%}
+{%- if cr.parts is defined -%}
+{%- for part in cr.parts -%}{{ part.ident.text }}{{ "." if not loop.last }}{%- endfor -%}
+{%- elif cr.ident is defined and cr.ident.text is defined -%}
+{{ cr.ident.text }}
+{%- elif cr.name is defined -%}
+{{ cr.name }}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro js_ident(name) -%}
+{{- ('v_' ~ (name|string)
+  |replace('.', '__')
+  |replace('[', '_')
+  |replace(']', '')
+  |replace('(', '_')
+  |replace(')', '')
+  |replace(',', '_')
+  |replace(' ', '_')
+  |replace('-', '_')
+  |replace('/', '_')
+  |replace(':', '_')
+  |replace(';', '_')
+  |replace('*', '_')
+  |replace('+', '_')
+  |replace('%', '_')
+  |replace('>', '_')
+  |replace('<', '_')
+  |replace('=', '_')
+  |replace('!', '_')
+  |replace('?', '_')
+  |replace('&', '_')
+  |replace('|', '_')
+  |replace('"', '_')
+  |replace("'", '_')) -}}
+{%- endmacro -%}
+
+{%- macro render_static_literal(e) -%}
+{%- if e is number -%}
+{{ e }}
+{%- elif e is boolean -%}
+{{ "true" if e else "false" }}
+{%- elif e is mapping and e.Literal is defined -%}
+  {%- if e.Literal.Integer is defined -%}{{ e.Literal.Integer }}
+  {%- elif e.Literal.Real is defined -%}{{ e.Literal.Real }}
+  {%- elif e.Literal.Bool is defined -%}{{ "true" if e.Literal.Bool else "false" }}
+  {%- else -%}0
+  {%- endif -%}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro comp_start_or_value(comp) -%}
+{%- if comp.value is defined -%}
+{{ render_static_literal(comp.value) }}
+{%- elif comp.start is defined -%}
+{{ render_static_literal(comp.start) }}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro comp_expr_or_value(comp) -%}
+{%- if comp.value is defined -%}
+{{ render_expr(comp.value) }}
+{%- elif comp.start is defined -%}
+{{ render_expr(comp.start) }}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro comp_unit_prop(comp) -%}
+{%- if comp.unit is defined and (comp.unit|string)|trim != '' -%}
+, unit: "{{ comp.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- elif comp.displayUnit is defined and (comp.displayUnit|string)|trim != '' -%}
+, unit: "{{ comp.displayUnit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- elif comp.display_unit is defined and (comp.display_unit|string)|trim != '' -%}
+, unit: "{{ comp.display_unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_js_function_name(fname) -%}
+{%- set f = (fname|string)|trim -%}
+{%- set f_norm = f|replace('::', '.') -%}
+{%- set f_leaf = f_norm
+  |replace('Modelica.Math.', '')
+  |replace('Modelica.Blocks.Math.', '')
+  |replace('Modelica.', '')
+  |replace('modelica.', '')
+  |replace('Units.', '')
+  |replace('units.', '')
+  |replace('SI.Conversions.', '')
+  |replace('si.conversions.', '')
+  |replace('Conversions.', '')
+  |replace('conversions.', '')
+  |replace('Math.', '')
+-%}
+{%- set fl = f_leaf|lower -%}
+{%- if fl == "sin" -%}Math.sin
+{%- elif fl == "cos" -%}Math.cos
+{%- elif fl == "tan" -%}Math.tan
+{%- elif fl == "asin" -%}Math.asin
+{%- elif fl == "acos" -%}Math.acos
+{%- elif fl == "atan" -%}Math.atan
+{%- elif fl == "atan2" -%}Math.atan2
+{%- elif fl == "sqrt" -%}Math.sqrt
+{%- elif fl == "abs" -%}Math.abs
+{%- elif fl == "exp" -%}Math.exp
+{%- elif fl == "log" -%}Math.log
+{%- elif fl == "log10" -%}Math.log10
+{%- elif fl == "sinh" -%}Math.sinh
+{%- elif fl == "cosh" -%}Math.cosh
+{%- elif fl == "tanh" -%}Math.tanh
+{%- elif fl == "floor" -%}Math.floor
+{%- elif fl == "ceil" -%}Math.ceil
+{%- elif fl == "min" -%}Math.min
+{%- elif fl == "max" -%}Math.max
+{%- else -%}{{ f_leaf }}
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro normalize_expr_text(txt) -%}
+{{- (txt|string)
+  |replace('::', '.')
+  |replace('Modelica.Blocks.Math.', 'Math.')
+  |replace('Modelica.Math.', 'Math.')
+  |replace('Modelica.Units.', '')
+  |replace('modelica.units.', '')
+  |replace('Units.', '')
+  |replace('units.', '')
+  |replace('modelica.blocks.math.', 'Math.')
+  |replace('modelica.math.', 'Math.')
+  |replace('Modelica.Constants.pi', 'Math.PI')
+  |replace('Modelica.Constants.e', 'Math.E')
+  |replace('modelica.constants.pi', 'Math.PI')
+  |replace('modelica.constants.e', 'Math.E')
+-}}
+{%- endmacro -%}
+
+{%- macro safe_symbol_ref(name) -%}
+{%- set id = js_ident(name) -%}
+((typeof {{ id }} !== "undefined") ? {{ id }} : __rumocaResolveSymbol("{{ name|string|replace('\\', '\\\\')|replace('"', '\\"') }}"))
+{%- endmacro -%}
+
+{%- macro render_symbol_expr(e) -%}
+{%- if e is mapping and e.VarRef is defined and e.VarRef.name == "time" -%}
+  t
+{%- elif e is mapping and e.VarRef is defined -%}
+  {{- js_ident(e.VarRef.name) -}}
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "time" -%}
+  t
+{%- elif e is mapping and e.ComponentReference is defined -%}
+  {{- js_ident(render_cref(e.ComponentReference)) -}}
+{%- else -%}
+  {{- render_expr(e) -}}
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_expr(e) -%}
+{%- if e is string -%}
+  {{- normalize_expr_text(e) -}}
+{%- elif e is number -%}
+  {{- e -}}
+{%- elif e is boolean -%}
+  {{- "true" if e else "false" -}}
+{%- elif e is mapping and e.Literal is defined -%}
+  {%- if e.Literal.Integer is defined -%}{{ e.Literal.Integer }}
+  {%- elif e.Literal.Real is defined -%}{{ e.Literal.Real }}
+  {%- elif e.Literal.Bool is defined -%}{{ "true" if e.Literal.Bool else "false" }}
+  {%- elif e.Literal.String is defined -%}"{{ e.Literal.String }}"
+  {%- else -%}0{%- endif -%}
+{%- elif e is mapping and e.VarRef is defined and e.VarRef.name == "time" -%}
+  t
+{%- elif e is mapping and e.VarRef is defined and e.VarRef.name == "Modelica.Constants.pi" -%}
+  Math.PI
+{%- elif e is mapping and e.VarRef is defined and e.VarRef.name == "Modelica.Constants.e" -%}
+  Math.E
+{%- elif e is mapping and e.VarRef is defined -%}
+  {{- safe_symbol_ref(e.VarRef.name) -}}
+{%- elif e is mapping and e.BuiltinCall is defined -%}
+  {%- set bc = e.BuiltinCall -%}
+  {%- if bc.function|lower == "der" and bc.args|length == 1 -%}
+    der_{{ render_symbol_expr(bc.args[0]) }}
+  {%- elif bc.function|lower == "pre" and bc.args|length == 1 -%}
+    {{ render_expr(bc.args[0]) }}
+  {%- elif bc.function|lower == "noevent" and bc.args|length >= 1 -%}
+    {{ render_expr(bc.args[0]) }}
+  {%- elif bc.function|lower == "homotopy" and bc.args|length >= 1 -%}
+    {{ render_expr(bc.args[0]) }}
+  {%- elif render_js_function_name(bc.function)|trim|lower == "from_degc" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) + 273.15)
+  {%- elif render_js_function_name(bc.function)|trim|lower == "to_degc" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) - 273.15)
+  {%- elif render_js_function_name(bc.function)|trim|lower == "from_deg" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) * Math.PI / 180)
+  {%- elif render_js_function_name(bc.function)|trim|lower == "to_deg" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) * 180 / Math.PI)
+  {%- else -%}
+    {{ render_js_function_name(bc.function) }}({%- for a in bc.args -%}{{ render_expr(a) }}{{ ", " if not loop.last }}{%- endfor -%})
+  {%- endif -%}
+{%- elif e is mapping and e.Terminal is defined -%}
+  {{- normalize_expr_text(e.Terminal.token.text) -}}
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "time" -%}
+  t
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "Modelica.Constants.pi" -%}
+  Math.PI
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "Modelica.Constants.e" -%}
+  Math.E
+{%- elif e is mapping and e.ComponentReference is defined -%}
+  {{- safe_symbol_ref(render_cref(e.ComponentReference)) -}}
+{%- elif e is mapping and e.Parenthesized is defined -%}
+  ({{ render_expr(e.Parenthesized.inner) }})
+{%- elif e is mapping and e.Unary is defined -%}
+  {%- set u = e.Unary -%}
+  {%- if u.op.Minus is defined -%}
+    -({{ render_expr(u.rhs) }})
+  {%- elif u.op.Not is defined -%}
+    !({{ render_expr(u.rhs) }})
+  {%- else -%}
+    {{ render_expr(u.rhs) }}
+  {%- endif -%}
+{%- elif e is mapping and e.Binary is defined -%}
+  {%- set b = e.Binary -%}
+  {%- set op -%}
+    {%- if b.op.Add is defined -%}+{% elif b.op.Sub is defined -%}-{% elif b.op.Mul is defined -%}*{% elif b.op.Div is defined -%}/{% elif b.op.Pow is defined or b.op.Power is defined or b.op.Caret is defined or b.op.Exp is defined or b.op.Circumflex is defined -%}**
+    {%- elif b.op is string and (b.op == "^" or b.op == "**" or b.op|lower == "pow" or b.op|lower == "power" or b.op|lower == "caret" or b.op|lower == "exp" or b.op|lower == "circumflex") -%}**
+    {%- elif b.op.token is defined and b.op.token.text is defined and (b.op.token.text == "^" or b.op.token.text == "**") -%}**
+    {%- elif b.op.Le is defined or b.op.LessEq is defined -%}<={% elif b.op.Lt is defined or b.op.Less is defined -%}<{% elif b.op.Ge is defined or b.op.GreaterEq is defined -%}>={% elif b.op.Gt is defined or b.op.Greater is defined -%}>{% elif b.op.Eq is defined or b.op.Equals is defined -%}==={% elif b.op.Ne is defined or b.op.NotEquals is defined -%}!==
+    {%- elif b.op.And is defined -%}&&{% elif b.op.Or is defined -%}||{% else -%}+{% endif -%}
+  {%- endset -%}
+  ({{ render_expr(b.lhs) }} {{ op }} {{ render_expr(b.rhs) }})
+{%- elif e is mapping and e.FunctionCall is defined -%}
+  {%- set f = e.FunctionCall -%}
+  {%- set args = f.args if f.args is defined else [] -%}
+  {%- set fname -%}
+    {%- if f.comp is defined and f.comp.parts is defined -%}
+      {%- for part in f.comp.parts -%}{{ part.ident.text }}{{ "." if not loop.last }}{%- endfor -%}
+    {%- elif f.function is defined -%}
+      {{- f.function -}}
+    {%- elif f.name is defined -%}
+      {{- f.name -}}
+    {%- elif f.comp is defined and f.comp.ident is defined and f.comp.ident.text is defined -%}
+      {{- f.comp.ident.text -}}
+    {%- else -%}
+      function_call
+    {%- endif -%}
+  {%- endset -%}
+  {%- if fname|lower == "der" and args|length == 1 -%}
+    der_{{ render_symbol_expr(args[0]) }}
+  {%- elif fname|lower == "pre" and args|length == 1 -%}
+    {{ render_expr(args[0]) }}
+  {%- elif fname|lower == "noevent" and args|length >= 1 -%}
+    {{ render_expr(args[0]) }}
+  {%- elif fname|lower == "homotopy" and args|length >= 1 -%}
+    {{ render_expr(args[0]) }}
+  {%- elif render_js_function_name(fname)|trim|lower == "from_degc" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) + 273.15)
+  {%- elif render_js_function_name(fname)|trim|lower == "to_degc" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) - 273.15)
+  {%- elif render_js_function_name(fname)|trim|lower == "from_deg" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) * Math.PI / 180)
+  {%- elif render_js_function_name(fname)|trim|lower == "to_deg" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) * 180 / Math.PI)
+  {%- else -%}
+    {{ render_js_function_name(fname) }}({%- for a in args -%}{{ render_expr(a) }}{{ ", " if not loop.last }}{%- endfor -%})
+  {%- endif -%}
+{%- elif e is mapping and e.If is defined -%}
+  {%- set branches = e.If.branches if e.If.branches is defined else [] -%}
+  {%- set else_expr = e.If.else_branch if e.If.else_branch is defined else 0 -%}
+  {%- if branches|length == 0 -%}
+    {{ render_expr(else_expr) }}
+  {%- else -%}
+    (
+    {%- for branch in branches -%}
+      ({{ render_expr(branch[0]) }}) ? ({{ render_expr(branch[1]) }}) :
+    {%- endfor -%}
+      ({{ render_expr(else_expr) }})
+    )
+  {%- endif -%}
+{%- elif e is mapping and e.FieldAccess is defined -%}
+  (({{ render_expr(e.FieldAccess.base) }})?.{{ e.FieldAccess.field }})
+{%- elif e is mapping and e.Index is defined -%}
+  {%- set subs = e.Index.subscripts if e.Index.subscripts is defined else [] -%}
+  {%- if subs|length > 0 and subs[0].Expr is defined -%}
+    (({{ render_expr(e.Index.base) }})[{{ render_expr(subs[0].Expr) }}])
+  {%- else -%}
+    ({{ render_expr(e.Index.base) }})
+  {%- endif -%}
+{%- else -%}
+  0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro is_derivative_eq_legacy(eq) -%}
+  {%- if eq.Simple is defined and eq.Simple.lhs.FunctionCall is defined -%}
+    {%- set f = eq.Simple.lhs.FunctionCall -%}
+    {%- if f.comp is defined and f.comp.parts is defined and f.comp.parts|length == 1 and f.comp.parts[0].ident.text == "der" -%}
+      1
+    {%- elif f.function is defined and f.function|lower == "der" -%}
+      1
+    {%- elif f.name is defined and f.name|lower == "der" -%}
+      1
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro lhs_state_name_legacy(eq) -%}
+  {%- set f = eq.Simple.lhs.FunctionCall -%}
+  {%- if f.args is defined and f.args|length > 0 -%}
+    {%- set arg0 = f.args[0] -%}
+    {%- if arg0.ComponentReference is defined and arg0.ComponentReference.parts is defined and arg0.ComponentReference.parts|length > 0 -%}
+      {{ arg0.ComponentReference.parts[0].ident.text }}
+    {%- elif arg0.VarRef is defined and arg0.VarRef.name is defined -%}
+      {{ arg0.VarRef.name }}
+    {%- else -%}
+      x
+    {%- endif -%}
+  {%- else -%}
+    x
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro residual_expr(eq) -%}
+  {%- if eq.lhs is defined and eq.rhs is defined -%}
+    ({{ render_expr(eq.lhs) }}) - ({{ render_expr(eq.rhs) }})
+  {%- elif eq.rhs is defined -%}
+    {{ render_expr(eq.rhs) }}
+{%- elif eq.Simple is defined and is_derivative_eq_legacy(eq) -%}
+    {{ js_ident(lhs_state_name_legacy(eq)) }}_dot - ({{ render_expr(eq.Simple.rhs) }})
+  {%- elif eq.Simple is defined -%}
+    ({{ render_expr(eq.Simple.lhs) }}) - ({{ render_expr(eq.Simple.rhs) }})
+  {%- else -%}
+    0
+  {%- endif -%}
+{%- endmacro -%}
+
+function Model() {
+  const __rumocaHasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+  function __rumocaMissingRef(name) {
+    throw new Error("Generated residual references an unresolved symbol: " + String(name));
+  }
+
+  function __rumocaFiniteOr(value, fallback = 0) {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  }
+
+  var __rumocaFallbackSymbols = {};
+
+  function __rumocaResolveSymbol(name) {
+    if (!__rumocaFallbackSymbols || typeof __rumocaFallbackSymbols !== "object") {
+      return __rumocaMissingRef(name);
+    }
+    const key = String(name);
+    if (__rumocaHasOwn(__rumocaFallbackSymbols, key)) return __rumocaFallbackSymbols[key];
+
+    const keyUnderscore = key.replaceAll(".", "__");
+    if (__rumocaHasOwn(__rumocaFallbackSymbols, keyUnderscore)) {
+      return __rumocaFallbackSymbols[keyUnderscore];
+    }
+
+    const keyTail = key.includes(".") ? key.split(".").pop() : key;
+    if (keyTail && __rumocaHasOwn(__rumocaFallbackSymbols, keyTail)) {
+      return __rumocaFallbackSymbols[keyTail];
+    }
+
+    const norm = (s) => String(s).replaceAll("__", ".");
+    const fallbackKeys = Object.keys(__rumocaFallbackSymbols);
+
+    const exactNormalized = fallbackKeys.find((k) => norm(k) === key);
+    if (exactNormalized) return __rumocaFallbackSymbols[exactNormalized];
+
+    const suffixMatches = fallbackKeys.filter((k) => {
+      const n = norm(k);
+      return key === n || key.endsWith("." + n) || n.endsWith("." + key);
+    });
+    if (suffixMatches.length === 1) {
+      return __rumocaFallbackSymbols[suffixMatches[0]];
+    }
+    if (suffixMatches.length > 1) {
+      throw new Error(
+        "Ambiguous symbol resolution for " +
+          key +
+          "; candidates: " +
+          suffixMatches.slice(0, 6).join(", "),
+      );
+    }
+    return __rumocaMissingRef(name);
+  }
+
+  const pDefaults = {};
+  {%- for (name, comp) in p_map|items %}
+  pDefaults["{{ name }}"] = 0;
+  __rumocaFallbackSymbols["{{ name }}"] = 0;
+  {%- endfor %}
+  {%- for (name, comp) in p_map|items %}
+  {
+    const __rumocaP = {{ comp_expr_or_value(comp) }};
+    pDefaults["{{ name }}"] = __rumocaFiniteOr(__rumocaP, pDefaults["{{ name }}"]);
+    __rumocaFallbackSymbols["{{ name }}"] = pDefaults["{{ name }}"];
+  }
+  {%- endfor %}
+
+  const constants = {};
+  {%- for (name, comp) in cp_map|items %}
+  constants["{{ name }}"] = 0;
+  __rumocaFallbackSymbols["{{ name }}"] = 0;
+  {%- endfor %}
+  {%- for (name, comp) in cp_map|items %}
+  {
+    const __rumocaC = {{ comp_expr_or_value(comp) }};
+    constants["{{ name }}"] = __rumocaFiniteOr(__rumocaC, constants["{{ name }}"]);
+    __rumocaFallbackSymbols["{{ name }}"] = constants["{{ name }}"];
+  }
+  {%- endfor %}
+
+  const x0 = [];
+  {%- for (name, comp) in x_map|items %}
+  {
+    const __rumocaX0 = {{ comp_expr_or_value(comp) }};
+    x0.push(__rumocaFiniteOr(__rumocaX0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = x0[{{ loop.index0 }}];
+  }
+  {%- endfor %}
+
+  const y0 = [];
+  {%- for (name, comp) in y_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ y_map|length + loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ y_map|length + z_map|length + loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in x_dot_alias_map|items %}
+  {
+    const __rumocaAlias = {{ comp_expr_or_value(comp) }};
+    __rumocaFallbackSymbols["{{ name }}"] = __rumocaFiniteOr(__rumocaAlias, 0);
+  }
+  {%- endfor %}
+  {%- for obs in obs_list %}
+  {
+    const __rumocaObs0 = {% if obs.start is defined %}{{ render_expr(obs.start) }}{% else %}0{% endif %};
+    __rumocaFallbackSymbols["{{ obs.name }}"] = __rumocaFiniteOr(__rumocaObs0, 0);
+  }
+  {%- endfor %}
+
+  const c0 = [
+  {%- if cond_eqs|length > 0 -%}
+    {%- for ce in cond_eqs %}false{% if not loop.last %},{% endif %}{%- endfor %}
+  {%- endif -%}
+  ];
+
+  const meta = {
+    name: "{{ model_name }}",
+
+    parameters: [
+    {%- for (name, comp) in p_map|items %}
+      { name: "{{ name }}", start: pDefaults["{{ name }}"]{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    constants: [
+    {%- for (name, comp) in cp_map|items %}
+      { name: "{{ name }}", value: constants["{{ name }}"]{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    states: [
+    {%- for (name, comp) in x_map|items %}
+      { name: "{{ name }}", start: x0[{{ loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    algebraics: [
+    {%- for (name, comp) in y_map|items %}
+      { name: "{{ name }}", start: y0[{{ loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or z_map|length > 0 or m_map|length > 0 or w_map|length > 0 or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in z_map|items %}
+      { name: "{{ name }}", start: y0[{{ y_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or m_map|length > 0 or w_map|length > 0 or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in m_map|items %}
+      { name: "{{ name }}", start: y0[{{ y_map|length + z_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or w_map|length > 0 or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in w_map|items %}
+      { name: "{{ name }}", start: y0[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for obs in obs_list %}
+      { name: "{{ obs.name }}", start: {% if obs.start is defined %}__rumocaFiniteOr({{ render_expr(obs.start) }}, 0){% else %}0{% endif %}{% if obs.unit is defined and (obs.unit|string)|trim != '' %}, unit: "{{ obs.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"{% endif %} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    solverAlgebraics: [
+    {%- for (name, comp) in y_map|items %}
+      "{{ name }}"{% if not loop.last or z_map|length > 0 or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in z_map|items %}
+      "{{ name }}"{% if not loop.last or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in m_map|items %}
+      "{{ name }}"{% if not loop.last or w_map|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in w_map|items %}
+      "{{ name }}"{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    inputs: [
+    {%- for (name, comp) in u_map|items %}
+      { name: "{{ name }}"{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    conditions: [
+    {%- if cond_eqs|length > 0 -%}
+      {%- for ce in cond_eqs %}
+      { name: "c[{{ loop.index }}]", start: false }{% if not loop.last %},{% endif %}
+      {%- endfor %}
+    {%- endif %}
+    ],
+
+    summary: {
+      nx: {{ x_map|length }},
+      ny: {{ y_map|length + z_map|length + m_map|length + w_map|length }},
+      nc: {{ cond_eqs|length }},
+      neqs: {{ eqs|length }}
+    }
+  };
+
+  const stateIndex = {
+  {%- for (name, comp) in x_map|items %}
+    "{{ name }}": {{ loop.index0 }}{% if not loop.last %},{% endif %}
+  {%- endfor %}
+  };
+
+  const algebraicIndex = {
+  {%- for (name, comp) in y_map|items %}
+    "{{ name }}": {{ loop.index0 }}{% if not loop.last or z_map|length > 0 or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    "{{ name }}": {{ y_map|length + loop.index0 }}{% if not loop.last or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    "{{ name }}": {{ y_map|length + z_map|length + loop.index0 }}{% if not loop.last or w_map|length > 0 %},{% endif %}
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    "{{ name }}": {{ y_map|length + z_map|length + m_map|length + loop.index0 }}{% if not loop.last %},{% endif %}
+  {%- endfor %}
+  };
+
+  function residual(t, xVec, xDotVec, yVec, uVec, pOverride) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+    const der_{{ js_ident(name) }} = xDotVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    return [
+    {%- for eq in eqs %}
+      {{ residual_expr(eq) }}{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ];
+  }
+
+  function evalConditions(t, xVec, yVec, uVec, pOverride) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    return [
+    {%- for ce in cond_eqs %}
+      {{ render_expr(ce.rhs) }}{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ];
+  }
+
+  function evalAlgebraics(t, xVec, yVec, uVec, pOverride) {
+    var p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    var {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    var {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    var {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+    var der_{{ js_ident(name) }} = 0;
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    var {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    var out = new Array(meta.algebraics.length).fill(0);
+  {%- for (name, comp) in y_map|items %}
+    out[{{ loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    out[{{ y_map|length + loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    out[{{ y_map|length + z_map|length + loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    out[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for obs in obs_list %}
+    var {{ js_ident(obs.name) }} = __rumocaFiniteOr(__rumocaResolveSymbol("{{ obs.name|string|replace('\\', '\\\\')|replace('"', '\\"') }}"), 0);
+  {%- endfor %}
+  {%- if obs_list|length > 0 %}
+    for (let __rumocaObsPass = 0; __rumocaObsPass < {{ obs_list|length }}; __rumocaObsPass++) {
+    {%- for obs in obs_list %}
+      {{ js_ident(obs.name) }} = __rumocaFiniteOr({{ render_expr(obs.expr) }}, 0);
+      __rumocaFallbackSymbols["{{ obs.name }}"] = {{ js_ident(obs.name) }};
+    {%- endfor %}
+    }
+  {%- endif %}
+  {%- for obs in obs_list %}
+    out[{{ y_map|length + z_map|length + m_map|length + w_map|length + loop.index0 }}] = {{ js_ident(obs.name) }};
+  {%- endfor %}
+    return out;
+  }
+
+  function applyResets(t, xVec, yVec, uVec, pOverride, cPrev, cCurr) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    let xNew = xVec.slice();
+    let yNew = yVec.slice();
+    let cNew = Array.isArray(cCurr) ? cCurr.slice() : [];
+
+  {%- for wc in when_clauses %}
+    {
+      const idx = {{ loop.index0 }};
+      const fired = !cPrev[idx] && cCurr[idx];
+      if (fired) {
+        {%- for eq in wc.equations %}
+        {%- if eq.lhs is defined %}
+        if (stateIndex["{{ eq.lhs }}"] !== undefined) {
+          xNew[stateIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+        } else if (algebraicIndex["{{ eq.lhs }}"] !== undefined) {
+          yNew[algebraicIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+        }
+        {%- endif %}
+        {%- endfor %}
+      }
+    }
+  {%- endfor %}
+
+    return { x: xNew, y: yNew, c: cNew };
+  }
+
+  const abiRequired = true;
+  const abi = { id: 'rumoca.model_runtime.residual.v1', version: 1 };
+  const description = {
+    modelName: meta.name,
+    variables: []
+      .concat(meta.parameters.map((v) => ({ name: v.name, kind: 'parameter', start: v.start, unit: v.unit })))
+      .concat(meta.constants.map((v) => ({ name: v.name, kind: 'constant', start: v.value, unit: v.unit })))
+      .concat(meta.states.map((v) => ({ name: v.name, kind: 'state', start: v.start, unit: v.unit })))
+      .concat(meta.algebraics.map((v) => ({ name: v.name, kind: 'algebraic', start: v.start, unit: v.unit })))
+      .concat(meta.inputs.map((v) => ({ name: v.name, kind: 'input', unit: v.unit }))),
+    nx: meta.summary.nx,
+    ny: meta.summary.ny,
+    nu: meta.inputs.length,
+    nz: 0
+  };
+  const capabilities = { events: false };
+
+  return {
+    abiRequired,
+    abi,
+    description,
+    capabilities,
+    name: meta.name,
+    meta,
+    x0,
+    y0,
+    c0,
+    residual,
+    evalAlgebraics,
+    evalConditions,
+    applyResets
+  };
+}
+
+    </script>
+
+    <script>
+      const simulateModel = (params, context, model) => {
+  // -----------------------------------------------------------------------------------------------
+  // Logging
+  //
+  // Functional style: the solver does not own global logging state.
+  // If you want logs, provide `context.log(msg, ...details)`.
+  // The sandbox wrapper can implement context.log by forwarding to postMessage.
+  // -----------------------------------------------------------------------------------------------
+  const log = (...args) => {
+    try {
+      if (context && typeof context.log === 'function') {
+        context.log(...args)
+      }
+    } catch {
+      /* empty */
+    }
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Existing solver implementation
+  // -----------------------------------------------------------------------------------------------
+  const meta = model.meta || {}
+
+  const stateNames = (meta.states || []).map((s) => s.name)
+  const algebraicNames = (meta.algebraics || []).map((a) => a.name)
+  const solverAlgebraicNames = Array.isArray(meta.solverAlgebraics)
+    ? meta.solverAlgebraics.filter((n) => typeof n === 'string')
+    : algebraicNames.slice()
+  const inputNames = (meta.inputs || []).map((u) => u.name)
+  const conditionNames = (meta.conditions || []).map((c) => c.name)
+
+  const nx = Array.isArray(model.x0) ? model.x0.length : 0
+  const ny = Array.isArray(model.y0) ? model.y0.length : 0
+  const nu = inputNames.length
+
+  const haveEvents =
+    typeof model.evalConditions === 'function' && typeof model.applyResets === 'function'
+  const haveAlgebraicEval = typeof model.evalAlgebraics === 'function'
+
+  const x0_model = Array.isArray(model.x0) ? model.x0.slice() : new Array(nx).fill(0)
+  const y0_model = Array.isArray(model.y0) ? model.y0.slice() : new Array(ny).fill(0)
+
+  let c0 = Array.isArray(model.c0) ? model.c0.slice() : null
+  if (!c0 && haveEvents) {
+    try {
+      const cProbe = model.evalConditions(0, x0_model, y0_model, new Array(nu).fill(0), null)
+      if (Array.isArray(cProbe)) c0 = cProbe.slice()
+    } catch {
+      /* empty */
+    }
+  }
+  if (!c0) c0 = new Array(conditionNames.length).fill(false)
+
+  // ---------- Linear solver ----------
+  function solveLinearSystem(A, b) {
+    const n = A.length
+    if (n === 0) return []
+    const M = A.map((r) => r.slice())
+    const x = b.slice()
+    const pivotTol = 1e-12
+
+    for (let k = 0; k < n; k++) {
+      let maxRow = k
+      let maxVal = Math.abs(M[k][k])
+      for (let i = k + 1; i < n; i++) {
+        const v = Math.abs(M[i][k])
+        if (v > maxVal) {
+          maxVal = v
+          maxRow = i
+        }
+      }
+      if (maxVal <= pivotTol) {
+        M[k][k] = M[k][k] >= 0 ? pivotTol : -pivotTol
+      }
+
+      if (maxRow !== k) {
+        ;[M[k], M[maxRow]] = [M[maxRow], M[k]]
+        ;[x[k], x[maxRow]] = [x[maxRow], x[k]]
+      }
+
+      for (let i = k + 1; i < n; i++) {
+        const f = M[i][k] / M[k][k]
+        x[i] -= f * x[k]
+        for (let j = k; j < n; j++) {
+          M[i][j] -= f * M[k][j]
+        }
+      }
+    }
+
+    for (let i = n - 1; i >= 0; i--) {
+      let s = x[i]
+      for (let j = i + 1; j < n; j++) s -= M[i][j] * x[j]
+      const diag = Math.abs(M[i][i]) <= pivotTol ? (M[i][i] >= 0 ? pivotTol : -pivotTol) : M[i][i]
+      x[i] = s / diag
+    }
+
+    return x
+  }
+
+  function solveDampedLeastSquares(J, r, lambda) {
+    const m = J.length
+    if (m === 0) return []
+    const n = Array.isArray(J[0]) ? J[0].length : 0
+    if (n === 0) return []
+    const A = Array.from({ length: n }, () => new Array(n).fill(0))
+    const b = new Array(n).fill(0)
+
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        let s = 0
+        for (let k = 0; k < m; k++) s += J[k][i] * J[k][j]
+        if (i === j) s += lambda
+        A[i][j] = s
+      }
+      let rhs = 0
+      for (let k = 0; k < m; k++) rhs += J[k][i] * r[k]
+      b[i] = -rhs
+    }
+
+    return solveLinearSystem(A, b)
+  }
+
+  function regularizeGuessVector(values, newtonOpts) {
+    const minAbs = Number.isFinite(newtonOpts?.initialGuessMinAbs)
+      ? Math.max(0, Math.abs(newtonOpts.initialGuessMinAbs))
+      : 1e-9
+    if (!Array.isArray(values) || minAbs <= 0) return Array.isArray(values) ? values.slice() : []
+    return values.map((raw) => {
+      const v = Number(raw)
+      if (!Number.isFinite(v)) return minAbs
+      if (v === 0) return minAbs
+      if (Math.abs(v) < minAbs) return v < 0 ? -minAbs : minAbs
+      return v
+    })
+  }
+
+  // ---------- Newton solver ----------
+  function newtonSolve(residualFn, z0, newtonOpts, trace) {
+    const maxIter = Number.isFinite(newtonOpts?.maxIter) ? newtonOpts.maxIter : 12
+    const tol = Number.isFinite(newtonOpts?.tol) ? newtonOpts.tol : 1e-8
+    const epsBase = Number.isFinite(newtonOpts?.epsBase) ? newtonOpts.epsBase : 1e-6
+    const lambda = Number.isFinite(newtonOpts?.lambda) ? Math.max(0, newtonOpts.lambda) : 1e-6
+    const maxUpdateFactor = Number.isFinite(newtonOpts?.maxUpdateFactor)
+      ? Math.max(0, newtonOpts.maxUpdateFactor)
+      : 5
+    const lineSearchBackoff = Number.isFinite(newtonOpts?.lineSearchBackoff)
+      ? Math.min(0.95, Math.max(0.1, newtonOpts.lineSearchBackoff))
+      : 0.5
+    const lineSearchMinAlpha = Number.isFinite(newtonOpts?.lineSearchMinAlpha)
+      ? Math.min(1, Math.max(1e-4, newtonOpts.lineSearchMinAlpha))
+      : 1 / 64
+    const lineSearchAcceptRatio = Number.isFinite(newtonOpts?.lineSearchAcceptRatio)
+      ? Math.max(0, newtonOpts.lineSearchAcceptRatio)
+      : 0.999
+
+    const n = z0.length
+    let z = regularizeGuessVector(z0, newtonOpts)
+    const residualInfNorm = (arr) => {
+      let v = 0
+      for (let i = 0; i < arr.length; i++) {
+        const ai = arr[i]
+        if (!Number.isFinite(ai)) return Number.POSITIVE_INFINITY
+        v = Math.max(v, Math.abs(ai))
+      }
+      return v
+    }
+
+    let lastResidualNorm = Number.POSITIVE_INFINITY
+    for (let iter = 0; iter < maxIter; iter++) {
+      let r
+      try {
+        r = residualFn(z)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        throw new Error(
+          `Residual evaluation failed (stage=${trace?.stage || 'unknown'}, iter=${iter}, t=${Number(trace?.t).toPrecision(8)}): ${msg}`,
+        )
+      }
+      if (!Array.isArray(r) || r.length !== n) {
+        // Allow over/under-determined systems (m != n) by solving in least-squares sense.
+        // We only require an array residual.
+        if (!Array.isArray(r)) {
+          throw new Error(
+            `Residual shape invalid (stage=${trace?.stage || 'unknown'}, iter=${iter}): expected array, got non-array`,
+          )
+        }
+      }
+      const m = r.length
+      if (m === 0) {
+        throw new Error(
+          `Residual shape invalid (stage=${trace?.stage || 'unknown'}, iter=${iter}): empty residual vector`,
+        )
+      }
+      for (let i = 0; i < n; i++) {
+        if (i < m && !Number.isFinite(r[i])) {
+          throw new Error(
+            `Residual non-finite at index=${i} (stage=${trace?.stage || 'unknown'}, iter=${iter}, t=${Number(trace?.t).toPrecision(8)}): ${String(r[i])}`,
+          )
+        }
+      }
+      for (let i = n; i < m; i++) {
+        if (!Number.isFinite(r[i])) {
+          throw new Error(
+            `Residual non-finite at index=${i} (stage=${trace?.stage || 'unknown'}, iter=${iter}, t=${Number(trace?.t).toPrecision(8)}): ${String(r[i])}`,
+          )
+        }
+      }
+
+      const maxAbs = residualInfNorm(r)
+      lastResidualNorm = maxAbs
+      if (maxAbs < tol) return z
+
+      const J = Array.from({ length: m }, () => new Array(n).fill(0))
+
+      for (let j = 0; j < n; j++) {
+        const zj = z[j]
+        const eps = epsBase * (1 + Math.abs(zj))
+        z[j] = zj + eps
+        let rp
+        try {
+          rp = residualFn(z)
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          throw new Error(
+            `Residual Jacobian probe failed (stage=${trace?.stage || 'unknown'}, iter=${iter}, col=${j}, t=${Number(trace?.t).toPrecision(8)}): ${msg}`,
+          )
+        }
+        z[j] = zj
+        if (!Array.isArray(rp) || rp.length !== m) {
+          throw new Error(
+            `Jacobian probe shape invalid (stage=${trace?.stage || 'unknown'}, iter=${iter}, col=${j}): expected ${m}, got ${
+              Array.isArray(rp) ? rp.length : 'non-array'
+            }`,
+          )
+        }
+        for (let i = 0; i < m; i++) {
+          J[i][j] = (rp[i] - r[i]) / eps
+          if (!Number.isFinite(J[i][j])) {
+            throw new Error(
+              `Jacobian non-finite at (row=${i}, col=${j}) (stage=${trace?.stage || 'unknown'}, iter=${iter}, t=${Number(trace?.t).toPrecision(8)})`,
+            )
+          }
+        }
+      }
+
+      let delta
+      // Use damped least-squares for both square and rectangular systems.
+      // This is robust for over-determined DAEs (m > n) that arise from expanded libraries.
+      delta = solveDampedLeastSquares(J, r, lambda)
+      for (let i = 0; i < n; i++) {
+        if (!Number.isFinite(delta[i])) {
+          throw new Error(
+            `Newton update non-finite at index=${i} (stage=${trace?.stage || 'unknown'}, iter=${iter}, t=${Number(trace?.t).toPrecision(8)})`,
+          )
+        }
+        if (maxUpdateFactor > 0) {
+          const maxAbsDelta = maxUpdateFactor * (1 + Math.abs(z[i]))
+          if (Math.abs(delta[i]) > maxAbsDelta) {
+            delta[i] = delta[i] < 0 ? -maxAbsDelta : maxAbsDelta
+          }
+        }
+      }
+
+      let accepted = false
+      let alpha = 1
+      while (alpha >= lineSearchMinAlpha) {
+        const zCand = new Array(n)
+        for (let i = 0; i < n; i++) zCand[i] = z[i] + alpha * delta[i]
+        let rCand
+        try {
+          rCand = residualFn(zCand)
+        } catch {
+          rCand = null
+        }
+        if (Array.isArray(rCand) && rCand.length === m) {
+          const maxAbsCand = residualInfNorm(rCand)
+          if (
+            Number.isFinite(maxAbsCand) &&
+            (maxAbsCand < tol || maxAbsCand <= maxAbs * lineSearchAcceptRatio)
+          ) {
+            z = zCand
+            accepted = true
+            break
+          }
+        }
+        alpha *= lineSearchBackoff
+      }
+      if (!accepted) {
+        throw new Error(
+          `Newton line search failed to reduce residual (stage=${trace?.stage || 'unknown'}, iter=${iter}, t=${Number(trace?.t).toPrecision(8)})`,
+        )
+      }
+    }
+
+    throw new Error(
+      `Newton failed to converge within maxIter=${maxIter} (stage=${trace?.stage || 'unknown'}, t=${Number(trace?.t).toPrecision(8)}, residualInfNorm=${lastResidualNorm})`,
+    )
+  }
+
+  // ---------- Backward-Euler-like stage ----------
+  function implicitStage(tStage, xBase, yGuess, u, dtStage, pOverride, newtonOpts, stageName) {
+    const z0 = regularizeGuessVector(xBase.concat(yGuess), newtonOpts)
+
+    function residual(z) {
+      const xS = z.slice(0, nx)
+      const yS = z.slice(nx)
+
+      const xDot = new Array(nx)
+      for (let i = 0; i < nx; i++) {
+        xDot[i] = (xS[i] - xBase[i]) / dtStage
+      }
+
+      return model.residual(tStage, xS, xDot, yS, u, pOverride)
+    }
+
+    const sol = newtonSolve(residual, z0, newtonOpts, { stage: stageName, t: tStage })
+    return {
+      x: sol.slice(0, nx),
+      y: sol.slice(nx),
+    }
+  }
+
+  // ---------- SDIRK-2 (Alexander) ----------
+  function sdirk2Step(t, x, y, u, dt, pOverride, newtonOpts) {
+    const gamma = 1 - 1 / Math.sqrt(2)
+
+    // ---- Stage 1 ----
+    const stage1 = implicitStage(
+      t + gamma * dt,
+      x,
+      y,
+      u,
+      gamma * dt,
+      pOverride,
+      newtonOpts,
+      'sdirk2_stage1',
+    )
+
+    // ---- Stage 2 ----
+    const z0 = regularizeGuessVector(stage1.x.concat(stage1.y), newtonOpts)
+
+    function residualStage2(z) {
+      const x2 = z.slice(0, nx)
+      const y2 = z.slice(nx)
+
+      const xDot = new Array(nx)
+      for (let i = 0; i < nx; i++) {
+        xDot[i] =
+          ((x2[i] - x[i]) / dt - ((1 - gamma) * (stage1.x[i] - x[i])) / (gamma * dt)) / gamma
+      }
+
+      return model.residual(t + dt, x2, xDot, y2, u, pOverride)
+    }
+
+    const sol2 = newtonSolve(residualStage2, z0, newtonOpts, {
+      stage: 'sdirk2_stage2',
+      t: t + dt,
+    })
+
+    return {
+      x: sol2.slice(0, nx),
+      y: sol2.slice(nx),
+    }
+  }
+
+  // ---------- IRK4 (Gauss-Legendre, 2-stage) ----------
+  function irk4Step(t, x, y, u, dt, pOverride, newtonOpts) {
+    const sqrt3 = Math.sqrt(3)
+    const c1 = 0.5 - sqrt3 / 6
+    const c2 = 0.5 + sqrt3 / 6
+    const a11 = 0.25
+    const a12 = 0.25 - sqrt3 / 6
+    const a21 = 0.25 + sqrt3 / 6
+    const a22 = 0.25
+    const detA = a11 * a22 - a12 * a21
+
+    const z0 = regularizeGuessVector(x.concat(y).concat(x).concat(y), newtonOpts)
+
+    function unpack(z) {
+      const i0 = 0
+      const i1 = nx
+      const i2 = i1 + ny
+      const i3 = i2 + nx
+      const i4 = i3 + ny
+      return {
+        x1: z.slice(i0, i1),
+        y1: z.slice(i1, i2),
+        x2: z.slice(i2, i3),
+        y2: z.slice(i3, i4),
+      }
+    }
+
+    function stageDerivativesFromStates(x1, x2) {
+      const k1 = new Array(nx)
+      const k2 = new Array(nx)
+      for (let i = 0; i < nx; i++) {
+        const d1 = (x1[i] - x[i]) / dt
+        const d2 = (x2[i] - x[i]) / dt
+        k1[i] = (a22 * d1 - a12 * d2) / detA
+        k2[i] = (-a21 * d1 + a11 * d2) / detA
+      }
+      return { k1, k2 }
+    }
+
+    function residualStages(z) {
+      const { x1, y1, x2, y2 } = unpack(z)
+      const { k1, k2 } = stageDerivativesFromStates(x1, x2)
+      const r1 = model.residual(t + c1 * dt, x1, k1, y1, u, pOverride)
+      const r2 = model.residual(t + c2 * dt, x2, k2, y2, u, pOverride)
+      return r1.concat(r2)
+    }
+
+    const sol = newtonSolve(residualStages, z0, newtonOpts, {
+      stage: 'irk4_stages',
+      t: t + dt,
+    })
+    const { x2, y2, x1 } = unpack(sol)
+    const { k1, k2 } = stageDerivativesFromStates(x1, x2)
+
+    const xNext = new Array(nx)
+    for (let i = 0; i < nx; i++) xNext[i] = x[i] + dt * 0.5 * (k1[i] + k2[i])
+
+    return {
+      x: xNext,
+      y: y2.slice(),
+    }
+  }
+
+  // ---------- Explicit RK4 (for ODE-like systems) ----------
+  function solveFlowAtState(tEval, xEval, yGuess, xDotGuess, u, pOverride, newtonOpts, stageName) {
+    const z0 = regularizeGuessVector(xDotGuess.concat(yGuess), newtonOpts)
+    function residual(z) {
+      const xDotS = z.slice(0, nx)
+      const yS = z.slice(nx)
+      return model.residual(tEval, xEval, xDotS, yS, u, pOverride)
+    }
+    const sol = newtonSolve(residual, z0, newtonOpts, { stage: stageName, t: tEval })
+    return {
+      xDot: sol.slice(0, nx),
+      y: sol.slice(nx),
+    }
+  }
+
+  function rk4Step(t, x, y, u, dt, pOverride, newtonOpts, xDotPrev) {
+    const xDotSeed = Array.isArray(xDotPrev) && xDotPrev.length === nx ? xDotPrev.slice() : new Array(nx).fill(0)
+
+    const s1 = solveFlowAtState(t, x, y, xDotSeed, u, pOverride, newtonOpts, 'rk4_stage1')
+    const x2 = new Array(nx)
+    for (let i = 0; i < nx; i++) x2[i] = x[i] + 0.5 * dt * s1.xDot[i]
+
+    const s2 = solveFlowAtState(
+      t + 0.5 * dt,
+      x2,
+      s1.y,
+      s1.xDot,
+      u,
+      pOverride,
+      newtonOpts,
+      'rk4_stage2',
+    )
+    const x3 = new Array(nx)
+    for (let i = 0; i < nx; i++) x3[i] = x[i] + 0.5 * dt * s2.xDot[i]
+
+    const s3 = solveFlowAtState(
+      t + 0.5 * dt,
+      x3,
+      s2.y,
+      s2.xDot,
+      u,
+      pOverride,
+      newtonOpts,
+      'rk4_stage3',
+    )
+    const x4 = new Array(nx)
+    for (let i = 0; i < nx; i++) x4[i] = x[i] + dt * s3.xDot[i]
+
+    const s4 = solveFlowAtState(
+      t + dt,
+      x4,
+      s3.y,
+      s3.xDot,
+      u,
+      pOverride,
+      newtonOpts,
+      'rk4_stage4',
+    )
+
+    const xNext = new Array(nx)
+    for (let i = 0; i < nx; i++) {
+      xNext[i] = x[i] + (dt / 6) * (s1.xDot[i] + 2 * s2.xDot[i] + 2 * s3.xDot[i] + s4.xDot[i])
+    }
+
+    return {
+      x: xNext,
+      y: s4.y.slice(),
+      xDot: s4.xDot.slice(),
+    }
+  }
+  // ---------- Simulation ----------
+  function simulate(t0, tf, dt, opts) {
+    opts = opts || {}
+    const pOverride = opts.pOverride || null
+
+    // solver options (merged with schema defaults)
+    const solverOptions = Object.assign(
+      {
+        timeIntegrator: 'sdirk2',
+        captureFailureState: false,
+        newtonTol: 1e-8,
+        newtonMaxIter: 12,
+        jacEpsBase: 1e-6,
+        initialGuessMinAbs: 1e-9,
+        newtonLambda: 1e-6,
+        maxUpdateFactor: 5,
+        lineSearchBackoff: 0.5,
+        lineSearchMinAlpha: 0.015625,
+        lineSearchAcceptRatio: 0.999,
+        initRetryCount: 5,
+        initRetryMinAbsBase: 1e-9,
+        initRetryLambdaScale: 100,
+        initRetryMaxIterScale: 2,
+        adaptiveSubsteps: true,
+        maxSubstepDepth: 6,
+        minSubstepDt: dt / 128,
+      },
+      opts.solverOptions || {},
+    )
+
+    const newtonOpts = {
+      tol: solverOptions.newtonTol,
+      maxIter: solverOptions.newtonMaxIter,
+      epsBase: solverOptions.jacEpsBase,
+      initialGuessMinAbs: solverOptions.initialGuessMinAbs,
+      lambda: solverOptions.newtonLambda,
+      maxUpdateFactor: solverOptions.maxUpdateFactor,
+      lineSearchBackoff: solverOptions.lineSearchBackoff,
+      lineSearchMinAlpha: solverOptions.lineSearchMinAlpha,
+      lineSearchAcceptRatio: solverOptions.lineSearchAcceptRatio,
+    }
+    const selectedIntegrator = String(
+      solverOptions.timeIntegrator ?? solverOptions.integrator ?? 'sdirk2',
+    ).toLowerCase()
+    const useIrk4 = selectedIntegrator === 'irk4' || selectedIntegrator === 'gauss_legendre_irk4'
+    const useRk4 = selectedIntegrator === 'rk4'
+    const stepperName = useIrk4 ? 'irk4' : useRk4 ? 'rk4' : 'sdirk2'
+    const captureFailureState = Boolean(
+      solverOptions.captureFailureState ?? opts.captureFailureState ?? false,
+    )
+    const initializeConsistently = Boolean(solverOptions.initializeConsistently ?? true)
+    const adaptiveSubsteps = Boolean(solverOptions.adaptiveSubsteps ?? true)
+    const maxSubstepDepth = Number.isFinite(solverOptions.maxSubstepDepth)
+      ? Math.max(0, Math.floor(solverOptions.maxSubstepDepth))
+      : 6
+    const minSubstepDt = Number.isFinite(solverOptions.minSubstepDt)
+      ? Math.max(1e-9, solverOptions.minSubstepDt)
+      : Math.max(1e-9, dt / 128)
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const f_u = typeof opts.f_u === 'function' ? opts.f_u : (_t) => new Array(nu).fill(0)
+
+    const nSteps = Math.max(1, Math.floor((tf - t0) / dt))
+    const tArr = []
+    const xArr = []
+    const yArr = []
+    const yOutArr = []
+    const uArr = []
+    const cArr = []
+    let stopReason = null
+    let stopError = null
+    let stopStack = null
+    let stopDetails = null
+
+    let t = t0
+    let x = (opts.x0 || x0_model).slice()
+    let y = y0_model.slice()
+    let c = c0.slice()
+    let xDotPrev = new Array(nx).fill(0)
+
+    if (initializeConsistently) {
+      const u0 = f_u(t) || new Array(nu).fill(0)
+      const retryCount = Number.isFinite(solverOptions.initRetryCount)
+        ? Math.max(1, Math.floor(solverOptions.initRetryCount))
+        : 5
+      const minAbsBase = Number.isFinite(solverOptions.initRetryMinAbsBase)
+        ? Math.max(0, Math.abs(solverOptions.initRetryMinAbsBase))
+        : 1e-9
+      const lambdaScale = Number.isFinite(solverOptions.initRetryLambdaScale)
+        ? Math.max(1, solverOptions.initRetryLambdaScale)
+        : 100
+      const maxIterScale = Number.isFinite(solverOptions.initRetryMaxIterScale)
+        ? Math.max(1, solverOptions.initRetryMaxIterScale)
+        : 2
+
+      const initErrors = []
+      let initSolved = false
+      for (let attempt = 0; attempt < retryCount; attempt++) {
+        const minAbs = Math.max(minAbsBase, Math.pow(10, attempt - 9))
+        const attemptOpts = Object.assign({}, newtonOpts, {
+          initialGuessMinAbs:
+            attempt === 0
+              ? newtonOpts.initialGuessMinAbs
+              : Math.max(minAbs, newtonOpts.initialGuessMinAbs || 0),
+          lambda:
+            attempt === 0
+              ? newtonOpts.lambda
+              : Math.max(newtonOpts.lambda || 0, (newtonOpts.lambda || 1e-6) * Math.pow(lambdaScale, attempt)),
+          maxIter:
+            attempt === 0
+              ? newtonOpts.maxIter
+              : Math.max(newtonOpts.maxIter || 12, Math.floor((newtonOpts.maxIter || 12) * maxIterScale)),
+        })
+        const yGuess =
+          attempt === 0 ? y.slice() : regularizeGuessVector(y.slice(), attemptOpts)
+        const xDotGuess =
+          attempt === 0
+            ? xDotPrev.slice()
+            : regularizeGuessVector(xDotPrev.slice(), attemptOpts)
+        try {
+          const init = solveFlowAtState(
+            t,
+            x,
+            yGuess,
+            xDotGuess,
+            u0,
+            pOverride,
+            attemptOpts,
+            `initial_consistent_state_attempt_${attempt + 1}`,
+          )
+          if (Array.isArray(init.y) && init.y.length === ny) y = init.y.slice()
+          if (Array.isArray(init.xDot) && init.xDot.length === nx) xDotPrev = init.xDot.slice()
+          initSolved = true
+          break
+        } catch (e) {
+          const msg = (e && e.message) || String(e)
+          initErrors.push(
+            `attempt=${attempt + 1}, minAbs=${attemptOpts.initialGuessMinAbs}, lambda=${attemptOpts.lambda}, maxIter=${attemptOpts.maxIter}, error=${msg}`,
+          )
+        }
+      }
+      if (!initSolved) {
+        const tailErrors = initErrors.slice(-3).join(' | ')
+        log('Consistent initialization failed after retries', { initErrors })
+        throw new Error(
+          `Consistent initialization failed (stage=initial_consistent_state, t=${Number(t).toPrecision(8)}): ${tailErrors}`,
+        )
+      }
+
+      if (haveEvents) {
+        try {
+          const cInit = model.evalConditions(t, x, y, u0, pOverride)
+          if (Array.isArray(cInit)) c = cInit.slice()
+        } catch {
+          /* empty */
+        }
+      }
+    }
+
+    function performSingleStep(tLocal, xLocal, yLocal, cLocal, dtLocal, xDotSeed) {
+      const uLocal = f_u(tLocal) || new Array(nu).fill(0)
+      const step = useIrk4
+        ? irk4Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts)
+        : useRk4
+          ? rk4Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts, xDotSeed)
+          : sdirk2Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts)
+      if (!step || !step.x || !step.y) {
+        throw new Error(`Invalid step payload at t=${tLocal}`)
+      }
+
+      let xNext = step.x
+      let yNext = step.y
+      let cNext = Array.isArray(cLocal) ? cLocal.slice() : []
+
+      if (haveEvents) {
+        const uNext = f_u(tLocal + dtLocal) || new Array(nu).fill(0)
+        const cPrev = Array.isArray(cLocal) ? cLocal.slice() : []
+        let cCurr = cPrev.slice()
+
+        try {
+          const ce = model.evalConditions(tLocal + dtLocal, xNext, yNext, uNext, pOverride)
+          if (Array.isArray(ce)) cCurr = ce.slice()
+        } catch (e) {
+          log(`evalConditions threw at t=${tLocal + dtLocal}`, {
+            error: (e && e.message) || String(e),
+            stack: e && e.stack,
+          })
+        }
+
+        try {
+          const applied = model.applyResets
+            ? model.applyResets(tLocal + dtLocal, xNext, yNext, uNext, pOverride, cPrev, cCurr)
+            : null
+
+          if (applied?.x) xNext = applied.x.slice()
+          if (applied?.y) yNext = applied.y.slice()
+          if (applied?.c) cNext = applied.c.slice()
+        } catch (e) {
+          log(`applyResets threw at t=${tLocal + dtLocal}`, {
+            error: (e && e.message) || String(e),
+            stack: e && e.stack,
+          })
+        }
+      }
+
+      const xDotNext =
+        Array.isArray(step.xDot) && step.xDot.length === nx
+          ? step.xDot.slice()
+          : xNext.map((xv, i) => (xv - xLocal[i]) / dtLocal)
+
+      return { xNext, yNext, cNext, xDotNext }
+    }
+
+    function evaluateAlgebraicsAtSample(tLocal, xLocal, yLocal, uLocal) {
+      if (haveAlgebraicEval) {
+        try {
+          const yEval = model.evalAlgebraics(tLocal, xLocal, yLocal, uLocal, pOverride)
+          if (Array.isArray(yEval) && yEval.length === algebraicNames.length) {
+            return yEval.map((v) =>
+              typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN,
+            )
+          }
+        } catch (e) {
+          log(`evalAlgebraics threw at t=${tLocal}`, {
+            error: (e && e.message) || String(e),
+            stack: e && e.stack,
+          })
+        }
+      }
+      const out = new Array(algebraicNames.length).fill(Number.NaN)
+      const n = Math.min(out.length, Array.isArray(yLocal) ? yLocal.length : 0)
+      for (let i = 0; i < n; i++) {
+        const v = yLocal[i]
+        out[i] = typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN
+      }
+      return out
+    }
+
+    function advanceAdaptive(tLocal, xLocal, yLocal, cLocal, dtLocal, xDotSeed, depth) {
+      try {
+        return performSingleStep(tLocal, xLocal, yLocal, cLocal, dtLocal, xDotSeed)
+      } catch (e) {
+        if (!adaptiveSubsteps || depth >= maxSubstepDepth || dtLocal * 0.5 < minSubstepDt) {
+          throw e
+        }
+        const half = dtLocal * 0.5
+        const a = advanceAdaptive(tLocal, xLocal, yLocal, cLocal, half, xDotSeed, depth + 1)
+        return advanceAdaptive(tLocal + half, a.xNext, a.yNext, a.cNext, half, a.xDotNext, depth + 1)
+      }
+    }
+
+    log('Simulation started', { t0, tf, dt, nx, ny, nu, haveEvents })
+
+    for (let k = 0; k <= nSteps; k++) {
+      const u = f_u(t) || new Array(nu).fill(0)
+
+      tArr.push(t)
+      xArr.push(x.slice())
+      yArr.push(y.slice())
+      yOutArr.push(evaluateAlgebraicsAtSample(t, x, y, u))
+      uArr.push(u.slice())
+      cArr.push(c.slice())
+
+      if (k === nSteps) break
+
+      try {
+        const advanced = advanceAdaptive(t, x, y, c, dt, xDotPrev, 0)
+        t += dt
+        x = advanced.xNext
+        y = advanced.yNext
+        c = advanced.cNext
+        xDotPrev = advanced.xDotNext
+      } catch (e) {
+        stopReason = `${stepperName}Step_failed`
+        stopError = (e && e.message) || String(e)
+        stopStack = e && e.stack ? String(e.stack) : null
+        const missingSymbol = /([A-Za-z_$][A-Za-z0-9_$]*) is not defined/.exec(String(stopError))
+        stopDetails = {
+          stepIndex: k,
+          time: t,
+          dt,
+          nx,
+          ny,
+          nu,
+          xHead: x.slice(0, Math.min(3, x.length)),
+          yHead: y.slice(0, Math.min(3, y.length)),
+          uHead: u.slice(0, Math.min(3, u.length)),
+          missingSymbol: missingSymbol ? missingSymbol[1] : null,
+        }
+        if (captureFailureState) {
+          stopDetails.failureState = {
+            stage: 'time_step',
+            time: t,
+            stepIndex: k,
+            x: x.slice(),
+            y: y.slice(),
+            u: u.slice(),
+            c: c.slice(),
+            stateNames: stateNames.slice(),
+            algebraicNames: solverAlgebraicNames.slice(),
+            inputNames: inputNames.slice(),
+            conditionNames: conditionNames.slice(),
+          }
+        }
+        log(`${stepperName.toUpperCase()} step failed at t=${t}`, {
+          error: (e && e.message) || String(e),
+          stack: e && e.stack,
+        })
+        break
+      }
+    }
+
+    log('Simulation finished', { nSamples: tArr.length })
+    return {
+      t: tArr,
+      x: xArr,
+      y: yArr,
+      yObserved: yOutArr,
+      u: uArr,
+      c: cArr,
+      stopReason,
+      stopError,
+      stopStack,
+      stopDetails,
+    }
+  }
+
+  // ---------- Run ----------
+  const sim = params?.sim || {}
+  const raw = simulate(sim.t0 ?? 0, sim.tf ?? 5, sim.dt ?? 0.1, {
+    x0: sim.x0,
+    f_u: sim.f_u,
+    solverOptions: sim.solverOptions,
+  })
+
+  const expectRows = (rows, width, label) => {
+    if (!Array.isArray(rows)) {
+      throw new Error(`Simulation result shape invalid: ${label} is not an array`)
+    }
+    if (rows.length !== raw.t.length) {
+      throw new Error(
+        `Simulation result shape invalid: ${label}.length=${rows.length} does not match t.length=${raw.t.length}`,
+      )
+    }
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
+      if (!Array.isArray(row)) {
+        throw new Error(`Simulation result shape invalid: ${label}[${i}] is not an array`)
+      }
+      if (row.length !== width) {
+        throw new Error(
+          `Simulation result shape invalid: ${label}[${i}].length=${row.length}, expected ${width}`,
+        )
+      }
+    }
+  }
+
+  expectRows(raw.x, nx, 'x')
+  expectRows(raw.y, ny, 'y')
+  expectRows(raw.yObserved, algebraicNames.length, 'yObserved')
+  expectRows(raw.u, nu, 'u')
+  expectRows(raw.c, conditionNames.length, 'c')
+
+  const projectSeries = (rows, names) =>
+    Object.fromEntries(
+      names.map((n, i) => [
+        n,
+        rows.map((r) => {
+          const v = r[i]
+          return typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN
+        }),
+      ]),
+    )
+
+  // Return ONLY structured-cloneable data.
+  // Never return the full `context` object because it may contain functions
+  // (e.g. context.log), which would break postMessage structured cloning.
+  const contextInfo = {
+    source: context?.source,
+    compiledAt: context?.compiledAt,
+    runId: context?.__rumocaRunId ?? context?.runId,
+  }
+
+  return {
+    meta: {
+      t0: sim.t0 ?? 0,
+      tf: sim.tf ?? 5,
+      dt: sim.dt ?? 0.1,
+      nSteps: raw.t.length,
+      stopReason: raw.stopReason,
+      stopError: raw.stopError,
+      stopStack: raw.stopStack,
+      stopDetails: raw.stopDetails,
+      model: {
+        name: model.name || meta.name || 'UnnamedModel',
+        stateNames,
+        inputNames,
+        algebraicNames,
+        solverAlgebraicNames,
+        conditionNames,
+      },
+      context: contextInfo,
+    },
+    data: {
+      t: raw.t,
+      x: projectSeries(raw.x, stateNames),
+      y: projectSeries(raw.yObserved, algebraicNames),
+      u: projectSeries(raw.u, inputNames),
+      c: projectSeries(raw.c, conditionNames),
+    },
+  }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Solver self-description (minimal FMI-like)
+// -------------------------------------------------------------------------------------------------
+// Default simulation parameter values (used by generic UI)
+simulateModel.simDefaults = {
+  t0: 0,
+  tf: 5,
+  dt: 0.01,
+}
+
+// JSON schema describing solver options (beyond t0/tf/dt)
+simulateModel.optionsSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    timeIntegrator: {
+      type: 'string',
+      enum: ['sdirk2', 'irk4', 'rk4'],
+      default: 'sdirk2',
+      description:
+        'Time integration method: SDIRK2 (robust default), IRK4 (implicit Gauss-Legendre), RK4 (explicit)',
+    },
+    captureFailureState: {
+      type: 'boolean',
+      default: false,
+      description: 'Include full model state in meta.stopDetails when a timestep fails',
+    },
+    newtonTol: { type: 'number', default: 1e-8, description: 'Newton solver tolerance' },
+    newtonMaxIter: {
+      type: 'integer',
+      default: 12,
+      description: 'Maximum Newton iterations per stage',
+    },
+    jacEpsBase: {
+      type: 'number',
+      default: 1e-6,
+      description: 'Finite difference epsilon base used for numerical Jacobian',
+    },
+    initialGuessMinAbs: {
+      type: 'number',
+      default: 1e-9,
+      description:
+        'Minimum absolute value for Newton initial guess entries (avoids singular zero-denominator starts)',
+    },
+    newtonLambda: {
+      type: 'number',
+      default: 1e-6,
+      description: 'Damping lambda used in normal-equation least-squares Newton step',
+    },
+    maxUpdateFactor: {
+      type: 'number',
+      default: 5,
+      description: 'Per-variable Newton update limit: |delta_i| <= factor * (1 + |z_i|)',
+    },
+    lineSearchBackoff: {
+      type: 'number',
+      default: 0.5,
+      description: 'Backtracking factor for Newton line search',
+    },
+    lineSearchMinAlpha: {
+      type: 'number',
+      default: 0.015625,
+      description: 'Minimum line-search step size alpha',
+    },
+    lineSearchAcceptRatio: {
+      type: 'number',
+      default: 0.999,
+      description: 'Accept update when residual_inf(new) <= ratio * residual_inf(old)',
+    },
+    initializeConsistently: {
+      type: 'boolean',
+      default: true,
+      description: 'Run a Newton consistent-initialization solve for xDot and algebraics at t0',
+    },
+    adaptiveSubsteps: {
+      type: 'boolean',
+      default: true,
+      description: 'On step failure, retry with recursive dt/2 substeps',
+    },
+    maxSubstepDepth: {
+      type: 'integer',
+      default: 6,
+      description: 'Maximum recursive bisection depth for adaptive substeps',
+    },
+    minSubstepDt: {
+      type: 'number',
+      default: 0.001,
+      description: 'Minimum allowed dt when adaptive substepping is enabled',
+    },
+  },
+}
+
+simulateModel.contract = {
+  id: 'rumoca.modelica_solver.v1',
+  version: 1,
+  simDefaults: simulateModel.simDefaults,
+  optionsSchema: simulateModel.optionsSchema,
+}
+
+;(() => {
+  try {
+    if (typeof simulateModel !== 'function') return
+    const prev = simulateModel.simDefaults
+    const base = prev && typeof prev === 'object' ? prev : {}
+    simulateModel.simDefaults = { ...base, ...{"t0":0,"tf":5,"dt":0.01} }
+  } catch {
+    /* empty */
+  }
+})()
+
+    </script>
+
+    <script>
+      'use strict'
+
+      // Minimal runtime glue for the default UI.
+      // Requirements:
+      // - Generated JS defines global Model()
+      // - Solver defines global simulateModel(params, context, model)
+
+      const model = Model()
+      const nu = (model?.meta?.inputs || []).length
+      const modelName = model?.name || model?.meta?.name || model?.description?.modelName || 'Model'
+
+      document.getElementById('modelName').textContent = `Model: ${modelName}`
+      document.getElementById('nuCount').textContent = String(nu)
+
+      const elT0 = document.getElementById('t0')
+      const elTf = document.getElementById('tf')
+      const elDt = document.getElementById('dt')
+      const elSolverOpts = document.getElementById('solverOpts')
+      const elInputFn = document.getElementById('inputFn')
+      const elRun = document.getElementById('runBtn')
+      const elCsv = document.getElementById('csvBtn')
+      const elStatus = document.getElementById('status')
+      const elSeries = document.getElementById('seriesSelect')
+      const elGrid = document.getElementById('grid')
+      const elAxes = document.getElementById('axes')
+      const elLine = document.getElementById('line')
+      const elPlotLabel = document.getElementById('plotLabel')
+
+      // Apply solver-provided default simulation parameters, if present
+      try {
+        const d = simulateModel?.simDefaults || null
+        if (d && typeof d === 'object') {
+          if (typeof d.t0 === 'number') elT0.value = String(d.t0)
+          if (typeof d.tf === 'number') elTf.value = String(d.tf)
+          if (typeof d.dt === 'number') elDt.value = String(d.dt)
+        }
+      } catch {
+        /* empty */
+      }
+
+      // Fill solver options textarea from schema defaults (if present)
+      try {
+        const schema = simulateModel?.optionsSchema || null
+        const props = schema?.properties || {}
+        const defaults = {}
+        for (const k of Object.keys(props)) {
+          if (props?.[k] && Object.prototype.hasOwnProperty.call(props[k], 'default')) {
+            defaults[k] = props[k].default
+          }
+        }
+        elSolverOpts.value = JSON.stringify(defaults, null, 2)
+      } catch {
+        elSolverOpts.value = '{}'
+      }
+
+      let lastResult = null
+
+      function setStatus(msg, kind) {
+        elStatus.textContent = msg
+        elStatus.classList.remove('good')
+        elStatus.classList.remove('bad')
+        if (kind === 'good') elStatus.classList.add('good')
+        if (kind === 'bad') elStatus.classList.add('bad')
+      }
+
+      function escapeCsv(s) {
+        const v = String(s)
+        if (v.includes(',') || v.includes('\n') || v.includes('\r') || v.includes('"')) {
+          return '"' + v.replaceAll('"', '""') + '"'
+        }
+        return v
+      }
+
+      function toWideCsv(result) {
+        const t = result?.data?.t || []
+        const x = result?.data?.x || {}
+        const y = result?.data?.y || {}
+        const u = result?.data?.u || {}
+        const c = result?.data?.c || result?.data?.z || {}
+
+        const series = []
+        const add = (prefix, obj) => {
+          for (const k of Object.keys(obj || {}).sort()) {
+            series.push({ key: prefix + k, values: obj[k] || [] })
+          }
+        }
+        add('x.', x)
+        add('y.', y)
+        add('u.', u)
+        add('c.', c)
+
+        const header = ['t'].concat(series.map((s) => formatSeriesLabel(s.key)))
+        const lines = [header.map(escapeCsv).join(',')]
+
+        const n = t.length
+        for (let i = 0; i < n; i++) {
+          const row = [t[i]]
+          for (const s of series) row.push(s.values[i])
+          lines.push(row.map(escapeCsv).join(','))
+        }
+
+        return lines.join('\n')
+      }
+
+      function downloadText(filename, content, mime) {
+        const blob = new Blob([content], { type: mime || 'text/plain;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 500)
+      }
+
+      function buildSeriesOptions(result, preferredKey) {
+        while (elSeries.firstChild) elSeries.removeChild(elSeries.firstChild)
+
+        const keys = []
+        const addGroup = (prefix, obj) => {
+          if (!obj) return
+          for (const k of Object.keys(obj)) keys.push(prefix + k)
+        }
+
+        addGroup('x.', result?.data?.x)
+        addGroup('y.', result?.data?.y)
+        addGroup('u.', result?.data?.u)
+        addGroup('c.', result?.data?.c)
+        addGroup('z.', result?.data?.z)
+
+        keys.sort()
+
+        for (const k of keys) {
+          const opt = document.createElement('option')
+          opt.value = k
+          opt.textContent = formatSeriesLabel(k)
+          elSeries.appendChild(opt)
+        }
+
+        const nextSelection =
+          keys.length === 0 ? '' : keys.includes(String(preferredKey || '')) ? preferredKey : keys[0]
+
+        if (nextSelection) elSeries.value = nextSelection
+        return String(nextSelection || '')
+      }
+
+      function getSeries(result, key) {
+        const t = result?.data?.t || []
+        const [grp, ...rest] = String(key || '').split('.')
+        const name = rest.join('.')
+        const group = result?.data?.[grp] || null
+        const y = group?.[name] || []
+        return { t, y }
+      }
+
+      function getMetaVariableUnit(group, name) {
+        const vars = Array.isArray(group) ? group : []
+        for (const v of vars) {
+          if (!v || typeof v !== 'object') continue
+          if (String(v.name || '') !== name) continue
+          const unit = String(v.unit || '').trim()
+          if (unit) return unit
+        }
+        return ''
+      }
+
+      function getSeriesUnit(key) {
+        const [grp, ...rest] = String(key || '').split('.')
+        const name = rest.join('.')
+        if (!name) return ''
+        if (grp === 'x') return getMetaVariableUnit(model?.meta?.states, name)
+        if (grp === 'y') return getMetaVariableUnit(model?.meta?.algebraics, name)
+        if (grp === 'u') return getMetaVariableUnit(model?.meta?.inputs, name)
+        if (grp === 'c' || grp === 'z') return ''
+        return ''
+      }
+
+      function formatSeriesLabel(key) {
+        const k = String(key || '')
+        const unit = getSeriesUnit(k)
+        return unit ? `${k} [${unit}]` : k
+      }
+
+      const PLOT = {
+        width: 1000,
+        height: 420,
+        marginLeft: 72,
+        marginRight: 20,
+        marginTop: 46,
+        marginBottom: 56,
+      }
+
+      function makeSvg(name) {
+        return document.createElementNS('http://www.w3.org/2000/svg', name)
+      }
+
+      function formatTick(v) {
+        const n = Number(v)
+        if (!Number.isFinite(n)) return ''
+        if (Math.abs(n) >= 1000 || (Math.abs(n) > 0 && Math.abs(n) < 0.01)) return n.toExponential(2)
+        return String(Number(n.toFixed(4)))
+      }
+
+      function drawGrid() {
+        while (elGrid.firstChild) elGrid.removeChild(elGrid.firstChild)
+        const plotW = PLOT.width - PLOT.marginLeft - PLOT.marginRight
+        const plotH = PLOT.height - PLOT.marginTop - PLOT.marginBottom
+        const nx = 10
+        const ny = 6
+        for (let i = 1; i < nx; i++) {
+          const x = PLOT.marginLeft + (i * plotW) / nx
+          const ln = makeSvg('line')
+          ln.setAttribute('x1', String(x))
+          ln.setAttribute('x2', String(x))
+          ln.setAttribute('y1', String(PLOT.marginTop))
+          ln.setAttribute('y2', String(PLOT.marginTop + plotH))
+          ln.setAttribute('stroke', '#1a263b')
+          ln.setAttribute('stroke-width', '1')
+          elGrid.appendChild(ln)
+        }
+        for (let j = 1; j < ny; j++) {
+          const y = PLOT.marginTop + (j * plotH) / ny
+          const ln = makeSvg('line')
+          ln.setAttribute('x1', String(PLOT.marginLeft))
+          ln.setAttribute('x2', String(PLOT.marginLeft + plotW))
+          ln.setAttribute('y1', String(y))
+          ln.setAttribute('y2', String(y))
+          ln.setAttribute('stroke', '#1a263b')
+          ln.setAttribute('stroke-width', '1')
+          elGrid.appendChild(ln)
+        }
+      }
+
+      function drawAxes(tMin, tMax, yMin, yMax, seriesLabel) {
+        while (elAxes.firstChild) elAxes.removeChild(elAxes.firstChild)
+        const plotW = PLOT.width - PLOT.marginLeft - PLOT.marginRight
+        const plotH = PLOT.height - PLOT.marginTop - PLOT.marginBottom
+        const x0 = PLOT.marginLeft
+        const x1 = PLOT.marginLeft + plotW
+        const y0 = PLOT.marginTop
+        const y1 = PLOT.marginTop + plotH
+
+        const xAxis = makeSvg('line')
+        xAxis.setAttribute('x1', String(x0))
+        xAxis.setAttribute('x2', String(x1))
+        xAxis.setAttribute('y1', String(y1))
+        xAxis.setAttribute('y2', String(y1))
+        xAxis.setAttribute('stroke', '#9bb0d1')
+        xAxis.setAttribute('stroke-width', '1.5')
+        elAxes.appendChild(xAxis)
+
+        const yAxis = makeSvg('line')
+        yAxis.setAttribute('x1', String(x0))
+        yAxis.setAttribute('x2', String(x0))
+        yAxis.setAttribute('y1', String(y0))
+        yAxis.setAttribute('y2', String(y1))
+        yAxis.setAttribute('stroke', '#9bb0d1')
+        yAxis.setAttribute('stroke-width', '1.5')
+        elAxes.appendChild(yAxis)
+
+        const tickCount = 5
+        for (let i = 0; i <= tickCount; i++) {
+          const frac = i / tickCount
+          const x = x0 + frac * plotW
+          const y = y1 - frac * plotH
+
+          const xTick = makeSvg('line')
+          xTick.setAttribute('x1', String(x))
+          xTick.setAttribute('x2', String(x))
+          xTick.setAttribute('y1', String(y1))
+          xTick.setAttribute('y2', String(y1 + 6))
+          xTick.setAttribute('stroke', '#9bb0d1')
+          xTick.setAttribute('stroke-width', '1')
+          elAxes.appendChild(xTick)
+
+          const yTick = makeSvg('line')
+          yTick.setAttribute('x1', String(x0 - 6))
+          yTick.setAttribute('x2', String(x0))
+          yTick.setAttribute('y1', String(y))
+          yTick.setAttribute('y2', String(y))
+          yTick.setAttribute('stroke', '#9bb0d1')
+          yTick.setAttribute('stroke-width', '1')
+          elAxes.appendChild(yTick)
+
+          const xText = makeSvg('text')
+          xText.setAttribute('x', String(x))
+          xText.setAttribute('y', String(y1 + 22))
+          xText.setAttribute('fill', '#9bb0d1')
+          xText.setAttribute('font-size', '11')
+          xText.setAttribute('text-anchor', 'middle')
+          xText.textContent = formatTick(tMin + frac * (tMax - tMin))
+          elAxes.appendChild(xText)
+
+          const yText = makeSvg('text')
+          yText.setAttribute('x', String(x0 - 10))
+          yText.setAttribute('y', String(y + 4))
+          yText.setAttribute('fill', '#9bb0d1')
+          yText.setAttribute('font-size', '11')
+          yText.setAttribute('text-anchor', 'end')
+          yText.textContent = formatTick(yMin + frac * (yMax - yMin))
+          elAxes.appendChild(yText)
+        }
+
+        const title = makeSvg('text')
+        title.setAttribute('x', String((x0 + x1) / 2))
+        title.setAttribute('y', '24')
+        title.setAttribute('fill', '#e7eefc')
+        title.setAttribute('font-size', '16')
+        title.setAttribute('font-weight', '700')
+        title.setAttribute('text-anchor', 'middle')
+        title.textContent = seriesLabel ? `Plot: ${seriesLabel}` : 'Plot'
+        elAxes.appendChild(title)
+
+        const xLabel = makeSvg('text')
+        xLabel.setAttribute('x', String((x0 + x1) / 2))
+        xLabel.setAttribute('y', String(PLOT.height - 14))
+        xLabel.setAttribute('fill', '#9bb0d1')
+        xLabel.setAttribute('font-size', '12')
+        xLabel.setAttribute('text-anchor', 'middle')
+        xLabel.textContent = 'Time (t)'
+        elAxes.appendChild(xLabel)
+
+        const yLabel = makeSvg('text')
+        yLabel.setAttribute('x', '18')
+        yLabel.setAttribute('y', String((y0 + y1) / 2))
+        yLabel.setAttribute('fill', '#9bb0d1')
+        yLabel.setAttribute('font-size', '12')
+        yLabel.setAttribute('text-anchor', 'middle')
+        yLabel.setAttribute('transform', `rotate(-90 18 ${(y0 + y1) / 2})`)
+        yLabel.textContent = seriesLabel || 'Value'
+        elAxes.appendChild(yLabel)
+      }
+
+      function plotSeries(t, y, label) {
+        const plotW = PLOT.width - PLOT.marginLeft - PLOT.marginRight
+        const plotH = PLOT.height - PLOT.marginTop - PLOT.marginBottom
+
+        if (!Array.isArray(t) || !Array.isArray(y) || t.length === 0 || y.length === 0) {
+          elLine.setAttribute('points', '')
+          drawAxes(0, 1, 0, 1, label || '')
+          elPlotLabel.textContent = label || ''
+          return
+        }
+
+        const n = Math.min(t.length, y.length)
+
+        let tMin = Infinity,
+          tMax = -Infinity
+        let yMin = Infinity,
+          yMax = -Infinity
+        for (let i = 0; i < n; i++) {
+          const ti = Number(t[i])
+          const yi = Number(y[i])
+          if (!Number.isFinite(ti) || !Number.isFinite(yi)) continue
+          tMin = Math.min(tMin, ti)
+          tMax = Math.max(tMax, ti)
+          yMin = Math.min(yMin, yi)
+          yMax = Math.max(yMax, yi)
+        }
+        if (
+          !Number.isFinite(tMin) ||
+          !Number.isFinite(tMax) ||
+          !Number.isFinite(yMin) ||
+          !Number.isFinite(yMax)
+        ) {
+          elLine.setAttribute('points', '')
+          drawAxes(0, 1, 0, 1, label || '')
+          elPlotLabel.textContent = label || ''
+          return
+        }
+        if (tMax === tMin) tMax = tMin + 1
+        if (yMax === yMin) yMax = yMin + 1
+
+        drawAxes(tMin, tMax, yMin, yMax, label || '')
+
+        const pts = []
+        for (let i = 0; i < n; i++) {
+          const ti = Number(t[i])
+          const yi = Number(y[i])
+          if (!Number.isFinite(ti) || !Number.isFinite(yi)) continue
+          const xx = PLOT.marginLeft + ((ti - tMin) / (tMax - tMin)) * plotW
+          const yy = PLOT.marginTop + plotH - ((yi - yMin) / (yMax - yMin)) * plotH
+          pts.push(xx.toFixed(2) + ',' + yy.toFixed(2))
+        }
+        elLine.setAttribute('points', pts.join(' '))
+        elPlotLabel.textContent = String(label || '')
+      }
+
+      function makeFuFromTextarea() {
+        const body = String(elInputFn.value || '')
+        // eslint-disable-next-line no-new-func
+        const fn = new Function('t', body)
+        return (t) => {
+          let out = fn(t)
+          if (out == null) {
+            if (nu === 0) return []
+            throw new Error('f_u must return an array')
+          }
+          if (!Array.isArray(out)) {
+            if (nu === 1 && typeof out === 'number' && Number.isFinite(out)) return [out]
+            throw new Error('f_u must return an array')
+          }
+          if (out.length !== nu) {
+            if (!(nu === 0 && out.length === 0)) {
+              throw new Error(`Expected ${nu} inputs but got ${out.length}`)
+            }
+          }
+          return out
+        }
+      }
+
+      function run() {
+        elRun.disabled = true
+        elCsv.disabled = true
+        setStatus('Running...', '')
+
+        try {
+          const t0 = Number(elT0.value)
+          const tf = Number(elTf.value)
+          const dt = Number(elDt.value)
+
+          if (!Number.isFinite(t0) || !Number.isFinite(tf) || !Number.isFinite(dt)) {
+            throw new Error('t0 tf dt must be finite numbers')
+          }
+          if (dt <= 0) throw new Error('dt must be > 0')
+          if (tf <= t0) throw new Error('tf must be > t0')
+
+          const f_u = makeFuFromTextarea()
+
+          let solverOptions = {}
+          try {
+            solverOptions = JSON.parse(String(elSolverOpts.value || '{}'))
+          } catch {
+            throw new Error('Solver options JSON is not valid JSON')
+          }
+
+          const params = { sim: { t0, tf, dt, f_u, solverOptions } }
+          const context = { source: 'ui_template', compiledAt: new Date().toISOString() }
+
+          const result = simulateModel(params, context, model)
+          lastResult = result
+
+          const previousSeries = elSeries.value
+          const sel = buildSeriesOptions(result, previousSeries)
+          const s = getSeries(result, sel)
+          plotSeries(s.t, s.y, formatSeriesLabel(sel))
+
+          elCsv.disabled = false
+          setStatus('Simulation complete.', 'good')
+        } catch (e) {
+          console.error(e)
+          setStatus(String(e?.message || e), 'bad')
+        } finally {
+          elRun.disabled = false
+        }
+      }
+
+      elRun.addEventListener('click', run)
+      elSeries.addEventListener('change', () => {
+        if (!lastResult) return
+        const sel = elSeries.value
+        const s = getSeries(lastResult, sel)
+        plotSeries(s.t, s.y, formatSeriesLabel(sel))
+      })
+
+      elCsv.addEventListener('click', () => {
+        if (!lastResult) return
+        const csv = toWideCsv(lastResult)
+        const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')
+        downloadText(`simulation_${stamp}.csv`, csv, 'text/csv;charset=utf-8')
+      })
+
+      drawGrid()
+      drawAxes(0, 1, 0, 1, '')
+      setStatus('Ready.', '')
+    </script>
+  
+<script>
+(() => {
+  const marker = '__RUMOCA_SERIES_PERSIST__'
+  if (window[marker]) return
+  window[marker] = true
+
+  const select = document.getElementById('seriesSelect')
+  const runBtn = document.getElementById('runBtn')
+  if (!(select instanceof HTMLSelectElement) || !(runBtn instanceof HTMLElement)) return
+
+  let preferred = String(select.value || '')
+
+  const selectOption = (key) => {
+    if (!key) return false
+    for (let i = 0; i < select.options.length; i++) {
+      if (select.options[i]?.value === key) {
+        if (select.value !== key) {
+          select.value = key
+          select.dispatchEvent(new Event('change'))
+        }
+        preferred = key
+        return true
+      }
+    }
+    return false
+  }
+
+  select.addEventListener('change', () => {
+    preferred = String(select.value || '')
+  })
+
+  const observer = new MutationObserver(() => {
+    if (preferred) selectOption(preferred)
+  })
+  observer.observe(select, { childList: true })
+
+  runBtn.addEventListener('click', () => {
+    const current = String(select.value || preferred || '')
+    if (current) preferred = current
+  })
+})()
+</script>
+</body>
+</html>

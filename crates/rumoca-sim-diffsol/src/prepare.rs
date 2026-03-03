@@ -880,6 +880,102 @@ pub(super) fn log_prepare_substitutions_if_introspect(
     }
 }
 
+/// Lightweight preparation path for template/runtime code generation.
+///
+/// Keeps structural preparation/index-reduction passes, but intentionally skips
+/// solver-only products (IC block plan + mass matrix extraction) to avoid
+/// unnecessary failure modes in browser/WASM compile flows.
+pub(super) fn prepare_dae_for_template_codegen_only(
+    dae: &Dae,
+    scalarize: bool,
+    budget: &TimeoutBudget,
+) -> Result<Dae, SimError> {
+    let trace = sim_trace_enabled();
+    let trace_step = |name: &str, f: &mut dyn FnMut() -> Result<(), SimError>| {
+        if trace {
+            eprintln!("[sim-trace] prepare(template) step start: {name}");
+        }
+        let t0 = trace_timer_start_if(trace);
+        let res = f();
+        if trace {
+            eprintln!(
+                "[sim-trace] prepare(template) step done: {name} elapsed={:.3}s",
+                trace_timer_elapsed_seconds(t0)
+            );
+        }
+        res
+    };
+
+    budget.check()?;
+    let n_x_orig: usize = dae.states.values().map(|v| v.size()).sum();
+    let n_z_declared: usize = dae.algebraics.values().map(|v| v.size()).sum::<usize>()
+        + dae.outputs.values().map(|v| v.size()).sum::<usize>();
+    let n_discrete_declared: usize = dae.discrete_reals.values().map(|v| v.size()).sum::<usize>()
+        + dae
+            .discrete_valued
+            .values()
+            .map(|v| v.size())
+            .sum::<usize>();
+    if n_x_orig + n_z_declared + n_discrete_declared == 0 {
+        return Err(SimError::EmptySystem);
+    }
+
+    let mut dae = dae.clone();
+    let disable_trivial_elim = std::env::var("RUMOCA_SIM_DISABLE_TRIVIAL_ELIM").is_ok();
+
+    budget.check()?;
+    let mut elim = run_trivial_elimination_phase(&mut dae, trace, disable_trivial_elim);
+    budget.check()?;
+
+    run_prepare_structure_passes(&mut dae, budget)?;
+    trace_flow_array_alias_watch("after_structure_passes(template)", &dae, trace);
+
+    budget.check()?;
+    run_post_structure_elimination_phase(&mut dae, trace, disable_trivial_elim, &mut elim);
+    budget.check()?;
+
+    debug_print_prepare_counts(&dae);
+    let has_dummy = dae.states.values().map(|v| v.size()).sum::<usize>() == 0;
+    if has_dummy {
+        trace_step("inject_dummy_state", &mut || {
+            run_timeout_step(budget, || inject_dummy_state(&mut dae))
+        })?;
+    }
+
+    if scalarize {
+        trace_step("scalarize_equations", &mut || {
+            run_timeout_step(budget, || scalarize_equations(&mut dae))
+        })?;
+        trace_flow_array_alias_watch("after_scalarize(template)", &dae, trace);
+    }
+
+    trace_step("reorder_equations_for_solver", &mut || {
+        reorder_equations_for_prepare(&mut dae, budget)
+    })?;
+
+    trace_step("normalize_ode_equation_signs", &mut || {
+        run_timeout_step(budget, || normalize_ode_equation_signs(&mut dae))
+    })?;
+
+    budget.check()?;
+    run_post_scalarize_elimination_phase(
+        &mut dae,
+        trace,
+        scalarize,
+        disable_trivial_elim,
+        &mut elim,
+    );
+    budget.check()?;
+
+    log_prepare_substitutions_if_introspect(&elim, trace);
+
+    trace_step("pin_orphaned_variables", &mut || {
+        run_timeout_step(budget, || pin_orphaned_variables(&mut dae, &elim))
+    })?;
+
+    Ok(dae)
+}
+
 pub(super) fn prepare_dae(
     dae: &Dae,
     scalarize: bool,
