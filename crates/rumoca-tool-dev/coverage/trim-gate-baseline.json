@@ -1,0 +1,172 @@
+{
+  "generated_by": "rum coverage-gate",
+  "generated_at_unix_secs": 1772289098,
+  "source_candidates_file": "target/llvm-cov/trim-candidates.json",
+  "workspace_line_coverage_percent": 75.56601867822789,
+  "workspace_lines_covered": 97258,
+  "workspace_lines_total": 128706,
+  "packages": {
+    "rumoca": {
+      "zero_count_functions_total": 105,
+      "candidates_total": 64,
+      "dead_likely_candidates": 23,
+      "needs_targeted_test_candidates": 22
+    },
+    "rumoca-bind-python": {
+      "zero_count_functions_total": 8,
+      "candidates_total": 8,
+      "dead_likely_candidates": 2,
+      "needs_targeted_test_candidates": 6
+    },
+    "rumoca-bind-wasm": {
+      "zero_count_functions_total": 23,
+      "candidates_total": 23,
+      "dead_likely_candidates": 2,
+      "needs_targeted_test_candidates": 2
+    },
+    "rumoca-contracts": {
+      "zero_count_functions_total": 29,
+      "candidates_total": 26,
+      "dead_likely_candidates": 4,
+      "needs_targeted_test_candidates": 1
+    },
+    "rumoca-core": {
+      "zero_count_functions_total": 66,
+      "candidates_total": 47,
+      "dead_likely_candidates": 5,
+      "needs_targeted_test_candidates": 4
+    },
+    "rumoca-eval-compiled": {
+      "zero_count_functions_total": 171,
+      "candidates_total": 118,
+      "dead_likely_candidates": 49,
+      "needs_targeted_test_candidates": 55
+    },
+    "rumoca-eval-const": {
+      "zero_count_functions_total": 183,
+      "candidates_total": 101,
+      "dead_likely_candidates": 54,
+      "needs_targeted_test_candidates": 25
+    },
+    "rumoca-eval-runtime": {
+      "zero_count_functions_total": 634,
+      "candidates_total": 205,
+      "dead_likely_candidates": 80,
+      "needs_targeted_test_candidates": 91
+    },
+    "rumoca-ir-ast": {
+      "zero_count_functions_total": 416,
+      "candidates_total": 181,
+      "dead_likely_candidates": 47,
+      "needs_targeted_test_candidates": 37
+    },
+    "rumoca-ir-dae": {
+      "zero_count_functions_total": 21,
+      "candidates_total": 16,
+      "dead_likely_candidates": 2,
+      "needs_targeted_test_candidates": 2
+    },
+    "rumoca-ir-flat": {
+      "zero_count_functions_total": 328,
+      "candidates_total": 137,
+      "dead_likely_candidates": 30,
+      "needs_targeted_test_candidates": 17
+    },
+    "rumoca-phase-codegen": {
+      "zero_count_functions_total": 91,
+      "candidates_total": 58,
+      "dead_likely_candidates": 40,
+      "needs_targeted_test_candidates": 15
+    },
+    "rumoca-phase-dae": {
+      "zero_count_functions_total": 192,
+      "candidates_total": 127,
+      "dead_likely_candidates": 75,
+      "needs_targeted_test_candidates": 32
+    },
+    "rumoca-phase-flatten": {
+      "zero_count_functions_total": 388,
+      "candidates_total": 350,
+      "dead_likely_candidates": 135,
+      "needs_targeted_test_candidates": 101
+    },
+    "rumoca-phase-instantiate": {
+      "zero_count_functions_total": 213,
+      "candidates_total": 182,
+      "dead_likely_candidates": 104,
+      "needs_targeted_test_candidates": 33
+    },
+    "rumoca-phase-parse": {
+      "zero_count_functions_total": 564,
+      "candidates_total": 444,
+      "dead_likely_candidates": 277,
+      "needs_targeted_test_candidates": 155
+    },
+    "rumoca-phase-resolve": {
+      "zero_count_functions_total": 40,
+      "candidates_total": 31,
+      "dead_likely_candidates": 9,
+      "needs_targeted_test_candidates": 10
+    },
+    "rumoca-phase-structural": {
+      "zero_count_functions_total": 16,
+      "candidates_total": 14,
+      "dead_likely_candidates": 8,
+      "needs_targeted_test_candidates": 5
+    },
+    "rumoca-phase-typecheck": {
+      "zero_count_functions_total": 164,
+      "candidates_total": 119,
+      "dead_likely_candidates": 35,
+      "needs_targeted_test_candidates": 32
+    },
+    "rumoca-session": {
+      "zero_count_functions_total": 92,
+      "candidates_total": 61,
+      "dead_likely_candidates": 5,
+      "needs_targeted_test_candidates": 20
+    },
+    "rumoca-sim-core": {
+      "zero_count_functions_total": 383,
+      "candidates_total": 299,
+      "dead_likely_candidates": 67,
+      "needs_targeted_test_candidates": 86
+    },
+    "rumoca-sim-diffsol": {
+      "zero_count_functions_total": 260,
+      "candidates_total": 153,
+      "dead_likely_candidates": 39,
+      "needs_targeted_test_candidates": 37
+    },
+    "rumoca-test-msl": {
+      "zero_count_functions_total": 516,
+      "candidates_total": 370,
+      "dead_likely_candidates": 130,
+      "needs_targeted_test_candidates": 108
+    },
+    "rumoca-tool-dev": {
+      "zero_count_functions_total": 77,
+      "candidates_total": 77,
+      "dead_likely_candidates": 50,
+      "needs_targeted_test_candidates": 19
+    },
+    "rumoca-tool-fmt": {
+      "zero_count_functions_total": 26,
+      "candidates_total": 23,
+      "dead_likely_candidates": 11,
+      "needs_targeted_test_candidates": 3
+    },
+    "rumoca-tool-lint": {
+      "zero_count_functions_total": 25,
+      "candidates_total": 17,
+      "dead_likely_candidates": 4,
+      "needs_targeted_test_candidates": 7
+    },
+    "rumoca-tool-lsp": {
+      "zero_count_functions_total": 227,
+      "candidates_total": 121,
+      "dead_likely_candidates": 40,
+      "needs_targeted_test_candidates": 53
+    }
+  }
+}

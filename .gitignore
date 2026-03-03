@@ -12,10 +12,16 @@ _native.cpython*
 *.so
 .claude/
 .vscode/
+dev/
 pkg/
-perf.data
+perf.data*
+flamegraph.svg
 msl
 
 # direnv artifacts
 *.direnv
 *.envrc
+
+# Vim swap files
+*.swp
+*.swo

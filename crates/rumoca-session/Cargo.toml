@@ -1,0 +1,37 @@
+[package]
+name = "rumoca-session"
+description = "Multi-file compilation session management for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+tracing = ["rumoca-phase-flatten/tracing"]
+
+[dependencies]
+rumoca-ir-ast = { workspace = true }
+rumoca-ir-flat = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-phase-parse = { workspace = true }
+rumoca-phase-resolve = { workspace = true }
+rumoca-phase-typecheck = { workspace = true }
+rumoca-phase-instantiate = { workspace = true }
+rumoca-phase-flatten = { workspace = true }
+rumoca-phase-dae = { workspace = true }
+rumoca-core = { workspace = true }
+anyhow = { workspace = true }
+indexmap = { workspace = true }
+rayon = { workspace = true }
+miette = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+toml = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

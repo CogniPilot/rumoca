@@ -1,0 +1,8 @@
+{
+  "model_name": "Modelica.Fixture.MinorAgreement",
+  "times": [0.0, 0.5, 1.0],
+  "names": ["x"],
+  "data": [
+    [1.03, 1.03, 1.03]
+  ]
+}

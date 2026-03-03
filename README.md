@@ -1,389 +1,422 @@
-# Rumoca
+# rumoca
 
 <img src="editors/icons/rumoca.png" alt="Rumoca Logo" width="128" align="right">
 
-[![CI](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/cognipilot/rumoca/actions)
+[![CI](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml)
+[![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-live-2ea44f?logo=github)](https://cognipilot.github.io/rumoca/)
 [![Crates.io](https://img.shields.io/crates/v/rumoca)](https://crates.io/crates/rumoca)
 [![PyPI](https://img.shields.io/pypi/v/rumoca)](https://pypi.org/project/rumoca/)
 [![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
 [![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
 
-**[Try Rumoca in your browser!](https://cognipilot.github.io/rumoca/)** - No installation required.
+**[Try Rumoca in your browser](https://cognipilot.github.io/rumoca/)** (no installation required).
 
-A Modelica compiler written in Rust. Rumoca parses Modelica source files and exports to the [DAE IR Format](https://github.com/CogniPilot/modelica_ir) (supporting both implicit and explicit model serialization), or via user-customizable templates using [MiniJinja](https://github.com/mitsuhiko/minijinja). The DAE IR format is consumed by [Cyecca](https://github.com/cognipilot/cyecca) for model simulation, analysis, and Python library integration with CasADi, SymPy, and other backends.
+Rumoca is a modern Modelica compiler written in Rust.
 
-> **Note:** Rumoca is in early development. While already usable for many practical tasks, you may encounter issues. Please [file bug reports](https://github.com/cognipilot/rumoca/issues) to help improve the compiler.
+It provides:
+- an end-to-end compilation pipeline from Modelica source to DAE
+- a Rust-native DAE simulation stack focused on robust, high-quality runs
+- code generation templates for multiple targets
+- LSP, formatter, linting, Python, and WASM integrations
+
+## Core Features
+
+- Full compiler pipeline: parse -> resolve -> typecheck -> instantiate -> flatten -> DAE
+- Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-session`)
+- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim-diffsol`)
+- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim-core`)
+- Template-based codegen to CasADi, C, JAX, Julia MTK, ONNX, and Modelica render targets
+- MLS contract test framework (`rumoca-contracts`)
+- Spec-driven quality gates (including SPEC_0021 and SPEC_0025)
 
 ## Quick Start
 
+### Requirements
+
+- Rust toolchain from `rust-toolchain.toml` (nightly, `wasm32-unknown-unknown` target)
+
+### Build
+
 ```bash
-# Install
-cargo install rumoca
+cargo build --workspace
+```
 
-# Compile to DAE IR (JSON)
-rumoca model.mo -m MyModel --json > model.json
+### Command Roles
 
-# Format Modelica files
-rumoca-fmt
+- `rumoca`: user-facing Modelica CLI (`compile`, `simulate`, `check`, `fmt`, `lint`, `project`, `completions`)
+- `rum`: developer workflow CLI (`test`, `ci-parity`, `vscode-dev`, `wasm-test`, `coverage`, hook/release tooling)
 
-# Lint Modelica files
-rumoca-lint
+Examples:
+
+```bash
+# User-facing
+cargo run -p rumoca -- lint path/to/model.mo
+cargo run -p rumoca -- project sync --prune-orphans
+
+# Developer-facing
+cargo run --bin rum -- test
+cargo run --bin rum -- vscode-dev -w dev/sample
+```
+
+### Compile a Model to JSON
+
+```bash
+cargo run -p rumoca -- \
+  compile path/to/model.mo \
+  --model MyModel \
+  --json
+```
+
+`--model` is optional when the file has a single unambiguous model candidate.
+
+### Simulate and Generate an HTML Report
+
+```bash
+cargo run -p rumoca -- \
+  simulate path/to/model.mo \
+  --model MyModel \
+  --t-end 1.0
+```
+
+### Format Modelica Sources
+
+```bash
+cargo run -p rumoca -- fmt --check path/to/models
+cargo run -p rumoca -- fmt path/to/models
+```
+
+### Lint Modelica Sources
+
+```bash
+cargo run -p rumoca -- lint path/to/models
+```
+
+### Run LSP Server
+
+```bash
+cargo run -p rumoca-tool-lsp --bin rumoca-lsp
+```
+
+### Shell Completions
+
+```bash
+cargo run -p rumoca -- completions bash
+cargo run --bin rum -- completions bash
 ```
 
 ## Installation
 
-### Rust (Compiler, Formatter, Linter)
+### Rust CLI
 
 ```bash
 cargo install rumoca
 ```
 
-### Python
-
-The Python package bundles the Rust compiler, so no separate Rust installation is needed:
+### Python Package
 
 ```bash
 pip install rumoca
 ```
 
-```python
-import rumoca
+## Compiler Pipeline
 
-# Compile a Modelica file
-result = rumoca.compile("model.mo")
+| Stage | Crate | Main Responsibility |
+|---|---|---|
+| Parse | `rumoca-phase-parse` | Parse Modelica source into AST/class tree |
+| Resolve | `rumoca-phase-resolve` | DefId assignment, scope setup, name resolution |
+| Typecheck | `rumoca-phase-typecheck` | Type resolution, dimension evaluation, structural parameters |
+| Instantiate | `rumoca-phase-instantiate` | Extends/modifier application, model instantiation |
+| Flatten | `rumoca-phase-flatten` | Hierarchy flattening, connection expansion, residual equations |
+| ToDAE | `rumoca-phase-dae` | Variable classification and DAE construction |
+| Structural | `rumoca-phase-structural` | BLT, incidence/matching, IC plan generation |
+| Simulate | `rumoca-sim-core`, `rumoca-sim-diffsol` | IC solving + runtime integration |
+| Codegen | `rumoca-phase-codegen` | Template-driven target generation |
 
-# Get as JSON string or Python dict
-json_str = result.to_base_modelica_json()
-model_dict = result.to_base_modelica_dict()
+Session pipeline invariants and failure contracts:
+- `crates/rumoca-session/PIPELINE_INVARIANTS.md`
 
-# Compile from string
-result = rumoca.compile_source("""
-    model Test
-        Real x(start=0);
-    equation
-        der(x) = 1;
-    end Test;
-""", "Test")
-```
+## Workspace Crate Catalog
 
-### Rust Library
+### Public Entry Points and Tooling
 
-```toml
-[dependencies]
-rumoca = "0.7"
-```
+| Crate | Key Features |
+|---|---|
+| `rumoca` | Primary compiler crate and end-user CLI (`check/compile/simulate/fmt/lint/project`) plus compiler API (`Compiler`, `CompilationResult`) |
+| `rumoca-session` | Unified multi-file session API, parallel parse/compile helpers, best-effort compile reports |
+| `rumoca-tool-fmt` | Modelica formatter engine used by `rumoca fmt` and dev tooling |
+| `rumoca-tool-lint` | Modelica lint engine (library API) with configurable rules and severity levels |
+| `rumoca-tool-lsp` | Language server (`rumoca-lsp`) with diagnostics, completion, hover, symbols, formatting, code actions |
+| `rumoca-tool-dev` | Cross-platform developer workflows (`rum`): hooks, checks, release, WASM, VSCode, Python |
+| `rumoca-bind-wasm` | WASM bindings for parse/lint/check/compile and editor workflows |
+| `rumoca-bind-python` | Python bindings for parse/lint/check/compile and template code generation |
 
-```rust
-use rumoca::Compiler;
+### IR and Shared Foundations
 
-fn main() -> anyhow::Result<()> {
-    let result = Compiler::new()
-        .model("MyModel")
-        .compile_file("model.mo")?;
+| Crate | Key Features |
+|---|---|
+| `rumoca-core` | Shared types, IDs, diagnostics utilities, MSL cache path resolution |
+| `rumoca-ir-ast` | Class-tree IR structures for parsed/resolved/typed model representation |
+| `rumoca-ir-flat` | Flat model IR with globally unique variables/equations |
+| `rumoca-ir-dae` | Canonical hybrid DAE IR (continuous + discrete equations) |
+| `rumoca-eval-const` | Compile-time expression evaluation (dimensions, parameters, constant functions) |
+| `rumoca-eval-runtime` | Runtime evaluator with `SimFloat` abstraction and dual-number AD support |
 
-    let json = result.to_dae_ir_json()?;
-    println!("{}", json);
-    Ok(())
-}
-```
+### Compiler Phases
 
-## Tools
+| Crate | Key Features |
+|---|---|
+| `rumoca-phase-parse` | Parol-based Modelica grammar parser |
+| `rumoca-phase-resolve` | Scope graph and cross-reference resolution |
+| `rumoca-phase-typecheck` | Type/variability/causality checks and dimension inference |
+| `rumoca-phase-instantiate` | Model instantiation and modification propagation |
+| `rumoca-phase-flatten` | Connection equation generation, algorithm handling, flat equation construction |
+| `rumoca-phase-dae` | Flat-to-DAE transformation with balance-oriented variable/equation accounting |
+| `rumoca-phase-structural` | Structural analysis, BLT decomposition, IC plan creation |
+| `rumoca-phase-codegen` | Minijinja-based template rendering for code and model outputs |
 
-| Tool | Description |
-|------|-------------|
-| `rumoca` | Main compiler - parses Modelica and exports DAE IR (JSON) |
-| `rumoca-fmt` | Code formatter for Modelica files (like `rustfmt`) |
-| `rumoca-lint` | Linter for Modelica files (like `clippy`) |
-| `rumoca-lsp` | Language Server Protocol server for editor integration |
+### Simulation and Quality
 
-## MSL Compatibility
+| Crate | Key Features |
+|---|---|
+| `rumoca-sim-core` | BLT-guided IC solver blocks (direct/newton/torn/coupled paths) |
+| `rumoca-sim-diffsol` | DAE runtime integration, solver fallbacks, timeout budgeting, diagnostics/introspection hooks |
+| `rumoca-contracts` | MLS contract registry, execution, and compliance reporting framework |
 
-Rumoca is tested against the [Modelica Standard Library 4.1.0](https://github.com/modelica/ModelicaStandardLibrary).
+## Code Generation Targets
 
-| Metric | Value | Description |
-|--------|-------|-------------|
-| **Parse Rate** | 100% (2551/2551) | All .mo files parse successfully |
-| **Compile Rate** | 100% (2283/2283) | All models compile to DAE |
-| **Balance Rate** | 94.9% (862 balanced, 1305 partial, 116 unbalanced) | 100% − (unbalanced / total) |
+Built-in templates in `rumoca-phase-codegen` include:
+- `CASADI_SX`
+- `CASADI_MX`
+- `CYECCA`
+- `JULIA_MTK`
+- `JAX`
+- `C_CODE`
+- `ONNX`
+- `DAE_MODELICA`
+- `FLAT_MODELICA`
 
-*Partial models are under-determined by design—they have external connectors whose flow variables receive equations when connected in a larger system.*
+You can use built-in template constants or provide custom template files.
 
-**Benchmark** (AMD Ryzen 9 7950X, 16 cores):
+## Simulation Quality and Robustness
 
-| Phase | Cold | Warm | Rate |
-|-------|------|------|------|
-| Parse (2551 files) | 0.80s | 0.80s | 3,189 files/sec |
-| Flatten (6491 classes) | 1.51s | 1.50s | 4,311 classes/sec |
-| Compile (2283 models) | 22.75s | 3.68s | 100 / 620 models/sec |
-| **Total** | **25.06s** | **5.98s** | **4.2x speedup** |
+The simulator stack is designed to improve result quality and avoid fragile shortcuts.
 
-**Caching:**
-- **In-memory caches** (extends chain, resolved classes): Built during flatten phase (~1.5s), reset between runs
-- **DAE disk cache** (`~/.cache/rumoca/dae/`): Stores compiled model results, provides 6x speedup on balance phase
+Key capabilities:
+- Exact Jacobian-vector and mass-term evaluation via AD (`Dual`/`SimFloat` path)
+- Structured DAE preparation before runtime integration, including:
+  - derivative expansion and alias cleanup
+  - structural index-reduction pass for missing derivative rows
+  - promotion/demotion of state/algebraic variables based on equation structure
+  - orphan variable pinning for determinism
+- Initial condition solving using structural IC plans, with Newton fallback when needed
+- Multi-method integration fallback sequence (BDF, TR-BDF2, ESDIRK34 with startup profiles)
+- Wall-clock timeout budgets enforced across setup, IC, and integration stages
+- Introspection/trace hooks for deep simulation debugging
 
-```bash
-# Run the MSL balance test
-cargo test --release test_msl_balance_all -- --ignored --nocapture
+Useful simulation/debug environment flags:
+- `RUMOCA_SIM_TRACE=1`
+- `RUMOCA_SIM_INTROSPECT=1`
+- `RUMOCA_SIM_INTROSPECT_EQ_LIMIT=<N>`
+- `RUMOCA_DEBUG=1`
 
-# Clear disk caches for cold-start benchmark
-rm -rf ~/.cache/rumoca/ast ~/.cache/rumoca/dae
-```
+## MSL Testing and Caching
 
-<details>
-<summary><strong>Detailed Compatibility Notes</strong></summary>
+MSL workflows target Modelica Standard Library `v4.1.0`.
 
-**Language Support:**
+Cache behavior:
+- default cache: `<workspace>/target/msl`
+- override: `RUMOCA_MSL_CACHE_DIR=/abs/or/relative/path`
 
-| Category | Supported |
-|----------|-----------|
-| Classes | `model`, `class`, `block`, `connector`, `record`, `type`, `package`, `function` |
-| Equations | Simple, connect (flow/potential), if, for, when, algorithm sections |
-| Expressions | Binary/unary ops, function calls, if-expressions, arrays |
-| Type prefixes | `flow`, `discrete`, `parameter`, `constant`, `input`, `output` |
-| Packages | Nested packages, `package.mo`/`package.order`, MODELICAPATH |
-| Imports | Qualified, renamed, unqualified (`.*`), selective (`{a,b}`) |
-| Functions | Single/multi-output, tuple equations `(a,b) = func()`, function inlining |
-| Built-ins | `der`, `pre`, `reinit`, `time`, trig, array functions, transpose, etc. |
-| Events | `noEvent`, `smooth`, `sample`, `edge`, `change`, `initial`, `terminal` |
-| Clocked | `previous`, `hold`, `interval`, `sample`, `shiftSample`, `Clock`, etc. |
-| Stream | `inStream`, `actualStream` operators recognized |
-
-**Partial Support:**
-
-| Feature | Status |
-|---------|--------|
-| Stream connectors | Operators recognized; balance semantics in progress |
-| External functions | `external` recognized; no linking |
-| Inner/outer | Basic resolution; nested scopes in progress |
-| Operator records | Record expansion works; operator overloading in progress |
-| Clocked partitions | Operators work; discrete partition balance semantics in progress |
-
-**Not Yet Implemented:**
-
-| Feature | Notes |
-|---------|-------|
-| Redeclarations | `redeclare`, `replaceable` parsed only |
-| Overloaded operators | `operator` class prefix recognized only |
-| Expandable connectors | Dynamic connector sizing |
-| Overconstrained connectors | `Connections.root`, `branch`, etc. |
-
-**What Works Well** (100% compile rate achieved):
-- All MSL packages compile successfully
-- Complex type support (operator record)
-- Replaceable package/model resolution (Medium.*, etc.)
-- Deep inheritance chain type lookup
-- ModelicaServices stubs
-
-**Known Limitations** (116 unbalanced models):
-
-| Category | Notes |
-|----------|-------|
-| Stream connectors | Balance semantics for stream variables |
-| External functions | Functions without equation bodies |
-| Operator records | Operator overloading not yet implemented |
-| Clocked partitions | Discrete partition equation counting |
-
-</details>
-
-### Custom Code Generation
-
-Rumoca supports [MiniJinja](https://docs.rs/minijinja/) templates for custom code generation:
+Run full MSL pipeline tests (release mode is required for practical runtime):
 
 ```bash
-rumoca model.mo -m MyModel --template-file examples/templates/casadi.jinja > model.py
-rumoca model.mo -m MyModel --template-file examples/templates/sympy.jinja > model.py
+cargo test --release --package rumoca-test-msl --test msl_tests -- --ignored --nocapture
 ```
 
-Example template:
+Simulation subset controls for faster iteration:
+- `RUMOCA_MSL_SIM_MATCH=<comma-separated substrings>`
+- `RUMOCA_MSL_SIM_LIMIT=<N>`
+- `RUMOCA_MSL_SIM_SET=short|long|full` (default: `short`)
+- `RUMOCA_MSL_SIM_SET_LIMIT=<N>` (default: `180`, used by `short`/`long`)
+- `RUMOCA_MSL_SIM_TARGETS_FILE=<json>` (overrides default committed target set)
+  `RUMOCA_MSL_SIM_SET` is applied within the selected target list; it does not
+  expand beyond that list.
 
-```jinja
-# Generated from {{ dae.model_name }}
-{% for name, comp in dae.x | items %}
-{{ name }}: {{ comp.type_name }} (start={{ comp.start }})
-{% endfor %}
-```
+Only explicit example models are simulated in the main MSL simulation sweep:
+- `Modelica.*.Examples.*`
 
-See [`examples/templates/`](examples/templates/) for complete examples (CasADi, SymPy, Base Modelica).
+Default compile/balance/simulation scope is the committed 180-model explicit
+example target file:
+`crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json`.
+Use `RUMOCA_MSL_SIM_TARGETS_FILE=<json>` to run an alternate or full model list.
 
-## VSCode Extension
-
-Search for "Rumoca Modelica" in the VSCode Extensions marketplace, or install from the [marketplace page](https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica).
-
-![Rumoca VSCode Extension Demo](docs/rumoca-demo.gif)
-
-The extension includes a bundled `rumoca-lsp` language server - **no additional installation required**.
-
-**Features:**
-- Syntax highlighting (semantic tokens)
-- Real-time diagnostics with type checking
-- Autocomplete for keywords, built-in functions, and class members
-- Go to definition / Find references
-- Document symbols and outline
-- Code formatting
-- Hover information
-- Signature help
-- Code folding
-- Inlay hints
-- Code lens with reference counts
-- Rename symbol
-- Call hierarchy
-- Document links
-
-**Configuring Library Paths:**
-
-```json
-{
-  "rumoca.modelicaPath": [
-    "/path/to/ModelicaStandardLibrary",
-    "/path/to/other/library"
-  ]
-}
-```
-
-Alternatively, set the `MODELICAPATH` environment variable. See the [extension documentation](editors/vscode/README.md) for details.
-
-## WebAssembly (Browser)
-
-Rumoca compiles to WebAssembly, enabling browser-based Modelica compilation without a backend server.
-
-**Features:**
-- Parse and compile Modelica models in the browser
-- DAE IR (JSON) generation
-- Template rendering with MiniJinja
-- Multi-threaded compilation using Web Workers
-
-**Try the Demo:**
+Single-model OMC vs Rumoca overlay plot (regenerates both traces on each run):
 
 ```bash
-./tools/wasm-test.sh
-# Open http://localhost:8080/examples/wasm_editor/index.html
+cargo run --release --package rumoca-tool-dev --bin rumoca-msl-tools -- \
+  plot-compare --model Modelica.Blocks.Examples.PID_Controller
 ```
 
-The demo provides a Monaco-based editor with:
-- Split-pane Modelica and Jinja2 template editing
-- Real-time template preview
-- DAE IR JSON export
-- Autocomplete for template variables (`dae.x`, `dae.u`, etc.)
+Defaults:
+- rumoca trace: `target/msl/results/sim_traces/rumoca/<model>.json`
+- OMC trace: `target/msl/results/sim_traces/omc/<model>.json`
+- output HTML: `target/msl/results/sim_trace_plots/<model>.html`
 
-[**Building WASM:**](./wasm/README.md)
+## MSL Quality Scoreboard
 
+Canonical gate baseline (committed):
+- `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`
+  - includes minimal compile/balance/simulation counts plus OMC parity distributions (runtime speedup ratio + trace-accuracy stats).
 
-## Integration with Cyecca
+Ephemeral run artifacts (regenerated per run in cache):
+- `target/msl/results/msl_results.json`
+- `target/msl/results/omc_reference.json` (run with `--model-timeout-seconds 30`)
+- `target/msl/results/omc_simulation_reference.json`
+- `target/msl/results/sim_trace_comparison.json`
+- `target/msl/results/msl_quality_current.json` (current run snapshot used for baseline promotion)
+
+The simulation target set used for scoreboard runs:
+- `crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json`
+
+Promote latest run to committed baseline after review:
 
 ```bash
-rumoca model.mo -m MyModel --json > model.json
+cargo run --release --package rumoca-tool-dev --bin rumoca-msl-tools -- \
+  promote-quality-baseline
 ```
 
-```python
-from cyecca.io.rumoca import import_rumoca
+## PR Requirements (SPEC_0025)
 
-model = import_rumoca('model.json')
-# Use model for simulation, analysis, code generation, etc.
-```
+For compiler-affecting PRs, compare MSL results to this baseline and report:
 
-## Architecture
+- compiled model count delta
+- compilation rate on simulatable models delta (`compiled/simulatable`)
+- non-simulatable non-partial model count delta
+- balanced model count delta
+- initial-balance OK model count delta
+- initial-balance deficit model count delta
+- compile phase time delta
+- both-balanced agreement delta
+- balanced-but-eq/var-count-differs-vs-OMC count delta
+- rumoca-unbalanced-vs-OMC-balanced count delta
+- rumoca-failed-vs-OMC-succeeded count delta
 
-```
-Modelica Source -> Parse -> Flatten -> BLT -> DAE -> DAE IR (JSON)
-                   (AST)   (Flat)    (Match)  (DAE)
-                                                          |
-                                                       Cyecca
-                                                          |
-                                               CasADi/SymPy/JAX/etc.
-```
+No regressions are allowed unless explicitly justified and approved. Baseline updates are explicit: run tests, inspect `target/msl/results/msl_quality_current.json`, then promote with `rumoca-msl-tools promote-quality-baseline` (from `rumoca-tool-dev`).
 
-**Structural Analysis:**
-- **Hopcroft-Karp matching** (O(E√V)) for equation-variable assignment
-- **Tarjan's SCC algorithm** for topological ordering and algebraic loop detection
-- **Pantelides algorithm** for DAE index reduction (detects high-index systems)
-- **Tearing** for algebraic loops (reduces nonlinear system size)
+Related specs:
+- `spec/SPEC_0021_CODE_COMPLEXITY.md`
+- `spec/SPEC_0025_PR_REVIEW_PROCESS.md`
+- `spec/SPEC_0030_COVERAGE_TRIM_PROCESS.md`
 
-## Development
+## Git Hooks
+
+Install repository-managed hooks:
 
 ```bash
-cargo build --release   # Build
-cargo test              # Run tests
-cargo fmt --check       # Check Rust formatting
-cargo clippy            # Lint Rust code
-rumoca-fmt --check      # Check Modelica formatting
-rumoca-lint             # Lint Modelica files
+cargo run --bin rum -- install-git-hooks
 ```
 
-<details>
-<summary><strong>Formatter & Linter Configuration</strong></summary>
+Current `pre-commit` checks (fast path):
+- `rum check-rust-file-lines` (staged files, SPEC_0021 guard)
+- `cargo fmt --all -- --check`
+- `cargo clippy` on changed crates (or workspace when needed)
+- `cargo doc` with `RUSTDOCFLAGS="-D warnings"` on changed crates (or workspace when needed)
 
-**Formatter:**
+Current `pre-push` checks (CI-parity, excluding slow MSL/coverage jobs):
+- `rum check-rust-file-lines --all-files`
+- `rum ci-parity` (fmt + clippy + rustdoc + workspace tests)
+
+Run the same CI-parity gate manually:
 
 ```bash
-rumoca-fmt                              # Format all .mo files
-rumoca-fmt --check                      # Check formatting (CI mode)
-rumoca-fmt model.mo                     # Format specific files
-rumoca-fmt --config indent_size=4       # Custom indentation
+cargo run --bin rum -- ci-parity
 ```
 
-Configuration (`.rumoca_fmt.toml`):
+## Coverage Workflow
 
-```toml
-indent_size = 2
-use_tabs = false
-max_line_length = 100
-blank_lines_between_classes = 1
-```
+Standardized workspace coverage artifacts are generated under:
+- `target/llvm-cov/`
 
-**Linter:**
+Generate unified workspace coverage from tests:
 
 ```bash
-rumoca-lint                     # Lint all .mo files
-rumoca-lint --level warning     # Show only warnings and errors
-rumoca-lint --format json       # JSON output for CI
-rumoca-lint --list-rules        # List available rules
-rumoca-lint --deny-warnings     # Exit with error on warnings
+cargo run --bin rum -- coverage
 ```
 
-Available Rules:
+Include ignored/slow suites (for example ignored MSL tests):
 
-| Rule | Level | Description |
-|------|-------|-------------|
-| `naming-convention` | note | CamelCase for types, camelCase for variables |
-| `missing-documentation` | note | Classes without documentation strings |
-| `unused-variable` | warning | Declared but unused variables |
-| `undefined-reference` | error | References to undefined variables |
-| `parameter-no-default` | help | Parameters without default values |
-| `empty-section` | note | Empty equation or algorithm sections |
-| `magic-number` | help | Magic numbers that should be constants |
-| `complex-expression` | note | Overly complex/deeply nested expressions |
-| `inconsistent-units` | warning | Potential unit inconsistencies |
-| `redundant-extends` | warning | Duplicate or circular extends |
-
-Configuration (`.rumoca_lint.toml`):
-
-```toml
-min_level = "warning"
-disabled_rules = ["magic-number", "missing-documentation"]
-deny_warnings = false
+```bash
+cargo run --bin rum -- coverage --include-ignored
 ```
 
-</details>
+Generate workspace trim inventory report + candidate list from llvm-cov artifacts:
 
-### Caching
+```bash
+cargo run --bin rum -- coverage-report
+```
 
-Rumoca uses multi-level caching: in-memory caches for session-level performance (parsed classes, resolved definitions), and a persistent disk cache (`~/.cache/rumoca/dae/`) that works like `ccache` for CI pipelines. The disk cache is invalidated when source files or the compiler version change.
+Enforce candidate-growth guardrails against committed baseline:
 
-## Roadmap
+```bash
+cargo run --bin rum -- coverage-gate
+```
 
-**Export Targets:**
-- [eFMI/GALEC](https://www.efmi-standard.org/)
+Promote current metrics as the new baseline (explicit update step):
 
-**Import Targets:**
-- [Base Modelica (MCP-0031)](https://github.com/modelica/ModelicaSpecification/blob/MCP/0031/RationaleMCP/0031/ReadMe.md) - interface with OpenModelica, Dymola, etc.
+```bash
+cargo run --bin rum -- coverage-gate --promote-baseline
+```
+
+Unified artifacts produced:
+- `target/llvm-cov/workspace-full.json`
+- `target/llvm-cov/workspace-summary.json`
+
+Coverage inventory artifacts:
+- `target/llvm-cov/coverage-trim-report.md`
+- `target/llvm-cov/trim-candidates.json`
+- `target/llvm-cov/coverage-gate.md` (baseline/current diff used by the gate)
+
+Committed coverage-trim gate baseline:
+- `crates/rumoca-tool-dev/coverage/trim-gate-baseline.json`
+  - includes workspace line coverage metrics: `workspace_line_coverage_percent`, `workspace_lines_covered`, `workspace_lines_total`
+
+Current committed workspace line coverage (from trim baseline):
+- `75.57%` (`97,258 / 128,706` lines)
+
+`trim-candidates.json` includes both:
+- `triage_label` (`dead_likely`, `rare_path_keep`, `single_use_helper_keep`, `needs_targeted_test`, `public_api_review`)
+- `owner_decision` (`delete_candidate`, `keep_document_rare_path`, `keep_single_use_helper`, `keep_add_targeted_test`, `keep_public_api_review`)
+- callsite stats:
+  - `callsites_same_file`
+  - `callsites_workspace`
+  - `callsites_other_crates`
+
+Command runbook:
+- `target/llvm-cov/coverage-commands.txt`
+
+Coverage trim SOP (baseline triage/promotion/rollback):
+- `spec/SPEC_0030_COVERAGE_TRIM_PROCESS.md`
+
+## VS Code Extension
+
+The VS Code extension is available as **Rumoca Modelica** in the marketplace and includes a bundled `rumoca-lsp` server.
+
+- Extension docs: `editors/vscode/README.md`
+- Marketplace: https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica
 
 ## Contributing
 
-Contributions welcome! All contributions must be made under the Apache-2.0 license.
+Contributions are welcome.
 
-## License
+Project specifications:
+- [Specifications folder](spec/)
 
-Apache-2.0 ([LICENSE](LICENSE))
+For compiler-affecting changes, follow:
+- `spec/SPEC_0025_PR_REVIEW_PROCESS.md`
+- `spec/README.md`
+
+Install repo hooks before opening PRs:
+- `cargo run --bin rum -- install-git-hooks`
 
 ## Citation
 
@@ -397,8 +430,6 @@ Apache-2.0 ([LICENSE](LICENSE))
 }
 ```
 
-## See Also
+## License
 
-- [Modelica IR](https://github.com/CogniPilot/modelica_ir) - DAE IR specification
-- [Cyecca](https://github.com/cognipilot/cyecca) - Model simulation, analysis, and code generation
-- [Modelica Language](https://www.modelica.org/)
+Apache-2.0 (`LICENSE`)

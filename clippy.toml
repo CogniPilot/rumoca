@@ -1,0 +1,18 @@
+# Code complexity limits (SPEC_0021)
+# See spec/SPEC_0021_CODE_COMPLEXITY.md for rationale
+# Using clippy defaults - they're research-backed
+
+# Maximum nesting depth (default: 4)
+# Research: 3-4 levels is cognitive limit for tracking context
+excessive-nesting-threshold = 4
+
+# Maximum lines per function (default: 100)
+# Research: Bug density increases significantly above 60-100 lines
+too-many-lines-threshold = 100
+
+# Maximum number of arguments for a function (default: 7)
+# Research: Miller's Law - 7±2 items in working memory
+too-many-arguments-threshold = 7
+
+# Type complexity threshold (default: 250)
+type-complexity-threshold = 250

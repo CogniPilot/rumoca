@@ -1,0 +1,16 @@
+[package]
+name = "rumoca-eval-runtime"
+description = "Generic expression evaluator with automatic differentiation for Rumoca simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-ir-ast = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-flat = { workspace = true }
+indexmap = { workspace = true }
+
+[lints]
+workspace = true

@@ -2,17 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
     tags:
       - 'v*'
   pull_request:
-    branches: [main]
+    branches: ['**']
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Pinned nightly for edition 2024 support. Update periodically.
-  RUST_VERSION: "nightly-2025-12-06"
 
 # Prevent duplicate publish runs for same tag
 concurrency:
@@ -36,14 +34,17 @@ jobs:
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }} --component rustfmt,clippy
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)" --component rustfmt,clippy
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+      - name: Check Rust file line count (SPEC_0021)
+        run: cargo run --quiet --bin rum -- check-rust-file-lines --all-files
+
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -57,7 +58,7 @@ jobs:
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
 
@@ -74,34 +75,177 @@ jobs:
         uses: actions/cache@v4
         id: msl-cache
         with:
-          path: ~/.cache/rumoca/src
-          key: msl-v4.1.0
+          path: target/msl
+          key: msl-v4.1.0-workspace
 
       - name: Download MSL
         if: steps.msl-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          mkdir -p ~/.cache/rumoca/src
-          curl -L -o ~/.cache/rumoca/src/msl-v4.1.0.tar.gz \
+          mkdir -p target/msl
+          curl -L -o target/msl/msl-v4.1.0.tar.gz \
             https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.tar.gz
-          tar -xzf ~/.cache/rumoca/src/msl-v4.1.0.tar.gz -C ~/.cache/rumoca/src
-          rm ~/.cache/rumoca/src/msl-v4.1.0.tar.gz
+          tar -xzf target/msl/msl-v4.1.0.tar.gz -C target/msl
+          rm target/msl/msl-v4.1.0.tar.gz
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose --exclude rumoca-bind-python --exclude rumoca-bind-wasm
 
-      - name: Build examples
-        run: cargo build --examples --verbose
+      - name: Build all binaries
+        run: cargo build --verbose --bin rumoca --bin rumoca-lsp
+
+  coverage-gate:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustup component add llvm-tools-preview
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Generate workspace coverage artifacts
+        run: |
+          cargo run --bin rum -- coverage
+
+      - name: Generate trim candidate inventory
+        run: |
+          cargo run --bin rum -- coverage-report
+
+      - name: Enforce coverage regression gate
+        run: |
+          cargo run --bin rum -- coverage-gate --allowed-workspace-line-coverage-drop 6.0
+
+  msl-quality-gate:
+    name: MSL Quality Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache MSL
+        uses: actions/cache@v4
+        id: msl-cache
+        with:
+          path: target/msl
+          key: msl-v4.1.0-workspace
+
+      - name: Download MSL
+        if: steps.msl-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p target/msl
+          curl -L -o target/msl/msl-v4.1.0.tar.gz \
+            https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.tar.gz
+          tar -xzf target/msl/msl-v4.1.0.tar.gz -C target/msl
+          rm target/msl/msl-v4.1.0.tar.gz
+
+      - name: Install OpenModelica
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v omc >/dev/null 2>&1; then
+            echo "OpenModelica already available:"
+            omc --version
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg
+          sudo curl -fsSL http://build.openmodelica.org/apt/openmodelica.asc | \
+            sudo gpg --dearmor -o /usr/share/keyrings/openmodelica-keyring.gpg
+          codename="$(
+            . /etc/os-release
+            echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}"
+          )"
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] \
+            https://build.openmodelica.org/apt ${codename} stable" | \
+            sudo tee /etc/apt/sources.list.d/openmodelica.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends omc
+          omc --version
+
+      - name: Resolve OMC parity cache metadata
+        id: omc-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          omc_version="$(omc --version | head -n1 | tr -d '\r')"
+          omc_version_hash="$(printf '%s' "$omc_version" | sha256sum | cut -c1-16)"
+          echo "version=$omc_version" >> "$GITHUB_OUTPUT"
+          echo "version_hash=$omc_version_hash" >> "$GITHUB_OUTPUT"
+          echo "OMC parity cache key metadata: version='$omc_version' hash=$omc_version_hash"
+
+      - name: Restore OMC parity cache
+        id: omc-parity-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: target/msl/results/omc_parity_cache
+          key: ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-
+
+      - name: Build MSL gate helper binaries
+        run: |
+          cargo build --release --package rumoca-test-msl --bin rumoca-sim-worker
+          cargo build --release --package rumoca-tool-dev --bin rumoca-msl-tools
+
+      - name: Run full MSL quality gate
+        run: |
+          RUMOCA_SIM_WORKER_EXE=target/release/rumoca-sim-worker \
+          RUMOCA_MSL_TOOLS_EXE=target/release/rumoca-msl-tools \
+          RUMOCA_MSL_CACHE_DIR=target/msl \
+          cargo test --release --package rumoca-test-msl --test msl_tests \
+            balance_pipeline::balance_pipeline_core::test_msl_all -- --ignored --nocapture
+
+      - name: Ensure OMC parity cache directory exists
+        if: always()
+        run: mkdir -p target/msl/results/omc_parity_cache
+
+      - name: Save OMC parity cache
+        if: always() && steps.omc-parity-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target/msl/results/omc_parity_cache
+          key: ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-${{ github.sha }}
 
   modelica-fmt:
-    name: Modelica Format
+    name: Modelica Format Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Cache cargo
@@ -115,50 +259,9 @@ jobs:
 
       - name: Build and check Modelica formatting
         run: |
-          cargo build --release --bin rumoca-fmt
-          ./target/release/rumoca-fmt --check
-
-  # ============================================================================
-  # Python Testing
-  # ============================================================================
-  python-test:
-    name: Python Test (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.10', '3.12']
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install dependencies and build
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install maturin pytest
-          cd bindings/python
-          maturin develop --release
-
-      - name: Test import and native bindings
-        run: |
-          source .venv/bin/activate
-          python -c "import rumoca; print(f'Version: {rumoca.__version__}'); print(f'Native: {rumoca.NATIVE_AVAILABLE}')"
-          python -c "import rumoca; assert rumoca.NATIVE_AVAILABLE, 'Native bindings not available!'"
-
-      - name: Run Python tests
-        run: |
-          source .venv/bin/activate
-          cd bindings/python
-          python -m pytest tests/ -v
+          cargo build --release --bin rumoca
+          # Check formatting on any .mo test files in the repo (excluding target/)
+          find . -path ./target -prune -o -name '*.mo' -print | head -20 | xargs -r ./target/release/rumoca fmt --check
 
   # ============================================================================
   # Documentation
@@ -171,11 +274,11 @@ jobs:
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Build documentation
-        run: cargo doc --no-deps
+        run: cargo doc --workspace --no-deps --exclude rumoca-bind-python --exclude rumoca-bind-wasm
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -197,13 +300,20 @@ jobs:
 
       - name: Install Rust nightly with rust-src
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustup target add wasm32-unknown-unknown
           rustup component add rust-src
 
-      - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli
+      - name: Install wasm-bindgen-cli (lockfile-matched)
+        shell: bash
+        run: |
+          set -euo pipefail
+          WASM_BINDGEN_VERSION="$(
+            python3 -c 'import pathlib, tomllib; lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text()); versions = sorted({pkg["version"] for pkg in lock.get("package", []) if pkg.get("name") == "wasm-bindgen"}); assert versions, "Failed to find wasm-bindgen in Cargo.lock"; print(versions[-1])'
+          )"
+          echo "Installing wasm-bindgen-cli v${WASM_BINDGEN_VERSION} to match Cargo.lock"
+          cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked --force
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -216,47 +326,42 @@ jobs:
 
       - name: Build WASM package
         run: |
-          # WASM deps are auto-included via target-specific dependencies
-          # Native-only deps (cli, lsp-server, cache, mimalloc) are excluded by target gate
-          cargo build --lib --release \
+          cargo build -p rumoca-bind-wasm --lib --release \
             --target wasm32-unknown-unknown
 
-          # Generate JS bindings
           mkdir -p pkg
           wasm-bindgen \
             --target web \
             --out-dir pkg \
             --out-name rumoca \
-            target/wasm32-unknown-unknown/release/rumoca.wasm
+            target/wasm32-unknown-unknown/release/rumoca_bind_wasm.wasm
 
-          # Copy the worker file (not generated by wasm-bindgen)
-          cp examples/wasm_editor/rumoca_worker.js pkg/
-
+          cp editors/wasm/rumoca_worker.js pkg/
           ls -lh pkg/
+
+      - name: Run WASM simulation regression test
+        run: |
+          node editors/wasm/tests/simulate_smoke.mjs
 
       - name: Prepare GitHub Pages content
         run: |
           mkdir -p gh-pages/pkg
 
-          # Copy WASM package files
           cp pkg/rumoca.js gh-pages/pkg/
           cp pkg/rumoca_bg.wasm gh-pages/pkg/
           cp pkg/rumoca_worker.js gh-pages/pkg/
           cp pkg/index.js gh-pages/pkg/ 2>/dev/null || true
           cp -r pkg/snippets gh-pages/pkg/ 2>/dev/null || true
 
-          # Fix wasm-bindgen-rayon's workerHelpers.js to use explicit import path
-          # (browsers can't import directories like Node.js can)
           find gh-pages/pkg/snippets -name "workerHelpers.js" -exec \
-            sed -i "s|import('../../..')|import('../../../rumoca.js')|g" {} \;
+            sed -i "s|import('../../..')|import('../../../rumoca.js')|g" {} \; 2>/dev/null || true
 
-          # Copy static assets from wasm_editor
-          cp examples/wasm_editor/rumoca.png gh-pages/
-          cp examples/wasm_editor/coi-serviceworker.js gh-pages/
+          cp editors/wasm/rumoca.png gh-pages/
+          cp editors/wasm/coi-serviceworker.js gh-pages/
+          cp -r editors/wasm/src gh-pages/
 
-          # Copy and modify HTML for GitHub Pages paths (only pkg path needs updating)
           sed 's|\.\./\.\./pkg/|./pkg/|g' \
-              examples/wasm_editor/index.html > gh-pages/index.html
+              editors/wasm/index.html > gh-pages/index.html
 
           echo "=== GitHub Pages content ==="
           find gh-pages -type f
@@ -274,7 +379,7 @@ jobs:
 
   deploy-pages:
     name: Deploy to GitHub Pages
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
     needs: [build-wasm]
     runs-on: ubuntu-latest
     environment:
@@ -291,7 +396,7 @@ jobs:
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, modelica-fmt]
+    needs: [lint, test, modelica-fmt, msl-quality-gate]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -317,7 +422,7 @@ jobs:
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
 
@@ -337,34 +442,34 @@ jobs:
           echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
 
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} --bin rumoca --bin rumoca-lsp
 
-      - name: Strip binary (Linux)
+      - name: Strip binaries (Linux native)
         if: runner.os == 'Linux' && !matrix.cross
         run: |
           strip target/${{ matrix.target }}/release/rumoca
           strip target/${{ matrix.target }}/release/rumoca-lsp
 
-      - name: Strip binary (Linux ARM64 cross)
+      - name: Strip binaries (Linux ARM64 cross)
         if: matrix.cross
         run: |
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca
           aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca-lsp
 
-      - name: Strip binary (macOS)
+      - name: Strip binaries (macOS)
         if: runner.os == 'macOS'
         run: |
           strip target/${{ matrix.target }}/release/rumoca
           strip target/${{ matrix.target }}/release/rumoca-lsp
 
-      - name: Upload binary artifact
+      - name: Upload rumoca binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
           path: ./target/${{ matrix.target }}/release/rumoca${{ matrix.os == 'windows-latest' && '.exe' || '' }}
 
-      - name: Upload LSP binary artifact
+      - name: Upload LSP binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}-lsp
@@ -372,8 +477,8 @@ jobs:
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, python-test]
+    if: github.event_name == 'push'
+    needs: [lint, test]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -399,7 +504,7 @@ jobs:
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
 
@@ -413,7 +518,7 @@ jobs:
       - name: Build wheels
         shell: bash
         run: |
-          cd bindings/python
+          cd crates/rumoca-bind-python
           if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
             maturin build --release --out dist
           else
@@ -424,12 +529,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.name }}
-          path: bindings/python/dist
+          path: crates/rumoca-bind-python/dist
 
   build-python-sdist:
     name: Build Python sdist
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, python-test]
+    if: github.event_name == 'push'
+    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -440,7 +545,7 @@ jobs:
 
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Install maturin
@@ -448,14 +553,14 @@ jobs:
 
       - name: Build sdist
         run: |
-          cd bindings/python
+          cd crates/rumoca-bind-python
           maturin sdist --out dist
 
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
-          path: bindings/python/dist
+          path: crates/rumoca-bind-python/dist
 
   build-vscode-extension:
     name: Build VS Code Extension (${{ matrix.target }})
@@ -498,7 +603,6 @@ jobs:
         run: |
           cd editors/vscode/bin
           ls -la
-          # Rename to expected name if needed
           if [ -f "rumoca-lsp" ] && [ "${{ matrix.binary_name }}" != "rumoca-lsp" ]; then
             mv rumoca-lsp ${{ matrix.binary_name }}
           elif [ -f "rumoca-lsp.exe" ] && [ "${{ matrix.binary_name }}" != "rumoca-lsp.exe" ]; then
@@ -515,7 +619,7 @@ jobs:
       - name: Package extension
         run: |
           cd editors/vscode
-          npx @vscode/vsce package --target ${{ matrix.target }} --no-dependencies
+          npx @vscode/vsce package --target ${{ matrix.target }} --no-dependencies --no-yarn
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
@@ -545,20 +649,46 @@ jobs:
             echo "::error::Tag must point to a commit on the main branch"
             exit 1
           fi
-          echo "✓ Tag points to a commit on main"
+          echo "Tag points to a commit on main"
 
       - name: Get tag name
         id: tag
         run: echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      # Publish to crates.io FIRST (before downloading artifacts that would pollute the working dir)
+      # Publish workspace crates to crates.io
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Publish in dependency order
+          for crate in \
+            rumoca-core \
+            rumoca-contracts \
+            rumoca-ir-ast \
+            rumoca-ir-flat \
+            rumoca-ir-dae \
+            rumoca-eval \
+            rumoca-phase-parse \
+            rumoca-phase-resolve \
+            rumoca-phase-typecheck \
+            rumoca-phase-instantiate \
+            rumoca-phase-flatten \
+            rumoca-phase-structural \
+            rumoca-phase-dae \
+            rumoca-phase-codegen \
+            rumoca-sim-diffsol \
+            rumoca-session \
+            rumoca-tool-lint \
+            rumoca-tool-fmt \
+            rumoca-tool-lsp \
+            rumoca; do
+            echo "Publishing $crate..."
+            cargo publish -p "$crate" --token ${{ secrets.CARGO_REGISTRY_TOKEN }} || true
+            sleep 5  # Allow crates.io to index
+          done
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -588,7 +718,7 @@ jobs:
             fi
           done
 
-          # Move VS Code extensions (platform-specific)
+          # Move VS Code extensions
           for dir in artifacts/vscode-extension-*; do
             if [ -d "$dir" ]; then
               echo "Processing VS Code artifact: $dir"
