@@ -1,0 +1,11 @@
+[
+  "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+  "Modelica.Blocks.Examples.Noise.Densities",
+  "Modelica.Blocks.Examples.Noise.Distributions",
+  "Modelica.Blocks.Examples.Noise.DrydenContinuousTurbulence",
+  "Modelica.Blocks.Examples.Noise.ImpureGenerator",
+  "Modelica.Blocks.Examples.Noise.UniformNoise",
+  "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise",
+  "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star",
+  "Modelica.Math.Random.Examples.GenerateRandomNumbers"
+]

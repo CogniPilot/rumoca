@@ -31,7 +31,9 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onNotebook:jupyter-notebook"
+    "onNotebook:jupyter-notebook",
+    "onCommand:rumoca.simulateModel",
+    "onCommand:rumoca.openSimulationSettings"
   ],
   "contributes": {
     "languages": [
@@ -59,7 +61,9 @@
       {
         "scopeName": "source.modelica.injection",
         "path": "./syntaxes/modelica-injection.tmLanguage.json",
-        "injectTo": ["source.python"],
+        "injectTo": [
+          "source.python"
+        ],
         "embeddedLanguages": {
           "meta.embedded.block.modelica": "modelica"
         }
@@ -107,10 +111,68 @@
           "type": "boolean",
           "default": true,
           "description": "Collapse single-line annotation contents by default, showing 'annotation(...)' instead of the full content. Click on the annotation to expand."
+        },
+        "rumoca.simulation.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional simulation model override. If empty, the extension infers the first model/block/class from the active file."
+        },
+        "rumoca.simulation.tEnd": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0.000001,
+          "description": "Simulation end time passed to `rumoca simulate --t-end`."
+        },
+        "rumoca.simulation.dt": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Optional fixed output step for simulation. Set to 0 for automatic step selection."
+        },
+        "rumoca.simulation.solver": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "bdf",
+            "rk-like"
+          ],
+          "default": "auto",
+          "description": "Solver mode passed to `rumoca simulate --solver`."
+        },
+        "rumoca.simulation.outputDir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory for generated simulation HTML reports. If empty, uses the system temp directory."
         }
       }
     },
+    "configurationDefaults": {
+      "[modelica]": {
+        "editor.inlayHints.enabled": "on",
+        "editor.codeLens": true
+      }
+    },
     "commands": [
+      {
+        "command": "rumoca.simulateModel",
+        "title": "Simulate Current Modelica File",
+        "shortTitle": "Simulate",
+        "category": "Rumoca",
+        "icon": {
+          "light": "icons/simulate-light.svg",
+          "dark": "icons/simulate-dark.svg"
+        }
+      },
+      {
+        "command": "rumoca.openSimulationSettings",
+        "title": "Open Simulation Settings",
+        "shortTitle": "Simulation Settings",
+        "category": "Rumoca",
+        "icon": {
+          "light": "icons/settings-light.svg",
+          "dark": "icons/settings-dark.svg"
+        }
+      },
       {
         "command": "rumoca.toggleAnnotation",
         "title": "Toggle Annotation Expansion",
@@ -127,26 +189,49 @@
         "category": "Rumoca"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "rumoca.simulateModel",
+          "when": "editorLangId == modelica",
+          "group": "navigation@10"
+        },
+        {
+          "command": "rumoca.openSimulationSettings",
+          "when": "editorLangId == modelica",
+          "group": "navigation@11"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "rumoca.toggleAnnotation",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a",
         "when": "editorTextFocus && editorLangId == modelica"
+      },
+      {
+        "command": "rumoca.simulateModel",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus && editorLangId == modelica"
       }
     ]
   },
   "scripts": {
+    "vendor-webview-assets": "node ./scripts/vendor-webview-assets.mjs",
     "vscode:prepublish": "npm run esbuild-base -- --minify",
-    "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "esbuild-base": "npm run vendor-webview-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
     "esbuild": "npm run esbuild-base -- --sourcemap",
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "package": "npm run esbuild-base -- --minify && npx @vscode/vsce package"
+    "package": "npm run esbuild-base -- --minify && npx @vscode/vsce package --no-dependencies --no-yarn"
   },
   "dependencies": {
+    "three": "^0.160.0",
+    "uplot": "^1.6.32",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {

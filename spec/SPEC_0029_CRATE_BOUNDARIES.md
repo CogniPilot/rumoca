@@ -1,0 +1,186 @@
+# SPEC_0029: Crate Boundaries as Collaboration Guardrails
+
+## Status
+ACCEPTED
+
+## Summary
+
+Crate boundaries serve as collaboration guardrails — hard compiler-enforced walls that make it safe for AI agents and new developers to work on one part of the compiler without accidentally breaking another.
+
+## Motivation
+
+- **AI agents (LLMs) have limited context windows and no persistent memory across sessions.** They cannot hold an entire monolithic codebase in context, and they forget architectural rules between conversations.
+- **New developers don't know implicit architectural rules.** Convention-based boundaries ("don't import X from Y") are invisible and unenforceable.
+- **Monolithic codebases allow plausible-but-wrong cross-cutting changes.** An AI or new contributor might reasonably add a helper function to an IR crate that performs evaluation, or add a phase dependency that creates a cycle.
+- **Crate boundaries make illegal dependencies a compile error, not a code review finding.** The Rust compiler enforces the dependency graph defined in each crate's `Cargo.toml`. If a dependency isn't listed, it can't be used — period.
+
+## Specification
+
+### 1. Bounded Context Per Task
+
+Each crate's `Cargo.toml` defines exactly what it can see. A contributor working on `rumoca-phase-flatten` only needs to understand its dependencies (`rumoca-core`, `rumoca-eval-const`, `rumoca-ir-ast`, `rumoca-ir-flat`), not all 24 workspace crates. The dependency list is the reading list.
+
+### 2. Strict DAG Dependency Graph
+
+No circular dependencies between crates. The dependency tiers form an acyclic graph enforced by the Rust compiler. See [Dependency Tiers](#dependency-tiers) below.
+
+### 3. IR Crates Are Pure Data
+
+`rumoca-ir-ast`, `rumoca-ir-flat`, and `rumoca-ir-dae` contain only data types, display/debug implementations, and serde serialization. No evaluation logic, no phase logic, no side effects. This prevents leaking behavior into data definitions and keeps IRs usable by any consumer without pulling in unwanted transitive dependencies.
+
+### 4. Phase Typing via Newtypes
+
+`ParsedTree`, `ResolvedTree`, `TypedTree`, and `InstancedTree` wrap `ClassTree`. The type system enforces phase ordering — you can't pass unresolved data to a phase that requires resolved data. This eliminates an entire class of pipeline-ordering bugs that would otherwise require runtime checks or careful documentation.
+
+### 5. Evaluation Decoupled from Representation
+
+`rumoca-eval-const` and `rumoca-eval-runtime` consume IRs but don't own them. This keeps evaluation strategies swappable without touching IR definitions. Constant evaluation (compile-time) and runtime evaluation (simulation-time) are separate concerns with different dependencies.
+
+### 6. Rules for Adding Dependencies
+
+Before adding a dependency from crate A to crate B:
+
+1. **Verify no cycle** — The dependency must not create a circular dependency. Cargo will reject it, but check first to avoid wasted effort.
+2. **Verify tier ordering** — Crate B must be in a lower or equal tier than crate A (see tier diagram). Dependencies flow downward.
+3. **Consider alternatives** — Would a trait or shared type in `rumoca-core` be more appropriate than a direct dependency?
+4. **Cross-tier dependencies are suspect** — If the dependency crosses multiple tiers (e.g., a binding crate importing an IR crate directly instead of going through session), it may indicate a design issue.
+
+### 7. Rules for Creating New Crates
+
+**Split when:**
+- A new IR representation is needed (new data layer)
+- A new compiler phase is introduced (new transformation)
+- Consumers need data types without pulling in evaluation or phase logic
+- Two unrelated concerns are growing in the same crate
+
+**Keep together when:**
+- The code is small (<500 lines) and has exactly one consumer
+- Splitting would create a crate with no clear single responsibility
+- The functionality is tightly coupled and always changes together
+
+### 8. Import and Re-export Discipline
+
+To keep layer boundaries obvious in code (not only in `Cargo.toml`), use explicit crate namespaces.
+
+In non-IR crates:
+- Import IR crates as namespaces:
+  - `use rumoca_ir_ast as ast;`
+  - `use rumoca_ir_flat as flat;`
+  - `use rumoca_ir_dae as dae;`
+- Prefer qualified references (`ast::...`, `flat::...`, `dae::...`) over direct type imports.
+- Avoid direct IR type imports such as `use rumoca_ir_flat::{Expression, VarName}` outside the owning IR crate.
+
+Re-export guardrails:
+- Crates MUST NOT re-export other crates to tunnel around dependency boundaries.
+- Do not add patterns like `pub use some_lower_layer_crate as alias;` in higher layers.
+- Do not add wildcard forwarding such as `pub use some_lower_layer_crate::*;` across layers.
+
+## Dependency Tiers
+
+The 24 workspace crates are organized into six tiers. Dependencies flow strictly downward.
+
+```
+Tier 6 — Binary & Bindings (top-level entry points)
+  rumoca                    CLI binary
+  rumoca-bind-python        Python bindings (PyO3)
+  rumoca-bind-wasm          WebAssembly bindings
+  rumoca-contracts          Specification contract tests
+
+Tier 5 — Integration (combine session + simulation/tools)
+  rumoca-sim-diffsol        ODE/DAE solver integration
+  rumoca-tool-lsp           Language server protocol
+
+Tier 4 — Orchestration (pipeline coordination)
+  rumoca-session            Compilation pipeline orchestrator
+  rumoca-sim-core           Simulation runtime core
+  rumoca-tool-fmt           Code formatter
+  rumoca-tool-lint          Linter
+
+Tier 3 — Phases & Evaluation (transformations)
+  rumoca-phase-parse        Source → AST
+  rumoca-phase-resolve      Name resolution, DefId assignment
+  rumoca-phase-typecheck    Type inference, variability
+  rumoca-phase-instantiate  Class instantiation, modifier merging
+  rumoca-phase-flatten      Instance tree → flat equations
+  rumoca-phase-dae          Flat equations → DAE system
+  rumoca-phase-structural   Structural analysis
+  rumoca-phase-codegen      DAE → solver code
+  rumoca-eval-const         Compile-time expression evaluation
+  rumoca-eval-runtime       Simulation-time expression evaluation
+
+Tier 2 — IR (pure data, no logic)
+  rumoca-ir-ast             Syntax tree, class definitions
+  rumoca-ir-flat            Flat equations, qualified names
+  rumoca-ir-dae             DAE representation
+
+Tier 1 — Foundation (shared primitives)
+  rumoca-core               Spans, errors, config, traits
+
+                    ┌─────────────────────┐
+                    │  Tier 6: Binary &    │
+                    │  Bindings            │
+                    └────────┬────────────┘
+                             │
+                    ┌────────▼────────────┐
+                    │  Tier 5: Integration │
+                    └────────┬────────────┘
+                             │
+                    ┌────────▼────────────┐
+                    │  Tier 4: Orchestr.   │
+                    └────────┬────────────┘
+                             │
+                    ┌────────▼────────────┐
+                    │  Tier 3: Phases &    │
+                    │  Evaluation          │
+                    └────────┬────────────┘
+                             │
+                    ┌────────▼────────────┐
+                    │  Tier 2: IR (data)   │
+                    └────────┬────────────┘
+                             │
+                    ┌────────▼────────────┐
+                    │  Tier 1: Foundation  │
+                    └─────────────────────┘
+```
+
+## How This Helps AI Collaboration
+
+### Cargo.toml Is the Reading List
+
+When an AI agent is asked to modify `rumoca-phase-flatten`, it reads `crates/rumoca-phase-flatten/Cargo.toml` and immediately knows the complete set of crates it needs to understand. There is no hidden coupling to discover.
+
+### Compile Errors Catch Architectural Violations
+
+If an AI agent adds `use rumoca_session::Session` inside a phase crate, the code won't compile. The violation is caught at build time, not during code review. This is critical because AI-generated code may be plausible-looking but architecturally wrong.
+
+### Flat Functions Stay Within Context Windows
+
+SPEC_0021 (Code Complexity) limits nesting depth and function length. Combined with crate boundaries, this means an AI agent can read an entire function and all of its dependencies without exceeding context limits.
+
+### Phase-Typed Wrappers Eliminate Ordering Mistakes
+
+The newtype wrappers (`ParsedTree`, `ResolvedTree`, etc.) mean an AI doesn't need to remember the correct pipeline ordering — the type system enforces it. Passing a `ParsedTree` where a `ResolvedTree` is expected is a type error.
+
+### Serde IRs Enable Template-Based Codegen
+
+The IR crates use serde serialization, so code generation templates work from data structures, not code. An AI can write a codegen template by inspecting the serialized IR format without understanding Rust compiler internals.
+
+## How This Helps New Developers
+
+### Clear Onboarding Path
+
+Start with one crate, understand its dependencies, expand outward. A new contributor can be productive in `rumoca-phase-parse` after reading only `rumoca-core` and `rumoca-ir-ast` — not the full workspace.
+
+### Impossible to Accidentally Break Other Phases
+
+Changes to `rumoca-phase-flatten` cannot affect `rumoca-phase-resolve` because there is no dependency path between them (they are siblings in the DAG, not parent-child). Crate boundaries guarantee blast radius.
+
+### Single Responsibility Per Crate
+
+Each crate has one clear job. When a bug is in "flattening," you look in `rumoca-phase-flatten`. When a type definition is wrong, you look in the appropriate IR crate. There is no ambiguity about where code belongs.
+
+## Related Specs
+
+- [SPEC_0009](SPEC_0009_COMMON_CRATE.md): Single Foundation Crate — defines the `rumoca-core` foundation layer
+- [SPEC_0021](SPEC_0021_CODE_COMPLEXITY.md): Code Complexity Guidelines — flat functions complement crate boundaries by keeping individual functions within context window limits
+- [SPEC_0023](SPEC_0023_CRATE_ARCHITECTURE.md): Crate Architecture for MLS Compliance — maps MLS specification sections to crates (complementary: SPEC_0023 is *what* maps where, SPEC_0029 is *why* the boundaries exist)

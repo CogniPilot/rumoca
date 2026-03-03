@@ -1,0 +1,36 @@
+[package]
+name = "rumoca-tool-lsp"
+description = "Language Server Protocol implementation for Modelica"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rumoca-lsp"
+path = "src/main.rs"
+required-features = ["server"]
+
+[dependencies]
+rumoca-session = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+rumoca-phase-parse = { workspace = true }
+rumoca-core = { workspace = true }
+rumoca-sim-diffsol = { workspace = true }
+rumoca-tool-lint = { workspace = true }
+rumoca-tool-fmt = { workspace = true }
+lsp-types = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Server-only dependencies (not needed for WASM)
+tower-lsp = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[features]
+default = ["server"]
+server = ["dep:tower-lsp", "dep:tokio"]
+
+[lints]
+workspace = true

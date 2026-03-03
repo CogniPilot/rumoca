@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Pre-push hook: CI-parity checks (excluding slow MSL/coverage jobs).
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+required_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1)"
+active_toolchain="$(rustup show active-toolchain 2>/dev/null | awk '{print $1}')"
+if [[ -n "$required_toolchain" && "$active_toolchain" != "$required_toolchain"* ]]; then
+  echo "pre-push: active toolchain '$active_toolchain' does not match required '$required_toolchain'."
+  echo "pre-push: run 'rustup override set $required_toolchain' in this repository."
+  exit 1
+fi
+
+echo "pre-push: checking Rust file line counts across workspace..."
+cargo run --quiet --bin rum -- check-rust-file-lines --all-files
+
+echo "pre-push: running ci-parity command..."
+cargo run --bin rum -- ci-parity
+
+echo "pre-push checks passed."

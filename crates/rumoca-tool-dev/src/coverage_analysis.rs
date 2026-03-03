@@ -1,0 +1,238 @@
+use crate::WorkspacePackageInfo;
+use anyhow::{Context, Result};
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Default, Clone)]
+pub(super) struct CallsiteIndex {
+    workspace: HashMap<String, usize>,
+    by_package: HashMap<String, HashMap<String, usize>>,
+}
+
+impl CallsiteIndex {
+    pub(super) fn workspace_callsites(&self, symbol: &str) -> Option<usize> {
+        self.workspace.get(symbol).copied()
+    }
+
+    pub(super) fn other_crate_callsites(&self, package_name: &str, symbol: &str) -> Option<usize> {
+        let workspace = self.workspace.get(symbol).copied()?;
+        let same_package = self
+            .by_package
+            .get(package_name)
+            .and_then(|package_calls| package_calls.get(symbol).copied())
+            .unwrap_or(0);
+        Some(workspace.saturating_sub(same_package))
+    }
+}
+
+pub(super) fn count_callsites_same_file(source: &str, symbol: &str) -> Option<usize> {
+    if symbol.len() < 2 {
+        return None;
+    }
+    Some(count_callsites_in_source(source, symbol))
+}
+
+fn count_callsites_in_source(source: &str, symbol: &str) -> usize {
+    let mut total = 0usize;
+    for ident in iter_callsite_identifiers(source) {
+        if ident == symbol {
+            total += 1;
+        }
+    }
+    total
+}
+
+fn iter_callsite_identifiers(source: &str) -> Vec<&str> {
+    let bytes = source.as_bytes();
+    let mut idents = Vec::new();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'(' {
+            continue;
+        }
+        let mut end = index;
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        if end == 0 {
+            continue;
+        }
+        let mut start = end;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            start -= 1;
+        }
+        if start == end {
+            continue;
+        }
+        let ident = &source[start..end];
+        if is_non_call_keyword(ident) || is_function_definition_prefix(source, start) {
+            continue;
+        }
+        idents.push(ident);
+    }
+    idents
+}
+
+fn is_non_call_keyword(ident: &str) -> bool {
+    matches!(
+        ident,
+        "if" | "for" | "while" | "match" | "loop" | "fn" | "let" | "return"
+    )
+}
+
+fn is_function_definition_prefix(source: &str, start: usize) -> bool {
+    let prefix = source[..start].trim_end();
+    prefix.ends_with("fn")
+}
+
+pub(super) fn build_workspace_callsite_index(
+    root: &Path,
+    package_infos: &[WorkspacePackageInfo],
+) -> Result<CallsiteIndex> {
+    let rust_files = collect_workspace_rust_files(&root.join("crates"))?;
+    let mut index = CallsiteIndex::default();
+    for file in rust_files {
+        let source = match fs::read_to_string(&file) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let file_str = file.to_string_lossy();
+        let Some(package) = crate::package_for_filename(root, package_infos, &file_str) else {
+            continue;
+        };
+        for ident in iter_callsite_identifiers(&source) {
+            *index.workspace.entry(ident.to_string()).or_insert(0) += 1;
+            *index
+                .by_package
+                .entry(package.name.clone())
+                .or_default()
+                .entry(ident.to_string())
+                .or_insert(0) += 1;
+        }
+    }
+    Ok(index)
+}
+
+fn collect_workspace_rust_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_workspace_rust_files_recursive(dir, &mut files)?;
+    Ok(files)
+}
+
+fn collect_workspace_rust_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let entries =
+        fs::read_dir(dir).with_context(|| format!("failed to read directory {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("failed to read directory {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_workspace_rust_files_recursive(&path, files)?;
+            continue;
+        }
+        if path.extension() == Some(OsStr::new("rs")) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn owner_decision_for_label(label: &str) -> &'static str {
+    match label {
+        "dead_likely" => "delete_candidate",
+        "rare_path_keep" => "keep_document_rare_path",
+        "single_use_helper_keep" => "keep_single_use_helper",
+        "needs_targeted_test" => "keep_add_targeted_test",
+        "public_api_review" => "keep_public_api_review",
+        _ => "keep_manual_review",
+    }
+}
+
+pub(super) fn is_opaque_symbol_name(name: &str) -> bool {
+    name.starts_with("_R")
+}
+
+pub(super) fn render_coverage_trim_report(
+    inventories: &[crate::PackageCoverageInventory],
+) -> String {
+    let mut report = String::new();
+    report.push_str("# Coverage Trim Report\n\n");
+    report.push_str("Generated by `rum coverage-report`.\n\n");
+    report.push_str("Triage labels:\n");
+    report.push_str("- `dead_likely`\n");
+    report.push_str("- `rare_path_keep`\n");
+    report.push_str("- `single_use_helper_keep`\n");
+    report.push_str("- `needs_targeted_test`\n");
+    report.push_str("- `public_api_review`\n\n");
+
+    for inventory in inventories {
+        report.push_str(&format!("## {}\n\n", inventory.package));
+        report.push_str(&format!(
+            "- zero-count functions: `{}`\n",
+            inventory.zero_count_functions_total
+        ));
+        if inventory.triage_counts.is_empty() {
+            report.push_str("- triage counts: none\n\n");
+        } else {
+            report.push_str("- triage counts:\n");
+            for (label, count) in &inventory.triage_counts {
+                report.push_str(&format!("  - `{label}`: `{count}`\n"));
+            }
+            report.push('\n');
+        }
+
+        report.push_str("Lowest-coverage files (by line coverage):\n\n");
+        report.push_str("| file | line % | covered/total |\n");
+        report.push_str("| --- | ---: | ---: |\n");
+        if inventory.lowest_files.is_empty() {
+            report.push_str("| _none_ | - | - |\n");
+        } else {
+            for file in &inventory.lowest_files {
+                report.push_str(&format!(
+                    "| `{}` | `{:.2}` | `{}/{}` |\n",
+                    file.file, file.line_percent, file.line_covered, file.line_count
+                ));
+            }
+        }
+        report.push('\n');
+
+        report.push_str("Zero-count function candidates:\n\n");
+        report.push_str(
+            "| file:line | symbol | visibility | callsites(same file) | callsites(workspace) | callsites(other crates) | label | owner decision |\n",
+        );
+        report.push_str("| --- | --- | --- | ---: | ---: | ---: | --- | --- |\n");
+        if inventory.candidates.is_empty() {
+            report.push_str("| _none_ | - | - | - | - | - | - | - |\n");
+        } else {
+            for candidate in &inventory.candidates {
+                let symbol = candidate.symbol.as_deref().unwrap_or("-");
+                let callsites = candidate
+                    .callsites_same_file
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let callsites_workspace = candidate
+                    .callsites_workspace
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let callsites_other_crates = candidate
+                    .callsites_other_crates
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                report.push_str(&format!(
+                    "| `{}`:`{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |\n",
+                    candidate.file,
+                    candidate.line,
+                    symbol,
+                    candidate.visibility,
+                    callsites,
+                    callsites_workspace,
+                    callsites_other_crates,
+                    candidate.triage_label,
+                    candidate.owner_decision
+                ));
+            }
+        }
+        report.push('\n');
+    }
+    report
+}

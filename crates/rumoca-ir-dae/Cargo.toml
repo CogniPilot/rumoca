@@ -1,0 +1,19 @@
+[package]
+name = "rumoca-ir-dae"
+description = "Hybrid DAE representation for the Rumoca compiler (MLS Appendix B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-flat = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

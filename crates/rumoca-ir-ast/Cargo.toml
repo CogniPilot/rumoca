@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-ir-ast"
+description = "Class Tree IR for the Rumoca compiler (MLS §5.6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true }
+parol_runtime = { workspace = true }
+anyhow = { workspace = true }
+rustc-hash = { workspace = true }
+
+[lints]
+workspace = true

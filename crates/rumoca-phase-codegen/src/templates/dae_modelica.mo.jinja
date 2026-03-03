@@ -1,0 +1,85 @@
+{# Flat Modelica output template — matches OMC instantiateModel() format. #}
+{%- set cfg = {
+  "power": "^",
+  "and_op": "and",
+  "or_op": "or",
+  "not_op": "not ",
+  "true_val": "true",
+  "false_val": "false",
+  "array_start": "{",
+  "array_end": "}",
+  "if_style": "modelica",
+  "sanitize_dots": false,
+  "one_based_index": true,
+  "modelica_builtins": true
+} -%}
+{#- Macro: variable attributes (unit, min, max, start, fixed, nominal, stateSelect) -#}
+{%- macro var_attrs(var) -%}
+{%- set ns = namespace(parts="") -%}
+{%- if var.unit -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'unit = "' ~ var.unit ~ '"' -%}
+{%- endif -%}
+{%- if var.min is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "min = " ~ render_expr(var.min, cfg) -%}
+{%- endif -%}
+{%- if var.max is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "max = " ~ render_expr(var.max, cfg) -%}
+{%- endif -%}
+{%- if var.start is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "start = " ~ render_expr(var.start, cfg) -%}
+{%- endif -%}
+{%- if var.fixed is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "fixed = " ~ ("true" if var.fixed else "false") -%}
+{%- endif -%}
+{%- if var.nominal is not none -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "nominal = " ~ render_expr(var.nominal, cfg) -%}
+{%- endif -%}
+{%- if var.state_select and var.state_select != "Default" -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "stateSelect = StateSelect." ~ var.state_select -%}
+{%- endif -%}
+{%- if ns.parts %}({{ ns.parts }}){% endif -%}
+{%- endmacro -%}
+{#- Macro: array dimensions -#}
+{%- macro dims(var) -%}
+{%- if var.dims | length > 0 %}[{{ var.dims | join(", ") }}]{% endif -%}
+{%- endmacro -%}
+{#- Macro: description string -#}
+{%- macro desc(var) -%}
+{%- if var.description %} "{{ var.description }}"{% endif -%}
+{%- endmacro -%}
+class {{ model_name }}
+{%- for name, var in dae.parameters | items %}
+  parameter Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{% if var.start is not none %} = {{ render_expr(var.start, cfg) }}{% endif %}{{ desc(var) }};
+{%- endfor -%}
+{%- for name, var in dae.constants | items %}
+  constant Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{% if var.start is not none %} = {{ render_expr(var.start, cfg) }}{% endif %}{{ desc(var) }};
+{%- endfor -%}
+{%- for name, var in dae.states | items %}
+  Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
+{%- endfor -%}
+{%- for name, var in dae.algebraics | items %}
+  Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
+{%- endfor -%}
+{%- for name, var in dae.inputs | items %}
+  input Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
+{%- endfor -%}
+{%- for name, var in dae.outputs | items %}
+  output Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
+{%- endfor -%}
+{%- for name, var in dae.discrete_reals | items %}
+  discrete Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
+{%- endfor -%}
+{%- for name, var in dae.derivative_aliases | items %}
+  Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
+{%- endfor %}
+equation
+{%- for eq in dae.f_x %}
+  {{ render_equation(eq, cfg) }};
+{%- endfor -%}
+{%- if dae.initial_equations | length > 0 %}
+initial equation
+{%- for eq in dae.initial_equations %}
+  {{ render_equation(eq, cfg) }};
+{%- endfor -%}
+{%- endif %}
+end {{ model_name }};
