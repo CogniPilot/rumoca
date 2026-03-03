@@ -46,6 +46,321 @@ use serde_json::{Map, Value};
 
 use crate::error::CompilerError;
 
+fn as_object_mut(value: &mut Value) -> Option<&mut Map<String, Value>> {
+    value.as_object_mut()
+}
+
+fn expr_var_name(expr: &Value) -> Option<String> {
+    let obj = expr.as_object()?;
+    if let Some(vr) = obj.get("VarRef").and_then(Value::as_object)
+        && let Some(n) = vr.get("name").and_then(Value::as_str)
+    {
+        return Some(n.to_string());
+    }
+    None
+}
+
+fn lhs_var_name(lhs: &Value) -> Option<String> {
+    if let Some(obj) = lhs.as_object()
+        && let Some(vr) = obj.get("VarRef")
+    {
+        return expr_var_name(vr);
+    }
+    if let Some(s) = lhs.as_str() {
+        return Some(s.to_string());
+    }
+    expr_var_name(lhs)
+}
+
+fn extract_residual_assignment_expr(expr: &Value, target: &str) -> Option<Value> {
+    let obj = expr.as_object()?;
+    let bin = obj.get("Binary")?.as_object()?;
+    let lhs = bin.get("lhs")?;
+    let rhs = bin.get("rhs")?;
+    let op = bin.get("op")?.as_object()?;
+    if !op.contains_key("Sub") {
+        return None;
+    }
+
+    if expr_var_name(lhs).is_some_and(|n| n == target) {
+        return Some(rhs.clone());
+    }
+    if expr_var_name(rhs).is_some_and(|n| n == target) {
+        let mut unary = Map::new();
+        unary.insert("op".to_string(), Value::String("-".to_string()));
+        unary.insert("arg".to_string(), lhs.clone());
+        let mut wrap = Map::new();
+        wrap.insert("Unary".to_string(), Value::Object(unary));
+        return Some(Value::Object(wrap));
+    }
+    None
+}
+
+fn collect_observable_expr_candidates_from_native(native: &Value, target: &str) -> Vec<Value> {
+    let Some(obj) = native.as_object() else {
+        return Vec::new();
+    };
+    let mut out: Vec<Value> = Vec::new();
+
+    for key in ["f_z", "f_m", "f_c"] {
+        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
+            out.extend(
+                rows.iter()
+                    .filter_map(Value::as_object)
+                    .filter(|row_obj| {
+                        row_obj
+                            .get("lhs")
+                            .and_then(lhs_var_name)
+                            .is_some_and(|name| name == target)
+                    })
+                    .filter_map(|row_obj| row_obj.get("rhs").cloned()),
+            );
+        }
+    }
+
+    for key in ["f_x", "fx"] {
+        if let Some(rows) = obj.get(key).and_then(Value::as_array) {
+            out.extend(
+                rows.iter()
+                    .filter_map(Value::as_object)
+                    .filter_map(|row_obj| {
+                        row_obj
+                            .get("rhs")
+                            .or_else(|| row_obj.get("residual"))
+                            .and_then(|expr| extract_residual_assignment_expr(expr, target))
+                    }),
+            );
+        }
+    }
+
+    out
+}
+
+fn expr_complexity(expr: &Value) -> usize {
+    match expr {
+        Value::Object(map) => {
+            1 + map
+                .values()
+                .map(expr_complexity)
+                .fold(0usize, |acc, n| acc.saturating_add(n))
+        }
+        Value::Array(items) => {
+            1 + items
+                .iter()
+                .map(expr_complexity)
+                .fold(0usize, |acc, n| acc.saturating_add(n))
+        }
+        _ => 1,
+    }
+}
+
+fn is_simple_alias_expr(expr: &Value) -> bool {
+    let is_var_like = |v: &Value| {
+        v.as_object()
+            .is_some_and(|m| m.contains_key("VarRef") || m.contains_key("ComponentReference"))
+    };
+    if is_var_like(expr) {
+        return true;
+    }
+    let Some(obj) = expr.as_object() else {
+        return false;
+    };
+    let Some(unary) = obj.get("Unary").and_then(Value::as_object) else {
+        return false;
+    };
+    unary.get("arg").is_some_and(is_var_like)
+}
+
+fn find_observable_expr_from_native(native: &Value, target: &str) -> Option<Value> {
+    let candidates = collect_observable_expr_candidates_from_native(native, target);
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.into_iter().max_by_key(|expr| {
+        let non_alias = if is_simple_alias_expr(expr) {
+            0usize
+        } else {
+            1usize
+        };
+        (non_alias, expr_complexity(expr))
+    })
+}
+
+fn component_ref_name(expr: &Value) -> Option<String> {
+    let obj = expr.as_object()?;
+    let cr = obj.get("ComponentReference")?.as_object()?;
+    let parts = cr.get("parts")?.as_array()?;
+    let mut segs: Vec<String> = Vec::new();
+    for part in parts {
+        let part_obj = part.as_object()?;
+        let ident = part_obj.get("ident")?.as_object()?;
+        let text = ident.get("text")?.as_str()?;
+        segs.push(text.to_string());
+    }
+    if segs.is_empty() {
+        return None;
+    }
+    Some(segs.join("."))
+}
+
+fn collect_prepared_symbol_names(prepared_obj: &Map<String, Value>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for key in [
+        "p",
+        "constants",
+        "cp",
+        "x",
+        "y",
+        "z",
+        "m",
+        "w",
+        "u",
+        "x_dot_alias",
+    ] {
+        if let Some(map) = prepared_obj.get(key).and_then(Value::as_object) {
+            out.extend(map.keys().cloned());
+        }
+    }
+    out
+}
+
+fn rewrite_observable_expr_with_native_aliases(
+    native_json: &Value,
+    expr: &Value,
+    prepared_symbols: &HashSet<String>,
+    visiting: &mut HashSet<String>,
+    depth: usize,
+) -> Value {
+    if depth > 24 {
+        return expr.clone();
+    }
+
+    if let Some(obj) = expr.as_object() {
+        if let Some(vr) = obj.get("VarRef").and_then(Value::as_object)
+            && let Some(name) = vr.get("name").and_then(Value::as_str)
+            && !prepared_symbols.contains(name)
+            && !visiting.contains(name)
+            && let Some(alias_expr) = find_observable_expr_from_native(native_json, name)
+        {
+            visiting.insert(name.to_string());
+            let rewritten = rewrite_observable_expr_with_native_aliases(
+                native_json,
+                &alias_expr,
+                prepared_symbols,
+                visiting,
+                depth + 1,
+            );
+            visiting.remove(name);
+            return rewritten;
+        }
+
+        if let Some(name) = component_ref_name(expr)
+            && !prepared_symbols.contains(&name)
+            && !visiting.contains(&name)
+            && let Some(alias_expr) = find_observable_expr_from_native(native_json, &name)
+        {
+            visiting.insert(name.clone());
+            let rewritten = rewrite_observable_expr_with_native_aliases(
+                native_json,
+                &alias_expr,
+                prepared_symbols,
+                visiting,
+                depth + 1,
+            );
+            visiting.remove(&name);
+            return rewritten;
+        }
+
+        let mut out = Map::new();
+        for (k, v) in obj {
+            out.insert(
+                k.clone(),
+                rewrite_observable_expr_with_native_aliases(
+                    native_json,
+                    v,
+                    prepared_symbols,
+                    visiting,
+                    depth + 1,
+                ),
+            );
+        }
+        return Value::Object(out);
+    }
+
+    if let Some(arr) = expr.as_array() {
+        return Value::Array(
+            arr.iter()
+                .map(|v| {
+                    rewrite_observable_expr_with_native_aliases(
+                        native_json,
+                        v,
+                        prepared_symbols,
+                        visiting,
+                        depth + 1,
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    expr.clone()
+}
+
+fn augment_prepared_with_native_observables(
+    native_json: &Value,
+    prepared_json: &mut Value,
+) -> Option<usize> {
+    let native_obj = native_json.as_object()?;
+    let prepared_obj = as_object_mut(prepared_json)?;
+    let native_y = native_obj.get("y").and_then(Value::as_object)?;
+    let prepared_y = prepared_obj.get("y").and_then(Value::as_object);
+    let prepared_symbols = collect_prepared_symbol_names(prepared_obj);
+
+    let mut observables: Vec<Value> = Vec::new();
+    for (name, comp) in native_y {
+        if prepared_y.is_some_and(|m| m.contains_key(name)) {
+            continue;
+        }
+        let Some(expr_raw) = find_observable_expr_from_native(native_json, name) else {
+            continue;
+        };
+        let mut visiting = HashSet::new();
+        let expr = rewrite_observable_expr_with_native_aliases(
+            native_json,
+            &expr_raw,
+            &prepared_symbols,
+            &mut visiting,
+            0,
+        );
+        let mut entry = Map::new();
+        entry.insert("name".to_string(), Value::String(name.clone()));
+        entry.insert("expr".to_string(), expr);
+        if let Some(comp_obj) = comp.as_object() {
+            if let Some(start) = comp_obj.get("start") {
+                entry.insert("start".to_string(), start.clone());
+            }
+            if let Some(unit) = comp_obj
+                .get("unit")
+                .or_else(|| comp_obj.get("displayUnit"))
+                .or_else(|| comp_obj.get("display_unit"))
+            {
+                entry.insert("unit".to_string(), unit.clone());
+            }
+        }
+        observables.push(Value::Object(entry));
+    }
+
+    if observables.is_empty() {
+        return Some(0);
+    }
+    let n = observables.len();
+    prepared_obj.insert(
+        "__rumoca_observables".to_string(),
+        Value::Array(observables),
+    );
+    Some(n)
+}
+
 /// Result of a successful compilation.
 #[derive(Debug)]
 pub struct CompilationResult {
@@ -237,11 +552,42 @@ impl CompilationResult {
         self.render_template_str(&template_content)
     }
 
+    /// Render a structurally prepared DAE using a template file.
+    ///
+    /// This runs the same template-preparation pass used by the simulation
+    /// pipeline (without solver-only artifacts), then renders against the
+    /// prepared DAE.
+    pub fn render_template_prepared(
+        &self,
+        template_path: &str,
+        scalarize: bool,
+    ) -> Result<String, CompilerError> {
+        let template_content = fs::read_to_string(template_path)
+            .map_err(|e| CompilerError::io_error(template_path, e.to_string()))?;
+
+        self.render_template_str_prepared(&template_content, scalarize)
+    }
+
     /// Render the DAE using a template string.
     pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
         // Use the codegen module's render function which sets up the context properly
         // with the DAE as `dae` and includes custom filters/functions
         rumoca_phase_codegen::render_template(&self.dae, template)
+            .map_err(|e| CompilerError::TemplateError(e.to_string()))
+    }
+
+    /// Render a structurally prepared DAE using a template string.
+    pub fn render_template_str_prepared(
+        &self,
+        template: &str,
+        scalarize: bool,
+    ) -> Result<String, CompilerError> {
+        let prepared = rumoca_sim_diffsol::prepare_dae_for_template_codegen(&self.dae, scalarize)
+            .map_err(|e| CompilerError::TemplateError(e.to_string()))?;
+        let native_json = rumoca_phase_codegen::dae_template_json(&self.dae);
+        let mut prepared_json = rumoca_phase_codegen::dae_template_json(&prepared);
+        let _ = augment_prepared_with_native_observables(&native_json, &mut prepared_json);
+        rumoca_phase_codegen::render_template_with_dae_json(&prepared_json, template)
             .map_err(|e| CompilerError::TemplateError(e.to_string()))
     }
 
@@ -667,6 +1013,72 @@ mod tests {
             assert!(
                 obj.contains_key(key),
                 "hybrid runtime JSON should contain key `{key}`"
+            );
+        }
+    }
+
+    #[test]
+    fn test_render_template_prepared_retains_orbit_observables() {
+        let source = r#"
+            model SatelliteOrbit2D
+              parameter Real mu = 398600.4418;
+              parameter Real r0 = 7000;
+              parameter Real v0 = sqrt(mu / r0);
+              Real rx(start = r0, fixed = true);
+              Real ry(start = 0, fixed = true);
+              Real vx(start = 0, fixed = true);
+              Real vy(start = v0, fixed = true);
+              Real inv_r;
+              Real inv_v2;
+              Real inv_h;
+              Real inv_energy;
+              Real inv_a;
+              Real inv_rv;
+              Real inv_ex;
+              Real inv_ey;
+              Real inv_ecc;
+            equation
+              der(rx) = vx;
+              der(ry) = vy;
+              inv_r = sqrt(rx * rx + ry * ry);
+              inv_v2 = vx * vx + vy * vy;
+              inv_h = rx * vy - ry * vx;
+              inv_energy = 0.5 * inv_v2 - mu / inv_r;
+              inv_a = 1 / (2 / inv_r - inv_v2 / mu);
+              inv_rv = rx * vx + ry * vy;
+              inv_ex = ((inv_v2 - mu / inv_r) * rx - inv_rv * vx) / mu;
+              inv_ey = ((inv_v2 - mu / inv_r) * ry - inv_rv * vy) / mu;
+              inv_ecc = sqrt(inv_ex * inv_ex + inv_ey * inv_ey);
+              der(vx) = -mu * rx / (inv_r ^ 3);
+              der(vy) = -mu * ry / (inv_r ^ 3);
+            end SatelliteOrbit2D;
+        "#;
+
+        let result = Compiler::new()
+            .model("SatelliteOrbit2D")
+            .compile_str(source, "orbit.mo")
+            .expect("compilation should succeed");
+        let rendered = result
+            .render_template_str_prepared(
+                "{% for o in dae.__rumoca_observables %}{{ o.name }}\n{% endfor %}",
+                true,
+            )
+            .expect("prepared template render should succeed");
+
+        for expected in [
+            "inv_r",
+            "inv_v2",
+            "inv_h",
+            "inv_energy",
+            "inv_a",
+            "inv_rv",
+            "inv_ex",
+            "inv_ey",
+            "inv_ecc",
+        ] {
+            assert!(
+                rendered.lines().any(|line| line.trim() == expected),
+                "expected observable `{expected}` in prepared template output; got:\n{rendered}"
             );
         }
     }

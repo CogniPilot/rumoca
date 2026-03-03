@@ -5,12 +5,12 @@
     #nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     # we are currently using 25.05 version of rustup
     # for faster dev env setup times
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
 
     # project root (not a flake!)
     src = {
-      url = "path:..";
+      url = "path:../..";
       flake = false;
     };
   };
@@ -39,6 +39,7 @@
             clang
             llvmPackages.bintools
             rustup
+            python3
             nodejs_22
             # plus any runtime libs, e.g. libvmi, etc.
           ];
@@ -52,6 +53,7 @@
           shellHook = ''
             export PATH=$PATH:''${CARGO_HOME:-~/.cargo}/bin
             export PATH=$PATH:''${RUSTUP_HOME:-~/.rustup}/toolchains/$RUSTC_VERSION-x86_64-unknown-linux-gnu/bin/
+            export PYO3_PYTHON="${pkgs.python3}/bin/python3"
 
             # detect host triple (assumes rustc is available)
             host_target="$(${"RUSTC:-rustc"} -Vv | sed -n 's/^host: //p')"
