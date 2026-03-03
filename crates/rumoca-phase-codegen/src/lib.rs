@@ -58,8 +58,8 @@ mod codegen;
 mod errors;
 
 pub use codegen::{
-    render_flat_template_with_name, render_template, render_template_file,
-    render_template_with_name,
+    dae_template_json, render_flat_template_with_name, render_template, render_template_file,
+    render_template_with_dae_json, render_template_with_name,
 };
 pub use errors::CodegenError;
 

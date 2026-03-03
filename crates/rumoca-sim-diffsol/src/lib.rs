@@ -44,6 +44,16 @@ use rumoca_sim_core::projection_maps::{
     build_component_index_projection_map, build_function_output_projection_map,
 };
 
+/// Prepare a DAE for simulation/codegen using the same structural passes that
+/// the diffsol runtime uses before integration.
+///
+/// This is useful for template backends (e.g. JS residual runtime) that want
+/// to consume a structurally preprocessed DAE instead of raw compile output.
+pub fn prepare_dae_for_template_codegen(dae: &Dae, scalarize: bool) -> Result<Dae, SimError> {
+    let budget = TimeoutBudget::new(None);
+    prepare_dae_for_template_codegen_only(dae, scalarize, &budget)
+}
+
 fn validate_simulation_function_support(dae: &Dae) -> Result<(), SimError> {
     rumoca_sim_core::function_validation::validate_simulation_function_support(dae).map_err(|err| {
         SimError::UnsupportedFunction {

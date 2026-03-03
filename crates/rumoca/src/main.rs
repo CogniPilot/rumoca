@@ -128,6 +128,10 @@ struct CompileArgs {
     /// Template file for custom export (advanced)
     #[arg(short, long)]
     template_file: Option<String>,
+
+    /// Render templates from a structurally prepared DAE instead of raw compile output
+    #[arg(long, requires = "template_file")]
+    template_prepared: bool,
 }
 
 #[derive(Args, Debug)]
@@ -337,7 +341,11 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
     if let Some(template_file) = args.template_file {
-        print!("{}", result.render_template(&template_file)?);
+        if args.template_prepared {
+            print!("{}", result.render_template_prepared(&template_file, true)?);
+        } else {
+            print!("{}", result.render_template(&template_file)?);
+        }
         return Ok(());
     }
     print_summary(&model, &result);
@@ -770,7 +778,8 @@ fn run_simulation(
 
 fn completion_script(shell: CompletionShell) -> String {
     let top = "compile simulate check completions --help -h --version -V";
-    let compile_opts = "--model --library --json --template-file --verbose --debug";
+    let compile_opts =
+        "--model --library --json --template-file --template-prepared --verbose --debug";
     let simulate_opts = "--model --library --t-end --dt --solver --output --verbose --debug";
     let check_opts = "--model --library --verbose --debug";
     let completion_opts = "bash zsh fish powershell";
@@ -824,7 +833,7 @@ compdef _rumoca rumoca
             "complete -c rumoca -n '__fish_use_subcommand' -a 'simulate' -d 'Simulate a Modelica file'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --library --json --template-file --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --library --json --template-file --template-prepared --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --library --t-end --output --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --library --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'",
