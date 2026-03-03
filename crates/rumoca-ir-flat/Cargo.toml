@@ -1,0 +1,16 @@
+[package]
+name = "rumoca-ir-flat"
+description = "Flat Model IR for the Rumoca compiler (MLS §5.6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

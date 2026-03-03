@@ -1,0 +1,32 @@
+[package]
+name = "rumoca-bind-wasm"
+description = "WebAssembly bindings for Rumoca Modelica compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rumoca-session = { workspace = true }
+rumoca-phase-parse = { workspace = true }
+rumoca-phase-codegen = { workspace = true }
+rumoca-sim-diffsol = { workspace = true }
+rumoca-tool-lint = { workspace = true }
+rumoca-tool-lsp = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+lsp-types = { workspace = true }
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = ["console_error_panic_hook"]
+
+[lints]
+workspace = true

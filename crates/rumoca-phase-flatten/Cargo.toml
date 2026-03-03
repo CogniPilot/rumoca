@@ -1,0 +1,25 @@
+[package]
+name = "rumoca-phase-flatten"
+description = "Flatten phase for the Rumoca Modelica compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+tracing = ["dep:tracing"]
+
+[dependencies]
+rumoca-core = { path = "../rumoca-core" }
+rumoca-eval-const = { path = "../rumoca-eval-const" }
+rumoca-ir-ast = { path = "../rumoca-ir-ast" }
+rumoca-ir-flat = { path = "../rumoca-ir-flat" }
+indexmap = "2.2"
+rustc-hash = { workspace = true }
+thiserror = "2.0"
+miette = "7.4"
+tracing = { workspace = true, optional = true }
+
+[lints]
+workspace = true

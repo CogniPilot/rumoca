@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-phase-instantiate"
+description = "Instantiation phase for the Rumoca compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+rustc-hash = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+
+[lints]
+workspace = true

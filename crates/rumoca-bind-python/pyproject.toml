@@ -1,0 +1,34 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rumoca"
+version = "0.8.0"
+description = "Python interface for the Rumoca Modelica compiler"
+license = {text = "Apache-2.0"}
+authors = [{name = "Rumoca Contributors"}]
+keywords = ["modelica", "compiler", "simulation", "dae", "code-generation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Compilers",
+]
+requires-python = ">=3.10"
+
+[project.urls]
+Homepage = "https://github.com/cognipilot/rumoca"
+Repository = "https://github.com/cognipilot/rumoca"
+Issues = "https://github.com/cognipilot/rumoca/issues"
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+module-name = "rumoca"

@@ -1,0 +1,66 @@
+[package]
+name = "rumoca"
+description = "Modelica compiler written in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["modelica", "compiler", "dae", "simulation"]
+categories = ["compilers", "science", "simulation"]
+default-run = "rumoca"
+
+[[bin]]
+name = "rumoca"
+path = "src/main.rs"
+
+[features]
+default = []
+tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
+
+[dependencies]
+# Internal crates - rumoca-session wraps all compilation phases
+rumoca-core = { workspace = true }
+rumoca-session = { workspace = true }
+rumoca-sim-diffsol = { workspace = true }
+rumoca-phase-codegen = { workspace = true }
+rumoca-tool-fmt = { workspace = true }
+rumoca-tool-lint = { workspace = true }
+
+# External dependencies
+anyhow = { workspace = true }
+mimalloc = { workspace = true }
+clap = { workspace = true }
+miette = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+mimalloc = { workspace = true }
+# MSL test dependencies
+flate2 = "1.0"
+tar = "0.4"
+walkdir = "2.5"
+ureq = "2.9"
+dirs = "5.0"
+serde = { version = "1.0", features = ["derive"] }
+rayon = { workspace = true }
+ntest = "0.9"  # Test timeouts
+# Direct phase access for debugging/analysis tests
+rumoca-ir-ast = { workspace = true }
+rumoca-ir-flat = { workspace = true }
+rumoca-phase-flatten = { workspace = true }
+rumoca-phase-instantiate = { workspace = true }
+rumoca-phase-parse = { workspace = true }
+rumoca-phase-resolve = { workspace = true }
+rumoca-phase-codegen = { workspace = true }
+rumoca-phase-dae = { workspace = true }
+rumoca-phase-structural = { workspace = true }
+rumoca-phase-typecheck = { workspace = true }
+
+[lints]
+workspace = true
