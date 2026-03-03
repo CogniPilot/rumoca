@@ -1,0 +1,264 @@
+{# ===========================
+   Helper macros (top only)
+   =========================== #}
+{# return a best-effort variable name #}
+{%- macro name_of(c) -%}
+    {%- if 'name' in c -%}
+        {{- c.name -}}
+    {%- elif 'ident' in c and 'text' in c.ident -%}
+        {{- c.ident.text -}}
+    {%- elif 'ComponentReference' in c -%}
+        {{- render_component_reference(c.ComponentReference) -}}
+    {%- elif 'comp' in c and 'parts' in c.comp -%}
+        {{- render_component_reference(c.comp) -}}
+    {%- else -%}
+        {{- "" -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{# return a start expression or 0.0 if missing #}
+{%- macro start_of(c) -%}
+    {%- if 'start' in c and c.start is defined -%}
+        {{- render_expression(c.start) -}}
+    {%- else -%}
+        0.0
+    {%- endif -%}
+{%- endmacro -%}
+
+
+{%- macro render_expression(expr) -%}
+    {%- if "Terminal" in expr -%}
+        {{- render_terminal(expr.Terminal) -}}
+    {%- elif "FunctionCall" in expr -%}
+        {{- render_function(expr.FunctionCall) -}}
+    {%- elif "ComponentReference" in expr -%}
+        {{- render_component_reference(expr.ComponentReference) -}}
+    {%- elif "Binary" in expr -%}
+        {{- render_binary(expr.Binary) -}}
+    {%- elif "Unary" in expr -%}
+        {{- render_unary(expr.Unary) -}}
+    {%- else -%}
+        UNHANDLED EXPRESSION: {{ expr | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_zero_crossing(expr) -%}
+    {%- if "Binary" in expr and ("Lt" in expr.Binary.op or "Gt" in expr.Binary.op) -%}
+        {{- render_expression(expr.Binary.lhs) -}} - {{- render_expression(expr.Binary.rhs) -}}
+    {%- else -%}
+        UNHANDLED ZERO CROSSING: {{ expr | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_simple_equation(eq, delimitter) -%}
+    {{- render_expression(eq.Simple.lhs) -}} {{- delimitter -}} {{- render_expression(eq.Simple.rhs) -}}
+{%- endmacro -%}
+
+{%- macro render_statement(stmt) -%}
+    {%- if "Assignment" in stmt -%}
+        {{- render_component_reference(stmt.Assignment.comp) -}} = {{- render_expression(stmt.Assignment.value) -}}
+    {%- else -%}
+        UNHANDLED RESET STATEMENT: {{ stmt | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_parts(stmt, delimitter) -%}
+    {%- if "Assignment" in stmt -%}
+        "{{- render_component_reference(stmt.Assignment.comp) -}}" {{- delimitter -}} {{- render_expression(stmt.Assignment.value) -}}
+    {%- else -%}
+        UNHANDLED RESET PARTS: {{ stmt | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_terminal(term) -%}
+    {%- if term.terminal_type == "UnsignedInteger" or term.terminal_type == "UnsignedReal" -%}
+        {{ term.token.text | float }}
+    {%- elif term.terminal_type == "Bool" -%}
+        {{ "True" if term.token.text == "true" else "False" }}
+    {%- else -%}
+        UNHANDLED Terminal: {{ term | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_binary(expr) -%}
+    ( {{- render_expression(expr.lhs) -}} 
+      {%- if "And" in expr.op -%} and
+      {%- elif "Add" in expr.op -%} +
+      {%- elif "Sub" in expr.op -%} -
+      {%- elif "Mul" in expr.op -%} *
+      {%- elif "Div" in expr.op -%} /
+      {%- elif "Lt"  in expr.op -%} <
+      {%- elif "Gt"  in expr.op -%} >
+      {%- else -%} {{ " /* UNHANDLED OP */ " }}
+      {%- endif -%}
+      {{- render_expression(expr.rhs) -}} )
+{%- endmacro -%}
+
+{%- macro render_unary(expr) -%}
+    {%- if "Minus" in expr.op -%}-{% else -%}/* UNARY */{% endif -%} ( {{- render_expression(expr.rhs) -}} )
+{%- endmacro -%}
+
+{%- macro render_component_reference(comp) -%}
+    {%- for part in comp.parts -%}
+        {{ part.ident.text }}{% if not loop.last %}.{% endif %}
+    {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_function(func) -%}
+    {{ render_component_reference(func.comp) }}( {%- for arg in func.args -%}
+        {{- render_expression(arg) -}}{%- if not loop.last -%}, {% endif -%}
+    {%- endfor -%} )
+{%- endmacro -%}
+
+{%- macro render_dae_equation(eq, id) -%}
+    {%- if "Simple" in eq -%}
+        dae.eq({{ render_simple_equation(eq, ", ") }})
+    {%- elif "If" in eq -%}
+        if_state_{{id}} = dae.add('if_state_{{id}}', 'local', 'discrete', dict(start = -1))
+        if_builder_{{ id }} = {}
+        if_builder_else_{{ id }} = {}
+        condition_builder_{{ id }} = []
+        {%- for b in eq.If.cond_blocks -%}
+            {%- set cond = render_expression(b.cond) | string | trim -%}
+            condition_builder_{{ id }}.append([{{cond}}(), {{cond[1:]}}])
+            {%- for e in b.eqs -%}
+                {%- set state = render_expression(e.Simple.lhs) | string | trim -%}
+                {%- set value = render_expression(e.Simple.rhs) | string | trim -%}
+                if state not in if_builder_{{ id }}: if_builder_{{ id }}[state] = []
+                if_builder_{{ id }}[state].append(['{{cond}}', {{value}}])
+            {%- endfor -%}
+        {%- endfor -%}
+        {%- if "else_block" in eq.If -%}
+            {%- for e in eq.If.else_block -%}
+                {%- set state = render_expression(e.Simple.lhs) | string | trim -%}
+                {%- set value = render_expression(e.Simple.rhs) | string | trim -%}
+                if_builder_else_{{ id }}['{{state}}'] = {{ value }}
+            {%- endfor -%}
+            for key, value in if_builder_{{ id }}.items():
+                default_value = if_builder_else_{{ id }}.get(str(key))
+                if default_value is None:
+                    default_value = key
+                dae.eq(key, if_else_builder(if_state_{{id}}, value, default_value))
+            if_state_{{id}}_update = if_else_builder2(condition_builder_{{ id }}, terminal_state=-1)
+            dae.when(-ca.sin(2*ca.pi*time/dt) < 0, [dae.assign('if_state_{{id}}', if_state_{{id}}_update)])
+        {%- endif -%}
+    {%- else -%}
+        UNHANDLED EQUATION: {{ eq | pprint }}
+    {%- endif -%}
+{%- endmacro -%}
+
+{# ===========================
+   Main renderer
+   =========================== #}
+
+{%- macro render_dae(dae) -%}
+    {%- set vars_vects = ['u', 'p', 'c', 'cp', 'x', 'm', 'y', 'z'] -%}
+    {%- set vars_pre_vects = ['pre_x', 'pre_m', 'pre_z'] -%}
+# --------------------------------------------
+# Automatically generated by Rumoca
+# --------------------------------------------
+import casadi as ca
+import numpy as np
+sin = ca.sin; cos = ca.cos; tan = ca.tan
+
+class Model:
+    """
+    Flattened Modelica Model
+    """
+    def __init__(self, model_name):
+        # Create new dae
+        dae = ca.DaeBuilder(model_name)
+
+        # Time & dt (used in if-when clock)
+        time = dae.add('time', 'independent')
+        dt = 0.01
+
+        # -----------------------------
+        # Declare variables
+        # -----------------------------
+        {% for var in vars_vects %}
+        # ============================================
+        # Declare {{ var }}
+
+        {% if var == 'u' %}
+        {% for name, comp in dae[var] | items %}
+        {{ name }} = dae.add('{{ name }}', 'input', dict(start = {{ render_expression(comp.start) }}))
+        {% endfor %}
+        {% elif var == 'p' %}
+        {% for name, comp in dae[var] | items %}
+        {{ name }} = dae.add('{{ name }}', 'parameter', 'tunable', dict(start = {{ render_expression(comp.start) }}))
+        {% endfor %}
+        {% elif var != 'c' %}
+        {% for name, comp in dae[var] | items %}
+        {{ name }} = dae.add('{{ name }}', dict(start = {{ render_expression(comp.start) }}))
+        {% endfor %}
+        {% endif %}
+
+        {% endfor %}
+
+
+
+        {% for var in vars_pre_vects %}
+        # ============================================
+        # Declare {{ var }}
+
+        {% for name, comp in dae[var] | items %}
+        {{ name }} = dae.pre({{ name[4:] }})
+        {% endfor %}
+
+        {% endfor %}
+
+
+
+        # -----------------------------
+        # Derivative declarations
+        # ============================================
+        # Declare x_dot
+
+        {% for name, comp in dae.x_dot | items %}
+        {{ name }} = dae.der({{ name[4:] }})
+        {% endfor %}
+
+
+
+
+
+        # Helpers for if/when
+        def if_else_builder(s, builder, terminal_state):
+            st = terminal_state
+            for cond, val in reversed(builder):
+                st = ca.if_else(s == int(cond[1:]), val, st)
+            return st
+        def if_else_builder2(builder, terminal_state):
+            st = terminal_state
+            for cond, val in reversed(builder):
+                st = ca.if_else(cond, val, st)
+            return st
+
+        # -----------------------------
+        # Equations (fx)
+        # -----------------------------
+        {% for eq in dae.fx -%}
+        {{ render_dae_equation(eq, loop.index0) }}
+        {% endfor %}
+
+        dae.sort('w')
+        self.dae = dae
+
+    def display(self):
+        self.dae.disp(True)
+
+    def simulate(self, t0, tf, dt, x0=None, p0=None, f_u=None, max_events=100):
+        if p0 is None:
+            p0 = self.dae.start(self.dae.p())
+        if x0 is None:
+            x0 = self.dae.start(self.dae.x())
+        tgrid = np.arange(t0, tf, dt)
+        simopts = dict(transition=self.dae.transition(), verbose=False,
+                       event_tol=1e-12, max_events=100000, max_event_iter=2000)
+        sim = ca.integrator('sim', 'cvodes', self.dae.create(), 0, tgrid, simopts)
+        simres = sim(x0=x0, p=p0) if f_u is None else sim(x0=x0, p=p0, u=f_u)
+        return tgrid, simres
+{%- endmacro -%}
+
+{{ render_dae(dae) }}
