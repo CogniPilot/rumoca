@@ -1,0 +1,177 @@
+{#
+Base Modelica JSON Export Template
+Generates Base Modelica IR (MCP-0031) compliant JSON from Rumoca DAE
+#}
+{%- macro render_expression(expr) -%}
+    {%- if "Terminal" in expr -%}
+        {%- set term = expr.Terminal -%}
+        {%- if term.terminal_type == "IntegerLiteral" or term.terminal_type == "RealLiteral" -%}
+            {"op": "literal", "value": {{ term.token.text }}}
+        {%- elif term.terminal_type == "BooleanLiteral" -%}
+            {"op": "literal", "value": {{ term.token.text | lower }}}
+        {%- elif term.terminal_type == "StringLiteral" -%}
+            {"op": "literal", "value": {{ term.token.text }}}
+        {%- else -%}
+            {"op": "literal", "value": "{{ term.token.text }}"}
+        {%- endif -%}
+    {%- elif "ComponentReference" in expr -%}
+        {%- set compref = expr.ComponentReference -%}
+        {"op": "component_ref", "parts": [
+            {%- for part in compref.parts -%}
+            {"name": "{{ part.ident.text }}", "subscripts": []}{{ "," if not loop.last }}
+            {%- endfor -%}
+        ]}
+    {%- elif "Unary" in expr -%}
+        {%- set unary = expr.Unary -%}
+        {"op": "{%- if "Neg" in unary.op -%}neg{%- elif "Not" in unary.op -%}not{%- else -%}unknown_unary{%- endif -%}", "args": [{{ render_expression(unary.rhs) }}]}
+    {%- elif "Binary" in expr -%}
+        {%- set binary = expr.Binary -%}
+        {"op": "{%- if "Add" in binary.op -%}+{%- elif "Sub" in binary.op -%}-{%- elif "Mul" in binary.op -%}*{%- elif "Div" in binary.op -%}/{%- elif "Pow" in binary.op -%}^{%- elif "Less" in binary.op -%}<{%- elif "LessEq" in binary.op -%}<={%- elif "Greater" in binary.op -%}>{%- elif "GreaterEq" in binary.op -%}>={%- elif "Equals" in binary.op -%}=={%- elif "NotEquals" in binary.op -%}!={%- elif "And" in binary.op -%}and{%- elif "Or" in binary.op -%}or{%- else -%}unknown_binary{%- endif -%}", "args": [{{ render_expression(binary.lhs) }}, {{ render_expression(binary.rhs) }}]}
+    {%- elif "FunctionCall" in expr -%}
+        {%- set func = expr.FunctionCall -%}
+        {%- set func_name_parts = func.comp.parts | map(attribute="ident") | map(attribute="text") | list -%}
+        {"op": "{{ func_name_parts | join(".") }}", "args": [
+            {%- for arg in func.args -%}
+            {{ render_expression(arg) }}{{ "," if not loop.last }}
+            {%- endfor -%}
+        ]}
+    {%- elif "Array" in expr -%}
+        {"op": "array", "values": [
+            {%- for elem in expr.Array.elements -%}
+            {{ render_expression(elem) }}{{ "," if not loop.last }}
+            {%- endfor -%}
+        ]}
+    {%- elif "Range" in expr -%}
+        {%- set range = expr.Range -%}
+        {%- if range.step -%}
+        {"op": "range", "start": {{ render_expression(range.start) }}, "step": {{ render_expression(range.step) }}, "end": {{ render_expression(range.end) }}}
+        {%- else -%}
+        {"op": "range", "start": {{ render_expression(range.start) }}, "end": {{ render_expression(range.end) }}}
+        {%- endif -%}
+    {%- elif "Empty" in expr -%}
+        {"op": "literal", "value": 0}
+    {%- else -%}
+        {"op": "unknown", "debug": {{ expr | tojson }}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_equation(eq, index) -%}
+    {%- if "Simple" in eq -%}
+        {%- set simple = eq.Simple -%}
+        {
+            "eq_type": "simple",
+            "lhs": {{ render_expression(simple.lhs) }},
+            "rhs": {{ render_expression(simple.rhs) }},
+            "source_ref": "eq_{{ index }}"
+        }
+    {%- elif "When" in eq -%}
+        {
+            "eq_type": "when",
+            "branches": [
+                {%- for branch in eq.When -%}
+                {
+                    "condition": {{ render_expression(branch.condition) }},
+                    "equations": [
+                        {%- for when_eq in branch.equations -%}
+                        {{ render_equation(when_eq, index ~ "_" ~ loop.index) }}{{ "," if not loop.last }}
+                        {%- endfor -%}
+                    ]
+                }{{ "," if not loop.last }}
+                {%- endfor -%}
+            ],
+            "source_ref": "when_{{ index }}"
+        }
+    {%- elif "Empty" in eq -%}
+        {
+            "eq_type": "simple",
+            "lhs": {"op": "literal", "value": 0},
+            "rhs": {"op": "literal", "value": 0},
+            "comment": "Empty equation",
+            "source_ref": "empty_{{ index }}"
+        }
+    {%- else -%}
+        {
+            "eq_type": "unknown",
+            "debug": {{ eq | tojson }},
+            "source_ref": "unknown_{{ index }}"
+        }
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_component(name, comp, variability, causality) -%}
+{
+    "name": "{{ name }}",
+    "vartype": "{{ comp.type_name.name | map(attribute="text") | join(".") }}",
+    "variability": "{{ variability }}",
+    "causality": "{{ causality }}",
+    "shape": [],
+    "start": {{ render_expression(comp.start) }}
+    {%- if comp.description | length > 0 -%}
+    ,
+    "comment": {{ comp.description | map(attribute="text") | join(" ") | tojson }}
+    {%- endif -%}
+    ,
+    "source_ref": "var_{{ name | replace(".", "_") }}"
+}
+{%- endmacro -%}
+
+{
+  "ir_version": "base-0.1.0",
+  "base_modelica_version": "0.1",
+  "model_name": "GeneratedModel",
+
+  "constants": [
+    {%- for (name, comp) in dae.cp | items %}
+    {{ render_component(name, comp, "constant", "local") }}{{ "," if not loop.last }}
+    {%- endfor %}
+  ],
+
+  "parameters": [
+    {%- for (name, comp) in dae.p | items %}
+    {{ render_component(name, comp, "parameter", "local") }}{{ "," if not loop.last }}
+    {%- endfor %}
+  ],
+
+  "variables": [
+    {%- for (name, comp) in dae.x | items %}
+    {{ render_component(name, comp, "continuous", "local") }}{{ "," if not loop.last }}
+    {%- endfor %}
+    {%- if dae.x | length > 0 and dae.y | length > 0 %},{% endif %}
+    {%- for (name, comp) in dae.y | items %}
+    {{ render_component(name, comp, "continuous", "local") }}{{ "," if not loop.last }}
+    {%- endfor %}
+    {%- if (dae.x | length > 0 or dae.y | length > 0) and dae.u | length > 0 %},{% endif %}
+    {%- for (name, comp) in dae.u | items %}
+    {{ render_component(name, comp, "continuous", "input") }}{{ "," if not loop.last }}
+    {%- endfor %}
+    {%- if (dae.x | length > 0 or dae.y | length > 0 or dae.u | length > 0) and dae.z | length > 0 %},{% endif %}
+    {%- for (name, comp) in dae.z | items %}
+    {{ render_component(name, comp, "discrete", "local") }}{{ "," if not loop.last }}
+    {%- endfor %}
+  ],
+
+  "equations": [
+    {%- for eq in dae.fx %}
+    {{ render_equation(eq, loop.index) }}{{ "," if not loop.last }}
+    {%- endfor %}
+  ],
+
+  "initial_equations": [],
+
+  "algorithms": [],
+
+  "initial_algorithms": [],
+
+  "functions": [],
+
+  "source_info": {},
+
+  "metadata": {
+    "description": "Generated by Rumoca {{ dae.rumoca_version }}",
+    "generator": "rumoca",
+    "rumoca_version": "{{ dae.rumoca_version }}",
+    "git_version": "{{ dae.git_version }}",
+    "model_hash": "{{ dae.model_hash }}",
+    "base_modelica_compliance": "0.1"
+  }
+}
