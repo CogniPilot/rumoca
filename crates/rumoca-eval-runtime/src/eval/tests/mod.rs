@@ -14,6 +14,7 @@ type VarName = flat::VarName;
 mod complex_array_projection;
 mod pre_seed_regressions;
 mod shift_sample_value_form;
+mod table_ad_edges;
 mod vector_binary_ops;
 
 fn lit(v: f64) -> flat::Expression {
@@ -102,6 +103,13 @@ fn simple_table_expr() -> flat::Expression {
 
 fn columns_expr() -> flat::Expression {
     arr(vec![int_lit(2)], false)
+}
+
+fn simple_table_if_expr() -> flat::Expression {
+    flat::Expression::If {
+        branches: vec![(bool_lit(true), simple_table_expr())],
+        else_branch: Box::new(arr(vec![arr(vec![lit(0.0), lit(0.0)], false)], true)),
+    }
 }
 
 fn eval_table1d_dual(u: Dual, extrapolation: i64) -> Dual {
@@ -1251,6 +1259,20 @@ fn test_eval_clock_special_functions_are_finite() {
 }
 
 #[test]
+fn test_eval_interval_for_clocked_var_uses_env_clock_interval_metadata() {
+    let mut env = VarEnv::<f64>::new();
+    env.set("time", 0.0);
+    env.clock_intervals = std::sync::Arc::new(IndexMap::from([("pulse.simTime".to_string(), 0.1)]));
+
+    let interval_expr = fn_call("interval", vec![var("pulse.simTime")]);
+    let value = eval_expr::<f64>(&interval_expr, &env);
+    assert!(
+        (value - 0.1).abs() <= 1e-12,
+        "expected interval(pulse.simTime)=0.1, got {value}"
+    );
+}
+
+#[test]
 fn test_eval_subsample_counter_clock_uses_factor_resolution_ratio() {
     let mut env = VarEnv::<f64>::new();
     env.set("factor", 20.0);
@@ -1326,6 +1348,29 @@ fn test_eval_builtin_sample_start_interval_keeps_event_boolean_semantics() {
 
     env.set("time", 0.5);
     assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 1.0);
+}
+
+#[test]
+fn test_eval_builtin_sample_internal_three_arg_form_uses_start_and_interval() {
+    clear_pre_values();
+
+    let mut env = VarEnv::<f64>::new();
+    let sample_event_expr = flat::Expression::BuiltinCall {
+        function: flat::BuiltinFunction::Sample,
+        args: vec![lit(3.0), lit(0.5), lit(0.1)],
+    };
+
+    env.set("time", 0.0);
+    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 0.0);
+
+    env.set("time", 0.5);
+    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 1.0);
+
+    env.set("time", 0.6);
+    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 1.0);
+
+    env.set("time", 0.65);
+    assert_eq!(eval_expr::<f64>(&sample_event_expr, &env), 0.0);
 }
 
 #[test]
@@ -1666,6 +1711,60 @@ fn test_time_table_bounds_and_lookup() {
 }
 
 #[test]
+fn test_time_table_constructor_uses_if_matrix_start_fallback() {
+    let mut env = VarEnv::<f64>::new();
+    env.dims = Arc::new(IndexMap::from([("table_dyn".to_string(), vec![0, 2])]));
+    env.start_exprs = Arc::new(IndexMap::from([(
+        "table_dyn".to_string(),
+        simple_table_if_expr(),
+    )]));
+
+    let constructor = fn_call(
+        "ExternalCombiTimeTable",
+        vec![
+            lit(0.0),
+            lit(0.0),
+            var("table_dyn"),
+            lit(0.0), // startTime
+            columns_expr(),
+            int_lit(1), // LinearSegments
+            int_lit(1), // HoldLastPoint
+        ],
+    );
+    let table_id = eval_expr::<f64>(&constructor, &env);
+    assert!(table_id > 0.0);
+
+    env.set("table_id", table_id);
+    let y = eval_expr::<f64>(
+        &fn_call(
+            "getTimeTableValueNoDer",
+            vec![var("table_id"), int_lit(1), lit(1.0)],
+        ),
+        &env,
+    );
+    assert!((y - 12.0).abs() < 1e-12);
+}
+
+#[test]
+fn test_eval_array_values_handles_array_comprehension() {
+    let env = VarEnv::<f64>::new();
+    let expr = flat::Expression::ArrayComprehension {
+        expr: Box::new(var("i")),
+        indices: vec![flat::ComprehensionIndex {
+            name: "i".to_string(),
+            range: flat::Expression::Range {
+                start: Box::new(int_lit(1)),
+                step: None,
+                end: Box::new(int_lit(4)),
+            },
+        }],
+        filter: None,
+    };
+    let values = eval_array_values::<f64>(&expr, &env);
+    assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
 fn test_time_table_next_event_edges() {
     let mut env = VarEnv::<f64>::new();
     let constructor = fn_call(
@@ -1852,98 +1951,4 @@ fn test_table1d_default_columns_skip_abscissa() {
         &env,
     );
     assert!((y - 12.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_table1d_periodic_extrapolation_preserves_ad_slope() {
-    let y = eval_table1d_dual(Dual::new(3.0, 1.0), 3); // wraps to 1.0 with span=2.0
-    assert!((y.re - 12.0).abs() < 1e-12);
-    assert!((y.du - 2.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_table1d_linear_ad_at_table_ends() {
-    let y_min = eval_table1d_dual(Dual::new(0.0, 1.0), 1);
-    assert!((y_min.re - 10.0).abs() < 1e-12);
-    assert!((y_min.du - 2.0).abs() < 1e-12);
-
-    let y_max = eval_table1d_dual(Dual::new(2.0, 1.0), 1);
-    assert!((y_max.re - 14.0).abs() < 1e-12);
-    assert!((y_max.du - 2.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_table1d_last_two_points_extrapolation_at_ends() {
-    let y_hi = eval_table1d_dual(Dual::new(2.5, 1.0), 2);
-    assert!((y_hi.re - 15.0).abs() < 1e-12);
-    assert!((y_hi.du - 2.0).abs() < 1e-12);
-
-    let y_lo = eval_table1d_dual(Dual::new(-0.5, 1.0), 2);
-    assert!((y_lo.re - 9.0).abs() < 1e-12);
-    assert!((y_lo.du - 2.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_timetable_linear_ad_at_zero_and_end() {
-    let y0 = eval_timetable_dual(Dual::new(0.0, 1.0), 1);
-    assert!((y0.re - 10.0).abs() < 1e-12);
-    assert!((y0.du - 2.0).abs() < 1e-12);
-
-    let y_end = eval_timetable_dual(Dual::new(2.0, 1.0), 1);
-    assert!((y_end.re - 14.0).abs() < 1e-12);
-    assert!((y_end.du - 2.0).abs() < 1e-12);
-}
-
-#[test]
-fn test_builtin_ad_zero_edge_guards() {
-    let mut env = VarEnv::<Dual>::new();
-    env.set("x", Dual::new(0.0, 1.0));
-
-    let log_x = eval_expr::<Dual>(
-        &flat::Expression::BuiltinCall {
-            function: flat::BuiltinFunction::Log,
-            args: vec![var("x")],
-        },
-        &env,
-    );
-    assert!(log_x.re.is_infinite() && log_x.re.is_sign_negative());
-    assert!(log_x.du.is_finite());
-    assert!(log_x.du.abs() < 1e-12);
-
-    let sqrt_x = eval_expr::<Dual>(
-        &flat::Expression::BuiltinCall {
-            function: flat::BuiltinFunction::Sqrt,
-            args: vec![var("x")],
-        },
-        &env,
-    );
-    assert!(sqrt_x.re.abs() < 1e-12);
-    assert!(sqrt_x.du.abs() < 1e-12);
-}
-
-#[test]
-fn test_pow_and_division_ad_zero_edges() {
-    let mut env = VarEnv::<Dual>::new();
-    env.set("x", Dual::new(0.0, 1.0));
-
-    let x_pow_1 = eval_expr::<Dual>(
-        &binop(flat::OpBinary::Exp(Default::default()), var("x"), lit(1.0)),
-        &env,
-    );
-    assert!(x_pow_1.re.abs() < 1e-12);
-    assert!((x_pow_1.du - 1.0).abs() < 1e-12);
-
-    let x_pow_2 = eval_expr::<Dual>(
-        &binop(flat::OpBinary::Exp(Default::default()), var("x"), lit(2.0)),
-        &env,
-    );
-    assert!(x_pow_2.re.abs() < 1e-12);
-    assert!(x_pow_2.du.abs() < 1e-12);
-
-    let zero_over_zero = eval_expr::<Dual>(
-        &binop(flat::OpBinary::Div(Default::default()), var("x"), var("x")),
-        &env,
-    );
-    assert!(zero_over_zero.re.abs() < 1e-12);
-    assert!(zero_over_zero.du.abs() < 1e-12);
 }

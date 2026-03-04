@@ -16,8 +16,10 @@ use diffsol::{
 use rumoca_ir_dae as dae;
 
 type Dae = dae::Dae;
+type BuiltinFunction = dae::BuiltinFunction;
 type Expression = dae::Expression;
 type Literal = dae::Literal;
+type Subscript = dae::Subscript;
 type VarName = dae::VarName;
 type Variable = dae::Variable;
 
@@ -201,6 +203,8 @@ struct OutputBuffers {
     times: Vec<f64>,
     data: Vec<Vec<f64>>,
     n_total: usize,
+    runtime_names: Vec<String>,
+    runtime_data: Vec<Vec<f64>>,
 }
 
 impl OutputBuffers {
@@ -209,6 +213,8 @@ impl OutputBuffers {
             times: Vec::with_capacity(capacity),
             data: (0..n_total).map(|_| Vec::with_capacity(capacity)).collect(),
             n_total,
+            runtime_names: Vec::new(),
+            runtime_data: Vec::new(),
         }
     }
 
@@ -217,6 +223,46 @@ impl OutputBuffers {
         for (var_idx, val) in y[..self.n_total].iter().enumerate() {
             self.data[var_idx].push(*val);
         }
+    }
+
+    fn set_runtime_channels(&mut self, names: Vec<String>, capacity: usize) {
+        self.runtime_names = names;
+        self.runtime_data = self
+            .runtime_names
+            .iter()
+            .map(|_| Vec::with_capacity(capacity))
+            .collect();
+    }
+
+    fn record_runtime_values(&mut self, values: &[f64]) {
+        if self.runtime_data.is_empty() {
+            return;
+        }
+        for (idx, series) in self.runtime_data.iter_mut().enumerate() {
+            series.push(values.get(idx).copied().unwrap_or(0.0));
+        }
+    }
+
+    fn overwrite_runtime_values_at_time(&mut self, t: f64, values: &[f64]) -> bool {
+        if self.runtime_data.is_empty() || self.times.is_empty() {
+            return false;
+        }
+        let tol = 1.0e-9 * (1.0 + t.abs());
+        let Some((row_idx, _)) = self
+            .times
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, sample_t)| (**sample_t - t).abs() <= tol)
+        else {
+            return false;
+        };
+        for (idx, series) in self.runtime_data.iter_mut().enumerate() {
+            if let Some(slot) = series.get_mut(row_idx) {
+                *slot = values.get(idx).copied().unwrap_or(0.0);
+            }
+        }
+        true
     }
 }
 
@@ -254,25 +300,116 @@ fn build_visible_result_names(dae: &Dae) -> Vec<String> {
     names
 }
 
-fn collect_missing_discrete_channel_names(dae: &Dae, existing_names: &[String]) -> Vec<String> {
-    let existing: HashSet<&str> = existing_names.iter().map(String::as_str).collect();
+fn collect_discrete_channel_names(dae: &Dae) -> Vec<String> {
     scalar_channel_names_from_vars(dae.discrete_reals.iter().chain(dae.discrete_valued.iter()))
-        .into_iter()
-        .filter(|name| !existing.contains(name.as_str()))
-        .collect()
 }
 
-fn append_discrete_runtime_channels(
+fn expr_uses_event_dependent_discrete(expr: &Expression) -> bool {
+    match expr {
+        Expression::BuiltinCall { function, args } => {
+            matches!(
+                function,
+                BuiltinFunction::Pre
+                    | BuiltinFunction::Sample
+                    | BuiltinFunction::Edge
+                    | BuiltinFunction::Change
+                    | BuiltinFunction::Reinit
+                    | BuiltinFunction::Initial
+            ) || args.iter().any(expr_uses_event_dependent_discrete)
+        }
+        Expression::FunctionCall { name, args, .. } => {
+            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+            matches!(
+                short,
+                "previous"
+                    | "hold"
+                    | "Clock"
+                    | "subSample"
+                    | "superSample"
+                    | "shiftSample"
+                    | "backSample"
+                    | "firstTick"
+            ) || args.iter().any(expr_uses_event_dependent_discrete)
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_uses_event_dependent_discrete(lhs) || expr_uses_event_dependent_discrete(rhs)
+        }
+        Expression::Unary { rhs, .. } => expr_uses_event_dependent_discrete(rhs),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expr_uses_event_dependent_discrete(cond)
+                    || expr_uses_event_dependent_discrete(value)
+            }) || expr_uses_event_dependent_discrete(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            elements.iter().any(expr_uses_event_dependent_discrete)
+        }
+        Expression::Range { start, step, end } => {
+            expr_uses_event_dependent_discrete(start)
+                || step
+                    .as_ref()
+                    .is_some_and(|value| expr_uses_event_dependent_discrete(value))
+                || expr_uses_event_dependent_discrete(end)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_uses_event_dependent_discrete(expr)
+                || indices
+                    .iter()
+                    .any(|index| expr_uses_event_dependent_discrete(&index.range))
+                || filter
+                    .as_ref()
+                    .is_some_and(|value| expr_uses_event_dependent_discrete(value))
+        }
+        Expression::Index { base, subscripts } => {
+            expr_uses_event_dependent_discrete(base)
+                || subscripts.iter().any(|sub| match sub {
+                    Subscript::Expr(value) => expr_uses_event_dependent_discrete(value),
+                    _ => false,
+                })
+        }
+        Expression::FieldAccess { base, .. } => expr_uses_event_dependent_discrete(base),
+        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
+    }
+}
+
+fn collect_recomputable_discrete_targets(dae: &Dae) -> HashSet<String> {
+    let mut targets = HashSet::new();
+    for eq in dae.f_z.iter().chain(dae.f_m.iter()) {
+        let Some(lhs) = eq.lhs.as_ref() else {
+            continue;
+        };
+        if expr_uses_event_dependent_discrete(&eq.rhs) {
+            continue;
+        }
+        targets.insert(lhs.as_str().to_string());
+    }
+    targets
+}
+
+fn evaluate_runtime_discrete_channels(
     dae: &Dae,
     n_x: usize,
     param_values: &[f64],
     times: &[f64],
     solver_names: &[String],
     solver_data: &[Vec<f64>],
-    existing_names: &[String],
 ) -> (Vec<String>, Vec<Vec<f64>>) {
-    let extra_names = collect_missing_discrete_channel_names(dae, existing_names);
-    if extra_names.is_empty() || times.is_empty() {
+    let recomputable_targets = collect_recomputable_discrete_targets(dae);
+    let discrete_names: Vec<String> = collect_discrete_channel_names(dae)
+        .into_iter()
+        .filter(|name| {
+            let base = rumoca_ir_dae::component_base_name(name).unwrap_or_else(|| name.to_string());
+            recomputable_targets.contains(&base)
+        })
+        .collect();
+    if discrete_names.is_empty() || times.is_empty() {
         return (Vec::new(), Vec::new());
     }
 
@@ -281,8 +418,8 @@ fn append_discrete_runtime_channels(
         .enumerate()
         .map(|(idx, name)| (name.as_str(), idx))
         .collect();
-    let solver_len = solver_names.len();
-    let mut discrete_data: Vec<Vec<f64>> = extra_names
+    let solver_len = solver_data.len().min(solver_names.len());
+    let mut discrete_data: Vec<Vec<f64>> = discrete_names
         .iter()
         .map(|_| Vec::with_capacity(times.len()))
         .collect();
@@ -304,7 +441,7 @@ fn append_discrete_runtime_channels(
                 t_eval,
             },
         );
-        for (channel_idx, name) in extra_names.iter().enumerate() {
+        for (channel_idx, name) in discrete_names.iter().enumerate() {
             let value = env
                 .vars
                 .get(name.as_str())
@@ -320,7 +457,36 @@ fn append_discrete_runtime_channels(
         eval::seed_pre_values_from_env(&env);
     }
 
-    (extra_names, discrete_data)
+    (discrete_names, discrete_data)
+}
+
+fn merge_runtime_discrete_channels(
+    final_names: &mut Vec<String>,
+    final_data: &mut Vec<Vec<f64>>,
+    discrete_names: Vec<String>,
+    discrete_data: Vec<Vec<f64>>,
+) {
+    if discrete_names.is_empty() {
+        return;
+    }
+    let mut existing_idx: HashMap<String, usize> = final_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect();
+
+    for (name, series) in discrete_names.into_iter().zip(discrete_data) {
+        if let Some(idx) = existing_idx.get(&name).copied() {
+            if idx < final_data.len() {
+                final_data[idx] = series;
+            }
+            continue;
+        }
+        let next = final_names.len();
+        existing_idx.insert(name.clone(), next);
+        final_names.push(name);
+        final_data.push(series);
+    }
 }
 
 fn lookup_variable_exact<'a>(dae: &'a Dae, name: &str) -> Option<VariableSource<'a>> {
@@ -1095,6 +1261,71 @@ where
     }
 }
 
+fn finalize_dynamic_result(
+    dae: &Dae,
+    elim: &eliminate::EliminationResult,
+    param_values: &[f64],
+    n_x: usize,
+    n_total: usize,
+    buf: OutputBuffers,
+) -> SimResult {
+    let mut names = build_output_names(dae);
+    names.truncate(n_total);
+    let solver_names = names.clone();
+    let OutputBuffers {
+        times: output_times,
+        data: output_data,
+        n_total: _,
+        runtime_names,
+        runtime_data,
+    } = buf;
+    let (mut final_names, mut final_data, final_n_states) = (names, output_data, n_x);
+    let runtime_capture_complete =
+        !runtime_names.is_empty() && runtime_data.iter().all(|s| s.len() == output_times.len());
+    if runtime_capture_complete {
+        merge_runtime_discrete_channels(
+            &mut final_names,
+            &mut final_data,
+            runtime_names,
+            runtime_data,
+        );
+    }
+    let (discrete_names, discrete_data) = evaluate_runtime_discrete_channels(
+        dae,
+        n_x,
+        param_values,
+        &output_times,
+        &solver_names,
+        &final_data,
+    );
+    merge_runtime_discrete_channels(
+        &mut final_names,
+        &mut final_data,
+        discrete_names,
+        discrete_data,
+    );
+    if !elim.substitutions.is_empty() {
+        let (extra_names, extra_data) = rumoca_sim_core::reconstruct::reconstruct_eliminated(
+            elim,
+            dae,
+            param_values,
+            &output_times,
+            &final_names,
+            &final_data,
+        );
+        final_names.extend(extra_names);
+        final_data.extend(extra_data);
+    }
+    let variable_meta = build_variable_meta(dae, &final_names, final_n_states);
+    SimResult {
+        times: output_times,
+        names: final_names,
+        data: final_data,
+        n_states: final_n_states,
+        variable_meta,
+    }
+}
+
 pub fn simulate(dae: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
     eval::clear_pre_values();
     let budget = TimeoutBudget::new(opts.max_wall_seconds);
@@ -1143,53 +1374,14 @@ pub fn simulate(dae: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
             trace_timer_elapsed_seconds(sim_start)
         );
     }
-
-    let mut names = build_output_names(&dae);
-    names.truncate(n_total);
-    let solver_names = names.clone();
-
-    let (mut final_names, mut final_data, mut final_n_states) = (names, buf.data, n_x);
-    if has_dummy
-        && let Some(dummy_idx) = final_names.iter().position(|name| name == DUMMY_STATE_NAME)
-    {
-        final_names.remove(dummy_idx);
-        if dummy_idx < final_data.len() {
-            final_data.remove(dummy_idx);
-        }
-        final_n_states = final_n_states.saturating_sub(1);
-    }
-    let (discrete_names, discrete_data) = append_discrete_runtime_channels(
+    Ok(finalize_dynamic_result(
         &dae,
-        n_x,
+        &elim,
         &param_values,
-        &buf.times,
-        &solver_names,
-        &final_data,
-        &final_names,
-    );
-    final_names.extend(discrete_names);
-    final_data.extend(discrete_data);
-
-    if !elim.substitutions.is_empty() {
-        let (extra_names, extra_data) = rumoca_sim_core::reconstruct::reconstruct_eliminated(
-            &elim,
-            &dae,
-            &param_values,
-            &buf.times,
-            &final_names,
-            &final_data,
-        );
-        final_names.extend(extra_names);
-        final_data.extend(extra_data);
-    }
-    let variable_meta = build_variable_meta(&dae, &final_names, final_n_states);
-    Ok(SimResult {
-        times: buf.times,
-        names: final_names,
-        data: final_data,
-        n_states: final_n_states,
-        variable_meta,
-    })
+        n_x,
+        n_total,
+        buf,
+    ))
 }
 
 #[cfg(test)]

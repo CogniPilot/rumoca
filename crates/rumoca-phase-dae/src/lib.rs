@@ -1696,7 +1696,7 @@ fn get_output_in_input_output_connection(
     eq: &rumoca_ir_flat::Equation,
     dae: &Dae,
 ) -> Option<VarName> {
-    equation_conversion::get_component_alias_connection_side(eq, dae)
+    equation_conversion::get_component_alias_connection_side(eq, dae).map(|(name, _)| name)
 }
 
 fn classify_equations(dae: &mut Dae, flat: &Model, prefix_counts: &FxHashMap<String, usize>) {

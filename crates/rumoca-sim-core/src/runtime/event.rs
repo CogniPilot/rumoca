@@ -2,9 +2,20 @@ use rumoca_eval_runtime::eval::{VarEnv, build_env};
 use rumoca_ir_dae as dae;
 
 fn carry_discrete_values_from_env(dae: &dae::Dae, env: &mut VarEnv<f64>, prev: &VarEnv<f64>) {
-    for name in dae.discrete_reals.keys().chain(dae.discrete_valued.keys()) {
-        if let Some(value) = prev.vars.get(name.as_str()).copied() {
-            env.set(name.as_str(), value);
+    for (name, var) in dae.discrete_reals.iter().chain(dae.discrete_valued.iter()) {
+        let base = name.as_str();
+        if let Some(value) = prev.vars.get(base).copied() {
+            env.set(base, value);
+        }
+        let size = var.size();
+        if size <= 1 {
+            continue;
+        }
+        for idx in 1..=size {
+            let scalar_name = format!("{base}[{idx}]");
+            if let Some(value) = prev.vars.get(scalar_name.as_str()).copied() {
+                env.set(scalar_name.as_str(), value);
+            }
         }
     }
 }
@@ -87,6 +98,7 @@ where
         }
 
         let prev_env = env;
+        // Keep pre(...) fixed to the event left-limit across settle passes.
         env = build_env(dae, y, p, t_eval);
         carry_discrete_values_from_env(dae, &mut env, &prev_env);
     }
@@ -100,6 +112,16 @@ pub fn settle_runtime_event_updates_default(input: EventSettleInput<'_>) -> VarE
         crate::runtime::assignment::propagate_runtime_direct_assignments_from_env,
         crate::runtime::alias::propagate_runtime_alias_components_from_env,
         crate::runtime::discrete::apply_discrete_partition_updates,
+        crate::runtime::layout::sync_solver_values_from_env,
+    )
+}
+
+pub fn settle_runtime_sample_updates_default(input: EventSettleInput<'_>) -> VarEnv<f64> {
+    settle_runtime_event_updates(
+        input,
+        crate::runtime::assignment::propagate_runtime_direct_assignments_from_env,
+        crate::runtime::alias::propagate_runtime_alias_components_from_env,
+        |_dae, _env| false,
         crate::runtime::layout::sync_solver_values_from_env,
     )
 }
@@ -186,6 +208,49 @@ mod tests {
     }
 
     #[test]
+    fn settle_runtime_event_updates_preserves_discrete_array_values_across_rebuilds() {
+        let mut dae = dae::Dae::default();
+        let mut z = dae::Variable::new(dae::VarName::new("z"));
+        z.dims = vec![2];
+        dae.discrete_valued.insert(dae::VarName::new("z"), z);
+        let mut y = vec![0.0];
+        let p = vec![];
+        let mut pass = 0usize;
+        let mut preserved_on_second_pass = false;
+
+        let env = settle_runtime_event_updates(
+            EventSettleInput {
+                dae: &dae,
+                y: &mut y,
+                p: &p,
+                n_x: 0,
+                t_eval: 0.0,
+            },
+            |_dae, _y, _n_x, env| {
+                pass += 1;
+                if pass == 1 {
+                    env.set("z[1]", 3.0);
+                    env.set("z[2]", -2.0);
+                    return 1;
+                }
+                if env.vars.get("z[1]").copied().unwrap_or(0.0) == 3.0
+                    && env.vars.get("z[2]").copied().unwrap_or(0.0) == -2.0
+                {
+                    preserved_on_second_pass = true;
+                }
+                0
+            },
+            |_dae, _y, _n_x, _env| 0,
+            |_dae, _env| false,
+            |_dae, _y, _env| 0,
+        );
+
+        assert!(preserved_on_second_pass);
+        assert_eq!(env.vars.get("z[1]").copied().unwrap_or(0.0), 3.0);
+        assert_eq!(env.vars.get("z[2]").copied().unwrap_or(0.0), -2.0);
+    }
+
+    #[test]
     fn settle_runtime_event_updates_applies_discrete_partition_across_passes() {
         let mut dae = dae::Dae::default();
         dae.discrete_reals.insert(
@@ -229,6 +294,56 @@ mod tests {
             "discrete partition should run on each settle pass while converging"
         );
         assert_eq!(env.vars.get("z").copied().unwrap_or(0.0), 42.0);
+    }
+
+    #[test]
+    fn settle_runtime_event_updates_keeps_pre_values_fixed_across_passes() {
+        let mut dae = dae::Dae::default();
+        dae.discrete_valued.insert(
+            dae::VarName::new("u"),
+            dae::Variable::new(dae::VarName::new("u")),
+        );
+        dae.discrete_valued.insert(
+            dae::VarName::new("y"),
+            dae::Variable::new(dae::VarName::new("y")),
+        );
+
+        rumoca_eval_runtime::eval::clear_pre_values();
+        rumoca_eval_runtime::eval::set_pre_value("u", 0.0);
+
+        let mut y = vec![];
+        let p = vec![];
+        let mut pass = 0usize;
+
+        let env = settle_runtime_event_updates(
+            EventSettleInput {
+                dae: &dae,
+                y: &mut y,
+                p: &p,
+                n_x: 0,
+                t_eval: 0.0,
+            },
+            |_dae, _y, _n_x, env| {
+                pass += 1;
+                let old = env.vars.get("u").copied().unwrap_or(0.0);
+                env.set("u", 1.0);
+                if (old - 1.0).abs() > 1.0e-12 { 1 } else { 0 }
+            },
+            |_dae, _y, _n_x, _env| 0,
+            |_dae, env| {
+                let pre_u = rumoca_eval_runtime::eval::get_pre_value("u").unwrap_or(0.0);
+                let old = env.vars.get("y").copied().unwrap_or(0.0);
+                env.set("y", pre_u);
+                (old - pre_u).abs() > 1.0e-12
+            },
+            |_dae, _y, _env| 0,
+        );
+
+        assert!(pass >= 2, "event settle should iterate to a fixed point");
+        assert!(
+            (env.vars.get("y").copied().unwrap_or(0.0) - 0.0).abs() <= 1.0e-12,
+            "y should observe pre(u) from event left-limit"
+        );
     }
 
     #[test]

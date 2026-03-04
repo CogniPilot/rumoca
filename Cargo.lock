@@ -2774,6 +2774,7 @@ name = "rumoca-bind-python"
 version = "0.8.0"
 dependencies = [
  "pyo3",
+ "pyo3-build-config",
  "rumoca-phase-codegen",
  "rumoca-phase-parse",
  "rumoca-session",
@@ -3008,6 +3009,7 @@ dependencies = [
  "miette",
  "rayon",
  "rumoca-core",
+ "rumoca-eval-runtime",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",

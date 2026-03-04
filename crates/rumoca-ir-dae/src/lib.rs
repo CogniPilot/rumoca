@@ -203,6 +203,13 @@ pub struct Dae {
     /// Lowered periodic clock schedules.
     /// This is canonical runtime metadata (always present in DAE schema).
     pub clock_schedules: Vec<ClockSchedule>,
+    /// Per-variable effective clock interval (seconds) for clocked variables.
+    ///
+    /// Keys use canonical flattened variable names (e.g. `pulse.simTime`).
+    /// This enables spec-compliant evaluation of `interval(v)` where `v` is a
+    /// clocked variable and the source clock is implicit.
+    #[serde(default)]
+    pub clock_intervals: IndexMap<String, f64>,
 
     /// Initial equations.
     pub initial_equations: Vec<Equation>,
@@ -506,9 +513,17 @@ impl Dae {
     fn count_f_x_scalars_with_continuous_unknowns(&self) -> usize {
         let continuous_unknowns = self.collect_continuous_unknown_names();
         let input_names = self.collect_input_names();
+        let component_defined_targets = self.collect_component_defined_targets_for_balance();
         self.f_x
             .iter()
-            .filter(|eq| self.equation_counts_for_balance(eq, &continuous_unknowns, &input_names))
+            .filter(|eq| {
+                self.equation_counts_for_balance(
+                    eq,
+                    &continuous_unknowns,
+                    &input_names,
+                    &component_defined_targets,
+                )
+            })
             .map(|eq| eq.scalar_count)
             .sum()
     }
@@ -518,9 +533,24 @@ impl Dae {
         eq: &Equation,
         continuous_unknowns: &std::collections::HashSet<VarName>,
         input_names: &std::collections::HashSet<VarName>,
+        component_defined_targets: &std::collections::HashSet<VarName>,
     ) -> bool {
+        if is_connection_origin(eq.origin.as_str())
+            && self.is_redundant_connection_alias(
+                eq,
+                continuous_unknowns,
+                component_defined_targets,
+            )
+        {
+            return false;
+        }
         if self.equation_references_continuous_unknown(eq, continuous_unknowns) {
             return true;
+        }
+        // Connection aliases that do not constrain any continuous unknown should
+        // not contribute to local continuous balance.
+        if is_connection_origin(eq.origin.as_str()) {
+            return false;
         }
         // Binding equations for internal promoted inputs/discrete partitions can
         // be input-only aliases and should not inflate continuous balance.
@@ -530,6 +560,43 @@ impl Dae {
         // Preserve explicit user equations constraining interface inputs
         // (e.g. inverse-block style constraints `u1 = u2`).
         self.equation_references_input(eq, input_names)
+    }
+
+    fn is_redundant_connection_alias(
+        &self,
+        eq: &Equation,
+        continuous_unknowns: &std::collections::HashSet<VarName>,
+        component_defined_targets: &std::collections::HashSet<VarName>,
+    ) -> bool {
+        let names = runtime_assignment_target_names(&eq.rhs);
+        if names.len() != 2 {
+            return false;
+        }
+        let lhs = names[0];
+        let rhs = names[1];
+
+        let lhs_component_defined = self.name_matches_set(lhs, component_defined_targets);
+        let rhs_component_defined = self.name_matches_set(rhs, component_defined_targets);
+        let lhs_is_continuous_unknown =
+            self.name_matches_continuous_unknown(lhs, continuous_unknowns);
+        let rhs_is_continuous_unknown =
+            self.name_matches_continuous_unknown(rhs, continuous_unknowns);
+
+        (lhs_component_defined && !rhs_is_continuous_unknown)
+            || (rhs_component_defined && !lhs_is_continuous_unknown)
+    }
+
+    fn collect_component_defined_targets_for_balance(&self) -> std::collections::HashSet<VarName> {
+        let mut targets = std::collections::HashSet::new();
+        for eq in &self.f_x {
+            if is_connection_origin(eq.origin.as_str()) {
+                continue;
+            }
+            if let Some(target) = runtime_assignment_target_name(&eq.rhs) {
+                targets.insert(target.clone());
+            }
+        }
+        targets
     }
 
     fn collect_continuous_unknown_names(&self) -> std::collections::HashSet<VarName> {
@@ -588,28 +655,7 @@ impl Dae {
         name: &VarName,
         continuous_unknowns: &std::collections::HashSet<VarName>,
     ) -> bool {
-        if continuous_unknowns.contains(name) {
-            return true;
-        }
-        if let Some(base_name) = component_base_name(name.as_str())
-            && base_name != name.as_str()
-        {
-            let base = VarName::new(base_name.clone());
-            if continuous_unknowns.contains(&base) {
-                return true;
-            }
-            let base_prefix = format!("{base_name}.");
-            if continuous_unknowns
-                .iter()
-                .any(|unknown| unknown.as_str().starts_with(&base_prefix))
-            {
-                return true;
-            }
-        }
-        let prefix = format!("{}.", name.as_str());
-        continuous_unknowns
-            .iter()
-            .any(|unknown| unknown.as_str().starts_with(&prefix))
+        self.name_matches_set(name, continuous_unknowns)
     }
 
     fn name_matches_input(
@@ -617,29 +663,37 @@ impl Dae {
         name: &VarName,
         inputs: &std::collections::HashSet<VarName>,
     ) -> bool {
-        if inputs.contains(name) {
+        self.name_matches_set(name, inputs)
+    }
+
+    fn name_matches_set(&self, name: &VarName, names: &std::collections::HashSet<VarName>) -> bool {
+        if names.contains(name) {
             return true;
         }
         if let Some(base_name) = component_base_name(name.as_str())
             && base_name != name.as_str()
         {
             let base = VarName::new(base_name.clone());
-            if inputs.contains(&base) {
+            if names.contains(&base) {
                 return true;
             }
             let base_prefix = format!("{base_name}.");
-            if inputs
+            if names
                 .iter()
-                .any(|input| input.as_str().starts_with(&base_prefix))
+                .any(|candidate| candidate.as_str().starts_with(&base_prefix))
             {
                 return true;
             }
         }
         let prefix = format!("{}.", name.as_str());
-        inputs
+        names
             .iter()
-            .any(|input| input.as_str().starts_with(&prefix))
+            .any(|candidate| candidate.as_str().starts_with(&prefix))
     }
+}
+
+fn is_connection_origin(origin: &str) -> bool {
+    origin.starts_with("connect(") || origin.starts_with("connection equation:")
 }
 
 fn insert_matching_runtime_targets<'a, I>(
@@ -1075,6 +1129,172 @@ mod tests {
             Span::DUMMY,
             "test",
         ));
+
+        assert_eq!(dae.balance(), 0);
+    }
+
+    #[test]
+    fn test_balance_ignores_connection_input_alias_without_continuous_unknowns() {
+        let mut dae = Dae::default();
+        dae.inputs.insert(
+            VarName::new("u"),
+            Variable {
+                name: VarName::new("u"),
+                ..Default::default()
+            },
+        );
+        dae.f_x.push(Equation {
+            lhs: None,
+            rhs: flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("u"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(0))),
+            },
+            span: Span::DUMMY,
+            origin: "connect(a.u,b.y)".to_string(),
+            scalar_count: 1,
+        });
+
+        assert_eq!(dae.balance(), 0);
+    }
+
+    #[test]
+    fn test_balance_ignores_redundant_connection_alias_with_component_definition() {
+        let mut dae = Dae::default();
+        dae.algebraics.insert(
+            VarName::new("y"),
+            Variable {
+                name: VarName::new("y"),
+                ..Default::default()
+            },
+        );
+        dae.inputs.insert(
+            VarName::new("u"),
+            Variable {
+                name: VarName::new("u"),
+                ..Default::default()
+            },
+        );
+
+        dae.f_x.push(Equation::residual(
+            flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::Literal(flat::Literal::Real(1.0))),
+            },
+            Span::DUMMY,
+            "equation from component",
+        ));
+
+        dae.f_x.push(Equation::residual(
+            flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("u"),
+                    subscripts: vec![],
+                }),
+            },
+            Span::DUMMY,
+            "connection equation: y = u",
+        ));
+
+        assert_eq!(dae.balance(), 0);
+    }
+
+    #[test]
+    fn test_balance_keeps_connection_between_continuous_unknowns() {
+        let mut dae = Dae::default();
+        dae.algebraics.insert(
+            VarName::new("y"),
+            Variable {
+                name: VarName::new("y"),
+                ..Default::default()
+            },
+        );
+        dae.algebraics.insert(
+            VarName::new("z"),
+            Variable {
+                name: VarName::new("z"),
+                ..Default::default()
+            },
+        );
+
+        dae.f_x.push(Equation::residual(
+            flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::Literal(flat::Literal::Real(1.0))),
+            },
+            Span::DUMMY,
+            "equation from component",
+        ));
+
+        dae.f_x.push(Equation::residual(
+            flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("z"),
+                    subscripts: vec![],
+                }),
+            },
+            Span::DUMMY,
+            "connection equation: y = z",
+        ));
+
+        assert_eq!(dae.balance(), 0);
+    }
+
+    #[test]
+    fn test_balance_ignores_connection_equation_origin_without_continuous_unknowns() {
+        let mut dae = Dae::default();
+        dae.inputs.insert(
+            VarName::new("u"),
+            Variable {
+                name: VarName::new("u"),
+                ..Default::default()
+            },
+        );
+        dae.inputs.insert(
+            VarName::new("v"),
+            Variable {
+                name: VarName::new("v"),
+                ..Default::default()
+            },
+        );
+        dae.f_x.push(Equation {
+            lhs: None,
+            rhs: flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("u"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::VarRef {
+                    name: VarName::new("v"),
+                    subscripts: vec![],
+                }),
+            },
+            span: Span::DUMMY,
+            origin: "connection equation: u = v".to_string(),
+            scalar_count: 1,
+        });
 
         assert_eq!(dae.balance(), 0);
     }

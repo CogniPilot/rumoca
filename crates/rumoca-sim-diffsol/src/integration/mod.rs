@@ -60,6 +60,149 @@ impl IntegrationOutput {
     }
 }
 
+struct RuntimeChannelCapture {
+    names: Vec<String>,
+    solver_name_to_idx: HashMap<String, usize>,
+}
+
+#[derive(Clone, Copy)]
+enum RuntimeSampleMode {
+    Initialization,
+    Regular,
+}
+
+fn runtime_capture_target_names(dae: &Dae, _solver_names: &[String]) -> Vec<String> {
+    collect_discrete_channel_names(dae)
+}
+
+fn sample_clock_arg_is_explicit_clock(
+    dae: &Dae,
+    clock_expr: &Expression,
+    env: &eval::VarEnv<f64>,
+) -> bool {
+    if let Expression::FunctionCall { name, .. } = clock_expr {
+        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+        if matches!(
+            short,
+            "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" | "firstTick"
+        ) {
+            return true;
+        }
+    }
+    if eval::infer_clock_timing_seconds(clock_expr, env).is_some() {
+        return true;
+    }
+    if let Expression::VarRef { name, subscripts } = clock_expr
+        && subscripts.is_empty()
+    {
+        let key = dae::VarName::new(name.as_str());
+        return dae.discrete_reals.contains_key(&key) || dae.discrete_valued.contains_key(&key);
+    }
+    false
+}
+
+fn expr_uses_implicit_sample_clock(dae: &Dae, expr: &Expression, env: &eval::VarEnv<f64>) -> bool {
+    match expr {
+        Expression::BuiltinCall { function, args } => {
+            let is_implicit_sample = if *function == BuiltinFunction::Sample {
+                if args.len() <= 1 {
+                    true
+                } else {
+                    !sample_clock_arg_is_explicit_clock(dae, &args[1], env)
+                }
+            } else {
+                false
+            };
+            is_implicit_sample
+                || args
+                    .iter()
+                    .any(|arg| expr_uses_implicit_sample_clock(dae, arg, env))
+        }
+        Expression::FunctionCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_uses_implicit_sample_clock(dae, arg, env)),
+        Expression::Binary { lhs, rhs, .. } => {
+            expr_uses_implicit_sample_clock(dae, lhs, env)
+                || expr_uses_implicit_sample_clock(dae, rhs, env)
+        }
+        Expression::Unary { rhs, .. } => expr_uses_implicit_sample_clock(dae, rhs, env),
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expr_uses_implicit_sample_clock(dae, cond, env)
+                    || expr_uses_implicit_sample_clock(dae, value, env)
+            }) || expr_uses_implicit_sample_clock(dae, else_branch, env)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => elements
+            .iter()
+            .any(|item| expr_uses_implicit_sample_clock(dae, item, env)),
+        Expression::Range { start, step, end } => {
+            expr_uses_implicit_sample_clock(dae, start, env)
+                || step
+                    .as_ref()
+                    .is_some_and(|value| expr_uses_implicit_sample_clock(dae, value, env))
+                || expr_uses_implicit_sample_clock(dae, end, env)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_uses_implicit_sample_clock(dae, expr, env)
+                || indices
+                    .iter()
+                    .any(|idx| expr_uses_implicit_sample_clock(dae, &idx.range, env))
+                || filter
+                    .as_ref()
+                    .is_some_and(|value| expr_uses_implicit_sample_clock(dae, value, env))
+        }
+        Expression::Index { base, subscripts } => {
+            expr_uses_implicit_sample_clock(dae, base, env)
+                || subscripts.iter().any(|sub| match sub {
+                    dae::Subscript::Expr(value) => expr_uses_implicit_sample_clock(dae, value, env),
+                    _ => false,
+                })
+        }
+        Expression::FieldAccess { base, .. } => expr_uses_implicit_sample_clock(dae, base, env),
+        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
+    }
+}
+
+fn settle_runtime_discrete_capture_env(
+    dae: &Dae,
+    y: &mut [f64],
+    p: &[f64],
+    n_x: usize,
+    t_eval: f64,
+) -> eval::VarEnv<f64> {
+    rumoca_sim_core::settle_runtime_event_updates(
+        rumoca_sim_core::EventSettleInput {
+            dae,
+            y,
+            p,
+            n_x,
+            t_eval,
+        },
+        rumoca_sim_core::runtime::assignment::propagate_runtime_direct_assignments_from_env,
+        rumoca_sim_core::runtime::alias::propagate_runtime_alias_components_from_env,
+        |dae, env| {
+            rumoca_sim_core::runtime::discrete::apply_discrete_partition_updates_with_scalar_override(
+                dae,
+                env,
+                |_eq, target, solution, env, implicit_clock_active| {
+                    if implicit_clock_active && expr_uses_implicit_sample_clock(dae, solution, env) {
+                        return Some(env.vars.get(target).copied().unwrap_or(0.0));
+                    }
+                    None
+                },
+            )
+        },
+        rumoca_sim_core::runtime::layout::sync_solver_values_from_env,
+    )
+}
+
 pub(super) type BdfTraceCtx = rumoca_sim_core::RuntimeTraceContext;
 pub(super) type BdfProgressSnapshot = rumoca_sim_core::RuntimeProgressSnapshot;
 
@@ -773,7 +916,7 @@ where
             "interpolate(active stop recovery)",
         )
     })?;
-    let mut projected = maybe_project_scheduled_event_state(
+    let projected = maybe_project_scheduled_event_state(
         ctx.dae,
         &y_at_stop,
         ctx.n_x,
@@ -781,33 +924,6 @@ where
         ctx.opts.atol,
         ctx.budget,
     )?;
-    refresh_pre_values_from_state(ctx.dae, &projected, ctx.param_values.as_slice(), stop_t);
-    let restart_t = event_restart_time(ctx.opts, stop_t);
-    let mut event_env = settle_runtime_event_updates(
-        ctx.dae,
-        projected.as_mut_slice(),
-        ctx.param_values.as_slice(),
-        ctx.n_x,
-        restart_t,
-        ctx.discrete_event_ctx.as_ref(),
-    );
-    eval::seed_pre_values_from_env(&event_env);
-    projected = maybe_project_scheduled_event_state(
-        ctx.dae,
-        projected.as_slice(),
-        ctx.n_x,
-        restart_t,
-        ctx.opts.atol,
-        ctx.budget,
-    )?;
-    event_env = settle_runtime_event_updates(
-        ctx.dae,
-        projected.as_mut_slice(),
-        ctx.param_values.as_slice(),
-        ctx.n_x,
-        restart_t,
-        ctx.discrete_event_ctx.as_ref(),
-    );
     overwrite_solver_state::<Eqn, S>(
         solver,
         SolverStateOverwriteInput {
@@ -816,11 +932,16 @@ where
             dae: ctx.dae,
             param_values: ctx.param_values.as_slice(),
             n_x: ctx.n_x,
-            t: restart_t,
+            t: stop_t,
             y: &projected,
         },
     )?;
-    eval::seed_pre_values_from_env(&event_env);
+    refresh_pre_values_from_state(
+        ctx.dae,
+        solver.state().y.as_slice(),
+        ctx.param_values.as_slice(),
+        stop_t,
+    );
     set_solver_stop_time::<Eqn, S>(
         solver,
         ctx.opts.t_end,
@@ -969,6 +1090,7 @@ where
     root_hits: usize,
     stalled_output_steps: usize,
     last_output_idx: usize,
+    runtime_capture: Option<RuntimeChannelCapture>,
     _phantom: std::marker::PhantomData<Eqn>,
 }
 
@@ -982,12 +1104,32 @@ where
 
     fn new(
         solver: S,
-        output: IntegrationOutput,
+        mut output: IntegrationOutput,
         ctx: SolverLoopContext<'a>,
         bdf_trace: Option<BdfTraceCtx>,
+        solver_names: Vec<String>,
     ) -> Self {
+        let runtime_names = runtime_capture_target_names(ctx.dae, &solver_names);
+        if !runtime_names.is_empty() {
+            output
+                .buf
+                .set_runtime_channels(runtime_names.clone(), output.out_len);
+        }
+        let runtime_capture = if runtime_names.is_empty() {
+            None
+        } else {
+            let solver_name_to_idx: HashMap<String, usize> = solver_names
+                .iter()
+                .enumerate()
+                .map(|(idx, name)| (name.clone(), idx))
+                .collect();
+            Some(RuntimeChannelCapture {
+                names: runtime_names,
+                solver_name_to_idx,
+            })
+        };
         let last_output_idx = output.t_out_idx;
-        Self {
+        let mut backend = Self {
             solver,
             output,
             ctx,
@@ -997,8 +1139,13 @@ where
             root_hits: 0,
             stalled_output_steps: 0,
             last_output_idx,
+            runtime_capture,
             _phantom: std::marker::PhantomData,
-        }
+        };
+        let t0 = backend.solver.state().t;
+        let y0 = backend.solver.state().y.as_slice().to_vec();
+        backend.record_runtime_sample(t0, y0.as_slice(), RuntimeSampleMode::Initialization);
+        backend
     }
 
     fn into_parts(self) -> (S, IntegrationOutput, usize, usize) {
@@ -1019,8 +1166,29 @@ where
                 &mut self.bdf_last_log,
             );
         }
+        let output_idx_before = self.output.t_out_idx;
         self.output
             .record_until::<Eqn, S>(&self.solver, t_limit, self.ctx.budget)?;
+        let output_idx_after = self.output.t_out_idx;
+        let new_samples = output_idx_after.saturating_sub(output_idx_before);
+        if new_samples > 0 {
+            let start_row = self.output.buf.times.len().saturating_sub(new_samples);
+            for row in start_row..self.output.buf.times.len() {
+                let t_sample = self.output.buf.times[row];
+                let sample_state: Vec<f64> = self
+                    .output
+                    .buf
+                    .data
+                    .iter()
+                    .map(|series| series.get(row).copied().unwrap_or(0.0))
+                    .collect();
+                self.record_runtime_sample(
+                    t_sample,
+                    sample_state.as_slice(),
+                    RuntimeSampleMode::Regular,
+                );
+            }
+        }
         if self.output.t_out_idx == self.last_output_idx {
             self.stalled_output_steps += 1;
             if self.stalled_output_steps >= Self::MAX_STEPS_WITHOUT_OUTPUT_PROGRESS {
@@ -1036,6 +1204,77 @@ where
             self.last_output_idx = self.output.t_out_idx;
         }
         project_internal_step_state_if_needed::<Eqn, S>(&mut self.solver, reason, &self.ctx)
+    }
+
+    fn evaluate_runtime_sample_values(
+        &self,
+        t_sample: f64,
+        sample_state: &[f64],
+        mode: RuntimeSampleMode,
+    ) -> Option<Vec<f64>> {
+        let capture = self.runtime_capture.as_ref()?;
+        let mut y = sample_state.to_vec();
+        let env = match mode {
+            RuntimeSampleMode::Initialization => {
+                // Keep startup channels consistent with initialized solver state.
+                build_env(
+                    self.ctx.dae,
+                    y.as_slice(),
+                    self.ctx.param_values.as_slice(),
+                    t_sample,
+                )
+            }
+            RuntimeSampleMode::Regular => settle_runtime_discrete_capture_env(
+                self.ctx.dae,
+                y.as_mut_slice(),
+                self.ctx.param_values.as_slice(),
+                self.ctx.n_x,
+                t_sample,
+            ),
+        };
+        let values: Vec<f64> = capture
+            .names
+            .iter()
+            .map(|name| {
+                env.vars
+                    .get(name.as_str())
+                    .copied()
+                    .or_else(|| {
+                        capture
+                            .solver_name_to_idx
+                            .get(name)
+                            .and_then(|idx| y.get(*idx).copied())
+                    })
+                    .unwrap_or(0.0)
+            })
+            .collect();
+        Some(values)
+    }
+
+    fn record_runtime_sample(
+        &mut self,
+        t_sample: f64,
+        sample_state: &[f64],
+        mode: RuntimeSampleMode,
+    ) {
+        let Some(values) = self.evaluate_runtime_sample_values(t_sample, sample_state, mode) else {
+            return;
+        };
+        self.output.buf.record_runtime_values(values.as_slice());
+    }
+
+    fn overwrite_runtime_sample_at_time(
+        &mut self,
+        t_sample: f64,
+        sample_state: &[f64],
+        mode: RuntimeSampleMode,
+    ) {
+        let Some(values) = self.evaluate_runtime_sample_values(t_sample, sample_state, mode) else {
+            return;
+        };
+        self.output
+            .buf
+            .overwrite_runtime_values_at_time(t_sample, values.as_slice());
     }
 }
 
@@ -1135,7 +1374,16 @@ where
     }
 
     fn apply_event_updates(&mut self, event_time: f64) -> Result<(), Self::Error> {
-        apply_event_updates_at_time::<Eqn, S>(&mut self.solver, event_time, &self.ctx)
+        apply_event_updates_at_time::<Eqn, S>(&mut self.solver, event_time, &self.ctx)?;
+        // Event updates happen after step output capture; rewrite the event-row
+        // runtime channels with post-event settled values to match right-limit semantics.
+        let post_event_state = self.solver.state().y.as_slice().to_vec();
+        self.overwrite_runtime_sample_at_time(
+            event_time,
+            post_event_state.as_slice(),
+            RuntimeSampleMode::Regular,
+        );
+        Ok(())
     }
 }
 
@@ -1182,6 +1430,8 @@ pub(super) fn try_integrate(
         n_x,
         budget,
     )?;
+    let mut solver_names = build_output_names(dae);
+    solver_names.truncate(n_total);
     let output = IntegrationOutput::new(opts, n_total, solver.state().y.as_slice());
     let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
 
@@ -1195,7 +1445,8 @@ pub(super) fn try_integrate(
         budget,
     };
     let output = {
-        let mut backend = DiffsolBackend::new(solver, output, ctx, Some(trace_ctx));
+        let mut backend =
+            DiffsolBackend::new(solver, output, ctx, Some(trace_ctx), solver_names.clone());
         let stats = rumoca_sim_core::run_with_runtime_schedule(
             &mut backend,
             dae,
@@ -1245,6 +1496,8 @@ pub(super) fn try_integrate_tr_bdf2(
         n_x,
         budget,
     )?;
+    let mut solver_names = build_output_names(dae);
+    solver_names.truncate(n_total);
     let output = IntegrationOutput::new(opts, n_total, solver.state().y.as_slice());
     let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
     let ctx = SolverLoopContext {
@@ -1257,7 +1510,7 @@ pub(super) fn try_integrate_tr_bdf2(
         budget,
     };
     let (output, stats, final_t) = {
-        let mut backend = DiffsolBackend::new(solver, output, ctx, None);
+        let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names.clone());
         let stats = match rumoca_sim_core::run_with_runtime_schedule(
             &mut backend,
             dae,
