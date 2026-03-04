@@ -41,13 +41,14 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     scheduled_time_events.sort_by(f64::total_cmp);
     scheduled_time_events.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * (1.0 + a.abs().max(b.abs())));
 
-    let (clock_constructor_exprs, clock_schedules) =
+    let (clock_constructor_exprs, clock_schedules, clock_intervals) =
         clock::compute_clock_runtime_metadata(dae_model, &compile_time_scalars)?;
 
     dae_model.synthetic_root_conditions = synthetic_roots;
     dae_model.scheduled_time_events = scheduled_time_events;
     dae_model.clock_constructor_exprs = clock_constructor_exprs;
     dae_model.clock_schedules = clock_schedules;
+    dae_model.clock_intervals = clock_intervals;
     Ok(())
 }
 
@@ -930,6 +931,10 @@ mod tests {
     #[test]
     fn test_runtime_precompute_collects_clock_constructor_exprs() {
         let mut dae_model = dae::Dae::default();
+        dae_model.discrete_reals.insert(
+            dae::VarName::new("s"),
+            dae::Variable::new(dae::VarName::new("s")),
+        );
         dae_model.f_z.push(dae::Equation::residual(
             dae::Expression::Binary {
                 op: ast::OpBinary::Sub(Default::default()),
@@ -962,6 +967,102 @@ mod tests {
         assert_eq!(dae_model.clock_schedules.len(), 1);
         assert!((dae_model.clock_schedules[0].period_seconds - 0.1).abs() <= 1e-12);
         assert!(dae_model.clock_schedules[0].phase_seconds.abs() <= 1e-12);
+        assert!((dae_model.clock_intervals["s"] - 0.1).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn test_runtime_precompute_assigns_implicit_sample_interval_from_unique_schedule() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.discrete_reals.insert(
+            dae::VarName::new("simTime"),
+            dae::Variable::new(dae::VarName::new("simTime")),
+        );
+        dae_model.discrete_reals.insert(
+            dae::VarName::new("clockY"),
+            dae::Variable::new(dae::VarName::new("clockY")),
+        );
+
+        // simTime = sample(time) (implicit clock sample form)
+        dae_model.f_z.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: ast::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("simTime")),
+                rhs: Box::new(dae::Expression::BuiltinCall {
+                    function: dae::BuiltinFunction::Sample,
+                    args: vec![var("time")],
+                }),
+            },
+            Span::DUMMY,
+            "implicit_clocked_sample",
+        ));
+
+        // clockY = Clock(0.1) gives the unique static schedule in this model.
+        dae_model.f_z.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: ast::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("clockY")),
+                rhs: Box::new(dae::Expression::FunctionCall {
+                    name: dae::VarName::new("Clock"),
+                    args: vec![dae::Expression::Literal(dae::Literal::Real(0.1))],
+                    is_constructor: false,
+                }),
+            },
+            Span::DUMMY,
+            "periodic_clock_constructor",
+        ));
+
+        populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+        assert_eq!(dae_model.clock_schedules.len(), 1);
+        assert!((dae_model.clock_intervals["simTime"] - 0.1).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn test_runtime_precompute_does_not_assign_fallback_interval_for_non_sample_clock_ops() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("b"),
+            dae::Variable::new(dae::VarName::new("b")),
+        );
+        dae_model.discrete_reals.insert(
+            dae::VarName::new("clockY"),
+            dae::Variable::new(dae::VarName::new("clockY")),
+        );
+
+        // b = pre(b) is discrete/event logic, not an implicit sample(..) form.
+        dae_model.f_m.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: ast::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("b")),
+                rhs: Box::new(dae::Expression::BuiltinCall {
+                    function: dae::BuiltinFunction::Pre,
+                    args: vec![var("b")],
+                }),
+            },
+            Span::DUMMY,
+            "pre_based_discrete_update",
+        ));
+
+        // Add one static periodic schedule in the model.
+        dae_model.f_z.push(dae::Equation::residual(
+            dae::Expression::Binary {
+                op: ast::OpBinary::Sub(Default::default()),
+                lhs: Box::new(var("clockY")),
+                rhs: Box::new(dae::Expression::FunctionCall {
+                    name: dae::VarName::new("Clock"),
+                    args: vec![dae::Expression::Literal(dae::Literal::Real(0.1))],
+                    is_constructor: false,
+                }),
+            },
+            Span::DUMMY,
+            "periodic_clock_constructor",
+        ));
+
+        populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+        assert_eq!(dae_model.clock_schedules.len(), 1);
+        assert!(
+            !dae_model.clock_intervals.contains_key("b"),
+            "fallback interval must only apply to implicit sample(..) sources",
+        );
     }
 
     #[test]

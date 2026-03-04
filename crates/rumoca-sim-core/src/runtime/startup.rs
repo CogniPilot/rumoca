@@ -7,6 +7,36 @@ fn clamp_finite(v: f64) -> f64 {
     if v.is_finite() { v } else { 0.0 }
 }
 
+fn apply_initial_pre_assignments_from_env(
+    dae_model: &dae::Dae,
+    env: &rumoca_eval_runtime::eval::VarEnv<f64>,
+) {
+    for eq in &dae_model.initial_equations {
+        let Some((target, solution)) =
+            crate::runtime::assignment::pre_assignment_from_initial_equation(eq)
+        else {
+            continue;
+        };
+
+        let value = clamp_finite(eval_expr::<f64>(solution, env));
+        rumoca_eval_runtime::eval::set_pre_value(target.as_str(), value);
+    }
+}
+
+/// Seed `pre()` cache from a startup state and then apply explicit
+/// `initial equation` `pre(...) = ...` assignments.
+pub fn refresh_pre_values_from_state_with_initial_assignments(
+    dae_model: &dae::Dae,
+    y: &[f64],
+    p: &[f64],
+    t_eval: f64,
+) {
+    let mut env = build_env(dae_model, y, p, t_eval);
+    env.is_initial = true;
+    rumoca_eval_runtime::eval::seed_pre_values_from_env(&env);
+    apply_initial_pre_assignments_from_env(dae_model, &env);
+}
+
 /// Apply initial section assignments (`initial equation` solved-form rows and
 /// `pre(...)` initialization) to the startup solver vector/environment.
 pub fn apply_initial_section_assignments(

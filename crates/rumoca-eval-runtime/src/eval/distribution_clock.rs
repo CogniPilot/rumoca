@@ -241,7 +241,7 @@ pub(super) fn eval_clock_special_function<T: SimFloat>(
             if let Some(timing) = infer_clock_timing_from_call(short_name, args, env) {
                 return Some(clock_tick_value(env, timing));
             }
-            if short_name == "shiftSample" {
+            if matches!(short_name, "shiftSample" | "backSample") {
                 return Some(eval_shift_sample_signal(short_name, args, env));
             }
             Some(
@@ -261,6 +261,15 @@ pub(super) fn eval_clock_special_function<T: SimFloat>(
                 && let Some(timing) = infer_clock_timing_from_expr(arg, env)
             {
                 return Some(T::from_f64(timing.period));
+            }
+            // MLS §16 (synchronous language elements): interval(v) returns the
+            // period of the clock associated with v. For implicit-clock lowering,
+            // clock association is precomputed in DAE metadata.
+            if let Some(Expression::VarRef { name, subscripts }) = args.first()
+                && subscripts.is_empty()
+                && let Some(interval) = env.clock_intervals.get(name.as_str())
+            {
+                return Some(T::from_f64(*interval));
             }
             Some(T::one())
         }

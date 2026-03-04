@@ -1,5 +1,7 @@
 use super::*;
 use crate::when_guard::when_guard_activation_expr;
+mod substitution;
+use substitution::*;
 
 enum DiscreteEquationBucket {
     DiscreteReal,
@@ -88,6 +90,13 @@ pub(super) fn route_discrete_event_equations(
 
 fn is_connection_equation_origin(origin: &str) -> bool {
     origin.contains("connection equation:")
+}
+
+fn discrete_assignment_rhs_var_name(expr: &Expression) -> Option<VarName> {
+    let Expression::VarRef { name, subscripts } = expr else {
+        return None;
+    };
+    Some(varref_with_subscripts(name, subscripts))
 }
 
 fn rewrite_discrete_self_refs_to_pre(expr: &Expression, target: &VarName) -> Expression {
@@ -308,10 +317,252 @@ fn rewrite_discrete_field_access_expr(
     }
 }
 
+fn anchored_collision_targets(
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+) -> std::collections::HashSet<VarName> {
+    grouped
+        .iter()
+        .filter(|(_, equations)| {
+            equations
+                .iter()
+                .any(|equation| !is_connection_equation_origin(&equation.origin))
+        })
+        .map(|(lhs, _)| lhs.clone())
+        .collect()
+}
+
+fn flip_edge_key(origin: &str, lhs: &VarName, rhs: &VarName) -> (String, String, String) {
+    (
+        origin.to_string(),
+        lhs.as_str().to_string(),
+        rhs.as_str().to_string(),
+    )
+}
+
+fn choose_collision_keep_index(
+    equations: &[rumoca_ir_dae::Equation],
+    lhs: &VarName,
+    anchored_targets: &std::collections::HashSet<VarName>,
+    flipped_once: &std::collections::HashSet<(String, String, String)>,
+) -> Option<usize> {
+    for (idx, equation) in equations.iter().enumerate() {
+        let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+            continue;
+        };
+        let reverse_key = flip_edge_key(&equation.origin, &rhs_target, lhs);
+        if flipped_once.contains(&reverse_key) {
+            return Some(idx);
+        }
+    }
+
+    for (idx, equation) in equations.iter().enumerate() {
+        let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+            continue;
+        };
+        if anchored_targets.contains(&rhs_target) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn has_reverse_connection_alias(
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    lhs: &VarName,
+    rhs_target: &VarName,
+) -> bool {
+    grouped.get(rhs_target).is_some_and(|rhs_equations| {
+        rhs_equations.iter().any(|rhs_equation| {
+            if !is_connection_equation_origin(&rhs_equation.origin) {
+                return false;
+            }
+            discrete_assignment_rhs_var_name(&rhs_equation.rhs)
+                .as_ref()
+                .is_some_and(|candidate| candidate == lhs)
+        })
+    })
+}
+
+fn keep_collision_equation_without_flip(dae: &Dae, lhs: &VarName, rhs_target: &VarName) -> bool {
+    rhs_target == lhs || discrete_equation_bucket_for_lhs(dae, rhs_target).is_none()
+}
+
+fn resolve_collision_equation(
+    dae: &Dae,
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    lhs: &VarName,
+    equation: &rumoca_ir_dae::Equation,
+    rhs_target: &VarName,
+    flipped_once: &std::collections::HashSet<(String, String, String)>,
+) -> Option<VarName> {
+    if keep_collision_equation_without_flip(dae, lhs, rhs_target) {
+        return None;
+    }
+    if has_reverse_connection_alias(grouped, lhs, rhs_target) {
+        return Some(lhs.clone());
+    }
+    let reverse_flip_key = flip_edge_key(&equation.origin, rhs_target, lhs);
+    if flipped_once.contains(&reverse_flip_key) {
+        return Some(lhs.clone());
+    }
+    Some(rhs_target.clone())
+}
+
+fn process_collision_equation(
+    dae: &Dae,
+    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    lhs: &VarName,
+    equation: rumoca_ir_dae::Equation,
+    flipped_once: &mut std::collections::HashSet<(String, String, String)>,
+    debug_canonicalize: bool,
+) -> bool {
+    let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+        if debug_canonicalize {
+            eprintln!(
+                "f_m canonicalize no-rhs-var lhs={} origin={}",
+                lhs, equation.origin
+            );
+        }
+        grouped.entry(lhs.clone()).or_default().push(equation);
+        return false;
+    };
+
+    let Some(resolved_target) =
+        resolve_collision_equation(dae, grouped, lhs, &equation, &rhs_target, flipped_once)
+    else {
+        if debug_canonicalize {
+            eprintln!(
+                "f_m canonicalize keep-collision lhs={} rhs={} origin={}",
+                lhs, rhs_target, equation.origin
+            );
+        }
+        grouped.entry(lhs.clone()).or_default().push(equation);
+        return false;
+    };
+
+    if resolved_target == *lhs {
+        if debug_canonicalize {
+            eprintln!(
+                "f_m canonicalize drop-redundant-edge lhs={} rhs={} origin={}",
+                lhs, rhs_target, equation.origin
+            );
+        }
+        return true;
+    }
+
+    flipped_once.insert(flip_edge_key(&equation.origin, lhs, &rhs_target));
+    let mut flipped = equation;
+    flipped.lhs = Some(resolved_target.clone());
+    flipped.rhs = Expression::VarRef {
+        name: lhs.clone(),
+        subscripts: vec![],
+    };
+    if debug_canonicalize {
+        eprintln!(
+            "f_m canonicalize flip lhs={} -> lhs={} origin={}",
+            lhs, resolved_target, flipped.origin
+        );
+    }
+    grouped.entry(resolved_target).or_default().push(flipped);
+    true
+}
+
+fn resolve_connection_alias_target_collisions(
+    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    dae: &Dae,
+) {
+    let debug_canonicalize = std::env::var("RUMOCA_DEBUG_FM_CANON").is_ok();
+    let anchored_targets = anchored_collision_targets(grouped);
+
+    let mut iteration = 0usize;
+    let max_iterations = 16usize;
+    let mut flipped_once: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    loop {
+        iteration += 1;
+        if iteration > max_iterations {
+            if debug_canonicalize {
+                eprintln!("f_m canonicalize collision-pass reached max iterations");
+            }
+            break;
+        }
+
+        let mut changed = false;
+        let keys: Vec<VarName> = grouped.keys().cloned().collect();
+
+        for lhs in keys {
+            let Some(equations) = grouped.get(&lhs) else {
+                continue;
+            };
+            if equations.len() <= 1 {
+                continue;
+            }
+            if equations
+                .iter()
+                .any(|equation| !is_connection_equation_origin(&equation.origin))
+            {
+                continue;
+            }
+
+            let candidate_keep_idx =
+                choose_collision_keep_index(equations, &lhs, &anchored_targets, &flipped_once);
+
+            let Some(mut current_equations) = grouped.swap_remove(&lhs) else {
+                continue;
+            };
+            if current_equations.len() <= 1 {
+                grouped.insert(lhs.clone(), current_equations);
+                continue;
+            }
+
+            let keep_idx = candidate_keep_idx
+                .unwrap_or(0)
+                .min(current_equations.len() - 1);
+            let keep_equation = current_equations.remove(keep_idx);
+            grouped.insert(lhs.clone(), vec![keep_equation]);
+
+            for equation in current_equations {
+                changed |= process_collision_equation(
+                    dae,
+                    grouped,
+                    &lhs,
+                    equation,
+                    &mut flipped_once,
+                    debug_canonicalize,
+                );
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
 pub(super) fn canonicalize_discrete_assignment_equations(dae: &mut Dae) {
+    let debug_canonicalize = std::env::var("RUMOCA_DEBUG_FM_CANON").is_ok();
+    let (mut grouped, passthrough) = drain_grouped_discrete_assignments(dae);
+    reroute_connection_aliases_for_defined_targets(&mut grouped, dae);
+    resolve_connection_alias_target_collisions(&mut grouped, dae);
+    debug_log_grouped_duplicates(debug_canonicalize, &grouped);
+
+    let mut rebuilt = Vec::with_capacity(passthrough.len() + grouped.len());
+    rebuilt.extend(passthrough);
+    for (lhs, equations) in grouped {
+        rebuilt.extend(canonicalize_assignment_group(lhs, equations));
+    }
+    dae.f_m = rebuilt;
+    debug_log_final_duplicates(debug_canonicalize, &dae.f_m);
+}
+
+fn drain_grouped_discrete_assignments(
+    dae: &mut Dae,
+) -> (
+    IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    Vec<rumoca_ir_dae::Equation>,
+) {
     let mut grouped: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
     let mut passthrough = Vec::new();
-
     for equation in dae.f_m.drain(..) {
         if let Some(lhs) = equation.lhs.as_ref() {
             grouped.entry(lhs.clone()).or_default().push(equation);
@@ -319,44 +570,112 @@ pub(super) fn canonicalize_discrete_assignment_equations(dae: &mut Dae) {
             passthrough.push(equation);
         }
     }
+    (grouped, passthrough)
+}
 
-    let mut rebuilt = Vec::with_capacity(passthrough.len() + grouped.len());
-    rebuilt.extend(passthrough);
-
-    for (lhs, mut equations) in grouped {
-        if equations.len() == 1 {
-            let mut equation = equations.remove(0);
-            equation.rhs = rewrite_discrete_self_refs_to_pre(&equation.rhs, &lhs);
-            rebuilt.push(equation);
+fn reroute_connection_aliases_for_defined_targets(
+    grouped: &mut IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+    dae: &Dae,
+) {
+    let mut rerouted: IndexMap<VarName, Vec<rumoca_ir_dae::Equation>> = IndexMap::new();
+    for (lhs, equations) in grouped.iter_mut() {
+        if equations.len() <= 1
+            || !equations
+                .iter()
+                .any(|equation| !is_connection_equation_origin(&equation.origin))
+        {
             continue;
         }
 
-        let has_non_connection = equations
+        for equation in equations
             .iter()
-            .any(|equation| !is_connection_equation_origin(&equation.origin));
-        if has_non_connection {
-            equations.retain(|equation| !is_connection_equation_origin(&equation.origin));
-        }
-
-        // Flattened scalarization can surface duplicate assignment rows with the
-        // same semantic origin. Keep the first origin occurrence per target.
-        let mut seen_origin = HashSet::<String>::default();
-        equations.retain(|equation| seen_origin.insert(equation.origin.clone()));
-
-        let mut seen_rhs = HashSet::<String>::default();
-        let mut deduped = Vec::new();
-        for mut equation in equations {
-            equation.rhs = rewrite_discrete_self_refs_to_pre(&equation.rhs, &lhs);
-            let rhs_key = format!("{:?}", equation.rhs);
-            if seen_rhs.insert(rhs_key) {
-                deduped.push(equation);
+            .filter(|equation| is_connection_equation_origin(&equation.origin))
+        {
+            let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+                continue;
+            };
+            if keep_collision_equation_without_flip(dae, lhs, &rhs_target) {
+                continue;
             }
+            let mut flipped = equation.clone();
+            flipped.lhs = Some(rhs_target.clone());
+            flipped.rhs = Expression::VarRef {
+                name: lhs.clone(),
+                subscripts: vec![],
+            };
+            rerouted.entry(rhs_target).or_default().push(flipped);
         }
+    }
+    for (lhs, aliases) in rerouted {
+        grouped.entry(lhs).or_default().extend(aliases);
+    }
+}
 
-        rebuilt.extend(deduped);
+fn canonicalize_assignment_group(
+    lhs: VarName,
+    mut equations: Vec<rumoca_ir_dae::Equation>,
+) -> Vec<rumoca_ir_dae::Equation> {
+    if equations.len() == 1 {
+        let mut equation = equations.remove(0);
+        equation.rhs = rewrite_discrete_self_refs_to_pre(&equation.rhs, &lhs);
+        return vec![equation];
     }
 
-    dae.f_m = rebuilt;
+    if equations
+        .iter()
+        .any(|equation| !is_connection_equation_origin(&equation.origin))
+    {
+        equations.retain(|equation| !is_connection_equation_origin(&equation.origin));
+    }
+
+    let mut seen_origin = HashSet::<String>::default();
+    equations.retain(|equation| seen_origin.insert(equation.origin.clone()));
+
+    let mut seen_rhs = HashSet::<String>::default();
+    let mut deduped = Vec::new();
+    for mut equation in equations {
+        equation.rhs = rewrite_discrete_self_refs_to_pre(&equation.rhs, &lhs);
+        let rhs_key = format!("{:?}", equation.rhs);
+        if seen_rhs.insert(rhs_key) {
+            deduped.push(equation);
+        }
+    }
+    deduped
+}
+
+fn debug_log_grouped_duplicates(
+    debug_canonicalize: bool,
+    grouped: &IndexMap<VarName, Vec<rumoca_ir_dae::Equation>>,
+) {
+    if !debug_canonicalize {
+        return;
+    }
+    for (lhs, equations) in grouped.iter().filter(|(_, eqs)| eqs.len() > 1) {
+        eprintln!(
+            "f_m canonicalize grouped-dup lhs={} count={} origins={:?}",
+            lhs,
+            equations.len(),
+            equations
+                .iter()
+                .map(|eq| eq.origin.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+fn debug_log_final_duplicates(debug_canonicalize: bool, equations: &[rumoca_ir_dae::Equation]) {
+    if !debug_canonicalize {
+        return;
+    }
+    let mut counts: IndexMap<String, usize> = IndexMap::new();
+    for equation in equations {
+        if let Some(lhs) = equation.lhs.as_ref() {
+            *counts.entry(lhs.as_str().to_string()).or_default() += 1;
+        }
+    }
+    for (lhs, count) in counts.into_iter().filter(|(_, count)| *count > 1) {
+        eprintln!("f_m canonicalize final-dup lhs={} count={}", lhs, count);
+    }
 }
 
 fn lookup_algorithm_target_scalar_count(dae: &Dae, target: &VarName) -> usize {
@@ -469,448 +788,6 @@ fn guarded_expr(guard: Expression, value: Expression, fallback: Expression) -> E
     Expression::If {
         branches: vec![(guard, value)],
         else_branch: Box::new(fallback),
-    }
-}
-
-fn substitute_subscript_with_bindings(
-    subscript: &Subscript,
-    bindings: &HashMap<String, i64>,
-) -> Subscript {
-    match subscript {
-        Subscript::Index(index) => Subscript::Index(*index),
-        Subscript::Colon => Subscript::Colon,
-        Subscript::Expr(expr) => {
-            Subscript::Expr(Box::new(substitute_expr_with_bindings(expr, bindings)))
-        }
-    }
-}
-
-fn substitute_expr_with_bindings(expr: &Expression, bindings: &HashMap<String, i64>) -> Expression {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            substitute_var_ref_with_bindings(name, subscripts, bindings)
-        }
-        Expression::Binary { op, lhs, rhs } => {
-            substitute_binary_expr_with_bindings(op, lhs, rhs, bindings)
-        }
-        Expression::Unary { op, rhs } => substitute_unary_expr_with_bindings(op, rhs, bindings),
-        Expression::BuiltinCall { function, args } => {
-            substitute_builtin_call_with_bindings(*function, args, bindings)
-        }
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-        } => substitute_function_call_with_bindings(name, args, *is_constructor, bindings),
-        Expression::Literal(literal) => Expression::Literal(literal.clone()),
-        Expression::If {
-            branches,
-            else_branch,
-        } => substitute_if_expr_with_bindings(branches, else_branch, bindings),
-        Expression::Array {
-            elements,
-            is_matrix,
-        } => substitute_array_expr_with_bindings(elements, *is_matrix, bindings),
-        Expression::Tuple { elements } => substitute_tuple_expr_with_bindings(elements, bindings),
-        Expression::Range { start, step, end } => {
-            substitute_range_expr_with_bindings(start, step, end, bindings)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => substitute_array_comprehension_with_bindings(expr, indices, filter, bindings),
-        Expression::Index { base, subscripts } => {
-            substitute_index_expr_with_bindings(base, subscripts, bindings)
-        }
-        Expression::FieldAccess { base, field } => {
-            substitute_field_access_with_bindings(base, field, bindings)
-        }
-        Expression::Empty => Expression::Empty,
-    }
-}
-
-fn substitute_var_ref_with_bindings(
-    name: &VarName,
-    subscripts: &[Subscript],
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    if subscripts.is_empty()
-        && let Some(value) = bindings.get(name.as_str())
-    {
-        return Expression::Literal(Literal::Integer(*value));
-    }
-    Expression::VarRef {
-        name: name.clone(),
-        subscripts: subscripts
-            .iter()
-            .map(|subscript| substitute_subscript_with_bindings(subscript, bindings))
-            .collect(),
-    }
-}
-
-fn substitute_binary_expr_with_bindings(
-    op: &ast::OpBinary,
-    lhs: &Expression,
-    rhs: &Expression,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::Binary {
-        op: op.clone(),
-        lhs: Box::new(substitute_expr_with_bindings(lhs, bindings)),
-        rhs: Box::new(substitute_expr_with_bindings(rhs, bindings)),
-    }
-}
-
-fn substitute_unary_expr_with_bindings(
-    op: &ast::OpUnary,
-    rhs: &Expression,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::Unary {
-        op: op.clone(),
-        rhs: Box::new(substitute_expr_with_bindings(rhs, bindings)),
-    }
-}
-
-fn substitute_builtin_call_with_bindings(
-    function: BuiltinFunction,
-    args: &[Expression],
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::BuiltinCall {
-        function,
-        args: args
-            .iter()
-            .map(|arg| substitute_expr_with_bindings(arg, bindings))
-            .collect(),
-    }
-}
-
-fn substitute_function_call_with_bindings(
-    name: &VarName,
-    args: &[Expression],
-    is_constructor: bool,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::FunctionCall {
-        name: name.clone(),
-        args: args
-            .iter()
-            .map(|arg| substitute_expr_with_bindings(arg, bindings))
-            .collect(),
-        is_constructor,
-    }
-}
-
-fn substitute_if_expr_with_bindings(
-    branches: &[(Expression, Expression)],
-    else_branch: &Expression,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::If {
-        branches: branches
-            .iter()
-            .map(|(cond, value)| {
-                (
-                    substitute_expr_with_bindings(cond, bindings),
-                    substitute_expr_with_bindings(value, bindings),
-                )
-            })
-            .collect(),
-        else_branch: Box::new(substitute_expr_with_bindings(else_branch, bindings)),
-    }
-}
-
-fn substitute_array_expr_with_bindings(
-    elements: &[Expression],
-    is_matrix: bool,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::Array {
-        elements: elements
-            .iter()
-            .map(|element| substitute_expr_with_bindings(element, bindings))
-            .collect(),
-        is_matrix,
-    }
-}
-
-fn substitute_tuple_expr_with_bindings(
-    elements: &[Expression],
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::Tuple {
-        elements: elements
-            .iter()
-            .map(|element| substitute_expr_with_bindings(element, bindings))
-            .collect(),
-    }
-}
-
-fn substitute_range_expr_with_bindings(
-    start: &Expression,
-    step: &Option<Box<Expression>>,
-    end: &Expression,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::Range {
-        start: Box::new(substitute_expr_with_bindings(start, bindings)),
-        step: step
-            .as_ref()
-            .map(|step_expr| Box::new(substitute_expr_with_bindings(step_expr, bindings))),
-        end: Box::new(substitute_expr_with_bindings(end, bindings)),
-    }
-}
-
-fn substitute_array_comprehension_with_bindings(
-    expr: &Expression,
-    indices: &[ComprehensionIndex],
-    filter: &Option<Box<Expression>>,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    let local_bindings = bindings_without_comprehension_indices(bindings, indices);
-    Expression::ArrayComprehension {
-        expr: Box::new(substitute_expr_with_bindings(expr, &local_bindings)),
-        indices: indices
-            .iter()
-            .map(|index| ComprehensionIndex {
-                name: index.name.clone(),
-                range: substitute_expr_with_bindings(&index.range, bindings),
-            })
-            .collect(),
-        filter: filter.as_ref().map(|filter_expr| {
-            Box::new(substitute_expr_with_bindings(filter_expr, &local_bindings))
-        }),
-    }
-}
-
-fn bindings_without_comprehension_indices(
-    bindings: &HashMap<String, i64>,
-    indices: &[ComprehensionIndex],
-) -> HashMap<String, i64> {
-    let mut local_bindings = bindings.clone();
-    for index in indices {
-        local_bindings.remove(&index.name);
-    }
-    local_bindings
-}
-
-fn substitute_index_expr_with_bindings(
-    base: &Expression,
-    subscripts: &[Subscript],
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::Index {
-        base: Box::new(substitute_expr_with_bindings(base, bindings)),
-        subscripts: subscripts
-            .iter()
-            .map(|subscript| substitute_subscript_with_bindings(subscript, bindings))
-            .collect(),
-    }
-}
-
-fn substitute_field_access_with_bindings(
-    base: &Expression,
-    field: &str,
-    bindings: &HashMap<String, i64>,
-) -> Expression {
-    Expression::FieldAccess {
-        base: Box::new(substitute_expr_with_bindings(base, bindings)),
-        field: field.to_string(),
-    }
-}
-
-fn substitute_component_ref_with_bindings(
-    comp: &ComponentReference,
-    bindings: &HashMap<String, i64>,
-) -> ComponentReference {
-    ComponentReference {
-        local: comp.local,
-        parts: comp
-            .parts
-            .iter()
-            .map(|part| flat::ComponentRefPart {
-                ident: part.ident.clone(),
-                subs: part
-                    .subs
-                    .iter()
-                    .map(|subscript| substitute_subscript_with_bindings(subscript, bindings))
-                    .collect(),
-            })
-            .collect(),
-        def_id: comp.def_id,
-    }
-}
-
-fn substitute_statement_with_bindings(
-    statement: &Statement,
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    match statement {
-        Statement::Empty => Statement::Empty,
-        Statement::Assignment { comp, value } => {
-            substitute_assignment_statement_with_bindings(comp, value, bindings)
-        }
-        Statement::Return => Statement::Return,
-        Statement::Break => Statement::Break,
-        Statement::For { indices, equations } => {
-            substitute_for_statement_with_bindings(indices, equations, bindings)
-        }
-        Statement::While(block) => {
-            Statement::While(substitute_statement_block_with_bindings(block, bindings))
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => substitute_if_statement_with_bindings(cond_blocks, else_block, bindings),
-        Statement::When(blocks) => substitute_when_statement_with_bindings(blocks, bindings),
-        Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-        } => substitute_function_call_statement_with_bindings(comp, args, outputs, bindings),
-        Statement::Reinit { variable, value } => {
-            substitute_reinit_statement_with_bindings(variable, value, bindings)
-        }
-        Statement::Assert {
-            condition,
-            message,
-            level,
-        } => substitute_assert_statement_with_bindings(condition, message, level, bindings),
-    }
-}
-
-fn substitute_assignment_statement_with_bindings(
-    comp: &ComponentReference,
-    value: &Expression,
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    Statement::Assignment {
-        comp: substitute_component_ref_with_bindings(comp, bindings),
-        value: substitute_expr_with_bindings(value, bindings),
-    }
-}
-
-fn substitute_statement_block_with_bindings(
-    block: &StatementBlock,
-    bindings: &HashMap<String, i64>,
-) -> StatementBlock {
-    StatementBlock {
-        cond: substitute_expr_with_bindings(&block.cond, bindings),
-        stmts: block
-            .stmts
-            .iter()
-            .map(|nested| substitute_statement_with_bindings(nested, bindings))
-            .collect(),
-    }
-}
-
-fn substitute_for_statement_with_bindings(
-    indices: &[flat::ForIndex],
-    equations: &[Statement],
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    let nested_bindings = bindings_without_for_indices(bindings, indices);
-    Statement::For {
-        indices: indices
-            .iter()
-            .map(|index| flat::ForIndex {
-                ident: index.ident.clone(),
-                range: substitute_expr_with_bindings(&index.range, bindings),
-            })
-            .collect(),
-        equations: equations
-            .iter()
-            .map(|nested| substitute_statement_with_bindings(nested, &nested_bindings))
-            .collect(),
-    }
-}
-
-fn bindings_without_for_indices(
-    bindings: &HashMap<String, i64>,
-    indices: &[flat::ForIndex],
-) -> HashMap<String, i64> {
-    let mut nested_bindings = bindings.clone();
-    for index in indices {
-        nested_bindings.remove(&index.ident);
-    }
-    nested_bindings
-}
-
-fn substitute_if_statement_with_bindings(
-    cond_blocks: &[StatementBlock],
-    else_block: &Option<Vec<Statement>>,
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    Statement::If {
-        cond_blocks: cond_blocks
-            .iter()
-            .map(|block| substitute_statement_block_with_bindings(block, bindings))
-            .collect(),
-        else_block: else_block.as_ref().map(|stmts| {
-            stmts
-                .iter()
-                .map(|nested| substitute_statement_with_bindings(nested, bindings))
-                .collect()
-        }),
-    }
-}
-
-fn substitute_when_statement_with_bindings(
-    blocks: &[StatementBlock],
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    Statement::When(
-        blocks
-            .iter()
-            .map(|block| substitute_statement_block_with_bindings(block, bindings))
-            .collect(),
-    )
-}
-
-fn substitute_function_call_statement_with_bindings(
-    comp: &ComponentReference,
-    args: &[Expression],
-    outputs: &[Expression],
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    Statement::FunctionCall {
-        comp: substitute_component_ref_with_bindings(comp, bindings),
-        args: args
-            .iter()
-            .map(|arg| substitute_expr_with_bindings(arg, bindings))
-            .collect(),
-        outputs: outputs
-            .iter()
-            .map(|output| substitute_expr_with_bindings(output, bindings))
-            .collect(),
-    }
-}
-
-fn substitute_reinit_statement_with_bindings(
-    variable: &ComponentReference,
-    value: &Expression,
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    Statement::Reinit {
-        variable: substitute_component_ref_with_bindings(variable, bindings),
-        value: substitute_expr_with_bindings(value, bindings),
-    }
-}
-
-fn substitute_assert_statement_with_bindings(
-    condition: &Expression,
-    message: &Expression,
-    level: &Option<Expression>,
-    bindings: &HashMap<String, i64>,
-) -> Statement {
-    Statement::Assert {
-        condition: substitute_expr_with_bindings(condition, bindings),
-        message: substitute_expr_with_bindings(message, bindings),
-        level: level
-            .as_ref()
-            .map(|level_expr| substitute_expr_with_bindings(level_expr, bindings)),
     }
 }
 
@@ -1653,4 +1530,260 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn explicit(lhs: &str, rhs: Expression, origin: &str) -> rumoca_ir_dae::Equation {
+        rumoca_ir_dae::Equation::explicit(VarName::new(lhs), rhs, Span::DUMMY, origin.to_string())
+    }
+
+    fn reaches_source_alias_chain(
+        start: &str,
+        aliases: &std::collections::HashMap<String, String>,
+    ) -> bool {
+        let mut cur = start.to_string();
+        let mut visited = std::collections::HashSet::<String>::new();
+        for _ in 0..16 {
+            if cur == "src" || !visited.insert(cur.clone()) {
+                return cur == "src";
+            }
+            let next = match aliases.get(&cur) {
+                Some(next) => next,
+                None => return false,
+            };
+            cur = next.clone();
+        }
+        false
+    }
+
+    #[test]
+    fn canonicalize_discrete_assignments_reroutes_connection_aliases_for_defined_target() {
+        let mut dae = Dae::new();
+        for name in ["y", "u", "v"] {
+            dae.discrete_valued
+                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+        }
+
+        dae.f_m.push(explicit(
+            "y",
+            Expression::Literal(Literal::Integer(1)),
+            "explicit equation from source",
+        ));
+        dae.f_m.push(explicit(
+            "y",
+            Expression::VarRef {
+                name: VarName::new("u"),
+                subscripts: vec![],
+            },
+            "connection equation: y = u",
+        ));
+        dae.f_m.push(explicit(
+            "y",
+            Expression::VarRef {
+                name: VarName::new("v"),
+                subscripts: vec![],
+            },
+            "connection equation: y = v",
+        ));
+
+        canonicalize_discrete_assignment_equations(&mut dae);
+
+        let mut has_source = false;
+        let mut has_u_alias = false;
+        let mut has_v_alias = false;
+        for eq in &dae.f_m {
+            let Some(lhs) = eq.lhs.as_ref() else {
+                continue;
+            };
+            match lhs.as_str() {
+                "y" => {
+                    has_source |= matches!(eq.rhs, Expression::Literal(Literal::Integer(1)));
+                    assert!(
+                        !is_connection_equation_origin(&eq.origin),
+                        "y should keep only non-connection defining equation"
+                    );
+                }
+                "u" => {
+                    has_u_alias |= matches!(
+                        eq.rhs,
+                        Expression::VarRef { ref name, ref subscripts }
+                            if name.as_str() == "y" && subscripts.is_empty()
+                    );
+                }
+                "v" => {
+                    has_v_alias |= matches!(
+                        eq.rhs,
+                        Expression::VarRef { ref name, ref subscripts }
+                            if name.as_str() == "y" && subscripts.is_empty()
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        assert!(has_source, "expected source definition for y");
+        assert!(has_u_alias, "expected rerouted alias u = y");
+        assert!(has_v_alias, "expected rerouted alias v = y");
+    }
+
+    #[test]
+    fn canonicalize_discrete_assignments_resolves_reroute_target_collisions() {
+        let mut dae = Dae::new();
+        for name in ["y", "u", "v"] {
+            dae.discrete_valued
+                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+        }
+
+        // Source definition + alias into u.
+        dae.f_m.push(explicit(
+            "y",
+            Expression::Literal(Literal::Integer(1)),
+            "explicit equation from source",
+        ));
+        dae.f_m.push(explicit(
+            "y",
+            Expression::VarRef {
+                name: VarName::new("u"),
+                subscripts: vec![],
+            },
+            "connection equation: y = u",
+        ));
+        // Existing alias chain from u to v.
+        dae.f_m.push(explicit(
+            "u",
+            Expression::VarRef {
+                name: VarName::new("v"),
+                subscripts: vec![],
+            },
+            "connection equation: u = v",
+        ));
+
+        canonicalize_discrete_assignment_equations(&mut dae);
+
+        let mut lhs_counts: IndexMap<String, usize> = IndexMap::new();
+        let mut has_u_from_y = false;
+        let mut has_v_from_u = false;
+        let mut has_y_source = false;
+
+        for eq in &dae.f_m {
+            if let Some(lhs) = eq.lhs.as_ref() {
+                *lhs_counts.entry(lhs.as_str().to_string()).or_default() += 1;
+            }
+            match eq.lhs.as_ref().map(VarName::as_str) {
+                Some("y") => {
+                    has_y_source |= matches!(eq.rhs, Expression::Literal(Literal::Integer(1)));
+                }
+                Some("u") => {
+                    has_u_from_y |= matches!(
+                        eq.rhs,
+                        Expression::VarRef { ref name, ref subscripts }
+                            if name.as_str() == "y" && subscripts.is_empty()
+                    );
+                }
+                Some("v") => {
+                    has_v_from_u |= matches!(
+                        eq.rhs,
+                        Expression::VarRef { ref name, ref subscripts }
+                            if name.as_str() == "u" && subscripts.is_empty()
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        for (lhs, count) in lhs_counts {
+            assert!(
+                count <= 1,
+                "duplicate discrete assignment target after canonicalize: {lhs} ({count})"
+            );
+        }
+        assert!(has_y_source, "expected source definition for y");
+        assert!(has_u_from_y, "expected rerouted alias u = y");
+        assert!(has_v_from_u, "expected collision resolution alias v = u");
+    }
+
+    #[test]
+    fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
+        let mut dae = Dae::new();
+        for name in ["src", "a", "b", "c"] {
+            dae.discrete_valued
+                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+        }
+
+        // Source definition plus a connection chain that can oscillate under
+        // flip-based collision resolution if keep-edge selection is unstable.
+        dae.f_m.push(explicit(
+            "src",
+            Expression::Literal(Literal::Integer(1)),
+            "explicit equation from source",
+        ));
+        dae.f_m.push(explicit(
+            "src",
+            Expression::VarRef {
+                name: VarName::new("a"),
+                subscripts: vec![],
+            },
+            "connection equation: src = a",
+        ));
+        dae.f_m.push(explicit(
+            "a",
+            Expression::VarRef {
+                name: VarName::new("b"),
+                subscripts: vec![],
+            },
+            "connection equation: a = b",
+        ));
+        dae.f_m.push(explicit(
+            "b",
+            Expression::VarRef {
+                name: VarName::new("c"),
+                subscripts: vec![],
+            },
+            "connection equation: b = c",
+        ));
+
+        canonicalize_discrete_assignment_equations(&mut dae);
+
+        let mut lhs_counts: IndexMap<String, usize> = IndexMap::new();
+        let mut aliases = std::collections::HashMap::<String, String>::new();
+        let mut has_source = false;
+        for eq in &dae.f_m {
+            let Some(lhs) = eq.lhs.as_ref() else {
+                continue;
+            };
+            *lhs_counts.entry(lhs.as_str().to_string()).or_default() += 1;
+            if lhs.as_str() == "src" {
+                has_source |= matches!(eq.rhs, Expression::Literal(Literal::Integer(1)));
+            }
+            if let Expression::VarRef { name, subscripts } = &eq.rhs
+                && subscripts.is_empty()
+            {
+                aliases.insert(lhs.as_str().to_string(), name.as_str().to_string());
+            }
+        }
+
+        for (lhs, count) in lhs_counts {
+            assert!(
+                count <= 1,
+                "duplicate discrete assignment target after canonicalize: {lhs} ({count})"
+            );
+        }
+        assert!(has_source, "expected source definition for src");
+
+        assert!(
+            reaches_source_alias_chain("a", &aliases),
+            "expected a to remain connected to src, aliases={aliases:?}"
+        );
+        assert!(
+            reaches_source_alias_chain("b", &aliases),
+            "expected b to remain connected to src, aliases={aliases:?}"
+        );
+        assert!(
+            reaches_source_alias_chain("c", &aliases),
+            "expected c to remain connected to src, aliases={aliases:?}"
+        );
+    }
 }
