@@ -102,12 +102,14 @@ pub(super) fn is_input_default_equation(
 
 /// Get the component-defined connection side whose peer is not a continuous unknown.
 ///
-/// If that side already has a component equation, this connection is usually a
-/// redundant alias constraint and can be skipped.
+/// Returns `(candidate_alias_side, peer_side)`.
+///
+/// If `candidate_alias_side` already has a component equation, this connection can
+/// be a redundant alias constraint and may be skipped.
 pub(super) fn get_component_alias_connection_side(
     eq: &flat::Equation,
     dae: &dae::Dae,
-) -> Option<flat::VarName> {
+) -> Option<(flat::VarName, Option<flat::VarName>)> {
     if !eq.origin.is_connection() {
         return None;
     }
@@ -130,12 +132,77 @@ pub(super) fn get_component_alias_connection_side(
         .is_some_and(|r| name_resolution::is_dae_continuous_unknown_name(dae, r));
 
     if !rhs_is_unknown {
-        lhs_name
+        lhs_name.map(|lhs| (lhs, rhs_name))
     } else if !lhs_is_unknown {
-        rhs_name
+        rhs_name.map(|rhs| (rhs, lhs_name))
     } else {
         None
     }
+}
+
+fn is_top_level_interface_input_name(
+    name: &flat::VarName,
+    flat: &flat::Model,
+    dae: &dae::Dae,
+) -> bool {
+    if !name_resolution::is_dae_input_name(dae, name) {
+        return false;
+    }
+    get_top_level_prefix(name.as_str())
+        .is_some_and(|prefix| flat.top_level_input_components.contains(prefix.as_str()))
+}
+
+fn output_alias_skip_reason(
+    eq: &flat::Equation,
+    ctx: &EqFilterContext<'_>,
+    dae: &dae::Dae,
+) -> Option<flat::VarName> {
+    let (output_name, peer_name) = get_component_alias_connection_side(eq, dae)?;
+    if !output_has_component_equation(&output_name, ctx.outputs_with_component_eqs) {
+        return None;
+    }
+
+    // Preserve discrete output aliases (e.g. BooleanTable internal output ->
+    // block output). Dropping these can disconnect runtime-discrete signal paths.
+    let is_discrete_signal = |name: &flat::VarName| {
+        name_resolution::resolve_var_name_with_subscript_fallback(name, |candidate| {
+            dae.discrete_valued.contains_key(candidate)
+                || dae.discrete_reals.contains_key(candidate)
+                || ctx.flat.variables.get(candidate).is_some_and(|var| {
+                    var.is_discrete_type || matches!(var.variability, ast::Variability::Discrete(_))
+                })
+        })
+        .is_some()
+    };
+    if is_discrete_signal(&output_name) || peer_name.as_ref().is_some_and(is_discrete_signal) {
+        return None;
+    }
+
+    // Preserve internal input aliases (e.g. connector inputs in component internals).
+    // Dropping these aliases disconnects discrete signal paths.
+    let preserve_internal_input_alias = peer_name.as_ref().is_some_and(|peer| {
+        let peer_is_discrete =
+            name_resolution::resolve_var_name_with_subscript_fallback(peer, |candidate| {
+                dae.discrete_valued.contains_key(candidate)
+                    || dae.discrete_reals.contains_key(candidate)
+                    || ctx.flat.variables.get(candidate).is_some_and(|var| {
+                        var.is_discrete_type
+                            || matches!(var.variability, ast::Variability::Discrete(_))
+                    })
+            })
+            .is_some();
+        let peer_is_component_consumed =
+            name_resolution::resolve_name_against_set(peer, ctx.non_connection_rhs_var_refs)
+                .is_some();
+        peer_is_discrete
+            && peer_is_component_consumed
+            && !is_top_level_interface_input_name(peer, ctx.flat, dae)
+    });
+    if preserve_internal_input_alias {
+        return None;
+    }
+
+    Some(output_name)
 }
 
 /// Collect variables that have component equations (non-connection equations).
@@ -171,6 +238,35 @@ fn collect_vars_with_component_equations(flat: &flat::Model) -> HashSet<flat::Va
     }
 
     outputs_with_equations
+}
+
+fn collect_non_connection_rhs_var_refs(flat: &flat::Model) -> HashSet<flat::VarName> {
+    let mut rhs_var_refs = HashSet::default();
+
+    for eq in &flat.equations {
+        if eq.origin.is_connection() {
+            continue;
+        }
+
+        match &eq.residual {
+            flat::Expression::Binary {
+                op: ast::OpBinary::Sub(_),
+                rhs,
+                ..
+            } => {
+                let mut refs = Vec::new();
+                super::collect_var_refs_skip_reductions(rhs, &mut refs);
+                rhs_var_refs.extend(refs.into_iter().map(|var_ref| var_ref.name));
+            }
+            expr => {
+                let mut refs = Vec::new();
+                super::collect_var_refs_skip_reductions(expr, &mut refs);
+                rhs_var_refs.extend(refs.into_iter().map(|var_ref| var_ref.name));
+            }
+        }
+    }
+
+    rhs_var_refs
 }
 
 fn output_has_component_equation(
@@ -289,6 +385,7 @@ fn log_skip(debug_eq_filter: bool, reason: &str, eq: &flat::Equation) {
 struct EqFilterContext<'a> {
     flat: &'a flat::Model,
     outputs_with_component_eqs: &'a HashSet<flat::VarName>,
+    non_connection_rhs_var_refs: &'a HashSet<flat::VarName>,
     top_level_oc_connectors: &'a HashSet<String>,
     debug_eq_filter: bool,
 }
@@ -320,9 +417,7 @@ fn skip_equation_pre_classification(
         return true;
     }
 
-    if let Some(output_name) = get_component_alias_connection_side(eq, dae)
-        && output_has_component_equation(&output_name, ctx.outputs_with_component_eqs)
-    {
+    if let Some(output_name) = output_alias_skip_reason(eq, ctx, dae) {
         stats.skipped_output_alias += 1;
         if ctx.debug_eq_filter {
             eprintln!(
@@ -615,6 +710,7 @@ pub(super) fn classify_equations(
     prefix_counts: &FxHashMap<String, usize>,
 ) {
     let outputs_with_component_eqs = collect_vars_with_component_equations(flat);
+    let non_connection_rhs_var_refs = collect_non_connection_rhs_var_refs(flat);
     let top_level_oc_connectors = collect_top_level_overconstrained_connectors(flat);
     let linearized_embedded_lhs_bases = super::collect_linearized_embedded_lhs_bases(flat);
     let debug_eq_filter = std::env::var("RUMOCA_DEBUG_EQ_FILTER").is_ok();
@@ -623,6 +719,7 @@ pub(super) fn classify_equations(
     let filter_ctx = EqFilterContext {
         flat,
         outputs_with_component_eqs: &outputs_with_component_eqs,
+        non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
         top_level_oc_connectors: &top_level_oc_connectors,
         debug_eq_filter,
     };
@@ -664,9 +761,11 @@ pub(super) fn classify_equations(
 mod tests {
     use std::collections::HashSet;
 
+    use rumoca_core::Span;
+    use rumoca_ir_dae as dae;
     use rumoca_ir_flat as flat;
 
-    use super::output_has_component_equation;
+    use super::{EqFilterContext, output_alias_skip_reason, output_has_component_equation};
 
     #[test]
     fn test_output_has_component_equation_matches_unsubscripted_base() {
@@ -686,5 +785,180 @@ mod tests {
             &flat::VarName::new("bus[1].signal[2]"),
             &outputs_with_component_eqs
         ));
+    }
+
+    #[test]
+    fn test_output_alias_skip_preserves_internal_input_alias_connection() {
+        let flat_model = flat::Model::new();
+        let outputs_with_component_eqs: HashSet<flat::VarName> =
+            [flat::VarName::new("booleanPulse1.y")]
+                .into_iter()
+                .collect();
+        let non_connection_rhs_var_refs: HashSet<flat::VarName> =
+            [flat::VarName::new("multiSwitch1.u")].into_iter().collect();
+        let top_level_oc_connectors: HashSet<String> = HashSet::default();
+        let ctx = EqFilterContext {
+            flat: &flat_model,
+            outputs_with_component_eqs: &outputs_with_component_eqs,
+            non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
+            top_level_oc_connectors: &top_level_oc_connectors,
+            debug_eq_filter: false,
+        };
+
+        let mut dae_model = dae::Dae::new();
+        dae_model.inputs.insert(
+            flat::VarName::new("multiSwitch1.u"),
+            dae::Variable::new(flat::VarName::new("multiSwitch1.u")),
+        );
+        dae_model.discrete_valued.insert(
+            flat::VarName::new("multiSwitch1.u"),
+            dae::Variable::new(flat::VarName::new("multiSwitch1.u")),
+        );
+
+        let eq = flat::Equation::new(
+            flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: flat::VarName::new("booleanPulse1.y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::VarRef {
+                    name: flat::VarName::new("multiSwitch1.u[1]"),
+                    subscripts: vec![],
+                }),
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::Connection {
+                lhs: "booleanPulse1.y".to_string(),
+                rhs: "multiSwitch1.u[1]".to_string(),
+            },
+        );
+
+        assert!(
+            output_alias_skip_reason(&eq, &ctx, &dae_model).is_none(),
+            "internal input alias connections must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_output_alias_skip_preserves_discrete_output_alias_connection() {
+        let mut flat_model = flat::Model::new();
+        flat_model.variables.insert(
+            flat::VarName::new("table1.y"),
+            flat::Variable {
+                name: flat::VarName::new("table1.y"),
+                is_discrete_type: true,
+                ..Default::default()
+            },
+        );
+        flat_model.variables.insert(
+            flat::VarName::new("table1.realToBoolean.y"),
+            flat::Variable {
+                name: flat::VarName::new("table1.realToBoolean.y"),
+                is_discrete_type: true,
+                ..Default::default()
+            },
+        );
+
+        let outputs_with_component_eqs: HashSet<flat::VarName> =
+            [flat::VarName::new("table1.realToBoolean.y")]
+                .into_iter()
+                .collect();
+        let non_connection_rhs_var_refs: HashSet<flat::VarName> = HashSet::default();
+        let top_level_oc_connectors: HashSet<String> = HashSet::default();
+        let ctx = EqFilterContext {
+            flat: &flat_model,
+            outputs_with_component_eqs: &outputs_with_component_eqs,
+            non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
+            top_level_oc_connectors: &top_level_oc_connectors,
+            debug_eq_filter: false,
+        };
+
+        let mut dae_model = dae::Dae::new();
+        dae_model.outputs.insert(
+            flat::VarName::new("table1.y"),
+            dae::Variable::new(flat::VarName::new("table1.y")),
+        );
+        dae_model.outputs.insert(
+            flat::VarName::new("table1.realToBoolean.y"),
+            dae::Variable::new(flat::VarName::new("table1.realToBoolean.y")),
+        );
+        dae_model.discrete_valued.insert(
+            flat::VarName::new("table1.y"),
+            dae::Variable::new(flat::VarName::new("table1.y")),
+        );
+        dae_model.discrete_valued.insert(
+            flat::VarName::new("table1.realToBoolean.y"),
+            dae::Variable::new(flat::VarName::new("table1.realToBoolean.y")),
+        );
+
+        let eq = flat::Equation::new(
+            flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: flat::VarName::new("table1.realToBoolean.y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::VarRef {
+                    name: flat::VarName::new("table1.y"),
+                    subscripts: vec![],
+                }),
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::Connection {
+                lhs: "table1.realToBoolean.y".to_string(),
+                rhs: "table1.y".to_string(),
+            },
+        );
+
+        assert!(
+            output_alias_skip_reason(&eq, &ctx, &dae_model).is_none(),
+            "discrete output alias connections must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_output_alias_skip_applies_when_both_sides_are_component_defined() {
+        let flat_model = flat::Model::new();
+        let outputs_with_component_eqs: HashSet<flat::VarName> =
+            [flat::VarName::new("source.y"), flat::VarName::new("sink.u")]
+                .into_iter()
+                .collect();
+        let non_connection_rhs_var_refs: HashSet<flat::VarName> = HashSet::default();
+        let top_level_oc_connectors: HashSet<String> = HashSet::default();
+        let ctx = EqFilterContext {
+            flat: &flat_model,
+            outputs_with_component_eqs: &outputs_with_component_eqs,
+            non_connection_rhs_var_refs: &non_connection_rhs_var_refs,
+            top_level_oc_connectors: &top_level_oc_connectors,
+            debug_eq_filter: false,
+        };
+
+        let dae_model = dae::Dae::new();
+
+        let eq = flat::Equation::new(
+            flat::Expression::Binary {
+                op: flat::OpBinary::Sub(Default::default()),
+                lhs: Box::new(flat::Expression::VarRef {
+                    name: flat::VarName::new("source.y"),
+                    subscripts: vec![],
+                }),
+                rhs: Box::new(flat::Expression::VarRef {
+                    name: flat::VarName::new("sink.u"),
+                    subscripts: vec![],
+                }),
+            },
+            Span::DUMMY,
+            flat::EquationOrigin::Connection {
+                lhs: "source.y".to_string(),
+                rhs: "sink.u".to_string(),
+            },
+        );
+
+        assert_eq!(
+            output_alias_skip_reason(&eq, &ctx, &dae_model).as_ref(),
+            Some(&flat::VarName::new("source.y")),
+            "alias skip should apply for non-preserved output aliases"
+        );
     }
 }

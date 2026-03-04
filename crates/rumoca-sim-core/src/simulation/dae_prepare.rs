@@ -1353,6 +1353,118 @@ fn is_connection_equation_origin(origin: &str) -> bool {
     origin.starts_with("connection equation:")
 }
 
+fn collect_non_state_continuous_unknown_names(dae: &Dae) -> HashSet<String> {
+    dae.algebraics
+        .keys()
+        .chain(dae.outputs.keys())
+        .chain(dae.derivative_aliases.keys())
+        .map(|name| name.as_str().to_string())
+        .collect()
+}
+
+fn expression_contains_any_der_call(expr: &Expression) -> bool {
+    match expr {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            ..
+        } => true,
+        Expression::Binary { lhs, rhs, .. } => {
+            expression_contains_any_der_call(lhs) || expression_contains_any_der_call(rhs)
+        }
+        Expression::Unary { rhs, .. }
+        | Expression::FieldAccess { base: rhs, .. }
+        | Expression::Index { base: rhs, .. } => expression_contains_any_der_call(rhs),
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            args.iter().any(expression_contains_any_der_call)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expression_contains_any_der_call(cond) || expression_contains_any_der_call(value)
+            }) || expression_contains_any_der_call(else_branch)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            elements.iter().any(expression_contains_any_der_call)
+        }
+        Expression::Range { start, step, end } => {
+            expression_contains_any_der_call(start)
+                || step
+                    .as_deref()
+                    .is_some_and(expression_contains_any_der_call)
+                || expression_contains_any_der_call(end)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expression_contains_any_der_call(expr)
+                || indices
+                    .iter()
+                    .any(|index| expression_contains_any_der_call(&index.range))
+                || filter
+                    .as_deref()
+                    .is_some_and(expression_contains_any_der_call)
+        }
+        Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => false,
+    }
+}
+
+fn equation_defining_expr_for_unknown(eq: &Equation, unknown_name: &VarName) -> Option<Expression> {
+    if let Some(lhs) = eq.lhs.as_ref()
+        && lhs == unknown_name
+    {
+        if expression_contains_any_der_call(&eq.rhs) {
+            return None;
+        }
+        return Some(eq.rhs.clone());
+    }
+    if let Some((coef, remainder)) = split_linear_target(&eq.rhs, unknown_name) {
+        let defining_expr = match coef {
+            1 => sub_expr(zero_expr(), remainder),
+            -1 => remainder,
+            _ => return None,
+        };
+        if expression_contains_any_der_call(&defining_expr) {
+            return None;
+        }
+        return Some(defining_expr);
+    }
+    None
+}
+
+fn defining_expr_references_non_state_alias_that_depends_on_state(
+    dae: &Dae,
+    defining_expr: &Expression,
+    state_name: &VarName,
+    non_state_unknown_names: &HashSet<String>,
+) -> bool {
+    let mut refs = HashSet::new();
+    defining_expr.collect_var_refs(&mut refs);
+    refs.into_iter().any(|ref_name| {
+        if !non_state_unknown_names.contains(ref_name.as_str()) {
+            return false;
+        }
+        let mut has_state_dependent_def = false;
+        let mut has_state_independent_def = false;
+        for eq in &dae.f_x {
+            let Some(defining_expr) = equation_defining_expr_for_unknown(eq, &ref_name) else {
+                continue;
+            };
+            if expr_contains_var(&defining_expr, state_name)
+                || expr_contains_der_of(&defining_expr, state_name)
+            {
+                has_state_dependent_def = true;
+            } else {
+                has_state_independent_def = true;
+            }
+        }
+        has_state_dependent_def && !has_state_independent_def
+    })
+}
+
 fn apply_direct_demotion_plans(
     dae: &mut Dae,
     substitutions: &HashMap<String, DirectStateDemotionPlan>,
@@ -1380,6 +1492,10 @@ fn apply_direct_demotion_plans(
 /// can be resolved without introducing derivatives of non-state variables, the
 /// state is demoted. States assigned in `when` clauses are preserved, since
 /// they participate in event/reinit updates and must remain in the state vector.
+#[expect(
+    clippy::too_many_lines,
+    reason = "demotion pass is intentionally linearized as a single staged filter"
+)]
 pub fn demote_direct_assigned_states(dae: &mut Dae) -> usize {
     let max_rounds = dae.states.len().clamp(1, 8);
     let mut total_demoted = 0usize;
@@ -1391,6 +1507,7 @@ pub fn demote_direct_assigned_states(dae: &mut Dae) -> usize {
         else {
             break;
         };
+        let non_state_unknown_names = collect_non_state_continuous_unknown_names(dae);
 
         let der_map = build_relaxed_derivative_map(dae);
         let mut substitutions: HashMap<String, DirectStateDemotionPlan> = HashMap::new();
@@ -1424,6 +1541,14 @@ pub fn demote_direct_assigned_states(dae: &mut Dae) -> usize {
                 counters.n_skip_der_in_defining_expr += 1;
                 continue;
             }
+            if defining_expr_references_non_state_alias_that_depends_on_state(
+                dae,
+                &defining_expr,
+                &state_name,
+                &non_state_unknown_names,
+            ) {
+                continue;
+            }
             if expr_contains_unsliced_vector_ref(&defining_expr, dae) {
                 counters.n_skip_unsliced_vector_ref += 1;
                 continue;
@@ -1449,6 +1574,10 @@ pub fn demote_direct_assigned_states(dae: &mut Dae) -> usize {
             ) else {
                 continue;
             };
+            if expr_contains_der_of(&der_expr, &state_name) {
+                counters.n_skip_self_der += 1;
+                continue;
+            }
             if expr_contains_der_of_non_state(&der_expr, &state_name_set) {
                 counters.n_skip_non_state_der += 1;
                 continue;
@@ -1809,3 +1938,6 @@ pub fn normalize_ode_equation_signs(dae: &mut Dae) {
         }
     }
 }
+
+#[cfg(test)]
+mod dae_prepare_demotion_tests;

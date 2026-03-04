@@ -682,6 +682,28 @@ fn test_runtime_projection_required_for_direct_assignment_cycles() {
     );
 }
 
+#[test]
+fn test_runtime_projection_required_for_runtime_discrete_builtins() {
+    let mut dae = dae::Dae::new();
+    dae.algebraics.insert(
+        dae::VarName::new("x"),
+        dae::Variable::new(dae::VarName::new("x")),
+    );
+    dae.f_x.push(eq_from(dae::Expression::Binary {
+        op: dae::OpBinary::Sub(Default::default()),
+        lhs: Box::new(var("x")),
+        rhs: Box::new(dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Pre,
+            args: vec![var("x")],
+        }),
+    }));
+
+    assert!(
+        runtime_projection_required(&dae, 0),
+        "assignments that depend on runtime discrete/event builtins must use runtime projection"
+    );
+}
+
 // =========================================================================
 // AD Jacobian vs Finite-Difference comparison tests
 // =========================================================================

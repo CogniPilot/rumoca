@@ -1,55 +1,68 @@
 {
-  "git_commit": "2c88021a366d109868374632f42b7d0becb57904",
+  "git_commit": "85770acbdd3d7366324750b95ad49669fea8ff7f",
   "msl_version": "v4.1.0",
   "sim_timeout_seconds": 10.0,
   "simulatable_attempted": 180,
-  "compiled_models": 173,
-  "balanced_models": 171,
-  "unbalanced_models": 2,
+  "compiled_models": 174,
+  "balanced_models": 173,
+  "unbalanced_models": 1,
   "partial_models": 0,
-  "balance_denominator": 173,
-  "initial_balanced_models": 172,
+  "balance_denominator": 174,
+  "initial_balanced_models": 173,
   "initial_unbalanced_models": 1,
   "sim_target_models": 180,
-  "sim_attempted": 173,
-  "sim_ok": 128,
-  "sim_success_rate": 0.7398843930635838,
+  "sim_attempted": 174,
+  "sim_ok": 126,
+  "sim_success_rate": 0.7241379310344828,
   "runtime_ratio_stats": {
     "system_ratio_both_success": {
-      "sample_count": 123,
-      "min": 0.00774096346051043,
-      "median": 0.29270137525881773,
-      "mean": 0.6110327222049684,
-      "max": 9.47333658579294
+      "sample_count": 118,
+      "min": 0.009632193733877616,
+      "median": 0.39629123596244287,
+      "mean": 0.7115259058708974,
+      "max": 4.8897180139796035
     },
     "wall_ratio_both_success": {
-      "sample_count": 123,
-      "min": 0.16783846830376478,
-      "median": 6.5561874944447,
-      "mean": 11.826152236560874,
-      "max": 118.51706690532464
+      "sample_count": 118,
+      "min": 1.4912121354912573,
+      "median": 46.441883379640245,
+      "mean": 55.083224714623825,
+      "max": 266.1778609948003
     }
   },
   "trace_accuracy_stats": {
-    "models_compared": 79,
+    "models_compared": 111,
     "missing_trace_models": 1,
-    "skipped_models": 44,
-    "agreement_high": 36,
-    "agreement_minor": 6,
-    "agreement_deviation": 37,
-    "deviation_score": {
-      "sample_count": 79,
+    "skipped_models": 7,
+    "agreement_high": 51,
+    "agreement_high_percent": 45.945945945945944,
+    "agreement_minor": 21,
+    "agreement_minor_percent": 18.91891891891892,
+    "agreement_deviation": 39,
+    "agreement_deviation_percent": 35.13513513513514,
+    "total_channels_compared": 2675,
+    "bad_channels_total": 918,
+    "severe_channels_total": 262,
+    "bad_channels_percent": 34.3177570093458,
+    "severe_channels_percent": 9.794392523364486,
+    "violation_mass_total": 400.4737960623892,
+    "violation_mass_mean_per_model": 3.607872036598101,
+    "violation_mass_mean_per_channel": 0.14970983030369692,
+    "models_with_bad_channel": null,
+    "models_with_severe_channel": null,
+    "models_with_any_channel_deviation": 46,
+    "models_with_any_channel_deviation_percent": 41.44144144144144,
+    "max_model_channel_deviation_percent": 100.0,
+    "bounded_normalized_l1": {
+      "sample_count": 111,
       "min": 0.0,
-      "median": 0.03033246969022784,
-      "mean": 128.5023558538044,
-      "max": 9999.99961398455
+      "median": 0.001996007984032007,
+      "mean": 0.09199212527428256,
+      "max": 0.9999966267891848
     },
-    "normalized_rmse": {
-      "sample_count": 79,
-      "min": 0.0,
-      "median": 0.1350859019398865,
-      "mean": 12911.275473748694,
-      "max": 1000000.0747138234
-    }
+    "mean_model_mean_channel_bounded_normalized_l1": 0.114830450657154,
+    "max_model_max_channel_bounded_normalized_l1": 1.0,
+    "model_mean_channel_bounded_normalized_l1": null,
+    "model_max_channel_bounded_normalized_l1": null
   }
 }

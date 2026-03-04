@@ -98,7 +98,7 @@ where
             },
         )?;
     }
-    rumoca_sim_core::refresh_pre_values_from_state(
+    rumoca_sim_core::refresh_pre_values_from_state_with_initial_assignments(
         dae,
         solver.state().y.as_slice(),
         param_values,

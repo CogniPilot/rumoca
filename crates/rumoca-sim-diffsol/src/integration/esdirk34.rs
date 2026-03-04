@@ -3,7 +3,7 @@ use diffsol::{OdeSolverMethod, VectorHost};
 use super::{
     DiffsolBackend, IntegrationOutput, SolverLoopContext,
     apply_initial_sections_and_sync_startup_state, build_compiled_discrete_event_context,
-    configure_solver_problem_with_profile,
+    build_output_names, configure_solver_problem_with_profile,
 };
 use crate::{
     Dae, LS, MassMatrix, OutputBuffers, SimError, SimOptions, SolverStartupProfile, TimeoutBudget,
@@ -44,6 +44,8 @@ pub(crate) fn try_integrate_esdirk34(
         n_x,
         budget,
     )?;
+    let mut solver_names = build_output_names(dae);
+    solver_names.truncate(n_total);
     let output = IntegrationOutput::new(opts, n_total, solver.state().y.as_slice());
     let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
     let ctx = SolverLoopContext {
@@ -56,7 +58,7 @@ pub(crate) fn try_integrate_esdirk34(
         budget,
     };
     let (output, stats, final_t) = {
-        let mut backend = DiffsolBackend::new(solver, output, ctx, None);
+        let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names);
         let stats = match rumoca_sim_core::run_with_runtime_schedule(
             &mut backend,
             dae,

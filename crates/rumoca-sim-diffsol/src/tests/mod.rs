@@ -10,222 +10,7 @@ type OpBinary = dae::OpBinary;
 type Statement = dae::Statement;
 type VarName = dae::VarName;
 type Variable = dae::Variable;
-
-#[test]
-fn test_simulate_no_state_preserves_runtime_equation_output_alias() {
-    let mut dae = Dae::new();
-    dae.outputs
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-    dae.algebraics
-        .insert(VarName::new("z"), Variable::new(VarName::new("z")));
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(var_ref("y"), var_ref("z")),
-        span: Span::DUMMY,
-        origin: "alias".to_string(),
-        scalar_count: 1,
-    });
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            var_ref("y"),
-            Expression::If {
-                branches: vec![(
-                    Expression::Binary {
-                        op: OpBinary::Gt(Default::default()),
-                        lhs: Box::new(var_ref("time")),
-                        rhs: Box::new(real(0.5)),
-                    },
-                    real(4.0),
-                )],
-                else_branch: Box::new(real(3.0)),
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "runtime-y".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_start: 0.0,
-            t_end: 1.0,
-            dt: Some(0.5),
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    )
-    .expect("simulation should succeed");
-
-    let y_idx = result
-        .names
-        .iter()
-        .position(|name| name == "y" || name == "y[1]")
-        .unwrap_or_else(|| panic!("y should appear in outputs, got {:?}", result.names));
-    let y_series = &result.data[y_idx];
-    assert_eq!(y_series.len(), result.times.len());
-    assert!(
-        (y_series.first().copied().unwrap_or_default() - 3.0).abs() < 1.0e-9,
-        "expected y(0) from runtime algorithm branch"
-    );
-    assert!(
-        (y_series.last().copied().unwrap_or_default() - 4.0).abs() < 1.0e-9,
-        "expected y(t_end) from runtime algorithm branch"
-    );
-}
-
-#[test]
-fn test_simulate_no_state_time_guard_step_trace() {
-    let mut dae = Dae::new();
-    dae.outputs
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-
-    // 0 = y - (if time > 5 then 1 else 0)
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            var_ref("y"),
-            Expression::If {
-                branches: vec![(
-                    Expression::Binary {
-                        op: OpBinary::Gt(Default::default()),
-                        lhs: Box::new(var_ref("time")),
-                        rhs: Box::new(real(5.0)),
-                    },
-                    real(1.0),
-                )],
-                else_branch: Box::new(real(0.0)),
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "time_guard_step".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_start: 0.0,
-            t_end: 10.0,
-            dt: Some(0.5),
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    )
-    .expect("simulation should succeed");
-
-    let y_idx = result
-        .names
-        .iter()
-        .position(|name| name == "y" || name == "y[1]")
-        .unwrap_or_else(|| panic!("y should appear in outputs, got {:?}", result.names));
-    let y_series = &result.data[y_idx];
-    assert_eq!(y_series.len(), result.times.len());
-
-    let mut saw_post_switch = false;
-    for (&t, &y) in result.times.iter().zip(y_series.iter()) {
-        if t <= 5.0 + 1.0e-12 {
-            assert!(
-                (y - 0.0).abs() < 1.0e-9,
-                "expected y=0.0 up to t=5, got y={y} at t={t}"
-            );
-        } else {
-            saw_post_switch = true;
-            assert!(
-                (y - 1.0).abs() < 1.0e-9,
-                "expected y=1.0 after t=5, got y={y} at t={t}"
-            );
-        }
-    }
-    assert!(
-        saw_post_switch,
-        "expected at least one sample strictly after t=5"
-    );
-}
-
-#[test]
-fn test_simulate_no_state_propagates_aliases_after_runtime_algorithm_updates() {
-    let mut dae = Dae::new();
-    dae.algebraics
-        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
-    dae.algebraics
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.algebraics
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
-
-    // Keep one extra algebraic equation so `y` and `x` are both inside the
-    // no-state solver vector prefix (`n_total = f_x.len()` after dummy state
-    // injection).
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(var_ref("a"), real(0.0)),
-        span: Span::DUMMY,
-        origin: "a_zero".to_string(),
-        scalar_count: 1,
-    });
-    // 0 = x - y (runtime-driven alias)
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(var_ref("x"), var_ref("y")),
-        span: Span::DUMMY,
-        origin: "alias_xy".to_string(),
-        scalar_count: 1,
-    });
-
-    // Runtime equation drives y.
-    dae.f_x.push(dae::Equation {
-        lhs: None,
-        rhs: sub(
-            var_ref("y"),
-            Expression::If {
-                branches: vec![(
-                    Expression::Binary {
-                        op: OpBinary::Gt(Default::default()),
-                        lhs: Box::new(var_ref("time")),
-                        rhs: Box::new(real(0.5)),
-                    },
-                    real(2.0),
-                )],
-                else_branch: Box::new(real(1.0)),
-            },
-        ),
-        span: Span::DUMMY,
-        origin: "runtime_y".to_string(),
-        scalar_count: 1,
-    });
-
-    let result = simulate(
-        &dae,
-        &SimOptions {
-            t_start: 0.0,
-            t_end: 1.0,
-            dt: Some(0.5),
-            max_wall_seconds: Some(1.0),
-            ..SimOptions::default()
-        },
-    )
-    .expect("simulation should succeed");
-
-    let idx = |name: &str| -> usize {
-        result
-            .names
-            .iter()
-            .position(|n| n == name)
-            .unwrap_or_else(|| panic!("missing channel {name}, got {:?}", result.names))
-    };
-    let y = &result.data[idx("y")];
-    let x = &result.data[idx("x")];
-    assert_eq!(y.len(), result.times.len());
-    assert_eq!(x.len(), result.times.len());
-
-    for (&yv, &xv) in y.iter().zip(x.iter()) {
-        assert!(
-            (xv - yv).abs() < 1.0e-9,
-            "expected x to alias y, got x={xv} y={yv}"
-        );
-    }
-}
+mod no_state_runtime_alias;
 
 #[test]
 fn test_sim_options_default() {
@@ -237,6 +22,103 @@ fn test_sim_options_default() {
     assert!(opts.scalarize);
     assert_eq!(opts.max_wall_seconds, None);
     assert_eq!(opts.solver_mode, SimSolverMode::Auto);
+}
+
+#[test]
+fn test_stateful_discrete_updates_respect_intermediate_scheduled_events() {
+    let mut dae = Dae::new();
+
+    // One continuous state so we exercise the full stateful integration path.
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.outputs
+        .insert(VarName::new("y_out"), Variable::new(VarName::new("y_out")));
+    dae.discrete_reals
+        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+
+    // 0 = der(x)
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![var_ref("x")],
+            },
+            real(0.0),
+        ),
+        span: Span::DUMMY,
+        origin: "x_hold".to_string(),
+        scalar_count: 1,
+    });
+    // 0 = y_out - y
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var_ref("y_out"), var_ref("y")),
+        span: Span::DUMMY,
+        origin: "y_alias".to_string(),
+        scalar_count: 1,
+    });
+
+    // At each scheduled event tick: y := pre(y) + 1, else hold pre(y).
+    dae.f_z.push(dae::Equation {
+        lhs: Some(VarName::new("y")),
+        rhs: Expression::If {
+            branches: vec![(
+                Expression::BuiltinCall {
+                    function: BuiltinFunction::Sample,
+                    args: vec![real(0.0), real(0.01)],
+                },
+                Expression::Binary {
+                    op: OpBinary::Add(Default::default()),
+                    lhs: Box::new(Expression::BuiltinCall {
+                        function: BuiltinFunction::Pre,
+                        args: vec![var_ref("y")],
+                    }),
+                    rhs: Box::new(real(1.0)),
+                },
+            )],
+            else_branch: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Pre,
+                args: vec![var_ref("y")],
+            }),
+        },
+        span: Span::DUMMY,
+        origin: "y_counter".to_string(),
+        scalar_count: 1,
+    });
+
+    // Four event instants between output samples.
+    dae.scheduled_time_events = vec![0.01, 0.02, 0.03, 0.04];
+
+    let result = simulate(
+        &dae,
+        &SimOptions {
+            t_start: 0.0,
+            t_end: 0.05,
+            dt: Some(0.05), // only [0.0, 0.05] output samples
+            max_wall_seconds: Some(2.0),
+            ..SimOptions::default()
+        },
+    )
+    .expect("stateful simulation should succeed");
+
+    let y_out_idx = result
+        .names
+        .iter()
+        .position(|name| name == "y_out")
+        .unwrap_or_else(|| panic!("missing y_out channel, got {:?}", result.names));
+    let y_out = &result.data[y_out_idx];
+    assert_eq!(y_out.len(), result.times.len());
+    assert_eq!(result.times.len(), 2, "expected coarse output schedule");
+
+    // With four scheduled events in (0, 0.05), y should increment four times.
+    let y0 = y_out.first().copied().unwrap_or_default();
+    let y_end = y_out.last().copied().unwrap_or_default();
+    assert!(
+        (y_end - (y0 + 4.0)).abs() < 1.0e-9,
+        "expected y_out to increment by four across scheduled events, got start={y0} end={y_end}; series={y_out:?}, times={:?}",
+        result.times
+    );
 }
 
 #[test]
@@ -276,6 +158,21 @@ fn test_record_outputs_until_rejects_sample_beyond_tolerance() {
 
     assert_eq!(t_out_idx, 1);
     assert!(captured.is_empty());
+}
+
+#[test]
+fn test_output_buffers_overwrite_runtime_values_at_event_time() {
+    let mut buf = OutputBuffers::new(1, 3);
+    buf.record(0.0, &[1.0]);
+    buf.record(0.5, &[2.0]);
+    buf.record(1.0, &[3.0]);
+    buf.set_runtime_channels(vec!["flag".to_string()], 3);
+    buf.record_runtime_values(&[0.0]);
+    buf.record_runtime_values(&[0.0]);
+    buf.record_runtime_values(&[0.0]);
+
+    assert!(buf.overwrite_runtime_values_at_time(0.5, &[1.0]));
+    assert_eq!(buf.runtime_data[0], vec![0.0, 1.0, 0.0]);
 }
 
 #[test]

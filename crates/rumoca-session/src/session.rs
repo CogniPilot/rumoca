@@ -10,6 +10,7 @@ use rumoca_core::{
     DefId, Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, SourceId,
     SourceMap, Span,
 };
+use rumoca_eval_runtime::eval::clear_pre_values;
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
@@ -1409,6 +1410,10 @@ fn flatten_options_for_tree() -> FlattenOptions {
 /// Type checking runs after instantiation so it has full access to the
 /// modification context for dimension evaluation (MLS §10.1).
 fn compile_model_internal(tree: &ast::ClassTree, model_name: &str) -> PhaseResult {
+    // Prevent thread-local `pre()` state from leaking across model compiles
+    // when worker threads are reused (e.g., MSL parallel compile batches).
+    clear_pre_values();
+
     let experiment_settings = experiment_settings_for_model(tree, model_name);
 
     // Phase 1: Instantiate

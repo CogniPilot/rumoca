@@ -1785,7 +1785,7 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
         VarName::new("outBus.x"),
         flat::Variable {
             name: VarName::new("outBus.x"),
-            variability: ast::Variability::Discrete(ast::Token::default()),
+            variability: ast::Variability::Parameter(ast::Token::default()),
             is_primitive: true,
             ..Default::default()
         },
@@ -1823,7 +1823,7 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
         VarName::new("gain.u"),
         Variable::new(VarName::new("gain.u")),
     );
-    dae.discrete_reals.insert(
+    dae.parameters.insert(
         VarName::new("outBus.x"),
         Variable::new(VarName::new("outBus.x")),
     );
