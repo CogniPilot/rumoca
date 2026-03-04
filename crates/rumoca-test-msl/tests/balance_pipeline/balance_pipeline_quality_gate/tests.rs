@@ -82,6 +82,7 @@ fn baseline_quality_template() -> MslQualityBaseline {
         sim_attempted: 10,
         sim_ok: 8,
         sim_success_rate: 0.8,
+        runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: None,
     }
@@ -164,6 +165,7 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
         sim_attempted: 10,
         sim_ok: 8,
         sim_success_rate: 0.8,
+        runtime_context: None,
         runtime_ratio_stats: Some(MslRuntimeRatioStatsBaseline {
             system_ratio_both_success: MslDistributionStats {
                 sample_count: 8,
@@ -184,6 +186,7 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
+        runtime_context: None,
         runtime_ratio_stats: Some(MslRuntimeRatioStatsBaseline {
             system_ratio_both_success: MslDistributionStats {
                 sample_count: 8,
@@ -221,6 +224,7 @@ fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_excee
     };
     let parity = MslParityGateInput {
         total_models: Some(10),
+        runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: Some(trace_accuracy_regressed()),
     };
@@ -320,6 +324,7 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
     let path = PathBuf::from("/tmp/omc_simulation_reference.json");
     let stale = MslParityGateInput {
         total_models: Some(1),
+        runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: None,
     };
@@ -330,6 +335,7 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
     );
     let matching = MslParityGateInput {
         total_models: Some(180),
+        runtime_context: None,
         runtime_ratio_stats: None,
         trace_accuracy_stats: None,
     };

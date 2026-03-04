@@ -320,6 +320,46 @@ pub(super) fn build_sim_output_payload(
     })
 }
 
+fn print_speed_snapshot(metrics: &RunMetrics) {
+    if let (Some(system), Some(wall)) = (
+        &metrics.system_ratio_both_success,
+        &metrics.wall_ratio_both_success,
+    ) {
+        println!(
+            "  Speed snapshot (informational only; omc/rumoca, >1 means Rumoca faster; both success, n={}): system_median={:.3e}, wall_median={:.3e}",
+            system.sample_count, system.median_ratio, wall.median_ratio
+        );
+    }
+}
+
+fn print_trace_snapshot(trace_summary: &TraceOutputSummary) {
+    println!(
+        "  Trace gate snapshot ({} models): high={:.2}%, near={:.2}%, deviation={:.2}%",
+        trace_summary.models_compared,
+        trace_summary.agreement_high_percent,
+        trace_summary.agreement_minor_percent,
+        trace_summary.agreement_deviation_percent
+    );
+    println!(
+        "    models_with_any_bad_channel={:.2}%, bad_channels={}, severe_channels={}, violation_mass_total={:.6e}",
+        trace_summary.models_with_any_channel_deviation_percent,
+        trace_summary.bad_channels_total,
+        trace_summary.severe_channels_total,
+        trace_summary.violation_mass_total
+    );
+}
+
+fn print_scaling_snapshot(context: &FinalizeContext) {
+    let elapsed = context.elapsed_seconds.max(f64::EPSILON);
+    let workers = context.workers.max(1);
+    let throughput_models_per_sec = context.total as f64 / elapsed;
+    let throughput_per_worker = throughput_models_per_sec / workers as f64;
+    println!(
+        "  Scaling snapshot: workers={}, throughput={:.3} models/s, throughput_per_worker={:.3} models/s",
+        workers, throughput_models_per_sec, throughput_per_worker
+    );
+}
+
 pub(super) fn print_summary(
     output_file: &Path,
     context: &FinalizeContext,
@@ -328,92 +368,19 @@ pub(super) fn print_summary(
 ) {
     println!();
     println!("Results saved to {}", output_file.display());
-    println!("  Total models: {}", context.total);
-    println!("  Successful simulations: {}", metrics.sim_successful);
-    println!("  Failed simulations: {}", metrics.sim_failed);
-    println!("  Timed out: {}", metrics.sim_timed_out);
     println!(
-        "  Simulation success rate: {:.1}% ({}/{})",
-        metrics.success_rate, metrics.sim_successful, context.total
+        "  Simulation: total={}, ok={}, failed={}, timed_out={}, success_rate={:.1}% ({}/{})",
+        context.total,
+        metrics.sim_successful,
+        metrics.sim_failed,
+        metrics.sim_timed_out,
+        metrics.success_rate,
+        metrics.sim_successful,
+        context.total
     );
-    println!(
-        "  OMC sim system time (sum): {:.2}s | OMC total system time (sum): {:.2}s | OMC external wall (sum): {:.2}s",
-        metrics.total_omc_sim_system_seconds,
-        metrics.total_omc_total_system_seconds,
-        metrics.total_omc_wall_seconds
-    );
-    println!(
-        "  Rumoca sim seconds (sum): {:.2}s | Rumoca sim wall seconds (sum): {:.2}s",
-        metrics.total_rumoca_sim_seconds, metrics.total_rumoca_sim_wall_seconds
-    );
-    if let Some(ratio) = &metrics.system_ratio_both_success {
-        println!(
-            "  System speedup ratio (omc/rumoca, >1 means Rumoca faster; both success, n={}): aggregate={:.3}, mean={:.3}, median={:.3}, min={:.3}, max={:.3}",
-            ratio.sample_count,
-            ratio.aggregate_ratio,
-            ratio.mean_ratio,
-            ratio.median_ratio,
-            ratio.min_ratio,
-            ratio.max_ratio
-        );
-    }
-    if let Some(ratio) = &metrics.wall_ratio_both_success {
-        println!(
-            "  Wall speedup ratio (external wall, omc/rumoca, >1 means Rumoca faster; both success, n={}): aggregate={:.3}, mean={:.3}, median={:.3}, min={:.3}, max={:.3}",
-            ratio.sample_count,
-            ratio.aggregate_ratio,
-            ratio.mean_ratio,
-            ratio.median_ratio,
-            ratio.min_ratio,
-            ratio.max_ratio
-        );
-    }
-    println!(
-        "  Trace comparison: {} models compared",
-        trace_summary.models_compared
-    );
-    println!(
-        "  Trace model buckets (%): high={:.2}, near={:.2}, deviation={:.2}",
-        trace_summary.agreement_high_percent,
-        trace_summary.agreement_minor_percent,
-        trace_summary.agreement_deviation_percent
-    );
-    println!(
-        "  Models with any deviation channel: {} ({:.2}%), max per-model deviation-channel share: {:.2}%",
-        trace_summary.models_with_any_channel_deviation,
-        trace_summary.models_with_any_channel_deviation_percent,
-        trace_summary.max_model_channel_deviation_percent
-    );
-    println!(
-        "  Bad/severe channels: bad={} ({:.2}%), severe={} ({:.2}%), compared channels={}",
-        trace_summary.bad_channels_total,
-        trace_summary.bad_channels_percent,
-        trace_summary.severe_channels_total,
-        trace_summary.severe_channels_percent,
-        trace_summary.total_channels_compared
-    );
-    println!(
-        "  Violation mass (>0.20): total={:.6e}, mean/model={:.6e}, mean/channel={:.6e}",
-        trace_summary.violation_mass_total,
-        trace_summary.violation_mass_mean_per_model,
-        trace_summary.violation_mass_mean_per_channel
-    );
-    println!(
-        "  Trace model score (bounded normalized L1 median-over-channel, n={}): min={:.3e}, median={:.3e}, mean={:.3e}, max={:.3e}",
-        trace_summary.models_compared,
-        trace_summary.min_model_bounded_normalized_l1,
-        trace_summary.median_model_bounded_normalized_l1,
-        trace_summary.mean_model_bounded_normalized_l1,
-        trace_summary.max_model_bounded_normalized_l1
-    );
-    println!(
-        "  Trace global progress metric (mean model mean-channel bounded L1): {:.3e}",
-        trace_summary.mean_model_mean_channel_bounded_normalized_l1
-    );
-    println!(
-        "  Trace worst-case metric (max model max-channel bounded L1): {:.3e}",
-        trace_summary.max_model_max_channel_bounded_normalized_l1
-    );
+    print_scaling_snapshot(context);
+    print_speed_snapshot(metrics);
+    print_trace_snapshot(trace_summary);
     println!(
         "  Elapsed: {:.1}s ({:.2}s/model)",
         context.elapsed_seconds,
