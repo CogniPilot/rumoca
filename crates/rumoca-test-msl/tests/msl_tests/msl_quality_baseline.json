@@ -14,22 +14,6 @@
   "sim_attempted": 174,
   "sim_ok": 126,
   "sim_success_rate": 0.7241379310344828,
-  "runtime_ratio_stats": {
-    "system_ratio_both_success": {
-      "sample_count": 118,
-      "min": 0.009632193733877616,
-      "median": 0.39629123596244287,
-      "mean": 0.7115259058708974,
-      "max": 4.8897180139796035
-    },
-    "wall_ratio_both_success": {
-      "sample_count": 118,
-      "min": 1.4912121354912573,
-      "median": 46.441883379640245,
-      "mean": 55.083224714623825,
-      "max": 266.1778609948003
-    }
-  },
   "trace_accuracy_stats": {
     "models_compared": 111,
     "missing_trace_models": 1,

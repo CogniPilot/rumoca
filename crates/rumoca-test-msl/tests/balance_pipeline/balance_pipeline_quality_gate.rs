@@ -127,15 +127,26 @@ pub(super) struct MslQualityBaseline {
     sim_attempted: usize,
     sim_ok: usize,
     sim_success_rate: f64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_context: Option<MslParityRuntimeContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
     #[serde(default)]
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct MslParityRuntimeContext {
+    #[serde(default)]
+    workers_used: Option<usize>,
+    #[serde(default)]
+    omc_threads: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct MslParityGateInput {
     total_models: Option<usize>,
+    runtime_context: Option<MslParityRuntimeContext>,
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
 }
@@ -291,6 +302,15 @@ fn parse_total_models(payload: &serde_json::Value) -> Option<usize> {
     })
 }
 
+fn parse_runtime_context(payload: &serde_json::Value) -> Option<MslParityRuntimeContext> {
+    let timing = payload.get("timing")?;
+    let context = MslParityRuntimeContext {
+        workers_used: json_usize_field(timing, "workers_used"),
+        omc_threads: json_usize_field(timing, "omc_threads"),
+    };
+    (context.workers_used.is_some() || context.omc_threads.is_some()).then_some(context)
+}
+
 fn parse_runtime_ratio_stats(payload: &serde_json::Value) -> Option<MslRuntimeRatioStatsBaseline> {
     let stats = payload.pointer("/runtime_comparison/ratio_stats")?;
     Some(MslRuntimeRatioStatsBaseline {
@@ -395,6 +415,7 @@ pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGat
 
     Ok(MslParityGateInput {
         total_models: parse_total_models(&payload),
+        runtime_context: parse_runtime_context(&payload),
         runtime_ratio_stats: parse_runtime_ratio_stats(&payload),
         trace_accuracy_stats: parse_trace_accuracy_stats(&payload),
     })
@@ -1073,7 +1094,10 @@ pub(super) fn current_msl_quality_baseline(
         sim_ok: gate_input.sim_ok,
         sim_success_rate: sim_success_rate(gate_input.sim_ok, gate_input.sim_attempted)
             .unwrap_or(0.0),
-        runtime_ratio_stats: parity_input.and_then(|parity| parity.runtime_ratio_stats.clone()),
+        // Runtime speed depends strongly on machine topology/workers; keep it informational
+        // in parity output but do not commit it into quality baselines.
+        runtime_context: None,
+        runtime_ratio_stats: None,
         trace_accuracy_stats: parity_input.and_then(|parity| parity.trace_accuracy_stats.clone()),
     }
 }
@@ -1125,9 +1149,6 @@ pub(super) fn msl_quality_context_mismatch_reason(
             baseline.sim_timeout_seconds, SIM_TIMEOUT_SECS
         ));
     }
-    if baseline.runtime_ratio_stats.is_none() {
-        return Some("runtime_ratio_stats missing in baseline".to_string());
-    }
     if baseline.trace_accuracy_stats.is_none() {
         return Some("trace_accuracy_stats missing in baseline".to_string());
     }
@@ -1148,7 +1169,6 @@ pub(super) fn msl_quality_regression_reasons(
     let mut reasons = Vec::new();
     push_compile_balance_regression_reasons(&mut reasons, gate_input, baseline);
     push_sim_rate_regression_reason(&mut reasons, gate_input, baseline);
-    push_runtime_ratio_regression_reasons(&mut reasons, baseline, parity_input);
     push_trace_regression_reasons(&mut reasons, baseline, parity_input);
     reasons
 }
@@ -1598,20 +1618,20 @@ pub(super) fn print_trace_gate_status(
             trace_models_with_any_channel_deviation_percent(current_trace).unwrap_or(0.0);
         let baseline_any =
             trace_models_with_any_channel_deviation_percent(baseline_trace).unwrap_or(0.0);
+        println!("MSL trace gate: PASS with baseline:");
         println!(
-            "MSL trace gate: PASS model buckets high={:.2}% (baseline={:.2}%, tol drop={:.2}pp), near={:.2}% (baseline={:.2}%, tol drop={:.2}pp), deviation={:.2}% (baseline={:.2}%, tol increase={:.2}pp), models_with_any_bad_channel={:.2}% (baseline={:.2}%, tol increase={:.2}pp), models_compared={} (baseline={}).",
+            "  high={:.2}% (baseline={:.2}%), near={:.2}% (baseline={:.2}%), deviation={:.2}% (baseline={:.2}%)",
             current_pct.high,
             baseline_pct.high,
-            TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP,
             current_pct.near,
             baseline_pct.near,
-            TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP,
             current_pct.deviation,
             baseline_pct.deviation,
-            TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP,
+        );
+        println!(
+            "  models_with_any_bad_channel={:.2}% (baseline={:.2}%), models_compared={} (baseline={})",
             current_any,
             baseline_any,
-            TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP,
             current_trace.models_compared,
             baseline_trace.models_compared
         );
@@ -1624,7 +1644,7 @@ pub(super) fn print_trace_gate_status(
             let current_mass = trace_violation_mass_total(current_trace).unwrap_or(0.0);
             let baseline_mass = trace_violation_mass_total(baseline_trace).unwrap_or(0.0);
             println!(
-                "MSL trace metrics: bad_channels={} (baseline={}), severe_channels={} (baseline={}), violation_mass_total={:.6e} (baseline={:.6e}).",
+                "  bad_channels={} (baseline={}), severe_channels={} (baseline={}), violation_mass_total={:.6e} (baseline={:.6e})",
                 current_bad,
                 baseline_bad,
                 current_severe,
@@ -1643,28 +1663,46 @@ pub(super) fn print_trace_gate_status(
     }
 }
 
+fn fmt_opt_usize(value: Option<usize>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
 pub(super) fn print_runtime_ratio_status(
     baseline: &MslQualityBaseline,
     parity_input: Option<&MslParityGateInput>,
 ) {
-    if let (Some(current_runtime), Some(baseline_runtime)) = (
-        parity_input.and_then(|parity| parity.runtime_ratio_stats.as_ref()),
-        baseline.runtime_ratio_stats.as_ref(),
-    ) {
+    let Some(current_runtime) = parity_input.and_then(|parity| parity.runtime_ratio_stats.as_ref())
+    else {
+        return;
+    };
+
+    let current_workers = parity_input
+        .and_then(|parity| parity.runtime_context.as_ref())
+        .and_then(|context| context.workers_used);
+    let current_omc_threads = parity_input
+        .and_then(|parity| parity.runtime_context.as_ref())
+        .and_then(|context| context.omc_threads);
+
+    if let Some(baseline_runtime) = baseline.runtime_ratio_stats.as_ref() {
         println!(
-            "MSL runtime gate: PASS system speedup median (omc/rumoca, >1 means Rumoca faster): current={:.3e} (baseline={:.3e}), tolerance={:.1}% drop. Wall median is informational only: current={:.3e} (baseline={:.3e}).",
+            "MSL speed metrics (informational only, not gated): system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}), workers={}, omc_threads={}.",
             current_runtime.system_ratio_both_success.median,
             baseline_runtime.system_ratio_both_success.median,
-            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0,
             current_runtime.wall_ratio_both_success.median,
-            baseline_runtime.wall_ratio_both_success.median
+            baseline_runtime.wall_ratio_both_success.median,
+            fmt_opt_usize(current_workers),
+            fmt_opt_usize(current_omc_threads)
         );
         return;
     }
-    if baseline.runtime_ratio_stats.is_some() {
-        println!(
-            "MSL runtime gate: skipped (missing runtime ratio stats in {}).",
-            omc_simulation_reference_path().display()
-        );
-    }
+
+    println!(
+        "MSL speed metrics (informational only, not gated): system_median={:.3e}, wall_median={:.3e}, workers={}, omc_threads={}.",
+        current_runtime.system_ratio_both_success.median,
+        current_runtime.wall_ratio_both_success.median,
+        fmt_opt_usize(current_workers),
+        fmt_opt_usize(current_omc_threads)
+    );
 }
