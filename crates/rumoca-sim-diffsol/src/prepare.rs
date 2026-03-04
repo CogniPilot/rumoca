@@ -5,6 +5,8 @@ use crate::{
     run_timeout_step, run_timeout_step_result, scalarize_equations, sim_trace_enabled,
     trace_timer_elapsed_seconds, trace_timer_start_if,
 };
+use rumoca_ir_dae as dae;
+use rumoca_phase_structural::eliminate::try_solve_for_unknown;
 use rumoca_sim_core::simulation::dae_prepare::{
     demote_alias_states_without_der, demote_coupled_derivative_states,
     demote_direct_assigned_states, demote_orphan_states_without_equation_refs,
@@ -16,6 +18,403 @@ use rumoca_sim_core::simulation::dae_prepare::{
 use rumoca_sim_core::simulation::introspection::trace_flow_array_alias_watch;
 use rumoca_sim_core::simulation::pipeline::{PreparedSimulation, run_logged_phase};
 use rumoca_sim_core::{compute_mass_matrix, pin_orphaned_variables};
+
+#[derive(Clone)]
+struct RuntimeAliasSubstitution {
+    var_name: VarName,
+    expr: dae::Expression,
+    equation_index: usize,
+}
+
+fn expr_contains_var_ref(expr: &dae::Expression, var_name: &VarName) -> bool {
+    let mut refs = std::collections::HashSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.contains(var_name)
+}
+
+fn expr_contains_any_event_or_clock_operator(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::BuiltinCall { function, args } => {
+            matches!(
+                function,
+                dae::BuiltinFunction::Pre
+                    | dae::BuiltinFunction::Edge
+                    | dae::BuiltinFunction::Change
+                    | dae::BuiltinFunction::Sample
+                    | dae::BuiltinFunction::NoEvent
+                    | dae::BuiltinFunction::Smooth
+            ) || args.iter().any(expr_contains_any_event_or_clock_operator)
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            expr_contains_any_event_or_clock_operator(lhs)
+                || expr_contains_any_event_or_clock_operator(rhs)
+        }
+        dae::Expression::Unary { rhs, .. } => expr_contains_any_event_or_clock_operator(rhs),
+        dae::Expression::FunctionCall { args, .. } => {
+            args.iter().any(expr_contains_any_event_or_clock_operator)
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, val)| {
+                expr_contains_any_event_or_clock_operator(cond)
+                    || expr_contains_any_event_or_clock_operator(val)
+            }) || expr_contains_any_event_or_clock_operator(else_branch)
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => elements
+            .iter()
+            .any(expr_contains_any_event_or_clock_operator),
+        dae::Expression::Range { start, step, end } => {
+            expr_contains_any_event_or_clock_operator(start)
+                || step
+                    .as_deref()
+                    .is_some_and(expr_contains_any_event_or_clock_operator)
+                || expr_contains_any_event_or_clock_operator(end)
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expr_contains_any_event_or_clock_operator(expr)
+                || indices
+                    .iter()
+                    .any(|idx| expr_contains_any_event_or_clock_operator(&idx.range))
+                || filter
+                    .as_deref()
+                    .is_some_and(expr_contains_any_event_or_clock_operator)
+        }
+        dae::Expression::Index { base, subscripts } => {
+            expr_contains_any_event_or_clock_operator(base)
+                || subscripts.iter().any(|sub| match sub {
+                    dae::Subscript::Expr(expr) => expr_contains_any_event_or_clock_operator(expr),
+                    _ => false,
+                })
+        }
+        dae::Expression::FieldAccess { base, .. } => {
+            expr_contains_any_event_or_clock_operator(base)
+        }
+        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
+            false
+        }
+    }
+}
+
+fn substitute_exact_var_exprs(
+    exprs: &[dae::Expression],
+    var_name: &VarName,
+    replacement: &dae::Expression,
+) -> Vec<dae::Expression> {
+    exprs
+        .iter()
+        .map(|expr| substitute_exact_var(expr, var_name, replacement))
+        .collect()
+}
+
+fn substitute_exact_var_subscripts(
+    subscripts: &[dae::Subscript],
+    var_name: &VarName,
+    replacement: &dae::Expression,
+) -> Vec<dae::Subscript> {
+    subscripts
+        .iter()
+        .map(|sub| match sub {
+            dae::Subscript::Expr(sub_expr) => dae::Subscript::Expr(Box::new(substitute_exact_var(
+                sub_expr,
+                var_name,
+                replacement,
+            ))),
+            _ => sub.clone(),
+        })
+        .collect()
+}
+
+fn substitute_exact_var_if_branches(
+    branches: &[(dae::Expression, dae::Expression)],
+    var_name: &VarName,
+    replacement: &dae::Expression,
+) -> Vec<(dae::Expression, dae::Expression)> {
+    branches
+        .iter()
+        .map(|(cond, val)| {
+            (
+                substitute_exact_var(cond, var_name, replacement),
+                substitute_exact_var(val, var_name, replacement),
+            )
+        })
+        .collect()
+}
+
+fn substitute_exact_var_comprehension_indices(
+    indices: &[dae::ComprehensionIndex],
+    var_name: &VarName,
+    replacement: &dae::Expression,
+) -> Vec<dae::ComprehensionIndex> {
+    indices
+        .iter()
+        .map(|idx| dae::ComprehensionIndex {
+            name: idx.name.clone(),
+            range: substitute_exact_var(&idx.range, var_name, replacement),
+        })
+        .collect()
+}
+
+fn substitute_exact_var(
+    expr: &dae::Expression,
+    var_name: &VarName,
+    replacement: &dae::Expression,
+) -> dae::Expression {
+    match expr {
+        dae::Expression::VarRef { name, subscripts }
+            if name == var_name && subscripts.is_empty() =>
+        {
+            replacement.clone()
+        }
+        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
+            expr.clone()
+        }
+        dae::Expression::Binary { op, lhs, rhs } => dae::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(substitute_exact_var(lhs, var_name, replacement)),
+            rhs: Box::new(substitute_exact_var(rhs, var_name, replacement)),
+        },
+        dae::Expression::Unary { op, rhs } => dae::Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(substitute_exact_var(rhs, var_name, replacement)),
+        },
+        dae::Expression::BuiltinCall { function, args } => dae::Expression::BuiltinCall {
+            function: *function,
+            args: substitute_exact_var_exprs(args, var_name, replacement),
+        },
+        dae::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+        } => dae::Expression::FunctionCall {
+            name: name.clone(),
+            args: substitute_exact_var_exprs(args, var_name, replacement),
+            is_constructor: *is_constructor,
+        },
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => dae::Expression::If {
+            branches: substitute_exact_var_if_branches(branches, var_name, replacement),
+            else_branch: Box::new(substitute_exact_var(else_branch, var_name, replacement)),
+        },
+        dae::Expression::Array {
+            elements,
+            is_matrix,
+        } => dae::Expression::Array {
+            elements: substitute_exact_var_exprs(elements, var_name, replacement),
+            is_matrix: *is_matrix,
+        },
+        dae::Expression::Tuple { elements } => dae::Expression::Tuple {
+            elements: substitute_exact_var_exprs(elements, var_name, replacement),
+        },
+        dae::Expression::Range { start, step, end } => dae::Expression::Range {
+            start: Box::new(substitute_exact_var(start, var_name, replacement)),
+            step: step
+                .as_ref()
+                .map(|s| Box::new(substitute_exact_var(s, var_name, replacement))),
+            end: Box::new(substitute_exact_var(end, var_name, replacement)),
+        },
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => dae::Expression::ArrayComprehension {
+            expr: Box::new(substitute_exact_var(expr, var_name, replacement)),
+            indices: substitute_exact_var_comprehension_indices(indices, var_name, replacement),
+            filter: filter
+                .as_ref()
+                .map(|pred| Box::new(substitute_exact_var(pred, var_name, replacement))),
+        },
+        dae::Expression::Index { base, subscripts } => dae::Expression::Index {
+            base: Box::new(substitute_exact_var(base, var_name, replacement)),
+            subscripts: substitute_exact_var_subscripts(subscripts, var_name, replacement),
+        },
+        dae::Expression::FieldAccess { base, field } => dae::Expression::FieldAccess {
+            base: Box::new(substitute_exact_var(base, var_name, replacement)),
+            field: field.clone(),
+        },
+    }
+}
+
+fn apply_runtime_alias_substitutions_expr(
+    expr: &dae::Expression,
+    substitutions: &[RuntimeAliasSubstitution],
+) -> dae::Expression {
+    let mut out = expr.clone();
+    for sub in substitutions {
+        if expr_contains_var_ref(&out, &sub.var_name) {
+            out = substitute_exact_var(&out, &sub.var_name, &sub.expr);
+        }
+    }
+    out
+}
+
+fn build_runtime_alias_substitutions(dae: &Dae) -> Vec<RuntimeAliasSubstitution> {
+    let mut substitutions = Vec::new();
+    let runtime_defined_discrete_targets: std::collections::HashSet<String> = dae
+        .f_m
+        .iter()
+        .chain(dae.f_z.iter())
+        .filter_map(|eq| eq.lhs.as_ref())
+        .map(|lhs| lhs.as_str().to_string())
+        .collect();
+
+    for (eq_idx, eq) in dae.f_x.iter().enumerate() {
+        if eq.origin.starts_with("connection equation:")
+            || eq.origin.starts_with("flow sum equation:")
+        {
+            continue;
+        }
+        let Some(target_name) = extract_runtime_assignment_target_name(&eq.rhs) else {
+            continue;
+        };
+        let Some(_target_size) = dae.algebraics.get(&target_name).map(|var| var.size()) else {
+            continue;
+        };
+        if runtime_defined_discrete_targets.contains(target_name.as_str()) {
+            continue;
+        }
+        if expr_contains_any_event_or_clock_operator(&eq.rhs) {
+            continue;
+        }
+        let Some(solution) = try_solve_for_unknown(&eq.rhs, &target_name) else {
+            continue;
+        };
+        if expr_contains_var_ref(&solution, &target_name) {
+            continue;
+        }
+        substitutions.push(RuntimeAliasSubstitution {
+            var_name: target_name,
+            expr: solution,
+            equation_index: eq_idx,
+        });
+    }
+    substitutions
+}
+
+fn extract_runtime_assignment_target_name(expr: &dae::Expression) -> Option<VarName> {
+    let dae::Expression::Binary { op, lhs, rhs } = expr else {
+        return None;
+    };
+    if !matches!(op, dae::OpBinary::Sub(_)) {
+        return None;
+    }
+    if let dae::Expression::VarRef { name, subscripts } = lhs.as_ref()
+        && subscripts.is_empty()
+    {
+        return Some(name.clone());
+    }
+    if let dae::Expression::VarRef { name, subscripts } = rhs.as_ref()
+        && subscripts.is_empty()
+    {
+        return Some(name.clone());
+    }
+    None
+}
+
+fn apply_runtime_alias_substitutions(dae: &mut Dae, substitutions: &[RuntimeAliasSubstitution]) {
+    if substitutions.is_empty() {
+        return;
+    }
+    for eq in &mut dae.f_x {
+        eq.rhs = apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions);
+    }
+    for eq in &mut dae.f_z {
+        eq.rhs = apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions);
+    }
+    for eq in &mut dae.f_m {
+        eq.rhs = apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions);
+    }
+    for eq in &mut dae.f_c {
+        eq.rhs = apply_runtime_alias_substitutions_expr(&eq.rhs, substitutions);
+    }
+    for expr in &mut dae.relation {
+        *expr = apply_runtime_alias_substitutions_expr(expr, substitutions);
+    }
+    for expr in &mut dae.synthetic_root_conditions {
+        *expr = apply_runtime_alias_substitutions_expr(expr, substitutions);
+    }
+    for expr in &mut dae.clock_constructor_exprs {
+        *expr = apply_runtime_alias_substitutions_expr(expr, substitutions);
+    }
+}
+
+fn expr_lists_reference_var(dae: &Dae, var_name: &VarName) -> bool {
+    dae.f_x
+        .iter()
+        .any(|eq| expr_contains_var_ref(&eq.rhs, var_name))
+        || dae
+            .f_z
+            .iter()
+            .any(|eq| expr_contains_var_ref(&eq.rhs, var_name))
+        || dae
+            .f_m
+            .iter()
+            .any(|eq| expr_contains_var_ref(&eq.rhs, var_name))
+        || dae
+            .f_c
+            .iter()
+            .any(|eq| expr_contains_var_ref(&eq.rhs, var_name))
+        || dae
+            .relation
+            .iter()
+            .any(|expr| expr_contains_var_ref(expr, var_name))
+        || dae
+            .synthetic_root_conditions
+            .iter()
+            .any(|expr| expr_contains_var_ref(expr, var_name))
+        || dae
+            .clock_constructor_exprs
+            .iter()
+            .any(|expr| expr_contains_var_ref(expr, var_name))
+}
+
+fn apply_runtime_alias_substitutions_to_elimination(
+    elim: &mut eliminate::EliminationResult,
+    substitutions: &[RuntimeAliasSubstitution],
+) {
+    if substitutions.is_empty() {
+        return;
+    }
+    for sub in &mut elim.substitutions {
+        sub.expr = apply_runtime_alias_substitutions_expr(&sub.expr, substitutions);
+    }
+}
+
+fn normalize_runtime_aliases_collect(dae: &mut Dae) -> (usize, Vec<RuntimeAliasSubstitution>) {
+    let substitutions = build_runtime_alias_substitutions(dae);
+    if substitutions.is_empty() {
+        return (0, substitutions);
+    }
+    apply_runtime_alias_substitutions(dae, &substitutions);
+
+    let mut removed = 0usize;
+    let mut removable_eq_indices = Vec::new();
+    for sub in &substitutions {
+        if expr_lists_reference_var(dae, &sub.var_name) {
+            continue;
+        }
+        dae.algebraics.shift_remove(&sub.var_name);
+        dae.outputs.shift_remove(&sub.var_name);
+        removable_eq_indices.push(sub.equation_index);
+        removed += 1;
+    }
+    removable_eq_indices.sort_unstable();
+    removable_eq_indices.dedup();
+    for idx in removable_eq_indices.into_iter().rev() {
+        if idx < dae.f_x.len() {
+            dae.f_x.remove(idx);
+        }
+    }
+
+    (removed, substitutions)
+}
 
 pub(super) fn run_orphan_and_direct_state_demotion_phases(
     dae: &mut Dae,
@@ -526,6 +925,23 @@ pub(super) fn prepare_dae(
     run_prepare_structure_passes(&mut dae, budget)?;
     trace_flow_array_alias_watch("after_structure_passes", &dae, trace);
 
+    run_logged_phase(trace, "normalize_runtime_aliases", || {
+        run_timeout_step(budget, || {
+            let (n_normalized, runtime_alias_substitutions) =
+                normalize_runtime_aliases_collect(&mut dae);
+            apply_runtime_alias_substitutions_to_elimination(
+                &mut elim,
+                &runtime_alias_substitutions,
+            );
+            if trace && n_normalized > 0 {
+                eprintln!(
+                    "[sim-trace] normalized {} runtime alias variables into core-state equations/events",
+                    n_normalized
+                );
+            }
+        })
+    })?;
+
     budget.check()?;
     run_post_structure_elimination_phase(&mut dae, trace, disable_trivial_elim, &mut elim);
     budget.check()?;
@@ -583,4 +999,127 @@ pub(super) fn prepare_dae(
         ic_blocks,
         mass_matrix,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::Span;
+
+    fn var(name: &str) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: VarName::new(name),
+            subscripts: vec![],
+        }
+    }
+
+    fn int(v: i64) -> dae::Expression {
+        dae::Expression::Literal(dae::Literal::Integer(v))
+    }
+
+    fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: dae::OpBinary::Sub(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    fn lt(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: dae::OpBinary::Lt(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    fn eq(rhs: dae::Expression) -> dae::Equation {
+        dae::Equation {
+            lhs: None,
+            rhs,
+            span: Span::DUMMY,
+            origin: "equation from ".to_string(),
+            scalar_count: 1,
+        }
+    }
+
+    #[test]
+    fn test_normalize_runtime_aliases_rewrites_event_surfaces_to_core_states() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.states
+            .insert(VarName::new("v"), dae::Variable::new(VarName::new("v")));
+        dae.algebraics
+            .insert(VarName::new("d"), dae::Variable::new(VarName::new("d")));
+        dae.parameters
+            .insert(VarName::new("r"), dae::Variable::new(VarName::new("r")));
+
+        // der(x) = v
+        dae.f_x.push(eq(sub(
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Der,
+                args: vec![var("x")],
+            },
+            var("v"),
+        )));
+        // d = x - r
+        dae.f_x.push(eq(sub(var("d"), sub(var("x"), var("r")))));
+        // der(v) = if d < 0 then -1 else -2 (shape only; values not important)
+        dae.f_x.push(eq(sub(
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Der,
+                args: vec![var("v")],
+            },
+            dae::Expression::If {
+                branches: vec![(
+                    lt(var("d"), int(0)),
+                    dae::Expression::Unary {
+                        op: dae::OpUnary::Minus(Default::default()),
+                        rhs: Box::new(int(1)),
+                    },
+                )],
+                else_branch: Box::new(dae::Expression::Unary {
+                    op: dae::OpUnary::Minus(Default::default()),
+                    rhs: Box::new(int(2)),
+                }),
+            },
+        )));
+
+        // Canonical condition roots reference alias before normalization.
+        let cond = lt(var("d"), int(0));
+        dae.relation.push(cond.clone());
+        dae.f_c.push(eq(cond));
+
+        let normalized = normalize_runtime_aliases_collect(&mut dae).0;
+        assert_eq!(normalized, 1, "expected one alias variable normalized");
+        assert!(
+            !dae.algebraics.contains_key(&VarName::new("d")),
+            "alias variable should be removed from algebraics after rewrite"
+        );
+        assert_eq!(
+            dae.f_x.len(),
+            2,
+            "alias defining equation should be removed after substitution"
+        );
+
+        assert!(
+            !dae.relation
+                .iter()
+                .any(|expr| expr_contains_var_ref(expr, &VarName::new("d"))),
+            "relation expressions should not reference eliminated alias"
+        );
+        assert!(
+            dae.relation
+                .iter()
+                .any(|expr| expr_contains_var_ref(expr, &VarName::new("x"))),
+            "relation expressions should be rewritten to core-state variables"
+        );
+        assert!(
+            !dae.f_c
+                .iter()
+                .any(|eq| expr_contains_var_ref(&eq.rhs, &VarName::new("d"))),
+            "f_c expressions should not reference eliminated alias"
+        );
+    }
 }

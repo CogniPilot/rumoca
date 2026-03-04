@@ -265,7 +265,7 @@ Defaults:
 ## MSL Quality Scoreboard
 
 Canonical gate baseline (committed):
-- `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`
+- [`crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`](crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json)
   - includes minimal compile/balance/simulation counts plus OMC parity distributions (runtime speedup ratio + trace-accuracy stats).
 
 Ephemeral run artifacts (regenerated per run in cache):

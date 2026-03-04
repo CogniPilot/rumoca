@@ -28,12 +28,18 @@ mod pre_seed;
 use pre_seed::try_seed_var_from_pre_store;
 mod array_helpers;
 mod builtin_table;
+mod clock_eval;
 mod distribution_clock;
 use array_helpers::{
     array_values_from_env_name, array_values_from_env_name_generic, encoded_slice_field_values,
     eval_field_access_array_values, eval_unary_builtin_array_values, infer_dims_from_values,
 };
 use builtin_table::{eval_builtin_product, eval_builtin_sum};
+pub use clock_eval::infer_clock_timing_seconds;
+use clock_eval::{
+    clock_tick_value, eval_builtin_sample, eval_time_seconds, infer_clock_timing_from_call,
+    infer_clock_timing_from_expr,
+};
 
 macro_rules! warn_once {
     ($flag:expr, $($arg:tt)*) => {
@@ -73,6 +79,7 @@ pub struct VarEnv<T: SimFloat = f64> {
     pub functions: Arc<IndexMap<String, flat::Function>>,
     pub dims: Arc<IndexMap<String, Vec<i64>>>,
     pub start_exprs: Arc<IndexMap<String, flat::Expression>>,
+    pub clock_intervals: Arc<IndexMap<String, f64>>,
     pub enum_literal_ordinals: Arc<IndexMap<String, i64>>,
     pub function_closures: IndexMap<String, FunctionClosure>,
     pub is_initial: bool,
@@ -85,6 +92,7 @@ impl<T: SimFloat> Default for VarEnv<T> {
             functions: Arc::new(IndexMap::new()),
             dims: Arc::new(IndexMap::new()),
             start_exprs: Arc::new(IndexMap::new()),
+            clock_intervals: Arc::new(IndexMap::new()),
             enum_literal_ordinals: Arc::new(IndexMap::new()),
             function_closures: IndexMap::new(),
             is_initial: false,
@@ -288,25 +296,37 @@ pub fn build_env(dae: &Dae, y: &[f64], p: &[f64], t: f64) -> VarEnv<f64> {
     let mut env = VarEnv::new();
     env.set("time", t);
 
+    map_solver_vectors_into_env(&mut env, dae, y);
+    map_parameter_vector_into_env(&mut env, dae, p);
+    configure_env_metadata(&mut env, dae);
+    inject_modelica_constants(&mut env);
+    bind_constants_and_inputs(&mut env, dae);
+    seed_discrete_values(&mut env, dae);
+
+    env
+}
+
+fn map_solver_vectors_into_env(env: &mut VarEnv<f64>, dae: &Dae, y: &[f64]) {
     let mut idx = 0;
     for (name, var) in &dae.states {
-        map_var_to_env(&mut env, name.as_str(), var, y, &mut idx);
+        map_var_to_env(env, name.as_str(), var, y, &mut idx);
     }
     for (name, var) in &dae.algebraics {
-        map_var_to_env(&mut env, name.as_str(), var, y, &mut idx);
+        map_var_to_env(env, name.as_str(), var, y, &mut idx);
     }
     for (name, var) in &dae.outputs {
-        map_var_to_env(&mut env, name.as_str(), var, y, &mut idx);
+        map_var_to_env(env, name.as_str(), var, y, &mut idx);
     }
+}
 
-    // Map parameters from p (also handle arrays)
+fn map_parameter_vector_into_env(env: &mut VarEnv<f64>, dae: &Dae, p: &[f64]) {
     let mut pidx = 0;
     for (name, var) in &dae.parameters {
-        map_var_to_env(&mut env, name.as_str(), var, p, &mut pidx);
+        map_var_to_env(env, name.as_str(), var, p, &mut pidx);
     }
+}
 
-    // Share user-defined function table for function body evaluation.
-    // This must be available before evaluating constant/input start expressions.
+fn configure_env_metadata(env: &mut VarEnv<f64>, dae: &Dae) {
     if !dae.functions.is_empty() {
         let func_map: IndexMap<String, flat::Function> = dae
             .functions
@@ -315,14 +335,13 @@ pub fn build_env(dae: &Dae, y: &[f64], p: &[f64], t: f64) -> VarEnv<f64> {
             .collect();
         env.functions = Arc::new(func_map);
     }
-
-    // Populate dimension info for Size builtin
     env.dims = Arc::new(collect_var_dims(dae));
     env.start_exprs = Arc::new(collect_var_starts(dae));
+    env.clock_intervals = Arc::new(dae.clock_intervals.clone());
     env.enum_literal_ordinals = Arc::new(dae.enum_literal_ordinals.clone());
+}
 
-    // Inject well-known Modelica constants as fallbacks.
-    // Only set if not already provided by the DAE constant declarations.
+fn inject_modelica_constants(env: &mut VarEnv<f64>) {
     for &(fqn, value) in MODELICA_CONSTANTS {
         if !env.vars.contains_key(fqn) {
             env.set(fqn, value);
@@ -333,76 +352,83 @@ pub fn build_env(dae: &Dae, y: &[f64], p: &[f64], t: f64) -> VarEnv<f64> {
             env.set(fqn, value);
         }
     }
+}
 
-    let bind_start_value = |env: &mut VarEnv<f64>, name: &str, var: &rumoca_ir_dae::Variable| {
-        let Some(start) = var.start.as_ref() else {
-            return;
-        };
-        let sz = var.size();
-        if sz <= 1 {
-            env.set(name, eval_expr::<f64>(start, env));
-            return;
-        }
-
-        // Array-valued starts can come from literals, references, conditionals,
-        // or other expressions; always evaluate through the array evaluator.
-        let raw_vals: Vec<f64> = eval_array_values::<f64>(start, env);
-        let vals = if raw_vals.len() == sz {
-            raw_vals
-        } else if raw_vals.is_empty() {
-            vec![0.0; sz]
-        } else if raw_vals.len() == 1 {
-            vec![raw_vals[0]; sz]
-        } else {
-            let last = *raw_vals.last().unwrap_or(&0.0);
-            let mut expanded = Vec::with_capacity(sz);
-            for i in 0..sz {
-                expanded.push(raw_vals.get(i).copied().unwrap_or(last));
-            }
-            expanded
-        };
-        if !vals.is_empty() {
-            set_array_entries(env, name, &var.dims, &vals);
-        }
+fn bind_start_value(env: &mut VarEnv<f64>, name: &str, var: &rumoca_ir_dae::Variable) {
+    let Some(start) = var.start.as_ref() else {
+        return;
     };
+    let size = var.size();
+    if size <= 1 {
+        env.set(name, eval_expr::<f64>(start, env));
+        return;
+    }
 
-    // Constants may reference earlier/later constants; do a second pass.
+    let raw_values: Vec<f64> = eval_array_values::<f64>(start, env);
+    let values = if raw_values.len() == size {
+        raw_values
+    } else if raw_values.is_empty() {
+        vec![0.0; size]
+    } else if raw_values.len() == 1 {
+        vec![raw_values[0]; size]
+    } else {
+        let last = *raw_values.last().unwrap_or(&0.0);
+        let mut expanded = Vec::with_capacity(size);
+        for i in 0..size {
+            expanded.push(raw_values.get(i).copied().unwrap_or(last));
+        }
+        expanded
+    };
+    if !values.is_empty() {
+        set_array_entries(env, name, &var.dims, &values);
+    }
+}
+
+fn bind_constants_and_inputs(env: &mut VarEnv<f64>, dae: &Dae) {
     for _ in 0..2 {
         for (name, var) in &dae.constants {
-            bind_start_value(&mut env, name.as_str(), var);
+            bind_start_value(env, name.as_str(), var);
         }
     }
-
-    // Inputs: bind default start expressions in the same context.
     for _ in 0..2 {
         for (name, var) in &dae.inputs {
-            bind_start_value(&mut env, name.as_str(), var);
+            bind_start_value(env, name.as_str(), var);
         }
     }
+}
 
-    // Discrete variables are not part of the continuous solver vector in the
-    // current runtime. First restore their current values from the pre-store
-    // (event-to-event memory), then fall back to start values when unavailable.
-    let mut pre_seeded_discrete: HashSet<String> = HashSet::new();
+fn seed_discrete_values(env: &mut VarEnv<f64>, dae: &Dae) {
+    let mut pre_seeded: HashSet<String> = HashSet::new();
     for (name, var) in dae.discrete_reals.iter().chain(dae.discrete_valued.iter()) {
         if env.vars.contains_key(name.as_str()) {
             continue;
         }
-        if try_seed_var_from_pre_store(&mut env, name.as_str(), var) {
-            pre_seeded_discrete.insert(name.as_str().to_string());
+        if try_seed_var_from_pre_store(env, name.as_str(), var) {
+            pre_seeded.insert(name.as_str().to_string());
         }
     }
 
     for _ in 0..2 {
         for (name, var) in dae.discrete_reals.iter().chain(dae.discrete_valued.iter()) {
-            if pre_seeded_discrete.contains(name.as_str()) {
+            if pre_seeded.contains(name.as_str()) {
                 continue;
             }
-            bind_start_value(&mut env, name.as_str(), var);
+            bind_start_value(env, name.as_str(), var);
         }
     }
 
-    env
+    for (name, var) in dae.discrete_reals.iter().chain(dae.discrete_valued.iter()) {
+        if env.vars.contains_key(name.as_str()) {
+            continue;
+        }
+        let size = var.size();
+        if size <= 1 {
+            env.set(name.as_str(), 0.0);
+            continue;
+        }
+        let zeros = vec![0.0; size];
+        set_array_entries(env, name.as_str(), &var.dims, zeros.as_slice());
+    }
 }
 
 /// Collect variable dimensions from all variable categories in the DAE.
@@ -459,6 +485,7 @@ pub fn lift_env<T: SimFloat>(env: &VarEnv<f64>) -> VarEnv<T> {
     result.functions = env.functions.clone();
     result.dims = env.dims.clone();
     result.start_exprs = env.start_exprs.clone();
+    result.clock_intervals = env.clock_intervals.clone();
     result.enum_literal_ordinals = env.enum_literal_ordinals.clone();
     result.is_initial = env.is_initial;
     result
@@ -474,70 +501,195 @@ pub fn eval_const_expr(expr: &flat::Expression) -> f64 {
 /// Nested array literals are flattened recursively; scalar expressions produce
 /// a single-element vector.
 pub fn eval_array_values<T: SimFloat>(expr: &flat::Expression, env: &VarEnv<T>) -> Vec<T> {
-    fn extend_range_values<T: SimFloat>(start_v: f64, end_v: f64, step_v: f64, out: &mut Vec<T>) {
-        let limit = 100_000usize;
-        let tol = step_v.abs() * 1e-9 + 1e-12;
-        let mut value = start_v;
-        for _ in 0..limit {
-            let past_end =
-                (step_v > 0.0 && value > end_v + tol) || (step_v < 0.0 && value < end_v - tol);
-            if past_end {
-                return;
-            }
-            out.push(T::from_f64(value));
-            value += step_v;
-        }
-    }
-
-    fn collect<T: SimFloat>(expr: &flat::Expression, env: &VarEnv<T>, out: &mut Vec<T>) {
-        match expr {
-            flat::Expression::Array { elements, .. } => {
-                for e in elements {
-                    collect(e, env, out);
-                }
-            }
-            flat::Expression::Tuple { elements } => {
-                for e in elements {
-                    collect(e, env, out);
-                }
-            }
-            flat::Expression::Range { start, step, end } => {
-                let start_v = eval_expr::<T>(start, env).real();
-                let end_v = eval_expr::<T>(end, env).real();
-                let step_v = step
-                    .as_ref()
-                    .map(|s| eval_expr::<T>(s, env).real())
-                    .unwrap_or_else(|| if end_v >= start_v { 1.0 } else { -1.0 });
-                if !start_v.is_finite()
-                    || !end_v.is_finite()
-                    || !step_v.is_finite()
-                    || step_v.abs() <= f64::EPSILON
-                {
-                    return;
-                }
-                extend_range_values(start_v, end_v, step_v, out);
-            }
-            flat::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
-                if let Some(values) = array_values_from_env_name_generic(name.as_str(), env) {
-                    out.extend(values);
-                } else {
-                    out.push(eval_expr::<T>(expr, env));
-                }
-            }
-            flat::Expression::FieldAccess { base, field } => {
-                if let Some(values) = eval_field_access_array_values(base, field, env) {
-                    out.extend(values);
-                } else {
-                    out.push(eval_expr::<T>(expr, env));
-                }
-            }
-            _ => out.push(eval_expr::<T>(expr, env)),
-        }
-    }
-
     let mut out = Vec::new();
-    collect(expr, env, &mut out);
+    collect_array_values(expr, env, &mut out);
     out
+}
+
+fn collect_array_values<T: SimFloat>(expr: &flat::Expression, env: &VarEnv<T>, out: &mut Vec<T>) {
+    match expr {
+        flat::Expression::Array {
+            elements,
+            is_matrix,
+        } => collect_array_literal_values(elements, *is_matrix, env, out),
+        flat::Expression::Tuple { elements } => {
+            for element in elements {
+                collect_array_values(element, env, out);
+            }
+        }
+        flat::Expression::If {
+            branches,
+            else_branch,
+        } => collect_if_values(branches, else_branch, env, out),
+        flat::Expression::Range { start, step, end } => {
+            collect_range_values(start, step, end, env, out);
+        }
+        flat::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => collect_array_comprehension_values(expr, indices, filter.as_deref(), env, out),
+        flat::Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
+            if let Some(values) = array_values_from_env_name_generic(name.as_str(), env) {
+                out.extend(values);
+            } else {
+                out.push(eval_expr::<T>(expr, env));
+            }
+        }
+        flat::Expression::FieldAccess { base, field } => {
+            if let Some(values) = eval_field_access_array_values(base, field, env) {
+                out.extend(values);
+            } else {
+                out.push(eval_expr::<T>(expr, env));
+            }
+        }
+        _ => out.push(eval_expr::<T>(expr, env)),
+    }
+}
+
+fn collect_array_literal_values<T: SimFloat>(
+    elements: &[flat::Expression],
+    is_matrix: bool,
+    env: &VarEnv<T>,
+    out: &mut Vec<T>,
+) {
+    if can_interleave_matrix_columns(elements, is_matrix)
+        && interleave_matrix_columns(elements, env, out)
+    {
+        return;
+    }
+    for element in elements {
+        collect_array_values(element, env, out);
+    }
+}
+
+fn can_interleave_matrix_columns(elements: &[flat::Expression], is_matrix: bool) -> bool {
+    is_matrix
+        && !elements.is_empty()
+        && !elements
+            .iter()
+            .all(|element| matches!(element, flat::Expression::Array { .. }))
+}
+
+fn interleave_matrix_columns<T: SimFloat>(
+    elements: &[flat::Expression],
+    env: &VarEnv<T>,
+    out: &mut Vec<T>,
+) -> bool {
+    let columns: Vec<Vec<T>> = elements
+        .iter()
+        .map(|element| eval_array_like_values::<T>(element, env))
+        .collect();
+    let row_count = columns.iter().map(Vec::len).max().unwrap_or(0);
+    if row_count == 0 {
+        return false;
+    }
+
+    for row in 0..row_count {
+        for column in &columns {
+            out.push(interleaved_column_value(column, row));
+        }
+    }
+    true
+}
+
+fn interleaved_column_value<T: SimFloat>(column: &[T], row: usize) -> T {
+    if column.is_empty() {
+        return T::zero();
+    }
+    if row < column.len() {
+        return column[row];
+    }
+    if column.len() == 1 {
+        return column[0];
+    }
+    *column.last().unwrap_or(&T::zero())
+}
+
+fn collect_if_values<T: SimFloat>(
+    branches: &[(flat::Expression, flat::Expression)],
+    else_branch: &flat::Expression,
+    env: &VarEnv<T>,
+    out: &mut Vec<T>,
+) {
+    for (cond, then_expr) in branches {
+        if eval_expr::<T>(cond, env).to_bool() {
+            collect_array_values(then_expr, env, out);
+            return;
+        }
+    }
+    collect_array_values(else_branch, env, out);
+}
+
+fn collect_range_values<T: SimFloat>(
+    start: &flat::Expression,
+    step: &Option<Box<flat::Expression>>,
+    end: &flat::Expression,
+    env: &VarEnv<T>,
+    out: &mut Vec<T>,
+) {
+    let start_v = eval_expr::<T>(start, env).real();
+    let end_v = eval_expr::<T>(end, env).real();
+    let step_v = step
+        .as_ref()
+        .map(|step_expr| eval_expr::<T>(step_expr, env).real())
+        .unwrap_or_else(|| if end_v >= start_v { 1.0 } else { -1.0 });
+    if !start_v.is_finite()
+        || !end_v.is_finite()
+        || !step_v.is_finite()
+        || step_v.abs() <= f64::EPSILON
+    {
+        return;
+    }
+    extend_range_values(start_v, end_v, step_v, out);
+}
+
+fn extend_range_values<T: SimFloat>(start_v: f64, end_v: f64, step_v: f64, out: &mut Vec<T>) {
+    let limit = 100_000usize;
+    let tol = step_v.abs() * 1e-9 + 1e-12;
+    let mut value = start_v;
+    for _ in 0..limit {
+        let past_end =
+            (step_v > 0.0 && value > end_v + tol) || (step_v < 0.0 && value < end_v - tol);
+        if past_end {
+            return;
+        }
+        out.push(T::from_f64(value));
+        value += step_v;
+    }
+}
+
+fn collect_array_comprehension_values<T: SimFloat>(
+    expr: &flat::Expression,
+    indices: &[flat::ComprehensionIndex],
+    filter: Option<&flat::Expression>,
+    env: &VarEnv<T>,
+    out: &mut Vec<T>,
+) {
+    expand_array_comprehension(0, expr, indices, filter, env, out);
+}
+
+fn expand_array_comprehension<T: SimFloat>(
+    level: usize,
+    expr: &flat::Expression,
+    indices: &[flat::ComprehensionIndex],
+    filter: Option<&flat::Expression>,
+    env: &VarEnv<T>,
+    out: &mut Vec<T>,
+) {
+    if level >= indices.len() {
+        if filter.is_none_or(|f| eval_expr::<T>(f, env).to_bool()) {
+            collect_array_values(expr, env, out);
+        }
+        return;
+    }
+
+    let index = &indices[level];
+    for value in eval_array_values::<T>(&index.range, env) {
+        let mut local_env = env.clone();
+        local_env.set(index.name.as_str(), value);
+        expand_array_comprehension(level + 1, expr, indices, filter, &local_env, out);
+    }
 }
 
 fn reshape_flat_matrix(flat_values: &[f64], rows: usize, cols: usize) -> Vec<Vec<f64>> {
@@ -588,7 +740,9 @@ fn eval_array_like_values<T: SimFloat>(expr: &flat::Expression, env: &VarEnv<T>)
         }
         flat::Expression::Array { .. }
         | flat::Expression::Tuple { .. }
-        | flat::Expression::Range { .. } => eval_array_values::<T>(expr, env),
+        | flat::Expression::Range { .. }
+        | flat::Expression::If { .. }
+        | flat::Expression::ArrayComprehension { .. } => eval_array_values::<T>(expr, env),
         _ => vec![eval_expr::<T>(expr, env)],
     }
 }
@@ -1541,187 +1695,6 @@ fn eval_unary<T: SimFloat>(op: &flat::OpUnary, rhs: &flat::Expression, env: &Var
         flat::OpUnary::Not(_) => T::from_bool(!r.to_bool()),
         flat::OpUnary::Empty => r,
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ClockTiming {
-    period: f64,
-    phase: f64,
-}
-
-fn eval_time_seconds<T: SimFloat>(env: &VarEnv<T>) -> f64 {
-    env.get("time").real()
-}
-
-fn is_clock_tick(time: f64, period: f64, phase: f64) -> bool {
-    if !time.is_finite() || !period.is_finite() || !phase.is_finite() || period <= 0.0 {
-        return false;
-    }
-
-    let shifted = time - phase;
-    let tol = 1e-9 * period.max(1.0);
-    if shifted < -tol {
-        return false;
-    }
-
-    let k = (shifted / period).round();
-    let nearest = k * period;
-    (shifted - nearest).abs() <= tol
-}
-
-fn clock_tick_value<T: SimFloat>(env: &VarEnv<T>, timing: ClockTiming) -> T {
-    T::from_bool(is_clock_tick(
-        eval_time_seconds(env),
-        timing.period,
-        timing.phase,
-    ))
-}
-
-fn valid_positive_period(period: f64) -> Option<f64> {
-    (period.is_finite() && period > 0.0).then_some(period)
-}
-
-fn eval_positive_factor<T: SimFloat>(
-    arg: Option<&flat::Expression>,
-    env: &VarEnv<T>,
-) -> Option<f64> {
-    let raw = arg.map(|expr| eval_expr::<T>(expr, env).real())?;
-    let rounded = raw.round();
-    (rounded.is_finite() && rounded > 0.0).then_some(rounded)
-}
-
-fn infer_clock_timing_from_expr<T: SimFloat>(
-    expr: &flat::Expression,
-    env: &VarEnv<T>,
-) -> Option<ClockTiming> {
-    let flat::Expression::FunctionCall { name, args, .. } = expr else {
-        return None;
-    };
-    let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-    infer_clock_timing_from_call(short_name, args, env)
-}
-
-fn infer_clock_counter_form<T: SimFloat>(expr: &flat::Expression, env: &VarEnv<T>) -> Option<f64> {
-    let flat::Expression::FunctionCall { name, args, .. } = expr else {
-        return None;
-    };
-    let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-    if short_name != "Clock" || args.len() != 1 {
-        return None;
-    }
-
-    let raw = eval_expr::<T>(&args[0], env).real();
-    let rounded = raw.round();
-    let tol = 1.0e-9 * rounded.abs().max(1.0);
-    if !rounded.is_finite() || rounded <= 0.0 || (raw - rounded).abs() > tol {
-        return None;
-    }
-    Some(rounded)
-}
-
-fn infer_clock_timing_from_call<T: SimFloat>(
-    short_name: &str,
-    args: &[flat::Expression],
-    env: &VarEnv<T>,
-) -> Option<ClockTiming> {
-    match short_name {
-        "Clock" => {
-            let first = args.first()?;
-            if let Some(base) = infer_clock_timing_from_expr(first, env) {
-                return Some(base);
-            }
-
-            if args.len() >= 2 {
-                let count = eval_expr::<T>(first, env).real();
-                let resolution = eval_expr::<T>(&args[1], env).real();
-                if resolution.is_finite() && resolution > 0.0 {
-                    return valid_positive_period(count / resolution)
-                        .map(|period| ClockTiming { period, phase: 0.0 });
-                }
-            }
-
-            let period = eval_expr::<T>(first, env).real();
-            valid_positive_period(period).map(|period| ClockTiming { period, phase: 0.0 })
-        }
-        "subSample" => {
-            // MLS exact-clock construction pattern used by PeriodicExactClock:
-            // c = subSample(Clock(factor), resolutionFactor)
-            // corresponds to period = factor / resolutionFactor.
-            if let Some(counter) = args
-                .first()
-                .and_then(|expr| infer_clock_counter_form(expr, env))
-            {
-                let resolution = eval_positive_factor(args.get(1), env).unwrap_or(1.0);
-                return valid_positive_period(counter / resolution)
-                    .map(|period| ClockTiming { period, phase: 0.0 });
-            }
-
-            let base = infer_clock_timing_from_expr(args.first()?, env)?;
-            let factor = eval_positive_factor(args.get(1), env).unwrap_or(1.0);
-            valid_positive_period(base.period * factor).map(|period| ClockTiming {
-                period,
-                phase: base.phase,
-            })
-        }
-        "superSample" => {
-            let base = infer_clock_timing_from_expr(args.first()?, env)?;
-            let factor = eval_positive_factor(args.get(1), env).unwrap_or(1.0);
-            valid_positive_period(base.period / factor).map(|period| ClockTiming {
-                period,
-                phase: base.phase,
-            })
-        }
-        "shiftSample" | "backSample" => {
-            let base = infer_clock_timing_from_expr(args.first()?, env)?;
-            let shift = eval_expr::<T>(args.get(1).unwrap_or(args.first()?), env).real();
-            let offset = if args.len() >= 3 {
-                let resolution = eval_expr::<T>(&args[2], env).real();
-                if resolution.is_finite() && resolution != 0.0 {
-                    shift / resolution
-                } else {
-                    shift * base.period
-                }
-            } else {
-                shift * base.period
-            };
-            let phase = if short_name == "shiftSample" {
-                base.phase + offset
-            } else {
-                base.phase - offset
-            };
-            valid_positive_period(base.period).map(|period| ClockTiming { period, phase })
-        }
-        _ => None,
-    }
-}
-
-fn eval_builtin_sample<T: SimFloat>(args: &[flat::Expression], env: &VarEnv<T>) -> T {
-    match args {
-        [] => T::zero(),
-        [value] => eval_expr::<T>(value, env),
-        [value, clock, ..] if infer_clock_timing_from_expr(clock, env).is_some() => {
-            eval_expr::<T>(value, env)
-        }
-        [start, interval, ..] => {
-            let start_t = eval_expr::<T>(start, env).real();
-            let period = eval_expr::<T>(interval, env).real();
-            let Some(period) = valid_positive_period(period) else {
-                return T::zero();
-            };
-            let timing = ClockTiming {
-                period,
-                phase: start_t,
-            };
-            clock_tick_value(env, timing)
-        }
-    }
-}
-
-pub fn infer_clock_timing_seconds(
-    expr: &flat::Expression,
-    env: &VarEnv<f64>,
-) -> Option<(f64, f64)> {
-    infer_clock_timing_from_expr(expr, env).map(|timing| (timing.period, timing.phase))
 }
 
 fn eval_builtin_pre<T: SimFloat>(args: &[flat::Expression], env: &VarEnv<T>) -> T {

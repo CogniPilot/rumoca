@@ -1,16 +1,22 @@
 use super::ToDaeError;
 use super::{eval_scalar_const_expr, extract_time_event_instant};
+use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 
 type SourceMap<'a> = HashMap<String, Vec<&'a dae::Expression>>;
+type ClockRuntimeMetadata = (
+    Vec<dae::Expression>,
+    Vec<dae::ClockSchedule>,
+    IndexMap<String, f64>,
+);
 
 pub(super) fn compute_clock_runtime_metadata(
     dae_model: &dae::Dae,
     compile_time_scalars: &HashMap<String, f64>,
-) -> Result<(Vec<dae::Expression>, Vec<dae::ClockSchedule>), ToDaeError> {
+) -> Result<ClockRuntimeMetadata, ToDaeError> {
     let mut clock_constructor_exprs = Vec::new();
     for eq in dae_model.f_z.iter().chain(dae_model.f_m.iter()) {
         collect_clock_constructor_exprs(
@@ -87,7 +93,10 @@ pub(super) fn compute_clock_runtime_metadata(
             examples,
         ));
     }
-    Ok((clock_constructor_exprs, clock_schedules))
+    let clock_intervals =
+        infer_clock_intervals_by_variable(dae_model, compile_time_scalars, &clock_schedules);
+
+    Ok((clock_constructor_exprs, clock_schedules, clock_intervals))
 }
 
 fn unresolved_clock_debug_enabled() -> bool {
@@ -743,6 +752,177 @@ fn build_clock_source_map<'a>(
         }
     }
     sources
+}
+
+fn infer_clock_intervals_by_variable(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+    clock_schedules: &[dae::ClockSchedule],
+) -> IndexMap<String, f64> {
+    let sources = build_clock_source_map(dae_model, constants);
+    let mut intervals = IndexMap::new();
+
+    for name in dae_model
+        .discrete_reals
+        .keys()
+        .chain(dae_model.discrete_valued.keys())
+    {
+        let expr = dae::Expression::VarRef {
+            name: name.clone(),
+            subscripts: Vec::new(),
+        };
+        if let Some((period, _phase)) =
+            infer_clock_timing_from_expr(&expr, constants, &sources, 24, &mut HashSet::new())
+            && period.is_finite()
+            && period > 0.0
+        {
+            intervals.insert(name.as_str().to_string(), period);
+        }
+    }
+
+    if let Some(fallback_period) = unique_static_clock_period(clock_schedules) {
+        add_implicit_sample_fallback_intervals(
+            dae_model,
+            constants,
+            &sources,
+            fallback_period,
+            &mut intervals,
+        );
+    }
+
+    intervals
+}
+
+fn unique_static_clock_period(clock_schedules: &[dae::ClockSchedule]) -> Option<f64> {
+    let [schedule] = clock_schedules else {
+        return None;
+    };
+    if schedule.period_seconds.is_finite() && schedule.period_seconds > 0.0 {
+        Some(schedule.period_seconds)
+    } else {
+        None
+    }
+}
+
+fn add_implicit_sample_fallback_intervals(
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+    sources: &SourceMap<'_>,
+    fallback_period: f64,
+    intervals: &mut IndexMap<String, f64>,
+) {
+    // MLS §16 (synchronous language elements): sample(u) may use an implicit
+    // clock. If a model has one unique static periodic schedule, apply that
+    // period only for unresolved variables whose defining expression contains
+    // an implicit one-argument sample(..) form.
+    for name in dae_model
+        .discrete_reals
+        .keys()
+        .chain(dae_model.discrete_valued.keys())
+    {
+        if intervals.contains_key(name.as_str()) {
+            continue;
+        }
+        if !variable_has_implicit_clock_source(name, constants, sources) {
+            continue;
+        }
+        intervals.insert(name.as_str().to_string(), fallback_period);
+    }
+}
+
+fn variable_has_implicit_clock_source(
+    name: &dae::VarName,
+    constants: &HashMap<String, f64>,
+    sources: &SourceMap<'_>,
+) -> bool {
+    let by_key = canonical_var_ref_key(name, &[], constants)
+        .and_then(|key| sources.get(&key))
+        .is_some_and(|exprs| {
+            exprs
+                .iter()
+                .any(|expr| expression_uses_implicit_clock_sample(expr))
+        });
+    if by_key {
+        return true;
+    }
+    sources.get(name.as_str()).is_some_and(|exprs| {
+        exprs
+            .iter()
+            .any(|expr| expression_uses_implicit_clock_sample(expr))
+    })
+}
+
+fn expression_uses_implicit_clock_sample(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::BuiltinCall { function, args } => {
+            if matches!(function, dae::BuiltinFunction::Sample) && args.len() == 1 {
+                return true;
+            }
+            args.iter().any(expression_uses_implicit_clock_sample)
+        }
+        dae::Expression::FunctionCall { name, args, .. } => {
+            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+            if short == "sample" && args.len() == 1 {
+                return true;
+            }
+            args.iter().any(expression_uses_implicit_clock_sample)
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            expression_uses_implicit_clock_sample(lhs) || expression_uses_implicit_clock_sample(rhs)
+        }
+        dae::Expression::Unary { rhs, .. } => expression_uses_implicit_clock_sample(rhs),
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(cond, value)| {
+                expression_uses_implicit_clock_sample(cond)
+                    || expression_uses_implicit_clock_sample(value)
+            }) || expression_uses_implicit_clock_sample(else_branch)
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+            elements.iter().any(expression_uses_implicit_clock_sample)
+        }
+        dae::Expression::Range { start, step, end } => {
+            expression_uses_implicit_clock_sample(start)
+                || step
+                    .as_ref()
+                    .is_some_and(|value| expression_uses_implicit_clock_sample(value))
+                || expression_uses_implicit_clock_sample(end)
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            expression_uses_implicit_clock_sample(expr)
+                || indices
+                    .iter()
+                    .any(|idx| expression_uses_implicit_clock_sample(&idx.range))
+                || filter
+                    .as_ref()
+                    .is_some_and(|value| expression_uses_implicit_clock_sample(value))
+        }
+        dae::Expression::Index { base, subscripts } => {
+            expression_uses_implicit_clock_sample(base)
+                || subscripts.iter().any(|subscript| match subscript {
+                    dae::Subscript::Colon => false,
+                    dae::Subscript::Index(_) => false,
+                    dae::Subscript::Expr(value) => expression_uses_implicit_clock_sample(value),
+                })
+        }
+        dae::Expression::FieldAccess { base, field: _ } => {
+            expression_uses_implicit_clock_sample(base)
+        }
+        dae::Expression::VarRef { subscripts, .. } => subscripts.iter().any(|subscript| {
+            if let dae::Subscript::Expr(value) = subscript {
+                expression_uses_implicit_clock_sample(value)
+            } else {
+                false
+            }
+        }),
+        dae::Expression::Literal(_) | dae::Expression::Empty => false,
+    }
 }
 
 fn infer_clock_timing_next(

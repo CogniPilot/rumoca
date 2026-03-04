@@ -182,11 +182,25 @@ fn resolve_boundary_equations(dae: &mut Dae) -> EliminationResult {
         let has_state_derivative = state_names
             .iter()
             .any(|sn| expr_contains_der_of(&eq_rhs, sn));
-        if is_connection_eq && live.len() > 1 {
-            // Preserve multi-unknown connection equations through structural
-            // solving. After prior substitutions reduce a connection equation
-            // to a single unknown assignment, allow elimination.
-            continue;
+        if is_connection_eq {
+            // Connection equations that touch runtime-discrete targets (f_m/f_z
+            // assignment lhs names) must stay live. Boundary elimination only
+            // substitutes through f_x; dropping these edges can disconnect
+            // discrete alias paths and freeze discrete connector inputs at
+            // default zero.
+            let touches_runtime_discrete_targets = expr_references_any_runtime_discrete_target(
+                &eq_rhs,
+                &runtime_defined_discrete_targets,
+            );
+            if touches_runtime_discrete_targets {
+                continue;
+            }
+            if live.len() > 1 {
+                // Preserve multi-unknown connection equations through structural
+                // solving. After prior substitutions reduce a connection equation
+                // to a single unknown assignment, allow elimination.
+                continue;
+            }
         }
         if live.is_empty() {
             // Keep equations that still reference non-scalar unknowns.
@@ -819,6 +833,24 @@ fn runtime_defined_discrete_target_names(dae: &Dae) -> HashSet<String> {
 
 fn is_runtime_protected_unknown(name: &VarName, protected: &HashSet<String>) -> bool {
     protected.contains(name.as_str())
+}
+
+fn expr_references_any_runtime_discrete_target(
+    expr: &Expression,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> bool {
+    if runtime_defined_discrete_targets.is_empty() {
+        return false;
+    }
+
+    let mut refs: HashSet<VarName> = HashSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.iter().any(|name| {
+        let raw = name.as_str();
+        runtime_defined_discrete_targets.contains(raw)
+            || flat::component_base_name(raw)
+                .is_some_and(|base| runtime_defined_discrete_targets.contains(base.as_str()))
+    })
 }
 
 // ── Expression Helpers ──────────────────────────────────────────────────

@@ -195,6 +195,19 @@ pub fn is_known_assignment_name(dae: &dae::Dae, raw: &str) -> bool {
     contains_assignment_name(dae, &base_key)
 }
 
+pub fn is_runtime_unknown_name(dae: &dae::Dae, raw: &str) -> bool {
+    let key = dae::VarName::new(raw);
+    if contains_runtime_unknown_name(dae, &key) {
+        return true;
+    }
+
+    let Some(base) = dae::component_base_name(raw) else {
+        return false;
+    };
+    let base_key = dae::VarName::new(base);
+    contains_runtime_unknown_name(dae, &base_key)
+}
+
 fn contains_assignment_name(dae: &dae::Dae, key: &dae::VarName) -> bool {
     dae.states.contains_key(key)
         || dae.algebraics.contains_key(key)
@@ -205,6 +218,14 @@ fn contains_assignment_name(dae: &dae::Dae, key: &dae::VarName) -> bool {
         || dae.discrete_reals.contains_key(key)
         || dae.discrete_valued.contains_key(key)
         || dae.derivative_aliases.contains_key(key)
+}
+
+fn contains_runtime_unknown_name(dae: &dae::Dae, key: &dae::VarName) -> bool {
+    dae.states.contains_key(key)
+        || dae.algebraics.contains_key(key)
+        || dae.outputs.contains_key(key)
+        || dae.discrete_reals.contains_key(key)
+        || dae.discrete_valued.contains_key(key)
 }
 
 pub fn variable_size_for_assignment_name(dae: &dae::Dae, name: &str) -> Option<usize> {

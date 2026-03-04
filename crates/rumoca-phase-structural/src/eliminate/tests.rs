@@ -1459,6 +1459,43 @@ fn test_boundary_eliminates_single_unknown_connection_after_substitution() {
 }
 
 #[test]
+fn test_boundary_keeps_connection_eq_touching_runtime_discrete_target() {
+    let mut dae = Dae::new();
+    dae.outputs
+        .insert(VarName::new("y"), dae::Variable::new(VarName::new("y")));
+    dae.inputs
+        .insert(VarName::new("u"), dae::Variable::new(VarName::new("u")));
+
+    // Runtime-discrete partition assignment target (f_m/f_z lhs) marks `y`
+    // as a runtime-discrete target that must not lose alias edges.
+    dae.f_m.push(dae::Equation {
+        lhs: Some(VarName::new("y")),
+        rhs: Expression::Literal(Literal::Boolean(false)),
+        span: Span::DUMMY,
+        origin: "runtime discrete assignment".to_string(),
+        scalar_count: 1,
+    });
+
+    // Connection equation that would normally be single-live-unknown.
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::Binary {
+            op: sub_op(),
+            lhs: Box::new(var_ref("y")),
+            rhs: Box::new(var_ref("u")),
+        },
+        span: Span::DUMMY,
+        origin: "connection equation: y = u".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = eliminate_trivial(&mut dae);
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.f_x.len(), 1);
+    assert!(dae.outputs.contains_key(&VarName::new("y")));
+}
+
+#[test]
 fn test_boundary_keeps_state_only_algebraic_constraint() {
     let mut dae = Dae::new();
 

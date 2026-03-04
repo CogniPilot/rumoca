@@ -505,6 +505,21 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
             )));
         }
     }
+    for (name, interval) in &dae_model.clock_intervals {
+        if !interval.is_finite() || *interval <= 0.0 {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "clock interval for `{name}` must be finite and positive, got {interval}",
+            )));
+        }
+        let key = dae::VarName::new(name);
+        if !dae_model.discrete_reals.contains_key(&key)
+            && !dae_model.discrete_valued.contains_key(&key)
+        {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "clock interval key `{name}` must reference a discrete variable in DAE",
+            )));
+        }
+    }
 
     for pair in dae_model.scheduled_time_events.windows(2) {
         if pair[1] <= pair[0] {
@@ -741,5 +756,17 @@ mod tests {
         validate_appendix_b_invariants(&dae_model).expect(
             "clock constructor metadata should not violate strict solver expression checks",
         );
+    }
+
+    #[test]
+    fn runtime_metadata_rejects_clock_interval_for_unknown_variable() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .clock_intervals
+            .insert("unknownVar".to_string(), 0.1);
+
+        let err = validate_appendix_b_invariants(&dae_model)
+            .expect_err("clock interval key without matching discrete variable must fail");
+        assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));
     }
 }

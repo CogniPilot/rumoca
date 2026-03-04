@@ -32,7 +32,7 @@ pub use runtime::compiled_discrete::{
 pub use runtime::event::{
     EventSettleInput, build_runtime_env, event_restart_time, event_right_limit_time,
     refresh_pre_values_from_state, settle_runtime_event_updates,
-    settle_runtime_event_updates_default,
+    settle_runtime_event_updates_default, settle_runtime_sample_updates_default,
 };
 pub use runtime::no_state::{
     NoStateSampleContext, NoStateSampleError, collect_algebraic_samples,
@@ -46,7 +46,9 @@ pub use runtime::report::{
     trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 pub use runtime::schedule::RuntimeStopSchedule;
-pub use runtime::startup::apply_initial_section_assignments;
+pub use runtime::startup::{
+    apply_initial_section_assignments, refresh_pre_values_from_state_with_initial_assignments,
+};
 pub use runtime::state_index::build_state_name_to_idx;
 pub use runtime::time::{stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol};
 pub use runtime::timeout::{
