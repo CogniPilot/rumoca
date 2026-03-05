@@ -4,7 +4,7 @@
   "scripts": {
     "build:dev": "wasm-pack build .. --dev --target web --out-dir ../../pkg && node ./patch-wasm-pkg.mjs",
     "build": "wasm-pack build .. --release --target web --out-dir ../../pkg",
-    "postbuild": "node ./patch-wasm-pkg.mjs && npm pack ../../pkg",
-    "publish": "npm run build && cd ../../pkg && npm publish"
+    "postbuild": "node ./patch-wasm-pkg.mjs && npm pack ../../../pkg",
+    "publish": "npm run build && cd ../../../pkg && npm publish"
   }
 }
