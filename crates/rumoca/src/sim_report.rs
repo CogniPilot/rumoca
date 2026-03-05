@@ -4,8 +4,8 @@ use std::path::Path;
 use rumoca_sim_diffsol::SimResult;
 use serde_json::json;
 
-const UPLOT_JS: &str = include_str!("../../rumoca-sim-diffsol/src/vendor/uplot.min.js");
-const UPLOT_CSS: &str = include_str!("../../rumoca-sim-diffsol/src/vendor/uplot.min.css");
+const UPLOT_JS: &str = include_str!("../../rumoca-sim-core/assets/uplot.min.js");
+const UPLOT_CSS: &str = include_str!("../../rumoca-sim-core/assets/uplot.min.css");
 
 #[derive(Debug, Clone)]
 pub struct SimulationHeaderSettings {

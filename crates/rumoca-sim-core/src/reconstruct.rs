@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rumoca_eval_runtime::eval::{self, eval_expr};
+use rumoca_eval_flat::eval::{self, eval_expr};
 use rumoca_ir_dae as dae;
 
 use rumoca_phase_structural::eliminate;
@@ -92,8 +92,23 @@ pub fn reconstruct_eliminated(
             ordered_subs.len(),
             cyclic_subs.len()
         );
+        if reconstruct_introspect_subs_enabled() {
+            for (idx, sub) in elim.substitutions.iter().enumerate() {
+                let expr_dbg = truncate_debug(
+                    format!("{:?}", sub.expr),
+                    reconstruct_introspect_expr_chars(),
+                );
+                eprintln!(
+                    "[sim-introspect] reconstruct sub[{idx}] var={} env_keys={:?} expr={}",
+                    sub.var_name.as_str(),
+                    sub.env_keys,
+                    expr_dbg
+                );
+            }
+        }
     }
     let mut env = build_reconstruction_env_template(existing_names, dae, param_values);
+    eval::clear_pre_values();
 
     for (t_idx, &t) in times.iter().enumerate() {
         update_reconstruction_env_for_time(&mut env, t, t_idx, existing_names, existing_data);
@@ -121,6 +136,7 @@ pub fn reconstruct_eliminated(
         for (sub_idx, v) in vals.into_iter().enumerate() {
             by_sub[sub_idx][t_idx] = v;
         }
+        eval::seed_pre_values_from_env(&env);
     }
 
     let mut extra_names: Vec<String> = Vec::new();
@@ -440,6 +456,10 @@ fn substitution_eval_order(elim: &eliminate::EliminationResult) -> (Vec<usize>, 
 
 fn reconstruct_introspect_enabled() -> bool {
     std::env::var("RUMOCA_SIM_INTROSPECT").is_ok()
+}
+
+fn reconstruct_introspect_subs_enabled() -> bool {
+    std::env::var("RUMOCA_SIM_INTROSPECT_SUBSTITUTIONS").is_ok()
 }
 
 fn reconstruct_introspect_expr_chars() -> usize {
@@ -812,5 +832,35 @@ mod tests {
 
         assert_eq!(names_full, names_const);
         assert_eq!(data_full, data_const);
+    }
+
+    #[test]
+    fn test_reconstruct_eliminated_pre_tracks_previous_sample_value() {
+        let dae = dae::Dae::new();
+        let elim = eliminate::EliminationResult {
+            substitutions: vec![eliminate::Substitution {
+                var_name: VarName::new("y_prev"),
+                expr: dae::Expression::BuiltinCall {
+                    function: dae::BuiltinFunction::Pre,
+                    args: vec![var("sig")],
+                },
+                env_keys: vec!["y_prev".to_string()],
+            }],
+            n_eliminated: 1,
+        };
+
+        let times = vec![0.0, 1.0, 2.0];
+        let existing_names = vec!["sig".to_string()];
+        let existing_data = vec![vec![1.0, 2.0, 3.0]];
+        let (names, data) =
+            reconstruct_eliminated(&elim, &dae, &[], &times, &existing_names, &existing_data);
+
+        assert_eq!(names, vec!["y_prev".to_string()]);
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].len(), 3);
+        // `pre(sig)` falls back to current sample when no prior cache exists.
+        assert!((data[0][0] - 1.0).abs() < 1e-12);
+        assert!((data[0][1] - 1.0).abs() < 1e-12);
+        assert!((data[0][2] - 2.0).abs() < 1e-12);
     }
 }

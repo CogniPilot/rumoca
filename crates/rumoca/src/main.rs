@@ -28,6 +28,7 @@ use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use rumoca::{CompilationResult, Compiler, sim_report};
 use rumoca_session::{ProjectFileMoveHint, resync_model_sidecars_with_move_hints};
+use serde::Serialize;
 use walkdir::WalkDir;
 
 /// Git version string
@@ -48,6 +49,8 @@ enum Commands {
     Compile(CompileArgs),
     /// Simulate a Modelica file and generate an HTML report
     Simulate(SimulateArgs),
+    /// Solve using the phase-solve contract (Modelica -> DAE -> SolveIr -> backend)
+    Solve(SolveArgs),
     /// Compile and print balance/summary information
     Check(CheckArgs),
     /// Format Modelica files
@@ -128,6 +131,10 @@ struct CompileArgs {
     /// Template file for custom export (advanced)
     #[arg(short, long)]
     template_file: Option<String>,
+
+    /// Render templates from a structurally prepared DAE instead of raw compile output
+    #[arg(long, requires = "template_file")]
+    template_prepared: bool,
 }
 
 #[derive(Args, Debug)]
@@ -152,7 +159,106 @@ struct SimulateArgs {
     output: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Args, Debug)]
+struct SolveArgs {
+    #[command(flatten)]
+    input: ModelInputArgs,
+
+    /// Solve form (auto-selected from backend/solver when omitted)
+    #[arg(long, value_enum)]
+    form: Option<SolveForm>,
+
+    /// Backend selector for solve execution path
+    #[arg(long, value_enum, default_value_t = SolveBackend::Auto)]
+    backend: SolveBackend,
+
+    /// Build solve IR and stop before runtime simulation
+    #[arg(long, default_value_t = false)]
+    prep_only: bool,
+
+    /// Write SolveIr JSON to this file
+    #[arg(long)]
+    emit_form: Option<String>,
+
+    /// List availability of all solve forms for the compiled model and exit
+    #[arg(long, default_value_t = false)]
+    list_forms: bool,
+
+    /// List availability of all solve forms as JSON and exit
+    #[arg(long, default_value_t = false)]
+    list_forms_json: bool,
+
+    /// Check whether a specific solve form can be built and exit
+    #[arg(long, value_enum)]
+    can_build_form: Option<SolveForm>,
+
+    /// Simulation end time (default: 1.0)
+    #[arg(long, default_value_t = 1.0)]
+    t_end: f64,
+
+    /// Optional fixed output interval (dt). If omitted, runtime chooses automatically.
+    #[arg(long)]
+    dt: Option<f64>,
+
+    /// Solver mode (auto, bdf, rk-like)
+    #[arg(long, value_enum, default_value_t = SimulateSolverMode::Auto)]
+    solver: SimulateSolverMode,
+
+    /// Output file path for simulation report (default: <MODEL>_results.html)
+    #[arg(short, long)]
+    output: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum SolveForm {
+    #[value(name = "implicit-residual")]
+    ImplicitResidual,
+    #[value(name = "mass-matrix")]
+    MassMatrix,
+    Causal,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum SolveBackend {
+    Auto,
+    Diffsol,
+    Rk45,
+    #[value(name = "solve-ir")]
+    SolveIr,
+}
+
+impl From<SolveForm> for rumoca_phase_solve::SolveFormRequest {
+    fn from(value: SolveForm) -> Self {
+        match value {
+            SolveForm::ImplicitResidual => rumoca_phase_solve::SolveFormRequest::ImplicitResidual,
+            SolveForm::MassMatrix => rumoca_phase_solve::SolveFormRequest::MassMatrix,
+            SolveForm::Causal => rumoca_phase_solve::SolveFormRequest::Causal,
+        }
+    }
+}
+
+impl SolveForm {
+    fn as_label(self) -> &'static str {
+        match self {
+            SolveForm::ImplicitResidual => "implicit-residual",
+            SolveForm::MassMatrix => "mass-matrix",
+            SolveForm::Causal => "causal",
+        }
+    }
+}
+
+impl SolveBackend {
+    fn as_label(self) -> &'static str {
+        match self {
+            SolveBackend::Auto => "auto",
+            SolveBackend::Diffsol => "diffsol",
+            SolveBackend::Rk45 => "rk45",
+            SolveBackend::SolveIr => "solve-ir",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum SimulateSolverMode {
     Auto,
     Bdf,
@@ -254,6 +360,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Compile(args) => run_compile(args),
         Commands::Simulate(args) => run_simulate(args),
+        Commands::Solve(args) => run_solve(args),
         Commands::Check(args) => run_check(args),
         Commands::Fmt(args) => run_fmt(args),
         Commands::Lint(args) => run_lint(args),
@@ -337,7 +444,11 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
     if let Some(template_file) = args.template_file {
-        print!("{}", result.render_template(&template_file)?);
+        if args.template_prepared {
+            print!("{}", result.render_template_prepared(&template_file, true)?);
+        } else {
+            print!("{}", result.render_template(&template_file)?);
+        }
         return Ok(());
     }
     print_summary(&model, &result);
@@ -355,6 +466,185 @@ fn run_simulate(args: SimulateArgs) -> Result<()> {
         args.solver,
         args.output.as_deref(),
     )
+}
+
+fn run_solve(args: SolveArgs) -> Result<()> {
+    init_debug_tracing(args.input.debug);
+    let (result, model) = compile_with_inferred_model(&args.input)?;
+
+    if args.list_forms || args.list_forms_json {
+        let records = solve_form_capability_records(&result);
+        if args.list_forms {
+            for row in &records {
+                let status = if row.available {
+                    "available".to_string()
+                } else {
+                    format!(
+                        "unavailable ({})",
+                        row.reason.as_deref().unwrap_or("unknown reason")
+                    )
+                };
+                println!("{}: {status}", row.form);
+            }
+        }
+        if args.list_forms_json {
+            println!("{}", serde_json::to_string_pretty(&records)?);
+        }
+        return Ok(());
+    }
+
+    if let Some(form) = args.can_build_form {
+        match rumoca_phase_solve::ensure_form_available(&result.dae, form.into()) {
+            Ok(()) => {
+                println!("{}: available", form.as_label());
+                return Ok(());
+            }
+            Err(err) => {
+                bail!("{}: unavailable ({})", form.as_label(), err);
+            }
+        }
+    }
+
+    let requested_form = resolve_requested_solve_form(args.backend, args.solver, args.form);
+
+    rumoca_phase_solve::ensure_form_available(&result.dae, requested_form.into())?;
+    let solve_ir = rumoca_phase_solve::to_solve_ir(
+        &result.dae,
+        rumoca_phase_solve::SolvePhaseOptions {
+            form: requested_form.into(),
+        },
+    )?;
+
+    let solve_json = serde_json::to_string_pretty(&solve_ir)?;
+    if let Some(path) = &args.emit_form {
+        std::fs::write(path, &solve_json)?;
+    }
+    if args.prep_only {
+        if args.emit_form.is_none() {
+            println!("{solve_json}");
+        }
+        return Ok(());
+    }
+
+    if args.backend == SolveBackend::SolveIr {
+        bail!(
+            "--backend {} is prep-only; pass --prep-only to emit SolveIr",
+            args.backend.as_label()
+        );
+    }
+
+    let solver = resolve_runtime_solver_for_solve(args.backend, args.solver, requested_form)?;
+
+    run_simulation(
+        &result,
+        &model,
+        args.t_end,
+        args.dt,
+        solver,
+        args.output.as_deref(),
+    )
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SolveFormCapabilityRecord {
+    form: &'static str,
+    available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+fn solve_form_capability_records(result: &CompilationResult) -> Vec<SolveFormCapabilityRecord> {
+    [
+        SolveForm::ImplicitResidual,
+        SolveForm::MassMatrix,
+        SolveForm::Causal,
+    ]
+    .into_iter()
+    .map(
+        |form| match rumoca_phase_solve::ensure_form_available(&result.dae, form.into()) {
+            Ok(()) => SolveFormCapabilityRecord {
+                form: form.as_label(),
+                available: true,
+                reason: None,
+            },
+            Err(err) => SolveFormCapabilityRecord {
+                form: form.as_label(),
+                available: false,
+                reason: Some(err.to_string()),
+            },
+        },
+    )
+    .collect()
+}
+
+fn effective_runtime_backend(backend: SolveBackend, solver: SimulateSolverMode) -> SolveBackend {
+    match backend {
+        SolveBackend::Auto => {
+            if solver == SimulateSolverMode::RkLike {
+                SolveBackend::Rk45
+            } else {
+                SolveBackend::Diffsol
+            }
+        }
+        _ => backend,
+    }
+}
+
+fn resolve_requested_solve_form(
+    backend: SolveBackend,
+    solver: SimulateSolverMode,
+    form: Option<SolveForm>,
+) -> SolveForm {
+    if let Some(form) = form {
+        return form;
+    }
+    match effective_runtime_backend(backend, solver) {
+        SolveBackend::Diffsol => SolveForm::MassMatrix,
+        SolveBackend::Rk45 => SolveForm::Causal,
+        // For solve-ir prep backend, follow the solver hint when present.
+        SolveBackend::SolveIr => {
+            if solver == SimulateSolverMode::RkLike {
+                SolveForm::Causal
+            } else {
+                SolveForm::MassMatrix
+            }
+        }
+        SolveBackend::Auto => unreachable!("auto resolved above"),
+    }
+}
+
+fn resolve_runtime_solver_for_solve(
+    backend: SolveBackend,
+    solver: SimulateSolverMode,
+    form: SolveForm,
+) -> Result<SimulateSolverMode> {
+    let runtime_backend = effective_runtime_backend(backend, solver);
+
+    match runtime_backend {
+        SolveBackend::SolveIr => bail!("--backend solve-ir is prep-only; pass --prep-only"),
+        SolveBackend::Rk45 => {
+            if form != SolveForm::Causal {
+                bail!(
+                    "RK45 backend requires --form causal (got --form {})",
+                    form.as_label()
+                );
+            }
+            Ok(SimulateSolverMode::RkLike)
+        }
+        SolveBackend::Diffsol => {
+            if form != SolveForm::MassMatrix {
+                bail!(
+                    "diffsol backend currently supports only --form mass-matrix (got --form {})",
+                    form.as_label()
+                );
+            }
+            if solver == SimulateSolverMode::RkLike {
+                bail!("diffsol backend is incompatible with --solver rk-like");
+            }
+            Ok(solver)
+        }
+        SolveBackend::Auto => unreachable!("resolved above"),
+    }
 }
 
 fn run_check(args: CheckArgs) -> Result<()> {
@@ -727,7 +1017,7 @@ fn run_simulation(
     solver: SimulateSolverMode,
     output: Option<&str>,
 ) -> Result<()> {
-    use rumoca_sim_diffsol::{SimOptions, simulate};
+    use rumoca_sim_diffsol::SimOptions;
 
     let opts = SimOptions {
         t_end,
@@ -737,7 +1027,12 @@ fn run_simulation(
     };
 
     eprintln!("Simulating {} to t={}...", model, t_end);
-    let sim = simulate(&result.dae, &opts)?;
+    let sim = match solver {
+        SimulateSolverMode::RkLike => rumoca_sim_rk45::simulate(&result.dae, &opts)?,
+        SimulateSolverMode::Auto | SimulateSolverMode::Bdf => {
+            rumoca_sim_diffsol::simulate(&result.dae, &opts)?
+        }
+    };
     eprintln!(
         "Simulation complete: {} time points, {} variables",
         sim.times.len(),
@@ -769,9 +1064,11 @@ fn run_simulation(
 }
 
 fn completion_script(shell: CompletionShell) -> String {
-    let top = "compile simulate check completions --help -h --version -V";
-    let compile_opts = "--model --library --json --template-file --verbose --debug";
+    let top = "compile simulate solve check completions --help -h --version -V";
+    let compile_opts =
+        "--model --library --json --template-file --template-prepared --verbose --debug";
     let simulate_opts = "--model --library --t-end --dt --solver --output --verbose --debug";
+    let solve_opts = "--model --library --form --backend --prep-only --emit-form --list-forms --list-forms-json --can-build-form --t-end --dt --solver --output --verbose --debug";
     let check_opts = "--model --library --verbose --debug";
     let completion_opts = "bash zsh fish powershell";
     match shell {
@@ -787,6 +1084,7 @@ fn completion_script(shell: CompletionShell) -> String {
   case "$cmd" in
     compile) opts="{compile_opts}" ;;
     simulate) opts="{simulate_opts}" ;;
+    solve) opts="{solve_opts}" ;;
     check) opts="{check_opts}" ;;
     completions) opts="{completion_opts}" ;;
     *) opts="{top}" ;;
@@ -810,6 +1108,7 @@ _rumoca() {{
       case $words[2] in
         compile) _values 'options' {compile_opts} ;;
         simulate) _values 'options' {simulate_opts} ;;
+        solve) _values 'options' {solve_opts} ;;
         check) _values 'options' {check_opts} ;;
         completions) _values 'shell' {completion_opts} ;;
       esac
@@ -822,10 +1121,12 @@ compdef _rumoca rumoca
         CompletionShell::Fish => [
             "complete -c rumoca -n '__fish_use_subcommand' -a 'compile' -d 'Compile a Modelica file'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'simulate' -d 'Simulate a Modelica file'",
+            "complete -c rumoca -n '__fish_use_subcommand' -a 'solve' -d 'Solve via phase-solve contract'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --library --json --template-file --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --library --json --template-file --template-prepared --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --library --t-end --output --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from solve' -a '--model --library --form --backend --prep-only --emit-form --list-forms --list-forms-json --can-build-form --t-end --dt --solver --output --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --library --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'",
         ]
@@ -840,6 +1141,7 @@ compdef _rumoca rumoca
     switch ($words[1]) {{
       "compile" {{ $candidates = @({compile_tokens}) }}
       "simulate" {{ $candidates = @({simulate_tokens}) }}
+      "solve" {{ $candidates = @({solve_tokens}) }}
       "check" {{ $candidates = @({check_tokens}) }}
       "completions" {{ $candidates = @({completion_tokens}) }}
     }}
@@ -852,6 +1154,7 @@ compdef _rumoca rumoca
             top_tokens = to_ps_tokens(top),
             compile_tokens = to_ps_tokens(compile_opts),
             simulate_tokens = to_ps_tokens(simulate_opts),
+            solve_tokens = to_ps_tokens(solve_opts),
             check_tokens = to_ps_tokens(check_opts),
             completion_tokens = to_ps_tokens(completion_opts),
         ),
@@ -869,6 +1172,7 @@ fn to_ps_tokens(words: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_ir_dae as dae;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -911,5 +1215,139 @@ mod tests {
             error.to_string().contains("Pass --model <NAME>"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn solve_form_labels_are_canonical() {
+        assert_eq!(SolveForm::ImplicitResidual.as_label(), "implicit-residual");
+        assert_eq!(SolveForm::MassMatrix.as_label(), "mass-matrix");
+        assert_eq!(SolveForm::Causal.as_label(), "causal");
+    }
+
+    #[test]
+    fn solve_backend_labels_are_canonical() {
+        assert_eq!(SolveBackend::Auto.as_label(), "auto");
+        assert_eq!(SolveBackend::Diffsol.as_label(), "diffsol");
+        assert_eq!(SolveBackend::Rk45.as_label(), "rk45");
+        assert_eq!(SolveBackend::SolveIr.as_label(), "solve-ir");
+    }
+
+    #[test]
+    fn completion_scripts_include_solve_capability_flags() {
+        let bash = completion_script(CompletionShell::Bash);
+        let zsh = completion_script(CompletionShell::Zsh);
+        let fish = completion_script(CompletionShell::Fish);
+        let ps = completion_script(CompletionShell::PowerShell);
+        for script in [&bash, &zsh, &fish, &ps] {
+            assert!(
+                script.contains("solve"),
+                "completion script missing solve command"
+            );
+            assert!(
+                script.contains("--list-forms"),
+                "completion script missing --list-forms flag"
+            );
+            assert!(
+                script.contains("--can-build-form"),
+                "completion script missing --can-build-form flag"
+            );
+            assert!(
+                script.contains("--list-forms-json"),
+                "completion script missing --list-forms-json flag"
+            );
+            assert!(
+                script.contains("--backend"),
+                "completion script missing --backend flag"
+            );
+        }
+    }
+
+    #[test]
+    fn solve_runtime_backend_form_compatibility_enforced() {
+        let err = resolve_runtime_solver_for_solve(
+            SolveBackend::Rk45,
+            SimulateSolverMode::Auto,
+            SolveForm::ImplicitResidual,
+        )
+        .expect_err("rk45 must reject implicit-residual");
+        assert!(
+            err.to_string().contains("requires --form causal"),
+            "unexpected error: {err}"
+        );
+
+        let err = resolve_runtime_solver_for_solve(
+            SolveBackend::Diffsol,
+            SimulateSolverMode::Bdf,
+            SolveForm::Causal,
+        )
+        .expect_err("diffsol must reject causal");
+        assert!(
+            err.to_string().contains("supports only --form mass-matrix"),
+            "unexpected error: {err}"
+        );
+
+        let solver = resolve_runtime_solver_for_solve(
+            SolveBackend::Diffsol,
+            SimulateSolverMode::Bdf,
+            SolveForm::MassMatrix,
+        )
+        .expect("diffsol+mass-matrix should resolve");
+        assert_eq!(solver, SimulateSolverMode::Bdf);
+
+        let solver = resolve_runtime_solver_for_solve(
+            SolveBackend::Rk45,
+            SimulateSolverMode::Auto,
+            SolveForm::Causal,
+        )
+        .expect("rk45+causal should resolve");
+        assert_eq!(solver, SimulateSolverMode::RkLike);
+    }
+
+    #[test]
+    fn solve_form_defaults_follow_backend_and_solver() {
+        assert_eq!(
+            resolve_requested_solve_form(SolveBackend::Auto, SimulateSolverMode::Auto, None),
+            SolveForm::MassMatrix
+        );
+        assert_eq!(
+            resolve_requested_solve_form(SolveBackend::Auto, SimulateSolverMode::RkLike, None),
+            SolveForm::Causal
+        );
+        assert_eq!(
+            resolve_requested_solve_form(SolveBackend::Diffsol, SimulateSolverMode::Bdf, None),
+            SolveForm::MassMatrix
+        );
+        assert_eq!(
+            resolve_requested_solve_form(SolveBackend::Rk45, SimulateSolverMode::Auto, None),
+            SolveForm::Causal
+        );
+        assert_eq!(
+            resolve_requested_solve_form(
+                SolveBackend::Diffsol,
+                SimulateSolverMode::Auto,
+                Some(SolveForm::ImplicitResidual)
+            ),
+            SolveForm::ImplicitResidual
+        );
+    }
+
+    #[test]
+    fn solve_form_capability_records_include_reason_only_when_unavailable() {
+        let result = CompilationResult {
+            dae: dae::Dae::new(),
+            flat: rumoca_session::Model::new(),
+            resolved: rumoca_session::ResolvedTree(rumoca_ir_ast::ClassTree::new()),
+        };
+        let rows = solve_form_capability_records(&result);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].form, "implicit-residual");
+        assert!(rows[0].available);
+        assert!(rows[0].reason.is_none());
+        assert_eq!(rows[1].form, "mass-matrix");
+        assert!(!rows[1].available);
+        assert!(rows[1].reason.is_some());
+        assert_eq!(rows[2].form, "causal");
+        assert!(!rows[2].available);
+        assert!(rows[2].reason.is_some());
     }
 }

@@ -16,20 +16,26 @@ use support::contract_cases_manifest::{
 /// tests are hardened.
 const STRICT_DUAL_CASE_CONTRACT_IDS: &[&str] = &[
     "ALG-001", "CONN-017", "DECL-001", "DECL-003", "DECL-024", "DECL-032", "EQN-001", "EQN-015",
-    "EQN-013", "EQN-016", "EQN-025", "EXPR-012", "EXPR-013", "EXPR-016", "FUNC-001", "FUNC-017",
-    "LEX-001", "PKG-002", "SIM-005", "SIM-009", "TYPE-013",
+    "EQN-013", "EQN-016", "EQN-025", "EXPR-012", "EXPR-013", "EXPR-016", "FUNC-001", "FUNC-003",
+    "FUNC-004", "FUNC-010", "FUNC-011", "FUNC-012", "FUNC-013", "FUNC-015", "FUNC-017", "FUNC-019",
+    "FUNC-020", "FUNC-021", "FUNC-022", "FUNC-023", "FUNC-024", "LEX-001", "PKG-002", "PKG-007",
+    "PKG-012", "SIM-001", "SIM-002", "SIM-003", "SIM-004", "SIM-005", "SIM-006", "SIM-007",
+    "SIM-008", "SIM-009", "TYPE-013",
 ];
 
 /// Contracts that must keep semantic coverage (compile or balance), not parse-only checks.
 const STRICT_NON_PARSE_CONTRACT_IDS: &[&str] = &[
     "ALG-005", "ALG-012", "ALG-013", "CONN-017", "DECL-003", "DECL-022", "DECL-036", "EQN-013",
-    "EQN-016", "EQN-021", "EXPR-013", "FUNC-001", "SIM-005", "SIM-009", "TYPE-013",
+    "EQN-016", "EQN-021", "EXPR-013", "FUNC-001", "FUNC-003", "FUNC-004", "FUNC-010", "FUNC-011",
+    "FUNC-012", "FUNC-013", "FUNC-015", "FUNC-018", "FUNC-019", "FUNC-020", "FUNC-021", "FUNC-022",
+    "FUNC-023", "FUNC-024", "PKG-007", "SIM-001", "SIM-002", "SIM-003", "SIM-004", "SIM-005",
+    "SIM-006", "SIM-007", "SIM-008", "SIM-009", "TYPE-013",
 ];
 
 /// Parse-enforced non-LEX contracts where grammar-level rejection is the intended guard.
 const PARSE_ENFORCED_NON_LEX_CONTRACT_IDS: &[&str] = &[
     "ALG-001", "DECL-001", "DECL-006", "DECL-012", "DECL-015", "DECL-024", "EQN-024", "EXPR-014",
-    "FUNC-006", "FUNC-017", "INST-003",
+    "FUNC-006", "FUNC-016", "FUNC-017", "INST-003", "INST-012", "INST-017", "INST-018", "PKG-012",
 ];
 
 /// Public helper API in `rumoca_contracts::test_support` that must stay in use.

@@ -2,6 +2,7 @@ mod completion_cmd;
 mod coverage_analysis;
 mod coverage_gate;
 mod msl_cmd;
+mod polydup_cmd;
 mod test_cmd;
 mod vscode_cmd;
 mod wasm_tooling;
@@ -18,6 +19,7 @@ use coverage_analysis::{
 };
 use coverage_gate::CoverageGateArgs;
 use msl_cmd::MslArgs;
+use polydup_cmd::DupesArgs;
 use rumoca_core::workspace_root_from_manifest_dir;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsStr;
@@ -59,6 +61,8 @@ enum Commands {
     Completions(CompletionsArgs),
     /// Run MSL tooling commands via the unified developer CLI
     Msl(MslArgs),
+    /// Detect similar/duplicate helper implementations using polydup
+    Dupes(DupesArgs),
     /// Generate standardized unified workspace coverage artifacts in target/llvm-cov
     Coverage(CoverageArgs),
     /// Generate per-package inventory and trim candidates from unified workspace llvm-cov JSON
@@ -212,6 +216,7 @@ fn main() -> Result<()> {
             completion_cmd::run(args, "rum", &Commands::subcommand_names())
         }
         Commands::Msl(args) => msl_cmd::run(args, &repo_root()),
+        Commands::Dupes(args) => polydup_cmd::run(args, &repo_root()),
         Commands::Coverage(args) => cmd_coverage(args),
         Commands::CoverageReport(args) => cmd_coverage_report(args),
         Commands::CoverageGate(args) => cmd_coverage_gate(args),
@@ -234,6 +239,7 @@ impl Commands {
             "ci-parity",
             "completions",
             "msl",
+            "dupes",
             "coverage",
             "coverage-report",
             "coverage-gate",

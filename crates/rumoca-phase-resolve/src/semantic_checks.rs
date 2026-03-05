@@ -4,9 +4,9 @@
 //! that can be validated purely from the AST without needing type information
 //! or instance data.
 
-use rumoca_core::{Diagnostic, Label, SourceMap};
+use rumoca_core::{DefId, Diagnostic, Label, SourceMap};
 use rumoca_ir_ast as ast;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 type Causality = ast::Causality;
 type ClassDef = ast::ClassDef;
@@ -51,6 +51,30 @@ const ER028_UNBALANCED_CONNECTOR: &str = "ER028";
 const ER029_REAL_EQUALITY_COMPARISON: &str = "ER029";
 const ER030_DER_IN_FUNCTION: &str = "ER030";
 const ER031_END_OUTSIDE_SUBSCRIPT: &str = "ER031";
+const ER032_FUNCTION_OUTPUT_NOT_ASSIGNED: &str = "ER032";
+const ER033_NAMED_ARGUMENT_SLOT_FILLED: &str = "ER033";
+const ER034_FUNCTION_CALL_MISSING_INPUT: &str = "ER034";
+const ER035_FUNCTION_INNER_OUTER_FORBIDDEN: &str = "ER035";
+const ER036_FUNCTION_CLOCK_COMPONENT_FORBIDDEN: &str = "ER036";
+const ER037_PARTIAL_FUNCTION_CALL_FORBIDDEN: &str = "ER037";
+const ER038_FUNCTION_INVALID_COMPONENT_TYPE: &str = "ER038";
+const ER039_FUNCTION_FORBIDDEN_OPERATOR: &str = "ER039";
+const ER040_IMPURE_INHERITANCE_REQUIRES_IMPURE: &str = "ER040";
+const ER041_IMPURE_CALL_SCOPE_VIOLATION: &str = "ER041";
+const ER042_FUNCTION_BINDING_CYCLE: &str = "ER042";
+const ER043_FUNCTION_UNINITIALIZED_USE: &str = "ER043";
+const ER044_FUNCTION_ARRAY_DIMENSION_SOURCE: &str = "ER044";
+const ER045_FUNCTION_VECTORIZATION_REPLACEABLE: &str = "ER045";
+const ER046_FUNCTION_VECTORIZATION_SIZE_MISMATCH: &str = "ER046";
+const ER047_FUNCTION_OUTPUT_TARGET_MISMATCH: &str = "ER047";
+const ER048_RECORD_CONSTRUCTOR_NON_GLOBAL: &str = "ER048";
+const ER049_RECORD_CONSTRUCTOR_CONDITIONAL_COMPONENT: &str = "ER049";
+const ER050_DERIVATIVE_OUTPUTS_EMPTY: &str = "ER050";
+const ER051_ZERODERIVATIVE_INVALID_TARGET: &str = "ER051";
+const ER052_EXTERNAL_PURITY_DEPRECATED: &str = "ER052";
+const ER053_FUNCTIONAL_PARAM_RECORD_ENUM: &str = "ER053";
+const ER054_INPUT_DEFAULT_DEPENDS_ON_NON_INPUT: &str = "ER054";
+const ER055_DERIVATIVE_ORDERING: &str = "ER055";
 
 /// Context tracking for nested traversal (function vs model, when depth, etc.)
 struct CheckContext {
@@ -75,20 +99,56 @@ impl CheckContext {
 pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let mut ctx = CheckContext::new();
+    let class_index = build_class_def_index(def);
+    let top_level_class_ids = build_top_level_class_ids(def);
     for class in def.classes.values() {
-        check_class(class, def, source_map, &mut ctx, &mut diags);
+        check_class(
+            class,
+            def,
+            source_map,
+            &class_index,
+            &top_level_class_ids,
+            &mut ctx,
+            &mut diags,
+        );
     }
     diags
+}
+
+fn build_class_def_index(def: &StoredDefinition) -> HashMap<DefId, &ClassDef> {
+    let mut index = HashMap::new();
+    for class in def.classes.values() {
+        index_class_def_recursive(class, &mut index);
+    }
+    index
+}
+
+fn build_top_level_class_ids(def: &StoredDefinition) -> HashSet<DefId> {
+    def.classes
+        .values()
+        .filter_map(|class| class.def_id)
+        .collect()
+}
+
+fn index_class_def_recursive<'a>(class: &'a ClassDef, index: &mut HashMap<DefId, &'a ClassDef>) {
+    if let Some(def_id) = class.def_id {
+        index.insert(def_id, class);
+    }
+    for nested in class.classes.values() {
+        index_class_def_recursive(nested, index);
+    }
 }
 
 fn check_class(
     class: &ClassDef,
     def: &StoredDefinition,
     source_map: &SourceMap,
+    class_index: &HashMap<DefId, &ClassDef>,
+    top_level_class_ids: &HashSet<DefId>,
     ctx: &mut CheckContext,
     diags: &mut Vec<Diagnostic>,
 ) {
-    check_class_structural(class, def, source_map, diags);
+    check_class_structural(class, def, source_map, class_index, diags);
 
     let was_function = ctx.in_function;
     if class.class_type == ClassType::Function {
@@ -146,10 +206,20 @@ fn check_class(
             check_statement(stmt, ctx, diags);
         }
     }
+    check_function_call_argument_contracts_in_class(class, class_index, top_level_class_ids, diags);
+    check_impure_call_scope_in_class(class, class_index, diags);
 
     // Recurse into nested classes
     for nested in class.classes.values() {
-        check_class(nested, def, source_map, ctx, diags);
+        check_class(
+            nested,
+            def,
+            source_map,
+            class_index,
+            top_level_class_ids,
+            ctx,
+            diags,
+        );
     }
 
     ctx.in_function = was_function;
@@ -163,6 +233,7 @@ fn check_class_structural(
     class: &ClassDef,
     def: &StoredDefinition,
     source_map: &SourceMap,
+    class_index: &HashMap<DefId, &ClassDef>,
     diags: &mut Vec<Diagnostic>,
 ) {
     check_duplicate_names(class, diags);
@@ -172,10 +243,11 @@ fn check_class_structural(
     check_component_name_vs_class_name(class, diags);
     check_package_restrictions(class, diags);
     check_duplicate_imports(class, source_map, diags);
-    check_function_restrictions(class, diags);
+    check_function_restrictions(class, class_index, diags);
     check_cross_class_restrictions(class, def, diags);
     check_cyclic_parameter_bindings(class, diags);
     check_parameter_variability(class, diags);
+    check_function_binding_cycles(class, diags);
 }
 
 /// DECL-001: Duplicate variable names within the same class scope.
@@ -455,7 +527,17 @@ fn label_for_token(token: &ast::Token, source_map: &SourceMap, message: String) 
 /// FUNC-001: Public function components must have input or output prefix.
 /// FUNC-002: Assignment to function input is forbidden.
 /// FUNC-006: Functions cannot have equation sections.
-fn check_function_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
+/// FUNC-003: Function outputs must be assigned or function must be external.
+/// FUNC-011: Functions may not declare Clock components.
+/// FUNC-012: Function components cannot use inner/outer prefixes.
+/// FUNC-015: Function components cannot be model/block/operator/connector types.
+/// FUNC-010: Functions cannot use forbidden simulation operators.
+/// FUNC-021: Extending an impure function requires impure declaration.
+fn check_function_restrictions(
+    class: &ClassDef,
+    class_index: &HashMap<DefId, &ClassDef>,
+    diags: &mut Vec<Diagnostic>,
+) {
     if class.class_type != ClassType::Function {
         return;
     }
@@ -493,1493 +575,715 @@ fn check_function_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     for alg in &class.algorithms {
         check_input_assignment(alg, &input_names, diags);
     }
+
+    for (name, comp) in &class.components {
+        if comp.inner || comp.outer {
+            diags.push(
+                Diagnostic::error(format!(
+                    "function element '{}' cannot use inner/outer prefixes (MLS §12.2)",
+                    name
+                ))
+                .with_code(ER035_FUNCTION_INNER_OUTER_FORBIDDEN),
+            );
+        }
+
+        if comp.type_name.to_string() == "Clock" {
+            diags.push(
+                Diagnostic::error(format!(
+                    "function component '{}' cannot have type Clock (MLS §12.2)",
+                    name
+                ))
+                .with_code(ER036_FUNCTION_CLOCK_COMPONENT_FORBIDDEN),
+            );
+        }
+
+        let Some(type_def_id) = comp.type_def_id else {
+            continue;
+        };
+        let Some(type_class) = class_index.get(&type_def_id) else {
+            continue;
+        };
+        if matches!(
+            type_class.class_type,
+            ClassType::Model | ClassType::Block | ClassType::Operator | ClassType::Connector
+        ) {
+            diags.push(
+                Diagnostic::error(format!(
+                    "function component '{}' cannot have type '{}' (a {}) (MLS §12.2)",
+                    name,
+                    comp.type_name,
+                    type_class.class_type.as_str()
+                ))
+                .with_code(ER038_FUNCTION_INVALID_COMPONENT_TYPE),
+            );
+        }
+    }
+
+    check_forbidden_operators_in_function(class, diags);
+    check_impure_inheritance(class, class_index, diags);
+    check_function_output_assignment(class, diags);
+    check_function_uninitialized_use(class, diags);
+    check_function_array_dimension_sources(class, diags);
+    check_input_default_independence(class, diags);
+    check_external_function_purity_deprecation(class, diags);
+    check_functional_parameter_type_contract(class, class_index, diags);
+    check_derivative_annotation_contracts(class, diags);
 }
 
-fn check_input_assignment(
-    stmts: &[Statement],
-    input_names: &std::collections::HashSet<String>,
+fn check_forbidden_operators_in_function(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
+    for alg in &class.algorithms {
+        for stmt in alg {
+            check_forbidden_operators_in_statement(stmt, diags);
+        }
+    }
+    for alg in &class.initial_algorithms {
+        for stmt in alg {
+            check_forbidden_operators_in_statement(stmt, diags);
+        }
+    }
+}
+
+fn check_forbidden_operators_in_statement(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
+    match stmt {
+        Statement::Empty | Statement::Return { .. } | Statement::Break { .. } => {}
+        Statement::Assignment { value, .. } => {
+            check_forbidden_operators_in_expr(value, diags);
+        }
+        Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+        } => {
+            check_forbidden_operator_call(comp, diags);
+            for arg in args {
+                check_forbidden_operators_in_expr(arg, diags);
+            }
+            for output in outputs {
+                check_forbidden_operators_in_expr(output, diags);
+            }
+        }
+        Statement::For { indices, equations } => {
+            for index in indices {
+                check_forbidden_operators_in_expr(&index.range, diags);
+            }
+            for inner in equations {
+                check_forbidden_operators_in_statement(inner, diags);
+            }
+        }
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                check_forbidden_operators_in_expr(&block.cond, diags);
+                for inner in &block.stmts {
+                    check_forbidden_operators_in_statement(inner, diags);
+                }
+            }
+            if let Some(else_stmts) = else_block {
+                for inner in else_stmts {
+                    check_forbidden_operators_in_statement(inner, diags);
+                }
+            }
+        }
+        Statement::When(blocks) => {
+            for block in blocks {
+                check_forbidden_operators_in_expr(&block.cond, diags);
+                for inner in &block.stmts {
+                    check_forbidden_operators_in_statement(inner, diags);
+                }
+            }
+        }
+        Statement::While(block) => {
+            check_forbidden_operators_in_expr(&block.cond, diags);
+            for inner in &block.stmts {
+                check_forbidden_operators_in_statement(inner, diags);
+            }
+        }
+        Statement::Reinit { value, .. } => {
+            diags.push(
+                Diagnostic::error("reinit() is not allowed in functions (MLS §12.2)".to_string())
+                    .with_code(ER039_FUNCTION_FORBIDDEN_OPERATOR),
+            );
+            check_forbidden_operators_in_expr(value, diags);
+        }
+        Statement::Assert {
+            condition,
+            message,
+            level,
+        } => {
+            check_forbidden_operators_in_expr(condition, diags);
+            check_forbidden_operators_in_expr(message, diags);
+            if let Some(level_expr) = level {
+                check_forbidden_operators_in_expr(level_expr, diags);
+            }
+        }
+    }
+}
+
+fn check_forbidden_operators_in_expr(expr: &Expression, diags: &mut Vec<Diagnostic>) {
+    match expr {
+        Expression::Empty | Expression::Terminal { .. } | Expression::ComponentReference(_) => {}
+        Expression::Range { start, step, end } => {
+            check_forbidden_operators_in_expr(start, diags);
+            if let Some(step_expr) = step {
+                check_forbidden_operators_in_expr(step_expr, diags);
+            }
+            check_forbidden_operators_in_expr(end, diags);
+        }
+        Expression::Unary { rhs, .. } => check_forbidden_operators_in_expr(rhs, diags),
+        Expression::Binary { lhs, rhs, .. } => {
+            check_forbidden_operators_in_expr(lhs, diags);
+            check_forbidden_operators_in_expr(rhs, diags);
+        }
+        Expression::FunctionCall { comp, args } => {
+            check_forbidden_operator_call(comp, diags);
+            for arg in args {
+                check_forbidden_operators_in_expr(arg, diags);
+            }
+        }
+        Expression::ClassModification {
+            target: _,
+            modifications,
+        } => {
+            for mod_expr in modifications {
+                check_forbidden_operators_in_expr(mod_expr, diags);
+            }
+        }
+        Expression::NamedArgument { value, .. } | Expression::Modification { value, .. } => {
+            check_forbidden_operators_in_expr(value, diags);
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            for elem in elements {
+                check_forbidden_operators_in_expr(elem, diags);
+            }
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, then_expr) in branches {
+                check_forbidden_operators_in_expr(cond, diags);
+                check_forbidden_operators_in_expr(then_expr, diags);
+            }
+            check_forbidden_operators_in_expr(else_branch, diags);
+        }
+        Expression::Parenthesized { inner } => check_forbidden_operators_in_expr(inner, diags),
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            check_forbidden_operators_in_expr(expr, diags);
+            for index in indices {
+                check_forbidden_operators_in_expr(&index.range, diags);
+            }
+            if let Some(filter_expr) = filter {
+                check_forbidden_operators_in_expr(filter_expr, diags);
+            }
+        }
+        Expression::ArrayIndex { base, subscripts } => {
+            check_forbidden_operators_in_expr(base, diags);
+            for sub in subscripts {
+                if let Subscript::Expression(sub_expr) = sub {
+                    check_forbidden_operators_in_expr(sub_expr, diags);
+                }
+            }
+        }
+        Expression::FieldAccess { base, .. } => check_forbidden_operators_in_expr(base, diags),
+    }
+}
+
+fn check_forbidden_operator_call(comp: &ComponentReference, diags: &mut Vec<Diagnostic>) {
+    let Some(first) = comp.parts.first() else {
+        return;
+    };
+    let name = first.ident.text.as_ref();
+    if !is_forbidden_function_operator(name) {
+        return;
+    }
+    diags.push(
+        Diagnostic::error(format!(
+            "operator '{}' is not allowed in functions (MLS §12.2)",
+            name
+        ))
+        .with_code(ER039_FUNCTION_FORBIDDEN_OPERATOR),
+    );
+}
+
+fn is_forbidden_function_operator(name: &str) -> bool {
+    matches!(
+        name,
+        "initial"
+            | "terminal"
+            | "sample"
+            | "pre"
+            | "edge"
+            | "change"
+            | "delay"
+            | "cardinality"
+            | "inStream"
+            | "actualStream"
+    )
+}
+
+fn check_impure_inheritance(
+    class: &ClassDef,
+    class_index: &HashMap<DefId, &ClassDef>,
     diags: &mut Vec<Diagnostic>,
 ) {
+    if !class.pure {
+        return;
+    }
+    let mut visited = HashSet::new();
+    let extends_impure = class.extends.iter().any(|ext| {
+        ext.base_def_id.is_some_and(|base_id| {
+            function_or_ancestor_is_impure(base_id, class_index, &mut visited)
+        })
+    });
+    if !extends_impure {
+        return;
+    }
+    diags.push(
+        Diagnostic::error(format!(
+            "function '{}' extends an impure function and must be declared impure (MLS §12.3)",
+            class.name.text
+        ))
+        .with_code(ER040_IMPURE_INHERITANCE_REQUIRES_IMPURE),
+    );
+}
+
+fn function_or_ancestor_is_impure(
+    def_id: DefId,
+    class_index: &HashMap<DefId, &ClassDef>,
+    visited: &mut HashSet<DefId>,
+) -> bool {
+    if !visited.insert(def_id) {
+        return false;
+    }
+    let Some(class) = class_index.get(&def_id) else {
+        return false;
+    };
+    if class.class_type == ClassType::Function && !class.pure {
+        return true;
+    }
+    class.extends.iter().any(|ext| {
+        ext.base_def_id
+            .is_some_and(|base_id| function_or_ancestor_is_impure(base_id, class_index, visited))
+    })
+}
+
+fn check_function_output_assignment(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
+    if class.external.is_some() {
+        return;
+    }
+
+    let output_names: Vec<&str> = class
+        .components
+        .iter()
+        .filter(|(_, c)| matches!(c.causality, Causality::Output(_)))
+        .map(|(name, _)| name.as_str())
+        .collect();
+
+    if output_names.is_empty() {
+        return;
+    }
+
+    let mut assigned = HashSet::new();
+    for alg in &class.algorithms {
+        collect_assigned_output_names(alg, &mut assigned);
+    }
+
+    for output_name in output_names {
+        let has_binding = class
+            .components
+            .get(output_name)
+            .and_then(|comp| comp.binding.as_ref())
+            .is_some();
+        if has_binding || assigned.contains(output_name) {
+            continue;
+        }
+        diags.push(
+            Diagnostic::error(format!(
+                "output '{}' in function '{}' must be assigned in the algorithm \
+                 or provided by an external function interface (MLS §12.2)",
+                output_name, class.name.text
+            ))
+            .with_code(ER032_FUNCTION_OUTPUT_NOT_ASSIGNED),
+        );
+    }
+}
+
+fn collect_assigned_output_names(stmts: &[Statement], assigned: &mut HashSet<String>) {
     for stmt in stmts {
         match stmt {
             Statement::Assignment { comp, .. } => {
-                if let Some(first) = comp.parts.first()
-                    && input_names.contains(&*first.ident.text)
-                {
-                    diags.push(
-                        Diagnostic::error(format!(
-                            "cannot assign to input parameter '{}' (MLS §12.2)",
-                            first.ident.text
-                        ))
-                        .with_code(ER014_FUNCTION_INPUT_ASSIGNED),
-                    );
+                if let Some(first) = comp.parts.first() {
+                    assigned.insert(first.ident.text.to_string());
+                }
+            }
+            Statement::FunctionCall { outputs, .. } => {
+                for output in outputs {
+                    collect_output_target_names(output, assigned);
                 }
             }
             Statement::For { equations, .. } => {
-                check_input_assignment(equations, input_names, diags);
+                collect_assigned_output_names(equations, assigned);
             }
             Statement::If {
                 cond_blocks,
                 else_block,
             } => {
                 for block in cond_blocks {
-                    check_input_assignment(&block.stmts, input_names, diags);
+                    collect_assigned_output_names(&block.stmts, assigned);
                 }
                 if let Some(else_stmts) = else_block {
-                    check_input_assignment(else_stmts, input_names, diags);
+                    collect_assigned_output_names(else_stmts, assigned);
                 }
             }
             Statement::When(blocks) => {
                 for block in blocks {
-                    check_input_assignment(&block.stmts, input_names, diags);
+                    collect_assigned_output_names(&block.stmts, assigned);
                 }
             }
             Statement::While(block) => {
-                check_input_assignment(&block.stmts, input_names, diags);
+                collect_assigned_output_names(&block.stmts, assigned);
             }
-            _ => {}
+            Statement::Empty
+            | Statement::Return { .. }
+            | Statement::Break { .. }
+            | Statement::Reinit { .. }
+            | Statement::Assert { .. } => {}
         }
     }
 }
 
-// ============================================================================
-// Cross-class checks (need access to full StoredDefinition)
-// ============================================================================
-
-/// Look up a class by type name in the StoredDefinition.
-fn find_class_by_name<'a>(def: &'a StoredDefinition, type_name: &str) -> Option<&'a ClassDef> {
-    // Try direct lookup
-    if let Some(cls) = def.classes.get(type_name) {
-        return Some(cls);
-    }
-    // Try nested lookup (one level)
-    for parent in def.classes.values() {
-        if let Some(cls) = parent.classes.get(type_name) {
-            return Some(cls);
-        }
-    }
-    None
-}
-
-/// Cross-class checks that need to look up type classes.
-fn check_cross_class_restrictions(
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    for (name, comp) in &class.components {
-        let type_name = comp.type_name.to_string();
-        let type_class = find_class_by_name(def, &type_name);
-
-        // DECL-005: Record components restricted to record/type
-        if class.class_type == ClassType::Record
-            && let Some(tc) = type_class
-            && !matches!(tc.class_type, ClassType::Record | ClassType::Type)
-        {
-            diags.push(
-                Diagnostic::error(format!(
-                    "record component '{}' has type '{}' which is a {}, \
-                             but only record or type components are allowed (MLS §4.7)",
-                    name,
-                    type_name,
-                    tc.class_type.as_str()
-                ))
-                .with_code(ER023_RECORD_INVALID_COMPONENT_TYPE),
-            );
-        }
-
-        // DECL-014: Partial class instantiation in simulation models
-        if matches!(class.class_type, ClassType::Model | ClassType::Block)
-            && let Some(tc) = type_class
-            && tc.partial
-        {
-            diags.push(
-                Diagnostic::error(format!(
-                    "component '{}' instantiates partial {} '{}' (MLS §4.7)",
-                    name,
-                    tc.class_type.as_str(),
-                    type_name
-                ))
-                .with_code(ER005_PARTIAL_CLASS_INSTANTIATION),
-            );
-        }
-
-        // CONN-007: Connector component cannot be parameter/constant
-        if let Some(tc) = type_class
-            && tc.class_type == ClassType::Connector
-            && matches!(
-                comp.variability,
-                Variability::Parameter(_) | Variability::Constant(_)
-            )
-        {
-            let var_str = match &comp.variability {
-                Variability::Parameter(_) => "parameter",
-                Variability::Constant(_) => "constant",
-                _ => unreachable!(),
-            };
-            diags.push(
-                Diagnostic::error(format!(
-                    "connector component '{}' cannot have '{}' prefix (MLS §9.1)",
-                    name, var_str
-                ))
-                .with_code(ER027_CONNECTOR_PARAMETER_OR_CONSTANT),
-            );
-        }
-
-        // CONN-017: Unbalanced connector (flow count != potential count)
-        // Check when a connector class is defined, not when used
-    }
-
-    // CONN-017: Check connector balance when defining the connector itself
-    if class.class_type == ClassType::Connector && !class.partial && !class.expandable {
-        check_connector_balance(class, diags);
-    }
-
-    // DECL-002: Block connector components need input/output prefix
-    if class.class_type == ClassType::Block {
-        for (name, comp) in &class.components {
-            let type_name = comp.type_name.to_string();
-            if let Some(tc) = find_class_by_name(def, &type_name)
-                && tc.class_type == ClassType::Connector
-                    && !comp.is_protected
-                    && matches!(comp.causality, Causality::Empty)
-                    // Also check if the type alias itself provides causality
-                    && matches!(tc.causality, Causality::Empty)
-            {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "public connector component '{}' in block '{}' must \
-                             have input or output prefix (MLS §4.7)",
-                        name, class.name.text
-                    ))
-                    .with_code(ER020_BLOCK_CONNECTOR_MISSING_IO_PREFIX),
-                );
-            }
-        }
-    }
-}
-
-/// CONN-017: Check flow/potential balance in connector.
-fn check_connector_balance(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    let mut flow_count = 0usize;
-    let mut potential_count = 0usize;
-
-    for (_, comp) in &class.components {
-        // Only count Real-typed components for balance.
-        // Non-Real types (Integer, Boolean, String) are not physical variables.
-        // Non-primitive types (records, models) expand to multiple scalars
-        // which we can't accurately count without type info.
-        let type_name = comp.type_name.to_string();
-        if type_name != "Real" {
-            if !matches!(type_name.as_str(), "Integer" | "Boolean" | "String") {
-                return; // Skip balance check for connectors with non-primitive members
-            }
-            continue; // Skip non-Real primitives for counting
-        }
-        match &comp.connection {
-            Connection::Flow(_) => flow_count += 1,
-            Connection::Stream(_) => {} // stream doesn't count
-            Connection::Empty => potential_count += 1,
-        }
-    }
-
-    if flow_count > 0 && flow_count != potential_count {
-        diags.push(
-            Diagnostic::error(format!(
-                "connector '{}' is unbalanced: {} flow variable(s) vs {} \
-                 potential variable(s) (MLS §9.3.1)",
-                class.name.text, flow_count, potential_count
-            ))
-            .with_code(ER028_UNBALANCED_CONNECTOR),
-        );
-    }
-}
-
-/// EXPR-012: Check that parameter/constant bindings don't reference continuous variables.
-fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    // Skip functions: function inputs/outputs have different variability semantics
-    if class.class_type == ClassType::Function {
-        return;
-    }
-
-    // Collect continuous variables: only Real-typed with no variability prefix and no
-    // input/output causality. Input/output variables are determined externally and their
-    // structural properties (like array size) are valid in parameter bindings.
-    let continuous_vars: HashSet<String> = class
-        .components
-        .iter()
-        .filter(|(_, c)| {
-            matches!(c.variability, Variability::Empty)
-                && c.type_name.to_string() == "Real"
-                && matches!(c.causality, Causality::Empty)
-        })
-        .map(|(n, _)| n.clone())
-        .collect();
-
-    if continuous_vars.is_empty() {
-        return;
-    }
-
-    for (name, comp) in &class.components {
-        if !matches!(
-            comp.variability,
-            Variability::Parameter(_) | Variability::Constant(_)
-        ) {
-            continue;
-        }
-        if let Some(binding) = &comp.binding {
-            let mut refs = HashSet::new();
-            collect_component_refs(binding, &continuous_vars, &mut refs, false);
-            if !refs.is_empty() {
-                let var_str = match &comp.variability {
-                    Variability::Parameter(_) => "parameter",
-                    Variability::Constant(_) => "constant",
-                    _ => unreachable!(),
-                };
-                let dep = refs.into_iter().next().unwrap();
-                diags.push(
-                    Diagnostic::error(format!(
-                        "{} '{}' cannot depend on continuous variable '{}' (MLS §3.8.4)",
-                        var_str, name, dep
-                    ))
-                    .with_code(ER006_PARAMETER_VARIABILITY),
-                );
-            }
-        }
-    }
-}
-
-/// INST-008: Detect cyclic parameter bindings.
-fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    use std::collections::HashMap;
-
-    // Build dependency graph: parameter name -> set of parameter names referenced in binding
-    let param_names: HashSet<String> = class
-        .components
-        .iter()
-        .filter(|(_, c)| {
-            matches!(
-                c.variability,
-                Variability::Parameter(_) | Variability::Constant(_)
-            )
-        })
-        .map(|(n, _)| n.clone())
-        .collect();
-
-    if param_names.is_empty() {
-        return;
-    }
-
-    let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
-    for (name, comp) in &class.components {
-        if !param_names.contains(name) {
-            continue;
-        }
-        let mut refs = HashSet::new();
-        if let Some(binding) = &comp.binding {
-            // Skip if-branches to avoid false cycles from conditional mutual deps
-            collect_component_refs(binding, &param_names, &mut refs, true);
-        }
-        deps.insert(name.clone(), refs);
-    }
-
-    // DFS cycle detection
-    let mut visited = HashSet::new();
-    let mut on_stack = HashSet::new();
-
-    for name in param_names {
-        if !visited.contains(&name) && has_cycle(&name, &deps, &mut visited, &mut on_stack) {
-            diags.push(
-                Diagnostic::error(format!(
-                    "cyclic dependency in parameter binding for '{}' (MLS §7.2.3)",
-                    name
-                ))
-                .with_code(ER007_CYCLIC_PARAMETER_BINDING),
-            );
-        }
-    }
-}
-
-fn has_cycle(
-    node: &str,
-    deps: &std::collections::HashMap<String, HashSet<String>>,
-    visited: &mut HashSet<String>,
-    on_stack: &mut HashSet<String>,
-) -> bool {
-    visited.insert(node.to_string());
-    on_stack.insert(node.to_string());
-
-    let found_cycle = deps.get(node).is_some_and(|neighbors| {
-        neighbors.iter().any(|neighbor| {
-            if !visited.contains(neighbor) {
-                has_cycle(neighbor, deps, visited, on_stack)
-            } else {
-                on_stack.contains(neighbor)
-            }
-        })
-    });
-
-    if !found_cycle {
-        on_stack.remove(node);
-    }
-    found_cycle
-}
-
-/// Collect component references from an expression that refer to known parameter names.
-/// Only matches single-part references (e.g., `x`) not multi-part (e.g., `system.x`),
-/// since multi-part references access sub-components rather than the parameter itself.
-/// When `skip_if_branches` is true, only collects from if-conditions (not branches),
-/// avoiding false positive cycles from conditional mutual dependencies.
-fn collect_component_refs(
-    expr: &Expression,
-    known_params: &HashSet<String>,
-    refs: &mut HashSet<String>,
-    skip_if_branches: bool,
-) {
+fn collect_output_target_names(expr: &Expression, assigned: &mut HashSet<String>) {
     match expr {
         Expression::ComponentReference(cref) => {
-            // Only match single-part references for direct dependencies.
-            // Multi-part refs like `system.x` access sub-components, not the param itself.
-            if let [part] = cref.parts.as_slice() {
-                let name = part.ident.text.to_string();
-                if known_params.contains(&name) {
-                    refs.insert(name);
-                }
+            if let Some(first) = cref.parts.first() {
+                assigned.insert(first.ident.text.to_string());
             }
         }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_component_refs(lhs, known_params, refs, skip_if_branches);
-            collect_component_refs(rhs, known_params, refs, skip_if_branches);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_component_refs(rhs, known_params, refs, skip_if_branches);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_component_refs(arg, known_params, refs, skip_if_branches);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                collect_component_refs(cond, known_params, refs, skip_if_branches);
-                if !skip_if_branches {
-                    collect_component_refs(then_expr, known_params, refs, skip_if_branches);
-                }
-            }
-            if !skip_if_branches {
-                collect_component_refs(else_branch, known_params, refs, skip_if_branches);
-            }
-        }
-        Expression::Array { elements, .. } => {
+        Expression::Tuple { elements } => {
             for elem in elements {
-                collect_component_refs(elem, known_params, refs, skip_if_branches);
+                collect_output_target_names(elem, assigned);
             }
         }
-        Expression::Parenthesized { inner, .. } => {
-            collect_component_refs(inner, known_params, refs, skip_if_branches);
+        Expression::Parenthesized { inner } => {
+            collect_output_target_names(inner, assigned);
         }
-        _ => {}
-    }
-}
-
-// ============================================================================
-// Batch 2: Context-sensitive checks
-// ============================================================================
-
-/// Check equations for context-sensitive issues.
-fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::When(blocks) => {
-            // EQN-005: Nested when-equations
-            if ctx.in_when_equation {
-                diags.push(
-                    Diagnostic::error("when-equations cannot be nested (MLS §8.3.5)".to_string())
-                        .with_code(ER017_NESTED_WHEN_EQUATION),
-                );
-            }
-
-            let was = ctx.in_when_equation;
-            ctx.in_when_equation = true;
-            for block in blocks {
-                for inner_eq in &block.eqs {
-                    check_equation(inner_eq, ctx, diags);
-                }
-            }
-            ctx.in_when_equation = was;
+        Expression::ArrayIndex { base, .. } => {
+            collect_output_target_names(base, assigned);
         }
-        Equation::For {
-            indices, equations, ..
-        } => {
-            // EQN-010: Track for-loop variables
-            let new_vars: Vec<String> = indices.iter().map(|i| i.ident.text.to_string()).collect();
-            ctx.for_loop_vars.extend(new_vars.clone());
-
-            for inner_eq in equations {
-                check_for_variable_assignment_eq(inner_eq, &ctx.for_loop_vars, diags);
-                check_equation(inner_eq, ctx, diags);
-            }
-
-            for var in &new_vars {
-                ctx.for_loop_vars.retain(|v| v != var);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner_eq in &block.eqs {
-                    check_equation(inner_eq, ctx, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner_eq in else_eqs {
-                    check_equation(inner_eq, ctx, diags);
-                }
-            }
-        }
-        Equation::FunctionCall { comp, .. } => {
-            // EQN-015: reinit outside when-equation
-            if let Some(first) = comp.parts.first()
-                && &*first.ident.text == "reinit"
-                && !ctx.in_when_equation
-            {
-                diags.push(
-                    Diagnostic::error(
-                        "reinit() can only be used inside when-equations (MLS §8.3.6)".to_string(),
-                    )
-                    .with_code(ER008_REINIT_OUTSIDE_WHEN),
-                );
-            }
+        Expression::FieldAccess { base, .. } => {
+            collect_output_target_names(base, assigned);
         }
         _ => {}
     }
 }
 
-/// Check initial equations for when-clause presence (EQN-006, EQN-037).
-fn check_initial_equation(eq: &Equation, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::When(_) => {
-            diags.push(
-                Diagnostic::error(
-                    "when-equations are not allowed in initial equation sections (MLS §8.6)"
-                        .to_string(),
-                )
-                .with_code(ER018_WHEN_IN_INITIAL_SECTION),
-            );
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_initial_equation(inner, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_initial_equation(inner, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_initial_equation(inner, diags);
-                }
-            }
-        }
-        _ => {}
+fn check_function_uninitialized_use(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
+    let tracked_names: HashSet<String> = class.components.keys().cloned().collect();
+    if tracked_names.is_empty() {
+        return;
     }
-}
 
-/// Check initial algorithm statements for when-clause presence (EQN-037).
-fn check_initial_statement(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::When(_) => {
-            diags.push(
-                Diagnostic::error(
-                    "when-statements are not allowed in initial algorithm sections (MLS §8.6)"
-                        .to_string(),
-                )
-                .with_code(ER018_WHEN_IN_INITIAL_SECTION),
-            );
-        }
-        Statement::For { equations, .. } => {
-            for inner in equations {
-                check_initial_statement(inner, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.stmts {
-                    check_initial_statement(inner, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    check_initial_statement(inner, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
+    let output_names: HashSet<String> = class
+        .components
+        .iter()
+        .filter(|(_, c)| matches!(c.causality, Causality::Output(_)))
+        .map(|(n, _)| n.clone())
+        .collect();
 
-/// Check statements for context-sensitive issues.
-fn check_statement(stmt: &Statement, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::When(blocks) => {
-            // ALG-007/FUNC-007: When-statement in function
-            if ctx.in_function {
-                diags.push(
-                    Diagnostic::error(
-                        "when-statements are not allowed in functions (MLS §12.2)".to_string(),
-                    )
-                    .with_code(ER015_WHEN_IN_FUNCTION),
-                );
-            }
+    let base_initialized: HashSet<String> = class
+        .components
+        .iter()
+        .filter(|(_, c)| matches!(c.causality, Causality::Input(_)) || c.binding.is_some())
+        .map(|(n, _)| n.clone())
+        .collect();
 
-            // ALG-009: Nested when-statements
-            if ctx.in_when_statement {
-                diags.push(
-                    Diagnostic::error("when-statements cannot be nested (MLS §11.2.7)".to_string())
-                        .with_code(ER016_NESTED_WHEN_STATEMENT),
-                );
-            }
+    let mut checker = FunctionInitUseCtx::new(&tracked_names, &output_names, diags);
 
-            let was = ctx.in_when_statement;
-            ctx.in_when_statement = true;
-            for block in blocks {
-                for inner_stmt in &block.stmts {
-                    check_statement(inner_stmt, ctx, diags);
-                }
-            }
-            ctx.in_when_statement = was;
-        }
-        Statement::For { equations, .. } => {
-            for inner_stmt in equations {
-                check_statement(inner_stmt, ctx, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner_stmt in &block.stmts {
-                    check_statement(inner_stmt, ctx, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner_stmt in else_stmts {
-                    check_statement(inner_stmt, ctx, diags);
-                }
-            }
-        }
-        Statement::While(block) => {
-            for inner_stmt in &block.stmts {
-                check_statement(inner_stmt, ctx, diags);
-            }
-        }
-        Statement::Reinit { .. } if !ctx.in_when_statement => {
-            diags.push(
-                Diagnostic::error(
-                    "reinit() can only be used inside when-statements (MLS §8.3.6)".to_string(),
-                )
-                .with_code(ER008_REINIT_OUTSIDE_WHEN),
-            );
-        }
-        _ => {}
-    }
-}
-
-/// Check for-loop variable assignment in equations (EQN-010).
-fn check_for_variable_assignment_eq(
-    eq: &Equation,
-    for_vars: &[String],
-    diags: &mut Vec<Diagnostic>,
-) {
-    if let Equation::Simple { lhs, .. } = eq
-        && let Expression::ComponentReference(comp) = lhs
-        && let Some(first) = comp.parts.first()
-        && for_vars.iter().any(|v| v.as_str() == &*first.ident.text)
-    {
-        diags.push(
-            Diagnostic::error(format!(
-                "cannot assign to for-loop variable '{}' (MLS §8.3.3)",
-                first.ident.text
-            ))
-            .with_code(ER019_FOR_LOOP_VARIABLE_ASSIGNED),
-        );
-    }
-}
-
-// ============================================================================
-// Batch 3: Expression checks
-// ============================================================================
-
-/// EXPR-014: Check for chained relational operators (e.g., 1 < 2 < 3).
-pub fn check_chained_relationals(def: &StoredDefinition) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    for class in def.classes.values() {
-        check_chained_in_class(class, &mut diags);
-    }
-    diags
-}
-
-fn check_chained_in_class(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    for eq in &class.equations {
-        check_chained_in_eq(eq, diags);
-    }
-    for eq in &class.initial_equations {
-        check_chained_in_eq(eq, diags);
-    }
     for alg in &class.algorithms {
-        for stmt in alg {
-            check_chained_in_stmt(stmt, diags);
-        }
+        let mut initialized = base_initialized.clone();
+        checker.check_statements(alg, &mut initialized);
     }
-    for nested in class.classes.values() {
-        check_chained_in_class(nested, diags);
-    }
-}
-
-fn check_chained_in_eq(eq: &Equation, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_chained_in_expr(lhs, diags);
-            check_chained_in_expr(rhs, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_chained_in_eq(inner, diags);
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.eqs {
-                    check_chained_in_eq(inner, diags);
-                }
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.eqs {
-                    check_chained_in_eq(inner, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_chained_in_eq(inner, diags);
-                }
-            }
-        }
-        _ => {}
+    for alg in &class.initial_algorithms {
+        let mut initialized = base_initialized.clone();
+        checker.check_statements(alg, &mut initialized);
     }
 }
 
-fn check_chained_in_stmt(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::Assignment { value, .. } => check_chained_in_expr(value, diags),
-        Statement::For { equations, .. } => {
-            for inner in equations {
-                check_chained_in_stmt(inner, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_chained_in_stmt(inner, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    check_chained_in_stmt(inner, diags);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_chained_in_stmt(inner, diags);
-                }
-            }
-        }
-        _ => {}
-    }
+struct FunctionInitUseCtx<'a> {
+    tracked_names: &'a HashSet<String>,
+    output_names: &'a HashSet<String>,
+    reported: HashSet<String>,
+    diags: &'a mut Vec<Diagnostic>,
 }
 
-fn is_relational(op: &OpBinary) -> bool {
-    matches!(
-        op,
-        OpBinary::Lt(_)
-            | OpBinary::Le(_)
-            | OpBinary::Gt(_)
-            | OpBinary::Ge(_)
-            | OpBinary::Eq(_)
-            | OpBinary::Neq(_)
-    )
-}
-
-fn expr_is_relational(expr: &Expression) -> bool {
-    matches!(expr, Expression::Binary { op, .. } if is_relational(op))
-}
-
-fn check_chained_in_expr(expr: &Expression, diags: &mut Vec<Diagnostic>) {
-    match expr {
-        Expression::Binary { op, lhs, rhs, .. } => {
-            if is_relational(op) && (expr_is_relational(lhs) || expr_is_relational(rhs)) {
-                diags.push(Diagnostic::error(
-                    "chained relational operators are not allowed (MLS §3.2)".to_string(),
-                ));
-            }
-            check_chained_in_expr(lhs, diags);
-            check_chained_in_expr(rhs, diags);
-        }
-        Expression::Unary { rhs, .. } => check_chained_in_expr(rhs, diags),
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_chained_in_expr(arg, diags);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_chained_in_expr(cond, diags);
-                check_chained_in_expr(then_expr, diags);
-            }
-            check_chained_in_expr(else_branch, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_chained_in_expr(elem, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => check_chained_in_expr(inner, diags),
-        _ => {}
-    }
-}
-
-/// EXPR-004: Check for der() in function algorithm sections.
-pub fn check_der_in_functions(def: &StoredDefinition) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    for class in def.classes.values() {
-        check_der_in_func_class(class, &mut diags);
-    }
-    diags
-}
-
-fn check_der_in_func_class(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    if class.class_type == ClassType::Function {
-        for alg in &class.algorithms {
-            for stmt in alg {
-                check_der_in_stmt(stmt, diags);
-            }
+impl<'a> FunctionInitUseCtx<'a> {
+    fn new(
+        tracked_names: &'a HashSet<String>,
+        output_names: &'a HashSet<String>,
+        diags: &'a mut Vec<Diagnostic>,
+    ) -> Self {
+        Self {
+            tracked_names,
+            output_names,
+            reported: HashSet::new(),
+            diags,
         }
     }
-    for nested in class.classes.values() {
-        check_der_in_func_class(nested, diags);
+
+    fn check_statements(&mut self, stmts: &[Statement], initialized: &mut HashSet<String>) {
+        for stmt in stmts {
+            self.check_statement(stmt, initialized);
+        }
     }
-}
 
-fn check_der_in_stmt(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::Assignment { value, .. } => check_der_in_expr(value, diags),
-        Statement::For { equations, .. } => {
-            for inner in equations {
-                check_der_in_stmt(inner, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                check_der_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_der_in_stmt(inner, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    check_der_in_stmt(inner, diags);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                check_der_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_der_in_stmt(inner, diags);
-                }
-            }
-        }
-        Statement::FunctionCall { args, .. } => {
-            for arg in args {
-                check_der_in_expr(arg, diags);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_der_in_expr(expr: &Expression, diags: &mut Vec<Diagnostic>) {
-    match expr {
-        Expression::FunctionCall { comp, args, .. } => {
-            if let Some(first) = comp.parts.first()
-                && &*first.ident.text == "der"
-            {
-                diags.push(
-                    Diagnostic::error("der() is not allowed in functions (MLS §12.2)".to_string())
-                        .with_code(ER030_DER_IN_FUNCTION),
-                );
-            }
-            for arg in args {
-                check_der_in_expr(arg, diags);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_der_in_expr(lhs, diags);
-            check_der_in_expr(rhs, diags);
-        }
-        Expression::Unary { rhs, .. } => check_der_in_expr(rhs, diags),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_der_in_expr(cond, diags);
-                check_der_in_expr(then_expr, diags);
-            }
-            check_der_in_expr(else_branch, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_der_in_expr(elem, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => check_der_in_expr(inner, diags),
-        _ => {}
-    }
-}
-
-// ============================================================================
-// DECL-020: der() on discrete variables
-// ============================================================================
-
-/// Check equations for der() applied to discrete variables.
-fn check_der_on_discrete_eq(
-    eq: &Equation,
-    discrete_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_der_on_discrete_expr(lhs, discrete_vars, diags);
-            check_der_on_discrete_expr(rhs, discrete_vars, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_der_on_discrete_eq(inner, discrete_vars, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_der_on_discrete_eq(inner, discrete_vars, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_der_on_discrete_eq(inner, discrete_vars, diags);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_der_on_discrete_eq(inner, discrete_vars, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_der_on_discrete_expr(
-    expr: &Expression,
-    discrete_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expression::FunctionCall { comp, args, .. } => {
-            if let Some(first) = comp.parts.first()
-                && &*first.ident.text == "der"
-            {
-                // Check if the argument is a discrete variable
-                if let Some(arg) = args.first()
-                    && let Expression::ComponentReference(cref) = arg
-                    && let Some(part) = cref.parts.first()
-                    && discrete_vars.contains(&*part.ident.text)
+    fn check_statement(&mut self, stmt: &Statement, initialized: &mut HashSet<String>) {
+        match stmt {
+            Statement::Empty | Statement::Break { .. } => {}
+            Statement::Return { .. } => {
+                for output_name in self
+                    .output_names
+                    .iter()
+                    .filter(|output_name| !initialized.contains(*output_name))
                 {
-                    diags.push(
-                        Diagnostic::error(format!(
-                            "der() cannot be applied to discrete variable '{}' (MLS §3.8.5)",
-                            part.ident.text
-                        ))
-                        .with_code(ER026_DER_ON_DISCRETE),
-                    );
+                    self.report_uninitialized_return(output_name);
                 }
             }
-            for arg in args {
-                check_der_on_discrete_expr(arg, discrete_vars, diags);
+            Statement::Assignment { comp, value } => {
+                self.check_expr(value, initialized);
+                if let Some(name) = component_reference_head_name(comp)
+                    && self.tracked_names.contains(name)
+                {
+                    initialized.insert(name.to_string());
+                }
             }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_der_on_discrete_expr(lhs, discrete_vars, diags);
-            check_der_on_discrete_expr(rhs, discrete_vars, diags);
-        }
-        Expression::Unary { rhs, .. } => check_der_on_discrete_expr(rhs, discrete_vars, diags),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_der_on_discrete_expr(cond, discrete_vars, diags);
-                check_der_on_discrete_expr(then_expr, discrete_vars, diags);
+            Statement::FunctionCall { args, outputs, .. } => {
+                for arg in args {
+                    self.check_expr(arg, initialized);
+                }
+                for output in outputs {
+                    self.mark_output_targets_initialized(output, initialized);
+                }
             }
-            check_der_on_discrete_expr(else_branch, discrete_vars, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_der_on_discrete_expr(elem, discrete_vars, diags);
+            Statement::For { indices, equations } => {
+                for index in indices {
+                    self.check_expr(&index.range, initialized);
+                }
+                let mut body_init = initialized.clone();
+                self.check_statements(equations, &mut body_init);
             }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            check_der_on_discrete_expr(inner, discrete_vars, diags);
-        }
-        _ => {}
-    }
-}
+            Statement::If {
+                cond_blocks,
+                else_block,
+            } => {
+                let mut branch_states = Vec::new();
+                for block in cond_blocks {
+                    self.check_expr(&block.cond, initialized);
+                    let mut branch_init = initialized.clone();
+                    self.check_statements(&block.stmts, &mut branch_init);
+                    branch_states.push(branch_init);
+                }
 
-// ============================================================================
-// DECL-009: Protected dot access
-// ============================================================================
+                if let Some(else_stmts) = else_block {
+                    let mut else_init = initialized.clone();
+                    self.check_statements(else_stmts, &mut else_init);
+                    branch_states.push(else_init);
+                } else {
+                    branch_states.push(initialized.clone());
+                }
 
-/// Check equations for protected component access (e.g., `a.x` where x is protected).
-fn check_protected_access_eq(
-    eq: &Equation,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_protected_access_expr(lhs, class, def, diags);
-            check_protected_access_expr(rhs, class, def, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_protected_access_eq(inner, class, def, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_protected_access_eq(inner, class, def, diags);
+                if let Some(merged) = intersect_initialized_states(branch_states) {
+                    *initialized = merged;
                 }
             }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_protected_access_eq(inner, class, def, diags);
+            Statement::When(blocks) => {
+                for block in blocks {
+                    self.check_expr(&block.cond, initialized);
+                    let mut block_init = initialized.clone();
+                    self.check_statements(&block.stmts, &mut block_init);
                 }
             }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_protected_access_eq(inner, class, def, diags);
+            Statement::While(block) => {
+                self.check_expr(&block.cond, initialized);
+                let mut block_init = initialized.clone();
+                self.check_statements(&block.stmts, &mut block_init);
+            }
+            Statement::Reinit { value, .. } => {
+                self.check_expr(value, initialized);
+            }
+            Statement::Assert {
+                condition,
+                message,
+                level,
+            } => {
+                self.check_expr(condition, initialized);
+                self.check_expr(message, initialized);
+                if let Some(level_expr) = level {
+                    self.check_expr(level_expr, initialized);
                 }
             }
         }
-        _ => {}
     }
-}
 
-fn check_protected_access_expr(
-    expr: &Expression,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expression::ComponentReference(cref) => {
-            check_cref_protected_access(cref, class, def, diags);
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_protected_access_expr(lhs, class, def, diags);
-            check_protected_access_expr(rhs, class, def, diags);
-        }
-        Expression::Unary { rhs, .. } => {
-            check_protected_access_expr(rhs, class, def, diags);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_protected_access_expr(arg, class, def, diags);
+    fn check_expr(&mut self, expr: &Expression, initialized: &HashSet<String>) {
+        match expr {
+            Expression::Empty | Expression::Terminal { .. } => {}
+            Expression::ComponentReference(cref) => {
+                if let Some(name) = component_reference_head_name(cref)
+                    && self.tracked_names.contains(name)
+                    && !initialized.contains(name)
+                {
+                    self.report_uninitialized_use(name);
+                }
+                self.check_component_reference_subscripts(cref, initialized);
+            }
+            Expression::Modification { value, .. } | Expression::NamedArgument { value, .. } => {
+                self.check_expr(value, initialized);
+            }
+            Expression::Range { start, step, end } => {
+                self.check_expr(start, initialized);
+                if let Some(step_expr) = step {
+                    self.check_expr(step_expr, initialized);
+                }
+                self.check_expr(end, initialized);
+            }
+            Expression::Unary { rhs, .. } => self.check_expr(rhs, initialized),
+            Expression::Binary { lhs, rhs, .. } => {
+                self.check_expr(lhs, initialized);
+                self.check_expr(rhs, initialized);
+            }
+            Expression::FunctionCall { args, .. } => {
+                for arg in args {
+                    self.check_expr(arg, initialized);
+                }
+            }
+            Expression::ClassModification {
+                target: _,
+                modifications,
+            } => {
+                for mod_expr in modifications {
+                    self.check_expr(mod_expr, initialized);
+                }
+            }
+            Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+                for elem in elements {
+                    self.check_expr(elem, initialized);
+                }
+            }
+            Expression::If {
+                branches,
+                else_branch,
+            } => {
+                for (cond, then_expr) in branches {
+                    self.check_expr(cond, initialized);
+                    self.check_expr(then_expr, initialized);
+                }
+                self.check_expr(else_branch, initialized);
+            }
+            Expression::Parenthesized { inner } => {
+                self.check_expr(inner, initialized);
+            }
+            Expression::ArrayComprehension {
+                expr,
+                indices,
+                filter,
+            } => {
+                self.check_expr(expr, initialized);
+                for index in indices {
+                    self.check_expr(&index.range, initialized);
+                }
+                if let Some(filter_expr) = filter {
+                    self.check_expr(filter_expr, initialized);
+                }
+            }
+            Expression::ArrayIndex { base, subscripts } => {
+                self.check_expr(base, initialized);
+                self.check_subscripts(subscripts, initialized);
+            }
+            Expression::FieldAccess { base, .. } => {
+                self.check_expr(base, initialized);
             }
         }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_protected_access_expr(cond, class, def, diags);
-                check_protected_access_expr(then_expr, class, def, diags);
-            }
-            check_protected_access_expr(else_branch, class, def, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_protected_access_expr(elem, class, def, diags);
+    }
+
+    fn check_subscripts(&mut self, subscripts: &[Subscript], initialized: &HashSet<String>) {
+        for sub in subscripts {
+            if let Subscript::Expression(sub_expr) = sub {
+                self.check_expr(sub_expr, initialized);
             }
         }
-        Expression::Parenthesized { inner, .. } => {
-            check_protected_access_expr(inner, class, def, diags);
+    }
+
+    fn check_component_reference_subscripts(
+        &mut self,
+        cref: &ComponentReference,
+        initialized: &HashSet<String>,
+    ) {
+        for subs in cref.parts.iter().filter_map(|part| part.subs.as_deref()) {
+            self.check_subscripts(subs, initialized);
         }
-        _ => {}
     }
-}
 
-// ============================================================================
-// CONN-029: Connect requires connectors
-// ============================================================================
-
-/// Check that connect() arguments refer to connector types.
-/// Check if a component reference accesses a protected member.
-fn check_cref_protected_access(
-    cref: &ComponentReference,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    if cref.parts.len() < 2 {
-        return;
+    fn mark_output_targets_initialized(
+        &self,
+        output: &Expression,
+        initialized: &mut HashSet<String>,
+    ) {
+        let mut assigned = HashSet::new();
+        collect_output_target_names(output, &mut assigned);
+        for name in assigned {
+            if self.tracked_names.contains(&name) {
+                initialized.insert(name);
+            }
+        }
     }
-    let first_name = &*cref.parts[0].ident.text;
-    let second_name = &*cref.parts[1].ident.text;
 
-    let Some(comp) = class.components.get(first_name) else {
-        return;
-    };
-    let type_name = comp.type_name.to_string();
-    let Some(type_class) = find_class_by_name(def, &type_name) else {
-        return;
-    };
-    if let Some(target) = type_class.components.get(second_name)
-        && target.is_protected
-    {
-        diags.push(
+    fn report_uninitialized_use(&mut self, name: &str) {
+        let report_key = format!("use:{name}");
+        if !self.reported.insert(report_key) {
+            return;
+        }
+        self.diags.push(
             Diagnostic::error(format!(
-                "cannot access protected component '{}.{}' (MLS §5.3)",
-                first_name, second_name
+                "function variable '{}' may be used before initialization (MLS §12.4.4)",
+                name
             ))
-            .with_code(ER025_PROTECTED_DOT_ACCESS),
+            .with_code(ER043_FUNCTION_UNINITIALIZED_USE),
+        );
+    }
+
+    fn report_uninitialized_return(&mut self, name: &str) {
+        let report_key = format!("return:{name}");
+        if !self.reported.insert(report_key) {
+            return;
+        }
+        self.diags.push(
+            Diagnostic::error(format!(
+                "output '{}' may be returned before initialization in function (MLS §12.4.4)",
+                name
+            ))
+            .with_code(ER043_FUNCTION_UNINITIALIZED_USE),
         );
     }
 }
 
-fn check_connect_requires_connectors_eq(
-    eq: &Equation,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Connect { lhs, rhs, .. } => {
-            check_connect_arg_is_connector(lhs, class, def, diags);
-            check_connect_arg_is_connector(rhs, class, def, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_connect_requires_connectors_eq(inner, class, def, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_connect_requires_connectors_eq(inner, class, def, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_connect_requires_connectors_eq(inner, class, def, diags);
-                }
-            }
-        }
-        _ => {}
-    }
+fn component_reference_head_name(cref: &ComponentReference) -> Option<&str> {
+    cref.parts.first().map(|part| part.ident.text.as_ref())
 }
 
-fn check_connect_arg_is_connector(
-    cref: &ComponentReference,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    // Only check single-part references (e.g., connect(x, y)).
-    // Multi-part references like connect(r1.p, r2.n) access sub-components
-    // which may be connectors even if the parent is a model.
-    if cref.parts.len() != 1 {
-        return;
+fn intersect_initialized_states(states: Vec<HashSet<String>>) -> Option<HashSet<String>> {
+    let mut state_iter = states.into_iter();
+    let mut merged = state_iter.next()?;
+    for branch_state in state_iter {
+        merged.retain(|name| branch_state.contains(name));
     }
-    if let Some(first) = cref.parts.first() {
-        let comp_name = &*first.ident.text;
-        if let Some(comp) = class.components.get(comp_name) {
-            let type_name = comp.type_name.to_string();
-            // Built-in types (Real, Integer, Boolean, String) are not connectors
-            if matches!(
-                type_name.as_str(),
-                "Real" | "Integer" | "Boolean" | "String"
-            ) {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "connect argument '{}' must be a connector, but has type '{}' (MLS §9.1)",
-                        comp_name, type_name
-                    ))
-                    .with_code(ER009_CONNECT_ARG_NOT_CONNECTOR),
-                );
-                return;
-            }
-            // Look up the type class
-            if let Some(type_class) = find_class_by_name(def, &type_name)
-                && type_class.class_type != ClassType::Connector
-            {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "connect argument '{}' must be a connector, but '{}' is a {} (MLS §9.1)",
-                        comp_name,
-                        type_name,
-                        type_class.class_type.as_str()
-                    ))
-                    .with_code(ER009_CONNECT_ARG_NOT_CONNECTOR),
-                );
-            }
-        }
-    }
+    Some(merged)
 }
 
-// ============================================================================
-// EXPR-013: 'end' outside subscript context
-// ============================================================================
-
-/// Check equations for 'end' used outside of array subscripts.
-fn check_end_outside_subscript_eq(eq: &Equation, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_end_outside_subscript_expr(lhs, false, diags);
-            check_end_outside_subscript_expr(rhs, false, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_end_outside_subscript_eq(inner, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_end_outside_subscript_eq(inner, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_end_outside_subscript_eq(inner, diags);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_end_outside_subscript_eq(inner, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Check an expression for 'end' used outside subscript context.
-/// `in_subscript` tracks whether we're inside a subscript.
-fn check_end_outside_subscript_expr(
-    expr: &Expression,
-    in_subscript: bool,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::End,
-            ..
-        } if !in_subscript => {
-            diags.push(
-                Diagnostic::error(
-                    "'end' can only be used within array subscripts (MLS §10.5.1)".to_string(),
-                )
-                .with_code(ER031_END_OUTSIDE_SUBSCRIPT),
-            );
-        }
-        Expression::ComponentReference(cref) => {
-            // Subscripts inside component references count as subscript context
-            let subs = cref.parts.iter().filter_map(|p| p.subs.as_ref()).flatten();
-            for sub in subs {
-                check_end_outside_subscript_subscript(sub, diags);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_end_outside_subscript_expr(lhs, in_subscript, diags);
-            check_end_outside_subscript_expr(rhs, in_subscript, diags);
-        }
-        Expression::Unary { rhs, .. } => {
-            check_end_outside_subscript_expr(rhs, in_subscript, diags);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_end_outside_subscript_expr(arg, in_subscript, diags);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_end_outside_subscript_expr(cond, in_subscript, diags);
-                check_end_outside_subscript_expr(then_expr, in_subscript, diags);
-            }
-            check_end_outside_subscript_expr(else_branch, in_subscript, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_end_outside_subscript_expr(elem, in_subscript, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            check_end_outside_subscript_expr(inner, in_subscript, diags);
-        }
-        _ => {}
-    }
-}
-
-fn check_end_outside_subscript_subscript(sub: &Subscript, diags: &mut Vec<Diagnostic>) {
-    match sub {
-        Subscript::Expression(expr) => {
-            // Inside a subscript, 'end' is valid
-            check_end_outside_subscript_expr(expr, true, diags);
-        }
-        Subscript::Empty | Subscript::Range { .. } => {}
-    }
-}
-
-// ============================================================================
-// EXPR-002: Real equality, EXPR-016: non-Boolean if, TYPE-005: class as value
-// ============================================================================
-
-/// Check equations for expression-level type issues that can be detected without
-/// full type inference.
-fn check_expr_type_issues_eq(
-    eq: &Equation,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    real_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_expr_type_issues(lhs, class, def, real_vars, diags);
-            check_expr_type_issues(rhs, class, def, real_vars, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_expr_type_issues(
-    expr: &Expression,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    real_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        // EXPR-002: Real equality/inequality comparison
-        Expression::Binary { op, lhs, rhs, .. } => {
-            if matches!(op, OpBinary::Eq(_) | OpBinary::Neq(_))
-                && (expr_is_real(lhs, real_vars) || expr_is_real(rhs, real_vars))
-            {
-                diags.push(
-                    Diagnostic::error(
-                        "equality comparison on Real values is not allowed \
-                             outside functions (MLS §3.5)"
-                            .to_string(),
-                    )
-                    .with_code(ER029_REAL_EQUALITY_COMPARISON),
-                );
-            }
-            check_expr_type_issues(lhs, class, def, real_vars, diags);
-            check_expr_type_issues(rhs, class, def, real_vars, diags);
-        }
-        // EXPR-016: non-Boolean if-expression condition
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                if expr_is_numeric_literal(cond) {
-                    diags.push(
-                        Diagnostic::error(
-                            "if-expression condition must be Boolean, \
-                             not a numeric value (MLS §3.6.5)"
-                                .to_string(),
-                        )
-                        .with_code(ER010_IF_CONDITION_NOT_BOOLEAN),
-                    );
-                }
-                check_expr_type_issues(cond, class, def, real_vars, diags);
-                check_expr_type_issues(then_expr, class, def, real_vars, diags);
-            }
-            check_expr_type_issues(else_branch, class, def, real_vars, diags);
-        }
-        // TYPE-005: Class name used as value in equation
-        Expression::ComponentReference(cref) if cref.parts.len() == 1 => {
-            let name = &*cref.parts[0].ident.text;
-            // Check if this refers to a class rather than a component
-            if !class.components.contains_key(name) && find_class_by_name(def, name).is_some() {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "'{}' is a class, not a variable; cannot be used as a value (MLS §4.4)",
-                        name
-                    ))
-                    .with_code(ER011_CLASS_USED_AS_VALUE),
-                );
-            }
-        }
-        Expression::Unary { rhs, .. } => {
-            check_expr_type_issues(rhs, class, def, real_vars, diags);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_expr_type_issues(arg, class, def, real_vars, diags);
-            }
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_expr_type_issues(elem, class, def, real_vars, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            check_expr_type_issues(inner, class, def, real_vars, diags);
-        }
-        _ => {}
-    }
-}
-
-/// Check if an expression is clearly a Real-typed component reference.
-fn expr_is_real(expr: &Expression, real_vars: &HashSet<String>) -> bool {
-    if let Expression::ComponentReference(cref) = expr
-        && let Some(first) = cref.parts.first()
-    {
-        return real_vars.contains(&*first.ident.text);
-    }
-    // Real literals
-    if let Expression::Terminal {
-        terminal_type: TerminalType::UnsignedReal,
-        ..
-    } = expr
-    {
-        return true;
-    }
-    false
-}
-
-/// Check if an expression is a numeric literal (not Boolean).
-fn expr_is_numeric_literal(expr: &Expression) -> bool {
-    matches!(
-        expr,
-        Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger | TerminalType::UnsignedReal,
-            ..
-        }
-    )
-}
+include!("semantic_checks/function_contracts.rs");
+include!("semantic_checks/core_checks.rs");

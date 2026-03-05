@@ -1,0 +1,830 @@
+{# -------------------------------------------------------------------------
+ # JS generator for Rumoca DAE JSON.
+ # Supports both legacy and redesign_v3 DAE field naming.
+ # ------------------------------------------------------------------------- #}
+
+{%- set model_name = dae.model_name if dae.model_name is defined else "GeneratedModel" -%}
+{%- set p_map = dae.p if dae.p is defined else {} -%}
+{%- set cp_map = dae.constants if dae.constants is defined else (dae.cp if dae.cp is defined else {}) -%}
+{%- set x_map = dae.x if dae.x is defined else {} -%}
+{%- set y_map = dae.y if dae.y is defined else {} -%}
+{%- if dae.__rumoca_observables is defined -%}
+{%- set obs_list = dae.__rumoca_observables -%}
+{%- else -%}
+{%- set obs_list = [] -%}
+{%- endif -%}
+{%- set u_map = dae.u if dae.u is defined else {} -%}
+{%- set w_map = dae.w if dae.w is defined else {} -%}
+{%- set z_map = dae.z if dae.z is defined else {} -%}
+{%- set m_map = dae.m if dae.m is defined else {} -%}
+{%- set x_dot_alias_map = dae.x_dot_alias if dae.x_dot_alias is defined else {} -%}
+{%- set eqs = dae.f_x if dae.f_x is defined else (dae.fx if dae.fx is defined else []) -%}
+{%- set cond_eqs = dae.f_c if dae.f_c is defined else [] -%}
+{%- set when_clauses = dae.when_clauses if dae.when_clauses is defined else [] -%}
+
+{%- macro render_cref(cr) -%}
+{%- if cr.parts is defined -%}
+{%- for part in cr.parts -%}{{ part.ident.text }}{{ "." if not loop.last }}{%- endfor -%}
+{%- elif cr.ident is defined and cr.ident.text is defined -%}
+{{ cr.ident.text }}
+{%- elif cr.name is defined -%}
+{{ cr.name }}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro js_ident(name) -%}
+{{- ('v_' ~ (name|string)
+  |replace('.', '__')
+  |replace('[', '_')
+  |replace(']', '')
+  |replace('(', '_')
+  |replace(')', '')
+  |replace(',', '_')
+  |replace(' ', '_')
+  |replace('-', '_')
+  |replace('/', '_')
+  |replace(':', '_')
+  |replace(';', '_')
+  |replace('*', '_')
+  |replace('+', '_')
+  |replace('%', '_')
+  |replace('>', '_')
+  |replace('<', '_')
+  |replace('=', '_')
+  |replace('!', '_')
+  |replace('?', '_')
+  |replace('&', '_')
+  |replace('|', '_')
+  |replace('"', '_')
+  |replace("'", '_')) -}}
+{%- endmacro -%}
+
+{%- macro render_static_literal(e) -%}
+{%- if e is number -%}
+{{ e }}
+{%- elif e is boolean -%}
+{{ "true" if e else "false" }}
+{%- elif e is mapping and e.Literal is defined -%}
+  {%- if e.Literal.Integer is defined -%}{{ e.Literal.Integer }}
+  {%- elif e.Literal.Real is defined -%}{{ e.Literal.Real }}
+  {%- elif e.Literal.Bool is defined -%}{{ "true" if e.Literal.Bool else "false" }}
+  {%- else -%}0
+  {%- endif -%}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro comp_start_or_value(comp) -%}
+{%- if comp.value is defined -%}
+{{ render_static_literal(comp.value) }}
+{%- elif comp.start is defined -%}
+{{ render_static_literal(comp.start) }}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro comp_expr_or_value(comp) -%}
+{%- if comp.value is defined -%}
+{{ render_expr(comp.value) }}
+{%- elif comp.start is defined -%}
+{{ render_expr(comp.start) }}
+{%- else -%}
+0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro comp_unit_prop(comp) -%}
+{%- if comp.unit is defined and (comp.unit|string)|trim != '' -%}
+, unit: "{{ comp.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- elif comp.displayUnit is defined and (comp.displayUnit|string)|trim != '' -%}
+, unit: "{{ comp.displayUnit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- elif comp.display_unit is defined and (comp.display_unit|string)|trim != '' -%}
+, unit: "{{ comp.display_unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_js_function_name(fname) -%}
+{%- set f = (fname|string)|trim -%}
+{%- set f_norm = f|replace('::', '.') -%}
+{%- set f_leaf = f_norm
+  |replace('Modelica.Math.', '')
+  |replace('Modelica.Blocks.Math.', '')
+  |replace('Modelica.', '')
+  |replace('modelica.', '')
+  |replace('Units.', '')
+  |replace('units.', '')
+  |replace('SI.Conversions.', '')
+  |replace('si.conversions.', '')
+  |replace('Conversions.', '')
+  |replace('conversions.', '')
+  |replace('Math.', '')
+-%}
+{%- set fl = f_leaf|lower -%}
+{%- if fl == "sin" -%}Math.sin
+{%- elif fl == "cos" -%}Math.cos
+{%- elif fl == "tan" -%}Math.tan
+{%- elif fl == "asin" -%}Math.asin
+{%- elif fl == "acos" -%}Math.acos
+{%- elif fl == "atan" -%}Math.atan
+{%- elif fl == "atan2" -%}Math.atan2
+{%- elif fl == "sqrt" -%}Math.sqrt
+{%- elif fl == "abs" -%}Math.abs
+{%- elif fl == "exp" -%}Math.exp
+{%- elif fl == "log" -%}Math.log
+{%- elif fl == "log10" -%}Math.log10
+{%- elif fl == "sinh" -%}Math.sinh
+{%- elif fl == "cosh" -%}Math.cosh
+{%- elif fl == "tanh" -%}Math.tanh
+{%- elif fl == "floor" -%}Math.floor
+{%- elif fl == "ceil" -%}Math.ceil
+{%- elif fl == "min" -%}Math.min
+{%- elif fl == "max" -%}Math.max
+{%- else -%}{{ f_leaf }}
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro normalize_expr_text(txt) -%}
+{{- (txt|string)
+  |replace('::', '.')
+  |replace('Modelica.Blocks.Math.', 'Math.')
+  |replace('Modelica.Math.', 'Math.')
+  |replace('Modelica.Units.', '')
+  |replace('modelica.units.', '')
+  |replace('Units.', '')
+  |replace('units.', '')
+  |replace('modelica.blocks.math.', 'Math.')
+  |replace('modelica.math.', 'Math.')
+  |replace('Modelica.Constants.pi', 'Math.PI')
+  |replace('Modelica.Constants.e', 'Math.E')
+  |replace('modelica.constants.pi', 'Math.PI')
+  |replace('modelica.constants.e', 'Math.E')
+-}}
+{%- endmacro -%}
+
+{%- macro safe_symbol_ref(name) -%}
+{%- set id = js_ident(name) -%}
+((typeof {{ id }} !== "undefined") ? {{ id }} : __rumocaResolveSymbol("{{ name|string|replace('\\', '\\\\')|replace('"', '\\"') }}"))
+{%- endmacro -%}
+
+{%- macro render_symbol_expr(e) -%}
+{%- if e is mapping and e.VarRef is defined and e.VarRef.name == "time" -%}
+  t
+{%- elif e is mapping and e.VarRef is defined -%}
+  {{- js_ident(e.VarRef.name) -}}
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "time" -%}
+  t
+{%- elif e is mapping and e.ComponentReference is defined -%}
+  {{- js_ident(render_cref(e.ComponentReference)) -}}
+{%- else -%}
+  {{- render_expr(e) -}}
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_expr(e) -%}
+{%- if e is string -%}
+  {{- normalize_expr_text(e) -}}
+{%- elif e is number -%}
+  {{- e -}}
+{%- elif e is boolean -%}
+  {{- "true" if e else "false" -}}
+{%- elif e is mapping and e.Literal is defined -%}
+  {%- if e.Literal.Integer is defined -%}{{ e.Literal.Integer }}
+  {%- elif e.Literal.Real is defined -%}{{ e.Literal.Real }}
+  {%- elif e.Literal.Bool is defined -%}{{ "true" if e.Literal.Bool else "false" }}
+  {%- elif e.Literal.String is defined -%}"{{ e.Literal.String }}"
+  {%- else -%}0{%- endif -%}
+{%- elif e is mapping and e.VarRef is defined and e.VarRef.name == "time" -%}
+  t
+{%- elif e is mapping and e.VarRef is defined and e.VarRef.name == "Modelica.Constants.pi" -%}
+  Math.PI
+{%- elif e is mapping and e.VarRef is defined and e.VarRef.name == "Modelica.Constants.e" -%}
+  Math.E
+{%- elif e is mapping and e.VarRef is defined -%}
+  {{- safe_symbol_ref(e.VarRef.name) -}}
+{%- elif e is mapping and e.BuiltinCall is defined -%}
+  {%- set bc = e.BuiltinCall -%}
+  {%- if bc.function|lower == "der" and bc.args|length == 1 -%}
+    der_{{ render_symbol_expr(bc.args[0]) }}
+  {%- elif bc.function|lower == "pre" and bc.args|length == 1 -%}
+    {{ render_expr(bc.args[0]) }}
+  {%- elif bc.function|lower == "noevent" and bc.args|length >= 1 -%}
+    {{ render_expr(bc.args[0]) }}
+  {%- elif bc.function|lower == "homotopy" and bc.args|length >= 1 -%}
+    {{ render_expr(bc.args[0]) }}
+  {%- elif render_js_function_name(bc.function)|trim|lower == "from_degc" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) + 273.15)
+  {%- elif render_js_function_name(bc.function)|trim|lower == "to_degc" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) - 273.15)
+  {%- elif render_js_function_name(bc.function)|trim|lower == "from_deg" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) * Math.PI / 180)
+  {%- elif render_js_function_name(bc.function)|trim|lower == "to_deg" and bc.args|length == 1 -%}
+    (({{ render_expr(bc.args[0]) }}) * 180 / Math.PI)
+  {%- else -%}
+    {{ render_js_function_name(bc.function) }}({%- for a in bc.args -%}{{ render_expr(a) }}{{ ", " if not loop.last }}{%- endfor -%})
+  {%- endif -%}
+{%- elif e is mapping and e.Terminal is defined -%}
+  {{- normalize_expr_text(e.Terminal.token.text) -}}
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "time" -%}
+  t
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "Modelica.Constants.pi" -%}
+  Math.PI
+{%- elif e is mapping and e.ComponentReference is defined and render_cref(e.ComponentReference) == "Modelica.Constants.e" -%}
+  Math.E
+{%- elif e is mapping and e.ComponentReference is defined -%}
+  {{- safe_symbol_ref(render_cref(e.ComponentReference)) -}}
+{%- elif e is mapping and e.Parenthesized is defined -%}
+  ({{ render_expr(e.Parenthesized.inner) }})
+{%- elif e is mapping and e.Unary is defined -%}
+  {%- set u = e.Unary -%}
+  {%- if u.op.Minus is defined -%}
+    -({{ render_expr(u.rhs) }})
+  {%- elif u.op.Not is defined -%}
+    !({{ render_expr(u.rhs) }})
+  {%- else -%}
+    {{ render_expr(u.rhs) }}
+  {%- endif -%}
+{%- elif e is mapping and e.Binary is defined -%}
+  {%- set b = e.Binary -%}
+  {%- set op -%}
+    {%- if b.op.Add is defined -%}+{% elif b.op.Sub is defined -%}-{% elif b.op.Mul is defined -%}*{% elif b.op.Div is defined -%}/{% elif b.op.Pow is defined or b.op.Power is defined or b.op.Caret is defined or b.op.Exp is defined or b.op.Circumflex is defined -%}**
+    {%- elif b.op is string and (b.op == "^" or b.op == "**" or b.op|lower == "pow" or b.op|lower == "power" or b.op|lower == "caret" or b.op|lower == "exp" or b.op|lower == "circumflex") -%}**
+    {%- elif b.op.token is defined and b.op.token.text is defined and (b.op.token.text == "^" or b.op.token.text == "**") -%}**
+    {%- elif b.op.Le is defined or b.op.LessEq is defined -%}<={% elif b.op.Lt is defined or b.op.Less is defined -%}<{% elif b.op.Ge is defined or b.op.GreaterEq is defined -%}>={% elif b.op.Gt is defined or b.op.Greater is defined -%}>{% elif b.op.Eq is defined or b.op.Equals is defined -%}==={% elif b.op.Ne is defined or b.op.NotEquals is defined -%}!==
+    {%- elif b.op.And is defined -%}&&{% elif b.op.Or is defined -%}||{% else -%}+{% endif -%}
+  {%- endset -%}
+  ({{ render_expr(b.lhs) }} {{ op }} {{ render_expr(b.rhs) }})
+{%- elif e is mapping and e.FunctionCall is defined -%}
+  {%- set f = e.FunctionCall -%}
+  {%- set args = f.args if f.args is defined else [] -%}
+  {%- set fname -%}
+    {%- if f.comp is defined and f.comp.parts is defined -%}
+      {%- for part in f.comp.parts -%}{{ part.ident.text }}{{ "." if not loop.last }}{%- endfor -%}
+    {%- elif f.function is defined -%}
+      {{- f.function -}}
+    {%- elif f.name is defined -%}
+      {{- f.name -}}
+    {%- elif f.comp is defined and f.comp.ident is defined and f.comp.ident.text is defined -%}
+      {{- f.comp.ident.text -}}
+    {%- else -%}
+      function_call
+    {%- endif -%}
+  {%- endset -%}
+  {%- if fname|lower == "der" and args|length == 1 -%}
+    der_{{ render_symbol_expr(args[0]) }}
+  {%- elif fname|lower == "pre" and args|length == 1 -%}
+    {{ render_expr(args[0]) }}
+  {%- elif fname|lower == "noevent" and args|length >= 1 -%}
+    {{ render_expr(args[0]) }}
+  {%- elif fname|lower == "homotopy" and args|length >= 1 -%}
+    {{ render_expr(args[0]) }}
+  {%- elif render_js_function_name(fname)|trim|lower == "from_degc" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) + 273.15)
+  {%- elif render_js_function_name(fname)|trim|lower == "to_degc" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) - 273.15)
+  {%- elif render_js_function_name(fname)|trim|lower == "from_deg" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) * Math.PI / 180)
+  {%- elif render_js_function_name(fname)|trim|lower == "to_deg" and args|length == 1 -%}
+    (({{ render_expr(args[0]) }}) * 180 / Math.PI)
+  {%- else -%}
+    {{ render_js_function_name(fname) }}({%- for a in args -%}{{ render_expr(a) }}{{ ", " if not loop.last }}{%- endfor -%})
+  {%- endif -%}
+{%- elif e is mapping and e.If is defined -%}
+  {%- set branches = e.If.branches if e.If.branches is defined else [] -%}
+  {%- set else_expr = e.If.else_branch if e.If.else_branch is defined else 0 -%}
+  {%- if branches|length == 0 -%}
+    {{ render_expr(else_expr) }}
+  {%- else -%}
+    (
+    {%- for branch in branches -%}
+      ({{ render_expr(branch[0]) }}) ? ({{ render_expr(branch[1]) }}) :
+    {%- endfor -%}
+      ({{ render_expr(else_expr) }})
+    )
+  {%- endif -%}
+{%- elif e is mapping and e.FieldAccess is defined -%}
+  (({{ render_expr(e.FieldAccess.base) }})?.{{ e.FieldAccess.field }})
+{%- elif e is mapping and e.Index is defined -%}
+  {%- set subs = e.Index.subscripts if e.Index.subscripts is defined else [] -%}
+  {%- if subs|length > 0 and subs[0].Expr is defined -%}
+    (({{ render_expr(e.Index.base) }})[{{ render_expr(subs[0].Expr) }}])
+  {%- else -%}
+    ({{ render_expr(e.Index.base) }})
+  {%- endif -%}
+{%- else -%}
+  0
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro is_derivative_eq_legacy(eq) -%}
+  {%- if eq.Simple is defined and eq.Simple.lhs.FunctionCall is defined -%}
+    {%- set f = eq.Simple.lhs.FunctionCall -%}
+    {%- if f.comp is defined and f.comp.parts is defined and f.comp.parts|length == 1 and f.comp.parts[0].ident.text == "der" -%}
+      1
+    {%- elif f.function is defined and f.function|lower == "der" -%}
+      1
+    {%- elif f.name is defined and f.name|lower == "der" -%}
+      1
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro lhs_state_name_legacy(eq) -%}
+  {%- set f = eq.Simple.lhs.FunctionCall -%}
+  {%- if f.args is defined and f.args|length > 0 -%}
+    {%- set arg0 = f.args[0] -%}
+    {%- if arg0.ComponentReference is defined and arg0.ComponentReference.parts is defined and arg0.ComponentReference.parts|length > 0 -%}
+      {{ arg0.ComponentReference.parts[0].ident.text }}
+    {%- elif arg0.VarRef is defined and arg0.VarRef.name is defined -%}
+      {{ arg0.VarRef.name }}
+    {%- else -%}
+      x
+    {%- endif -%}
+  {%- else -%}
+    x
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro residual_expr(eq) -%}
+  {%- if eq.lhs is defined and eq.rhs is defined -%}
+    ({{ render_expr(eq.lhs) }}) - ({{ render_expr(eq.rhs) }})
+  {%- elif eq.rhs is defined -%}
+    {{ render_expr(eq.rhs) }}
+{%- elif eq.Simple is defined and is_derivative_eq_legacy(eq) -%}
+    {{ js_ident(lhs_state_name_legacy(eq)) }}_dot - ({{ render_expr(eq.Simple.rhs) }})
+  {%- elif eq.Simple is defined -%}
+    ({{ render_expr(eq.Simple.lhs) }}) - ({{ render_expr(eq.Simple.rhs) }})
+  {%- else -%}
+    0
+  {%- endif -%}
+{%- endmacro -%}
+
+function Model() {
+  const __rumocaHasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+  function __rumocaMissingRef(name) {
+    throw new Error("Generated residual references an unresolved symbol: " + String(name));
+  }
+
+  function __rumocaFiniteOr(value, fallback = 0) {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  }
+
+  var __rumocaFallbackSymbols = {};
+
+  function __rumocaResolveSymbol(name) {
+    if (!__rumocaFallbackSymbols || typeof __rumocaFallbackSymbols !== "object") {
+      return __rumocaMissingRef(name);
+    }
+    const key = String(name);
+    if (__rumocaHasOwn(__rumocaFallbackSymbols, key)) return __rumocaFallbackSymbols[key];
+
+    const keyUnderscore = key.replaceAll(".", "__");
+    if (__rumocaHasOwn(__rumocaFallbackSymbols, keyUnderscore)) {
+      return __rumocaFallbackSymbols[keyUnderscore];
+    }
+
+    const keyTail = key.includes(".") ? key.split(".").pop() : key;
+    if (keyTail && __rumocaHasOwn(__rumocaFallbackSymbols, keyTail)) {
+      return __rumocaFallbackSymbols[keyTail];
+    }
+
+    const norm = (s) => String(s).replaceAll("__", ".");
+    const fallbackKeys = Object.keys(__rumocaFallbackSymbols);
+
+    const exactNormalized = fallbackKeys.find((k) => norm(k) === key);
+    if (exactNormalized) return __rumocaFallbackSymbols[exactNormalized];
+
+    const suffixMatches = fallbackKeys.filter((k) => {
+      const n = norm(k);
+      return key === n || key.endsWith("." + n) || n.endsWith("." + key);
+    });
+    if (suffixMatches.length === 1) {
+      return __rumocaFallbackSymbols[suffixMatches[0]];
+    }
+    if (suffixMatches.length > 1) {
+      throw new Error(
+        "Ambiguous symbol resolution for " +
+          key +
+          "; candidates: " +
+          suffixMatches.slice(0, 6).join(", "),
+      );
+    }
+    return __rumocaMissingRef(name);
+  }
+
+  const pDefaults = {};
+  {%- for (name, comp) in p_map|items %}
+  pDefaults["{{ name }}"] = 0;
+  __rumocaFallbackSymbols["{{ name }}"] = 0;
+  {%- endfor %}
+  {%- for (name, comp) in p_map|items %}
+  {
+    const __rumocaP = {{ comp_expr_or_value(comp) }};
+    pDefaults["{{ name }}"] = __rumocaFiniteOr(__rumocaP, pDefaults["{{ name }}"]);
+    __rumocaFallbackSymbols["{{ name }}"] = pDefaults["{{ name }}"];
+  }
+  {%- endfor %}
+
+  const constants = {};
+  {%- for (name, comp) in cp_map|items %}
+  constants["{{ name }}"] = 0;
+  __rumocaFallbackSymbols["{{ name }}"] = 0;
+  {%- endfor %}
+  {%- for (name, comp) in cp_map|items %}
+  {
+    const __rumocaC = {{ comp_expr_or_value(comp) }};
+    constants["{{ name }}"] = __rumocaFiniteOr(__rumocaC, constants["{{ name }}"]);
+    __rumocaFallbackSymbols["{{ name }}"] = constants["{{ name }}"];
+  }
+  {%- endfor %}
+
+  const x0 = [];
+  {%- for (name, comp) in x_map|items %}
+  {
+    const __rumocaX0 = {{ comp_expr_or_value(comp) }};
+    x0.push(__rumocaFiniteOr(__rumocaX0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = x0[{{ loop.index0 }}];
+  }
+  {%- endfor %}
+
+  const y0 = [];
+  {%- for (name, comp) in y_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ y_map|length + loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ y_map|length + z_map|length + loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+  {
+    const __rumocaY0 = {{ comp_expr_or_value(comp) }};
+    y0.push(__rumocaFiniteOr(__rumocaY0, 0));
+    __rumocaFallbackSymbols["{{ name }}"] = y0[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  }
+  {%- endfor %}
+  {%- for (name, comp) in x_dot_alias_map|items %}
+  {
+    const __rumocaAlias = {{ comp_expr_or_value(comp) }};
+    __rumocaFallbackSymbols["{{ name }}"] = __rumocaFiniteOr(__rumocaAlias, 0);
+  }
+  {%- endfor %}
+  {%- for obs in obs_list %}
+  {
+    const __rumocaObs0 = {% if obs.start is defined %}{{ render_expr(obs.start) }}{% else %}0{% endif %};
+    __rumocaFallbackSymbols["{{ obs.name }}"] = __rumocaFiniteOr(__rumocaObs0, 0);
+  }
+  {%- endfor %}
+
+  const c0 = [
+  {%- if cond_eqs|length > 0 -%}
+    {%- for ce in cond_eqs %}false{% if not loop.last %},{% endif %}{%- endfor %}
+  {%- endif -%}
+  ];
+
+  const meta = {
+    name: "{{ model_name }}",
+
+    parameters: [
+    {%- for (name, comp) in p_map|items %}
+      { name: "{{ name }}", start: pDefaults["{{ name }}"]{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    constants: [
+    {%- for (name, comp) in cp_map|items %}
+      { name: "{{ name }}", value: constants["{{ name }}"]{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    states: [
+    {%- for (name, comp) in x_map|items %}
+      { name: "{{ name }}", start: x0[{{ loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    algebraics: [
+    {%- for (name, comp) in y_map|items %}
+      { name: "{{ name }}", start: y0[{{ loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or z_map|length > 0 or m_map|length > 0 or w_map|length > 0 or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in z_map|items %}
+      { name: "{{ name }}", start: y0[{{ y_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or m_map|length > 0 or w_map|length > 0 or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in m_map|items %}
+      { name: "{{ name }}", start: y0[{{ y_map|length + z_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or w_map|length > 0 or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in w_map|items %}
+      { name: "{{ name }}", start: y0[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or obs_list|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for obs in obs_list %}
+      { name: "{{ obs.name }}", start: {% if obs.start is defined %}__rumocaFiniteOr({{ render_expr(obs.start) }}, 0){% else %}0{% endif %}{% if obs.unit is defined and (obs.unit|string)|trim != '' %}, unit: "{{ obs.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"{% endif %} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    solverAlgebraics: [
+    {%- for (name, comp) in y_map|items %}
+      "{{ name }}"{% if not loop.last or z_map|length > 0 or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in z_map|items %}
+      "{{ name }}"{% if not loop.last or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in m_map|items %}
+      "{{ name }}"{% if not loop.last or w_map|length > 0 %},{% endif %}
+    {%- endfor %}
+    {%- for (name, comp) in w_map|items %}
+      "{{ name }}"{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    inputs: [
+    {%- for (name, comp) in u_map|items %}
+      { name: "{{ name }}"{{ comp_unit_prop(comp) }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ],
+
+    conditions: [
+    {%- if cond_eqs|length > 0 -%}
+      {%- for ce in cond_eqs %}
+      { name: "c[{{ loop.index }}]", start: false }{% if not loop.last %},{% endif %}
+      {%- endfor %}
+    {%- endif %}
+    ],
+
+    summary: {
+      nx: {{ x_map|length }},
+      ny: {{ y_map|length + z_map|length + m_map|length + w_map|length }},
+      nc: {{ cond_eqs|length }},
+      neqs: {{ eqs|length }}
+    }
+  };
+
+  const stateIndex = {
+  {%- for (name, comp) in x_map|items %}
+    "{{ name }}": {{ loop.index0 }}{% if not loop.last %},{% endif %}
+  {%- endfor %}
+  };
+
+  const algebraicIndex = {
+  {%- for (name, comp) in y_map|items %}
+    "{{ name }}": {{ loop.index0 }}{% if not loop.last or z_map|length > 0 or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    "{{ name }}": {{ y_map|length + loop.index0 }}{% if not loop.last or m_map|length > 0 or w_map|length > 0 %},{% endif %}
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    "{{ name }}": {{ y_map|length + z_map|length + loop.index0 }}{% if not loop.last or w_map|length > 0 %},{% endif %}
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    "{{ name }}": {{ y_map|length + z_map|length + m_map|length + loop.index0 }}{% if not loop.last %},{% endif %}
+  {%- endfor %}
+  };
+
+  function residual(t, xVec, xDotVec, yVec, uVec, pOverride) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+    const der_{{ js_ident(name) }} = xDotVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    return [
+    {%- for eq in eqs %}
+      {{ residual_expr(eq) }}{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ];
+  }
+
+  function evalConditions(t, xVec, yVec, uVec, pOverride) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    return [
+    {%- for ce in cond_eqs %}
+      {{ render_expr(ce.rhs) }}{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ];
+  }
+
+  function evalAlgebraics(t, xVec, yVec, uVec, pOverride) {
+    var p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    var {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    var {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    var {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+    var der_{{ js_ident(name) }} = 0;
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    var {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    var {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    var out = new Array(meta.algebraics.length).fill(0);
+  {%- for (name, comp) in y_map|items %}
+    out[{{ loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    out[{{ y_map|length + loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    out[{{ y_map|length + z_map|length + loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    out[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}] = __rumocaFiniteOr({{ js_ident(name) }}, 0);
+  {%- endfor %}
+  {%- for obs in obs_list %}
+    var {{ js_ident(obs.name) }} = __rumocaFiniteOr(__rumocaResolveSymbol("{{ obs.name|string|replace('\\', '\\\\')|replace('"', '\\"') }}"), 0);
+  {%- endfor %}
+  {%- if obs_list|length > 0 %}
+    for (let __rumocaObsPass = 0; __rumocaObsPass < {{ obs_list|length }}; __rumocaObsPass++) {
+    {%- for obs in obs_list %}
+      {{ js_ident(obs.name) }} = __rumocaFiniteOr({{ render_expr(obs.expr) }}, 0);
+      __rumocaFallbackSymbols["{{ obs.name }}"] = {{ js_ident(obs.name) }};
+    {%- endfor %}
+    }
+  {%- endif %}
+  {%- for obs in obs_list %}
+    out[{{ y_map|length + z_map|length + m_map|length + w_map|length + loop.index0 }}] = {{ js_ident(obs.name) }};
+  {%- endfor %}
+    return out;
+  }
+
+  function applyResets(t, xVec, yVec, uVec, pOverride, cPrev, cCurr) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    let xNew = xVec.slice();
+    let yNew = yVec.slice();
+    let cNew = Array.isArray(cCurr) ? cCurr.slice() : [];
+
+  {%- for wc in when_clauses %}
+    {
+      const idx = {{ loop.index0 }};
+      const fired = !cPrev[idx] && cCurr[idx];
+      if (fired) {
+        {%- for eq in wc.equations %}
+        {%- if eq.lhs is defined %}
+        if (stateIndex["{{ eq.lhs }}"] !== undefined) {
+          xNew[stateIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+        } else if (algebraicIndex["{{ eq.lhs }}"] !== undefined) {
+          yNew[algebraicIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+        }
+        {%- endif %}
+        {%- endfor %}
+      }
+    }
+  {%- endfor %}
+
+    return { x: xNew, y: yNew, c: cNew };
+  }
+
+  const abiRequired = true;
+  const abi = { id: 'rumoca.model_runtime.residual.v1', version: 1 };
+  const description = {
+    modelName: meta.name,
+    variables: []
+      .concat(meta.parameters.map((v) => ({ name: v.name, kind: 'parameter', start: v.start, unit: v.unit })))
+      .concat(meta.constants.map((v) => ({ name: v.name, kind: 'constant', start: v.value, unit: v.unit })))
+      .concat(meta.states.map((v) => ({ name: v.name, kind: 'state', start: v.start, unit: v.unit })))
+      .concat(meta.algebraics.map((v) => ({ name: v.name, kind: 'algebraic', start: v.start, unit: v.unit })))
+      .concat(meta.inputs.map((v) => ({ name: v.name, kind: 'input', unit: v.unit }))),
+    nx: meta.summary.nx,
+    ny: meta.summary.ny,
+    nu: meta.inputs.length,
+    nz: 0
+  };
+  const capabilities = { events: false };
+
+  return {
+    abiRequired,
+    abi,
+    description,
+    capabilities,
+    name: meta.name,
+    meta,
+    x0,
+    y0,
+    c0,
+    residual,
+    evalAlgebraics,
+    evalConditions,
+    applyResets
+  };
+}

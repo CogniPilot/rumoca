@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 rumoca-core = { workspace = true }
-rumoca-eval-runtime = { workspace = true }
+rumoca-eval-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-sim-core = { workspace = true }
@@ -19,10 +19,10 @@ thiserror = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
-rumoca-eval-compiled = { workspace = true, features = ["wasm"] }
+rumoca-eval-dae = { workspace = true, features = ["wasm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rumoca-eval-compiled = { workspace = true, features = ["cranelift"] }
+rumoca-eval-dae = { workspace = true, features = ["cranelift"] }
 
 [dev-dependencies]
 rumoca-session = { workspace = true }

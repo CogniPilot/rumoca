@@ -303,3 +303,128 @@ fn load_trace_exclusions_reads_model_list() {
         Some(&STOCHASTIC_TRACE_EXCLUSION_REASON.to_string())
     );
 }
+
+#[test]
+fn refresh_omc_trace_artifacts_rebuilds_missing_trace_json_from_csv() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let results_dir = temp.path().join("results");
+    let sim_work_dir = results_dir.join("omc_sim_work");
+    let omc_trace_dir = results_dir.join("sim_traces").join("omc");
+    std::fs::create_dir_all(&sim_work_dir).expect("create sim work dir");
+    std::fs::create_dir_all(&omc_trace_dir).expect("create omc trace dir");
+
+    let model_name = "Modelica.Blocks.Examples.PID_Controller";
+    let csv_path = sim_work_dir.join(format!("{model_name}_res.csv"));
+    std::fs::write(&csv_path, "time,signal\n0.0,1.0\n0.5,2.0\n1.0,3.0\n").expect("write csv");
+
+    let paths = MslPaths {
+        repo_root: temp.path().to_path_buf(),
+        msl_dir: temp.path().join("msl"),
+        results_dir: results_dir.clone(),
+        flat_dir: results_dir.join("omc_flat"),
+        work_dir: results_dir.join("omc_work"),
+        sim_work_dir: sim_work_dir.clone(),
+        omc_trace_dir: omc_trace_dir.clone(),
+        rumoca_trace_dir: results_dir.join("sim_traces").join("rumoca"),
+    };
+
+    let mut results = BTreeMap::new();
+    results.insert(
+        model_name.to_string(),
+        SimModelResult {
+            status: "success".to_string(),
+            error: None,
+            sim_system_seconds: Some(0.1),
+            total_system_seconds: Some(0.2),
+            omc_wall_seconds: Some(0.3),
+            result_file: Some(format!("{model_name}_res.csv")),
+            trace_file: Some(format!("sim_traces/omc/{model_name}.json")),
+            trace_error: None,
+            rumoca_status: Some("sim_ok".to_string()),
+            rumoca_sim_seconds: Some(0.1),
+            rumoca_sim_wall_seconds: Some(0.11),
+            rumoca_trace_file: None,
+            rumoca_trace_error: None,
+        },
+    );
+
+    refresh_omc_trace_artifacts_from_results(&paths, &mut results);
+    let refreshed = results.get(model_name).expect("missing model result");
+    let trace_file = refreshed
+        .trace_file
+        .as_ref()
+        .expect("trace file should be regenerated");
+    assert_eq!(
+        trace_file,
+        &format!("sim_traces/omc/{model_name}.json"),
+        "regenerated trace should use canonical relative path"
+    );
+    assert_eq!(refreshed.trace_error, None);
+    let trace_path = results_dir.join(trace_file);
+    assert!(trace_path.is_file(), "regenerated trace file missing");
+    let trace = load_trace_json(&trace_path).expect("load generated trace");
+    assert_eq!(trace.times.len(), 3);
+    assert_eq!(trace.names, vec!["signal".to_string()]);
+}
+
+#[test]
+fn refresh_omc_trace_artifacts_preserves_existing_trace_reference() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let results_dir = temp.path().join("results");
+    let omc_trace_dir = results_dir.join("sim_traces").join("omc");
+    std::fs::create_dir_all(&omc_trace_dir).expect("create omc trace dir");
+
+    let model_name = "Modelica.Blocks.Examples.PID_Controller";
+    let existing_rel = PathBuf::from("sim_traces")
+        .join("omc")
+        .join(format!("{model_name}.json"));
+    let existing_path = results_dir.join(&existing_rel);
+    let trace = SimTrace {
+        model_name: Some(model_name.to_string()),
+        times: vec![0.0, 1.0],
+        names: vec!["x".to_string()],
+        data: vec![vec![Some(1.0), Some(2.0)]],
+        variable_meta: None,
+    };
+    write_pretty_json(&existing_path, &trace).expect("write existing trace");
+
+    let paths = MslPaths {
+        repo_root: temp.path().to_path_buf(),
+        msl_dir: temp.path().join("msl"),
+        results_dir: results_dir.clone(),
+        flat_dir: results_dir.join("omc_flat"),
+        work_dir: results_dir.join("omc_work"),
+        sim_work_dir: results_dir.join("omc_sim_work"),
+        omc_trace_dir: omc_trace_dir.clone(),
+        rumoca_trace_dir: results_dir.join("sim_traces").join("rumoca"),
+    };
+
+    let mut results = BTreeMap::new();
+    results.insert(
+        model_name.to_string(),
+        SimModelResult {
+            status: "success".to_string(),
+            error: None,
+            sim_system_seconds: Some(0.1),
+            total_system_seconds: Some(0.2),
+            omc_wall_seconds: Some(0.3),
+            result_file: Some(format!("{model_name}_res.csv")),
+            trace_file: None,
+            trace_error: Some("stale error".to_string()),
+            rumoca_status: Some("sim_ok".to_string()),
+            rumoca_sim_seconds: Some(0.1),
+            rumoca_sim_wall_seconds: Some(0.11),
+            rumoca_trace_file: None,
+            rumoca_trace_error: None,
+        },
+    );
+
+    refresh_omc_trace_artifacts_from_results(&paths, &mut results);
+    let refreshed = results.get(model_name).expect("missing model result");
+    let existing_rel_string = existing_rel.display().to_string();
+    assert_eq!(
+        refreshed.trace_file.as_deref(),
+        Some(existing_rel_string.as_str())
+    );
+    assert_eq!(refreshed.trace_error, None);
+}

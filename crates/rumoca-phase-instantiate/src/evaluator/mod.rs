@@ -1732,7 +1732,7 @@ fn lookup_local_integer(
 /// Evaluate a function call to an integer value during instantiation.
 ///
 /// Handles Modelica builtins (integer, mod, div, abs) and user-defined pure
-/// functions by looking them up in the ast::ClassTree and evaluating with rumoca_eval_const.
+/// functions by looking them up in the ast::ClassTree and evaluating with rumoca_eval_flat.
 fn eval_integer_function_call(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],

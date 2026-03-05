@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use rumoca_eval_runtime::eval;
+use rumoca_eval_flat::eval;
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::EliminationResult;
 
@@ -127,10 +127,15 @@ where
     eval::clear_pre_values();
     project_or_seed(&mut y, ctx.t_start, ctx.requires_projection)
         .map_err(NoStateSampleError::Callback)?;
+    crate::runtime::startup::refresh_pre_values_from_state_with_initial_assignments(
+        ctx.dae,
+        &y,
+        ctx.param_values,
+        ctx.t_start,
+    );
     let mut t0_env =
         crate::runtime::event::build_runtime_env(ctx.dae, &mut y, ctx.param_values, ctx.t_start);
     reconstruct::apply_eliminated_substitutions_to_env(ctx.elim, &mut t0_env);
-    eval::seed_pre_values_from_env(&t0_env);
 
     let mut out_idx = 0usize;
     for &t in evaluation_times {

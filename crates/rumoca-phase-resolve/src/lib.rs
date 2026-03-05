@@ -877,14 +877,17 @@ end Common;
 package Interfaces
   partial package PartialMedium
     replaceable record ThermodynamicState
-      Real x;
+      Real p;
+      Real T;
     end ThermodynamicState;
 
     replaceable function setState_pTX
       input Real p;
       input Real T;
       output ThermodynamicState state;
-      external "C";
+    algorithm
+      state.p := p;
+      state.T := T;
     end setState_pTX;
   end PartialMedium;
 end Interfaces;
@@ -898,7 +901,9 @@ package TableBased
     input Real p;
     input Real T;
     output ThermodynamicState state;
-    external "C";
+  algorithm
+    state.p := p;
+    state.T := T;
   end setState_pTX;
 end TableBased;
 

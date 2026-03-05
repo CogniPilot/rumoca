@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::runtime::assignment::{canonical_var_ref_key, direct_assignment_from_equation};
-use rumoca_eval_runtime::eval::VarEnv;
+use rumoca_eval_flat::eval::VarEnv;
 use rumoca_ir_dae as dae;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

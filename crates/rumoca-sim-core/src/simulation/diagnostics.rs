@@ -1,4 +1,4 @@
-use rumoca_eval_runtime::eval::{VarEnv, eval_expr};
+use rumoca_eval_flat::eval::{VarEnv, eval_expr};
 use rumoca_ir_dae as dae;
 
 use crate::equation_scalarize::build_output_names;

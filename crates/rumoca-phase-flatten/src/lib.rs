@@ -691,7 +691,7 @@ fn compute_closure_iterations(
 /// This replaces hardcoded constant values with values from the actual parsed library.
 fn resolve_constants_from_tree(
     tree: &ast::ClassTree,
-    eval_ctx: &mut rumoca_eval_const::EvalContext,
+    eval_ctx: &mut rumoca_eval_flat::EvalContext,
 ) {
     // Well-known constant packages to resolve.
     // ModelicaServices.Machine must come first since Modelica.Constants.eps
@@ -711,7 +711,7 @@ fn resolve_constants_from_tree(
                 continue;
             };
             let flat_binding = qualify_expression(binding, &ast::QualifiedName::new());
-            let Ok(val) = rumoca_eval_const::eval_expr(&flat_binding, eval_ctx) else {
+            let Ok(val) = rumoca_eval_flat::eval_expr(&flat_binding, eval_ctx) else {
                 continue;
             };
             eval_ctx.add_parameter(qualified, val);

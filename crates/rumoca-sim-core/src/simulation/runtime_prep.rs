@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use rumoca_core::Span;
-use rumoca_eval_runtime::eval::{build_env, eval_expr};
+use rumoca_eval_flat::eval::{build_env, eval_expr};
 use rumoca_ir_dae as dae;
 
 use crate::runtime::timeout::{TimeoutBudget, TimeoutExceeded};
 use crate::simulation::dae_prepare::expr_contains_der_of;
 use crate::simulation::diagnostics::sim_trace_enabled;
+use crate::simulation::mass_matrix_form::expr_contains_any_der_call;
 use crate::simulation::pipeline::MassMatrix;
 
 pub fn compute_mass_matrix(
@@ -216,58 +217,6 @@ fn direct_assignment_target_bases(expr: &dae::Expression, out: &mut HashSet<Stri
     }
 }
 
-fn expr_contains_der_call(expr: &dae::Expression) -> bool {
-    match expr {
-        dae::Expression::BuiltinCall { function, args } => {
-            if *function == dae::BuiltinFunction::Der {
-                return true;
-            }
-            args.iter().any(expr_contains_der_call)
-        }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            expr_contains_der_call(lhs) || expr_contains_der_call(rhs)
-        }
-        dae::Expression::Unary { rhs, .. } => expr_contains_der_call(rhs),
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(cond, branch)| {
-                expr_contains_der_call(cond) || expr_contains_der_call(branch)
-            }) || expr_contains_der_call(else_branch)
-        }
-        dae::Expression::FunctionCall { args, .. } => args.iter().any(expr_contains_der_call),
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            elements.iter().any(expr_contains_der_call)
-        }
-        dae::Expression::Range { start, step, end } => {
-            expr_contains_der_call(start)
-                || step.as_deref().is_some_and(expr_contains_der_call)
-                || expr_contains_der_call(end)
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            expr_contains_der_call(expr)
-                || indices.iter().any(|idx| expr_contains_der_call(&idx.range))
-                || filter.as_deref().is_some_and(expr_contains_der_call)
-        }
-        dae::Expression::Index { base, subscripts } => {
-            expr_contains_der_call(base)
-                || subscripts.iter().any(|sub| match sub {
-                    dae::Subscript::Expr(expr) => expr_contains_der_call(expr),
-                    _ => false,
-                })
-        }
-        dae::Expression::FieldAccess { base, .. } => expr_contains_der_call(base),
-        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
-            false
-        }
-    }
-}
-
 fn collect_derivative_assignment_target_bases(expr: &dae::Expression, out: &mut HashSet<String>) {
     match expr {
         dae::Expression::Binary {
@@ -276,13 +225,13 @@ fn collect_derivative_assignment_target_bases(expr: &dae::Expression, out: &mut 
             rhs,
         } => {
             if let dae::Expression::VarRef { name, .. } = lhs.as_ref()
-                && expr_contains_der_call(rhs)
+                && expr_contains_any_der_call(rhs)
                 && let Some(base) = component_base_name(name.as_str())
             {
                 out.insert(base);
             }
             if let dae::Expression::VarRef { name, .. } = rhs.as_ref()
-                && expr_contains_der_call(lhs)
+                && expr_contains_any_der_call(lhs)
                 && let Some(base) = component_base_name(name.as_str())
             {
                 out.insert(base);
@@ -520,7 +469,7 @@ fn append_pin_equations(
         let start_val = candidate
             .start
             .as_ref()
-            .map(rumoca_eval_runtime::eval::eval_const_expr)
+            .map(rumoca_eval_flat::eval::eval_const_expr)
             .unwrap_or(0.0);
         if sim_trace_enabled() {
             eprintln!(

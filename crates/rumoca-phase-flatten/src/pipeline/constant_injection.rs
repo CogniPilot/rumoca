@@ -1221,8 +1221,8 @@ pub(crate) fn build_structural_eval_context(
     ctx: &Context,
     overlay: &InstanceOverlay,
     tree: &ClassTree,
-) -> rumoca_eval_const::EvalContext {
-    use rumoca_eval_const::{EvalContext, Value};
+) -> rumoca_eval_flat::EvalContext {
+    use rumoca_eval_flat::{EvalContext, Value};
 
     let mut eval_ctx = EvalContext::new();
     for (name, value) in &ctx.parameter_values {
@@ -1251,7 +1251,7 @@ pub(crate) fn build_structural_eval_context(
 /// constants, and must not be used for structural equation evaluation (MLS §8.6).
 pub(crate) fn collect_component_binding_values(
     overlay: &InstanceOverlay,
-    eval_ctx: &mut rumoca_eval_const::EvalContext,
+    eval_ctx: &mut rumoca_eval_flat::EvalContext,
 ) {
     for (_def_id, instance_data) in &overlay.components {
         let qualified_name = instance_data.qualified_name.to_flat_string();
@@ -1262,7 +1262,7 @@ pub(crate) fn collect_component_binding_values(
 
         if let Some(binding) = &instance_data.binding {
             let flat_binding = qualify_expression(binding, &QualifiedName::new());
-            if let Ok(val) = rumoca_eval_const::eval_expr(&flat_binding, eval_ctx) {
+            if let Ok(val) = rumoca_eval_flat::eval_expr(&flat_binding, eval_ctx) {
                 eval_ctx.add_parameter(qualified_name.clone(), val);
                 continue;
             }
@@ -1277,7 +1277,7 @@ pub(crate) fn collect_component_binding_values(
         );
         if is_param_or_const && let Some(start) = &instance_data.start {
             let flat_start = qualify_expression(start, &QualifiedName::new());
-            if let Ok(val) = rumoca_eval_const::eval_expr(&flat_start, eval_ctx) {
+            if let Ok(val) = rumoca_eval_flat::eval_expr(&flat_start, eval_ctx) {
                 eval_ctx.add_parameter(qualified_name, val);
             }
         }
@@ -1290,7 +1290,7 @@ pub(crate) fn try_eval_structural_equation(
     equation: &rumoca_ir_ast::Equation,
     prefix: &QualifiedName,
     ctx: &Context,
-    eval_ctx: &rumoca_eval_const::EvalContext,
+    eval_ctx: &rumoca_eval_flat::EvalContext,
 ) -> Option<(String, bool)> {
     let ast::Equation::Simple { lhs, rhs } = equation else {
         return None;
@@ -1315,7 +1315,7 @@ pub(crate) fn try_eval_structural_equation(
     }
 
     let flat_rhs = qualify_expression(rhs, prefix);
-    let val = match rumoca_eval_const::eval_expr(&flat_rhs, eval_ctx) {
+    let val = match rumoca_eval_flat::eval_expr(&flat_rhs, eval_ctx) {
         Ok(v) => v,
         Err(_e) => {
             return None;
@@ -1581,7 +1581,7 @@ pub struct Context {
     pub cardinality_counts: rustc_hash::FxHashMap<String, i64>,
     /// Lazy base evaluator for flatten expression fallback evaluation.
     /// This is built once per flatten context after structural lookup stabilizes.
-    pub(crate) eval_fallback_context: std::cell::OnceCell<rumoca_eval_const::EvalContext>,
+    pub(crate) eval_fallback_context: std::cell::OnceCell<rumoca_eval_flat::EvalContext>,
     /// Current import map for the class instance being processed (MLS §13.2).
     /// Set before processing each class instance's equations, cleared after.
     pub current_imports: crate::qualify::ImportMap,

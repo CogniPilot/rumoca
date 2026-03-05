@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::projection_maps::output_is_complex_record;
-use rumoca_eval_runtime::eval;
+use rumoca_eval_flat::eval;
 use rumoca_ir_dae as dae;
 
 type BuiltinFunction = dae::BuiltinFunction;

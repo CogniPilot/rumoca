@@ -21,6 +21,7 @@ rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-core = { workspace = true }
+rumoca-eval-flat = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
 rayon = { workspace = true }

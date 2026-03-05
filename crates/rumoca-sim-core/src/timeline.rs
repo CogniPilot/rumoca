@@ -100,6 +100,21 @@ pub fn merge_evaluation_times(output_times: &[f64], injected_times: &[f64]) -> V
     merged
 }
 
+pub fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
+    let mut times = Vec::new();
+    let mut t = t_start;
+    while t <= t_end {
+        times.push(t);
+        t += dt;
+    }
+    if let Some(&last) = times.last()
+        && (last - t_end).abs() > 1.0e-12
+    {
+        times.push(t_end);
+    }
+    times
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +163,11 @@ mod tests {
         let injected = vec![0.5 + 1.0e-16, 0.75];
         let merged = merge_evaluation_times(&output, &injected);
         assert_eq!(merged, vec![0.0, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn build_output_times_includes_end_when_not_on_grid() {
+        let times = build_output_times(0.0, 1.0, 0.3);
+        assert_eq!(times.last().copied(), Some(1.0));
     }
 }

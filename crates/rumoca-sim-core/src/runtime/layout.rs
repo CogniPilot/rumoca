@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use rumoca_eval_runtime::eval::{VarEnv, build_env};
+use rumoca_eval_flat::eval::{VarEnv, build_env};
 use rumoca_ir_dae as dae;
 
 #[derive(Clone, Debug)]

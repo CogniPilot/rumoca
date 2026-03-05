@@ -22,6 +22,8 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
 rumoca-core = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-sim-diffsol = { workspace = true }
+rumoca-sim-rk45 = { workspace = true }
+rumoca-phase-solve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
@@ -53,6 +55,7 @@ ntest = "0.9"  # Test timeouts
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }
+rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }

@@ -36,19 +36,19 @@
       "dead_likely_candidates": 5,
       "needs_targeted_test_candidates": 4
     },
-    "rumoca-eval-compiled": {
+    "rumoca-eval-dae": {
       "zero_count_functions_total": 171,
       "candidates_total": 118,
       "dead_likely_candidates": 49,
       "needs_targeted_test_candidates": 55
     },
-    "rumoca-eval-const": {
+    "rumoca-eval-ast": {
       "zero_count_functions_total": 183,
       "candidates_total": 101,
       "dead_likely_candidates": 54,
       "needs_targeted_test_candidates": 25
     },
-    "rumoca-eval-runtime": {
+    "rumoca-eval-flat": {
       "zero_count_functions_total": 634,
       "candidates_total": 205,
       "dead_likely_candidates": 80,

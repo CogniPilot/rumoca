@@ -105,6 +105,7 @@ fn test_sim_sources_use_ir_namespace_aliases() {
     let sim_dirs = [
         root.join("crates/rumoca-sim-core/src"),
         root.join("crates/rumoca-sim-diffsol/src"),
+        root.join("crates/rumoca-sim-rk45/src"),
     ];
 
     let mut offenders = Vec::new();
@@ -134,5 +135,20 @@ fn test_sim_diffsol_dag_boundary_no_flat_or_ast_dependency() {
     assert!(
         !content.contains("rumoca-ir-ast"),
         "sim-diffsol must not depend on rumoca-ir-ast"
+    );
+}
+
+#[test]
+fn test_sim_rk45_dag_boundary_no_flat_or_ast_dependency() {
+    let cargo_toml = workspace_root().join("crates/rumoca-sim-rk45/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read sim-rk45 Cargo.toml");
+
+    assert!(
+        !content.contains("rumoca-ir-flat"),
+        "sim-rk45 must not depend on rumoca-ir-flat"
+    );
+    assert!(
+        !content.contains("rumoca-ir-ast"),
+        "sim-rk45 must not depend on rumoca-ir-ast"
     );
 }

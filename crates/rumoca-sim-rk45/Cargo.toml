@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-sim-rk45"
+description = "Causal ODE simulation backend (RK45) for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-eval-flat = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-sim-core = { workspace = true }
+
+[dev-dependencies]
+rumoca-core = { workspace = true }
+
+[lints]
+workspace = true

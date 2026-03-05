@@ -1,7 +1,7 @@
 //! Integration tests for DAE simulation using diffsol.
 
-use rumoca_eval_runtime::dual::Dual;
-use rumoca_eval_runtime::eval::{VarEnv, build_env, eval_expr, get_pre_value, lift_env};
+use rumoca_eval_flat::dual::Dual;
+use rumoca_eval_flat::eval::{VarEnv, build_env, eval_expr, get_pre_value, lift_env};
 use rumoca_session::{Session, SessionConfig};
 use rumoca_sim_diffsol::problem::{default_params, reorder_equations_for_solver};
 use rumoca_sim_diffsol::{SimOptions, eliminate, simulate};
@@ -1475,7 +1475,7 @@ fn compute_diagnostic_jacobian(
         let env_f64 = build_env(dae, y, p, 0.0);
         let mut env_dual: VarEnv<Dual> = lift_env(&env_f64);
         seed_dual_column(dae, &mut env_dual, col);
-        rumoca_eval_runtime::statement::eval_algorithms(dae, &mut env_dual);
+        rumoca_eval_flat::statement::eval_algorithms(dae, &mut env_dual);
         let mut col_values = vec![0.0; n_total];
         for (row, eq) in dae.f_x.iter().enumerate() {
             let val = eval_expr::<Dual>(&eq.rhs, &env_dual);

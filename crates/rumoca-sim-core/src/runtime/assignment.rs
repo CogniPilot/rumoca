@@ -1,5 +1,5 @@
-use rumoca_eval_runtime::eval::{VarEnv, eval_expr};
-use rumoca_eval_runtime::sim_float::SimFloat;
+use rumoca_eval_flat::eval::{VarEnv, eval_expr};
+use rumoca_eval_flat::sim_float::SimFloat;
 use rumoca_ir_dae as dae;
 use std::collections::{HashMap, HashSet};
 
@@ -88,7 +88,7 @@ pub fn extract_active_assignment_from_expr<'a>(
             else_branch,
         } => {
             for (condition, value) in branches {
-                if rumoca_eval_runtime::eval::eval_expr::<f64>(condition, env).to_bool() {
+                if rumoca_eval_flat::eval::eval_expr::<f64>(condition, env).to_bool() {
                     return extract_active_assignment_from_expr(value, env);
                 }
             }
@@ -195,6 +195,19 @@ pub fn is_known_assignment_name(dae: &dae::Dae, raw: &str) -> bool {
     contains_assignment_name(dae, &base_key)
 }
 
+pub fn is_runtime_unknown_name(dae: &dae::Dae, raw: &str) -> bool {
+    let key = dae::VarName::new(raw);
+    if contains_runtime_unknown_name(dae, &key) {
+        return true;
+    }
+
+    let Some(base) = dae::component_base_name(raw) else {
+        return false;
+    };
+    let base_key = dae::VarName::new(base);
+    contains_runtime_unknown_name(dae, &base_key)
+}
+
 fn contains_assignment_name(dae: &dae::Dae, key: &dae::VarName) -> bool {
     dae.states.contains_key(key)
         || dae.algebraics.contains_key(key)
@@ -205,6 +218,14 @@ fn contains_assignment_name(dae: &dae::Dae, key: &dae::VarName) -> bool {
         || dae.discrete_reals.contains_key(key)
         || dae.discrete_valued.contains_key(key)
         || dae.derivative_aliases.contains_key(key)
+}
+
+fn contains_runtime_unknown_name(dae: &dae::Dae, key: &dae::VarName) -> bool {
+    dae.states.contains_key(key)
+        || dae.algebraics.contains_key(key)
+        || dae.outputs.contains_key(key)
+        || dae.discrete_reals.contains_key(key)
+        || dae.discrete_valued.contains_key(key)
 }
 
 pub fn variable_size_for_assignment_name(dae: &dae::Dae, name: &str) -> Option<usize> {
@@ -395,8 +416,7 @@ fn indexed_history_values_from_runtime(
 ) -> Option<Vec<f64>> {
     indexed_values_with(expected_len, |index| {
         let key = format!("{}[{}]", name.as_str(), index);
-        rumoca_eval_runtime::eval::get_pre_value(&key)
-            .or_else(|| env.vars.get(key.as_str()).copied())
+        rumoca_eval_flat::eval::get_pre_value(&key).or_else(|| env.vars.get(key.as_str()).copied())
     })
 }
 
@@ -412,9 +432,9 @@ fn indexed_varref_values_from_env(
 }
 
 fn eval_array_or_scalar_assignment(expr: &dae::Expression, env: &VarEnv<f64>) -> Vec<f64> {
-    let values = rumoca_eval_runtime::eval::eval_array_values::<f64>(expr, env);
+    let values = rumoca_eval_flat::eval::eval_array_values::<f64>(expr, env);
     if values.is_empty() {
-        vec![rumoca_eval_runtime::eval::eval_expr::<f64>(expr, env)]
+        vec![rumoca_eval_flat::eval::eval_expr::<f64>(expr, env)]
     } else {
         values
     }
@@ -433,7 +453,7 @@ fn active_if_branch<'a>(
     };
     if let Some((_, value)) = branches
         .iter()
-        .find(|(cond, _)| rumoca_eval_runtime::eval::eval_expr::<f64>(cond, env).to_bool())
+        .find(|(cond, _)| rumoca_eval_flat::eval::eval_expr::<f64>(cond, env).to_bool())
     {
         return Some(value);
     }
@@ -955,9 +975,9 @@ mod tests {
 
     #[test]
     fn evaluate_direct_assignment_values_reads_pre_history_for_arrays() {
-        rumoca_eval_runtime::eval::clear_pre_values();
-        rumoca_eval_runtime::eval::set_pre_value("hist[1]", 3.0);
-        rumoca_eval_runtime::eval::set_pre_value("hist[2]", 4.0);
+        rumoca_eval_flat::eval::clear_pre_values();
+        rumoca_eval_flat::eval::set_pre_value("hist[1]", 3.0);
+        rumoca_eval_flat::eval::set_pre_value("hist[2]", 4.0);
         let env = VarEnv::<f64>::new();
         let expr = dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Pre,
@@ -968,7 +988,7 @@ mod tests {
         };
         let values = evaluate_direct_assignment_values(&expr, &env, 2);
         assert_eq!(values, vec![3.0, 4.0]);
-        rumoca_eval_runtime::eval::clear_pre_values();
+        rumoca_eval_flat::eval::clear_pre_values();
     }
 
     #[test]

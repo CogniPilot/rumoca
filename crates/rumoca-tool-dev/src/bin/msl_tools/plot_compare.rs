@@ -5,7 +5,7 @@ use crate::common::{
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use rumoca::sim_trace_compare::{
-    ModelDeviationMetric, SimTrace, compare_model_traces, load_trace_json,
+    ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
 };
 use rumoca::{Session, SessionConfig, parse_files_parallel_lenient};
 use rumoca_session::CompilationResult as SessionCompilationResult;
@@ -18,10 +18,8 @@ use std::time::Duration;
 const GRID_DEDUP_EPS: f64 = 1.0e-12;
 const SIM_TIMEOUT_SECONDS: f64 = 10.0;
 const OMC_SIM_TIMEOUT_SECONDS: u64 = 10;
-const UPLOT_JS: &str =
-    include_str!("../../../../../crates/rumoca-sim-diffsol/src/vendor/uplot.min.js");
-const UPLOT_CSS: &str =
-    include_str!("../../../../../crates/rumoca-sim-diffsol/src/vendor/uplot.min.css");
+const UPLOT_JS: &str = include_str!("../../../../../crates/rumoca-sim-core/assets/uplot.min.js");
+const UPLOT_CSS: &str = include_str!("../../../../../crates/rumoca-sim-core/assets/uplot.min.css");
 
 #[derive(Debug, Clone, ClapArgs)]
 pub(crate) struct Args {
@@ -52,8 +50,8 @@ struct PlotPayload {
 
 #[derive(Debug, Clone, Serialize)]
 struct ModelMetricSummary {
-    deviation_score: f64,
-    mean_normalized_rmse: f64,
+    bounded_normalized_l1_score: f64,
+    mean_channel_bounded_normalized_l1: f64,
     compared_variables: usize,
     samples_compared: usize,
 }
@@ -83,7 +81,15 @@ pub(crate) fn run(args: Args) -> Result<()> {
     let omc_trace = load_trace_json(&omc_trace_path)
         .with_context(|| format!("failed to load OMC trace '{}'", omc_trace_path.display()))?;
     let aligned = align_traces(&args.model, &rumoca_trace, &omc_trace)?;
-    let metric = compare_model_traces(&args.model, &rumoca_trace, &omc_trace).ok();
+    let metric = match compare_model_traces(&args.model, &rumoca_trace, &omc_trace) {
+        Ok(metric) => Some(metric),
+        Err(error) => {
+            if std::env::var("RUMOCA_PLOT_COMPARE_DEBUG").is_ok() {
+                eprintln!("[plot-compare-debug] compare_model_traces error: {error}");
+            }
+            None
+        }
+    };
     let payload = build_plot_payload(aligned, metric);
     let html = generate_html(&args.model, &payload)?;
     let output_path = resolve_output_path(&paths, &args);
@@ -101,14 +107,14 @@ pub(crate) fn run(args: Args) -> Result<()> {
     );
     if let Some(metric) = payload.model_metric.as_ref() {
         println!(
-            "Deviation score: {:.3e} (mean normalized RMSE {:.3e})",
-            metric.deviation_score, metric.mean_normalized_rmse
+            "Bounded normalized L1 score: {:.3e} (mean channel score {:.3e})",
+            metric.bounded_normalized_l1_score, metric.mean_channel_bounded_normalized_l1
         );
         if let Ok(full_metric) = compare_model_traces(&args.model, &rumoca_trace, &omc_trace) {
             for channel in full_metric.worst_variables.iter().take(5) {
                 println!(
-                    "  worst: {} (integral {:.3e}, rmse {:.3e})",
-                    channel.name, channel.normalized_integral_abs_error, channel.normalized_rmse
+                    "  worst: {} (bounded L1 {:.3e}, normalized L1 {:.3e})",
+                    channel.name, channel.bounded_normalized_l1_error, channel.normalized_l1_error
                 );
             }
         }
@@ -170,6 +176,7 @@ fn maybe_debug_dump_compiled_model(compiled: &SessionCompilationResult, model_na
     debug_log_enum_ordinals(compiled);
     debug_log_selected_starts(compiled);
     debug_log_named_variables(compiled);
+    debug_log_named_equations(compiled);
     debug_log_counter_equations(compiled);
 }
 
@@ -323,6 +330,41 @@ fn debug_log_named_variables(compiled: &SessionCompilationResult) {
     }
 }
 
+fn debug_log_named_equations(compiled: &SessionCompilationResult) {
+    let patterns = debug_targets_from_env("RUMOCA_PLOT_COMPARE_DEBUG_EQ_PATTERNS");
+    if patterns.is_empty() {
+        return;
+    }
+
+    for (bucket, equations) in [
+        ("f_x", &compiled.dae.f_x),
+        ("f_z", &compiled.dae.f_z),
+        ("f_m", &compiled.dae.f_m),
+        ("f_c", &compiled.dae.f_c),
+    ] {
+        for (idx, eq) in equations.iter().enumerate() {
+            let lhs = eq
+                .lhs
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("<none>")
+                .to_string();
+            let rhs_dbg = format!("{:?}", eq.rhs);
+            let origin = eq.origin.as_str();
+            let hit = patterns
+                .iter()
+                .any(|p| lhs.contains(p) || rhs_dbg.contains(p) || origin.contains(p));
+            if !hit {
+                continue;
+            }
+            eprintln!(
+                "[plot-compare-debug] {bucket}[{idx}] lhs='{lhs}' origin='{}' rhs={rhs_dbg}",
+                eq.origin
+            );
+        }
+    }
+}
+
 fn debug_log_counter_equations(compiled: &SessionCompilationResult) {
     for (bucket, equations) in [
         ("f_x", &compiled.dae.f_x),
@@ -422,11 +464,28 @@ fn trace_from_sim_result(model_name: &str, sim: &rumoca_sim_diffsol::SimResult) 
         .iter()
         .map(|column| column.iter().copied().map(Some).collect())
         .collect();
+    let variable_meta = if sim.variable_meta.is_empty() {
+        None
+    } else {
+        Some(
+            sim.variable_meta
+                .iter()
+                .map(|meta| SimTraceVariableMeta {
+                    name: meta.name.clone(),
+                    role: Some(meta.role.clone()),
+                    value_type: meta.value_type.clone(),
+                    variability: meta.variability.clone(),
+                    time_domain: meta.time_domain.clone(),
+                })
+                .collect(),
+        )
+    };
     SimTrace {
         model_name: Some(model_name.to_string()),
         times: sim.times.clone(),
         names: sim.names.clone(),
         data,
+        variable_meta,
     }
 }
 
@@ -568,6 +627,7 @@ fn load_omc_csv_as_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> 
         times,
         names,
         data,
+        variable_meta: None,
     })
 }
 
@@ -614,8 +674,8 @@ fn build_plot_payload(
 
 fn model_metric_summary(metric: &ModelDeviationMetric) -> ModelMetricSummary {
     ModelMetricSummary {
-        deviation_score: metric.deviation_score,
-        mean_normalized_rmse: metric.mean_normalized_rmse,
+        bounded_normalized_l1_score: metric.bounded_normalized_l1_score,
+        mean_channel_bounded_normalized_l1: metric.mean_channel_bounded_normalized_l1,
         compared_variables: metric.compared_variables,
         samples_compared: metric.samples_compared,
     }
@@ -935,8 +995,8 @@ fn app_js(payload_json: &str, model_json: &str) -> String {
   var metaEl = document.getElementById("meta");
   var modelMetric = payload.model_metric;
   var metricText = modelMetric
-    ? ("<br>Deviation: " + modelMetric.deviation_score.toExponential(3) +
-       " | Mean nRMSE: " + modelMetric.mean_normalized_rmse.toExponential(3))
+    ? ("<br>Bounded nL1 score: " + modelMetric.bounded_normalized_l1_score.toExponential(3) +
+       " | Mean channel score: " + modelMetric.mean_channel_bounded_normalized_l1.toExponential(3))
     : "";
   metaEl.innerHTML =
     "Overlap: [" + payload.overlap_start.toFixed(6) + ", " + payload.overlap_end.toFixed(6) + "]" +
@@ -1022,6 +1082,7 @@ mod tests {
                 .into_iter()
                 .map(|column| column.into_iter().map(Some).collect())
                 .collect(),
+            variable_meta: None,
         }
     }
 

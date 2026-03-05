@@ -9,6 +9,65 @@ use rumoca_contracts::test_support::{
 use rumoca_session::FailedPhase;
 
 // =============================================================================
+// SIM-001: Event iteration
+// "Iterate solving equations until z == pre(z) and m == pre(m)"
+// =============================================================================
+
+#[test]
+fn sim_001_when_guard_uses_pre_edge_activation() {
+    let result = expect_success(
+        r#"
+        model Test
+            discrete Boolean b(start = false);
+            discrete Integer k(start = 0);
+        equation
+            when sample(0, 0.1) then
+                b = not pre(b);
+            end when;
+
+            when b then
+                k = pre(k) + 1;
+            end when;
+        end Test;
+    "#,
+        "Test",
+    );
+
+    let k_eq = result
+        .dae
+        .f_m
+        .iter()
+        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "k"))
+        .unwrap_or_else(|| panic!("expected lowered discrete assignment for k in f_m"));
+
+    let rhs_debug = format!("{:?}", k_eq.rhs);
+    assert!(
+        rhs_debug.contains("Pre") && rhs_debug.contains("\"b\""),
+        "when-guarded assignment should encode edge/pre semantics for event iteration; rhs={rhs_debug}"
+    );
+}
+
+#[test]
+fn sim_001_event_iteration_rejects_non_convergent_cycle() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            discrete Boolean a(start = false);
+            discrete Boolean b(start = false);
+        equation
+            when sample(0, 0.1) then
+                a = b;
+                b = a;
+            end when;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::ToDae,
+        "ED010",
+    );
+}
+
+// =============================================================================
 // SIM-002: Initialization fixed
 // "Continuous Real with fixed=true adds equation vc = startExpression"
 // =============================================================================
@@ -29,6 +88,22 @@ fn sim_002_initialization_fixed() {
     assert!(!result.dae.states.is_empty(), "Should have state variables");
     let state = result.dae.states.values().next().unwrap();
     assert!(state.start.is_some(), "State should have start value");
+}
+
+#[test]
+fn sim_002_fixed_start_type_mismatch_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Real x(start = true, fixed = true);
+        equation
+            der(x) = -x;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET002",
+    );
 }
 
 // =============================================================================
@@ -101,6 +176,72 @@ fn sim_003_parameter_with_binding_is_standalone_simulatable() {
     assert!(
         unbound_fixed_parameter_names(&result).is_empty(),
         "No unbound fixed parameters expected"
+    );
+}
+
+// =============================================================================
+// SIM-004: Variable fixed default
+// "For other variables: fixed defaults to false"
+// =============================================================================
+
+#[test]
+fn sim_004_variable_default_fixed_false_does_not_force_fixed_true() {
+    let result = expect_success(
+        r#"
+        model Test
+            Real x;
+        initial equation
+            x = 1;
+        equation
+            der(x) = -x;
+        end Test;
+    "#,
+        "Test",
+    );
+
+    let state = result
+        .dae
+        .states
+        .iter()
+        .find(|(name, _)| name.as_str() == "x")
+        .map(|(_, var)| var)
+        .unwrap_or_else(|| panic!("expected state x"));
+    assert_ne!(
+        state.fixed,
+        Some(true),
+        "non-parameter variables must not default to fixed=true"
+    );
+    assert_eq!(
+        result.dae.initial_equations.len(),
+        1,
+        "default fixed=false must not inject an extra initial equation"
+    );
+}
+
+#[test]
+fn sim_004_explicit_fixed_true_overrides_default_false() {
+    let result = expect_success(
+        r#"
+        model Test
+            Real x(fixed = true);
+        equation
+            der(x) = -x;
+        end Test;
+    "#,
+        "Test",
+    );
+
+    let state = result
+        .dae
+        .states
+        .iter()
+        .find(|(name, _)| name.as_str() == "x")
+        .map(|(_, var)| var)
+        .unwrap_or_else(|| panic!("expected state x"));
+    assert_eq!(
+        state.fixed,
+        Some(true),
+        "explicit fixed=true should be preserved for continuous variables"
     );
 }
 
@@ -483,6 +624,153 @@ fn sim_005_discrete_solved_form_rejects_cycle() {
             discrete Boolean b(start = false);
         equation
             when time > 0 then
+                a = b;
+                b = a;
+            end when;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::ToDae,
+        "ED010",
+    );
+}
+
+// =============================================================================
+// SIM-006: Integer solved form
+// "Solved variable must appear uniquely as term (no multiplicative factor)"
+// =============================================================================
+
+#[test]
+fn sim_006_integer_assignment_form_in_when_is_accepted() {
+    let result = expect_success(
+        r#"
+        model Test
+            discrete Integer a(start = 0);
+            discrete Integer b(start = 1);
+        equation
+            when sample(0, 0.1) then
+                a = b;
+                b = pre(a) + 1;
+            end when;
+        end Test;
+    "#,
+        "Test",
+    );
+
+    assert!(
+        result.dae.f_m.iter().all(|eq| eq.lhs.is_some()),
+        "integer discrete solved form must lower to explicit assignment equations in f_m"
+    );
+}
+
+#[test]
+fn sim_006_integer_lhs_with_multiplicative_factor_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            discrete Integer k(start = 0);
+        equation
+            when sample(0, 0.1) then
+                2 * k = 4;
+            end when;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF004",
+    );
+}
+
+// =============================================================================
+// SIM-007: Non-Integer flip form
+// "Non-Integer equations require at most flipping sides to obtain assignment form"
+// =============================================================================
+
+#[test]
+fn sim_007_non_integer_assignment_form_in_when_is_accepted() {
+    let result = expect_success(
+        r#"
+        model Test
+            discrete Real zr(start = 0.0);
+        equation
+            when sample(0, 0.1) then
+                zr = 1.0;
+            end when;
+        end Test;
+    "#,
+        "Test",
+    );
+
+    assert!(
+        result
+            .dae
+            .f_z
+            .iter()
+            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "zr")),
+        "discrete Real assignment should lower into f_z"
+    );
+}
+
+#[test]
+fn sim_007_non_integer_needing_more_than_flip_is_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            discrete Real zr(start = 0.0);
+        equation
+            when sample(0, 0.1) then
+                2.0 * zr = 1.0;
+            end when;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF004",
+    );
+}
+
+// =============================================================================
+// SIM-008: Discrete variable stability
+// "Values of conditions c, z, and m only changed at event instant"
+// =============================================================================
+
+#[test]
+fn sim_008_discrete_updates_use_pre_fallback_between_events() {
+    let result = expect_success(
+        r#"
+        model Test
+            discrete Integer d(start = 0);
+        equation
+            when sample(0, 0.1) then
+                d = d + 1;
+            end when;
+        end Test;
+    "#,
+        "Test",
+    );
+
+    let d_eq = result
+        .dae
+        .f_m
+        .iter()
+        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "d"))
+        .unwrap_or_else(|| panic!("expected lowered discrete assignment for d in f_m"));
+    let rhs_debug = format!("{:?}", d_eq.rhs);
+    assert!(
+        rhs_debug.contains("Pre"),
+        "discrete updates should carry pre() fallback outside event instants; rhs={rhs_debug}"
+    );
+}
+
+#[test]
+fn sim_008_discrete_dependency_cycle_is_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            discrete Integer a(start = 0);
+            discrete Integer b(start = 0);
+        equation
+            when sample(0, 0.1) then
                 a = b;
                 b = a;
             end when;

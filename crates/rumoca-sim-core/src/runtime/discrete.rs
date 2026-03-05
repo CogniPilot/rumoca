@@ -1,11 +1,15 @@
 use crate::runtime::assignment::{canonical_var_ref_key, evaluate_direct_assignment_values};
-use rumoca_eval_runtime::eval::{VarEnv, eval_expr};
-use rumoca_eval_runtime::sim_float::SimFloat;
+use rumoca_eval_flat::eval::{VarEnv, eval_expr};
+use rumoca_eval_flat::sim_float::SimFloat;
 use rumoca_ir_dae as dae;
 use std::collections::{HashMap, HashSet};
 
 fn clamp_finite(v: f64) -> f64 {
     if v.is_finite() { v } else { 0.0 }
+}
+
+fn clock_bool(value: f64) -> bool {
+    value.is_finite() && value > 0.5
 }
 
 fn state_base_name(name: &str) -> String {
@@ -30,11 +34,11 @@ fn eval_state_assignment_with_left_limit_target(
     env: &VarEnv<f64>,
 ) -> f64 {
     let mut left_limit_env = env.clone();
-    if let Some(pre) = rumoca_eval_runtime::eval::get_pre_value(target) {
+    if let Some(pre) = rumoca_eval_flat::eval::get_pre_value(target) {
         left_limit_env.set(target, clamp_finite(pre));
     }
     let target_base = state_base_name(target);
-    if let Some(pre) = rumoca_eval_runtime::eval::get_pre_value(&target_base) {
+    if let Some(pre) = rumoca_eval_flat::eval::get_pre_value(&target_base) {
         left_limit_env.set(&target_base, clamp_finite(pre));
     }
     clamp_finite(eval_expr::<f64>(solution, &left_limit_env))
@@ -69,6 +73,12 @@ pub fn eval_clock_edge_assignment(
         && subscripts.is_empty()
     {
         let key = dae::VarName::new(trigger_name.as_str());
+        if dae.discrete_valued.contains_key(&key) {
+            // Discrete-valued triggers (Boolean/Integer) use rising-edge semantics.
+        } else if rumoca_eval_flat::eval::infer_clock_timing_seconds(solution, env).is_some() {
+            // Numeric aliases such as Clock(period) should keep periodic timing semantics.
+            return Some(clamp_finite(eval_expr::<f64>(solution, env)));
+        }
         if dae.parameters.contains_key(&key) || dae.constants.contains_key(&key) {
             return Some(clamp_finite(eval_expr::<f64>(solution, env)));
         }
@@ -77,35 +87,46 @@ pub fn eval_clock_edge_assignment(
         return Some(clamp_finite(eval_expr::<f64>(solution, env)));
     }
 
-    let current = eval_expr::<f64>(trigger, env).to_bool();
+    let current = clock_bool(eval_expr::<f64>(trigger, env));
     let previous = match trigger {
         dae::Expression::VarRef { name, subscripts } => canonical_var_ref_key(name, subscripts)
-            .and_then(|key| rumoca_eval_runtime::eval::get_pre_value(&key))
-            .is_some_and(|value| value != 0.0),
+            .and_then(|key| rumoca_eval_flat::eval::get_pre_value(&key))
+            .is_some_and(clock_bool),
         _ => false,
     };
     Some(if current && !previous { 1.0 } else { 0.0 })
 }
 
 fn sampled_target_held_value(target: &str, value_expr: &dae::Expression, env: &VarEnv<f64>) -> f64 {
-    let held = rumoca_eval_runtime::eval::get_pre_value(target)
+    let held = rumoca_eval_flat::eval::get_pre_value(target)
         .or_else(|| env.vars.get(target).copied())
         .unwrap_or_else(|| clamp_finite(eval_expr::<f64>(value_expr, env)));
     clamp_finite(held)
 }
 
 fn eval_left_limit_value(expr: &dae::Expression, env: &VarEnv<f64>) -> f64 {
-    if let dae::Expression::VarRef { name, subscripts } = expr {
-        if name.as_str() == "time" && subscripts.is_empty() {
-            return clamp_finite(env.get("time"));
-        }
-        if let Some(key) = canonical_var_ref_key(name, subscripts)
-            && let Some(pre) = rumoca_eval_runtime::eval::get_pre_value(&key)
-        {
-            return clamp_finite(pre);
-        }
+    if let dae::Expression::VarRef { name, subscripts } = expr
+        && name.as_str() == "time"
+        && subscripts.is_empty()
+    {
+        return clamp_finite(env.get("time"));
     }
-    clamp_finite(eval_expr::<f64>(expr, env))
+
+    let mut left_limit_env = env.clone();
+    for (name, pre) in rumoca_eval_flat::eval::snapshot_pre_values() {
+        if name == "time" {
+            continue;
+        }
+        left_limit_env.set(name.as_str(), clamp_finite(pre));
+    }
+
+    if let dae::Expression::VarRef { name, subscripts } = expr
+        && let Some(key) = canonical_var_ref_key(name, subscripts)
+        && let Some(pre) = rumoca_eval_flat::eval::get_pre_value(&key)
+    {
+        return clamp_finite(pre);
+    }
+    clamp_finite(eval_expr::<f64>(expr, &left_limit_env))
 }
 
 pub fn eval_sample_clock_active(
@@ -113,9 +134,14 @@ pub fn eval_sample_clock_active(
     clock_expr: &dae::Expression,
     env: &VarEnv<f64>,
 ) -> bool {
-    eval_clock_edge_assignment(dae, clock_expr, env)
-        .map(|value| value != 0.0)
-        .unwrap_or_else(|| eval_expr::<f64>(clock_expr, env).to_bool())
+    if let dae::Expression::FunctionCall { name, .. } = clock_expr {
+        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+        if short == "Clock" {
+            return eval_clock_edge_assignment(dae, clock_expr, env).is_some_and(clock_bool);
+        }
+    }
+    eval_clock_edge_assignment(dae, clock_expr, env).is_some_and(clock_bool)
+        || clock_bool(eval_expr::<f64>(clock_expr, env))
 }
 
 pub fn is_clock_function_name(short: &str) -> bool {
@@ -140,6 +166,12 @@ fn eval_clocked_sample_assignment(
 
     let value_expr = &args[0];
     let clock_expr = &args[1];
+    // Disambiguate sample(value, clockExpr) from sample(start, interval):
+    // only treat the 2nd argument as a clock when it is an explicit clock
+    // constructor/derivation expression.
+    if !crate::runtime::clock::sample_clock_arg_is_explicit_clock(dae, clock_expr, env) {
+        return None;
+    }
 
     let clock_active = eval_sample_clock_active(dae, clock_expr, env);
     if clock_active {
@@ -383,7 +415,7 @@ fn apply_scalar_discrete_partition_equation_with_override(
             for (index, value) in values.iter_mut().enumerate() {
                 let key = format!("{target}[{}]", index + 1);
                 let base_fallback = base_target_hold_fallback(env, target, index);
-                *value = rumoca_eval_runtime::eval::get_pre_value(&key)
+                *value = rumoca_eval_flat::eval::get_pre_value(&key)
                     .or_else(|| env.vars.get(&key).copied())
                     .or(base_fallback)
                     .unwrap_or(*value);
@@ -397,12 +429,20 @@ fn apply_scalar_discrete_partition_equation_with_override(
         if let Some(first) = values.first().copied() {
             changed_any |= set_target_value(env, target, first);
         }
-        rumoca_eval_runtime::eval::set_array_entries(env, target, &dims, &values);
+        rumoca_eval_flat::eval::set_array_entries(env, target, &dims, &values);
         return changed_any;
     }
 
-    if crate::runtime::assignment::extract_alias_pair_from_equation(dae, eq).is_some() {
-        return false;
+    if let Some((lhs, rhs)) = crate::runtime::assignment::extract_alias_pair_from_equation(dae, eq)
+    {
+        let lhs_runtime_unknown = crate::runtime::assignment::is_runtime_unknown_name(dae, &lhs);
+        let rhs_runtime_unknown = crate::runtime::assignment::is_runtime_unknown_name(dae, &rhs);
+        // Alias-only equalities between runtime unknowns are resolved by alias
+        // propagation. Keep direct evaluation for parameter/constant sourced
+        // assignments (e.g. y = k) so discrete partitions materialize values.
+        if lhs_runtime_unknown && rhs_runtime_unknown {
+            return false;
+        }
     }
     let new_value =
         eval_override(eq, target, solution, env, implicit_clock_active).unwrap_or_else(|| {
@@ -556,7 +596,7 @@ pub fn apply_discrete_partition_updates_with_scalar_override(
         let mut explicit_updates: HashSet<String> = HashSet::new();
         let implicit_clock_active = discrete_clock_event_active(dae, env);
         env.set(
-            rumoca_eval_runtime::eval::IMPLICIT_CLOCK_ACTIVE_ENV_KEY,
+            rumoca_eval_flat::eval::IMPLICIT_CLOCK_ACTIVE_ENV_KEY,
             if implicit_clock_active { 1.0 } else { 0.0 },
         );
 
@@ -635,8 +675,8 @@ mod tests {
         let dae_model = dae::Dae::default();
         let mut env = VarEnv::<f64>::new();
         env.set("x", 5.0);
-        rumoca_eval_runtime::eval::clear_pre_values();
-        rumoca_eval_runtime::eval::set_pre_value("x", 4.0);
+        rumoca_eval_flat::eval::clear_pre_values();
+        rumoca_eval_flat::eval::set_pre_value("x", 4.0);
 
         let solution = dae::Expression::BuiltinCall {
             function: dae::BuiltinFunction::Sample,
@@ -645,7 +685,7 @@ mod tests {
         let value = eval_discrete_assignment_value(&dae_model, "y", &solution, &env, true);
         assert!((value - 4.0).abs() <= 1.0e-12);
 
-        rumoca_eval_runtime::eval::clear_pre_values();
+        rumoca_eval_flat::eval::clear_pre_values();
     }
 
     #[test]
@@ -654,8 +694,8 @@ mod tests {
         let mut env = VarEnv::<f64>::new();
         env.set("x", 2.0);
         env.set("y", 1.0);
-        rumoca_eval_runtime::eval::clear_pre_values();
-        rumoca_eval_runtime::eval::set_pre_value("y", 7.0);
+        rumoca_eval_flat::eval::clear_pre_values();
+        rumoca_eval_flat::eval::set_pre_value("y", 7.0);
 
         let solution = dae::Expression::FunctionCall {
             name: dae::VarName::new("previous"),
@@ -665,7 +705,7 @@ mod tests {
         let value = eval_discrete_assignment_value(&dae_model, "y", &solution, &env, false);
         assert!((value - 7.0).abs() <= 1.0e-12);
 
-        rumoca_eval_runtime::eval::clear_pre_values();
+        rumoca_eval_flat::eval::clear_pre_values();
     }
 
     #[test]
@@ -677,8 +717,8 @@ mod tests {
         );
         let mut env = VarEnv::<f64>::new();
         env.set("x", 2.0);
-        rumoca_eval_runtime::eval::clear_pre_values();
-        rumoca_eval_runtime::eval::set_pre_value("x", -5.0);
+        rumoca_eval_flat::eval::clear_pre_values();
+        rumoca_eval_flat::eval::set_pre_value("x", -5.0);
 
         let solution = dae::Expression::Binary {
             op: dae::OpBinary::Mul(Default::default()),
@@ -688,7 +728,7 @@ mod tests {
         let value = eval_discrete_assignment_value(&dae_model, "x", &solution, &env, true);
         assert!((value - 4.0).abs() <= 1.0e-12);
 
-        rumoca_eval_runtime::eval::clear_pre_values();
+        rumoca_eval_flat::eval::clear_pre_values();
     }
 
     #[test]
@@ -714,5 +754,62 @@ mod tests {
         );
         assert!(changed);
         assert!((env.vars.get("z").copied().unwrap_or(0.0) - 3.0).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn sample_start_interval_with_varrefs_is_not_treated_as_clocked_value_sample() {
+        let dae_model = dae::Dae::default();
+        let mut env = VarEnv::<f64>::new();
+        env.set("start", 0.3);
+        env.set("period", 0.3);
+
+        let solution = dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Sample,
+            args: vec![var("start"), var("period")],
+        };
+
+        env.set("time", 0.45);
+        let off_tick = eval_discrete_assignment_value(&dae_model, "y", &solution, &env, true);
+        assert!(
+            (off_tick - 0.0).abs() <= 1.0e-12,
+            "sample(start, period) must be event boolean between ticks, got {off_tick}"
+        );
+
+        env.set("time", 0.6);
+        let on_tick = eval_discrete_assignment_value(&dae_model, "y", &solution, &env, true);
+        assert!(
+            (on_tick - 1.0).abs() <= 1.0e-12,
+            "sample(start, period) must tick at t=start+n*period, got {on_tick}"
+        );
+    }
+
+    #[test]
+    fn discrete_partition_evaluates_parameter_to_discrete_assignment() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.parameters.insert(
+            dae::VarName::new("integerConstant.k"),
+            dae::Variable::new(dae::VarName::new("integerConstant.k")),
+        );
+        dae_model.discrete_valued.insert(
+            dae::VarName::new("integerConstant.y"),
+            dae::Variable::new(dae::VarName::new("integerConstant.y")),
+        );
+        dae_model.f_m.push(dae::Equation::explicit(
+            dae::VarName::new("integerConstant.y"),
+            var("integerConstant.k"),
+            rumoca_core::Span::DUMMY,
+            "integerConstant.y = integerConstant.k",
+        ));
+
+        let mut env = VarEnv::<f64>::new();
+        env.set("integerConstant.k", 1.0);
+        env.set("integerConstant.y", 0.0);
+
+        let changed = apply_discrete_partition_updates(&dae_model, &mut env);
+        assert!(
+            changed,
+            "parameter sourced assignment must update discrete target"
+        );
+        assert!((env.get("integerConstant.y") - 1.0).abs() <= 1.0e-12);
     }
 }

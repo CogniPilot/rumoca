@@ -14,6 +14,15 @@ pub enum StepUntilOutcome {
     Finished,
 }
 
+/// Minimal contract a solver backend implements to participate in Rumoca runtime orchestration.
+///
+/// Backends own solver-specific integration details and expose only:
+/// - time advancement to a stop time (`step_until`)
+/// - event update application (`apply_event_updates`)
+/// - current simulation time (`read_state`)
+///
+/// `run_with_runtime_schedule` drives this interface and applies Rumoca's shared
+/// event/time scheduling semantics independently of the concrete solver.
 pub trait SimulationBackend {
     type Error;
 

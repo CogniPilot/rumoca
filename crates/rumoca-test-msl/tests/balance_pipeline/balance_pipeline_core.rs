@@ -211,26 +211,27 @@ fn compile_chunk_with_model_budgets(
 }
 
 fn run_compile_chunk_progress_loop(
-    compile_in_flight_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    compile_done_rx: std::sync::mpsc::Receiver<()>,
     chunk_idx: usize,
     chunk_count: usize,
     chunk_models: usize,
 ) {
     let start = Instant::now();
-    while compile_in_flight_flag.load(Ordering::Relaxed) {
-        std::thread::sleep(std::time::Duration::from_secs(
+    loop {
+        match compile_done_rx.recv_timeout(std::time::Duration::from_secs(
             COMPILE_CHUNK_PROGRESS_INTERVAL_SECS,
-        ));
-        if !compile_in_flight_flag.load(Ordering::Relaxed) {
-            return;
+        )) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!(
+                    "    chunk {}/{} compile still running after {:.1}s ({} models)",
+                    chunk_idx,
+                    chunk_count,
+                    start.elapsed().as_secs_f64(),
+                    chunk_models
+                );
+            }
         }
-        eprintln!(
-            "    chunk {}/{} compile still running after {:.1}s ({} models)",
-            chunk_idx,
-            chunk_count,
-            start.elapsed().as_secs_f64(),
-            chunk_models
-        );
     }
 }
 
@@ -265,14 +266,13 @@ fn run_chunked_compile_and_render(
             chunk_count,
             names_chunk.len()
         );
-        let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);
+        let (compile_done_tx, compile_done_rx) = std::sync::mpsc::channel();
         let chunk_idx_for_log = chunk_idx + 1;
         let chunk_count_for_log = chunk_count;
         let chunk_models_for_log = names_chunk.len();
         let compile_progress_logger = std::thread::spawn(move || {
             run_compile_chunk_progress_loop(
-                compile_in_flight_flag,
+                compile_done_rx,
                 chunk_idx_for_log,
                 chunk_count_for_log,
                 chunk_models_for_log,
@@ -291,7 +291,7 @@ fn run_chunked_compile_and_render(
             worker_threads,
             model_budget_secs,
         );
-        compile_in_flight.store(false, Ordering::Relaxed);
+        let _ = compile_done_tx.send(());
         let _ = compile_progress_logger.join();
         let chunk_compile_seconds = chunk_compile_start.elapsed().as_secs_f64();
         compile_only_seconds += chunk_compile_seconds;

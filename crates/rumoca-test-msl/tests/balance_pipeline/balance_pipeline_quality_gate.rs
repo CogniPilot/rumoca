@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 // =============================================================================
 // MSL quality gate (compile/balance strict + simulation tolerant gate)
 // =============================================================================
@@ -17,11 +20,14 @@ pub(super) const COMPILE_RATE_GATE_TOLERANCE: f64 = 0.0;
 pub(super) const BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Initial-balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const INITIAL_BALANCE_RATE_GATE_TOLERANCE: f64 = 0.0;
-/// Allowed absolute drop in high-agreement trace count.
-pub(super) const TRACE_HIGH_AGREEMENT_TOLERANCE_ABS: usize = 4;
-/// Additional allowed relative drop in high-agreement trace count.
-// Temporary merge-unblock setting: 100% allowed drop means this check is non-blocking.
-pub(super) const TRACE_HIGH_AGREEMENT_TOLERANCE_REL: f64 = 1.00;
+/// Allowed drop in trace high-agreement model percentage (absolute percentage points).
+pub(super) const TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
+/// Allowed drop in trace near-agreement model percentage (absolute percentage points).
+pub(super) const TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
+/// Allowed increase in trace deviation model percentage (absolute percentage points).
+pub(super) const TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
+/// Hard guard for models that contain any deviation channel (absolute percentage points).
+pub(super) const TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
 pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.20;
 /// OMC process timeout budget for simulation reference generation.
@@ -57,10 +63,51 @@ pub(super) struct MslTraceAccuracyStatsBaseline {
     missing_trace_models: usize,
     skipped_models: usize,
     agreement_high: usize,
+    #[serde(default)]
+    agreement_high_percent: Option<f64>,
+    #[serde(default, alias = "agreement_near")]
     agreement_minor: usize,
+    #[serde(default, alias = "agreement_near_percent")]
+    agreement_minor_percent: Option<f64>,
     agreement_deviation: usize,
-    deviation_score: MslDistributionStats,
-    normalized_rmse: MslDistributionStats,
+    #[serde(default)]
+    agreement_deviation_percent: Option<f64>,
+    #[serde(default)]
+    total_channels_compared: Option<usize>,
+    #[serde(default)]
+    bad_channels_total: Option<usize>,
+    #[serde(default)]
+    severe_channels_total: Option<usize>,
+    #[serde(default)]
+    bad_channels_percent: Option<f64>,
+    #[serde(default)]
+    severe_channels_percent: Option<f64>,
+    #[serde(default)]
+    violation_mass_total: Option<f64>,
+    #[serde(default)]
+    violation_mass_mean_per_model: Option<f64>,
+    #[serde(default)]
+    violation_mass_mean_per_channel: Option<f64>,
+    #[serde(default)]
+    models_with_bad_channel: Option<usize>,
+    #[serde(default)]
+    models_with_severe_channel: Option<usize>,
+    #[serde(default)]
+    models_with_any_channel_deviation: Option<usize>,
+    #[serde(default)]
+    models_with_any_channel_deviation_percent: Option<f64>,
+    #[serde(default)]
+    max_model_channel_deviation_percent: Option<f64>,
+    #[serde(default)]
+    bounded_normalized_l1: Option<MslDistributionStats>,
+    #[serde(default)]
+    mean_model_mean_channel_bounded_normalized_l1: Option<f64>,
+    #[serde(default)]
+    max_model_max_channel_bounded_normalized_l1: Option<f64>,
+    #[serde(default)]
+    model_mean_channel_bounded_normalized_l1: Option<MslDistributionStats>,
+    #[serde(default)]
+    model_max_channel_bounded_normalized_l1: Option<MslDistributionStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,15 +127,26 @@ pub(super) struct MslQualityBaseline {
     sim_attempted: usize,
     sim_ok: usize,
     sim_success_rate: f64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_context: Option<MslParityRuntimeContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
     #[serde(default)]
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct MslParityRuntimeContext {
+    #[serde(default)]
+    workers_used: Option<usize>,
+    #[serde(default)]
+    omc_threads: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct MslParityGateInput {
     total_models: Option<usize>,
+    runtime_context: Option<MslParityRuntimeContext>,
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
 }
@@ -221,6 +279,131 @@ pub(super) fn parse_distribution_stats(root: &serde_json::Value) -> Option<MslDi
     })
 }
 
+fn parse_distribution_stats_with_prefix(
+    root: &serde_json::Value,
+    prefix: &str,
+    sample_count: usize,
+) -> Option<MslDistributionStats> {
+    Some(MslDistributionStats {
+        sample_count,
+        min: json_f64_field(root, &format!("min_{prefix}"))?,
+        median: json_f64_field(root, &format!("median_{prefix}"))?,
+        mean: json_f64_field(root, &format!("mean_{prefix}"))?,
+        max: json_f64_field(root, &format!("max_{prefix}"))?,
+    })
+}
+
+fn parse_total_models(payload: &serde_json::Value) -> Option<usize> {
+    json_usize_field(payload, "total_models").or_else(|| {
+        payload
+            .get("models")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len)
+    })
+}
+
+fn parse_runtime_context(payload: &serde_json::Value) -> Option<MslParityRuntimeContext> {
+    let timing = payload.get("timing")?;
+    let context = MslParityRuntimeContext {
+        workers_used: json_usize_field(timing, "workers_used"),
+        omc_threads: json_usize_field(timing, "omc_threads"),
+    };
+    (context.workers_used.is_some() || context.omc_threads.is_some()).then_some(context)
+}
+
+fn parse_runtime_ratio_stats(payload: &serde_json::Value) -> Option<MslRuntimeRatioStatsBaseline> {
+    let stats = payload.pointer("/runtime_comparison/ratio_stats")?;
+    Some(MslRuntimeRatioStatsBaseline {
+        system_ratio_both_success: parse_distribution_stats(
+            stats.get("system_ratio_both_success")?,
+        )?,
+        wall_ratio_both_success: parse_distribution_stats(stats.get("wall_ratio_both_success")?)?,
+    })
+}
+
+fn parse_trace_bounded_normalized_l1(
+    trace: &serde_json::Value,
+    models_compared: usize,
+) -> Option<MslDistributionStats> {
+    parse_distribution_stats_with_prefix(
+        trace,
+        "model_score_bounded_normalized_l1",
+        models_compared,
+    )
+    .or_else(|| {
+        Some(MslDistributionStats {
+            sample_count: models_compared,
+            min: json_f64_field(trace, "min_model_bounded_normalized_l1")?,
+            median: json_f64_field(trace, "median_model_bounded_normalized_l1")?,
+            mean: json_f64_field(trace, "mean_model_bounded_normalized_l1")?,
+            max: json_f64_field(trace, "max_model_bounded_normalized_l1")?,
+        })
+    })
+}
+
+fn parse_trace_accuracy_stats(
+    payload: &serde_json::Value,
+) -> Option<MslTraceAccuracyStatsBaseline> {
+    let trace = payload.pointer("/trace_comparison")?;
+    let models_compared = json_usize_field(trace, "models_compared")?;
+    let bounded_normalized_l1 = parse_trace_bounded_normalized_l1(trace, models_compared);
+    Some(MslTraceAccuracyStatsBaseline {
+        models_compared,
+        missing_trace_models: json_usize_field(trace, "missing_trace_models")?,
+        skipped_models: json_usize_field(trace, "skipped_models")?,
+        agreement_high: json_usize_field(trace, "agreement_high")?,
+        agreement_high_percent: json_f64_field(trace, "agreement_high_percent"),
+        agreement_minor: json_usize_field(trace, "agreement_near")
+            .or_else(|| json_usize_field(trace, "agreement_minor"))?,
+        agreement_minor_percent: json_f64_field(trace, "agreement_near_percent")
+            .or_else(|| json_f64_field(trace, "agreement_minor_percent")),
+        agreement_deviation: json_usize_field(trace, "agreement_deviation")?,
+        agreement_deviation_percent: json_f64_field(trace, "agreement_deviation_percent"),
+        total_channels_compared: json_usize_field(trace, "total_channels_compared"),
+        bad_channels_total: json_usize_field(trace, "bad_channels_total"),
+        severe_channels_total: json_usize_field(trace, "severe_channels_total"),
+        bad_channels_percent: json_f64_field(trace, "bad_channels_percent"),
+        severe_channels_percent: json_f64_field(trace, "severe_channels_percent"),
+        violation_mass_total: json_f64_field(trace, "violation_mass_total"),
+        violation_mass_mean_per_model: json_f64_field(trace, "violation_mass_mean_per_model"),
+        violation_mass_mean_per_channel: json_f64_field(trace, "violation_mass_mean_per_channel"),
+        models_with_bad_channel: json_usize_field(trace, "models_with_bad_channel"),
+        models_with_severe_channel: json_usize_field(trace, "models_with_severe_channel"),
+        models_with_any_channel_deviation: json_usize_field(
+            trace,
+            "models_with_any_channel_deviation",
+        ),
+        models_with_any_channel_deviation_percent: json_f64_field(
+            trace,
+            "models_with_any_channel_deviation_percent",
+        ),
+        max_model_channel_deviation_percent: json_f64_field(
+            trace,
+            "max_model_channel_deviation_percent",
+        ),
+        bounded_normalized_l1,
+        mean_model_mean_channel_bounded_normalized_l1: json_f64_field(
+            trace,
+            "mean_model_mean_channel_bounded_normalized_l1",
+        ),
+        max_model_max_channel_bounded_normalized_l1: json_f64_field(
+            trace,
+            "max_model_max_channel_bounded_normalized_l1",
+        )
+        .or_else(|| json_f64_field(trace, "global_max_channel_bounded_normalized_l1")),
+        model_mean_channel_bounded_normalized_l1: parse_distribution_stats_with_prefix(
+            trace,
+            "model_mean_channel_bounded_normalized_l1",
+            models_compared,
+        ),
+        model_max_channel_bounded_normalized_l1: parse_distribution_stats_with_prefix(
+            trace,
+            "model_max_channel_bounded_normalized_l1",
+            models_compared,
+        ),
+    })
+}
+
 pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGateInput> {
     let file = File::open(path)?;
     let payload: serde_json::Value = serde_json::from_reader(file).map_err(|error| {
@@ -230,57 +413,11 @@ pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGat
         ))
     })?;
 
-    let total_models = json_usize_field(&payload, "total_models").or_else(|| {
-        payload
-            .get("models")
-            .and_then(serde_json::Value::as_object)
-            .map(serde_json::Map::len)
-    });
-
-    let runtime_ratio_stats =
-        payload
-            .pointer("/runtime_comparison/ratio_stats")
-            .and_then(|stats| {
-                Some(MslRuntimeRatioStatsBaseline {
-                    system_ratio_both_success: parse_distribution_stats(
-                        stats.get("system_ratio_both_success")?,
-                    )?,
-                    wall_ratio_both_success: parse_distribution_stats(
-                        stats.get("wall_ratio_both_success")?,
-                    )?,
-                })
-            });
-
-    let trace_accuracy_stats = payload.pointer("/trace_comparison").and_then(|trace| {
-        let models_compared = json_usize_field(trace, "models_compared")?;
-        Some(MslTraceAccuracyStatsBaseline {
-            models_compared,
-            missing_trace_models: json_usize_field(trace, "missing_trace_models")?,
-            skipped_models: json_usize_field(trace, "skipped_models")?,
-            agreement_high: json_usize_field(trace, "agreement_high")?,
-            agreement_minor: json_usize_field(trace, "agreement_minor")?,
-            agreement_deviation: json_usize_field(trace, "agreement_deviation")?,
-            deviation_score: MslDistributionStats {
-                sample_count: models_compared,
-                min: json_f64_field(trace, "min_model_deviation_score")?,
-                median: json_f64_field(trace, "median_model_deviation_score")?,
-                mean: json_f64_field(trace, "mean_model_deviation_score")?,
-                max: json_f64_field(trace, "max_model_deviation_score")?,
-            },
-            normalized_rmse: MslDistributionStats {
-                sample_count: models_compared,
-                min: json_f64_field(trace, "min_model_normalized_rmse")?,
-                median: json_f64_field(trace, "median_model_normalized_rmse")?,
-                mean: json_f64_field(trace, "mean_model_normalized_rmse")?,
-                max: json_f64_field(trace, "max_model_normalized_rmse")?,
-            },
-        })
-    });
-
     Ok(MslParityGateInput {
-        total_models,
-        runtime_ratio_stats,
-        trace_accuracy_stats,
+        total_models: parse_total_models(&payload),
+        runtime_context: parse_runtime_context(&payload),
+        runtime_ratio_stats: parse_runtime_ratio_stats(&payload),
+        trace_accuracy_stats: parse_trace_accuracy_stats(&payload),
     })
 }
 
@@ -321,6 +458,12 @@ pub(super) fn load_current_msl_parity_gate_input_required(
     if trace_stats.models_compared == 0 {
         return Err(io::Error::other(format!(
             "OMC parity file '{}' has models_compared=0 (no OMC/Rumoca traces were compared)",
+            path.display()
+        )));
+    }
+    if trace_model_bucket_percentages(trace_stats).is_none() {
+        return Err(io::Error::other(format!(
+            "OMC parity file '{}' is missing trace model bucket percentages",
             path.display()
         )));
     }
@@ -951,7 +1094,10 @@ pub(super) fn current_msl_quality_baseline(
         sim_ok: gate_input.sim_ok,
         sim_success_rate: sim_success_rate(gate_input.sim_ok, gate_input.sim_attempted)
             .unwrap_or(0.0),
-        runtime_ratio_stats: parity_input.and_then(|parity| parity.runtime_ratio_stats.clone()),
+        // Runtime speed depends strongly on machine topology/workers; keep it informational
+        // in parity output but do not commit it into quality baselines.
+        runtime_context: None,
+        runtime_ratio_stats: None,
         trace_accuracy_stats: parity_input.and_then(|parity| parity.trace_accuracy_stats.clone()),
     }
 }
@@ -1003,9 +1149,6 @@ pub(super) fn msl_quality_context_mismatch_reason(
             baseline.sim_timeout_seconds, SIM_TIMEOUT_SECS
         ));
     }
-    if baseline.runtime_ratio_stats.is_none() {
-        return Some("runtime_ratio_stats missing in baseline".to_string());
-    }
     if baseline.trace_accuracy_stats.is_none() {
         return Some("trace_accuracy_stats missing in baseline".to_string());
     }
@@ -1026,7 +1169,6 @@ pub(super) fn msl_quality_regression_reasons(
     let mut reasons = Vec::new();
     push_compile_balance_regression_reasons(&mut reasons, gate_input, baseline);
     push_sim_rate_regression_reason(&mut reasons, gate_input, baseline);
-    push_runtime_ratio_regression_reasons(&mut reasons, baseline, parity_input);
     push_trace_regression_reasons(&mut reasons, baseline, parity_input);
     reasons
 }
@@ -1149,18 +1291,72 @@ pub(super) fn push_runtime_ratio_regression_reasons(
         return;
     };
 
-    let allowed_wall_median = baseline_runtime.wall_ratio_both_success.median
+    let allowed_system_median = baseline_runtime.system_ratio_both_success.median
         * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
-    if current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON < allowed_wall_median
+    if current_runtime.system_ratio_both_success.median + SIM_RATE_GATE_EPSILON
+        < allowed_system_median
     {
         reasons.push(format!(
-            "runtime wall speedup median regressed: current={:.6e} < floor={:.6e} (baseline={:.6e}, tolerance={:.1}%)",
-            current_runtime.wall_ratio_both_success.median,
-            allowed_wall_median,
-            baseline_runtime.wall_ratio_both_success.median,
+            "runtime system speedup median regressed: current={:.6e} < floor={:.6e} (baseline={:.6e}, tolerance={:.1}%)",
+            current_runtime.system_ratio_both_success.median,
+            allowed_system_median,
+            baseline_runtime.system_ratio_both_success.median,
             RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0
         ));
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TraceBucketPercentages {
+    high: f64,
+    near: f64,
+    deviation: f64,
+}
+
+fn trace_count_to_percent(count: usize, total: usize) -> Option<f64> {
+    if total == 0 {
+        return None;
+    }
+    Some(count as f64 * 100.0 / total as f64)
+}
+
+fn trace_model_bucket_percentages(
+    stats: &MslTraceAccuracyStatsBaseline,
+) -> Option<TraceBucketPercentages> {
+    let total = stats.models_compared;
+    Some(TraceBucketPercentages {
+        high: stats
+            .agreement_high_percent
+            .or_else(|| trace_count_to_percent(stats.agreement_high, total))?,
+        near: stats
+            .agreement_minor_percent
+            .or_else(|| trace_count_to_percent(stats.agreement_minor, total))?,
+        deviation: stats
+            .agreement_deviation_percent
+            .or_else(|| trace_count_to_percent(stats.agreement_deviation, total))?,
+    })
+}
+
+fn trace_models_with_any_channel_deviation_percent(
+    stats: &MslTraceAccuracyStatsBaseline,
+) -> Option<f64> {
+    stats.models_with_any_channel_deviation_percent.or_else(|| {
+        stats
+            .models_with_any_channel_deviation
+            .and_then(|count| trace_count_to_percent(count, stats.models_compared))
+    })
+}
+
+fn trace_bad_channels_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<usize> {
+    stats.bad_channels_total
+}
+
+fn trace_severe_channels_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<usize> {
+    stats.severe_channels_total
+}
+
+fn trace_violation_mass_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<f64> {
+    stats.violation_mass_total
 }
 
 pub(super) fn push_trace_regression_reasons(
@@ -1172,18 +1368,90 @@ pub(super) fn push_trace_regression_reasons(
         parity_input.and_then(|parity| parity.trace_accuracy_stats.as_ref()),
         baseline.trace_accuracy_stats.as_ref(),
     ) {
-        let rel_tolerance_drop = (baseline_trace.agreement_high as f64
-            * TRACE_HIGH_AGREEMENT_TOLERANCE_REL)
-            .ceil() as usize;
-        let allowed_drop = TRACE_HIGH_AGREEMENT_TOLERANCE_ABS.max(rel_tolerance_drop);
-        if current_trace.agreement_high + allowed_drop < baseline_trace.agreement_high {
+        if let (Some(current), Some(baseline_pct)) = (
+            trace_model_bucket_percentages(current_trace),
+            trace_model_bucket_percentages(baseline_trace),
+        ) {
+            let high_floor = (baseline_pct.high - TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP).max(0.0);
+            if current.high + SIM_RATE_GATE_EPSILON < high_floor {
+                reasons.push(format!(
+                    "trace high-agreement model share regressed: current={:.2}% < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
+                    current.high,
+                    high_floor,
+                    baseline_pct.high,
+                    TRACE_HIGH_PERCENT_DROP_TOLERANCE_PP
+                ));
+            }
+
+            let near_floor = (baseline_pct.near - TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP).max(0.0);
+            if current.near + SIM_RATE_GATE_EPSILON < near_floor {
+                reasons.push(format!(
+                    "trace near-agreement model share regressed: current={:.2}% < floor={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
+                    current.near,
+                    near_floor,
+                    baseline_pct.near,
+                    TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP
+                ));
+            }
+
+            let deviation_ceiling =
+                (baseline_pct.deviation + TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP).min(100.0);
+            if current.deviation > deviation_ceiling + SIM_RATE_GATE_EPSILON {
+                reasons.push(format!(
+                    "trace deviation model share regressed: current={:.2}% > ceiling={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
+                    current.deviation,
+                    deviation_ceiling,
+                    baseline_pct.deviation,
+                    TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP
+                ));
+            }
+        }
+
+        if let (Some(current_any), Some(baseline_any)) = (
+            trace_models_with_any_channel_deviation_percent(current_trace),
+            trace_models_with_any_channel_deviation_percent(baseline_trace),
+        ) {
+            let any_ceiling = (baseline_any
+                + TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP)
+                .min(100.0);
+            if current_any > any_ceiling + SIM_RATE_GATE_EPSILON {
+                reasons.push(format!(
+                    "trace models-with-any-bad-channel share regressed: current={:.2}% > ceiling={:.2}% (baseline={:.2}%, tolerance={:.2}pp)",
+                    current_any,
+                    any_ceiling,
+                    baseline_any,
+                    TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP
+                ));
+            }
+        }
+
+        if let (Some(current_bad), Some(baseline_bad)) = (
+            trace_bad_channels_total(current_trace),
+            trace_bad_channels_total(baseline_trace),
+        ) && current_bad > baseline_bad
+        {
             reasons.push(format!(
-                "trace agreement_high regressed: current={} < baseline={} (allowed_drop={}, abs_tolerance={}, rel_tolerance={:.1}%)",
-                current_trace.agreement_high,
-                baseline_trace.agreement_high,
-                allowed_drop,
-                TRACE_HIGH_AGREEMENT_TOLERANCE_ABS,
-                TRACE_HIGH_AGREEMENT_TOLERANCE_REL * 100.0
+                "trace bad channel count regressed: current={} > baseline={}",
+                current_bad, baseline_bad
+            ));
+        }
+
+        if let (Some(current_severe), Some(baseline_severe)) = (
+            trace_severe_channels_total(current_trace),
+            trace_severe_channels_total(baseline_trace),
+        ) && current_severe > baseline_severe
+        {
+            reasons.push(format!(
+                "trace severe channel count regressed: current={} > baseline={}",
+                current_severe, baseline_severe
+            ));
+        }
+
+        if current_trace.models_compared + 1 < baseline_trace.models_compared {
+            reasons.push(format!(
+                "trace model coverage regressed: current models_compared={} < baseline={} (allowed_drop=1)",
+                current_trace.models_compared,
+                baseline_trace.models_compared
             ));
         }
     }
@@ -1334,13 +1602,57 @@ pub(super) fn print_trace_gate_status(
         parity_input.and_then(|parity| parity.trace_accuracy_stats.as_ref()),
         baseline.trace_accuracy_stats.as_ref(),
     ) {
+        let current_pct =
+            trace_model_bucket_percentages(current_trace).unwrap_or(TraceBucketPercentages {
+                high: 0.0,
+                near: 0.0,
+                deviation: 0.0,
+            });
+        let baseline_pct =
+            trace_model_bucket_percentages(baseline_trace).unwrap_or(TraceBucketPercentages {
+                high: 0.0,
+                near: 0.0,
+                deviation: 0.0,
+            });
+        let current_any =
+            trace_models_with_any_channel_deviation_percent(current_trace).unwrap_or(0.0);
+        let baseline_any =
+            trace_models_with_any_channel_deviation_percent(baseline_trace).unwrap_or(0.0);
+        println!("MSL trace gate: PASS with baseline:");
         println!(
-            "MSL trace gate: PASS agreement_high={} (baseline={}, abs_tolerance={}, rel_tolerance={:.1}%).",
-            current_trace.agreement_high,
-            baseline_trace.agreement_high,
-            TRACE_HIGH_AGREEMENT_TOLERANCE_ABS,
-            TRACE_HIGH_AGREEMENT_TOLERANCE_REL * 100.0
+            "  high={:.2}% (baseline={:.2}%), near={:.2}% (baseline={:.2}%), deviation={:.2}% (baseline={:.2}%)",
+            current_pct.high,
+            baseline_pct.high,
+            current_pct.near,
+            baseline_pct.near,
+            current_pct.deviation,
+            baseline_pct.deviation,
         );
+        println!(
+            "  models_with_any_bad_channel={:.2}% (baseline={:.2}%), models_compared={} (baseline={})",
+            current_any,
+            baseline_any,
+            current_trace.models_compared,
+            baseline_trace.models_compared
+        );
+        if let (Some(current_bad), Some(baseline_bad)) = (
+            trace_bad_channels_total(current_trace),
+            trace_bad_channels_total(baseline_trace),
+        ) {
+            let current_severe = trace_severe_channels_total(current_trace).unwrap_or(0);
+            let baseline_severe = trace_severe_channels_total(baseline_trace).unwrap_or(0);
+            let current_mass = trace_violation_mass_total(current_trace).unwrap_or(0.0);
+            let baseline_mass = trace_violation_mass_total(baseline_trace).unwrap_or(0.0);
+            println!(
+                "  bad_channels={} (baseline={}), severe_channels={} (baseline={}), violation_mass_total={:.6e} (baseline={:.6e})",
+                current_bad,
+                baseline_bad,
+                current_severe,
+                baseline_severe,
+                current_mass,
+                baseline_mass
+            );
+        }
         return;
     }
     if baseline.trace_accuracy_stats.is_some() {
@@ -1351,282 +1663,46 @@ pub(super) fn print_trace_gate_status(
     }
 }
 
+fn fmt_opt_usize(value: Option<usize>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
 pub(super) fn print_runtime_ratio_status(
     baseline: &MslQualityBaseline,
     parity_input: Option<&MslParityGateInput>,
 ) {
-    if let (Some(current_runtime), Some(baseline_runtime)) = (
-        parity_input.and_then(|parity| parity.runtime_ratio_stats.as_ref()),
-        baseline.runtime_ratio_stats.as_ref(),
-    ) {
+    let Some(current_runtime) = parity_input.and_then(|parity| parity.runtime_ratio_stats.as_ref())
+    else {
+        return;
+    };
+
+    let current_workers = parity_input
+        .and_then(|parity| parity.runtime_context.as_ref())
+        .and_then(|context| context.workers_used);
+    let current_omc_threads = parity_input
+        .and_then(|parity| parity.runtime_context.as_ref())
+        .and_then(|context| context.omc_threads);
+
+    if let Some(baseline_runtime) = baseline.runtime_ratio_stats.as_ref() {
         println!(
-            "MSL runtime gate: PASS speedup medians (omc/rumoca, >1 means Rumoca faster): wall current={:.3e} (baseline={:.3e}), system current={:.3e} (baseline={:.3e}), tolerance={:.1}% drop.",
-            current_runtime.wall_ratio_both_success.median,
-            baseline_runtime.wall_ratio_both_success.median,
+            "MSL speed metrics (informational only, not gated): system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}), workers={}, omc_threads={}.",
             current_runtime.system_ratio_both_success.median,
             baseline_runtime.system_ratio_both_success.median,
-            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0
+            current_runtime.wall_ratio_both_success.median,
+            baseline_runtime.wall_ratio_both_success.median,
+            fmt_opt_usize(current_workers),
+            fmt_opt_usize(current_omc_threads)
         );
         return;
     }
-    if baseline.runtime_ratio_stats.is_some() {
-        println!(
-            "MSL runtime gate: skipped (missing runtime ratio stats in {}).",
-            omc_simulation_reference_path().display()
-        );
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::Value;
-    use serde_json::json;
-    use std::path::Path;
-    use std::path::PathBuf;
-    use tempfile::tempdir;
-
-    fn assert_distribution_parsed(input: Value, expected: MslDistributionStats) {
-        let stats = parse_distribution_stats(&input).expect("expected distribution stats");
-        assert_eq!(stats.sample_count, expected.sample_count);
-        assert_eq!(stats.min, expected.min);
-        assert_eq!(stats.median, expected.median);
-        assert_eq!(stats.mean, expected.mean);
-        assert_eq!(stats.max, expected.max);
-    }
-
-    #[test]
-    fn parse_distribution_stats_accepts_supported_field_sets() {
-        let cases = vec![
-            (
-                json!({
-                    "sample_count": 3,
-                    "min": 1.0,
-                    "median": 2.0,
-                    "mean": 2.5,
-                    "max": 4.0
-                }),
-                MslDistributionStats {
-                    sample_count: 3,
-                    min: 1.0,
-                    median: 2.0,
-                    mean: 2.5,
-                    max: 4.0,
-                },
-            ),
-            (
-                json!({
-                    "sample_count": 4,
-                    "min_ratio": 0.5,
-                    "median_ratio": 1.2,
-                    "mean_ratio": 1.4,
-                    "max_ratio": 2.5
-                }),
-                MslDistributionStats {
-                    sample_count: 4,
-                    min: 0.5,
-                    median: 1.2,
-                    mean: 1.4,
-                    max: 2.5,
-                },
-            ),
-        ];
-        for (input, expected) in cases {
-            assert_distribution_parsed(input, expected);
-        }
-    }
-
-    #[test]
-    fn runtime_ratio_regression_reason_triggers_on_large_drop() {
-        let baseline = MslQualityBaseline {
-            git_commit: "baseline".to_string(),
-            msl_version: "v4.1.0".to_string(),
-            sim_timeout_seconds: 10.0,
-            simulatable_attempted: 10,
-            compiled_models: 10,
-            balanced_models: 10,
-            unbalanced_models: 0,
-            partial_models: 0,
-            balance_denominator: 10,
-            initial_balanced_models: 10,
-            initial_unbalanced_models: 0,
-            sim_target_models: 10,
-            sim_attempted: 10,
-            sim_ok: 8,
-            sim_success_rate: 0.8,
-            runtime_ratio_stats: Some(MslRuntimeRatioStatsBaseline {
-                system_ratio_both_success: MslDistributionStats {
-                    sample_count: 8,
-                    min: 0.9,
-                    median: 2.0,
-                    mean: 2.1,
-                    max: 3.0,
-                },
-                wall_ratio_both_success: MslDistributionStats {
-                    sample_count: 8,
-                    min: 0.8,
-                    median: 1.5,
-                    mean: 1.6,
-                    max: 2.6,
-                },
-            }),
-            trace_accuracy_stats: None,
-        };
-        let parity = MslParityGateInput {
-            total_models: Some(10),
-            runtime_ratio_stats: Some(MslRuntimeRatioStatsBaseline {
-                system_ratio_both_success: MslDistributionStats {
-                    sample_count: 8,
-                    min: 0.4,
-                    median: 1.0,
-                    mean: 1.1,
-                    max: 1.8,
-                },
-                wall_ratio_both_success: MslDistributionStats {
-                    sample_count: 8,
-                    min: 0.3,
-                    median: 1.0,
-                    mean: 1.1,
-                    max: 1.7,
-                },
-            }),
-            trace_accuracy_stats: None,
-        };
-
-        let mut reasons = Vec::new();
-        push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
-        assert_eq!(reasons.len(), 1);
-        assert!(
-            reasons
-                .iter()
-                .any(|reason| reason.contains("runtime wall speedup median"))
-        );
-    }
-
-    #[test]
-    fn simulation_parity_cache_requires_runtime_and_trace_metrics() {
-        fn write_payload(path: &Path, payload: &Value) {
-            std::fs::write(
-                path,
-                serde_json::to_vec(payload).expect("serialize payload"),
-            )
-            .expect("write payload");
-        }
-        fn assert_cache_metric_check(path: &Path, payload: Value, expected: bool) {
-            write_payload(path, &payload);
-            let actual = simulation_parity_cache_has_required_metrics(path)
-                .expect("check parity metrics payload");
-            assert_eq!(actual, expected);
-        }
-
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("omc_simulation_reference.json");
-
-        let missing = json!({
-            "runtime_comparison": { "ratio_stats": {
-                "system_ratio_both_success": null,
-                "wall_ratio_both_success": null
-            }},
-            "trace_comparison": { "models_compared": 0 }
-        });
-        assert_cache_metric_check(&path, missing, false);
-
-        let valid = json!({
-            "total_models": 7,
-            "runtime_comparison": { "ratio_stats": {
-                "system_ratio_both_success": {
-                    "sample_count": 5,
-                    "min_ratio": 0.5,
-                    "median_ratio": 0.9,
-                    "mean_ratio": 1.0,
-                    "max_ratio": 1.3
-                },
-                "wall_ratio_both_success": {
-                    "sample_count": 5,
-                    "min_ratio": 0.4,
-                    "median_ratio": 0.8,
-                    "mean_ratio": 0.9,
-                    "max_ratio": 1.4
-                }
-            }},
-            "trace_comparison": {
-                "models_compared": 7,
-                "missing_trace_models": 0,
-                "skipped_models": 0,
-                "agreement_high": 5,
-                "agreement_minor": 1,
-                "agreement_deviation": 1,
-                "min_model_deviation_score": 0.01,
-                "median_model_deviation_score": 0.02,
-                "mean_model_deviation_score": 0.03,
-                "max_model_deviation_score": 0.08,
-                "min_model_normalized_rmse": 0.01,
-                "median_model_normalized_rmse": 0.02,
-                "mean_model_normalized_rmse": 0.03,
-                "max_model_normalized_rmse": 0.08
-            }
-        });
-        assert_cache_metric_check(&path, valid, true);
-    }
-
-    #[test]
-    fn parity_total_models_guard_checks_stale_and_matching_counts() {
-        let path = PathBuf::from("/tmp/omc_simulation_reference.json");
-        let stale = MslParityGateInput {
-            total_models: Some(1),
-            runtime_ratio_stats: None,
-            trace_accuracy_stats: None,
-        };
-        let err =
-            validate_parity_total_models(&path, &stale, 180).expect_err("must fail stale count");
-        assert!(
-            err.to_string().contains("is stale"),
-            "unexpected error: {err}"
-        );
-        let matching = MslParityGateInput {
-            total_models: Some(180),
-            runtime_ratio_stats: None,
-            trace_accuracy_stats: None,
-        };
-        validate_parity_total_models(&path, &matching, 180).expect("matching count should pass");
-    }
-
-    #[test]
-    fn parity_target_set_cache_key_is_order_insensitive() {
-        let lhs = parity_target_set_cache_key(
-            &["B".to_string(), "A".to_string()],
-            "v4.1.0",
-            "OpenModelica 1.26.1",
-        );
-        let rhs = parity_target_set_cache_key(
-            &["A".to_string(), "B".to_string()],
-            "4.1.0",
-            "OpenModelica 1.26.1",
-        );
-        assert_eq!(lhs, rhs, "cache key should ignore target order");
-    }
-
-    #[test]
-    fn parity_target_set_cache_key_changes_with_models_or_versions() {
-        let base = parity_target_set_cache_key(
-            &["A".to_string(), "B".to_string()],
-            "4.1.0",
-            "OpenModelica 1.26.1",
-        );
-        let diff_models =
-            parity_target_set_cache_key(&["A".to_string()], "4.1.0", "OpenModelica 1.26.1");
-        let diff_msl = parity_target_set_cache_key(
-            &["A".to_string(), "B".to_string()],
-            "4.2.0",
-            "OpenModelica 1.26.1",
-        );
-        let diff_omc = parity_target_set_cache_key(
-            &["A".to_string(), "B".to_string()],
-            "4.1.0",
-            "OpenModelica 1.27.0",
-        );
-        assert_ne!(base, diff_models);
-        assert_ne!(base, diff_msl);
-        assert_ne!(base, diff_omc);
-    }
+    println!(
+        "MSL speed metrics (informational only, not gated): system_median={:.3e}, wall_median={:.3e}, workers={}, omc_threads={}.",
+        current_runtime.system_ratio_both_success.median,
+        current_runtime.wall_ratio_both_success.median,
+        fmt_opt_usize(current_workers),
+        fmt_opt_usize(current_omc_threads)
+    );
 }

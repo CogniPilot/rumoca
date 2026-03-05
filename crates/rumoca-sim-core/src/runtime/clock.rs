@@ -1,8 +1,111 @@
 use crate::runtime::assignment::canonical_var_ref_key;
-use rumoca_eval_runtime::eval::{VarEnv, eval_expr};
-use rumoca_eval_runtime::sim_float::SimFloat;
+use rumoca_eval_flat::eval::{VarEnv, eval_expr};
 use rumoca_ir_dae as dae;
 use std::collections::{HashMap, HashSet};
+
+fn clock_bool(value: f64) -> bool {
+    value.is_finite() && value > 0.5
+}
+
+fn sample_clock_alias_source_expr<'a>(
+    dae: &'a dae::Dae,
+    name: &dae::VarName,
+    subscripts: &[dae::Subscript],
+) -> Option<&'a dae::Expression> {
+    let target = canonical_var_ref_key(name, subscripts)?;
+    for eq in dae.f_z.iter().chain(dae.f_m.iter()).chain(dae.f_x.iter()) {
+        if let Some(lhs) = eq.lhs.as_ref()
+            && lhs.as_str() == target
+        {
+            return Some(&eq.rhs);
+        }
+        if let dae::Expression::Binary {
+            op: dae::OpBinary::Sub(_),
+            lhs,
+            rhs,
+        } = &eq.rhs
+        {
+            let lhs_key = match lhs.as_ref() {
+                dae::Expression::VarRef { name, subscripts } => {
+                    canonical_var_ref_key(name, subscripts)
+                }
+                _ => None,
+            };
+            let rhs_key = match rhs.as_ref() {
+                dae::Expression::VarRef { name, subscripts } => {
+                    canonical_var_ref_key(name, subscripts)
+                }
+                _ => None,
+            };
+            if lhs_key.as_deref() == Some(target.as_str()) {
+                return Some(rhs.as_ref());
+            }
+            if rhs_key.as_deref() == Some(target.as_str()) {
+                return Some(lhs.as_ref());
+            }
+        }
+    }
+    None
+}
+
+fn sample_clock_arg_is_explicit_clock_inner(
+    dae: &dae::Dae,
+    clock_arg: &dae::Expression,
+    env: &VarEnv<f64>,
+    remaining_depth: usize,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    if let dae::Expression::FunctionCall { name, .. } = clock_arg {
+        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+        if matches!(
+            short,
+            "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" | "firstTick"
+        ) {
+            return true;
+        }
+    }
+    if rumoca_eval_flat::eval::infer_clock_timing_seconds(clock_arg, env).is_some() {
+        return true;
+    }
+    if let dae::Expression::VarRef { name, subscripts } = clock_arg
+        && subscripts.is_empty()
+    {
+        let key = dae::VarName::new(name.as_str());
+        if dae.discrete_reals.contains_key(&key) || dae.discrete_valued.contains_key(&key) {
+            return true;
+        }
+        if remaining_depth == 0 {
+            return false;
+        }
+        let Some(canonical) = canonical_var_ref_key(name, subscripts) else {
+            return false;
+        };
+        if !visiting.insert(canonical.clone()) {
+            return false;
+        }
+        let inferred =
+            sample_clock_alias_source_expr(dae, name, subscripts).is_some_and(|source| {
+                sample_clock_arg_is_explicit_clock_inner(
+                    dae,
+                    source,
+                    env,
+                    remaining_depth.saturating_sub(1),
+                    visiting,
+                )
+            });
+        visiting.remove(&canonical);
+        return inferred;
+    }
+    false
+}
+
+pub fn sample_clock_arg_is_explicit_clock(
+    dae: &dae::Dae,
+    clock_arg: &dae::Expression,
+    env: &VarEnv<f64>,
+) -> bool {
+    sample_clock_arg_is_explicit_clock_inner(dae, clock_arg, env, 16, &mut HashSet::new())
+}
 
 struct ClockInferenceContext<'a, FClockName, FClockEdge, FSampleActive>
 where
@@ -47,10 +150,10 @@ where
 {
     if (ctx.is_clock_function_name)(short) {
         if let Some(value) = (ctx.eval_clock_edge_assignment)(ctx.dae, expr, ctx.env) {
-            return Some(value != 0.0);
+            return Some(clock_bool(value));
         }
-        if rumoca_eval_runtime::eval::infer_clock_timing_seconds(expr, ctx.env).is_some() {
-            return Some(eval_expr::<f64>(expr, ctx.env).to_bool());
+        if rumoca_eval_flat::eval::infer_clock_timing_seconds(expr, ctx.env).is_some() {
+            return Some(clock_bool(eval_expr::<f64>(expr, ctx.env)));
         }
         if matches!(short, "shiftSample" | "backSample")
             && let Some(source_expr) = args.first()
@@ -81,7 +184,22 @@ where
 {
     match function {
         dae::BuiltinFunction::Sample if args.len() >= 2 => {
-            Some((ctx.eval_sample_clock_active)(ctx.dae, &args[1], ctx.env))
+            let clock_arg = &args[1];
+            if sample_clock_arg_is_explicit_clock(ctx.dae, clock_arg, ctx.env) {
+                return Some((ctx.eval_sample_clock_active)(ctx.dae, clock_arg, ctx.env));
+            }
+            // sample(start, interval) and lowered internal
+            // sample(id, start, interval) forms are both event indicators.
+            let sample_args = if args.len() >= 3 {
+                vec![args[1].clone(), args[2].clone()]
+            } else {
+                args.to_vec()
+            };
+            let sample_expr = dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Sample,
+                args: sample_args,
+            };
+            Some(clock_bool(eval_expr::<f64>(&sample_expr, ctx.env)))
         }
         dae::BuiltinFunction::Pre if !args.is_empty() => {
             infer_clock_active_next(ctx, &args[0], remaining_depth, visiting)
@@ -131,7 +249,7 @@ where
     FSampleActive: Copy + Fn(&dae::Dae, &dae::Expression, &VarEnv<f64>) -> bool,
 {
     for (condition, value) in branches {
-        if eval_expr::<f64>(condition, ctx.env).to_bool() {
+        if clock_bool(eval_expr::<f64>(condition, ctx.env)) {
             return infer_clock_active_next(ctx, value, remaining_depth, visiting);
         }
     }
@@ -324,13 +442,11 @@ where
         return false;
     }
     if (ctx.is_clock_function_name)(short) {
-        if (ctx.eval_clock_edge_assignment)(ctx.dae, expr, ctx.env)
-            .is_some_and(|value| value != 0.0)
-        {
+        if (ctx.eval_clock_edge_assignment)(ctx.dae, expr, ctx.env).is_some_and(clock_bool) {
             return true;
         }
-        if rumoca_eval_runtime::eval::infer_clock_timing_seconds(expr, ctx.env)
-            .is_some_and(|_| eval_expr::<f64>(expr, ctx.env).to_bool())
+        if rumoca_eval_flat::eval::infer_clock_timing_seconds(expr, ctx.env)
+            .is_some_and(|_| clock_bool(eval_expr::<f64>(expr, ctx.env)))
         {
             return true;
         }
@@ -352,14 +468,18 @@ where
 {
     if *function == dae::BuiltinFunction::Sample && args.len() >= 2 {
         let clock_arg = &args[1];
-        let has_clock_expr = matches!(clock_arg, dae::Expression::VarRef { .. })
-            || rumoca_eval_runtime::eval::infer_clock_timing_seconds(clock_arg, ctx.env).is_some();
+        let has_clock_expr = sample_clock_arg_is_explicit_clock(ctx.dae, clock_arg, ctx.env);
         if has_clock_expr {
             return (ctx.eval_sample_clock_active)(ctx.dae, clock_arg, ctx.env);
         }
-        if args.len() == 2 {
-            return eval_expr::<f64>(expr, ctx.env).to_bool();
+        if args.len() >= 3 {
+            let sample_expr = dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Sample,
+                args: vec![args[1].clone(), args[2].clone()],
+            };
+            return clock_bool(eval_expr::<f64>(&sample_expr, ctx.env));
         }
+        return clock_bool(eval_expr::<f64>(expr, ctx.env));
     }
     args.iter()
         .any(|arg| expression_has_active_clock_event_in_context(ctx, arg))
@@ -474,4 +594,56 @@ where
         infer_clock_active_from_expression(&ctx, solution, 16, &mut HashSet::new())
             .is_some_and(|active| active)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_internal_id_start_period(start: f64, period: f64) -> dae::Expression {
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Sample,
+            args: vec![
+                dae::Expression::Literal(dae::Literal::Integer(1)),
+                dae::Expression::Literal(dae::Literal::Real(start)),
+                dae::Expression::Literal(dae::Literal::Real(period)),
+            ],
+        }
+    }
+
+    #[test]
+    fn lowered_internal_sample_three_arg_is_treated_as_periodic_event_indicator() {
+        let dae_model = dae::Dae::default();
+        let sample_expr = sample_internal_id_start_period(0.3, 0.3);
+        let active = vec![&sample_expr];
+        let sources: HashMap<String, &dae::Expression> = HashMap::new();
+
+        let mut env = VarEnv::<f64>::new();
+        env.set("time", 0.45);
+        let off_tick = discrete_clock_event_active_from_sources(
+            &dae_model,
+            &env,
+            &sources,
+            &active,
+            |_| false,
+            |_dae, _expr, _env| None,
+            |_dae, _expr, _env| false,
+        );
+        assert!(
+            !off_tick,
+            "3-arg lowered sample must be false between ticks"
+        );
+
+        env.set("time", 0.6);
+        let on_tick = discrete_clock_event_active_from_sources(
+            &dae_model,
+            &env,
+            &sources,
+            &active,
+            |_| false,
+            |_dae, _expr, _env| None,
+            |_dae, _expr, _env| false,
+        );
+        assert!(on_tick, "3-arg lowered sample must tick at start+n*period");
+    }
 }

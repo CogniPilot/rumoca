@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-ir-solve"
+description = "Symbolic prepared solve IR for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+indexmap = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

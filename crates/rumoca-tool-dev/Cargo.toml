@@ -27,6 +27,7 @@ serde = { workspace = true }
 toml = { workspace = true }
 dirs = "5.0"
 flate2 = "1.0"
+polydup-core = "0.9.3"
 rayon = { workspace = true }
 tar = "0.4"
 tempfile = { workspace = true }

@@ -4,43 +4,38 @@ pub mod eliminate {
     };
 }
 mod integration;
-mod prepare;
-pub mod problem;
 
-use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use diffsol::{
-    FaerSparseLU, OdeEquations, OdeSolverMethod, OdeSolverProblem, OdeSolverStopReason, VectorHost,
-};
+use diffsol::{FaerSparseLU, OdeEquations, OdeSolverProblem};
 use rumoca_ir_dae as dae;
 
 type Dae = dae::Dae;
-type Expression = dae::Expression;
-type Literal = dae::Literal;
-type VarName = dae::VarName;
-type Variable = dae::Variable;
 
-use rumoca_core::Span;
-
-use rumoca_eval_runtime::eval::{self, build_env, eval_expr};
+use rumoca_eval_flat::eval::{self, build_env};
+pub(crate) use rumoca_sim_core::panic_payload_message;
 pub(crate) use rumoca_sim_core::simulation::dae_prepare::*;
+pub use rumoca_sim_core::{
+    OutputBuffers, SimError, SimOptions, SimResult, SimSolverMode, SimVariableMeta,
+    SolverStartupProfile,
+};
 use rumoca_sim_core::{
-    SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, is_solver_timeout_panic, timeline,
+    SolverDeadlineGuard, TimeoutBudget, build_visible_result_names, is_solver_timeout_panic,
 };
 
 type LS = FaerSparseLU<f64>;
 use integration::*;
-use prepare::*;
-#[cfg(test)]
-use rumoca_sim_core::equation_scalarize::{
-    build_complex_field_map, build_var_dims_map, index_into_expr,
-};
-use rumoca_sim_core::equation_scalarize::{build_output_names, scalarize_equations};
-#[cfg(test)]
-use rumoca_sim_core::projection_maps::{
-    build_component_index_projection_map, build_function_output_projection_map,
-};
+use rumoca_sim_core::equation_scalarize::build_output_names;
+
+/// Prepare a DAE for simulation/codegen using the same structural passes that
+/// the diffsol runtime uses before integration.
+///
+/// This is useful for template backends (e.g. JS residual runtime) that want
+/// to consume a structurally preprocessed DAE instead of raw compile output.
+pub fn prepare_dae_for_template_codegen(dae: &Dae, scalarize: bool) -> Result<Dae, SimError> {
+    let budget = TimeoutBudget::new(None);
+    rumoca_sim_core::prepare_dae_for_template_codegen_only(dae, scalarize, &budget)
+}
 
 fn validate_simulation_function_support(dae: &Dae) -> Result<(), SimError> {
     rumoca_sim_core::function_validation::validate_simulation_function_support(dae).map_err(|err| {
@@ -49,89 +44,6 @@ fn validate_simulation_function_support(dae: &Dae) -> Result<(), SimError> {
             reason: err.reason,
         }
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SimSolverMode {
-    Auto,
-    Bdf,
-    RkLike,
-}
-
-impl SimSolverMode {
-    pub fn from_external_name(name: &str) -> Self {
-        let lower = name.trim().to_ascii_lowercase();
-        if lower.is_empty() {
-            return Self::Bdf;
-        }
-        if lower == "auto" {
-            return Self::Auto;
-        }
-
-        let normalized = lower.replace(['-', '_', ' '], "");
-        let rk_like = normalized.contains("rungekutta")
-            || normalized.starts_with("rk")
-            || normalized.contains("dopri")
-            || normalized.contains("esdirk")
-            || normalized.contains("trbdf2")
-            || normalized.contains("euler")
-            || normalized.contains("midpoint");
-
-        if rk_like { Self::RkLike } else { Self::Bdf }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SimOptions {
-    pub t_start: f64,
-    pub t_end: f64,
-    pub rtol: f64,
-    pub atol: f64,
-    pub dt: Option<f64>,
-    pub scalarize: bool,
-    pub max_wall_seconds: Option<f64>,
-    pub solver_mode: SimSolverMode,
-}
-
-impl Default for SimOptions {
-    fn default() -> Self {
-        Self {
-            t_start: 0.0,
-            t_end: 1.0,
-            rtol: 1e-6,
-            atol: 1e-6,
-            dt: None,
-            scalarize: true,
-            max_wall_seconds: None,
-            solver_mode: SimSolverMode::Auto,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SimResult {
-    pub times: Vec<f64>,
-    pub names: Vec<String>,
-    pub data: Vec<Vec<f64>>,
-    pub n_states: usize,
-    pub variable_meta: Vec<SimVariableMeta>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SimVariableMeta {
-    pub name: String,
-    pub role: String,
-    pub is_state: bool,
-    pub value_type: Option<String>,
-    pub variability: Option<String>,
-    pub time_domain: Option<String>,
-    pub unit: Option<String>,
-    pub start: Option<String>,
-    pub min: Option<String>,
-    pub max: Option<String>,
-    pub nominal: Option<String>,
-    pub fixed: Option<bool>,
-    pub description: Option<String>,
 }
 
 #[inline]
@@ -154,371 +66,8 @@ pub(crate) fn trace_timer_elapsed_seconds(start: Option<Instant>) -> f64 {
     start.map_or(0.0, |t0| t0.elapsed().as_secs_f64())
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum SimError {
-    #[error("empty system: no equations to simulate")]
-    EmptySystem,
-
-    #[error(
-        "equation/variable mismatch: {n_equations} equations but \
-         {n_states} states + {n_algebraics} algebraics = {} unknowns",
-        n_states + n_algebraics
-    )]
-    EquationMismatch {
-        n_equations: usize,
-        n_states: usize,
-        n_algebraics: usize,
-    },
-
-    #[error(
-        "no ODE equation found for state variable '{0}': \
-         every state needs an equation containing der({0})"
-    )]
-    MissingStateEquation(String),
-
-    #[error("solver error: {0}")]
-    SolverError(String),
-
-    #[error("unsupported function '{name}': {reason}")]
-    UnsupportedFunction { name: String, reason: String },
-
-    #[error("compiled evaluator build failed: {0}")]
-    CompiledEval(String),
-
-    #[error("timeout after {seconds:.3}s")]
-    Timeout { seconds: f64 },
-}
-
-impl From<TimeoutExceeded> for SimError {
-    fn from(value: TimeoutExceeded) -> Self {
-        Self::Timeout {
-            seconds: value.seconds,
-        }
-    }
-}
-
-struct OutputBuffers {
-    times: Vec<f64>,
-    data: Vec<Vec<f64>>,
-    n_total: usize,
-}
-
-impl OutputBuffers {
-    fn new(n_total: usize, capacity: usize) -> Self {
-        Self {
-            times: Vec::with_capacity(capacity),
-            data: (0..n_total).map(|_| Vec::with_capacity(capacity)).collect(),
-            n_total,
-        }
-    }
-
-    fn record(&mut self, t: f64, y: &[f64]) {
-        self.times.push(t);
-        for (var_idx, val) in y[..self.n_total].iter().enumerate() {
-            self.data[var_idx].push(*val);
-        }
-    }
-}
-
 fn interp_err(t: f64, e: impl std::fmt::Display) -> SimError {
     SimError::SolverError(format!("Interpolation failed at t={t}: {e}"))
-}
-
-struct VariableSource<'a> {
-    var: &'a Variable,
-    role: &'static str,
-    is_state: bool,
-}
-
-fn scalar_channel_names_from_vars<'a>(
-    vars: impl Iterator<Item = (&'a VarName, &'a Variable)>,
-) -> Vec<String> {
-    let mut names = Vec::new();
-    for (name, var) in vars {
-        let size = var.size();
-        if size <= 1 {
-            names.push(name.as_str().to_string());
-        } else {
-            for i in 1..=size {
-                names.push(format!("{}[{}]", name.as_str(), i));
-            }
-        }
-    }
-    names
-}
-
-fn build_visible_result_names(dae: &Dae) -> Vec<String> {
-    let mut names = build_output_names(dae);
-    names.extend(scalar_channel_names_from_vars(dae.discrete_reals.iter()));
-    names.extend(scalar_channel_names_from_vars(dae.discrete_valued.iter()));
-    names
-}
-
-fn collect_missing_discrete_channel_names(dae: &Dae, existing_names: &[String]) -> Vec<String> {
-    let existing: HashSet<&str> = existing_names.iter().map(String::as_str).collect();
-    scalar_channel_names_from_vars(dae.discrete_reals.iter().chain(dae.discrete_valued.iter()))
-        .into_iter()
-        .filter(|name| !existing.contains(name.as_str()))
-        .collect()
-}
-
-fn append_discrete_runtime_channels(
-    dae: &Dae,
-    n_x: usize,
-    param_values: &[f64],
-    times: &[f64],
-    solver_names: &[String],
-    solver_data: &[Vec<f64>],
-    existing_names: &[String],
-) -> (Vec<String>, Vec<Vec<f64>>) {
-    let extra_names = collect_missing_discrete_channel_names(dae, existing_names);
-    if extra_names.is_empty() || times.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-
-    let solver_name_to_idx: HashMap<&str, usize> = solver_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name.as_str(), idx))
-        .collect();
-    let solver_len = solver_names.len();
-    let mut discrete_data: Vec<Vec<f64>> = extra_names
-        .iter()
-        .map(|_| Vec::with_capacity(times.len()))
-        .collect();
-    eval::clear_pre_values();
-
-    for (sample_idx, &t_eval) in times.iter().enumerate() {
-        let mut y = vec![0.0; solver_len];
-        for (col_idx, series) in solver_data.iter().enumerate().take(solver_len) {
-            if let Some(value) = series.get(sample_idx).copied() {
-                y[col_idx] = value;
-            }
-        }
-        let env = rumoca_sim_core::settle_runtime_event_updates_default(
-            rumoca_sim_core::EventSettleInput {
-                dae,
-                y: &mut y,
-                p: param_values,
-                n_x,
-                t_eval,
-            },
-        );
-        for (channel_idx, name) in extra_names.iter().enumerate() {
-            let value = env
-                .vars
-                .get(name.as_str())
-                .copied()
-                .or_else(|| {
-                    solver_name_to_idx
-                        .get(name.as_str())
-                        .and_then(|idx| y.get(*idx).copied())
-                })
-                .unwrap_or(0.0);
-            discrete_data[channel_idx].push(value);
-        }
-        eval::seed_pre_values_from_env(&env);
-    }
-
-    (extra_names, discrete_data)
-}
-
-fn lookup_variable_exact<'a>(dae: &'a Dae, name: &str) -> Option<VariableSource<'a>> {
-    let key = VarName::new(name.to_string());
-    if let Some(var) = dae.states.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "state",
-            is_state: true,
-        });
-    }
-    if let Some(var) = dae.algebraics.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "algebraic",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae.outputs.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "output",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae.inputs.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "input",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae.parameters.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "parameter",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae.constants.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "constant",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae.discrete_reals.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "discrete-real",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae.discrete_valued.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "discrete-valued",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae.derivative_aliases.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "derivative-alias",
-            is_state: false,
-        });
-    }
-    None
-}
-
-fn trim_trailing_scalar_indices(name: &str) -> &str {
-    let mut trimmed = name;
-    loop {
-        if !trimmed.ends_with(']') {
-            break;
-        }
-        let Some(open_idx) = trimmed.rfind('[') else {
-            break;
-        };
-        let index_text = &trimmed[(open_idx + 1)..(trimmed.len() - 1)];
-        if index_text.is_empty() || !index_text.chars().all(|c| c.is_ascii_digit()) {
-            break;
-        }
-        trimmed = &trimmed[..open_idx];
-    }
-    trimmed
-}
-
-fn lookup_variable_source<'a>(dae: &'a Dae, name: &str) -> Option<VariableSource<'a>> {
-    lookup_variable_exact(dae, name).or_else(|| {
-        let base = trim_trailing_scalar_indices(name);
-        if base != name {
-            lookup_variable_exact(dae, base)
-        } else {
-            None
-        }
-    })
-}
-
-fn format_meta_expr(expr: &Expression) -> String {
-    truncate_debug(&format!("{expr:?}"), 160)
-}
-
-fn classify_role(role: &str, is_state: bool) -> (Option<String>, Option<String>, Option<String>) {
-    if is_state {
-        return (
-            Some("Real".to_string()),
-            Some("continuous".to_string()),
-            Some("continuous-time".to_string()),
-        );
-    }
-
-    match role {
-        "algebraic" | "output" | "input" | "derivative-alias" => (
-            Some("Real".to_string()),
-            Some("continuous".to_string()),
-            Some("continuous-time".to_string()),
-        ),
-        "parameter" => (
-            Some("Real".to_string()),
-            Some("parameter".to_string()),
-            Some("static".to_string()),
-        ),
-        "constant" => (
-            Some("Real".to_string()),
-            Some("constant".to_string()),
-            Some("static".to_string()),
-        ),
-        "discrete-real" => (
-            Some("Real".to_string()),
-            Some("discrete".to_string()),
-            Some("event-discrete".to_string()),
-        ),
-        "discrete-valued" => (
-            Some("Boolean/Integer/Enum".to_string()),
-            Some("discrete".to_string()),
-            Some("event-discrete".to_string()),
-        ),
-        _ => (None, None, None),
-    }
-}
-
-fn build_variable_meta(dae: &Dae, names: &[String], n_states: usize) -> Vec<SimVariableMeta> {
-    names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| {
-            if let Some(source) = lookup_variable_source(dae, name) {
-                let (value_type, variability, time_domain) =
-                    classify_role(source.role, source.is_state);
-                SimVariableMeta {
-                    name: name.clone(),
-                    role: source.role.to_string(),
-                    is_state: source.is_state,
-                    value_type,
-                    variability,
-                    time_domain,
-                    unit: source.var.unit.clone(),
-                    start: source.var.start.as_ref().map(format_meta_expr),
-                    min: source.var.min.as_ref().map(format_meta_expr),
-                    max: source.var.max.as_ref().map(format_meta_expr),
-                    nominal: source.var.nominal.as_ref().map(format_meta_expr),
-                    fixed: source.var.fixed,
-                    description: source.var.description.clone(),
-                }
-            } else {
-                let inferred_is_state = idx < n_states;
-                let inferred_role = if inferred_is_state {
-                    "state"
-                } else {
-                    "unknown"
-                };
-                let (value_type, variability, time_domain) =
-                    classify_role(inferred_role, inferred_is_state);
-                SimVariableMeta {
-                    name: name.clone(),
-                    role: inferred_role.to_string(),
-                    is_state: inferred_is_state,
-                    value_type,
-                    variability,
-                    time_domain,
-                    unit: None,
-                    start: None,
-                    min: None,
-                    max: None,
-                    nominal: None,
-                    fixed: None,
-                    description: None,
-                }
-            }
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SolverStartupProfile {
-    Default,
-    RobustTinyStep,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -685,112 +234,21 @@ fn configure_solver_problem_with_profile<Eqn>(
     apply_timeout_solver_caps(problem, opts.max_wall_seconds, profile);
 }
 
-fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
-    let mut times = Vec::new();
-    let mut t = t_start;
-    while t <= t_end {
-        times.push(t);
-        t += dt;
-    }
-    if let Some(&last) = times.last()
-        && (last - t_end).abs() > 1e-12
-    {
-        times.push(t_end);
-    }
-    times
-}
-
 fn build_parameter_values(dae: &Dae, budget: &TimeoutBudget) -> Result<Vec<f64>, SimError> {
     problem::default_params_with_budget(dae, budget)
 }
 
+fn prepare_dae(
+    dae: &Dae,
+    scalarize: bool,
+    budget: &TimeoutBudget,
+) -> Result<rumoca_sim_core::simulation::pipeline::PreparedSimulation, SimError> {
+    rumoca_sim_core::prepare_dae(dae, scalarize, budget)
+}
+
 const DUMMY_STATE_NAME: &str = "_rumoca_dummy_state";
 
-fn inject_dummy_state(dae: &mut Dae) {
-    let var_name = VarName::new(DUMMY_STATE_NAME);
-    let mut var = dae::Variable::new(var_name.clone());
-    var.start = Some(Expression::Literal(Literal::Real(0.0)));
-    var.fixed = Some(true);
-    dae.states.insert(var_name, var);
-
-    let der_expr = Expression::BuiltinCall {
-        function: rumoca_ir_dae::BuiltinFunction::Der,
-        args: vec![Expression::VarRef {
-            name: VarName::new(DUMMY_STATE_NAME),
-            subscripts: vec![],
-        }],
-    };
-    let eq = dae::Equation {
-        lhs: None,
-        rhs: der_expr,
-        span: Span::DUMMY,
-        scalar_count: 1,
-        origin: "dummy_state_injection".to_string(),
-    };
-    dae.f_x.push(eq);
-}
-
 pub(crate) type MassMatrix = rumoca_sim_core::simulation::pipeline::MassMatrix;
-
-fn debug_print_after_expand(dae: &Dae) {
-    if std::env::var("RUMOCA_DEBUG").is_err() {
-        return;
-    }
-    eprintln!("[after expand_compound_derivatives] equations:");
-    for (i, eq) in dae.f_x.iter().enumerate() {
-        eprintln!("  eq[{}]: {:?}", i, eq.rhs);
-    }
-    eprintln!(
-        "[after expand_compound_derivatives] algebraics: {:?}",
-        dae.algebraics
-            .keys()
-            .map(|n| n.as_str())
-            .collect::<Vec<_>>()
-    );
-    eprintln!(
-        "[after expand_compound_derivatives] states: {:?}",
-        dae.states.keys().map(|n| n.as_str()).collect::<Vec<_>>()
-    );
-}
-
-fn debug_print_prepare_counts(dae: &Dae) {
-    if std::env::var("RUMOCA_DEBUG").is_ok() {
-        eprintln!(
-            "[prepare_dae] states={}, algebraics={}, eqs={}",
-            dae.states.len(),
-            dae.algebraics.len(),
-            dae.f_x.len()
-        );
-    }
-}
-
-fn debug_print_mass_matrix(dae: &Dae, mass_matrix: &MassMatrix) {
-    if std::env::var("RUMOCA_DEBUG").is_err() {
-        return;
-    }
-    let state_names: Vec<_> = dae.states.keys().map(|n| n.as_str()).collect();
-    for (i, name) in state_names.iter().enumerate() {
-        let diag = mass_matrix
-            .get(i)
-            .and_then(|row| row.get(i))
-            .copied()
-            .unwrap_or(1.0);
-        if (diag - 1.0).abs() > 1e-10 {
-            eprintln!("[mass_matrix] state[{i}] {name:?} diag={diag}");
-        }
-        if let Some(row) = mass_matrix.get(i) {
-            for (j, coeff) in row
-                .iter()
-                .copied()
-                .enumerate()
-                .filter(|(j, coeff)| *j != i && coeff.abs() > 1e-10)
-            {
-                let other = state_names.get(j).copied().unwrap_or("<unknown>");
-                eprintln!("[mass_matrix] state[{i}] {name:?} offdiag[{j}] {other:?}={coeff}");
-            }
-        }
-    }
-}
 
 fn sim_introspect_enabled() -> bool {
     rumoca_sim_core::simulation::diagnostics::sim_introspect_enabled()
@@ -798,10 +256,6 @@ fn sim_introspect_enabled() -> bool {
 
 fn sim_trace_enabled() -> bool {
     rumoca_sim_core::simulation::diagnostics::sim_trace_enabled()
-}
-
-fn truncate_debug(s: &str, max_chars: usize) -> String {
-    rumoca_sim_core::simulation::diagnostics::truncate_debug(s, max_chars)
 }
 
 fn validate_no_initial_division_by_zero(
@@ -830,13 +284,6 @@ fn validate_no_initial_division_by_zero(
         return Err(SimError::SolverError(msg));
     }
     Ok(())
-}
-
-fn dump_missing_state_equation_diagnostics(dae: &Dae, missing_state: &str) {
-    rumoca_sim_core::simulation::diagnostics::dump_missing_state_equation_diagnostics(
-        dae,
-        missing_state,
-    );
 }
 
 fn dump_transformed_dae_for_diffsol(dae: &Dae, mass_matrix: &MassMatrix) {
@@ -873,207 +320,6 @@ fn dump_initial_residual_summary_for_diffsol(
 
 pub(crate) fn dump_parameter_vector_for_diffsol(dae: &Dae, params: &[f64]) {
     rumoca_sim_core::simulation::diagnostics::dump_parameter_vector(dae, params);
-}
-
-fn trace_projection_failed_at_time(t: f64) {
-    if sim_trace_enabled() {
-        eprintln!("[sim-trace] no-state runtime projection failed at t={}", t);
-    }
-}
-
-struct AlgebraicResultSetup {
-    times: Vec<f64>,
-    eval_times: Vec<f64>,
-    y: Vec<f64>,
-    param_values: Vec<f64>,
-    n_x: usize,
-    all_names: Vec<String>,
-    visible_name_set: HashSet<String>,
-    solver_name_to_idx: HashMap<String, usize>,
-    requires_projection: bool,
-}
-
-fn prepare_algebraic_result_setup(
-    dae: &Dae,
-    opts: &SimOptions,
-    elim: &eliminate::EliminationResult,
-    budget: &TimeoutBudget,
-) -> Result<AlgebraicResultSetup, SimError> {
-    let dt = opts.dt.unwrap_or(opts.t_end / 500.0);
-    let times = build_output_times(opts.t_start, opts.t_end, dt);
-    let n_total = dae.f_x.len();
-    let n_x: usize = dae.states.values().map(|v| v.size()).sum();
-
-    let mut y = vec![0.0; n_total];
-    problem::initialize_state_vector(dae, &mut y);
-
-    let param_values = build_parameter_values(dae, budget)?;
-    dump_parameter_vector_for_diffsol(dae, &param_values);
-    let clock_events =
-        timeline::collect_periodic_clock_events(&dae.clock_schedules, opts.t_start, opts.t_end);
-    if sim_introspect_enabled() {
-        let preview: Vec<f64> = clock_events.iter().copied().take(12).collect();
-        eprintln!(
-            "[sim-introspect] no-state clock events count={} preview={:?}",
-            clock_events.len(),
-            preview
-        );
-    }
-    let eval_times = timeline::merge_evaluation_times(&times, &clock_events);
-    let visible_names = build_visible_result_names(dae);
-    let mut all_names = visible_names.clone();
-    all_names.extend(
-        rumoca_sim_core::collect_reconstruction_discrete_context_names(dae, elim, &all_names),
-    );
-    let visible_name_set: HashSet<String> = visible_names
-        .iter()
-        .filter(|name| *name != DUMMY_STATE_NAME)
-        .cloned()
-        .collect();
-    let mut solver_names = visible_names.clone();
-    solver_names.truncate(n_total);
-    let solver_name_to_idx: HashMap<String, usize> = solver_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name.clone(), idx))
-        .collect();
-    let requires_projection = problem::runtime_projection_required(dae, n_x);
-    if sim_trace_enabled() {
-        eprintln!(
-            "[sim-trace] no-state runtime projection required={}",
-            requires_projection
-        );
-    }
-
-    Ok(AlgebraicResultSetup {
-        times,
-        eval_times,
-        y,
-        param_values,
-        n_x,
-        all_names,
-        visible_name_set,
-        solver_name_to_idx,
-        requires_projection,
-    })
-}
-
-fn collect_no_state_sample_data(
-    dae: &Dae,
-    opts: &SimOptions,
-    elim: &eliminate::EliminationResult,
-    budget: &TimeoutBudget,
-    setup: &AlgebraicResultSetup,
-) -> Result<Vec<Vec<f64>>, SimError> {
-    let sample_ctx = rumoca_sim_core::NoStateSampleContext {
-        dae,
-        elim,
-        param_values: &setup.param_values,
-        all_names: &setup.all_names,
-        solver_name_to_idx: &setup.solver_name_to_idx,
-        n_x: setup.n_x,
-        t_start: opts.t_start,
-        requires_projection: setup.requires_projection,
-    };
-
-    let (_, data) = rumoca_sim_core::collect_algebraic_samples(
-        &sample_ctx,
-        &setup.times,
-        &setup.eval_times,
-        setup.y.clone(),
-        || budget.check().map_err(SimError::from),
-        |y_values, t, do_projection| {
-            if do_projection {
-                let projection = problem::project_algebraics_with_fixed_states_at_time(
-                    dae,
-                    y_values,
-                    setup.n_x,
-                    t,
-                    opts.atol.max(1.0e-8),
-                    budget,
-                )?;
-                if let Some(projected) = projection {
-                    *y_values = projected;
-                    return Ok(());
-                }
-                trace_projection_failed_at_time(t);
-            }
-            let _ = problem::seed_runtime_direct_assignments(
-                dae,
-                y_values,
-                &setup.param_values,
-                setup.n_x,
-                t,
-            );
-            Ok(())
-        },
-    )
-    .map_err(|err| match err {
-        rumoca_sim_core::NoStateSampleError::Callback(sim_err) => sim_err,
-        rumoca_sim_core::NoStateSampleError::SampleScheduleMismatch { captured, expected } => {
-            SimError::SolverError(format!(
-                "no-state sample schedule mismatch: captured {captured}/{expected} output samples"
-            ))
-        }
-    })?;
-
-    Ok(data)
-}
-
-fn filter_visible_output_series(
-    recon_names: &[String],
-    recon_data: &[Vec<f64>],
-    visible_name_set: &HashSet<String>,
-) -> (Vec<String>, Vec<Vec<f64>>) {
-    let mut final_names: Vec<String> = Vec::new();
-    let mut final_data: Vec<Vec<f64>> = Vec::new();
-    for (name, series) in recon_names.iter().zip(recon_data.iter()) {
-        if visible_name_set.contains(name) {
-            final_names.push(name.clone());
-            final_data.push(series.clone());
-        }
-    }
-    (final_names, final_data)
-}
-
-fn build_algebraic_result(
-    dae: &Dae,
-    opts: &SimOptions,
-    elim: &eliminate::EliminationResult,
-    budget: &TimeoutBudget,
-) -> Result<SimResult, SimError> {
-    let setup = prepare_algebraic_result_setup(dae, opts, elim, budget)?;
-    let data = collect_no_state_sample_data(dae, opts, elim, budget, &setup)?;
-    let (recon_names, recon_data, final_n_states) = rumoca_sim_core::finalize_algebraic_outputs(
-        setup.all_names,
-        data,
-        setup.n_x,
-        DUMMY_STATE_NAME,
-    );
-    let (mut final_names, mut final_data) =
-        filter_visible_output_series(&recon_names, &recon_data, &setup.visible_name_set);
-
-    if !elim.substitutions.is_empty() {
-        let (extra_names, extra_data) = rumoca_sim_core::reconstruct::reconstruct_eliminated(
-            elim,
-            dae,
-            &setup.param_values,
-            &setup.times,
-            &recon_names,
-            &recon_data,
-        );
-        final_names.extend(extra_names);
-        final_data.extend(extra_data);
-    }
-
-    let variable_meta = build_variable_meta(dae, &final_names, final_n_states);
-    Ok(SimResult {
-        times: setup.times,
-        names: final_names,
-        data: final_data,
-        n_states: final_n_states,
-        variable_meta,
-    })
 }
 
 fn run_with_timeout_panic_handling<T, F>(budget: &TimeoutBudget, f: F) -> Result<T, SimError>
@@ -1118,7 +364,14 @@ pub fn simulate(dae: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
     let n_x: usize = dae.states.values().map(|v| v.size()).sum();
     if has_dummy {
         return run_timeout_result(&budget, || {
-            build_algebraic_result(&dae, opts, &elim, &budget)
+            rumoca_sim_core::build_algebraic_result(
+                &dae,
+                opts,
+                &elim,
+                &budget,
+                build_visible_result_names(&dae),
+                DUMMY_STATE_NAME,
+            )
         });
     }
     let n_total = dae.f_x.len();
@@ -1143,57 +396,359 @@ pub fn simulate(dae: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
             trace_timer_elapsed_seconds(sim_start)
         );
     }
-
-    let mut names = build_output_names(&dae);
-    names.truncate(n_total);
-    let solver_names = names.clone();
-
-    let (mut final_names, mut final_data, mut final_n_states) = (names, buf.data, n_x);
-    if has_dummy
-        && let Some(dummy_idx) = final_names.iter().position(|name| name == DUMMY_STATE_NAME)
-    {
-        final_names.remove(dummy_idx);
-        if dummy_idx < final_data.len() {
-            final_data.remove(dummy_idx);
-        }
-        final_n_states = final_n_states.saturating_sub(1);
-    }
-    let (discrete_names, discrete_data) = append_discrete_runtime_channels(
+    let mut output_names = build_output_names(&dae);
+    output_names.truncate(n_total);
+    Ok(rumoca_sim_core::finalize_dynamic_result(
         &dae,
-        n_x,
+        &elim,
         &param_values,
-        &buf.times,
-        &solver_names,
-        &final_data,
-        &final_names,
-    );
-    final_names.extend(discrete_names);
-    final_data.extend(discrete_data);
-
-    if !elim.substitutions.is_empty() {
-        let (extra_names, extra_data) = rumoca_sim_core::reconstruct::reconstruct_eliminated(
-            &elim,
-            &dae,
-            &param_values,
-            &buf.times,
-            &final_names,
-            &final_data,
-        );
-        final_names.extend(extra_names);
-        final_data.extend(extra_data);
-    }
-    let variable_meta = build_variable_meta(&dae, &final_names, final_n_states);
-    Ok(SimResult {
-        times: buf.times,
-        names: final_names,
-        data: final_data,
-        n_states: final_n_states,
-        variable_meta,
-    })
+        n_x,
+        output_names,
+        buf,
+    ))
 }
 
-#[cfg(test)]
-pub(crate) mod test_support;
+pub mod problem {
+    use crate::SimError;
+    use diffsol::{
+        FaerSparseMat, MatrixCommon, OdeBuilder, OdeEquationsImplicit, OdeSolverProblem, Vector,
+        VectorHost,
+    };
+    use rumoca_ir_dae as dae;
 
-#[cfg(test)]
-mod tests;
+    pub(crate) type Dae = dae::Dae;
+    pub(crate) type Expression = dae::Expression;
+    pub(crate) type M = FaerSparseMat<f64>;
+    pub(crate) type V = <M as MatrixCommon>::V;
+    pub(crate) type T = <M as MatrixCommon>::T;
+    pub(crate) type C = <M as MatrixCommon>::C;
+
+    pub(crate) use rumoca_sim_core::{
+        apply_initial_section_assignments, count_states, default_params_with_budget,
+        eval_jacobian_vector_ad, eval_rhs_equations, initialize_state_vector,
+        project_algebraics_with_fixed_states_at_time,
+    };
+    pub use rumoca_sim_core::{default_params, reorder_equations_for_solver};
+
+    fn sim_trace_enabled() -> bool {
+        rumoca_sim_core::simulation::diagnostics::sim_trace_enabled()
+    }
+
+    fn sim_introspect_enabled() -> bool {
+        rumoca_sim_core::simulation::diagnostics::sim_introspect_enabled()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    type CompiledResidual = rumoca_eval_dae::CompiledResidual;
+    #[cfg(target_arch = "wasm32")]
+    type CompiledResidual = rumoca_eval_dae::CompiledResidualWasm;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    type CompiledJacobianV = rumoca_eval_dae::CompiledJacobianV;
+    #[cfg(target_arch = "wasm32")]
+    type CompiledJacobianV = rumoca_eval_dae::CompiledJacobianVWasm;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    type CompiledExpressionRows = rumoca_eval_dae::CompiledExpressionRows;
+    #[cfg(target_arch = "wasm32")]
+    type CompiledExpressionRows = rumoca_eval_dae::CompiledExpressionRowsWasm;
+
+    pub(crate) fn build_problem(
+        dae: &Dae,
+        rtol: f64,
+        atol: f64,
+        algebraic_eps: f64,
+        mass_matrix: &crate::MassMatrix,
+    ) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C>>, SimError>
+    {
+        let n_x = count_states(dae);
+        let n_eq = dae.f_x.len();
+        let n_z = n_eq - n_x;
+        let n_total = n_x + n_z;
+
+        let params = default_params(dae);
+        let dae_init = dae.clone();
+        let ProblemCompiledKernels {
+            compiled_eval_ctx_rhs,
+            compiled_eval_ctx_jac,
+            compiled_eval_ctx_root,
+            compiled_residual,
+            compiled_jacobian,
+            compiled_root_conditions,
+            n_roots,
+        } = compile_problem_kernels(dae, n_total)?;
+
+        let mass_matrix_owned = mass_matrix.clone();
+        let atol_vec: Vec<f64> = vec![atol; n_total.max(1)];
+
+        OdeBuilder::<M>::new()
+            .t0(0.0)
+            .rtol(rtol)
+            .atol(atol_vec)
+            .p(params)
+            .rhs_implicit(
+                move |y: &V, p: &V, t: T, out: &mut V| {
+                    crate::integration::panic_on_expired_solver_deadline();
+                    call_compiled_residual(
+                        &compiled_residual,
+                        &compiled_eval_ctx_rhs,
+                        y.as_slice(),
+                        p.as_slice(),
+                        t,
+                        out.as_mut_slice(),
+                    );
+                },
+                move |y: &V, p: &V, t: T, v: &V, out: &mut V| {
+                    crate::integration::panic_on_expired_solver_deadline();
+                    call_compiled_jacobian(
+                        &compiled_jacobian,
+                        &compiled_eval_ctx_jac,
+                        y.as_slice(),
+                        p.as_slice(),
+                        t,
+                        v.as_slice(),
+                        out.as_mut_slice(),
+                    );
+                },
+            )
+            .mass(move |v: &V, _p: &V, _t: T, beta: T, y: &mut V| {
+                crate::integration::panic_on_expired_solver_deadline();
+                apply_mass_matrix_update(
+                    &mass_matrix_owned,
+                    n_x,
+                    n_total,
+                    algebraic_eps,
+                    v,
+                    beta,
+                    y,
+                );
+            })
+            .init(
+                move |_p: &V, _t: T, y: &mut V| {
+                    crate::integration::panic_on_expired_solver_deadline();
+                    initialize_state_vector(&dae_init, y.as_mut_slice())
+                },
+                n_total.max(1),
+            )
+            .root(
+                move |y: &V, p: &V, t: T, out: &mut V| {
+                    crate::integration::panic_on_expired_solver_deadline();
+                    eval_root_callback(
+                        &compiled_root_conditions,
+                        &compiled_eval_ctx_root,
+                        y.as_slice(),
+                        p.as_slice(),
+                        t,
+                        out.as_mut_slice(),
+                    );
+                },
+                n_roots,
+            )
+            .build()
+            .map_err(|err| {
+                SimError::SolverError(format!(
+                    "ODE problem builder failed: check DAE dimensions and parameters: {err}"
+                ))
+            })
+    }
+
+    struct ProblemCompiledKernels {
+        compiled_eval_ctx_rhs: CompiledEvalContext,
+        compiled_eval_ctx_jac: CompiledEvalContext,
+        compiled_eval_ctx_root: CompiledEvalContext,
+        compiled_residual: CompiledResidual,
+        compiled_jacobian: CompiledJacobianV,
+        compiled_root_conditions: CompiledExpressionRows,
+        n_roots: usize,
+    }
+
+    fn compile_problem_kernels(
+        dae: &Dae,
+        n_total: usize,
+    ) -> Result<ProblemCompiledKernels, SimError> {
+        let sim_context =
+            rumoca_sim_core::runtime::layout::SimulationContext::from_dae(dae, n_total);
+        let compiled_eval_ctx = CompiledEvalContext {
+            dae: dae.clone(),
+            sim_context,
+        };
+        let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
+        let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
+        let compiled_eval_ctx_root = compiled_eval_ctx.clone();
+
+        let compiled_residual = compile_residual_kernel(dae)?;
+        let compiled_jacobian = compile_jacobian_kernel(dae)?;
+        log_precomputed_synthetic_root_conditions(&dae.synthetic_root_conditions);
+        let compiled_root_conditions = compile_root_conditions_kernel(dae)?;
+        let n_roots = compiled_root_conditions.rows().max(1);
+
+        Ok(ProblemCompiledKernels {
+            compiled_eval_ctx_rhs,
+            compiled_eval_ctx_jac,
+            compiled_eval_ctx_root,
+            compiled_residual,
+            compiled_jacobian,
+            compiled_root_conditions,
+            n_roots,
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compile_residual_kernel(dae: &Dae) -> Result<CompiledResidual, SimError> {
+        rumoca_eval_dae::compile_residual(dae, rumoca_eval_dae::Backend::Cranelift)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn compile_residual_kernel(dae: &Dae) -> Result<CompiledResidual, SimError> {
+        rumoca_eval_dae::compile_residual_wasm(dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compile_jacobian_kernel(dae: &Dae) -> Result<CompiledJacobianV, SimError> {
+        rumoca_eval_dae::compile_jacobian_v(dae, rumoca_eval_dae::Backend::Cranelift)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn compile_jacobian_kernel(dae: &Dae) -> Result<CompiledJacobianV, SimError> {
+        rumoca_eval_dae::compile_jacobian_v_wasm(dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compile_root_conditions_kernel(dae: &Dae) -> Result<CompiledExpressionRows, SimError> {
+        rumoca_eval_dae::compile_root_conditions(dae, rumoca_eval_dae::Backend::Cranelift)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn compile_root_conditions_kernel(dae: &Dae) -> Result<CompiledExpressionRows, SimError> {
+        rumoca_eval_dae::compile_root_conditions_wasm(dae)
+            .map_err(|err| SimError::CompiledEval(err.to_string()))
+    }
+
+    fn apply_mass_matrix_update(
+        mass_matrix: &crate::MassMatrix,
+        n_x: usize,
+        n_total: usize,
+        algebraic_eps: f64,
+        v: &V,
+        beta: T,
+        y: &mut V,
+    ) {
+        let n_xv = n_x.min(v.len()).min(y.len());
+        for i in 0..n_xv {
+            let acc = mass_matrix.get(i).map_or(v[i], |row| {
+                (0..n_xv)
+                    .filter_map(|j| row.get(j).copied().map(|coeff| (coeff, v[j])))
+                    .filter(|(coeff, _)| coeff.abs() > 1.0e-15)
+                    .map(|(coeff, vj)| coeff * vj)
+                    .sum()
+            });
+            y[i] = acc + beta * y[i];
+        }
+        for i in n_x..n_total {
+            if i < y.len() && i < v.len() {
+                y[i] = algebraic_eps * v[i] + beta * y[i];
+            }
+        }
+    }
+
+    fn eval_root_callback(
+        compiled_root_conditions: &CompiledExpressionRows,
+        compiled_eval_ctx_root: &CompiledEvalContext,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) {
+        if compiled_root_conditions.rows() == 0 {
+            if !out.is_empty() {
+                out[0] = 1.0;
+            }
+            return;
+        }
+        call_compiled_expression_rows(
+            compiled_root_conditions,
+            compiled_eval_ctx_root,
+            y,
+            p,
+            t,
+            out,
+        );
+    }
+
+    #[derive(Clone)]
+    struct CompiledEvalContext {
+        dae: Dae,
+        sim_context: rumoca_sim_core::runtime::layout::SimulationContext,
+    }
+
+    fn call_compiled_residual(
+        compiled_residual: &CompiledResidual,
+        ctx: &CompiledEvalContext,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) {
+        let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
+        if let Err(err) = compiled_residual.call(y, &compiled_p, t, out) {
+            panic!("compiled residual call failed: {err}");
+        }
+    }
+
+    fn call_compiled_jacobian(
+        compiled_jacobian: &CompiledJacobianV,
+        ctx: &CompiledEvalContext,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) {
+        let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
+        if let Err(err) = compiled_jacobian.call(y, &compiled_p, t, v, out) {
+            panic!("compiled Jacobian-vector call failed: {err}");
+        }
+    }
+
+    fn call_compiled_expression_rows(
+        compiled_rows: &CompiledExpressionRows,
+        ctx: &CompiledEvalContext,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) {
+        let compiled_p = build_compiled_eval_param_vector(ctx, y, p, t);
+        if let Err(err) = compiled_rows.call(y, &compiled_p, t, out) {
+            panic!("compiled expression rows call failed: {err}");
+        }
+    }
+
+    fn build_compiled_eval_param_vector(
+        ctx: &CompiledEvalContext,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Vec<f64> {
+        ctx.sim_context.compiled_parameter_vector(&ctx.dae, y, p, t)
+    }
+
+    fn log_precomputed_synthetic_root_conditions(roots: &[Expression]) {
+        if sim_trace_enabled() && !roots.is_empty() {
+            eprintln!(
+                "[sim-trace] using {} precomputed synthetic root conditions",
+                roots.len()
+            );
+        }
+        if sim_introspect_enabled() && !roots.is_empty() {
+            for (idx, cond) in roots.iter().enumerate() {
+                eprintln!("[sim-introspect] synthetic_root[{idx}] = {cond:?}");
+            }
+        }
+    }
+}

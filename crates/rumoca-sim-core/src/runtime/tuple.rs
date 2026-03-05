@@ -1,5 +1,5 @@
 use crate::runtime::assignment::canonical_var_ref_key;
-use rumoca_eval_runtime::eval::VarEnv;
+use rumoca_eval_flat::eval::VarEnv;
 use rumoca_ir_dae as dae;
 
 #[derive(Clone, Debug)]
@@ -204,7 +204,7 @@ fn evaluate_projected_function_output(
 ) -> f64 {
     let projected = projected_output_name(resolved_name, output_name, suffix);
     let value =
-        rumoca_eval_runtime::eval::eval_function_call_pub(&dae::VarName::new(projected), args, env);
+        rumoca_eval_flat::eval::eval_function_call_pub(&dae::VarName::new(projected), args, env);
     if value.is_finite() { value } else { 0.0 }
 }
 
@@ -254,7 +254,7 @@ fn apply_tuple_array_output_target(
     }
 
     if !values.is_empty() {
-        rumoca_eval_runtime::eval::set_array_entries(env, target_base, dims, &values);
+        rumoca_eval_flat::eval::set_array_entries(env, target_base, dims, &values);
     }
     changed
 }
@@ -276,7 +276,7 @@ pub fn apply_discrete_tuple_function_assignment(
     }
 
     let Some((resolved_name, output_names)) =
-        rumoca_eval_runtime::eval::resolve_function_call_outputs_pub(name, env)
+        rumoca_eval_flat::eval::resolve_function_call_outputs_pub(name, env)
     else {
         on_unresolved_function_outputs(name);
         return false;
@@ -337,7 +337,7 @@ pub fn apply_discrete_tuple_function_assignment(
 mod tests {
     use super::*;
     use rumoca_core::Span;
-    use rumoca_eval_runtime::sim_float::SimFloat;
+    use rumoca_eval_flat::sim_float::SimFloat;
 
     #[test]
     fn extract_direct_tuple_function_assignment_detects_tuple_call_form() {
@@ -413,7 +413,7 @@ mod tests {
         let assignment = discrete_tuple_function_assignment_from_equation(
             &eq,
             &env,
-            |cond, env| rumoca_eval_runtime::eval::eval_expr::<f64>(cond, env).to_bool(),
+            |cond, env| rumoca_eval_flat::eval::eval_expr::<f64>(cond, env).to_bool(),
             |expr| matches!(expr, dae::Expression::Literal(dae::Literal::Integer(0))),
         )
         .expect("active tuple assignment");

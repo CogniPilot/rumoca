@@ -437,8 +437,8 @@ impl Context {
                     return Some((name.clone(), val));
                 }
 
-                // Fallback to rumoca_eval_const for complex expressions
-                rumoca_eval_const::try_eval_integer(binding, &eval_ctx)
+                // Fallback to rumoca_eval_flat for complex expressions
+                rumoca_eval_flat::try_eval_integer(binding, &eval_ctx)
                     .map(|val| (name.clone(), val))
             })
             .collect();
@@ -732,8 +732,8 @@ impl Context {
         self.array_dimensions.get(name)
     }
 
-    /// Return the shared `rumoca_eval_const` context used by complex-expression fallback.
-    pub(crate) fn eval_fallback_context(&self) -> &rumoca_eval_const::EvalContext {
+    /// Return the shared `rumoca_eval_flat` context used by complex-expression fallback.
+    pub(crate) fn eval_fallback_context(&self) -> &rumoca_eval_flat::EvalContext {
         self.eval_fallback_context
             .get_or_init(|| equations::build_eval_context(self, None))
     }

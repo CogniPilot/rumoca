@@ -6,20 +6,23 @@ members = [
     "crates/rumoca-core",
     "crates/rumoca-contracts",
     "crates/rumoca-ir-dae",
-    "crates/rumoca-eval-const",
+    "crates/rumoca-ir-solve",
+    "crates/rumoca-eval-ast",
     "crates/rumoca-ir-ast",
     "crates/rumoca-ir-flat",
     "crates/rumoca-phase-codegen",
+    "crates/rumoca-phase-solve",
     "crates/rumoca-phase-flatten",
     "crates/rumoca-phase-instantiate",
     "crates/rumoca-phase-parse",
     "crates/rumoca-phase-resolve",
     "crates/rumoca-phase-dae",
     "crates/rumoca-phase-structural",
-    "crates/rumoca-eval-runtime",
-    "crates/rumoca-eval-compiled",
+    "crates/rumoca-eval-flat",
+    "crates/rumoca-eval-dae",
     "crates/rumoca-sim-core",
     "crates/rumoca-sim-diffsol",
+    "crates/rumoca-sim-rk45",
     "crates/rumoca-phase-typecheck",
     # Session and tools
     "crates/rumoca-session",
@@ -45,20 +48,23 @@ rumoca = { path = "crates/rumoca" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
-rumoca-eval-const = { path = "crates/rumoca-eval-const" }
+rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
+rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
 rumoca-ir-ast = { path = "crates/rumoca-ir-ast" }
 rumoca-ir-flat = { path = "crates/rumoca-ir-flat" }
 rumoca-phase-flatten = { path = "crates/rumoca-phase-flatten" }
+rumoca-phase-solve = { path = "crates/rumoca-phase-solve" }
 rumoca-phase-instantiate = { path = "crates/rumoca-phase-instantiate" }
 rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }
 rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
-rumoca-eval-runtime = { path = "crates/rumoca-eval-runtime" }
-rumoca-eval-compiled = { path = "crates/rumoca-eval-compiled", default-features = false }
+rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
+rumoca-eval-dae = { path = "crates/rumoca-eval-dae", default-features = false }
 rumoca-sim-core = { path = "crates/rumoca-sim-core" }
 rumoca-sim-diffsol = { path = "crates/rumoca-sim-diffsol" }
+rumoca-sim-rk45 = { path = "crates/rumoca-sim-rk45" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-session = { path = "crates/rumoca-session" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }

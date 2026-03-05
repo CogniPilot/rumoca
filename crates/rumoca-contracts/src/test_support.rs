@@ -81,6 +81,23 @@ pub fn expect_failure_in_phase_with_code(
     );
 }
 
+/// Compile a model from source, expecting failure in a specific compile phase.
+///
+/// Use this when a contract is known to reject but the exact diagnostic code
+/// is not yet stabilized.
+///
+/// # Panics
+/// Panics if parsing fails, compilation succeeds, needs synthesized inner
+/// bindings, or fails in a different phase.
+pub fn expect_failure_in_phase(source: &str, model: &str, expected_phase: FailedPhase) {
+    let phase_result = compile_model_phases_or_panic(source, model);
+    let (actual_phase, _) = extract_failed_phase_and_optional_code(phase_result, model);
+    assert_eq!(
+        actual_phase, expected_phase,
+        "Expected failure in phase {expected_phase} for model {model}, got {actual_phase}"
+    );
+}
+
 fn compile_model_phases_or_panic(source: &str, model: &str) -> PhaseResult {
     let mut session = Session::new(SessionConfig::default());
     session

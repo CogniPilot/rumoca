@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 // Conditional tracing support (SPEC_0024)
-use rumoca_eval_const::{EvalContext, Value};
+use rumoca_eval_flat::{EvalContext, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 #[cfg(feature = "tracing")]

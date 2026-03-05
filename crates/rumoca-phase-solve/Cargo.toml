@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-phase-solve"
+description = "Solve preparation phase: transform DAE IR into symbolic Solve IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+indexmap = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+
+[dev-dependencies]
+rumoca-core = { workspace = true }
+
+[lints]
+workspace = true

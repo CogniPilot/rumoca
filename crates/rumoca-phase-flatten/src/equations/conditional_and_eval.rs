@@ -447,21 +447,21 @@ fn try_eval_integer_with_ctx(
         }
 
         _ => {
-            // Fall back to rumoca_eval_const for complex expressions
+            // Fall back to rumoca_eval_flat for complex expressions
             #[cfg(feature = "tracing")]
             debug!(
                 expr_kind = std::any::type_name_of_val(expr),
-                "trying rumoca_eval_const for unhandled expression kind"
+                "trying rumoca_eval_flat for unhandled expression kind"
             );
-            try_eval_with_rumoca_eval_const(ctx, expr, prefix)
+            try_eval_with_rumoca_eval_flat(ctx, expr, prefix)
         }
     };
 
     // If simple evaluation failed, try the full evaluator as fallback
     let result = result.or_else(|| {
         #[cfg(feature = "tracing")]
-        debug!("simple evaluation failed, trying rumoca_eval_const fallback");
-        try_eval_with_rumoca_eval_const(ctx, expr, prefix)
+        debug!("simple evaluation failed, trying rumoca_eval_flat fallback");
+        try_eval_with_rumoca_eval_flat(ctx, expr, prefix)
     });
 
     #[cfg(feature = "tracing")]
@@ -1094,9 +1094,9 @@ fn substitute_index_in_subscript(
     }
 }
 
-/// Build a rumoca_eval_const::EvalContext from the Context.
+/// Build a rumoca_eval_flat::EvalContext from the Context.
 ///
-/// This allows using the rumoca_eval_const crate for more complex expression evaluation
+/// This allows using the rumoca_eval_flat crate for more complex expression evaluation
 /// while still leveraging the parameter values collected during flattening.
 ///
 /// If a ClassTree is provided, functions will be looked up on-demand during evaluation.
@@ -1159,11 +1159,11 @@ pub fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> EvalContex
     eval_ctx
 }
 
-/// Evaluate an AST expression using the rumoca_eval_const crate.
+/// Evaluate an AST expression using the rumoca_eval_flat crate.
 ///
 /// This is a fallback for complex expressions that the simpler ad-hoc evaluation
 /// in `try_eval_integer_with_ctx` cannot handle.
-fn try_eval_with_rumoca_eval_const(
+fn try_eval_with_rumoca_eval_flat(
     ctx: &Context,
     expr: &ast::Expression,
     prefix: &QualifiedName,
@@ -1178,7 +1178,7 @@ fn try_eval_with_rumoca_eval_const(
     let eval_ctx = ctx.eval_fallback_context();
 
     // Try to evaluate
-    let result = rumoca_eval_const::try_eval_integer(&flat_expr, eval_ctx);
+    let result = rumoca_eval_flat::try_eval_integer(&flat_expr, eval_ctx);
     crate::maybe_record_eval_fallback_timing(fallback_start);
     result
 }
@@ -1535,14 +1535,14 @@ mod tests {
 
         let prefix = QualifiedName::new();
         assert_eq!(
-            try_eval_with_rumoca_eval_const(&ctx, &make_int(7), &prefix),
+            try_eval_with_rumoca_eval_flat(&ctx, &make_int(7), &prefix),
             Some(7)
         );
         assert!(ctx.has_cached_eval_fallback_context());
         let first_ctx_ptr = ctx.eval_fallback_context() as *const _;
 
         assert_eq!(
-            try_eval_with_rumoca_eval_const(&ctx, &make_int(11), &prefix),
+            try_eval_with_rumoca_eval_flat(&ctx, &make_int(11), &prefix),
             Some(11)
         );
         let second_ctx_ptr = ctx.eval_fallback_context() as *const _;

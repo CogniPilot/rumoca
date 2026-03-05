@@ -13,7 +13,7 @@
 use rustc_hash::FxHashMap;
 
 use rumoca_core::{IntegerBinaryOperator, eval_integer_binary, eval_integer_div_builtin};
-use rumoca_eval_const::{EvalContext, Value};
+use rumoca_eval_flat::{EvalContext, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -1186,16 +1186,16 @@ fn eval_user_func_integer(
         return try_eval_real_with_context(arg, ctx).map(|v| v as i64);
     }
 
-    // Try to find and evaluate the user-defined function using rumoca_eval_const
+    // Try to find and evaluate the user-defined function using rumoca_eval_flat
     let func = ctx.functions.get(&name_str)?;
     let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
 
-    let result = rumoca_eval_const::function_eval::eval_function(
+    let result = rumoca_eval_flat::function_eval::eval_function(
         func,
         arg_values,
         &eval_ctx,
-        &rumoca_eval_const::function_eval::EvalLimits::default(),
+        &rumoca_eval_flat::function_eval::EvalLimits::default(),
         0,
         rumoca_core::Span::DUMMY,
     );
@@ -1217,11 +1217,11 @@ pub(crate) fn eval_user_func_real(
     let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
 
-    let result = rumoca_eval_const::function_eval::eval_function(
+    let result = rumoca_eval_flat::function_eval::eval_function(
         func,
         arg_values,
         &eval_ctx,
-        &rumoca_eval_const::function_eval::EvalLimits::default(),
+        &rumoca_eval_flat::function_eval::EvalLimits::default(),
         0,
         rumoca_core::Span::DUMMY,
     );

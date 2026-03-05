@@ -841,6 +841,18 @@ fn extract_derivative_annotations(
 
 /// Extract a single derivative annotation from an expression.
 fn extract_single_derivative(expr: &ast::Expression) -> Option<flat::DerivativeAnnotation> {
+    // Parser-normalized pattern from source:
+    // annotation(derivative(...) = myFunc_der)
+    if let ast::Expression::Binary { op, lhs, rhs } = expr
+        && matches!(op, rumoca_ir_ast::OpBinary::Assign(_))
+    {
+        let func_name = extract_function_name(rhs)?;
+        if let Some(mut annotation) = try_extract_derivative_target(lhs) {
+            annotation.derivative_function = func_name;
+            return Some(annotation);
+        }
+    }
+
     // Pattern 1: NamedArgument { name: "derivative", value: ... }
     // This handles: derivative = funcName
     if let ast::Expression::NamedArgument { name, value } = expr
@@ -871,6 +883,54 @@ fn extract_single_derivative(expr: &ast::Expression) -> Option<flat::DerivativeA
     } = expr
         && let Some(annotation) = try_extract_class_mod_derivative(target, modifications)
     {
+        return Some(annotation);
+    }
+
+    None
+}
+
+fn try_extract_derivative_target(expr: &ast::Expression) -> Option<flat::DerivativeAnnotation> {
+    if let ast::Expression::NamedArgument { name, .. } = expr
+        && name.text.as_ref() == "derivative"
+    {
+        return Some(flat::DerivativeAnnotation {
+            derivative_function: String::new(),
+            order: 1,
+            zero_derivative: Vec::new(),
+            no_derivative: Vec::new(),
+        });
+    }
+
+    if let ast::Expression::Modification { target, .. } = expr
+        && target.parts.len() == 1
+        && target.parts[0].ident.text.as_ref() == "derivative"
+    {
+        let mut annotation = flat::DerivativeAnnotation {
+            derivative_function: String::new(),
+            order: 1,
+            zero_derivative: Vec::new(),
+            no_derivative: Vec::new(),
+        };
+        extract_modifiers_from_subscripts(&target.parts[0].subs, &mut annotation);
+        return Some(annotation);
+    }
+
+    if let ast::Expression::ClassModification {
+        target,
+        modifications,
+    } = expr
+        && target.parts.len() == 1
+        && target.parts[0].ident.text.as_ref() == "derivative"
+    {
+        let mut annotation = flat::DerivativeAnnotation {
+            derivative_function: String::new(),
+            order: 1,
+            zero_derivative: Vec::new(),
+            no_derivative: Vec::new(),
+        };
+        for mod_expr in modifications {
+            extract_derivative_modifier(mod_expr, &mut annotation);
+        }
         return Some(annotation);
     }
 

@@ -9,9 +9,9 @@ use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Dyn, OMatrix, OVector, U1, Vector};
 use std::time::Instant;
 
-use rumoca_eval_runtime::dual::Dual;
-use rumoca_eval_runtime::eval::{VarEnv, build_env, eval_expr, lift_env};
-use rumoca_eval_runtime::sim_float::SimFloat;
+use rumoca_eval_flat::dual::Dual;
+use rumoca_eval_flat::eval::{VarEnv, build_env, eval_expr, lift_env};
+use rumoca_eval_flat::sim_float::SimFloat;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_phase_structural::{CausalStep, IcBlock};
@@ -428,11 +428,11 @@ fn init_eval_env(dae: &Dae) -> VarEnv<f64> {
         env.functions = std::sync::Arc::new(func_map);
     }
 
-    env.dims = std::sync::Arc::new(rumoca_eval_runtime::eval::collect_var_dims(dae));
-    env.start_exprs = std::sync::Arc::new(rumoca_eval_runtime::eval::collect_var_starts(dae));
+    env.dims = std::sync::Arc::new(rumoca_eval_flat::eval::collect_var_dims(dae));
+    env.start_exprs = std::sync::Arc::new(rumoca_eval_flat::eval::collect_var_starts(dae));
     env.enum_literal_ordinals = std::sync::Arc::new(dae.enum_literal_ordinals.clone());
 
-    for &(fqn, value) in rumoca_eval_runtime::eval::MODELICA_CONSTANTS {
+    for &(fqn, value) in rumoca_eval_flat::eval::MODELICA_CONSTANTS {
         env.set(fqn, value);
     }
 

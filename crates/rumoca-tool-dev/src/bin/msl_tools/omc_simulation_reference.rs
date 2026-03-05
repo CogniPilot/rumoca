@@ -9,8 +9,7 @@ use crate::common::{
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use rumoca::sim_trace_compare::{
-    ModelDeviationMetric, SimTrace, compare_model_traces, count_agreement_bands_default,
-    load_trace_json,
+    ModelDeviationMetric, SimTrace, compare_model_traces, load_trace_json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,6 +18,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+mod output;
+#[cfg(test)]
+mod tests;
+use output::{
+    build_sim_output_payload, compute_trace_output_summary, print_summary, write_trace_report,
+};
 
 const DEFAULT_TRACE_EXCLUSIONS_FILE_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json";
@@ -182,14 +188,26 @@ struct TraceOutputSummary {
     agreement_high: usize,
     agreement_minor: usize,
     agreement_deviation: usize,
-    min_model_deviation_score: f64,
-    median_model_deviation_score: f64,
-    mean_model_deviation_score: f64,
-    max_model_deviation_score: f64,
-    min_model_normalized_rmse: f64,
-    median_model_normalized_rmse: f64,
-    mean_model_normalized_rmse: f64,
-    max_model_normalized_rmse: f64,
+    agreement_high_percent: f64,
+    agreement_minor_percent: f64,
+    agreement_deviation_percent: f64,
+    total_channels_compared: usize,
+    bad_channels_total: usize,
+    severe_channels_total: usize,
+    bad_channels_percent: f64,
+    severe_channels_percent: f64,
+    violation_mass_total: f64,
+    violation_mass_mean_per_model: f64,
+    violation_mass_mean_per_channel: f64,
+    models_with_any_channel_deviation: usize,
+    models_with_any_channel_deviation_percent: f64,
+    max_model_channel_deviation_percent: f64,
+    min_model_bounded_normalized_l1: f64,
+    median_model_bounded_normalized_l1: f64,
+    mean_model_bounded_normalized_l1: f64,
+    max_model_bounded_normalized_l1: f64,
+    mean_model_mean_channel_bounded_normalized_l1: f64,
+    max_model_max_channel_bounded_normalized_l1: f64,
 }
 
 fn simulation_stop_time_override() -> Option<f64> {
@@ -255,6 +273,7 @@ pub(crate) fn run(args: Args) -> Result<()> {
         &mut state.all_results,
     )?;
     run_pending_batches(&args, workers, &paths.sim_work_dir, &mut state)?;
+    refresh_omc_trace_artifacts_from_results(&paths, &mut state.all_results);
     attach_rumoca_runtime(&paths, &mut state.all_results)?;
     let trace_exclusions = load_trace_exclusions(&args, &paths)?;
     let trace_report = quantify_trace_differences(&paths, &state.all_results, &trace_exclusions)?;
@@ -965,6 +984,68 @@ fn attach_omc_traces(paths: &MslPaths, results: &mut BTreeMap<String, SimModelRe
     }
 }
 
+fn refresh_omc_trace_artifacts_from_results(
+    paths: &MslPaths,
+    results: &mut BTreeMap<String, SimModelResult>,
+) {
+    let mut existing_count = 0usize;
+    let mut regenerated_count = 0usize;
+    let mut missing_count = 0usize;
+    for (model_name, result) in results {
+        if result.status != "success" {
+            continue;
+        }
+        if let Some(reference) =
+            existing_omc_trace_reference(paths, model_name, result.trace_file.as_deref())
+        {
+            result.trace_file = Some(reference);
+            result.trace_error = None;
+            existing_count += 1;
+            continue;
+        }
+        let (trace_file, trace_error) =
+            write_omc_trace_artifact(paths, model_name, result.result_file.as_deref());
+        if trace_file.is_some() {
+            regenerated_count += 1;
+        } else {
+            missing_count += 1;
+        }
+        result.trace_file = trace_file;
+        result.trace_error = trace_error;
+    }
+    if regenerated_count > 0 || missing_count > 0 {
+        println!(
+            "OMC trace artifact refresh: existing={} regenerated={} missing={}",
+            existing_count, regenerated_count, missing_count
+        );
+    }
+}
+
+fn existing_omc_trace_reference(
+    paths: &MslPaths,
+    model_name: &str,
+    trace_file: Option<&str>,
+) -> Option<String> {
+    if let Some(trace_file) = trace_file {
+        let trace_path = PathBuf::from(trace_file);
+        let resolved = if trace_path.is_absolute() {
+            trace_path
+        } else {
+            paths.results_dir.join(&trace_path)
+        };
+        if resolved.is_file() {
+            return Some(trace_file.to_string());
+        }
+    }
+    let fallback = PathBuf::from("sim_traces")
+        .join("omc")
+        .join(format!("{model_name}.json"));
+    if paths.results_dir.join(&fallback).is_file() {
+        return Some(fallback.display().to_string());
+    }
+    None
+}
+
 fn write_omc_trace_artifact(
     paths: &MslPaths,
     model_name: &str,
@@ -1053,6 +1134,7 @@ fn load_omc_csv_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> {
         times,
         names,
         data,
+        variable_meta: None,
     })
 }
 
@@ -1400,84 +1482,6 @@ fn resolve_omc_trace_path(
     }
 }
 
-fn write_trace_report(
-    paths: &MslPaths,
-    all_results: &BTreeMap<String, SimModelResult>,
-    quantification: &TraceQuantification,
-) -> Result<()> {
-    let mut metrics = quantification.models.values().cloned().collect::<Vec<_>>();
-    metrics.sort_by(|a, b| {
-        b.metric
-            .max_normalized_integral_abs_error
-            .partial_cmp(&a.metric.max_normalized_integral_abs_error)
-            .unwrap_or(Ordering::Equal)
-    });
-    let model_metrics = metrics.iter().map(|item| &item.metric).collect::<Vec<_>>();
-    let agreement_counts = count_agreement_bands_default(model_metrics.iter().copied());
-    let (min_deviation, median_deviation, mean_deviation, max_deviation) =
-        metric_distribution(model_metrics.iter().map(|metric| metric.deviation_score))
-            .unwrap_or((0.0, 0.0, 0.0, 0.0));
-    let (min_rmse, median_rmse, mean_rmse, max_rmse) = metric_distribution(
-        model_metrics
-            .iter()
-            .map(|metric| metric.mean_normalized_rmse),
-    )
-    .unwrap_or((0.0, 0.0, 0.0, 0.0));
-    let total_rumoca_wall = metrics
-        .iter()
-        .filter_map(|metric| metric.rumoca_sim_wall_seconds)
-        .sum::<f64>();
-    let total_rumoca_sim = metrics
-        .iter()
-        .filter_map(|metric| metric.rumoca_sim_seconds)
-        .sum::<f64>();
-    let total_omc_sim = metrics
-        .iter()
-        .filter_map(|metric| metric.omc_sim_system_seconds)
-        .sum::<f64>();
-    let speedup_ratio = if total_rumoca_sim > 0.0 {
-        Some(total_omc_sim / total_rumoca_sim)
-    } else {
-        None
-    };
-    let candidate = all_results
-        .iter()
-        .filter(|(_, result)| {
-            result.status == "success" && result.rumoca_status.as_deref() == Some("sim_ok")
-        })
-        .count();
-    let trace_file = paths.results_dir.join("sim_trace_comparison.json");
-    let payload = json!({
-        "generated_at_unix_seconds": unix_timestamp_seconds(),
-        "models_candidate": candidate,
-        "models_compared": metrics.len(),
-        "missing_trace_models": quantification.missing_trace.len(),
-        "skipped_models": quantification.skipped.len(),
-        "agreement_bands": agreement_counts,
-        "summary": {
-            "min_model_deviation_score": min_deviation,
-            "mean_model_deviation_score": mean_deviation,
-            "median_model_deviation_score": median_deviation,
-            "max_model_deviation_score": max_deviation,
-            "worst_model_deviation_score": max_deviation,
-            "min_model_normalized_rmse": min_rmse,
-            "mean_model_normalized_rmse": mean_rmse,
-            "median_model_normalized_rmse": median_rmse,
-            "max_model_normalized_rmse": max_rmse,
-            "worst_model_normalized_rmse": max_rmse,
-            "total_rumoca_sim_wall_seconds": total_rumoca_wall,
-            "total_rumoca_sim_seconds": total_rumoca_sim,
-            "total_omc_sim_system_seconds": total_omc_sim,
-            "omc_sim_over_rumoca_sim_speedup_ratio": speedup_ratio,
-        },
-        "worst_models": metrics.iter().take(20).collect::<Vec<_>>(),
-        "missing_trace": quantification.missing_trace,
-        "skipped": quantification.skipped,
-        "models": quantification.models,
-    });
-    write_pretty_json(&trace_file, &payload)
-}
-
 fn metric_distribution(values: impl Iterator<Item = f64>) -> Option<(f64, f64, f64, f64)> {
     let mut collected = values.filter(|value| value.is_finite()).collect::<Vec<_>>();
     if collected.is_empty() {
@@ -1695,121 +1699,6 @@ fn compute_runtime_ratio_buckets(state: &SimRunState) -> RuntimeRatioBuckets {
     }
 }
 
-fn compute_trace_output_summary(trace_report: &TraceQuantification) -> TraceOutputSummary {
-    let agreement =
-        count_agreement_bands_default(trace_report.models.values().map(|item| &item.metric));
-    let (min_deviation, median_deviation, mean_deviation, max_deviation) = metric_distribution(
-        trace_report
-            .models
-            .values()
-            .map(|item| item.metric.deviation_score),
-    )
-    .unwrap_or((0.0, 0.0, 0.0, 0.0));
-    let (min_rmse, median_rmse, mean_rmse, max_rmse) = metric_distribution(
-        trace_report
-            .models
-            .values()
-            .map(|item| item.metric.mean_normalized_rmse),
-    )
-    .unwrap_or((0.0, 0.0, 0.0, 0.0));
-
-    TraceOutputSummary {
-        models_compared: trace_report.models.len(),
-        missing_trace_models: trace_report.missing_trace.len(),
-        skipped_models: trace_report.skipped.len(),
-        agreement_high: agreement.high_agreement,
-        agreement_minor: agreement.minor_agreement,
-        agreement_deviation: agreement.deviation,
-        min_model_deviation_score: min_deviation,
-        median_model_deviation_score: median_deviation,
-        mean_model_deviation_score: mean_deviation,
-        max_model_deviation_score: max_deviation,
-        min_model_normalized_rmse: min_rmse,
-        median_model_normalized_rmse: median_rmse,
-        mean_model_normalized_rmse: mean_rmse,
-        max_model_normalized_rmse: max_rmse,
-    }
-}
-
-fn build_sim_output_payload(
-    args: &Args,
-    paths: &MslPaths,
-    selection: &ModelSelection,
-    context: &FinalizeContext,
-    metrics: &RunMetrics,
-    trace_summary: &TraceOutputSummary,
-    state: &SimRunState,
-) -> Value {
-    json!({
-        "msl_version": MSL_VERSION,
-        "omc_version": context.omc_version,
-        "git_commit": context.git_commit,
-        "target_selection": {
-            "source_file": selection.source_file.display().to_string(),
-            "rule": selection.rule,
-        },
-        "stop_time": args.stop_time,
-        "use_experiment_stop_time": args.use_experiment_stop_time,
-        "total_models": context.total,
-        "processed": state.all_results.len(),
-        "sim_successful": metrics.sim_successful,
-        "sim_failed": metrics.sim_failed,
-        "sim_timed_out": metrics.sim_timed_out,
-        "simulation_success_rate_percent": round3(metrics.success_rate),
-        "elapsed_seconds": round3(context.elapsed_seconds),
-        "timing": {
-            "selection_seconds": round3(selection.selection_seconds),
-            "batch_size_requested": args.batch_size,
-            "batch_size_effective": context.effective_batch_size,
-            "batch_timeout_seconds": args.batch_timeout_seconds,
-            "workers_requested": args.workers,
-            "workers_used": context.workers,
-            "omc_threads": args.omc_threads,
-            "batches_total": context.n_batches,
-            "batches_ran": metrics.ran_batches,
-            "batches_skipped": metrics.skipped_batches,
-            "batch_elapsed_stats": metrics.batch_stats,
-            "batch_details": state.batch_timings,
-        },
-        "runtime_comparison": {
-            "ratio_definition": "omc_over_rumoca_higher_is_better",
-            "ratio_metric_system": "omc_timeSimulation_over_rumoca_sim_seconds",
-            "ratio_metric_wall": "omc_external_wall_over_rumoca_external_wall",
-            "total_omc_sim_system_seconds": round3(metrics.total_omc_sim_system_seconds),
-            "total_omc_total_system_seconds": round3(metrics.total_omc_total_system_seconds),
-            "total_omc_wall_seconds": round3(metrics.total_omc_wall_seconds),
-            "total_rumoca_sim_seconds": round3(metrics.total_rumoca_sim_seconds),
-            "total_rumoca_sim_wall_seconds": round3(metrics.total_rumoca_sim_wall_seconds),
-            "ratio_stats": {
-                "system_ratio_all_positive": metrics.system_ratio_all_positive,
-                "system_ratio_both_success": metrics.system_ratio_both_success,
-                "wall_ratio_all_positive": metrics.wall_ratio_all_positive,
-                "wall_ratio_both_success": metrics.wall_ratio_both_success,
-            }
-        },
-        "trace_comparison": {
-            "report_file": paths.results_dir.join("sim_trace_comparison.json").display().to_string(),
-            "models_compared": trace_summary.models_compared,
-            "missing_trace_models": trace_summary.missing_trace_models,
-            "skipped_models": trace_summary.skipped_models,
-            "agreement_high": trace_summary.agreement_high,
-            "agreement_minor": trace_summary.agreement_minor,
-            "agreement_deviation": trace_summary.agreement_deviation,
-            "min_model_deviation_score": trace_summary.min_model_deviation_score,
-            "median_model_deviation_score": trace_summary.median_model_deviation_score,
-            "mean_model_deviation_score": trace_summary.mean_model_deviation_score,
-            "max_model_deviation_score": trace_summary.max_model_deviation_score,
-            "worst_model_deviation_score": trace_summary.max_model_deviation_score,
-            "min_model_normalized_rmse": trace_summary.min_model_normalized_rmse,
-            "median_model_normalized_rmse": trace_summary.median_model_normalized_rmse,
-            "mean_model_normalized_rmse": trace_summary.mean_model_normalized_rmse,
-            "max_model_normalized_rmse": trace_summary.max_model_normalized_rmse,
-            "worst_model_normalized_rmse": trace_summary.max_model_normalized_rmse,
-        },
-        "models": state.all_results,
-    })
-}
-
 fn sum_metric(values: impl Iterator<Item = f64>) -> f64 {
     values.filter(|value| value.is_finite()).sum::<f64>()
 }
@@ -1860,81 +1749,6 @@ fn compute_runtime_ratio_stats(
     })
 }
 
-fn print_summary(
-    output_file: &Path,
-    context: &FinalizeContext,
-    metrics: &RunMetrics,
-    trace_summary: &TraceOutputSummary,
-) {
-    println!();
-    println!("Results saved to {}", output_file.display());
-    println!("  Total models: {}", context.total);
-    println!("  Successful simulations: {}", metrics.sim_successful);
-    println!("  Failed simulations: {}", metrics.sim_failed);
-    println!("  Timed out: {}", metrics.sim_timed_out);
-    println!(
-        "  Simulation success rate: {:.1}% ({}/{})",
-        metrics.success_rate, metrics.sim_successful, context.total
-    );
-    println!(
-        "  OMC sim system time (sum): {:.2}s | OMC total system time (sum): {:.2}s | OMC external wall (sum): {:.2}s",
-        metrics.total_omc_sim_system_seconds,
-        metrics.total_omc_total_system_seconds,
-        metrics.total_omc_wall_seconds
-    );
-    println!(
-        "  Rumoca sim seconds (sum): {:.2}s | Rumoca sim wall seconds (sum): {:.2}s",
-        metrics.total_rumoca_sim_seconds, metrics.total_rumoca_sim_wall_seconds
-    );
-    if let Some(ratio) = &metrics.system_ratio_both_success {
-        println!(
-            "  System speedup ratio (omc/rumoca, >1 means Rumoca faster; both success, n={}): aggregate={:.3}, mean={:.3}, median={:.3}, min={:.3}, max={:.3}",
-            ratio.sample_count,
-            ratio.aggregate_ratio,
-            ratio.mean_ratio,
-            ratio.median_ratio,
-            ratio.min_ratio,
-            ratio.max_ratio
-        );
-    }
-    if let Some(ratio) = &metrics.wall_ratio_both_success {
-        println!(
-            "  Wall speedup ratio (external wall, omc/rumoca, >1 means Rumoca faster; both success, n={}): aggregate={:.3}, mean={:.3}, median={:.3}, min={:.3}, max={:.3}",
-            ratio.sample_count,
-            ratio.aggregate_ratio,
-            ratio.mean_ratio,
-            ratio.median_ratio,
-            ratio.min_ratio,
-            ratio.max_ratio
-        );
-    }
-    println!(
-        "  Trace comparison: {} models compared",
-        trace_summary.models_compared
-    );
-    println!(
-        "  Trace deviation (n={}): min={:.3e}, median={:.3e}, mean={:.3e}, max={:.3e}",
-        trace_summary.models_compared,
-        trace_summary.min_model_deviation_score,
-        trace_summary.median_model_deviation_score,
-        trace_summary.mean_model_deviation_score,
-        trace_summary.max_model_deviation_score
-    );
-    println!(
-        "  Trace normalized RMSE (n={}): min={:.3e}, median={:.3e}, mean={:.3e}, max={:.3e}",
-        trace_summary.models_compared,
-        trace_summary.min_model_normalized_rmse,
-        trace_summary.median_model_normalized_rmse,
-        trace_summary.mean_model_normalized_rmse,
-        trace_summary.max_model_normalized_rmse
-    );
-    println!(
-        "  Elapsed: {:.1}s ({:.2}s/model)",
-        context.elapsed_seconds,
-        context.elapsed_seconds / context.total.max(1) as f64
-    );
-}
-
 fn append_line(buffer: &mut String, line: &str) {
     if !buffer.is_empty() {
         buffer.push('\n');
@@ -1951,6 +1765,3 @@ enum SimEntryMode {
     None,
     Error,
 }
-
-#[cfg(test)]
-mod tests;

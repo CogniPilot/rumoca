@@ -18,7 +18,7 @@ Crate boundaries serve as collaboration guardrails — hard compiler-enforced wa
 
 ### 1. Bounded Context Per Task
 
-Each crate's `Cargo.toml` defines exactly what it can see. A contributor working on `rumoca-phase-flatten` only needs to understand its dependencies (`rumoca-core`, `rumoca-eval-const`, `rumoca-ir-ast`, `rumoca-ir-flat`), not all 24 workspace crates. The dependency list is the reading list.
+Each crate's `Cargo.toml` defines exactly what it can see. A contributor working on `rumoca-phase-flatten` only needs to understand its dependencies (`rumoca-core`, `rumoca-eval-flat`, `rumoca-ir-ast`, `rumoca-ir-flat`), not all 24 workspace crates. The dependency list is the reading list.
 
 ### 2. Strict DAG Dependency Graph
 
@@ -34,7 +34,7 @@ No circular dependencies between crates. The dependency tiers form an acyclic gr
 
 ### 5. Evaluation Decoupled from Representation
 
-`rumoca-eval-const` and `rumoca-eval-runtime` consume IRs but don't own them. This keeps evaluation strategies swappable without touching IR definitions. Constant evaluation (compile-time) and runtime evaluation (simulation-time) are separate concerns with different dependencies.
+`rumoca-eval-ast`, `rumoca-eval-flat`, and `rumoca-eval-dae` consume IRs but don't own them. This keeps evaluation strategies swappable without touching IR definitions while keeping AST-, flat-, and DAE-level evaluation concerns isolated.
 
 ### 6. Rules for Adding Dependencies
 
@@ -77,7 +77,7 @@ Re-export guardrails:
 
 ## Dependency Tiers
 
-The 24 workspace crates are organized into six tiers. Dependencies flow strictly downward.
+Workspace crates are organized into six tiers. Dependencies flow strictly downward.
 
 ```
 Tier 6 — Binary & Bindings (top-level entry points)
@@ -105,8 +105,9 @@ Tier 3 — Phases & Evaluation (transformations)
   rumoca-phase-dae          Flat equations → DAE system
   rumoca-phase-structural   Structural analysis
   rumoca-phase-codegen      DAE → solver code
-  rumoca-eval-const         Compile-time expression evaluation
-  rumoca-eval-runtime       Simulation-time expression evaluation
+  rumoca-eval-ast          AST-level evaluation contracts
+  rumoca-eval-flat         Flat IR expression evaluation (compile-time + runtime)
+  rumoca-eval-dae          DAE-level lowering/compiled evaluation kernels
 
 Tier 2 — IR (pure data, no logic)
   rumoca-ir-ast             Syntax tree, class definitions

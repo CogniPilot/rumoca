@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use rumoca_eval_runtime::eval::VarEnv;
+use rumoca_eval_flat::eval::VarEnv;
 use rumoca_ir_dae as dae;
 
 #[cfg(not(target_arch = "wasm32"))]
-type CompiledExpressionRows = rumoca_eval_compiled::CompiledExpressionRows;
+type CompiledExpressionRows = rumoca_eval_dae::CompiledExpressionRows;
 #[cfg(target_arch = "wasm32")]
-type CompiledExpressionRows = rumoca_eval_compiled::CompiledExpressionRowsWasm;
+type CompiledExpressionRows = rumoca_eval_dae::CompiledExpressionRowsWasm;
 
 fn equation_key(eq: &dae::Equation) -> usize {
     eq as *const dae::Equation as usize
@@ -247,12 +247,8 @@ fn compile_scalar_expression_rows(
     dae_model: &dae::Dae,
     exprs: &[dae::Expression],
 ) -> Result<CompiledExpressionRows, String> {
-    rumoca_eval_compiled::compile_expressions(
-        dae_model,
-        exprs,
-        rumoca_eval_compiled::Backend::Cranelift,
-    )
-    .map_err(|err| err.to_string())
+    rumoca_eval_dae::compile_expressions(dae_model, exprs, rumoca_eval_dae::Backend::Cranelift)
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -260,7 +256,7 @@ fn compile_scalar_expression_rows(
     dae_model: &dae::Dae,
     exprs: &[dae::Expression],
 ) -> Result<CompiledExpressionRows, String> {
-    rumoca_eval_compiled::compile_expressions_wasm(dae_model, exprs).map_err(|err| err.to_string())
+    rumoca_eval_dae::compile_expressions_wasm(dae_model, exprs).map_err(|err| err.to_string())
 }
 
 pub fn settle_runtime_event_updates_with_compiled_discrete(

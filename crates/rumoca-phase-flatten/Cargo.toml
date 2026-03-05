@@ -12,7 +12,7 @@ tracing = ["dep:tracing"]
 
 [dependencies]
 rumoca-core = { path = "../rumoca-core" }
-rumoca-eval-const = { path = "../rumoca-eval-const" }
+rumoca-eval-flat = { path = "../rumoca-eval-flat" }
 rumoca-ir-ast = { path = "../rumoca-ir-ast" }
 rumoca-ir-flat = { path = "../rumoca-ir-flat" }
 indexmap = "2.2"

@@ -63,6 +63,21 @@ struct SimTraceArtifact {
     times: Vec<f64>,
     names: Vec<String>,
     data: Vec<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    variable_meta: Option<Vec<SimTraceVariableMetaArtifact>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SimTraceVariableMetaArtifact {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    variability: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    time_domain: Option<String>,
 }
 
 fn panic_message(panic_info: Box<dyn std::any::Any + Send>) -> String {
@@ -209,6 +224,23 @@ fn write_trace_json(
         times: result.times.clone(),
         names: result.names.clone(),
         data: result.data.clone(),
+        variable_meta: if result.variable_meta.is_empty() {
+            None
+        } else {
+            Some(
+                result
+                    .variable_meta
+                    .iter()
+                    .map(|meta| SimTraceVariableMetaArtifact {
+                        name: meta.name.clone(),
+                        role: Some(meta.role.clone()),
+                        value_type: meta.value_type.clone(),
+                        variability: meta.variability.clone(),
+                        time_domain: meta.time_domain.clone(),
+                    })
+                    .collect(),
+            )
+        },
     };
 
     let mut file = File::create(trace_path).map_err(|e| {

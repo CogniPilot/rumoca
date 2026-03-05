@@ -1,5 +1,14 @@
+pub mod causal_ode_form;
 pub mod dae_prepare;
 pub mod diagnostics;
+pub mod equation_reorder;
 pub mod introspection;
+pub mod mass_matrix_form;
+pub mod parameter_values;
 pub mod pipeline;
+pub mod prepare;
+pub mod problem_runtime;
+pub mod result_build;
+pub mod results;
+pub mod runtime_alias_normalization;
 pub mod runtime_prep;
