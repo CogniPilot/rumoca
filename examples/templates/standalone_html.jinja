@@ -223,8 +223,28 @@ return [];</textarea
 
         <div style="margin-top: 12px">
           <label for="seriesSelect">Plot series</label>
-          <select id="seriesSelect" style="width: 100%"></select>
-          <div class="hint">Plots time versus selected series using a simple SVG polyline.</div>
+          <div class="row">
+            <select id="seriesSelect" style="flex: 1 1 auto"></select>
+            <button id="axisPlotBtn" type="button" class="secondary">Axis plot</button>
+          </div>
+          <div id="axisPicker" style="display: none; margin-top: 8px">
+            <div class="row">
+              <div style="flex: 1 1 180px">
+                <label for="xAxisSelect">X axis</label>
+                <select id="xAxisSelect" style="width: 100%"></select>
+              </div>
+              <div style="flex: 1 1 180px">
+                <label for="yAxisSelect">Y axis</label>
+                <select id="yAxisSelect" style="width: 100%"></select>
+              </div>
+            </div>
+            <div class="row" style="margin-top: 8px">
+              <button id="applyAxisPlotBtn" type="button" class="secondary">Plot X/Y</button>
+            </div>
+          </div>
+          <div class="hint">
+            Time plot or custom X/Y plot using local model result series.
+          </div>
         </div>
       </section>
 
@@ -291,6 +311,7 @@ return [];</textarea
 {%- set eqs = dae.f_x if dae.f_x is defined else (dae.fx if dae.fx is defined else []) -%}
 {%- set cond_eqs = dae.f_c if dae.f_c is defined else [] -%}
 {%- set when_clauses = dae.when_clauses if dae.when_clauses is defined else [] -%}
+{%- set reset_eqs = dae.f_z if dae.f_z is defined else [] -%}
 
 {%- macro render_cref(cr) -%}
 {%- if cr.parts is defined -%}
@@ -367,13 +388,46 @@ return [];</textarea
 {%- endif -%}
 {%- endmacro -%}
 
+{%- macro inferred_unit_from_name(name) -%}
+{%- set __n = (name|string)|trim -%}
+{%- set __nl = __n|lower -%}
+{%- if __nl == 'i' or __nl[-2:] == '.i' -%}A
+{%- elif __nl == 'v' or __nl[-2:] == '.v' -%}V
+{%- elif __nl[-7:] == 'q_flow' or __nl[-10:] == '.q_flow' -%}W
+{%- elif __nl[-9:] == 'losspower' or __nl[-10:] == '.losspower' -%}W
+{%- elif __nl[-9:] == 'r_actual' or __nl[-10:] == '.r_actual' or __nl == 'r' or __nl[-2:] == '.r' -%}Ohm
+{%- elif __nl == 'g' or __nl[-2:] == '.g' -%}W/K
+{%- elif __nl[-3:] == '.dt' or __nl == 'dt' -%}K
+{%- elif __nl == 't' or __nl[-2:] == '.t' -%}K
+{%- elif __nl == 'f' or __nl[-2:] == '.f' -%}Hz
+{%- elif __nl[-6:] == '.phase' or __nl == 'phase' -%}rad
+{%- elif __nl[-6:] == '.omega' or __nl == 'omega' -%}rad/s
+{%- elif __nl[-6:] == '.alpha' or __nl == 'alpha' -%}1/K
+{%- else -%}
+{%- endif -%}
+{%- endmacro -%}
+
 {%- macro comp_unit_prop(comp) -%}
-{%- if comp.unit is defined and (comp.unit|string)|trim != '' -%}
-, unit: "{{ comp.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
-{%- elif comp.displayUnit is defined and (comp.displayUnit|string)|trim != '' -%}
-, unit: "{{ comp.displayUnit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
-{%- elif comp.display_unit is defined and (comp.display_unit|string)|trim != '' -%}
-, unit: "{{ comp.display_unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- if comp.unit is defined and comp.unit is not none -%}
+  {%- set __u = (comp.unit|string)|trim -%}
+  {%- if __u != '' and __u|lower != 'none' and __u|lower != 'null' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
+{%- elif comp.displayUnit is defined and comp.displayUnit is not none -%}
+  {%- set __u = (comp.displayUnit|string)|trim -%}
+  {%- if __u != '' and __u|lower != 'none' and __u|lower != 'null' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
+{%- elif comp.display_unit is defined and comp.display_unit is not none -%}
+  {%- set __u = (comp.display_unit|string)|trim -%}
+  {%- if __u != '' and __u|lower != 'none' and __u|lower != 'null' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
+{%- else -%}
+  {%- set __u = inferred_unit_from_name(comp.name if comp.name is defined else '')|trim -%}
+  {%- if __u != '' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
 {%- endif -%}
 {%- endmacro -%}
 
@@ -632,6 +686,23 @@ return [];</textarea
   {%- endif -%}
 {%- endmacro -%}
 
+{%- macro event_indicator_expr(e) -%}
+{%- if e is mapping and e.Binary is defined -%}
+  {%- set b = e.Binary -%}
+  {%- if b.op.Le is defined or b.op.Lt is defined or b.op.LessEq is defined or b.op.Less is defined -%}
+    (({{ render_expr(b.lhs) }}) - ({{ render_expr(b.rhs) }}))
+  {%- elif b.op.Ge is defined or b.op.Gt is defined or b.op.GreaterEq is defined or b.op.Greater is defined -%}
+    (({{ render_expr(b.rhs) }}) - ({{ render_expr(b.lhs) }}))
+  {%- elif b.op.Eq is defined or b.op.Ne is defined or b.op.Equals is defined or b.op.NotEquals is defined -%}
+    (({{ render_expr(b.lhs) }}) - ({{ render_expr(b.rhs) }}))
+  {%- else -%}
+    (({{ render_expr(e) }}) ? -1 : 1)
+  {%- endif -%}
+{%- else -%}
+  (({{ render_expr(e) }}) ? -1 : 1)
+{%- endif -%}
+{%- endmacro -%}
+
 function Model() {
   const __rumocaHasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -804,7 +875,7 @@ function Model() {
       { name: "{{ name }}", start: y0[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or obs_list|length > 0 %},{% endif %}
     {%- endfor %}
     {%- for obs in obs_list %}
-      { name: "{{ obs.name }}", start: {% if obs.start is defined %}__rumocaFiniteOr({{ render_expr(obs.start) }}, 0){% else %}0{% endif %}{% if obs.unit is defined and (obs.unit|string)|trim != '' %}, unit: "{{ obs.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"{% endif %} }{% if not loop.last %},{% endif %}
+      { name: "{{ obs.name }}", start: {% if obs.start is defined %}__rumocaFiniteOr({{ render_expr(obs.start) }}, 0){% else %}0{% endif %}{% if obs.unit is defined and obs.unit is not none and (obs.unit|string)|trim != '' and (obs.unit|string)|trim|lower != 'none' and (obs.unit|string)|trim|lower != 'null' %}, unit: "{{ (obs.unit|string)|trim|replace('\\', '\\\\')|replace('"', '\\"') }}"{% else %}{% set __u = inferred_unit_from_name(obs.name)|trim %}{% if __u != '' %}, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"{% endif %}{% endif %} }{% if not loop.last %},{% endif %}
     {%- endfor %}
     ],
 
@@ -945,6 +1016,45 @@ function Model() {
     ];
   }
 
+  function evalEventIndicators(t, xVec, yVec, uVec, pOverride) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    return [
+    {%- for ce in cond_eqs %}
+      {{ event_indicator_expr(ce.rhs) }}{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ];
+  }
+
   function evalAlgebraics(t, xVec, yVec, uVec, pOverride) {
     var p = Object.assign({}, pDefaults, pOverride || {});
 
@@ -1062,6 +1172,23 @@ function Model() {
     }
   {%- endfor %}
 
+  {%- if when_clauses|length == 0 and reset_eqs|length > 0 %}
+    const firedAny = Array.isArray(cPrev) && Array.isArray(cCurr)
+      ? cCurr.some((value, idx) => !Boolean(cPrev[idx]) && Boolean(value))
+      : false;
+    if (firedAny) {
+    {%- for eq in reset_eqs %}
+      {%- if eq.lhs is defined %}
+      if (stateIndex["{{ eq.lhs }}"] !== undefined) {
+        xNew[stateIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+      } else if (algebraicIndex["{{ eq.lhs }}"] !== undefined) {
+        yNew[algebraicIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+      }
+      {%- endif %}
+    {%- endfor %}
+    }
+  {%- endif %}
+
     return { x: xNew, y: yNew, c: cNew };
   }
 
@@ -1078,9 +1205,9 @@ function Model() {
     nx: meta.summary.nx,
     ny: meta.summary.ny,
     nu: meta.inputs.length,
-    nz: 0
+    nz: {{ cond_eqs|length }}
   };
-  const capabilities = { events: false };
+  const capabilities = { events: {{ "true" if cond_eqs|length > 0 or when_clauses|length > 0 or reset_eqs|length > 0 else "false" }} };
 
   return {
     abiRequired,
@@ -1094,6 +1221,7 @@ function Model() {
     c0,
     residual,
     evalAlgebraics,
+    evalEventIndicators,
     evalConditions,
     applyResets
   };
@@ -1133,12 +1261,28 @@ function Model() {
   const inputNames = (meta.inputs || []).map((u) => u.name)
   const conditionNames = (meta.conditions || []).map((c) => c.name)
 
+  const sanitizeVariableMeta = (vars) =>
+    (Array.isArray(vars) ? vars : [])
+      .map((v) => {
+        const name = typeof v?.name === 'string' ? v.name : ''
+        if (!name) return null
+        const unit = typeof v?.unit === 'string' ? v.unit.trim() : ''
+        return unit ? { name, unit } : { name }
+      })
+      .filter((v) => v !== null)
+
+  const stateVariables = sanitizeVariableMeta(meta.states)
+  const algebraicVariables = sanitizeVariableMeta(meta.algebraics)
+  const inputVariables = sanitizeVariableMeta(meta.inputs)
+  const conditionVariables = sanitizeVariableMeta(meta.conditions)
+
   const nx = Array.isArray(model.x0) ? model.x0.length : 0
   const ny = Array.isArray(model.y0) ? model.y0.length : 0
   const nu = inputNames.length
 
   const haveEvents =
     typeof model.evalConditions === 'function' && typeof model.applyResets === 'function'
+  const haveEventIndicators = typeof model.evalEventIndicators === 'function'
   const haveAlgebraicEval = typeof model.evalAlgebraics === 'function'
 
   const x0_model = Array.isArray(model.x0) ? model.x0.slice() : new Array(nx).fill(0)
@@ -1546,7 +1690,8 @@ function Model() {
   }
 
   function rk4Step(t, x, y, u, dt, pOverride, newtonOpts, xDotPrev) {
-    const xDotSeed = Array.isArray(xDotPrev) && xDotPrev.length === nx ? xDotPrev.slice() : new Array(nx).fill(0)
+    const xDotSeed =
+      Array.isArray(xDotPrev) && xDotPrev.length === nx ? xDotPrev.slice() : new Array(nx).fill(0)
 
     const s1 = solveFlowAtState(t, x, y, xDotSeed, u, pOverride, newtonOpts, 'rk4_stage1')
     const x2 = new Array(nx)
@@ -1578,16 +1723,7 @@ function Model() {
     const x4 = new Array(nx)
     for (let i = 0; i < nx; i++) x4[i] = x[i] + dt * s3.xDot[i]
 
-    const s4 = solveFlowAtState(
-      t + dt,
-      x4,
-      s3.y,
-      s3.xDot,
-      u,
-      pOverride,
-      newtonOpts,
-      'rk4_stage4',
-    )
+    const s4 = solveFlowAtState(t + dt, x4, s3.y, s3.xDot, u, pOverride, newtonOpts, 'rk4_stage4')
 
     const xNext = new Array(nx)
     for (let i = 0; i < nx; i++) {
@@ -1598,6 +1734,123 @@ function Model() {
       x: xNext,
       y: s4.y.slice(),
       xDot: s4.xDot.slice(),
+    }
+  }
+
+  // ---------- Explicit RK45 (Dormand-Prince 5(4)) ----------
+  function rk45Step(t, x, y, u, dt, pOverride, newtonOpts, xDotPrev) {
+    const xDotSeed =
+      Array.isArray(xDotPrev) && xDotPrev.length === nx ? xDotPrev.slice() : new Array(nx).fill(0)
+
+    const s1 = solveFlowAtState(t, x, y, xDotSeed, u, pOverride, newtonOpts, 'rk45_stage1')
+
+    const x2 = new Array(nx)
+    for (let i = 0; i < nx; i++) x2[i] = x[i] + dt * ((1 / 5) * s1.xDot[i])
+    const s2 = solveFlowAtState(
+      t + dt * (1 / 5),
+      x2,
+      s1.y,
+      s1.xDot,
+      u,
+      pOverride,
+      newtonOpts,
+      'rk45_stage2',
+    )
+
+    const x3 = new Array(nx)
+    for (let i = 0; i < nx; i++) x3[i] = x[i] + dt * ((3 / 40) * s1.xDot[i] + (9 / 40) * s2.xDot[i])
+    const s3 = solveFlowAtState(
+      t + dt * (3 / 10),
+      x3,
+      s2.y,
+      s2.xDot,
+      u,
+      pOverride,
+      newtonOpts,
+      'rk45_stage3',
+    )
+
+    const x4 = new Array(nx)
+    for (let i = 0; i < nx; i++) {
+      x4[i] = x[i] + dt * ((44 / 45) * s1.xDot[i] + (-56 / 15) * s2.xDot[i] + (32 / 9) * s3.xDot[i])
+    }
+    const s4 = solveFlowAtState(
+      t + dt * (4 / 5),
+      x4,
+      s3.y,
+      s3.xDot,
+      u,
+      pOverride,
+      newtonOpts,
+      'rk45_stage4',
+    )
+
+    const x5 = new Array(nx)
+    for (let i = 0; i < nx; i++) {
+      x5[i] =
+        x[i] +
+        dt *
+          ((19372 / 6561) * s1.xDot[i] +
+            (-25360 / 2187) * s2.xDot[i] +
+            (64448 / 6561) * s3.xDot[i] +
+            (-212 / 729) * s4.xDot[i])
+    }
+    const s5 = solveFlowAtState(
+      t + dt * (8 / 9),
+      x5,
+      s4.y,
+      s4.xDot,
+      u,
+      pOverride,
+      newtonOpts,
+      'rk45_stage5',
+    )
+
+    const x6 = new Array(nx)
+    for (let i = 0; i < nx; i++) {
+      x6[i] =
+        x[i] +
+        dt *
+          ((9017 / 3168) * s1.xDot[i] +
+            (-355 / 33) * s2.xDot[i] +
+            (46732 / 5247) * s3.xDot[i] +
+            (49 / 176) * s4.xDot[i] +
+            (-5103 / 18656) * s5.xDot[i])
+    }
+    const s6 = solveFlowAtState(t + dt, x6, s5.y, s5.xDot, u, pOverride, newtonOpts, 'rk45_stage6')
+
+    const x7 = new Array(nx)
+    for (let i = 0; i < nx; i++) {
+      x7[i] =
+        x[i] +
+        dt *
+          ((35 / 384) * s1.xDot[i] +
+            (500 / 1113) * s3.xDot[i] +
+            (125 / 192) * s4.xDot[i] +
+            (-2187 / 6784) * s5.xDot[i] +
+            (11 / 84) * s6.xDot[i])
+    }
+    const s7 = solveFlowAtState(t + dt, x7, s6.y, s6.xDot, u, pOverride, newtonOpts, 'rk45_stage7')
+
+    const x5th = x7
+    const x4th = new Array(nx)
+    for (let i = 0; i < nx; i++) {
+      x4th[i] =
+        x[i] +
+        dt *
+          ((5179 / 57600) * s1.xDot[i] +
+            (7571 / 16695) * s3.xDot[i] +
+            (393 / 640) * s4.xDot[i] +
+            (-92097 / 339200) * s5.xDot[i] +
+            (187 / 2100) * s6.xDot[i] +
+            (1 / 40) * s7.xDot[i])
+    }
+
+    return {
+      x: x5th.slice(),
+      y: s7.y.slice(),
+      xDot: s7.xDot.slice(),
+      xEmbedded: x4th,
     }
   }
   // ---------- Simulation ----------
@@ -1623,9 +1876,22 @@ function Model() {
         initRetryMinAbsBase: 1e-9,
         initRetryLambdaScale: 100,
         initRetryMaxIterScale: 2,
+        enableEventLocalization: true,
+        eventTolTime: dt / 1024,
+        maxEventBisectionIter: 40,
+        eventIterationMaxIter: 8,
+        maxEventsPerMacroStep: 16,
+        rk45AbsTol: 1e-6,
+        rk45RelTol: 1e-4,
+        rk45Safety: 0.9,
+        rk45MinFactor: 0.2,
+        rk45MaxFactor: 5,
+        rk45MinDt: dt / 1e6,
         adaptiveSubsteps: true,
         maxSubstepDepth: 6,
         minSubstepDt: dt / 128,
+        includeEventSamples: true,
+        eventSampleDedupTol: 0,
       },
       opts.solverOptions || {},
     )
@@ -1646,18 +1912,54 @@ function Model() {
     ).toLowerCase()
     const useIrk4 = selectedIntegrator === 'irk4' || selectedIntegrator === 'gauss_legendre_irk4'
     const useRk4 = selectedIntegrator === 'rk4'
-    const stepperName = useIrk4 ? 'irk4' : useRk4 ? 'rk4' : 'sdirk2'
+    const useRk45 = selectedIntegrator === 'rk45' || selectedIntegrator === 'dopri54'
+    const stepperName = useIrk4 ? 'irk4' : useRk4 ? 'rk4' : useRk45 ? 'rk45' : 'sdirk2'
     const captureFailureState = Boolean(
       solverOptions.captureFailureState ?? opts.captureFailureState ?? false,
     )
     const initializeConsistently = Boolean(solverOptions.initializeConsistently ?? true)
     const adaptiveSubsteps = Boolean(solverOptions.adaptiveSubsteps ?? true)
+    const includeEventSamples = Boolean(solverOptions.includeEventSamples ?? true)
+    const eventSampleDedupTol = Number.isFinite(solverOptions.eventSampleDedupTol)
+      ? Math.max(0, Number(solverOptions.eventSampleDedupTol))
+      : 0
     const maxSubstepDepth = Number.isFinite(solverOptions.maxSubstepDepth)
       ? Math.max(0, Math.floor(solverOptions.maxSubstepDepth))
       : 6
     const minSubstepDt = Number.isFinite(solverOptions.minSubstepDt)
       ? Math.max(1e-9, solverOptions.minSubstepDt)
       : Math.max(1e-9, dt / 128)
+    const enableEventLocalization = Boolean(solverOptions.enableEventLocalization ?? true)
+    const eventTolTime = Number.isFinite(solverOptions.eventTolTime)
+      ? Math.max(1e-12, solverOptions.eventTolTime)
+      : Math.max(1e-9, dt / 1024)
+    const maxEventBisectionIter = Number.isFinite(solverOptions.maxEventBisectionIter)
+      ? Math.max(1, Math.floor(solverOptions.maxEventBisectionIter))
+      : 40
+    const eventIterationMaxIter = Number.isFinite(solverOptions.eventIterationMaxIter)
+      ? Math.max(1, Math.floor(solverOptions.eventIterationMaxIter))
+      : 8
+    const maxEventsPerMacroStep = Number.isFinite(solverOptions.maxEventsPerMacroStep)
+      ? Math.max(1, Math.floor(solverOptions.maxEventsPerMacroStep))
+      : 16
+    const rk45AbsTol = Number.isFinite(solverOptions.rk45AbsTol)
+      ? Math.max(1e-14, solverOptions.rk45AbsTol)
+      : 1e-6
+    const rk45RelTol = Number.isFinite(solverOptions.rk45RelTol)
+      ? Math.max(1e-14, solverOptions.rk45RelTol)
+      : 1e-4
+    const rk45Safety = Number.isFinite(solverOptions.rk45Safety)
+      ? Math.min(0.99, Math.max(0.1, solverOptions.rk45Safety))
+      : 0.9
+    const rk45MinFactor = Number.isFinite(solverOptions.rk45MinFactor)
+      ? Math.min(1, Math.max(0.01, solverOptions.rk45MinFactor))
+      : 0.2
+    const rk45MaxFactor = Number.isFinite(solverOptions.rk45MaxFactor)
+      ? Math.max(1, solverOptions.rk45MaxFactor)
+      : 5
+    const rk45MinDt = Number.isFinite(solverOptions.rk45MinDt)
+      ? Math.max(1e-14, solverOptions.rk45MinDt)
+      : Math.max(1e-12, dt / 1e6)
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const f_u = typeof opts.f_u === 'function' ? opts.f_u : (_t) => new Array(nu).fill(0)
@@ -1669,6 +1971,26 @@ function Model() {
     const yOutArr = []
     const uArr = []
     const cArr = []
+    const zArr = []
+    const eventLog = []
+    const solverStats = {
+      runCount: 1,
+      macroStepCount: 0,
+      flowStepCalls: 0,
+      rk45Attempts: 0,
+      rk45Accepted: 0,
+      rk45Rejected: 0,
+      adaptiveRetryCount: 0,
+      adaptiveSplitCount: 0,
+      eventLocalizationCalls: 0,
+      eventBisectionIterations: 0,
+      eventIterationPasses: 0,
+      eventCount: 0,
+      eventSampleCount: 0,
+      eventSampleSkippedDuplicates: 0,
+      initAttempts: 0,
+      initFailures: 0,
+    }
     let stopReason = null
     let stopError = null
     let stopStack = null
@@ -1698,6 +2020,7 @@ function Model() {
       const initErrors = []
       let initSolved = false
       for (let attempt = 0; attempt < retryCount; attempt++) {
+        solverStats.initAttempts += 1
         const minAbs = Math.max(minAbsBase, Math.pow(10, attempt - 9))
         const attemptOpts = Object.assign({}, newtonOpts, {
           initialGuessMinAbs:
@@ -1707,18 +2030,21 @@ function Model() {
           lambda:
             attempt === 0
               ? newtonOpts.lambda
-              : Math.max(newtonOpts.lambda || 0, (newtonOpts.lambda || 1e-6) * Math.pow(lambdaScale, attempt)),
+              : Math.max(
+                  newtonOpts.lambda || 0,
+                  (newtonOpts.lambda || 1e-6) * Math.pow(lambdaScale, attempt),
+                ),
           maxIter:
             attempt === 0
               ? newtonOpts.maxIter
-              : Math.max(newtonOpts.maxIter || 12, Math.floor((newtonOpts.maxIter || 12) * maxIterScale)),
+              : Math.max(
+                  newtonOpts.maxIter || 12,
+                  Math.floor((newtonOpts.maxIter || 12) * maxIterScale),
+                ),
         })
-        const yGuess =
-          attempt === 0 ? y.slice() : regularizeGuessVector(y.slice(), attemptOpts)
+        const yGuess = attempt === 0 ? y.slice() : regularizeGuessVector(y.slice(), attemptOpts)
         const xDotGuess =
-          attempt === 0
-            ? xDotPrev.slice()
-            : regularizeGuessVector(xDotPrev.slice(), attemptOpts)
+          attempt === 0 ? xDotPrev.slice() : regularizeGuessVector(xDotPrev.slice(), attemptOpts)
         try {
           const init = solveFlowAtState(
             t,
@@ -1735,6 +2061,7 @@ function Model() {
           initSolved = true
           break
         } catch (e) {
+          solverStats.initFailures += 1
           const msg = (e && e.message) || String(e)
           initErrors.push(
             `attempt=${attempt + 1}, minAbs=${attemptOpts.initialGuessMinAbs}, lambda=${attemptOpts.lambda}, maxIter=${attemptOpts.maxIter}, error=${msg}`,
@@ -1759,58 +2086,369 @@ function Model() {
       }
     }
 
-    function performSingleStep(tLocal, xLocal, yLocal, cLocal, dtLocal, xDotSeed) {
+    function conditionsChanged(cPrev, cNext) {
+      const n = Math.max(
+        Array.isArray(cPrev) ? cPrev.length : 0,
+        Array.isArray(cNext) ? cNext.length : 0,
+      )
+      for (let i = 0; i < n; i++) {
+        if (Boolean(cPrev?.[i]) !== Boolean(cNext?.[i])) return true
+      }
+      return false
+    }
+
+    function evalConditionsSafe(tLocal, xLocal, yLocal, uLocal, fallback) {
+      if (!haveEvents) return Array.isArray(fallback) ? fallback.slice() : []
+      try {
+        const ce = model.evalConditions(tLocal, xLocal, yLocal, uLocal, pOverride)
+        if (Array.isArray(ce)) return ce.slice()
+      } catch (e) {
+        log(`evalConditions threw at t=${tLocal}`, {
+          error: (e && e.message) || String(e),
+          stack: e && e.stack,
+        })
+      }
+      return Array.isArray(fallback) ? fallback.slice() : []
+    }
+    function evalEventIndicatorsSafe(tLocal, xLocal, yLocal, uLocal, cLocal) {
+      if (haveEventIndicators) {
+        try {
+          const zi = model.evalEventIndicators(tLocal, xLocal, yLocal, uLocal, pOverride)
+          if (Array.isArray(zi)) {
+            return zi.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN))
+          }
+        } catch (e) {
+          log(`evalEventIndicators threw at t=${tLocal}`, {
+            error: (e && e.message) || String(e),
+            stack: e && e.stack,
+          })
+        }
+      }
+      const cSafe = Array.isArray(cLocal) ? cLocal : []
+      return cSafe.map((v) => (v ? -1 : 1))
+    }
+
+    function applyResetsSafe(tLocal, xLocal, yLocal, uLocal, cPrev, cCurr) {
+      let xNext = xLocal.slice()
+      let yNext = yLocal.slice()
+      let cNext = Array.isArray(cCurr) ? cCurr.slice() : []
+      if (!haveEvents || !model.applyResets) return { xNext, yNext, cNext }
+      try {
+        const applied = model.applyResets(tLocal, xLocal, yLocal, uLocal, pOverride, cPrev, cCurr)
+        if (applied?.x) xNext = applied.x.slice()
+        if (applied?.y) yNext = applied.y.slice()
+        if (applied?.c) cNext = applied.c.slice()
+      } catch (e) {
+        log(`applyResets threw at t=${tLocal}`, {
+          error: (e && e.message) || String(e),
+          stack: e && e.stack,
+        })
+      }
+      return { xNext, yNext, cNext }
+    }
+
+    function performFlowStepOnce(tLocal, xLocal, yLocal, dtLocal, xDotSeed) {
+      solverStats.flowStepCalls += 1
       const uLocal = f_u(tLocal) || new Array(nu).fill(0)
       const step = useIrk4
         ? irk4Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts)
         : useRk4
           ? rk4Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts, xDotSeed)
-          : sdirk2Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts)
-      if (!step || !step.x || !step.y) {
-        throw new Error(`Invalid step payload at t=${tLocal}`)
-      }
-
-      let xNext = step.x
-      let yNext = step.y
-      let cNext = Array.isArray(cLocal) ? cLocal.slice() : []
-
-      if (haveEvents) {
-        const uNext = f_u(tLocal + dtLocal) || new Array(nu).fill(0)
-        const cPrev = Array.isArray(cLocal) ? cLocal.slice() : []
-        let cCurr = cPrev.slice()
-
-        try {
-          const ce = model.evalConditions(tLocal + dtLocal, xNext, yNext, uNext, pOverride)
-          if (Array.isArray(ce)) cCurr = ce.slice()
-        } catch (e) {
-          log(`evalConditions threw at t=${tLocal + dtLocal}`, {
-            error: (e && e.message) || String(e),
-            stack: e && e.stack,
-          })
-        }
-
-        try {
-          const applied = model.applyResets
-            ? model.applyResets(tLocal + dtLocal, xNext, yNext, uNext, pOverride, cPrev, cCurr)
-            : null
-
-          if (applied?.x) xNext = applied.x.slice()
-          if (applied?.y) yNext = applied.y.slice()
-          if (applied?.c) cNext = applied.c.slice()
-        } catch (e) {
-          log(`applyResets threw at t=${tLocal + dtLocal}`, {
-            error: (e && e.message) || String(e),
-            stack: e && e.stack,
-          })
-        }
-      }
-
+          : useRk45
+            ? rk45Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts, xDotSeed)
+            : sdirk2Step(tLocal, xLocal, yLocal, uLocal, dtLocal, pOverride, newtonOpts)
+      if (!step || !step.x || !step.y) throw new Error(`Invalid step payload at t=${tLocal}`)
       const xDotNext =
         Array.isArray(step.xDot) && step.xDot.length === nx
           ? step.xDot.slice()
-          : xNext.map((xv, i) => (xv - xLocal[i]) / dtLocal)
+          : step.x.map((xv, i) => (xv - xLocal[i]) / dtLocal)
+      return {
+        xNext: step.x.slice(),
+        yNext: step.y.slice(),
+        xDotNext,
+        xEmbedded: Array.isArray(step.xEmbedded) ? step.xEmbedded.slice() : null,
+      }
+    }
 
-      return { xNext, yNext, cNext, xDotNext }
+    function advanceAdaptiveOnFailure(tLocal, xLocal, yLocal, dtLocal, xDotSeed, depth) {
+      try {
+        return performFlowStepOnce(tLocal, xLocal, yLocal, dtLocal, xDotSeed)
+      } catch (e) {
+        if (!adaptiveSubsteps || depth >= maxSubstepDepth || dtLocal * 0.5 < minSubstepDt) throw e
+        solverStats.adaptiveRetryCount += 1
+        solverStats.adaptiveSplitCount += 1
+        const half = dtLocal * 0.5
+        const a = advanceAdaptiveOnFailure(tLocal, xLocal, yLocal, half, xDotSeed, depth + 1)
+        return advanceAdaptiveOnFailure(
+          tLocal + half,
+          a.xNext,
+          a.yNext,
+          half,
+          a.xDotNext,
+          depth + 1,
+        )
+      }
+    }
+
+    function rk45ErrorNorm(xOld, x5, x4) {
+      let maxNorm = 0
+      for (let i = 0; i < nx; i++) {
+        const err = Math.abs(x5[i] - x4[i])
+        const scale = rk45AbsTol + rk45RelTol * Math.max(Math.abs(xOld[i]), Math.abs(x5[i]))
+        const n = scale > 0 ? err / scale : err
+        if (n > maxNorm) maxNorm = n
+      }
+      return maxNorm
+    }
+
+    function advanceFlowInterval(tLocal, xLocal, yLocal, dtLocal, xDotSeed) {
+      if (!useRk45) return advanceAdaptiveOnFailure(tLocal, xLocal, yLocal, dtLocal, xDotSeed, 0)
+      const tEnd = tLocal + dtLocal
+      let tCur = tLocal
+      let xCur = xLocal.slice()
+      let yCur = yLocal.slice()
+      let xDotCur =
+        Array.isArray(xDotSeed) && xDotSeed.length === nx ? xDotSeed.slice() : new Array(nx).fill(0)
+      let h = Math.min(Math.max(rk45MinDt, dtLocal * 0.25), dtLocal)
+
+      while (tCur < tEnd - 1e-15) {
+        const remaining = tEnd - tCur
+        if (h > remaining) h = remaining
+        if (h < rk45MinDt) {
+          throw new Error(
+            `RK45 minimum step reached before interval end (t=${Number(tCur).toPrecision(8)}, remaining=${remaining})`,
+          )
+        }
+
+        let attempt
+        try {
+          solverStats.rk45Attempts += 1
+          attempt = performFlowStepOnce(tCur, xCur, yCur, h, xDotCur)
+        } catch (e) {
+          solverStats.rk45Rejected += 1
+          h *= 0.5
+          if (h < rk45MinDt) throw e
+          continue
+        }
+
+        const err = attempt.xEmbedded ? rk45ErrorNorm(xCur, attempt.xNext, attempt.xEmbedded) : 0
+        if (err <= 1 || h <= rk45MinDt) {
+          solverStats.rk45Accepted += 1
+          tCur += h
+          xCur = attempt.xNext
+          yCur = attempt.yNext
+          xDotCur = attempt.xDotNext
+          const factor = err > 0 ? rk45Safety * Math.pow(err, -0.2) : rk45MaxFactor
+          const clipped = Math.min(rk45MaxFactor, Math.max(rk45MinFactor, factor))
+          h = Math.min(remaining, Math.max(rk45MinDt, h * clipped))
+        } else {
+          solverStats.rk45Rejected += 1
+          const factor = rk45Safety * Math.pow(err, -0.25)
+          const clipped = Math.min(1, Math.max(rk45MinFactor, factor))
+          h = Math.max(rk45MinDt, h * clipped)
+        }
+      }
+
+      return { xNext: xCur, yNext: yCur, xDotNext: xDotCur }
+    }
+
+    function localizeEvent(tLeft, xLeft, yLeft, cLeft, xDotLeft, tRight, xRight, yRight, cRight) {
+      solverStats.eventLocalizationCalls += 1
+      let tl = tLeft
+      let xl = xLeft.slice()
+      let yl = yLeft.slice()
+      let cl = cLeft.slice()
+      let xDotL = Array.isArray(xDotLeft) ? xDotLeft.slice() : new Array(nx).fill(0)
+      let tr = tRight
+      let xr = xRight.slice()
+      let yr = yRight.slice()
+      let cr = cRight.slice()
+      let xDotR = xDotL.slice()
+
+      let bisectionIters = 0
+      for (let iter = 0; iter < maxEventBisectionIter; iter++) {
+        bisectionIters = iter + 1
+        if (tr - tl <= eventTolTime) break
+        const tm = 0.5 * (tl + tr)
+        const mid = advanceFlowInterval(tl, xl, yl, tm - tl, xDotL)
+        const uMid = f_u(tm) || new Array(nu).fill(0)
+        const cm = evalConditionsSafe(tm, mid.xNext, mid.yNext, uMid, cl)
+
+        if (conditionsChanged(cl, cm)) {
+          tr = tm
+          xr = mid.xNext
+          yr = mid.yNext
+          cr = cm
+          xDotR = mid.xDotNext
+        } else {
+          tl = tm
+          xl = mid.xNext
+          yl = mid.yNext
+          cl = cm
+          xDotL = mid.xDotNext
+        }
+      }
+
+      return {
+        tEvent: tr,
+        xEventPre: xr,
+        yEventPre: yr,
+        cLeft: cl,
+        cRight: cr,
+        xDotEventPre: xDotR,
+        bisectionIters,
+      }
+    }
+
+    function settleEventAtTime(tEvent, xEventPre, yEventPre, cPrevStep) {
+      let xCurr = xEventPre.slice()
+      let yCurr = yEventPre.slice()
+      let cPrev = Array.isArray(cPrevStep) ? cPrevStep.slice() : []
+      let cCurr = cPrev.slice()
+      const uEvent = f_u(tEvent) || new Array(nu).fill(0)
+
+      for (let iter = 0; iter < eventIterationMaxIter; iter++) {
+        cCurr = evalConditionsSafe(tEvent, xCurr, yCurr, uEvent, cPrev)
+        const applied = applyResetsSafe(tEvent, xCurr, yCurr, uEvent, cPrev, cCurr)
+        const cAfter = evalConditionsSafe(
+          tEvent,
+          applied.xNext,
+          applied.yNext,
+          uEvent,
+          applied.cNext,
+        )
+
+        xCurr = applied.xNext
+        yCurr = applied.yNext
+
+        if (!conditionsChanged(cPrev, cAfter)) {
+          const iterations = iter + 1
+          solverStats.eventIterationPasses += iterations
+          return { x: xCurr, y: yCurr, c: cAfter, iterations }
+        }
+        cPrev = cAfter
+      }
+      solverStats.eventIterationPasses += eventIterationMaxIter
+      return { x: xCurr, y: yCurr, c: cCurr, iterations: eventIterationMaxIter, clipped: true }
+    }
+
+    function advanceMacroStep(tLocal, xLocal, yLocal, cLocal, dtLocal, xDotSeed, stepIndex) {
+      solverStats.macroStepCount += 1
+      const tTarget = tLocal + dtLocal
+      if (!haveEvents || !enableEventLocalization) {
+        const flow = advanceFlowInterval(tLocal, xLocal, yLocal, dtLocal, xDotSeed)
+        const uNext = f_u(tTarget) || new Array(nu).fill(0)
+        const cEval = evalConditionsSafe(tTarget, flow.xNext, flow.yNext, uNext, cLocal)
+        const applied = applyResetsSafe(tTarget, flow.xNext, flow.yNext, uNext, cLocal, cEval)
+        return {
+          xNext: applied.xNext,
+          yNext: applied.yNext,
+          cNext: applied.cNext,
+          xDotNext: flow.xDotNext,
+          eventSamples: [],
+        }
+      }
+
+      let tCur = tLocal
+      let xCur = xLocal.slice()
+      let yCur = yLocal.slice()
+      let cCur = cLocal.slice()
+      let xDotCur =
+        Array.isArray(xDotSeed) && xDotSeed.length === nx ? xDotSeed.slice() : new Array(nx).fill(0)
+      let eventCount = 0
+      const eventSamples = []
+      let lastEventSampleTime = Number.NaN
+
+      while (tCur < tTarget - 1e-15) {
+        const remaining = tTarget - tCur
+        const flow = advanceFlowInterval(tCur, xCur, yCur, remaining, xDotCur)
+        const uEnd = f_u(tTarget) || new Array(nu).fill(0)
+        const cEnd = evalConditionsSafe(tTarget, flow.xNext, flow.yNext, uEnd, cCur)
+        if (!conditionsChanged(cCur, cEnd)) {
+          xCur = flow.xNext
+          yCur = flow.yNext
+          cCur = cEnd
+          xDotCur = flow.xDotNext
+          tCur = tTarget
+          break
+        }
+
+        if (eventCount >= maxEventsPerMacroStep) {
+          throw new Error(
+            `Exceeded maxEventsPerMacroStep=${maxEventsPerMacroStep} while localizing events at t=${Number(tCur).toPrecision(8)}`,
+          )
+        }
+
+        const localized = localizeEvent(
+          tCur,
+          xCur,
+          yCur,
+          cCur,
+          xDotCur,
+          tTarget,
+          flow.xNext,
+          flow.yNext,
+          cEnd,
+        )
+        if (localized.tEvent <= tCur + 1e-15) {
+          throw new Error(
+            `Event localization failed to progress (t=${Number(tCur).toPrecision(8)}, tEvent=${Number(localized.tEvent).toPrecision(8)})`,
+          )
+        }
+
+        const settled = settleEventAtTime(
+          localized.tEvent,
+          localized.xEventPre,
+          localized.yEventPre,
+          localized.cLeft,
+        )
+
+        eventLog.push({
+          stepIndex,
+          time: localized.tEvent,
+          iterations: settled.iterations,
+          bisectionIters: localized.bisectionIters,
+          clippedIterations: Boolean(settled.clipped),
+          before: localized.cLeft.slice(),
+          atDetection: localized.cRight.slice(),
+          after: settled.c.slice(),
+          indicatorsAtEvent: evalEventIndicatorsSafe(
+            localized.tEvent,
+            localized.xEventPre,
+            localized.yEventPre,
+            f_u(localized.tEvent) || new Array(nu).fill(0),
+            settled.c,
+          ),
+        })
+
+        tCur = localized.tEvent
+        xCur = settled.x
+        yCur = settled.y
+        cCur = settled.c
+        xDotCur = localized.xDotEventPre.slice()
+        eventCount += 1
+        solverStats.eventCount += 1
+        solverStats.eventBisectionIterations += Number(localized.bisectionIters || 0)
+        if (includeEventSamples) {
+          const minDelta = Math.max(eventTolTime * 2, eventSampleDedupTol)
+          const shouldInsert =
+            !Number.isFinite(lastEventSampleTime) ||
+            Math.abs(localized.tEvent - lastEventSampleTime) > minDelta
+          if (shouldInsert) {
+            eventSamples.push({
+              time: localized.tEvent,
+              x: settled.x.slice(),
+              y: settled.y.slice(),
+              c: settled.c.slice(),
+            })
+            lastEventSampleTime = localized.tEvent
+          } else {
+            solverStats.eventSampleSkippedDuplicates += 1
+          }
+        }
+      }
+
+      return { xNext: xCur, yNext: yCur, cNext: cCur, xDotNext: xDotCur, eventSamples }
     }
 
     function evaluateAlgebraicsAtSample(tLocal, xLocal, yLocal, uLocal) {
@@ -1818,9 +2456,7 @@ function Model() {
         try {
           const yEval = model.evalAlgebraics(tLocal, xLocal, yLocal, uLocal, pOverride)
           if (Array.isArray(yEval) && yEval.length === algebraicNames.length) {
-            return yEval.map((v) =>
-              typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN,
-            )
+            return yEval.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN))
           }
         } catch (e) {
           log(`evalAlgebraics threw at t=${tLocal}`, {
@@ -1838,35 +2474,40 @@ function Model() {
       return out
     }
 
-    function advanceAdaptive(tLocal, xLocal, yLocal, cLocal, dtLocal, xDotSeed, depth) {
-      try {
-        return performSingleStep(tLocal, xLocal, yLocal, cLocal, dtLocal, xDotSeed)
-      } catch (e) {
-        if (!adaptiveSubsteps || depth >= maxSubstepDepth || dtLocal * 0.5 < minSubstepDt) {
-          throw e
-        }
-        const half = dtLocal * 0.5
-        const a = advanceAdaptive(tLocal, xLocal, yLocal, cLocal, half, xDotSeed, depth + 1)
-        return advanceAdaptive(tLocal + half, a.xNext, a.yNext, a.cNext, half, a.xDotNext, depth + 1)
-      }
-    }
-
     log('Simulation started', { t0, tf, dt, nx, ny, nu, haveEvents })
+    const appendOutputSample = (tSample, xSample, ySample, uSample, cSample) => {
+      tArr.push(tSample)
+      xArr.push(xSample.slice())
+      yArr.push(ySample.slice())
+      yOutArr.push(evaluateAlgebraicsAtSample(tSample, xSample, ySample, uSample))
+      uArr.push(uSample.slice())
+      cArr.push(cSample.slice())
+      zArr.push(evalEventIndicatorsSafe(tSample, xSample, ySample, uSample, cSample))
+    }
 
     for (let k = 0; k <= nSteps; k++) {
       const u = f_u(t) || new Array(nu).fill(0)
 
-      tArr.push(t)
-      xArr.push(x.slice())
-      yArr.push(y.slice())
-      yOutArr.push(evaluateAlgebraicsAtSample(t, x, y, u))
-      uArr.push(u.slice())
-      cArr.push(c.slice())
+      appendOutputSample(t, x, y, u, c)
 
       if (k === nSteps) break
 
       try {
-        const advanced = advanceAdaptive(t, x, y, c, dt, xDotPrev, 0)
+        const advanced = advanceMacroStep(t, x, y, c, dt, xDotPrev, k)
+        if (Array.isArray(advanced.eventSamples) && advanced.eventSamples.length > 0) {
+          for (const sample of advanced.eventSamples) {
+            const tSample = Number(sample?.time)
+            if (!Number.isFinite(tSample) || tSample <= t + 1e-15 || tSample >= t + dt - 1e-15) {
+              continue
+            }
+            const xSample = Array.isArray(sample?.x) ? sample.x : x
+            const ySample = Array.isArray(sample?.y) ? sample.y : y
+            const cSample = Array.isArray(sample?.c) ? sample.c : c
+            const uSample = f_u(tSample) || new Array(nu).fill(0)
+            appendOutputSample(tSample, xSample, ySample, uSample, cSample)
+            solverStats.eventSampleCount += 1
+          }
+        }
         t += dt
         x = advanced.xNext
         y = advanced.yNext
@@ -1888,6 +2529,10 @@ function Model() {
           yHead: y.slice(0, Math.min(3, y.length)),
           uHead: u.slice(0, Math.min(3, u.length)),
           missingSymbol: missingSymbol ? missingSymbol[1] : null,
+          solverStatsSnapshot: {
+            ...solverStats,
+            eventCount: eventLog.length,
+          },
         }
         if (captureFailureState) {
           stopDetails.failureState = {
@@ -1920,6 +2565,12 @@ function Model() {
       yObserved: yOutArr,
       u: uArr,
       c: cArr,
+      z: zArr,
+      eventLog,
+      solverStats: {
+        ...solverStats,
+        eventCount: eventLog.length,
+      },
       stopReason,
       stopError,
       stopStack,
@@ -1962,6 +2613,7 @@ function Model() {
   expectRows(raw.yObserved, algebraicNames.length, 'yObserved')
   expectRows(raw.u, nu, 'u')
   expectRows(raw.c, conditionNames.length, 'c')
+  expectRows(raw.z, conditionNames.length, 'z')
 
   const projectSeries = (rows, names) =>
     Object.fromEntries(
@@ -1970,6 +2622,18 @@ function Model() {
         rows.map((r) => {
           const v = r[i]
           return typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN
+        }),
+      ]),
+    )
+  const projectConditionSeries = (rows, names) =>
+    Object.fromEntries(
+      names.map((n, i) => [
+        n,
+        rows.map((r) => {
+          const v = r[i]
+          if (typeof v === 'boolean') return v
+          if (typeof v === 'number' && Number.isFinite(v)) return v !== 0
+          return null
         }),
       ]),
     )
@@ -1989,6 +2653,8 @@ function Model() {
       tf: sim.tf ?? 5,
       dt: sim.dt ?? 0.1,
       nSteps: raw.t.length,
+      events: raw.eventLog || [],
+      solverStats: raw.solverStats || null,
       stopReason: raw.stopReason,
       stopError: raw.stopError,
       stopStack: raw.stopStack,
@@ -2000,6 +2666,10 @@ function Model() {
         algebraicNames,
         solverAlgebraicNames,
         conditionNames,
+        stateVariables,
+        algebraicVariables,
+        inputVariables,
+        conditionVariables,
       },
       context: contextInfo,
     },
@@ -2008,7 +2678,10 @@ function Model() {
       x: projectSeries(raw.x, stateNames),
       y: projectSeries(raw.yObserved, algebraicNames),
       u: projectSeries(raw.u, inputNames),
-      c: projectSeries(raw.c, conditionNames),
+      c: projectSeries(raw.z, conditionNames),
+      cBoolean: projectConditionSeries(raw.c, conditionNames),
+      z: projectSeries(raw.z, conditionNames),
+      eventTimes: Array.isArray(raw.eventLog) ? raw.eventLog.map((e) => e.time) : [],
     },
   }
 }
@@ -2031,10 +2704,10 @@ simulateModel.optionsSchema = {
   properties: {
     timeIntegrator: {
       type: 'string',
-      enum: ['sdirk2', 'irk4', 'rk4'],
+      enum: ['sdirk2', 'irk4', 'rk4', 'rk45'],
       default: 'sdirk2',
       description:
-        'Time integration method: SDIRK2 (robust default), IRK4 (implicit Gauss-Legendre), RK4 (explicit)',
+        'Time integration method: SDIRK2 (robust default), IRK4 (implicit Gauss-Legendre), RK4 (explicit), RK45 (Dormand-Prince explicit adaptive)',
     },
     captureFailureState: {
       type: 'boolean',
@@ -2087,6 +2760,73 @@ simulateModel.optionsSchema = {
       type: 'boolean',
       default: true,
       description: 'Run a Newton consistent-initialization solve for xDot and algebraics at t0',
+    },
+    enableEventLocalization: {
+      type: 'boolean',
+      default: true,
+      description: 'Localize event times by bisection and apply resets at localized event time',
+    },
+    eventTolTime: {
+      type: 'number',
+      default: 0.00001,
+      description: 'Event localization time tolerance',
+    },
+    maxEventBisectionIter: {
+      type: 'integer',
+      default: 40,
+      description: 'Maximum bisection iterations used to localize each event',
+    },
+      eventIterationMaxIter: {
+      type: 'integer',
+      default: 8,
+      description: 'Maximum event-iteration passes at a single localized event instant',
+    },
+    includeEventSamples: {
+      type: 'boolean',
+      default: true,
+      description:
+        'Insert localized event times into output series (t/x/y/u/c) so event turnarounds are visible even for coarse dt',
+    },
+    eventSampleDedupTol: {
+      type: 'number',
+      default: 0,
+      description:
+        'Additional time tolerance for coalescing near-duplicate event samples (helps avoid clustered touch/release duplicates)',
+    },
+    maxEventsPerMacroStep: {
+      type: 'integer',
+      default: 16,
+      description: 'Maximum number of localized events handled within a single output step',
+    },
+    rk45AbsTol: {
+      type: 'number',
+      default: 1e-6,
+      description: 'Absolute error tolerance for RK45 adaptive step control',
+    },
+    rk45RelTol: {
+      type: 'number',
+      default: 1e-4,
+      description: 'Relative error tolerance for RK45 adaptive step control',
+    },
+    rk45Safety: {
+      type: 'number',
+      default: 0.9,
+      description: 'Safety factor for RK45 step-size updates',
+    },
+    rk45MinFactor: {
+      type: 'number',
+      default: 0.2,
+      description: 'Minimum multiplicative factor when RK45 shrinks/grows internal step size',
+    },
+    rk45MaxFactor: {
+      type: 'number',
+      default: 5,
+      description: 'Maximum multiplicative factor when RK45 grows internal step size',
+    },
+    rk45MinDt: {
+      type: 'number',
+      default: 1e-9,
+      description: 'Minimum RK45 internal step size',
     },
     adaptiveSubsteps: {
       type: 'boolean',
@@ -2150,6 +2890,11 @@ simulateModel.contract = {
       const elCsv = document.getElementById('csvBtn')
       const elStatus = document.getElementById('status')
       const elSeries = document.getElementById('seriesSelect')
+      const elAxisPlotBtn = document.getElementById('axisPlotBtn')
+      const elAxisPicker = document.getElementById('axisPicker')
+      const elXAxis = document.getElementById('xAxisSelect')
+      const elYAxis = document.getElementById('yAxisSelect')
+      const elApplyAxisPlot = document.getElementById('applyAxisPlotBtn')
       const elGrid = document.getElementById('grid')
       const elAxes = document.getElementById('axes')
       const elLine = document.getElementById('line')
@@ -2241,22 +2986,24 @@ simulateModel.contract = {
         setTimeout(() => URL.revokeObjectURL(url), 500)
       }
 
-      function buildSeriesOptions(result, preferredKey) {
-        while (elSeries.firstChild) elSeries.removeChild(elSeries.firstChild)
-
+      function listSeriesKeys(result) {
         const keys = []
         const addGroup = (prefix, obj) => {
           if (!obj) return
           for (const k of Object.keys(obj)) keys.push(prefix + k)
         }
-
         addGroup('x.', result?.data?.x)
         addGroup('y.', result?.data?.y)
         addGroup('u.', result?.data?.u)
         addGroup('c.', result?.data?.c)
         addGroup('z.', result?.data?.z)
-
         keys.sort()
+        return keys
+      }
+
+      function buildSeriesOptions(result, preferredKey) {
+        while (elSeries.firstChild) elSeries.removeChild(elSeries.firstChild)
+        const keys = listSeriesKeys(result)
 
         for (const k of keys) {
           const opt = document.createElement('option')
@@ -2272,6 +3019,36 @@ simulateModel.contract = {
         return String(nextSelection || '')
       }
 
+      function buildAxisSelectors(result, preferredX, preferredY) {
+        while (elXAxis.firstChild) elXAxis.removeChild(elXAxis.firstChild)
+        while (elYAxis.firstChild) elYAxis.removeChild(elYAxis.firstChild)
+
+        const keys = listSeriesKeys(result)
+        const xKeys = ['t'].concat(keys)
+        const yKeys = keys.slice()
+
+        for (const k of xKeys) {
+          const opt = document.createElement('option')
+          opt.value = k
+          opt.textContent = k === 't' ? 't (time)' : formatSeriesLabel(k)
+          elXAxis.appendChild(opt)
+        }
+        for (const k of yKeys) {
+          const opt = document.createElement('option')
+          opt.value = k
+          opt.textContent = formatSeriesLabel(k)
+          elYAxis.appendChild(opt)
+        }
+
+        const xDefault = xKeys.includes(String(preferredX || 't')) ? String(preferredX || 't') : 't'
+        const yDefault =
+          yKeys.length === 0
+            ? ''
+            : yKeys.includes(String(preferredY || '')) ? String(preferredY || '') : yKeys[0]
+        elXAxis.value = xDefault
+        elYAxis.value = yDefault
+      }
+
       function getSeries(result, key) {
         const t = result?.data?.t || []
         const [grp, ...rest] = String(key || '').split('.')
@@ -2281,13 +3058,23 @@ simulateModel.contract = {
         return { t, y }
       }
 
+      function getSeriesValues(result, key) {
+        const k = String(key || '')
+        if (!k) return []
+        if (k === 't') return Array.isArray(result?.data?.t) ? result.data.t : []
+        const [grp, ...rest] = k.split('.')
+        const name = rest.join('.')
+        const group = result?.data?.[grp] || null
+        return Array.isArray(group?.[name]) ? group[name] : []
+      }
+
       function getMetaVariableUnit(group, name) {
         const vars = Array.isArray(group) ? group : []
         for (const v of vars) {
           if (!v || typeof v !== 'object') continue
           if (String(v.name || '') !== name) continue
           const unit = String(v.unit || '').trim()
-          if (unit) return unit
+          if (unit && unit.toLowerCase() !== 'none' && unit.toLowerCase() !== 'null') return unit
         }
         return ''
       }
@@ -2359,7 +3146,7 @@ simulateModel.contract = {
         }
       }
 
-      function drawAxes(tMin, tMax, yMin, yMax, seriesLabel) {
+      function drawAxes(xMin, xMax, yMin, yMax, titleLabel, xAxisLabel, yAxisLabel) {
         while (elAxes.firstChild) elAxes.removeChild(elAxes.firstChild)
         const plotW = PLOT.width - PLOT.marginLeft - PLOT.marginRight
         const plotH = PLOT.height - PLOT.marginTop - PLOT.marginBottom
@@ -2416,7 +3203,7 @@ simulateModel.contract = {
           xText.setAttribute('fill', '#9bb0d1')
           xText.setAttribute('font-size', '11')
           xText.setAttribute('text-anchor', 'middle')
-          xText.textContent = formatTick(tMin + frac * (tMax - tMin))
+          xText.textContent = formatTick(xMin + frac * (xMax - xMin))
           elAxes.appendChild(xText)
 
           const yText = makeSvg('text')
@@ -2436,7 +3223,7 @@ simulateModel.contract = {
         title.setAttribute('font-size', '16')
         title.setAttribute('font-weight', '700')
         title.setAttribute('text-anchor', 'middle')
-        title.textContent = seriesLabel ? `Plot: ${seriesLabel}` : 'Plot'
+        title.textContent = titleLabel ? `Plot: ${titleLabel}` : 'Plot'
         elAxes.appendChild(title)
 
         const xLabel = makeSvg('text')
@@ -2445,7 +3232,7 @@ simulateModel.contract = {
         xLabel.setAttribute('fill', '#9bb0d1')
         xLabel.setAttribute('font-size', '12')
         xLabel.setAttribute('text-anchor', 'middle')
-        xLabel.textContent = 'Time (t)'
+        xLabel.textContent = xAxisLabel || 'X'
         elAxes.appendChild(xLabel)
 
         const yLabel = makeSvg('text')
@@ -2455,58 +3242,63 @@ simulateModel.contract = {
         yLabel.setAttribute('font-size', '12')
         yLabel.setAttribute('text-anchor', 'middle')
         yLabel.setAttribute('transform', `rotate(-90 18 ${(y0 + y1) / 2})`)
-        yLabel.textContent = seriesLabel || 'Value'
+        yLabel.textContent = yAxisLabel || 'Y'
         elAxes.appendChild(yLabel)
       }
 
-      function plotSeries(t, y, label) {
+      function plotSeries(xValues, yValues, label, xAxisLabel, yAxisLabel) {
         const plotW = PLOT.width - PLOT.marginLeft - PLOT.marginRight
         const plotH = PLOT.height - PLOT.marginTop - PLOT.marginBottom
 
-        if (!Array.isArray(t) || !Array.isArray(y) || t.length === 0 || y.length === 0) {
+        if (
+          !Array.isArray(xValues) ||
+          !Array.isArray(yValues) ||
+          xValues.length === 0 ||
+          yValues.length === 0
+        ) {
           elLine.setAttribute('points', '')
-          drawAxes(0, 1, 0, 1, label || '')
+          drawAxes(0, 1, 0, 1, label || '', xAxisLabel || 'X', yAxisLabel || 'Y')
           elPlotLabel.textContent = label || ''
           return
         }
 
-        const n = Math.min(t.length, y.length)
+        const n = Math.min(xValues.length, yValues.length)
 
-        let tMin = Infinity,
-          tMax = -Infinity
+        let xMin = Infinity,
+          xMax = -Infinity
         let yMin = Infinity,
           yMax = -Infinity
         for (let i = 0; i < n; i++) {
-          const ti = Number(t[i])
-          const yi = Number(y[i])
-          if (!Number.isFinite(ti) || !Number.isFinite(yi)) continue
-          tMin = Math.min(tMin, ti)
-          tMax = Math.max(tMax, ti)
+          const xi = Number(xValues[i])
+          const yi = Number(yValues[i])
+          if (!Number.isFinite(xi) || !Number.isFinite(yi)) continue
+          xMin = Math.min(xMin, xi)
+          xMax = Math.max(xMax, xi)
           yMin = Math.min(yMin, yi)
           yMax = Math.max(yMax, yi)
         }
         if (
-          !Number.isFinite(tMin) ||
-          !Number.isFinite(tMax) ||
+          !Number.isFinite(xMin) ||
+          !Number.isFinite(xMax) ||
           !Number.isFinite(yMin) ||
           !Number.isFinite(yMax)
         ) {
           elLine.setAttribute('points', '')
-          drawAxes(0, 1, 0, 1, label || '')
+          drawAxes(0, 1, 0, 1, label || '', xAxisLabel || 'X', yAxisLabel || 'Y')
           elPlotLabel.textContent = label || ''
           return
         }
-        if (tMax === tMin) tMax = tMin + 1
+        if (xMax === xMin) xMax = xMin + 1
         if (yMax === yMin) yMax = yMin + 1
 
-        drawAxes(tMin, tMax, yMin, yMax, label || '')
+        drawAxes(xMin, xMax, yMin, yMax, label || '', xAxisLabel || 'X', yAxisLabel || 'Y')
 
         const pts = []
         for (let i = 0; i < n; i++) {
-          const ti = Number(t[i])
-          const yi = Number(y[i])
-          if (!Number.isFinite(ti) || !Number.isFinite(yi)) continue
-          const xx = PLOT.marginLeft + ((ti - tMin) / (tMax - tMin)) * plotW
+          const xi = Number(xValues[i])
+          const yi = Number(yValues[i])
+          if (!Number.isFinite(xi) || !Number.isFinite(yi)) continue
+          const xx = PLOT.marginLeft + ((xi - xMin) / (xMax - xMin)) * plotW
           const yy = PLOT.marginTop + plotH - ((yi - yMin) / (yMax - yMin)) * plotH
           pts.push(xx.toFixed(2) + ',' + yy.toFixed(2))
         }
@@ -2570,8 +3362,9 @@ simulateModel.contract = {
 
           const previousSeries = elSeries.value
           const sel = buildSeriesOptions(result, previousSeries)
+          buildAxisSelectors(result, elXAxis.value, elYAxis.value)
           const s = getSeries(result, sel)
-          plotSeries(s.t, s.y, formatSeriesLabel(sel))
+          plotSeries(s.t, s.y, formatSeriesLabel(sel), 'Time (t)', formatSeriesLabel(sel))
 
           elCsv.disabled = false
           setStatus('Simulation complete.', 'good')
@@ -2588,7 +3381,25 @@ simulateModel.contract = {
         if (!lastResult) return
         const sel = elSeries.value
         const s = getSeries(lastResult, sel)
-        plotSeries(s.t, s.y, formatSeriesLabel(sel))
+        plotSeries(s.t, s.y, formatSeriesLabel(sel), 'Time (t)', formatSeriesLabel(sel))
+      })
+
+      elAxisPlotBtn.addEventListener('click', () => {
+        if (!lastResult) return
+        const visible = elAxisPicker.style.display !== 'none'
+        elAxisPicker.style.display = visible ? 'none' : 'block'
+      })
+
+      elApplyAxisPlot.addEventListener('click', () => {
+        if (!lastResult) return
+        const xKey = String(elXAxis.value || 't')
+        const yKey = String(elYAxis.value || '')
+        if (!yKey) return
+        const xValues = getSeriesValues(lastResult, xKey)
+        const yValues = getSeriesValues(lastResult, yKey)
+        const xLabel = xKey === 't' ? 'Time (t)' : formatSeriesLabel(xKey)
+        const yLabel = formatSeriesLabel(yKey)
+        plotSeries(xValues, yValues, `${yLabel} vs ${xLabel}`, xLabel, yLabel)
       })
 
       elCsv.addEventListener('click', () => {
@@ -2599,7 +3410,7 @@ simulateModel.contract = {
       })
 
       drawGrid()
-      drawAxes(0, 1, 0, 1, '')
+      drawAxes(0, 1, 0, 1, '', 'Time (t)', 'Value')
       setStatus('Ready.', '')
     </script>
   
