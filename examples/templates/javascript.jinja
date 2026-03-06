@@ -21,6 +21,7 @@
 {%- set eqs = dae.f_x if dae.f_x is defined else (dae.fx if dae.fx is defined else []) -%}
 {%- set cond_eqs = dae.f_c if dae.f_c is defined else [] -%}
 {%- set when_clauses = dae.when_clauses if dae.when_clauses is defined else [] -%}
+{%- set reset_eqs = dae.f_z if dae.f_z is defined else [] -%}
 
 {%- macro render_cref(cr) -%}
 {%- if cr.parts is defined -%}
@@ -97,13 +98,46 @@
 {%- endif -%}
 {%- endmacro -%}
 
+{%- macro inferred_unit_from_name(name) -%}
+{%- set __n = (name|string)|trim -%}
+{%- set __nl = __n|lower -%}
+{%- if __nl == 'i' or __nl[-2:] == '.i' -%}A
+{%- elif __nl == 'v' or __nl[-2:] == '.v' -%}V
+{%- elif __nl[-7:] == 'q_flow' or __nl[-10:] == '.q_flow' -%}W
+{%- elif __nl[-9:] == 'losspower' or __nl[-10:] == '.losspower' -%}W
+{%- elif __nl[-9:] == 'r_actual' or __nl[-10:] == '.r_actual' or __nl == 'r' or __nl[-2:] == '.r' -%}Ohm
+{%- elif __nl == 'g' or __nl[-2:] == '.g' -%}W/K
+{%- elif __nl[-3:] == '.dt' or __nl == 'dt' -%}K
+{%- elif __nl == 't' or __nl[-2:] == '.t' -%}K
+{%- elif __nl == 'f' or __nl[-2:] == '.f' -%}Hz
+{%- elif __nl[-6:] == '.phase' or __nl == 'phase' -%}rad
+{%- elif __nl[-6:] == '.omega' or __nl == 'omega' -%}rad/s
+{%- elif __nl[-6:] == '.alpha' or __nl == 'alpha' -%}1/K
+{%- else -%}
+{%- endif -%}
+{%- endmacro -%}
+
 {%- macro comp_unit_prop(comp) -%}
-{%- if comp.unit is defined and (comp.unit|string)|trim != '' -%}
-, unit: "{{ comp.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
-{%- elif comp.displayUnit is defined and (comp.displayUnit|string)|trim != '' -%}
-, unit: "{{ comp.displayUnit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
-{%- elif comp.display_unit is defined and (comp.display_unit|string)|trim != '' -%}
-, unit: "{{ comp.display_unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"
+{%- if comp.unit is defined and comp.unit is not none -%}
+  {%- set __u = (comp.unit|string)|trim -%}
+  {%- if __u != '' and __u|lower != 'none' and __u|lower != 'null' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
+{%- elif comp.displayUnit is defined and comp.displayUnit is not none -%}
+  {%- set __u = (comp.displayUnit|string)|trim -%}
+  {%- if __u != '' and __u|lower != 'none' and __u|lower != 'null' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
+{%- elif comp.display_unit is defined and comp.display_unit is not none -%}
+  {%- set __u = (comp.display_unit|string)|trim -%}
+  {%- if __u != '' and __u|lower != 'none' and __u|lower != 'null' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
+{%- else -%}
+  {%- set __u = inferred_unit_from_name(comp.name if comp.name is defined else '')|trim -%}
+  {%- if __u != '' -%}
+, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"
+  {%- endif -%}
 {%- endif -%}
 {%- endmacro -%}
 
@@ -362,6 +396,23 @@
   {%- endif -%}
 {%- endmacro -%}
 
+{%- macro event_indicator_expr(e) -%}
+{%- if e is mapping and e.Binary is defined -%}
+  {%- set b = e.Binary -%}
+  {%- if b.op.Le is defined or b.op.Lt is defined or b.op.LessEq is defined or b.op.Less is defined -%}
+    (({{ render_expr(b.lhs) }}) - ({{ render_expr(b.rhs) }}))
+  {%- elif b.op.Ge is defined or b.op.Gt is defined or b.op.GreaterEq is defined or b.op.Greater is defined -%}
+    (({{ render_expr(b.rhs) }}) - ({{ render_expr(b.lhs) }}))
+  {%- elif b.op.Eq is defined or b.op.Ne is defined or b.op.Equals is defined or b.op.NotEquals is defined -%}
+    (({{ render_expr(b.lhs) }}) - ({{ render_expr(b.rhs) }}))
+  {%- else -%}
+    (({{ render_expr(e) }}) ? -1 : 1)
+  {%- endif -%}
+{%- else -%}
+  (({{ render_expr(e) }}) ? -1 : 1)
+{%- endif -%}
+{%- endmacro -%}
+
 function Model() {
   const __rumocaHasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -534,7 +585,7 @@ function Model() {
       { name: "{{ name }}", start: y0[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}]{{ comp_unit_prop(comp) }} }{% if not loop.last or obs_list|length > 0 %},{% endif %}
     {%- endfor %}
     {%- for obs in obs_list %}
-      { name: "{{ obs.name }}", start: {% if obs.start is defined %}__rumocaFiniteOr({{ render_expr(obs.start) }}, 0){% else %}0{% endif %}{% if obs.unit is defined and (obs.unit|string)|trim != '' %}, unit: "{{ obs.unit|string|replace('\\', '\\\\')|replace('"', '\\"') }}"{% endif %} }{% if not loop.last %},{% endif %}
+      { name: "{{ obs.name }}", start: {% if obs.start is defined %}__rumocaFiniteOr({{ render_expr(obs.start) }}, 0){% else %}0{% endif %}{% if obs.unit is defined and obs.unit is not none and (obs.unit|string)|trim != '' and (obs.unit|string)|trim|lower != 'none' and (obs.unit|string)|trim|lower != 'null' %}, unit: "{{ (obs.unit|string)|trim|replace('\\', '\\\\')|replace('"', '\\"') }}"{% else %}{% set __u = inferred_unit_from_name(obs.name)|trim %}{% if __u != '' %}, unit: "{{ __u|replace('\\', '\\\\')|replace('"', '\\"') }}"{% endif %}{% endif %} }{% if not loop.last %},{% endif %}
     {%- endfor %}
     ],
 
@@ -675,6 +726,45 @@ function Model() {
     ];
   }
 
+  function evalEventIndicators(t, xVec, yVec, uVec, pOverride) {
+    const p = Object.assign({}, pDefaults, pOverride || {});
+
+  {%- for (name, comp) in p_map|items %}
+    const {{ js_ident(name) }} = p["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in cp_map|items %}
+    const {{ js_ident(name) }} = constants["{{ name }}"];
+  {%- endfor %}
+
+  {%- for (name, comp) in x_map|items %}
+    const {{ js_ident(name) }} = xVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in y_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in z_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in m_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + loop.index0 }}];
+  {%- endfor %}
+  {%- for (name, comp) in w_map|items %}
+    const {{ js_ident(name) }} = yVec[{{ y_map|length + z_map|length + m_map|length + loop.index0 }}];
+  {%- endfor %}
+
+  {%- for (name, comp) in u_map|items %}
+    const {{ js_ident(name) }} = uVec[{{ loop.index0 }}];
+  {%- endfor %}
+
+    return [
+    {%- for ce in cond_eqs %}
+      {{ event_indicator_expr(ce.rhs) }}{% if not loop.last %},{% endif %}
+    {%- endfor %}
+    ];
+  }
+
   function evalAlgebraics(t, xVec, yVec, uVec, pOverride) {
     var p = Object.assign({}, pDefaults, pOverride || {});
 
@@ -792,6 +882,23 @@ function Model() {
     }
   {%- endfor %}
 
+  {%- if when_clauses|length == 0 and reset_eqs|length > 0 %}
+    const firedAny = Array.isArray(cPrev) && Array.isArray(cCurr)
+      ? cCurr.some((value, idx) => !Boolean(cPrev[idx]) && Boolean(value))
+      : false;
+    if (firedAny) {
+    {%- for eq in reset_eqs %}
+      {%- if eq.lhs is defined %}
+      if (stateIndex["{{ eq.lhs }}"] !== undefined) {
+        xNew[stateIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+      } else if (algebraicIndex["{{ eq.lhs }}"] !== undefined) {
+        yNew[algebraicIndex["{{ eq.lhs }}"]] = {{ render_expr(eq.rhs) }};
+      }
+      {%- endif %}
+    {%- endfor %}
+    }
+  {%- endif %}
+
     return { x: xNew, y: yNew, c: cNew };
   }
 
@@ -808,9 +915,9 @@ function Model() {
     nx: meta.summary.nx,
     ny: meta.summary.ny,
     nu: meta.inputs.length,
-    nz: 0
+    nz: {{ cond_eqs|length }}
   };
-  const capabilities = { events: false };
+  const capabilities = { events: {{ "true" if cond_eqs|length > 0 or when_clauses|length > 0 or reset_eqs|length > 0 else "false" }} };
 
   return {
     abiRequired,
@@ -824,6 +931,7 @@ function Model() {
     c0,
     residual,
     evalAlgebraics,
+    evalEventIndicators,
     evalConditions,
     applyResets
   };
