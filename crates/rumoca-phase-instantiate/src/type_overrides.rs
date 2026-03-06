@@ -1,4 +1,5 @@
-use super::{find_class_in_tree, find_member_type_in_class, find_member_type_path_in_class};
+use super::find_class_in_tree;
+use super::type_lookup::{find_member_type_in_class, find_member_type_path_in_class};
 use indexmap::IndexMap;
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
