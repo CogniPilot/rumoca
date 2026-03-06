@@ -1555,6 +1555,99 @@ fn extract_component_attrs_and_binding(
     )
 }
 
+fn extract_string_attr_value_from_modification_expr(
+    expr: &ast::Expression,
+    attr_name: &str,
+) -> Option<String> {
+    match expr {
+        ast::Expression::Modification { target, value } => {
+            let target_name = target.parts.last()?.ident.text.as_ref();
+            if target_name == attr_name {
+                expr_to_string(value)
+            } else {
+                None
+            }
+        }
+        ast::Expression::NamedArgument { name, value } => {
+            if name.text.as_ref() == attr_name {
+                expr_to_string(value)
+            } else {
+                None
+            }
+        }
+        ast::Expression::ClassModification { modifications, .. } => modifications
+            .iter()
+            .find_map(|m| extract_string_attr_value_from_modification_expr(m, attr_name)),
+        _ => None,
+    }
+}
+
+fn has_all_type_string_attrs(attrs: &ExtractedAttributes) -> bool {
+    attrs.quantity.is_some() && attrs.unit.is_some() && attrs.display_unit.is_some()
+}
+
+fn merge_missing_type_string_attrs_from_expr(
+    attrs: &mut ExtractedAttributes,
+    expr: &ast::Expression,
+) {
+    if attrs.quantity.is_none() {
+        attrs.quantity = extract_string_attr_value_from_modification_expr(expr, "quantity");
+    }
+    if attrs.unit.is_none() {
+        attrs.unit = extract_string_attr_value_from_modification_expr(expr, "unit");
+    }
+    if attrs.display_unit.is_none() {
+        attrs.display_unit = extract_string_attr_value_from_modification_expr(expr, "displayUnit");
+    }
+}
+
+/// Fill missing quantity/unit/displayUnit attributes from the declared type hierarchy.
+///
+/// This is needed for Modelica type aliases (for example
+/// `type Resistance = Real(final unit="Ohm", ...)`) where the attribute is defined
+/// on the type's `extends` chain rather than on the component declaration itself.
+fn merge_type_hierarchy_string_attributes(
+    tree: &ast::ClassTree,
+    class_def: Option<&ast::ClassDef>,
+    attrs: &mut ExtractedAttributes,
+) {
+    if has_all_type_string_attrs(attrs) {
+        return;
+    }
+
+    let mut stack: Vec<&ast::ClassDef> = class_def.into_iter().collect();
+    let mut visited = std::collections::HashSet::<DefId>::new();
+
+    while let Some(class) = stack.pop() {
+        if let Some(def_id) = class.def_id
+            && !visited.insert(def_id)
+        {
+            continue;
+        }
+
+        for ext in &class.extends {
+            for modification in &ext.modifications {
+                merge_missing_type_string_attrs_from_expr(attrs, &modification.expr);
+            }
+        }
+
+        if has_all_type_string_attrs(attrs) {
+            break;
+        }
+
+        for ext in &class.extends {
+            let base_name = ext.base_name.to_string();
+            if let Some(base_class) = ext
+                .base_def_id
+                .and_then(|def_id| tree.get_class_by_def_id(def_id))
+                .or_else(|| find_class_in_tree(tree, &base_name))
+            {
+                stack.push(base_class);
+            }
+        }
+    }
+}
+
 fn should_promote_binding_to_start(
     comp: &ast::Component,
     attrs: &ExtractedAttributes,
@@ -1591,7 +1684,7 @@ fn instantiate_component(
     // MLS §5.4: Handle inner/outer components
     handle_inner_outer(tree, comp, ctx, overlay, &qualified_name, &type_name)?;
 
-    let (attrs, binding, binding_source, binding_source_scope, binding_from_modification) =
+    let (mut attrs, binding, binding_source, binding_source_scope, binding_from_modification) =
         extract_component_attrs_and_binding(comp, ctx.mod_env());
 
     // Extract flow/stream from connection prefix (MLS §9.3)
@@ -1609,6 +1702,7 @@ fn instantiate_component(
         is_primitive,
         is_discrete: is_discrete_type,
     } = type_info;
+    merge_type_hierarchy_string_attributes(tree, class_def, &mut attrs);
     validate_partial_component_instantiation(
         tree,
         comp,
