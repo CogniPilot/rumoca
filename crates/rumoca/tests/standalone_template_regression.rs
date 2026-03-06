@@ -133,3 +133,63 @@ end Wrapper;
         "rendered output must not contain Taskyon script placeholders"
     );
 }
+
+#[test]
+fn standalone_template_preserves_msl_resistor_units_in_meta() {
+    // Minimal MSL-shaped model hierarchy that captures the unit propagation path:
+    // SI.Resistance extends Real with unit metadata, and a resistor model uses that type.
+    let source = r#"
+package Modelica
+  package Units
+    package SI
+      type Resistance = Real(final quantity = "ElectricResistance", final unit = "Ohm", final displayUnit = "Ohm");
+      type Voltage = Real(final unit = "V");
+      type Current = Real(final unit = "A");
+    end SI;
+  end Units;
+
+  package Electrical
+    package Analog
+      package Basic
+        model Resistor
+          parameter Modelica.Units.SI.Resistance R = 1;
+          Modelica.Units.SI.Voltage v;
+          Modelica.Units.SI.Current i;
+        equation
+          v = R * i;
+        end Resistor;
+      end Basic;
+
+      package Examples
+        model Resistor
+          extends Modelica.Electrical.Analog.Basic.Resistor;
+        end Resistor;
+      end Examples;
+    end Analog;
+  end Electrical;
+end Modelica;
+
+model MslResistorExample
+  extends Modelica.Electrical.Analog.Examples.Resistor;
+end MslResistorExample;
+"#;
+
+    let result = Compiler::new()
+        .model("MslResistorExample")
+        .compile_str(source, "MslResistorExample.mo")
+        .expect("compile MSL resistor wrapper");
+
+    let template_path = standalone_template_path();
+    let rendered = result
+        .render_template(template_path.to_string_lossy().as_ref())
+        .expect("render standalone template");
+
+    assert!(
+        rendered.contains(r#"name: "R""#),
+        "expected resistor parameter in rendered template meta, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"unit: "Ohm""#),
+        "expected propagated MSL Resistance unit in rendered template meta, got:\n{rendered}"
+    );
+}
