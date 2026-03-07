@@ -2,7 +2,8 @@
 //!
 //! Ported from the main branch's `src/lsp/handlers/semantic_tokens.rs`.
 
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 use std::ops::ControlFlow::{self, Continue};
 
 use lsp_types::{
@@ -17,7 +18,7 @@ type ComponentReference = ast::ComponentReference;
 type Expression = ast::Expression;
 type StoredDefinition = ast::StoredDefinition;
 type TerminalType = ast::TerminalType;
-type Variability = ast::Variability;
+type Variability = rumoca_ir_core::Variability;
 
 // Token type indices (must match order in get_semantic_token_legend)
 const TYPE_NAMESPACE: u32 = 0;
@@ -427,7 +428,7 @@ fn default_visit_expression(v: &mut SemanticTokenCollector, expr: &Expression) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_phase_parse::parse_to_ast;
+    use rumoca_session::parsing::parse_source_to_ast;
 
     fn decode_tokens(tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, u32)> {
         let mut decoded = Vec::with_capacity(tokens.len());
@@ -457,7 +458,7 @@ mod tests {
     }
 
     fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
-        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let ast = parse_source_to_ast(source, "test.mo").expect("parse should succeed");
         let result = handle_semantic_tokens(&ast).expect("semantic tokens should be available");
         match result {
             SemanticTokensResult::Tokens(tokens) => tokens.data,

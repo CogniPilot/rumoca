@@ -1,5 +1,5 @@
 use super::*;
-use rumoca::sim_trace_compare::count_agreement_bands_default;
+use rumoca_session::analysis::count_agreement_bands_default;
 
 pub(super) fn compute_trace_output_summary(
     trace_report: &TraceQuantification,

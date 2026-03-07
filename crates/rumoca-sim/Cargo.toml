@@ -1,0 +1,35 @@
+[package]
+name = "rumoca-sim"
+description = "Simulation facade and backend abstraction for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["diffsol"]
+diffsol = ["dep:diffsol"]
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-core = { workspace = true }
+rumoca-eval-dae = { workspace = true }
+rumoca-phase-solve = { workspace = true }
+diffsol = { version = "0.10", optional = true }
+levenberg-marquardt = "0.15"
+nalgebra = "0.34"
+indexmap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+thiserror = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+rumoca-eval-dae = { workspace = true, features = ["wasm"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rumoca-eval-dae = { workspace = true, features = ["cranelift"] }
+
+[lints]
+workspace = true

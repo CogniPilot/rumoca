@@ -34,15 +34,15 @@ pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validat
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, SourceMap, Span,
+    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, ScopeId, SourceMap,
+    Span,
 };
 use rumoca_ir_ast as ast;
 
 type ClassTree = ast::ClassTree;
-type Location = ast::Location;
+type Location = rumoca_ir_core::Location;
 type ParsedTree = ast::ParsedTree;
 type ResolvedTree = ast::ResolvedTree;
-type ScopeId = ast::ScopeId;
 type ScopeTree = ast::ScopeTree;
 type StoredDefinition = ast::StoredDefinition;
 

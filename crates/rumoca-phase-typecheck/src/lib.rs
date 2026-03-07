@@ -20,7 +20,6 @@
 //! - Structural parameters are identified early
 //! - Array sizes for for-loops can be computed at compile time
 
-pub mod eval;
 mod modifier_targets;
 pub(crate) mod path_utils;
 mod typechecker;
@@ -141,7 +140,7 @@ pub struct TypeChecker {
     /// Collected diagnostics.
     diagnostics: Diagnostics,
     /// Evaluation context for current class (built from constants/parameters).
-    eval_ctx: eval::TypeCheckEvalContext,
+    eval_ctx: rumoca_eval_ast::eval::TypeCheckEvalContext,
     /// Source map for file name → SourceId resolution in diagnostics.
     source_map: SourceMap,
     /// DefId → fully-qualified class name map for anchor-aware dotted type lookup.
@@ -181,7 +180,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         Self {
             diagnostics: Diagnostics::new(),
-            eval_ctx: eval::TypeCheckEvalContext::new(),
+            eval_ctx: rumoca_eval_ast::eval::TypeCheckEvalContext::new(),
             source_map: SourceMap::default(),
             def_qualified_names: HashMap::new(),
             type_ids_by_def_id: HashMap::new(),
@@ -234,7 +233,7 @@ impl TypeChecker {
             .map(|(def_id, name)| (*def_id, name.clone()))
             .collect();
         // Build evaluation context from overlay's parameter values
-        self.eval_ctx = eval::TypeCheckEvalContext::new();
+        self.eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
         let (type_table, type_ids_by_def_id) = Self::build_type_context(tree);
         self.type_ids_by_def_id = type_ids_by_def_id;
         self.type_suffix_index = Self::build_type_suffix_index(&type_table);
@@ -259,33 +258,39 @@ impl TypeChecker {
 
             // Try integer first (binding then start)
             if let Some(ref binding) = instance_data.binding
-                && let Some(value) = eval::eval_integer_with_scope(binding, &self.eval_ctx, scope)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_integer_with_scope(binding, &self.eval_ctx, scope)
             {
                 self.eval_ctx.add_integer(&name, value);
             } else if let Some(ref start) = instance_data.start
-                && let Some(value) = eval::eval_integer_with_scope(start, &self.eval_ctx, scope)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_integer_with_scope(start, &self.eval_ctx, scope)
             {
                 self.eval_ctx.add_integer(&name, value);
             }
 
             // Try boolean (binding then start)
             if let Some(ref binding) = instance_data.binding
-                && let Some(value) = eval::eval_boolean_with_scope(binding, &self.eval_ctx, scope)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_boolean_with_scope(binding, &self.eval_ctx, scope)
             {
                 self.eval_ctx.booleans.insert(name.clone(), value);
             } else if let Some(ref start) = instance_data.start
-                && let Some(value) = eval::eval_boolean_with_scope(start, &self.eval_ctx, scope)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_boolean_with_scope(start, &self.eval_ctx, scope)
             {
                 self.eval_ctx.booleans.insert(name.clone(), value);
             }
 
             // Try real (binding then start)
             if let Some(ref binding) = instance_data.binding
-                && let Some(value) = eval::eval_real_with_scope(binding, &self.eval_ctx, scope)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_real_with_scope(binding, &self.eval_ctx, scope)
             {
                 self.eval_ctx.reals.insert(name.clone(), value);
             } else if let Some(ref start) = instance_data.start
-                && let Some(value) = eval::eval_real_with_scope(start, &self.eval_ctx, scope)
+                && let Some(value) =
+                    rumoca_eval_ast::eval::eval_real_with_scope(start, &self.eval_ctx, scope)
             {
                 self.eval_ctx.reals.insert(name.clone(), value);
             }
@@ -293,11 +298,11 @@ impl TypeChecker {
             // Try enumeration (binding then start)
             // Enum values are ComponentReferences with qualified paths (>= 2 parts)
             if let Some(ref binding) = instance_data.binding
-                && let Some(value) = eval::extract_enum_value(binding)
+                && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(binding)
             {
                 self.eval_ctx.enums.insert(name.clone(), value);
             } else if let Some(ref start) = instance_data.start
-                && let Some(value) = eval::extract_enum_value(start)
+                && let Some(value) = rumoca_eval_ast::eval::extract_enum_value(start)
             {
                 self.eval_ctx.enums.insert(name.clone(), value);
             }
@@ -451,7 +456,7 @@ impl TypeChecker {
     fn collect_instance_class_override_constants(
         tree: &ClassTree,
         overlay: &InstanceOverlay,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let component_index: HashMap<String, &rumoca_ir_ast::InstanceData> = overlay
             .components
@@ -480,7 +485,7 @@ impl TypeChecker {
         tree: &ClassTree,
         component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
         data: &rumoca_ir_ast::InstanceData,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         if data.class_overrides.is_empty() {
             return;
@@ -511,7 +516,7 @@ impl TypeChecker {
         active_alias: Option<&str>,
         alias: &str,
         def_id: DefId,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         if Self::try_apply_forwarded_parent_alias_constants(
             tree,
@@ -542,7 +547,7 @@ impl TypeChecker {
         active_alias: Option<&str>,
         alias: &str,
         def_id: DefId,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) -> bool {
         let Some(def_qname) = tree.def_map.get(&def_id) else {
             return false;
@@ -577,7 +582,7 @@ impl TypeChecker {
 
     fn propagate_alias_values_in_ctx(
         alias_pairs: &[(String, String)],
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         Self::propagate_alias_map(alias_pairs, &mut ctx.integers);
         Self::propagate_alias_map(alias_pairs, &mut ctx.reals);
@@ -979,7 +984,7 @@ impl TypeChecker {
     /// the eval context's `enum_sizes` map with type name → literal count mappings.
     /// Also resolves import aliases so that `import L = ...Logic` makes `L` usable
     /// as a dimension.
-    fn collect_enum_sizes(tree: &ClassTree, ctx: &mut eval::TypeCheckEvalContext) {
+    fn collect_enum_sizes(tree: &ClassTree, ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext) {
         // Scan all classes in the name_map for enumeration types
         for (name, &def_id) in &tree.name_map {
             let size = Self::enum_literal_count(tree, def_id);
@@ -1025,7 +1030,7 @@ impl TypeChecker {
         tree: &ClassTree,
         def_id: rumoca_core::DefId,
         type_name: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let Some(class) = tree.get_class_by_def_id(def_id) else {
             return;
@@ -1048,7 +1053,7 @@ impl TypeChecker {
     fn collect_enum_from_import(
         tree: &ClassTree,
         import: &ScopeImport,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         // Extract (alias_name, def_id) pairs from the import.
         // For renamed/qualified imports, include both import alias and full path
@@ -1076,7 +1081,10 @@ impl TypeChecker {
     /// When a class has `import generator = Modelica.Math.Random.Generators.Xorshift128plus`,
     /// this adds `generator.nState = 4` to the eval context so that dimension expressions
     /// like `Integer state[generator.nState]` can be evaluated.
-    fn collect_import_constants(tree: &ClassTree, ctx: &mut eval::TypeCheckEvalContext) {
+    fn collect_import_constants(
+        tree: &ClassTree,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
         for idx in 0..tree.scope_tree.len() {
             let scope_id = ScopeId::new(idx as u32);
             let Some(scope) = tree.scope_tree.get(scope_id) else {
@@ -1095,7 +1103,7 @@ impl TypeChecker {
     fn collect_model_extends_redeclare_constants(
         tree: &ClassTree,
         model_name: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
             tree.get_class_by_qualified_name(path_utils::top_level_last_segment(model_name))
@@ -1131,7 +1139,10 @@ impl TypeChecker {
         }
     }
 
-    fn clear_alias_scope_values(ctx: &mut eval::TypeCheckEvalContext, alias: &str) {
+    fn clear_alias_scope_values(
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+        alias: &str,
+    ) {
         let prefix = format!("{alias}.");
         ctx.integers.retain(|k, _| !k.starts_with(&prefix));
         ctx.reals.retain(|k, _| !k.starts_with(&prefix));
@@ -1229,7 +1240,7 @@ impl TypeChecker {
         tree: &ClassTree,
         alias: &str,
         def_id: DefId,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let Some(class) = tree.get_class_by_def_id(def_id) else {
             return;
@@ -1262,7 +1273,7 @@ impl TypeChecker {
     fn collect_constants_from_import(
         tree: &ClassTree,
         import: &ScopeImport,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let pairs: Vec<(String, rumoca_core::DefId)> = match import {
             ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
@@ -1337,7 +1348,7 @@ impl TypeChecker {
         tree: &ClassTree,
         prefix: &str,
         class: &ClassDef,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for (nested_name, nested_class) in &class.classes {
             let qualified = format!("{}.{}", prefix, nested_name);
@@ -1360,7 +1371,7 @@ impl TypeChecker {
         tree: &ClassTree,
         alias: &str,
         base_name: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let Some(base_class) = tree.get_class_by_qualified_name(base_name) else {
             return;
@@ -1379,7 +1390,7 @@ impl TypeChecker {
     fn extract_extends_modification_constants(
         alias: &str,
         ext: &rumoca_ir_ast::Extend,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for ext_mod in &ext.modifications {
             if ext_mod.redeclare {
@@ -1393,7 +1404,7 @@ impl TypeChecker {
     fn extract_extends_modification_expr(
         alias: &str,
         expr: &Expression,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         if let Expression::Modification { target, value } = expr {
             let target_name = target.to_string();
@@ -1403,13 +1414,15 @@ impl TypeChecker {
                 format!("{alias}.{}", target)
             };
 
-            if let Some(val) = eval::eval_integer_with_scope(value, ctx, alias) {
+            if let Some(val) = rumoca_eval_ast::eval::eval_integer_with_scope(value, ctx, alias) {
                 ctx.integers.insert(full_name.clone(), val);
             }
-            if let Some(val) = eval::eval_boolean_with_scope(value, ctx, alias) {
+            if let Some(val) = rumoca_eval_ast::eval::eval_boolean_with_scope(value, ctx, alias) {
                 ctx.booleans.insert(full_name.clone(), val);
             }
-            if let Some(dims) = eval::infer_dimensions_from_binding_with_scope(value, ctx, alias) {
+            if let Some(dims) =
+                rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(value, ctx, alias)
+            {
                 ctx.dimensions.insert(full_name, dims);
             }
         }
@@ -1418,7 +1431,7 @@ impl TypeChecker {
     /// Apply direct extends-modifier constant overrides from one ancestor class.
     fn extract_ancestor_extends_modification_constants(
         ancestor: &ClassDef,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for ext in &ancestor.extends {
             Self::extract_extends_modification_constants("", ext, ctx);
@@ -1430,10 +1443,10 @@ impl TypeChecker {
     fn extract_class_constants(
         prefix: &str,
         class: &ClassDef,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for (name, comp) in &class.components {
-            if !matches!(comp.variability, rumoca_ir_ast::Variability::Constant(_)) {
+            if !matches!(comp.variability, rumoca_ir_core::Variability::Constant(_)) {
                 continue;
             }
             let full_name = if prefix.is_empty() {
@@ -1463,7 +1476,7 @@ impl TypeChecker {
         shape: &[usize],
         binding: &Expression,
         scope: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         if ctx.dimensions.contains_key(full_name) {
             return;
@@ -1474,7 +1487,9 @@ impl TypeChecker {
             return;
         }
         // Try to infer dimensions from the binding expression
-        if let Some(dims) = eval::infer_dimensions_from_binding_with_scope(binding, ctx, scope) {
+        if let Some(dims) =
+            rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(binding, ctx, scope)
+        {
             ctx.dimensions.insert(full_name.to_string(), dims);
         }
     }
@@ -1485,21 +1500,23 @@ impl TypeChecker {
         type_name: &str,
         expr: &Expression,
         scope: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         match type_name {
             "Integer" => {
-                if let Some(val) = eval::eval_integer_with_scope(expr, ctx, scope) {
+                if let Some(val) = rumoca_eval_ast::eval::eval_integer_with_scope(expr, ctx, scope)
+                {
                     ctx.integers.entry(full_name.to_string()).or_insert(val);
                 }
             }
             "Real" => {
-                if let Some(val) = eval::eval_real_with_scope(expr, ctx, scope) {
+                if let Some(val) = rumoca_eval_ast::eval::eval_real_with_scope(expr, ctx, scope) {
                     ctx.reals.entry(full_name.to_string()).or_insert(val);
                 }
             }
             "Boolean" => {
-                if let Some(val) = eval::eval_boolean_with_scope(expr, ctx, scope) {
+                if let Some(val) = rumoca_eval_ast::eval::eval_boolean_with_scope(expr, ctx, scope)
+                {
                     ctx.booleans.entry(full_name.to_string()).or_insert(val);
                 }
             }
@@ -1520,7 +1537,7 @@ impl TypeChecker {
     fn collect_nested_class_constants(
         tree: &ClassTree,
         model_name: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         // Get all ancestors of the model (including itself) via extends chains
         let ancestors = Self::collect_ancestor_classes(tree, model_name);
@@ -1545,7 +1562,7 @@ impl TypeChecker {
         tree: &ClassTree,
         class_def: &ClassDef,
         model_name: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         // Walk nested class declarations (e.g., `package Medium = SomeMedium`)
         for (nested_name, nested_class) in &class_def.classes {
@@ -1576,7 +1593,7 @@ impl TypeChecker {
         alias: &str,
         base_name: &str,
         resolve_context: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let (base_class, resolved_qname) =
             Self::resolve_class_name_with_qname(tree, base_name, resolve_context);
@@ -1608,7 +1625,7 @@ impl TypeChecker {
     fn collect_enclosing_class_constants(
         tree: &ClassTree,
         model_name: &str,
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         let Some(pos) = path_utils::find_last_top_level_dot(model_name) else {
             return;
@@ -1627,7 +1644,10 @@ impl TypeChecker {
     /// Populates `ctx.functions` with function ClassDefs keyed by qualified name.
     /// Used by `eval_integer_func_with_scope` to interpret user-defined pure
     /// functions whose return values appear in dimension expressions (MLS §12.4).
-    fn collect_function_defs(tree: &ClassTree, ctx: &mut eval::TypeCheckEvalContext) {
+    fn collect_function_defs(
+        tree: &ClassTree,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
         ctx.functions = std::sync::Arc::clone(tree.function_defs_for_eval());
     }
 
@@ -1683,7 +1703,7 @@ impl TypeChecker {
     /// Multi-pass extraction of constants from ancestor classes (MLS §4.5, §7.1).
     fn extract_enclosing_constants_multi_pass(
         ancestors: &[&ClassDef],
-        ctx: &mut eval::TypeCheckEvalContext,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         const MAX_PASSES: usize = 5;
         for _pass in 0..MAX_PASSES {

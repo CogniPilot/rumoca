@@ -187,7 +187,7 @@ pub(super) fn collect_record_equation_defined_vars(
         let flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, rumoca_ir_ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_flat::OpBinary::Sub(_)) {
             continue;
         }
 
@@ -354,7 +354,7 @@ mod tests {
             flat::VarName::new("bus[data.medium].pin.v"),
             flat::Variable {
                 name: flat::VarName::new("bus[data.medium].pin.v"),
-                variability: rumoca_ir_ast::Variability::Empty,
+                variability: rumoca_ir_flat::Variability::Empty,
                 is_primitive: true,
                 ..Default::default()
             },

@@ -55,14 +55,53 @@ if [[ $run_workspace -eq 1 || ${#changed_crates[@]} -eq 0 ]]; then
   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --exclude rumoca-bind-python --exclude rumoca-bind-wasm
 else
   mapfile -t crate_list < <(printf '%s\n' "${!changed_crates[@]}" | sort)
+
+  run_clippy_for_crate() {
+    local crate="$1"
+    local stderr_log
+    stderr_log="$(mktemp)"
+    if cargo clippy --package "$crate" --all-targets --all-features -- -D warnings 2>"$stderr_log"; then
+      rm -f "$stderr_log"
+      return 0
+    fi
+    cat "$stderr_log" >&2
+    if rg -q "outside of workspace" "$stderr_log"; then
+      echo "pre-commit: crate '${crate}' is not a workspace member; retrying clippy via manifest..."
+      rm -f "$stderr_log"
+      cargo clippy --manifest-path "crates/${crate}/Cargo.toml" --all-targets --all-features -- -D warnings
+      return 0
+    fi
+    rm -f "$stderr_log"
+    return 1
+  }
+
+  run_doc_for_crate() {
+    local crate="$1"
+    local stderr_log
+    stderr_log="$(mktemp)"
+    if RUSTDOCFLAGS="-D warnings" cargo doc --package "$crate" --no-deps 2>"$stderr_log"; then
+      rm -f "$stderr_log"
+      return 0
+    fi
+    cat "$stderr_log" >&2
+    if rg -q "outside of workspace" "$stderr_log"; then
+      echo "pre-commit: crate '${crate}' is not a workspace member; retrying docs via manifest..."
+      rm -f "$stderr_log"
+      RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path "crates/${crate}/Cargo.toml" --no-deps
+      return 0
+    fi
+    rm -f "$stderr_log"
+    return 1
+  }
+
   for crate in "${crate_list[@]}"; do
     echo "pre-commit: running clippy for crate '${crate}'..."
-    cargo clippy --package "$crate" --all-targets --all-features -- -D warnings
+    run_clippy_for_crate "$crate"
   done
 
   for crate in "${crate_list[@]}"; do
     echo "pre-commit: running rustdoc warnings gate for crate '${crate}'..."
-    RUSTDOCFLAGS="-D warnings" cargo doc --package "$crate" --no-deps
+    run_doc_for_crate "$crate"
   done
 fi
 

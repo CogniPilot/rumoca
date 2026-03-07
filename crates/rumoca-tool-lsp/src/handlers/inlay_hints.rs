@@ -1,7 +1,7 @@
 //! Inlay hints handler for Modelica files.
 
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position, Range};
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
 
 /// Handle inlay hints request.
 ///
@@ -416,6 +416,7 @@ fn collect_loose_builtin_call_hints(source: &str, range: &Range, hints: &mut Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_session::parsing::parse_source_to_ast;
 
     #[test]
     fn provides_array_dimension_inlay_hint() {
@@ -426,7 +427,7 @@ equation
   der(x[1,1]) = 0;
 end M;
 "#;
-        let ast = rumoca_phase_parse::parse_to_ast(source, "input.mo").expect("parse");
+        let ast = parse_source_to_ast(source, "input.mo").expect("parse");
         let range = Range {
             start: Position {
                 line: 0,

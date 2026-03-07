@@ -8,6 +8,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use std::collections::HashSet;
 
+use crate::flat_to_dae_expression;
+
 #[derive(Debug, Clone)]
 struct ConditionCandidate {
     expr: dae::Expression,
@@ -20,7 +22,7 @@ pub(crate) fn populate_canonical_conditions(dae_model: &mut dae::Dae, flat_model
 
     for eq in &flat_model.equations {
         collect_if_condition_candidates(
-            &eq.residual,
+            &flat_to_dae_expression(&eq.residual),
             eq.span,
             format!("{}", eq.origin),
             false,

@@ -2744,7 +2744,10 @@ dependencies = [
  "ntest",
  "rayon",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
+ "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
@@ -2752,10 +2755,9 @@ dependencies = [
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
- "rumoca-phase-structural",
+ "rumoca-phase-solve",
  "rumoca-phase-typecheck",
  "rumoca-session",
- "rumoca-sim-diffsol",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
@@ -2775,10 +2777,7 @@ version = "0.8.0"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
- "rumoca-phase-codegen",
- "rumoca-phase-parse",
  "rumoca-session",
- "rumoca-tool-lint",
  "serde_json",
 ]
 
@@ -2789,12 +2788,7 @@ dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
  "lsp-types",
- "rumoca-ir-ast",
- "rumoca-phase-codegen",
- "rumoca-phase-parse",
  "rumoca-session",
- "rumoca-sim-diffsol",
- "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
  "serde-wasm-bindgen",
@@ -2807,8 +2801,6 @@ name = "rumoca-contracts"
 version = "0.8.0"
 dependencies = [
  "indexmap",
- "rumoca-ir-ast",
- "rumoca-phase-parse",
  "rumoca-session",
  "serde",
  "serde_json",
@@ -2823,7 +2815,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-eval-compiled"
+name = "rumoca-eval-ast"
+version = "0.8.0"
+dependencies = [
+ "rumoca-core",
+ "rumoca-ir-ast",
+ "rumoca-ir-core",
+ "rustc-hash",
+]
+
+[[package]]
+name = "rumoca-eval-dae"
 version = "0.8.0"
 dependencies = [
  "cranelift-codegen",
@@ -2832,44 +2834,40 @@ dependencies = [
  "cranelift-module",
  "indexmap",
  "js-sys",
- "rumoca-eval-runtime",
+ "rumoca-core",
+ "rumoca-ir-core",
  "rumoca-ir-dae",
- "rumoca-ir-flat",
  "wasm-bindgen",
  "wasm-encoder",
  "wasmparser",
 ]
 
 [[package]]
-name = "rumoca-eval-const"
+name = "rumoca-eval-flat"
 version = "0.8.0"
 dependencies = [
  "indexmap",
  "rumoca-core",
- "rumoca-ir-ast",
+ "rumoca-ir-core",
  "rumoca-ir-flat",
  "thiserror 2.0.17",
-]
-
-[[package]]
-name = "rumoca-eval-runtime"
-version = "0.8.0"
-dependencies = [
- "indexmap",
- "rumoca-ir-ast",
- "rumoca-ir-dae",
- "rumoca-ir-flat",
 ]
 
 [[package]]
 name = "rumoca-ir-ast"
 version = "0.8.0"
 dependencies = [
- "anyhow",
  "indexmap",
- "parol_runtime",
  "rumoca-core",
+ "rumoca-ir-core",
  "rustc-hash",
+ "serde",
+]
+
+[[package]]
+name = "rumoca-ir-core"
+version = "0.8.0"
+dependencies = [
  "serde",
 ]
 
@@ -2879,7 +2877,7 @@ version = "0.8.0"
 dependencies = [
  "indexmap",
  "rumoca-core",
- "rumoca-ir-flat",
+ "rumoca-ir-core",
  "serde",
  "serde_json",
 ]
@@ -2891,6 +2889,7 @@ dependencies = [
  "indexmap",
  "rumoca-core",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "serde",
 ]
 
@@ -2901,6 +2900,7 @@ dependencies = [
  "miette",
  "minijinja",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "serde_json",
@@ -2914,7 +2914,8 @@ dependencies = [
  "indexmap",
  "miette",
  "rumoca-core",
- "rumoca-ir-ast",
+ "rumoca-eval-dae",
+ "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rustc-hash",
@@ -2928,8 +2929,9 @@ dependencies = [
  "indexmap",
  "miette",
  "rumoca-core",
- "rumoca-eval-const",
+ "rumoca-eval-flat",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "rumoca-ir-flat",
  "rustc-hash",
  "thiserror 2.0.17",
@@ -2944,6 +2946,7 @@ dependencies = [
  "miette",
  "rumoca-core",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "rustc-hash",
  "thiserror 2.0.17",
 ]
@@ -2959,6 +2962,7 @@ dependencies = [
  "parol_runtime",
  "rumoca-core",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "scnr2",
 ]
 
@@ -2971,18 +2975,19 @@ dependencies = [
  "miette",
  "rumoca-core",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "rumoca-phase-parse",
  "thiserror 2.0.17",
 ]
 
 [[package]]
-name = "rumoca-phase-structural"
+name = "rumoca-phase-solve"
 version = "0.8.0"
 dependencies = [
  "rumoca-core",
- "rumoca-ir-ast",
+ "rumoca-eval-dae",
+ "rumoca-ir-core",
  "rumoca-ir-dae",
- "rumoca-ir-flat",
  "thiserror 2.0.17",
 ]
 
@@ -2992,7 +2997,9 @@ version = "0.8.0"
 dependencies = [
  "miette",
  "rumoca-core",
+ "rumoca-eval-ast",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
  "rustc-hash",
@@ -3009,53 +3016,42 @@ dependencies = [
  "miette",
  "rayon",
  "rumoca-core",
- "rumoca-eval-runtime",
  "rumoca-ir-ast",
+ "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
+ "rumoca-phase-solve",
  "rumoca-phase-typecheck",
+ "rumoca-sim",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.17",
  "toml",
 ]
 
 [[package]]
-name = "rumoca-sim-core"
-version = "0.8.0"
-dependencies = [
- "indexmap",
- "levenberg-marquardt",
- "nalgebra",
- "rumoca-core",
- "rumoca-eval-compiled",
- "rumoca-eval-runtime",
- "rumoca-ir-dae",
- "rumoca-ir-flat",
- "rumoca-phase-structural",
- "thiserror 2.0.17",
-]
-
-[[package]]
-name = "rumoca-sim-diffsol"
+name = "rumoca-sim"
 version = "0.8.0"
 dependencies = [
  "diffsol",
  "getrandom 0.3.4",
  "indexmap",
+ "levenberg-marquardt",
  "nalgebra",
  "rumoca-core",
- "rumoca-eval-compiled",
- "rumoca-eval-runtime",
+ "rumoca-eval-dae",
+ "rumoca-ir-core",
  "rumoca-ir-dae",
- "rumoca-phase-structural",
- "rumoca-session",
- "rumoca-sim-core",
+ "rumoca-phase-solve",
+ "serde",
+ "serde_json",
  "thiserror 2.0.17",
 ]
 
@@ -3070,9 +3066,9 @@ dependencies = [
  "mimalloc",
  "ntest",
  "rayon",
- "rumoca",
- "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-ir-ast",
+ "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
@@ -3080,10 +3076,9 @@ dependencies = [
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
- "rumoca-phase-structural",
+ "rumoca-phase-solve",
  "rumoca-phase-typecheck",
  "rumoca-session",
- "rumoca-sim-diffsol",
  "serde",
  "serde_json",
  "tar",
@@ -3102,10 +3097,7 @@ dependencies = [
  "flate2",
  "mimalloc",
  "rayon",
- "rumoca",
- "rumoca-core",
  "rumoca-session",
- "rumoca-sim-diffsol",
  "serde",
  "serde_json",
  "tar",
@@ -3121,11 +3113,8 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "miette",
- "rumoca-phase-parse",
- "serde",
+ "rumoca-session",
  "tempfile",
- "thiserror 2.0.17",
- "toml",
  "walkdir",
 ]
 
@@ -3133,11 +3122,8 @@ dependencies = [
 name = "rumoca-tool-lint"
 version = "0.8.0"
 dependencies = [
- "rumoca-phase-parse",
- "serde",
+ "rumoca-session",
  "tempfile",
- "thiserror 2.0.17",
- "toml",
 ]
 
 [[package]]
@@ -3146,13 +3132,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "lsp-types",
- "rumoca-core",
- "rumoca-ir-ast",
- "rumoca-phase-parse",
  "rumoca-session",
- "rumoca-sim-diffsol",
- "rumoca-tool-fmt",
- "rumoca-tool-lint",
  "serde",
  "serde_json",
  "tokio",

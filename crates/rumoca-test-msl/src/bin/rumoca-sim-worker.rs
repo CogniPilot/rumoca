@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Parser;
-use rumoca_sim_diffsol::{SimError, SimOptions, SimSolverMode, simulate};
+use rumoca_session::compile::Dae;
+use rumoca_session::runtime::{SimError, SimOptions, SimResult, SimSolverMode, simulate_dae};
 use serde::Deserialize;
 
 #[derive(Debug, Parser)]
@@ -90,11 +91,7 @@ fn panic_message(panic_info: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-fn sample_series_value(
-    result: &rumoca_sim_diffsol::SimResult,
-    series_name: &str,
-    time_idx: usize,
-) -> Option<f64> {
+fn sample_series_value(result: &SimResult, series_name: &str, time_idx: usize) -> Option<f64> {
     let col_idx = result.names.iter().position(|name| name == series_name)?;
     result
         .data
@@ -104,7 +101,7 @@ fn sample_series_value(
 }
 
 fn push_named_value_detail(
-    result: &rumoca_sim_diffsol::SimResult,
+    result: &SimResult,
     details: &mut Vec<String>,
     series_name: &str,
     time_idx: usize,
@@ -124,7 +121,7 @@ fn sim_worker_result(status: &str, error: Option<String>, sim_seconds: f64) -> S
     }
 }
 
-fn first_non_finite_sample(result: &rumoca_sim_diffsol::SimResult) -> Option<(usize, usize, f64)> {
+fn first_non_finite_sample(result: &SimResult) -> Option<(usize, usize, f64)> {
     result.data.iter().enumerate().find_map(|(col_idx, col)| {
         col.iter()
             .enumerate()
@@ -132,7 +129,7 @@ fn first_non_finite_sample(result: &rumoca_sim_diffsol::SimResult) -> Option<(us
     })
 }
 
-fn classify_success(result: &rumoca_sim_diffsol::SimResult, elapsed: f64) -> SimWorkerResult {
+fn classify_success(result: &SimResult, elapsed: f64) -> SimWorkerResult {
     let first_non_finite = first_non_finite_sample(result);
     if let Some((col_idx, time_idx, value)) = first_non_finite {
         let var_name = result
@@ -204,11 +201,7 @@ fn classify_solver_error(err: SimError, elapsed: f64) -> SimWorkerResult {
     }
 }
 
-fn write_trace_json(
-    trace_path: &Path,
-    model_name: &str,
-    result: &rumoca_sim_diffsol::SimResult,
-) -> Result<(), String> {
+fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> Result<(), String> {
     if let Some(parent) = trace_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -264,7 +257,7 @@ fn write_trace_json(
     Ok(())
 }
 
-fn parse_dae_json(mut reader: impl Read, source_label: &str) -> Result<rumoca::Dae, String> {
+fn parse_dae_json(mut reader: impl Read, source_label: &str) -> Result<Dae, String> {
     let mut payload = Vec::new();
     reader
         .read_to_end(&mut payload)
@@ -278,7 +271,7 @@ fn parse_dae_json(mut reader: impl Read, source_label: &str) -> Result<rumoca::D
         .spawn(move || {
             let mut deserializer = serde_json::Deserializer::from_slice(&payload);
             deserializer.disable_recursion_limit();
-            rumoca::Dae::deserialize(&mut deserializer)
+            Dae::deserialize(&mut deserializer)
                 .map_err(|e| format!("failed to parse dae_json '{thread_source}': {e}"))
         })
         .map_err(|e| format!("failed to spawn dae_json parser thread for '{source}': {e}"))?;
@@ -346,7 +339,8 @@ fn run(args: &Args) -> SimWorkerResult {
     }
 
     let sim_start = Instant::now();
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulate(&dae, &opts)));
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| simulate_dae(&dae, &opts)));
     let elapsed = sim_start.elapsed().as_secs_f64();
     match outcome {
         Ok(Ok(result)) => {
@@ -391,7 +385,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Args, effective_output_dt, parse_dae_json, sample_grid_dt};
-    use rumoca::Compiler;
+    use rumoca_session::compile::{Session, SessionConfig};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -420,9 +414,12 @@ mod tests {
     fn parse_dae_json_handles_deeply_nested_expression_trees() {
         let source =
             "model DeepJson\n  Real x(start = 0);\nequation\n  der(x) = 0 + 1;\nend DeepJson;\n";
-        let compiled = Compiler::new()
-            .model("DeepJson")
-            .compile_str(source, "deep_json.mo")
+        let mut session = Session::new(SessionConfig::default());
+        session
+            .add_document("deep_json.mo", source)
+            .expect("add source file");
+        let compiled = session
+            .compile_model("DeepJson")
             .expect("compile deep nested expression model");
         let mut dae_json = serde_json::to_value(&compiled.dae).expect("serialize deep DAE json");
         let base_add_expr = dae_json["f_x"][0]["rhs"]["Binary"]["rhs"].clone();

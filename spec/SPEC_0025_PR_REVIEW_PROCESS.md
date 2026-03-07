@@ -308,7 +308,7 @@ The following are enforced by CI:
 # .github/workflows/ci.yml
 - cargo fmt --check
 - cargo clippy --workspace --all-targets --all-features -- -D warnings
-- cargo test --workspace
+- cargo test --workspace  # includes architecture_hardening_test guardrails (SPEC_0029)
 - cargo doc --no-deps
 ```
 

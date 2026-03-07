@@ -4,12 +4,16 @@ use crate::common::{
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
-use rumoca::sim_trace_compare::{
+use rumoca_session::analysis::{
     ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces, load_trace_json,
 };
-use rumoca::{Session, SessionConfig, parse_files_parallel_lenient};
-use rumoca_session::CompilationResult as SessionCompilationResult;
-use rumoca_sim_diffsol::{SimOptions, SimSolverMode, simulate};
+use rumoca_session::compile::{
+    CompilationResult as SessionCompilationResult, Session, SessionConfig,
+};
+use rumoca_session::parsing::parse_files_parallel_lenient;
+use rumoca_session::runtime::{
+    SimOptions, SimResult, SimSolverMode, runtime_defined_unknown_names, simulate_dae,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,9 +23,9 @@ const GRID_DEDUP_EPS: f64 = 1.0e-12;
 const SIM_TIMEOUT_SECONDS: f64 = 10.0;
 const OMC_SIM_TIMEOUT_SECONDS: u64 = 10;
 const UPLOT_JS: &str =
-    include_str!("../../../../../crates/rumoca-sim-diffsol/src/vendor/uplot.min.js");
+    include_str!("../../../../../crates/rumoca-sim/src/with_diffsol/vendor/uplot.min.js");
 const UPLOT_CSS: &str =
-    include_str!("../../../../../crates/rumoca-sim-diffsol/src/vendor/uplot.min.css");
+    include_str!("../../../../../crates/rumoca-sim/src/with_diffsol/vendor/uplot.min.css");
 
 #[derive(Debug, Clone, ClapArgs)]
 pub(crate) struct Args {
@@ -156,7 +160,7 @@ fn generate_rumoca_trace(paths: &MslPaths, model_name: &str, output_path: &Path)
         .with_context(|| format!("rumoca compile failed for '{model_name}'"))?;
     maybe_debug_dump_compiled_model(&compiled, model_name);
     let options = sim_options_from_compilation(&compiled);
-    let sim = simulate(&compiled.dae, &options)
+    let sim = simulate_dae(&compiled.dae, &options)
         .with_context(|| format!("rumoca simulate failed for '{model_name}'"))?;
     let trace = trace_from_sim_result(model_name, &sim);
     write_pretty_json(output_path, &trace).with_context(|| {
@@ -215,7 +219,7 @@ fn debug_log_compile_summary(compiled: &SessionCompilationResult, model_name: &s
 }
 
 fn debug_log_runtime_defined(compiled: &SessionCompilationResult) {
-    let runtime_defined = compiled.dae.runtime_defined_unknown_names();
+    let runtime_defined = runtime_defined_unknown_names(&compiled.dae);
     for name in [
         "Counter.FF3.RS1.q",
         "Counter.FF3.RS1.qn",
@@ -432,7 +436,7 @@ fn collect_mo_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn sim_options_from_compilation(compiled: &rumoca_session::CompilationResult) -> SimOptions {
+fn sim_options_from_compilation(compiled: &SessionCompilationResult) -> SimOptions {
     let mut options = SimOptions::default();
     options.t_start = compiled.experiment_start_time.unwrap_or(options.t_start);
     options.t_end = compiled.experiment_stop_time.unwrap_or(options.t_end);
@@ -460,7 +464,7 @@ fn sim_options_from_compilation(compiled: &rumoca_session::CompilationResult) ->
     options
 }
 
-fn trace_from_sim_result(model_name: &str, sim: &rumoca_sim_diffsol::SimResult) -> SimTrace {
+fn trace_from_sim_result(model_name: &str, sim: &SimResult) -> SimTrace {
     let data = sim
         .data
         .iter()

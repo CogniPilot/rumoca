@@ -1,5 +1,4 @@
 use super::*;
-use rumoca_ir_ast as ast;
 
 #[test]
 fn test_classify_equations_keeps_unconnected_flow_for_regular_top_level_connector() {
@@ -16,7 +15,7 @@ fn test_classify_equations_keeps_unconnected_flow_for_regular_top_level_connecto
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("pin.i")),
             rhs: Box::new(flat::Expression::Literal(Literal::Integer(0))),
         },
@@ -28,8 +27,10 @@ fn test_classify_equations_keeps_unconnected_flow_for_regular_top_level_connecto
     });
 
     let mut dae = Dae::new();
-    dae.algebraics
-        .insert(VarName::new("pin.i"), Variable::new(VarName::new("pin.i")));
+    dae.algebraics.insert(
+        dae::VarName::new("pin.i"),
+        Variable::new(dae::VarName::new("pin.i")),
+    );
 
     let prefix_counts = build_prefix_counts(&flat);
     classify_equations(&mut dae, &flat, &prefix_counts);
@@ -48,7 +49,7 @@ fn test_count_interface_flows_requires_top_level_connector_membership() {
         VarName::new("delta.pin.i"),
         flat::Variable {
             name: VarName::new("delta.pin.i"),
-            variability: ast::Variability::Empty,
+            variability: rumoca_ir_core::Variability::Empty,
             flow: true,
             is_primitive: true,
             ..Default::default()
@@ -93,10 +94,10 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::Literal(Literal::Integer(0))),
             rhs: Box::new(flat::Expression::Binary {
-                op: ast::OpBinary::Add(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
                 lhs: Box::new(make_var_ref("arr.i")),
                 rhs: Box::new(make_var_ref("s.i")),
             }),
@@ -109,10 +110,14 @@ fn test_classify_equations_preserves_flat_scalar_count_for_flow_sum() {
     });
 
     let mut dae = Dae::new();
-    dae.algebraics
-        .insert(VarName::new("arr.i"), Variable::new(VarName::new("arr.i")));
-    dae.algebraics
-        .insert(VarName::new("s.i"), Variable::new(VarName::new("s.i")));
+    dae.algebraics.insert(
+        dae::VarName::new("arr.i"),
+        Variable::new(dae::VarName::new("arr.i")),
+    );
+    dae.algebraics.insert(
+        dae::VarName::new("s.i"),
+        Variable::new(dae::VarName::new("s.i")),
+    );
 
     let prefix_counts = build_prefix_counts(&flat);
     classify_equations(&mut dae, &flat, &prefix_counts);
@@ -150,13 +155,13 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::Literal(Literal::Integer(0))),
             rhs: Box::new(flat::Expression::Binary {
-                op: ast::OpBinary::Add(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
                 lhs: Box::new(make_var_ref("arr1.i")),
                 rhs: Box::new(flat::Expression::Binary {
-                    op: ast::OpBinary::Add(ast::Token::default()),
+                    op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
                     lhs: Box::new(make_var_ref("arr2.i")),
                     rhs: Box::new(make_var_ref("s.i")),
                 }),
@@ -171,8 +176,10 @@ fn test_classify_equations_flow_sum_with_multiple_arrays_is_array_sized() {
 
     let mut dae = Dae::new();
     for name in ["arr1.i", "arr2.i", "s.i"] {
-        dae.algebraics
-            .insert(VarName::new(name), Variable::new(VarName::new(name)));
+        dae.algebraics.insert(
+            dae::VarName::new(name),
+            Variable::new(dae::VarName::new(name)),
+        );
     }
 
     let prefix_counts = build_prefix_counts(&flat);

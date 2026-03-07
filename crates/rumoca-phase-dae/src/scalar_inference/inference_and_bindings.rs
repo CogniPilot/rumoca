@@ -289,7 +289,7 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     };
 
     // Must be a subtraction
-    if !matches!(op, ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
         return None;
     }
 
@@ -558,16 +558,17 @@ pub(crate) fn create_dae_variable(
         _ => var.start.clone(),
     }
     .map(|expr| project_scalar_start_record_alias(name, &expr, known_var_names))
-    .map(|expr| rewrite_start_expr_missing_refs(&expr, known_var_names));
+    .map(|expr| rewrite_start_expr_missing_refs(&expr, known_var_names))
+    .map(|expr| flat_to_dae_expression(&expr));
 
     Variable {
-        name: name.clone(),
+        name: flat_to_dae_var_name(name),
         dims: var.dims.clone(),
         start,
         fixed: var.fixed,
-        min: var.min.clone(),
-        max: var.max.clone(),
-        nominal: var.nominal.clone(),
+        min: var.min.as_ref().map(flat_to_dae_expression),
+        max: var.max.as_ref().map(flat_to_dae_expression),
+        nominal: var.nominal.as_ref().map(flat_to_dae_expression),
         unit: var.unit.clone(),
         state_select: var.state_select,
         description: None,

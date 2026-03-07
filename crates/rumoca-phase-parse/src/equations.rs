@@ -4,56 +4,41 @@ use crate::errors::semantic_error_from_expression;
 use crate::generated::modelica_grammar_trait;
 
 //-----------------------------------------------------------------------------
-impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_ir_ast::Token {
+impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_ir_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Ident) -> std::result::Result<Self, Self::Error> {
         match ast {
-            modelica_grammar_trait::Ident::BasicIdent(tok) => Ok(rumoca_ir_ast::Token {
-                location: tok.basic_ident.location.clone(),
-                text: tok.basic_ident.text.clone(),
-                token_number: tok.basic_ident.token_number,
-                token_type: tok.basic_ident.token_type,
-            }),
-            modelica_grammar_trait::Ident::QIdent(tok) => Ok(rumoca_ir_ast::Token {
-                location: tok.q_ident.location.clone(),
-                text: tok.q_ident.text.clone(),
-                token_number: tok.q_ident.token_number,
-                token_type: tok.q_ident.token_type,
-            }),
+            modelica_grammar_trait::Ident::BasicIdent(tok) => Ok((&tok.basic_ident).into()),
+            modelica_grammar_trait::Ident::QIdent(tok) => Ok((&tok.q_ident).into()),
         }
     }
 }
 
 //-----------------------------------------------------------------------------
-impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for rumoca_ir_ast::Token {
+impl TryFrom<&modelica_grammar_trait::UnsignedInteger> for rumoca_ir_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::UnsignedInteger,
     ) -> std::result::Result<Self, Self::Error> {
-        Ok(rumoca_ir_ast::Token {
-            location: ast.unsigned_integer.location.clone(),
-            text: ast.unsigned_integer.text.clone(),
-            token_number: ast.unsigned_integer.token_number,
-            token_type: ast.unsigned_integer.token_type,
-        })
+        Ok((&ast.unsigned_integer).into())
     }
 }
 
 //-----------------------------------------------------------------------------
-impl TryFrom<&modelica_grammar_trait::UnsignedReal> for rumoca_ir_ast::Token {
+impl TryFrom<&modelica_grammar_trait::UnsignedReal> for rumoca_ir_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::UnsignedReal,
     ) -> std::result::Result<Self, Self::Error> {
         match &ast {
-            modelica_grammar_trait::UnsignedReal::Decimal(num) => Ok(num.decimal.clone()),
-            modelica_grammar_trait::UnsignedReal::Scientific(num) => Ok(num.scientific.clone()),
-            modelica_grammar_trait::UnsignedReal::Scientific2(num) => Ok(num.scientific2.clone()),
+            modelica_grammar_trait::UnsignedReal::Decimal(num) => Ok((&num.decimal).into()),
+            modelica_grammar_trait::UnsignedReal::Scientific(num) => Ok((&num.scientific).into()),
+            modelica_grammar_trait::UnsignedReal::Scientific2(num) => Ok((&num.scientific2).into()),
             modelica_grammar_trait::UnsignedReal::ScientificInt(num) => {
-                Ok(num.scientific_int.clone())
+                Ok((&num.scientific_int).into())
             }
         }
     }
@@ -267,12 +252,12 @@ impl TryFrom<&modelica_grammar_trait::Statement> for rumoca_ir_ast::Statement {
             }
             modelica_grammar_trait::StatementOption::Break(tok) => {
                 Ok(rumoca_ir_ast::Statement::Break {
-                    token: tok.r#break.r#break.clone(),
+                    token: tok.r#break.r#break.clone().into(),
                 })
             }
             modelica_grammar_trait::StatementOption::Return(tok) => {
                 Ok(rumoca_ir_ast::Statement::Return {
-                    token: tok.r#return.r#return.clone(),
+                    token: tok.r#return.r#return.clone().into(),
                 })
             }
             modelica_grammar_trait::StatementOption::ForStatement(stmt) => {

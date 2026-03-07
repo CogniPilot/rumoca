@@ -4,7 +4,6 @@ use super::{collect_continuous_equation_lhs, is_internal_input};
 use crate::path_utils::{
     is_top_level_member, normalized_top_level_names, subscript_fallback_chain,
 };
-use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 use std::collections::{HashSet, VecDeque};
@@ -85,7 +84,7 @@ pub(super) fn find_top_level_connector_input_members(
         let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
             continue;
         };
-        if !matches!(op, ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             continue;
         }
         let (
@@ -124,7 +123,7 @@ pub(super) fn find_top_level_connector_input_members(
         let has_anchor = directly_defined.contains(name)
             || var.binding.is_some()
             || state_vars.contains(name)
-            || matches!(&var.causality, ast::Causality::Output(_));
+            || matches!(&var.causality, rumoca_ir_core::Causality::Output(_));
         if has_anchor {
             component_has_internal_anchor[*comp_id] = true;
         }
@@ -149,7 +148,7 @@ pub(super) fn find_top_level_connector_input_members(
         // connection component, it behaves as an external interface value and should
         // not be treated as an unknown.
         let is_unanchored_expandable_interface = var.from_expandable_connector
-            && matches!(&var.causality, ast::Causality::Empty)
+            && matches!(&var.causality, rumoca_ir_core::Causality::Empty)
             && !component_has_internal_anchor[comp_id];
         if is_unanchored_expandable_interface {
             result.insert(name.clone());
@@ -215,8 +214,8 @@ mod tests {
             flat::VarName::new("a.b.c"),
             flat::Variable {
                 name: flat::VarName::new("a.b.c"),
-                variability: ast::Variability::Empty,
-                causality: ast::Causality::Input(Default::default()),
+                variability: rumoca_ir_core::Variability::Empty,
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 ..Default::default()
             },
         );
@@ -233,8 +232,8 @@ mod tests {
             flat::VarName::new("bus.signal"),
             flat::Variable {
                 name: flat::VarName::new("bus.signal"),
-                variability: ast::Variability::Empty,
-                causality: ast::Causality::Input(Default::default()),
+                variability: rumoca_ir_core::Variability::Empty,
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 ..Default::default()
             },
         );

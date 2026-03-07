@@ -168,9 +168,9 @@ mod tests {
             parts: crate::path_utils::parse_path_with_indices(path)
                 .into_iter()
                 .map(|part| ast::ComponentRefPart {
-                    ident: ast::Token {
+                    ident: rumoca_ir_core::Token {
                         text: Arc::from(part),
-                        location: ast::Location::default(),
+                        location: rumoca_ir_core::Location::default(),
                         token_number: 0,
                         token_type: 0,
                     },
@@ -188,9 +188,9 @@ mod tests {
     fn uint_expr(value: i64) -> ast::Expression {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
-            token: ast::Token {
+            token: rumoca_ir_core::Token {
                 text: Arc::from(value.to_string()),
-                location: ast::Location::default(),
+                location: rumoca_ir_core::Location::default(),
                 token_number: 0,
                 token_type: 0,
             },

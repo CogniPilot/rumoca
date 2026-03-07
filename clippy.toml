@@ -16,3 +16,11 @@ too-many-arguments-threshold = 7
 
 # Type complexity threshold (default: 250)
 type-complexity-threshold = 250
+
+# Enforce explicit crate aliases for IR layers (SPEC_0029)
+enforced-import-renames = [
+  { path = "rumoca_ir_ast", rename = "ast" },
+  { path = "rumoca_ir_flat", rename = "flat" },
+  { path = "rumoca_ir_dae", rename = "dae" },
+  { path = "rumoca_ir_core", rename = "ir_core" },
+]

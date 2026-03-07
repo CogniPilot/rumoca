@@ -1,5 +1,4 @@
 use super::*;
-use rumoca_ir_ast as ast;
 
 /// Helper to create a flat::ComponentReference from a simple name.
 fn make_comp_ref(name: &str) -> flat::ComponentReference {
@@ -36,7 +35,7 @@ fn make_var_ref(name: &str) -> flat::Expression {
 fn add_connection_equation(flat: &mut Model, lhs: &str, rhs: &str) {
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref(lhs)),
             rhs: Box::new(make_var_ref(rhs)),
         },
@@ -52,7 +51,7 @@ fn add_connection_equation(flat: &mut Model, lhs: &str, rhs: &str) {
 fn add_component_equation(flat: &mut Model, lhs: &str, rhs: flat::Expression) {
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref(lhs)),
             rhs: Box::new(rhs),
         },
@@ -78,7 +77,7 @@ fn add_primitive_real(flat: &mut Model, name: &str) {
 fn add_scalar_ode_with_rhs_call(flat: &mut Model, state_name: &str, call_name: &str) {
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref(state_name)],
@@ -105,7 +104,7 @@ fn test_todae_rewrites_missing_scoped_parameter_start_reference() {
         VarName::new("nT"),
         flat::Variable {
             name: VarName::new("nT"),
-            variability: rumoca_ir_ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_flat::Variability::Parameter(rumoca_ir_core::Token::default()),
             binding: Some(flat::Expression::Literal(rumoca_ir_flat::Literal::Real(
                 0.577350269,
             ))),
@@ -118,7 +117,7 @@ fn test_todae_rewrites_missing_scoped_parameter_start_reference() {
         VarName::new("idealTransformer.idealTransformer[1].n"),
         flat::Variable {
             name: VarName::new("idealTransformer.idealTransformer[1].n"),
-            variability: rumoca_ir_ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_flat::Variability::Parameter(rumoca_ir_core::Token::default()),
             binding: Some(make_var_ref("idealTransformer.nT")),
             is_primitive: true,
             ..Default::default()
@@ -135,7 +134,7 @@ fn test_todae_rewrites_missing_scoped_parameter_start_reference() {
 
     let nested = dae
         .parameters
-        .get(&VarName::new("idealTransformer.idealTransformer[1].n"))
+        .get(&dae::VarName::new("idealTransformer.idealTransformer[1].n"))
         .expect("missing nested transformer parameter");
     let start = nested
         .start
@@ -143,7 +142,7 @@ fn test_todae_rewrites_missing_scoped_parameter_start_reference() {
         .expect("nested transformer parameter should keep rewritten start expression");
 
     match start {
-        flat::Expression::VarRef { name, subscripts } => {
+        dae::Expression::VarRef { name, subscripts } => {
             assert!(
                 subscripts.is_empty(),
                 "expected scalar rewritten start reference"
@@ -161,7 +160,7 @@ fn test_todae_rejects_unresolved_function_calls() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -200,7 +199,7 @@ fn test_todae_rejects_unresolved_references() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -235,7 +234,7 @@ fn test_todae_rejects_unresolved_component_qualified_constant_like_ref() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -273,7 +272,7 @@ fn test_todae_rejects_non_external_function_without_body() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -316,7 +315,7 @@ fn test_todae_preserves_function_algorithm_bodies_for_codegen_readability() {
     fn_def.body.push(flat::Statement::Assignment {
         comp: make_comp_ref("y"),
         value: flat::Expression::Binary {
-            op: ast::OpBinary::Add(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("u")),
             rhs: Box::new(flat::Expression::Literal(rumoca_ir_flat::Literal::Real(
                 1.0,
@@ -337,7 +336,7 @@ fn test_todae_preserves_function_algorithm_bodies_for_codegen_readability() {
 
     let lowered_fn = dae
         .functions
-        .get(&VarName::new("f"))
+        .get(&dae::VarName::new("f"))
         .expect("function f should be preserved in DAE");
     assert_eq!(
         lowered_fn.body.len(),
@@ -508,10 +507,10 @@ fn test_todae_lowers_multi_output_algorithm_function_call_to_output_projections(
     let mut saw_y1 = false;
     let mut saw_y2 = false;
     for eq in &dae.f_x {
-        let flat::Expression::Binary { rhs, .. } = &eq.rhs else {
+        let dae::Expression::Binary { rhs, .. } = &eq.rhs else {
             continue;
         };
-        let flat::Expression::FunctionCall { name, .. } = rhs.as_ref() else {
+        let dae::Expression::FunctionCall { name, .. } = rhs.as_ref() else {
             continue;
         };
         if name.as_str() == "Pkg.multi.y1" {
@@ -534,7 +533,7 @@ fn test_todae_ignores_unreachable_function_without_body() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -641,7 +640,7 @@ fn test_todae_accepts_record_constructor_calls_for_known_type_names() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -671,7 +670,7 @@ fn test_todae_rejects_constructor_field_projection_without_signature() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -721,7 +720,7 @@ fn test_todae_accepts_constructor_field_projection_with_signature() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -758,7 +757,7 @@ fn test_todae_allows_complex_constructor_re_im_projection_without_signature() {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -796,7 +795,7 @@ fn test_todae_rejects_parameter_constructor_projection_in_final_dae_validation()
         VarName::new("p"),
         flat::Variable {
             name: VarName::new("p"),
-            variability: ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
             is_primitive: true,
             binding: Some(flat::Expression::FieldAccess {
                 base: Box::new(flat::Expression::FunctionCall {
@@ -812,7 +811,7 @@ fn test_todae_rejects_parameter_constructor_projection_in_final_dae_validation()
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("x")],
@@ -848,7 +847,7 @@ fn test_todae_rejects_parameter_constructor_projection_in_final_dae_validation()
 fn test_insert_discrete_var_routes_discrete_type_to_discrete_valued() {
     let mut dae = Dae::new();
     let name = VarName::new("flag");
-    let dae_var = Variable::new(name.clone());
+    let dae_var = Variable::new(flat_to_dae_var_name(&name));
     let flat_var = flat::Variable {
         name: name.clone(),
         is_discrete_type: true,
@@ -858,26 +857,38 @@ fn test_insert_discrete_var_routes_discrete_type_to_discrete_valued() {
 
     insert_discrete_var(&mut dae, &name, dae_var, &flat_var);
 
-    assert!(dae.discrete_valued.contains_key(&name));
-    assert!(!dae.discrete_reals.contains_key(&name));
+    assert!(
+        dae.discrete_valued
+            .contains_key(&flat_to_dae_var_name(&name))
+    );
+    assert!(
+        !dae.discrete_reals
+            .contains_key(&flat_to_dae_var_name(&name))
+    );
 }
 
 #[test]
 fn test_insert_discrete_var_routes_real_discrete_to_discrete_reals() {
     let mut dae = Dae::new();
     let name = VarName::new("x");
-    let dae_var = Variable::new(name.clone());
+    let dae_var = Variable::new(flat_to_dae_var_name(&name));
     let flat_var = flat::Variable {
         name: name.clone(),
-        variability: rumoca_ir_ast::Variability::Discrete(ast::Token::default()),
+        variability: rumoca_ir_flat::Variability::Discrete(rumoca_ir_core::Token::default()),
         is_primitive: true,
         ..Default::default()
     };
 
     insert_discrete_var(&mut dae, &name, dae_var, &flat_var);
 
-    assert!(dae.discrete_reals.contains_key(&name));
-    assert!(!dae.discrete_valued.contains_key(&name));
+    assert!(
+        dae.discrete_reals
+            .contains_key(&flat_to_dae_var_name(&name))
+    );
+    assert!(
+        !dae.discrete_valued
+            .contains_key(&flat_to_dae_var_name(&name))
+    );
 }
 
 #[test]
@@ -888,7 +899,7 @@ fn test_todae_routes_explicit_discrete_integer_when_assignment_to_f_m() {
         name.clone(),
         flat::Variable {
             name: name.clone(),
-            variability: rumoca_ir_ast::Variability::Discrete(ast::Token::default()),
+            variability: rumoca_ir_flat::Variability::Discrete(rumoca_ir_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
@@ -914,8 +925,11 @@ fn test_todae_routes_explicit_discrete_integer_when_assignment_to_f_m() {
     )
     .expect("explicit discrete integer when assignment should route to f_m");
 
-    assert!(dae.discrete_valued.contains_key(&name));
-    assert!(!dae.algebraics.contains_key(&name));
+    assert!(
+        dae.discrete_valued
+            .contains_key(&flat_to_dae_var_name(&name))
+    );
+    assert!(!dae.algebraics.contains_key(&flat_to_dae_var_name(&name)));
     assert_eq!(
         dae.f_m.len(),
         1,
@@ -931,7 +945,7 @@ fn test_todae_routes_explicit_discrete_real_when_assignment_to_f_z() {
         name.clone(),
         flat::Variable {
             name: name.clone(),
-            variability: rumoca_ir_ast::Variability::Discrete(ast::Token::default()),
+            variability: rumoca_ir_flat::Variability::Discrete(rumoca_ir_core::Token::default()),
             is_primitive: true,
             ..Default::default()
         },
@@ -956,8 +970,11 @@ fn test_todae_routes_explicit_discrete_real_when_assignment_to_f_z() {
     )
     .expect("discrete real when assignment should route to f_z");
 
-    assert!(dae.discrete_reals.contains_key(&name));
-    assert!(!dae.algebraics.contains_key(&name));
+    assert!(
+        dae.discrete_reals
+            .contains_key(&flat_to_dae_var_name(&name))
+    );
+    assert!(!dae.algebraics.contains_key(&flat_to_dae_var_name(&name)));
     assert_eq!(
         dae.f_z.len(),
         1,
@@ -972,7 +989,7 @@ fn test_should_skip_binding_for_explicit_var_keeps_record_prefix_unknown_binding
         name: name.clone(),
         is_primitive: true,
         binding: Some(flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("core.port_p.V_m")),
             rhs: Box::new(make_var_ref("core.port_n.V_m")),
         }),
@@ -1001,7 +1018,7 @@ fn test_should_keep_connected_input_binding_for_connected_input_with_binding() {
     let name = VarName::new("u");
     let var = flat::Variable {
         name: name.clone(),
-        causality: ast::Causality::Input(ast::Token::default()),
+        causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
         is_primitive: true,
         binding: Some(flat::Expression::Literal(Literal::Real(1.0))),
         ..Default::default()
@@ -1022,7 +1039,7 @@ fn test_should_keep_connected_input_binding_rejects_missing_binding() {
     let name = VarName::new("u");
     let var = flat::Variable {
         name: name.clone(),
-        causality: ast::Causality::Input(ast::Token::default()),
+        causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
         is_primitive: true,
         binding: None,
         ..Default::default()
@@ -1043,7 +1060,7 @@ fn test_should_keep_connected_input_binding_rejects_non_input_kind() {
     let name = VarName::new("x");
     let var = flat::Variable {
         name: name.clone(),
-        causality: ast::Causality::Output(ast::Token::default()),
+        causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
         is_primitive: true,
         binding: Some(flat::Expression::Literal(Literal::Real(1.0))),
         ..Default::default()
@@ -1082,7 +1099,7 @@ fn test_collect_vars_with_unknown_rhs_resolves_collapsed_array_member_refs() {
     let mut flat = Model::new();
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("ht.Ts")),
             rhs: Box::new(make_var_ref("ht.heatPorts.T")),
         },
@@ -1112,8 +1129,8 @@ fn test_collect_vars_with_unknown_rhs_resolves_collapsed_array_member_refs() {
 fn test_empty_model() {
     let flat = Model::new();
     let dae = to_dae(&flat).unwrap();
-    assert!(dae.is_balanced());
-    assert_eq!(dae.balance(), 0);
+    assert!(rumoca_eval_dae::analysis::is_balanced(&dae));
+    assert_eq!(rumoca_eval_dae::analysis::balance(&dae), 0);
 }
 
 #[test]
@@ -1123,15 +1140,15 @@ fn test_internal_input_with_der_becomes_state() {
         VarName::new("medium.p"),
         flat::Variable {
             name: VarName::new("medium.p"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("medium.p")],
@@ -1147,14 +1164,14 @@ fn test_internal_input_with_der_becomes_state() {
 
     let dae = to_dae(&flat).expect("internal input der-equation should compile");
     assert!(
-        dae.states.contains_key(&VarName::new("medium.p")),
+        dae.states.contains_key(&dae::VarName::new("medium.p")),
         "internal input with der() must become a state unknown"
     );
     assert!(
-        !dae.inputs.contains_key(&VarName::new("medium.p")),
+        !dae.inputs.contains_key(&dae::VarName::new("medium.p")),
         "internal input with der() must not remain an external input"
     );
-    assert_eq!(dae.balance(), 0);
+    assert_eq!(rumoca_eval_dae::analysis::balance(&dae), 0);
 }
 
 #[test]
@@ -1164,15 +1181,15 @@ fn test_top_level_input_with_der_remains_input() {
         VarName::new("u"),
         flat::Variable {
             name: VarName::new("u"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
                 args: vec![make_var_ref("u")],
@@ -1194,11 +1211,11 @@ fn test_top_level_input_with_der_remains_input() {
     )
     .expect("top-level input der-equation should compile");
     assert!(
-        dae.inputs.contains_key(&VarName::new("u")),
+        dae.inputs.contains_key(&dae::VarName::new("u")),
         "external top-level input with der() must remain an input"
     );
     assert!(
-        !dae.states.contains_key(&VarName::new("u")),
+        !dae.states.contains_key(&dae::VarName::new("u")),
         "external top-level input with der() must not become a state"
     );
 }
@@ -1276,14 +1293,18 @@ fn test_is_input_input_connection_true() {
     // Test: connection between two inputs should return true
 
     let mut dae = Dae::new();
-    dae.inputs
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
-    dae.inputs
-        .insert(VarName::new("b"), Variable::new(VarName::new("b")));
+    dae.inputs.insert(
+        dae::VarName::new("a"),
+        Variable::new(dae::VarName::new("a")),
+    );
+    dae.inputs.insert(
+        dae::VarName::new("b"),
+        Variable::new(dae::VarName::new("b")),
+    );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("a"),
                 subscripts: vec![],
@@ -1309,14 +1330,18 @@ fn test_is_input_input_connection_false_one_algebraic() {
     // Test: connection between input and algebraic should return false
 
     let mut dae = Dae::new();
-    dae.inputs
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
-    dae.algebraics
-        .insert(VarName::new("b"), Variable::new(VarName::new("b")));
+    dae.inputs.insert(
+        dae::VarName::new("a"),
+        Variable::new(dae::VarName::new("a")),
+    );
+    dae.algebraics.insert(
+        dae::VarName::new("b"),
+        Variable::new(dae::VarName::new("b")),
+    );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("a"),
                 subscripts: vec![],
@@ -1342,14 +1367,18 @@ fn test_is_input_input_connection_false_not_connection() {
     // Test: non-connection equations should return false
 
     let mut dae = Dae::new();
-    dae.inputs
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
-    dae.inputs
-        .insert(VarName::new("b"), Variable::new(VarName::new("b")));
+    dae.inputs.insert(
+        dae::VarName::new("a"),
+        Variable::new(dae::VarName::new("a")),
+    );
+    dae.inputs.insert(
+        dae::VarName::new("b"),
+        Variable::new(dae::VarName::new("b")),
+    );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("a"),
                 subscripts: vec![],
@@ -1375,16 +1404,18 @@ fn test_is_input_default_equation_true_for_parameter_rhs() {
     flat.top_level_input_components.insert("x_in".to_string());
 
     let mut dae = Dae::new();
-    dae.inputs
-        .insert(VarName::new("x_in"), Variable::new(VarName::new("x_in")));
+    dae.inputs.insert(
+        dae::VarName::new("x_in"),
+        Variable::new(dae::VarName::new("x_in")),
+    );
     dae.parameters.insert(
-        VarName::new("x_param"),
-        Variable::new(VarName::new("x_param")),
+        dae::VarName::new("x_param"),
+        Variable::new(dae::VarName::new("x_param")),
     );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("x_in"),
                 subscripts: vec![],
@@ -1410,16 +1441,18 @@ fn test_is_input_default_equation_false_for_unknown_rhs() {
     flat.top_level_input_components.insert("x_in".to_string());
 
     let mut dae = Dae::new();
-    dae.inputs
-        .insert(VarName::new("x_in"), Variable::new(VarName::new("x_in")));
+    dae.inputs.insert(
+        dae::VarName::new("x_in"),
+        Variable::new(dae::VarName::new("x_in")),
+    );
     dae.algebraics.insert(
-        VarName::new("x_unknown"),
-        Variable::new(VarName::new("x_unknown")),
+        dae::VarName::new("x_unknown"),
+        Variable::new(dae::VarName::new("x_unknown")),
     );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("x_in"),
                 subscripts: vec![],
@@ -1446,14 +1479,18 @@ fn test_is_input_default_equation_false_for_rhs_input_alias() {
     flat.top_level_input_components.insert("y_in".to_string());
 
     let mut dae = Dae::new();
-    dae.inputs
-        .insert(VarName::new("x_in"), Variable::new(VarName::new("x_in")));
-    dae.inputs
-        .insert(VarName::new("y_in"), Variable::new(VarName::new("y_in")));
+    dae.inputs.insert(
+        dae::VarName::new("x_in"),
+        Variable::new(dae::VarName::new("x_in")),
+    );
+    dae.inputs.insert(
+        dae::VarName::new("y_in"),
+        Variable::new(dae::VarName::new("y_in")),
+    );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("x_in"),
                 subscripts: vec![],
@@ -1479,17 +1516,17 @@ fn test_is_input_default_equation_false_for_internal_input_default() {
 
     let mut dae = Dae::new();
     dae.inputs.insert(
-        VarName::new("transition1.condition"),
-        Variable::new(VarName::new("transition1.condition")),
+        dae::VarName::new("transition1.condition"),
+        Variable::new(dae::VarName::new("transition1.condition")),
     );
     dae.parameters.insert(
-        VarName::new("alwaysTrue"),
-        Variable::new(VarName::new("alwaysTrue")),
+        dae::VarName::new("alwaysTrue"),
+        Variable::new(dae::VarName::new("alwaysTrue")),
     );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("transition1.condition"),
                 subscripts: vec![],
@@ -1516,8 +1553,8 @@ fn test_connected_input_binding_kept_for_input_only_connection_alias() {
         VarName::new("inner.p"),
         flat::Variable {
             name: VarName::new("inner.p"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             binding: Some(flat::Expression::Literal(Literal::Real(1.0))),
             ..Default::default()
@@ -1527,8 +1564,8 @@ fn test_connected_input_binding_kept_for_input_only_connection_alias() {
         VarName::new("inner.q"),
         flat::Variable {
             name: VarName::new("inner.q"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1545,8 +1582,8 @@ fn test_connected_input_binding_kept_for_input_only_connection_alias() {
     .expect("to_dae should succeed for connected internal input alias");
 
     assert!(
-        dae.algebraics.contains_key(&VarName::new("inner.p"))
-            && dae.algebraics.contains_key(&VarName::new("inner.q")),
+        dae.algebraics.contains_key(&dae::VarName::new("inner.p"))
+            && dae.algebraics.contains_key(&dae::VarName::new("inner.q")),
         "connected internal inputs should be promoted to algebraics"
     );
     assert!(
@@ -1556,7 +1593,7 @@ fn test_connected_input_binding_kept_for_input_only_connection_alias() {
         "binding equation for connected input should be kept for input-only alias set"
     );
     assert_eq!(
-        dae.balance(),
+        rumoca_eval_dae::analysis::balance(&dae),
         0,
         "input-only connection aliases with a binding must stay balanced"
     );
@@ -1569,8 +1606,8 @@ fn test_connected_input_alias_with_multilayer_subscripts_promotes_internal_input
         VarName::new("bus.signal"),
         flat::Variable {
             name: VarName::new("bus.signal"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1579,8 +1616,8 @@ fn test_connected_input_alias_with_multilayer_subscripts_promotes_internal_input
         VarName::new("bus.target"),
         flat::Variable {
             name: VarName::new("bus.target"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1597,7 +1634,7 @@ fn test_connected_input_alias_with_multilayer_subscripts_promotes_internal_input
     .expect("to_dae should succeed for multi-layer indexed input aliases");
 
     for name in ["bus.signal", "bus.target"] {
-        let n = VarName::new(name);
+        let n = dae::VarName::new(name);
         assert!(
             dae.algebraics.contains_key(&n),
             "internal input {name} should be promoted through multi-layer subscript fallback"
@@ -1616,8 +1653,8 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
         VarName::new("test.p"),
         flat::Variable {
             name: VarName::new("test.p"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1626,7 +1663,7 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
         VarName::new("test.conn.field"),
         flat::Variable {
             name: VarName::new("test.conn.field"),
-            variability: ast::Variability::Empty,
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             connected: true,
             dims: vec![2, 3],
@@ -1644,7 +1681,7 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
     )
     .expect("to_dae should succeed for multi-layer connected LHS alias");
 
-    let input = VarName::new("test.p");
+    let input = dae::VarName::new("test.p");
     assert!(
         dae.inputs.contains_key(&input),
         "RHS input should remain an input when aliased from a connected multi-layer LHS"
@@ -1659,17 +1696,17 @@ fn test_rhs_intra_component_alias_with_multilayer_connected_lhs_does_not_promote
 fn test_get_output_in_input_output_connection_subscripted_output() {
     let mut dae = Dae::new();
     dae.inputs.insert(
-        VarName::new("gain.u"),
-        Variable::new(VarName::new("gain.u")),
+        dae::VarName::new("gain.u"),
+        Variable::new(dae::VarName::new("gain.u")),
     );
     dae.outputs.insert(
-        VarName::new("table.y"),
-        Variable::new(VarName::new("table.y")),
+        dae::VarName::new("table.y"),
+        Variable::new(dae::VarName::new("table.y")),
     );
 
     let eq = rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("table.y[1]"),
                 subscripts: vec![],
@@ -1700,8 +1737,8 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
         VarName::new("table.y"),
         flat::Variable {
             name: VarName::new("table.y"),
-            causality: ast::Causality::Output(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1710,8 +1747,8 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
         VarName::new("gain.u"),
         flat::Variable {
             name: VarName::new("gain.u"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1720,7 +1757,7 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
     // Component equation for one output element.
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("table.y[1]"),
                 subscripts: vec![],
@@ -1739,12 +1776,12 @@ fn test_classify_equations_skips_subscripted_output_input_connection_when_output
 
     let mut dae = Dae::new();
     dae.outputs.insert(
-        VarName::new("table.y"),
-        Variable::new(VarName::new("table.y")),
+        dae::VarName::new("table.y"),
+        Variable::new(dae::VarName::new("table.y")),
     );
     dae.inputs.insert(
-        VarName::new("gain.u"),
-        Variable::new(VarName::new("gain.u")),
+        dae::VarName::new("gain.u"),
+        Variable::new(dae::VarName::new("gain.u")),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1765,8 +1802,8 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
         VarName::new("gain.y"),
         flat::Variable {
             name: VarName::new("gain.y"),
-            causality: ast::Causality::Output(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1775,8 +1812,8 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
         VarName::new("gain.u"),
         flat::Variable {
             name: VarName::new("gain.u"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -1785,7 +1822,7 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
         VarName::new("outBus.x"),
         flat::Variable {
             name: VarName::new("outBus.x"),
-            variability: ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
             is_primitive: true,
             ..Default::default()
         },
@@ -1794,7 +1831,7 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
     // Output has an explicit component equation.
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(flat::Expression::VarRef {
                 name: VarName::new("gain.y"),
                 subscripts: vec![],
@@ -1816,16 +1853,16 @@ fn test_classify_equations_skips_output_known_connection_when_output_has_compone
 
     let mut dae = Dae::new();
     dae.outputs.insert(
-        VarName::new("gain.y"),
-        Variable::new(VarName::new("gain.y")),
+        dae::VarName::new("gain.y"),
+        Variable::new(dae::VarName::new("gain.y")),
     );
     dae.inputs.insert(
-        VarName::new("gain.u"),
-        Variable::new(VarName::new("gain.u")),
+        dae::VarName::new("gain.u"),
+        Variable::new(dae::VarName::new("gain.u")),
     );
     dae.parameters.insert(
-        VarName::new("outBus.x"),
-        Variable::new(VarName::new("outBus.x")),
+        dae::VarName::new("outBus.x"),
+        Variable::new(dae::VarName::new("outBus.x")),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -1848,7 +1885,7 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
         VarName::new("port.reference.gamma"),
         flat::Variable {
             name: VarName::new("port.reference.gamma"),
-            variability: ast::Variability::Empty,
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             is_overconstrained: true,
             oc_record_path: Some("port.reference".to_string()),
@@ -1868,7 +1905,7 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("port.Phi.re")),
             rhs: Box::new(flat::Expression::Literal(Literal::Real(0.0))),
         },
@@ -1881,8 +1918,8 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
 
     let mut dae = Dae::new();
     dae.algebraics.insert(
-        VarName::new("port.Phi.re"),
-        Variable::new(VarName::new("port.Phi.re")),
+        dae::VarName::new("port.Phi.re"),
+        Variable::new(dae::VarName::new("port.Phi.re")),
     );
 
     let prefix_counts = build_prefix_counts(&flat);

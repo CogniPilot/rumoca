@@ -81,7 +81,7 @@ pub(super) fn substitute_var_ref_with_bindings(
 }
 
 pub(super) fn substitute_binary_expr_with_bindings(
-    op: &ast::OpBinary,
+    op: &rumoca_ir_core::OpBinary,
     lhs: &Expression,
     rhs: &Expression,
     bindings: &HashMap<String, i64>,
@@ -94,7 +94,7 @@ pub(super) fn substitute_binary_expr_with_bindings(
 }
 
 pub(super) fn substitute_unary_expr_with_bindings(
-    op: &ast::OpUnary,
+    op: &rumoca_ir_core::OpUnary,
     rhs: &Expression,
     bindings: &HashMap<String, i64>,
 ) -> Expression {

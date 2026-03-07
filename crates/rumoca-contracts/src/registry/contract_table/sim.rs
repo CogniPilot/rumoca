@@ -2,7 +2,7 @@
 // Source: rumoca-contracts registry snapshot
 use super::*;
 
-pub static CONTRACTS_SIM: &[StaticContract] = &[
+pub(super) static CONTRACTS_SIM: &[StaticContract] = &[
     StaticContract {
         id: "SIM-001",
         category: ContractCategory::Simulation,

@@ -9,15 +9,15 @@ fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
     flat.top_level_connectors.insert("cellBus".to_string());
 
     for (name, causality, from_expandable_connector) in [
-        ("cellBus.i", ast::Causality::Empty, true),
+        ("cellBus.i", rumoca_ir_core::Causality::Empty, true),
         (
             "limIntegrator.u",
-            ast::Causality::Input(ast::Token::default()),
+            rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
             false,
         ),
         (
             "multiSensor.i",
-            ast::Causality::Output(ast::Token::default()),
+            rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
             false,
         ),
     ] {
@@ -25,7 +25,7 @@ fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
             VarName::new(name),
             flat::Variable {
                 name: VarName::new(name),
-                variability: ast::Variability::Empty,
+                variability: rumoca_ir_core::Variability::Empty,
                 causality,
                 is_primitive: true,
                 connected: true,
@@ -53,11 +53,11 @@ fn test_anchored_expandable_member_via_input_alias_is_not_interface_input() {
 
     let dae = to_dae(&flat).expect("to_dae should succeed");
     assert!(
-        dae.algebraics.contains_key(&VarName::new("cellBus.i")),
+        dae.algebraics.contains_key(&dae::VarName::new("cellBus.i")),
         "anchored expandable member should remain an algebraic unknown"
     );
     assert!(
-        !dae.inputs.contains_key(&VarName::new("cellBus.i")),
+        !dae.inputs.contains_key(&dae::VarName::new("cellBus.i")),
         "anchored expandable member should not remain in inputs"
     );
 }
@@ -153,7 +153,7 @@ fn test_extract_lhs_var_size_keeps_symbolic_tail_subscript_scalar_equation() {
     );
 
     let residual = Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("medium_T[1].X[medium_T[1].nX]"),
             subscripts: vec![],
@@ -186,7 +186,7 @@ fn test_extract_lhs_var_size_multilayer_subscript_fallback_is_scalar() {
     );
 
     let residual = Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("bus[1].signal[2]"),
             subscripts: vec![],
@@ -222,7 +222,7 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
         flat::Variable {
             name: VarName::new("add.k"),
             dims: vec![2],
-            variability: ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
             is_primitive: true,
             ..Default::default()
         },
@@ -240,7 +240,7 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
     let residual = Expression::If {
         branches: vec![(
             Expression::Binary {
-                op: ast::OpBinary::Gt(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Gt(rumoca_ir_core::Token::default()),
                 lhs: Box::new(Expression::BuiltinCall {
                     function: BuiltinFunction::Size,
                     args: vec![
@@ -254,13 +254,13 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
                 rhs: Box::new(Expression::Literal(Literal::Integer(0))),
             },
             Expression::Binary {
-                op: ast::OpBinary::Sub(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("add.y"),
                     subscripts: vec![],
                 }),
                 rhs: Box::new(Expression::Binary {
-                    op: ast::OpBinary::Mul(ast::Token::default()),
+                    op: rumoca_ir_core::OpBinary::Mul(rumoca_ir_core::Token::default()),
                     lhs: Box::new(Expression::VarRef {
                         name: VarName::new("add.k"),
                         subscripts: vec![],
@@ -273,7 +273,7 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
             },
         )],
         else_branch: Box::new(Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(Expression::VarRef {
                 name: VarName::new("add.y"),
                 subscripts: vec![],
@@ -312,7 +312,7 @@ fn test_overconstrained_interface_uses_optional_edges_for_rooted_component() {
             flat::Variable {
                 name: VarName::new(name),
                 dims,
-                variability: ast::Variability::Empty,
+                variability: rumoca_ir_core::Variability::Empty,
                 is_primitive: true,
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
@@ -403,7 +403,7 @@ fn test_overconstrained_interface_skips_internally_defined_record_paths() {
             flat::Variable {
                 name: VarName::new(name),
                 dims,
-                variability: ast::Variability::Empty,
+                variability: rumoca_ir_core::Variability::Empty,
                 is_primitive: true,
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
@@ -429,7 +429,7 @@ fn test_overconstrained_interface_skips_internally_defined_record_paths() {
     };
     flat.add_equation(flat::Equation {
         residual: Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         },
@@ -463,7 +463,7 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
             flat::Variable {
                 name: VarName::new(name),
                 dims,
-                variability: ast::Variability::Empty,
+                variability: rumoca_ir_core::Variability::Empty,
                 is_primitive: true,
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
@@ -483,7 +483,7 @@ fn test_overconstrained_interface_counts_only_top_level_records() {
             flat::Variable {
                 name: VarName::new(name),
                 dims,
-                variability: ast::Variability::Empty,
+                variability: rumoca_ir_core::Variability::Empty,
                 is_primitive: true,
                 is_overconstrained: true,
                 oc_record_path: Some(rec_path.to_string()),
@@ -543,7 +543,7 @@ fn test_infer_scalar_count_function_lhs_uses_function_output_dims() {
     flat.add_function(f);
 
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::FunctionCall {
             name: VarName::new("Frames.angularVelocity2"),
             args: vec![Expression::VarRef {
@@ -582,7 +582,7 @@ fn test_infer_scalar_count_single_element_array_lhs_is_scalar() {
     );
 
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::Array {
             elements: vec![Expression::Literal(Literal::Integer(0))],
             is_matrix: false,
@@ -682,7 +682,7 @@ fn test_infer_scalar_count_array_lhs_der_array_plus_scalar() {
     };
 
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     };
@@ -837,7 +837,7 @@ fn test_infer_scalar_count_function_lhs_supports_alias_suffix_lookup() {
     flat.add_function(f);
 
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::FunctionCall {
             name: VarName::new("Frames.angularVelocity2"),
             args: vec![Expression::VarRef {
@@ -895,7 +895,7 @@ fn test_infer_scalar_count_function_lhs_falls_back_to_rhs_size() {
     // No function definition added on purpose: scalar inference should still
     // use RHS size (w_rel_b:3) instead of LHS record argument size (12).
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::FunctionCall {
             name: VarName::new("Frames.angularVelocity2"),
             args: vec![Expression::VarRef {
@@ -950,7 +950,7 @@ fn test_infer_scalar_count_function_lhs_skips_rhs_function_arg_records() {
         is_constructor: false,
     };
     let rhs = Expression::Binary {
-        op: ast::OpBinary::Add(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::FunctionCall {
             name: VarName::new("Frames.resolve2"),
             args: vec![
@@ -975,7 +975,7 @@ fn test_infer_scalar_count_function_lhs_skips_rhs_function_arg_records() {
         }),
     };
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     };
@@ -1005,12 +1005,12 @@ fn test_infer_scalar_count_vector_dot_residual_is_scalar() {
 
     // Residual for equation: 0 = a*b - s
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::Literal(Literal::Integer(0))),
         rhs: Box::new(Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(Expression::Binary {
-                op: ast::OpBinary::Mul(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Mul(rumoca_ir_core::Token::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("a"),
                     subscripts: vec![],
@@ -1069,12 +1069,12 @@ fn test_infer_scalar_count_vector_matrix_vector_residual_is_scalar() {
     // Residual for equation:
     // 0 = ((constraint.ex_a * constraint.R_rel.T) * constraint.e)
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::Literal(Literal::Integer(0))),
         rhs: Box::new(Expression::Binary {
-            op: ast::OpBinary::Mul(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Mul(rumoca_ir_core::Token::default()),
             lhs: Box::new(Expression::Binary {
-                op: ast::OpBinary::Mul(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Mul(rumoca_ir_core::Token::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("constraint.ex_a"),
                     subscripts: vec![],
@@ -1114,7 +1114,7 @@ fn test_infer_scalar_count_zero_equals_vector_stays_vector() {
 
     // Residual for equation: 0 = v
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::Literal(Literal::Integer(0))),
         rhs: Box::new(Expression::VarRef {
             name: VarName::new("v"),
@@ -1147,12 +1147,12 @@ fn test_infer_scalar_count_elementwise_mul_residual_is_vector() {
 
     // Residual for equation: 0 = a .* b - c
     let residual = Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(Expression::Literal(Literal::Integer(0))),
         rhs: Box::new(Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(Expression::Binary {
-                op: ast::OpBinary::MulElem(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::MulElem(rumoca_ir_core::Token::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("a"),
                     subscripts: vec![],
@@ -1228,7 +1228,7 @@ fn test_infer_equation_scalar_count_connector_field_array_alias() {
     }
 
     let residual = Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pin_n.v"),
             subscripts: vec![],
@@ -1277,7 +1277,7 @@ fn test_infer_equation_scalar_count_record_array_range_lhs_uses_full_slice_size(
     // LHS is a range slice over the record array. This should count both
     // selected elements: 2 records * 5 scalars each = 10 equations.
     let residual = Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[1:pipe.n]"),
             subscripts: vec![],
@@ -1303,7 +1303,7 @@ fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fall
         flat::Variable {
             name: VarName::new("pipe.n"),
             is_primitive: true,
-            variability: ast::Variability::Parameter(rumoca_ir_ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_flat::Token::default()),
             start: Some(Expression::Literal(Literal::Integer(1))),
             binding: None,
             ..Default::default()
@@ -1325,7 +1325,7 @@ fn test_infer_equation_scalar_count_record_array_range_uses_parameter_start_fall
 
     // 2:(pipe.n + 1) with pipe.n=1 should select one record element.
     let residual = Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[2:(pipe.n + 1)]"),
             subscripts: vec![],
@@ -1362,7 +1362,7 @@ fn test_infer_equation_scalar_count_record_array_range_uses_known_lower_bound_wh
     // End bound depends on an unknown symbol. Use the known lower bound and
     // declared dimension to avoid over-counting (2:dim -> one element).
     let residual = Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[2:(pipe.n + 1)]"),
             subscripts: vec![],
@@ -1387,7 +1387,7 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
         flat::Variable {
             name: VarName::new("pipe.n"),
             is_primitive: true,
-            variability: ast::Variability::Parameter(rumoca_ir_ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_flat::Token::default()),
             binding: Some(Expression::Literal(Literal::Integer(1))),
             ..Default::default()
         },
@@ -1409,7 +1409,7 @@ fn test_infer_equation_scalar_count_record_array_range_with_scalarized_field_ind
     }
 
     let residual = Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
         lhs: Box::new(Expression::VarRef {
             name: VarName::new("pipe.statesFM[2:(pipe.n + 1)]"),
             subscripts: vec![],

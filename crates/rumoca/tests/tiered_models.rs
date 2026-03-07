@@ -19,31 +19,31 @@
 //! | 8 | Inheritance | Extends, modifications, redeclarations |
 //! | 9 | Advanced | Algorithms, external functions |
 
-use rumoca::{Dae, Session, SessionConfig};
-use rumoca_ir_flat as flat;
+use rumoca_ir_dae::{self as dae, Dae};
+use rumoca_session::{Session, SessionConfig};
 
 /// Check if a Expression contains an If expression anywhere in its tree.
-fn contains_if_expr(expr: &flat::Expression) -> bool {
+fn contains_if_expr(expr: &dae::Expression) -> bool {
     match expr {
-        flat::Expression::If { .. } => true,
-        flat::Expression::Binary { lhs, rhs, .. } => contains_if_expr(lhs) || contains_if_expr(rhs),
-        flat::Expression::Unary { rhs, .. } => contains_if_expr(rhs),
+        dae::Expression::If { .. } => true,
+        dae::Expression::Binary { lhs, rhs, .. } => contains_if_expr(lhs) || contains_if_expr(rhs),
+        dae::Expression::Unary { rhs, .. } => contains_if_expr(rhs),
         _ => false,
     }
 }
 
 /// Check if a Expression contains a pre() builtin call anywhere in its tree.
-fn contains_pre_expr(expr: &flat::Expression) -> bool {
+fn contains_pre_expr(expr: &dae::Expression) -> bool {
     match expr {
-        flat::Expression::BuiltinCall {
-            function: rumoca_ir_flat::BuiltinFunction::Pre,
+        dae::Expression::BuiltinCall {
+            function: rumoca_ir_dae::BuiltinFunction::Pre,
             ..
         } => true,
-        flat::Expression::Binary { lhs, rhs, .. } => {
+        dae::Expression::Binary { lhs, rhs, .. } => {
             contains_pre_expr(lhs) || contains_pre_expr(rhs)
         }
-        flat::Expression::Unary { rhs, .. } => contains_pre_expr(rhs),
-        flat::Expression::If {
+        dae::Expression::Unary { rhs, .. } => contains_pre_expr(rhs),
+        dae::Expression::If {
             branches,
             else_branch,
         } => {
@@ -52,25 +52,26 @@ fn contains_pre_expr(expr: &flat::Expression) -> bool {
                 .any(|(cond, then_expr)| contains_pre_expr(cond) || contains_pre_expr(then_expr))
                 || contains_pre_expr(else_branch)
         }
-        flat::Expression::BuiltinCall { args, .. }
-        | flat::Expression::FunctionCall { args, .. } => args.iter().any(contains_pre_expr),
-        flat::Expression::Array { elements, .. } | flat::Expression::Tuple { elements } => {
+        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
+            args.iter().any(contains_pre_expr)
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
             elements.iter().any(contains_pre_expr)
         }
-        flat::Expression::Range { start, step, end } => {
+        dae::Expression::Range { start, step, end } => {
             contains_pre_expr(start)
                 || step.as_ref().is_some_and(|s| contains_pre_expr(s))
                 || contains_pre_expr(end)
         }
-        flat::Expression::Index { base, subscripts } => {
+        dae::Expression::Index { base, subscripts } => {
             contains_pre_expr(base)
                 || subscripts.iter().any(|sub| match sub {
-                    rumoca_ir_flat::Subscript::Expr(e) => contains_pre_expr(e),
+                    rumoca_ir_dae::Subscript::Expr(e) => contains_pre_expr(e),
                     _ => false,
                 })
         }
-        flat::Expression::FieldAccess { base, .. } => contains_pre_expr(base),
-        flat::Expression::ArrayComprehension {
+        dae::Expression::FieldAccess { base, .. } => contains_pre_expr(base),
+        dae::Expression::ArrayComprehension {
             expr,
             indices,
             filter,
@@ -79,9 +80,9 @@ fn contains_pre_expr(expr: &flat::Expression) -> bool {
                 || contains_pre_expr(expr)
                 || filter.as_ref().is_some_and(|cond| contains_pre_expr(cond))
         }
-        flat::Expression::VarRef { .. }
-        | flat::Expression::Literal(_)
-        | flat::Expression::Empty => false,
+        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {
+            false
+        }
     }
 }
 
@@ -129,7 +130,7 @@ fn compile(source: &str, model_name: &str) -> Result<CompileResult, String> {
         inputs: dae.inputs.len(),
         outputs: dae.outputs.len(),
         f_x_count: dae.f_x.len(),
-        balance: dae.balance(),
+        balance: rumoca_eval_dae::analysis::balance(&dae),
         dae,
     })
 }

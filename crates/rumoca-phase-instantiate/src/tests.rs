@@ -2,10 +2,10 @@ use super::*;
 use rumoca_ir_ast as ast;
 
 /// Helper to create a token with text for testing.
-fn make_token(text: &str) -> ast::Token {
-    ast::Token {
+fn make_token(text: &str) -> rumoca_ir_core::Token {
+    rumoca_ir_core::Token {
         text: std::sync::Arc::from(text),
-        location: ast::Location::default(),
+        location: rumoca_ir_core::Location::default(),
         token_number: 0,
         token_type: 0,
     }

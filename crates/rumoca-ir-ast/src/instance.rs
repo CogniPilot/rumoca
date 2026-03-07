@@ -12,7 +12,9 @@ use rumoca_core::{DefId, Span, TypeId};
 use rustc_hash::FxBuildHasher;
 use serde::{Deserialize, Serialize};
 
-use crate::{Causality, ClassTree, ClassType, Equation, Expression, Statement, Variability};
+use crate::{
+    Causality, ClassTree, ClassType, Equation, Expression, StateSelect, Statement, Variability,
+};
 
 type FastIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
@@ -185,26 +187,6 @@ impl std::fmt::Display for QualifiedName {
         }
         Ok(())
     }
-}
-
-// =============================================================================
-// State Selection
-// =============================================================================
-
-/// State selection hint for variables.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StateSelect {
-    /// Default behavior.
-    #[default]
-    Default,
-    /// Never use as state.
-    Never,
-    /// Avoid using as state.
-    Avoid,
-    /// Prefer using as state.
-    Prefer,
-    /// Always use as state.
-    Always,
 }
 
 // =============================================================================

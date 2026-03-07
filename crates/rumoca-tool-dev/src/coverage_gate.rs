@@ -135,7 +135,12 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     );
     let baseline = load_baseline(&baseline_path)?;
     let package_filter = selected_packages(&args.packages, Some(&baseline), &current_metrics);
-    let comparisons = build_comparisons(&baseline, &current_metrics, &package_filter)?;
+    let comparisons = build_comparisons(
+        &baseline,
+        &current_metrics,
+        &package_filter,
+        !args.packages.is_empty(),
+    )?;
     let baseline_workspace = baseline
         .workspace_line_coverage_percent
         .zip(baseline.workspace_lines_covered)
@@ -162,14 +167,40 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     );
     write_text_file(&diff_path, &diff_markdown)?;
 
+    finalize_gate_result(
+        comparisons.len(),
+        &diff_path,
+        trim_failures,
+        workspace_coverage_failure,
+        args.enforce_trim_regressions,
+    )
+}
+
+fn resolve_path(root: &Path, user_path: Option<&PathBuf>, default_rel: &str) -> PathBuf {
+    let path = user_path
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(default_rel));
+    if path.is_absolute() {
+        return path;
+    }
+    root.join(path)
+}
+
+fn finalize_gate_result(
+    package_count: usize,
+    diff_path: &Path,
+    trim_failures: Vec<String>,
+    workspace_coverage_failure: Option<String>,
+    enforce_trim_regressions: bool,
+) -> Result<()> {
     let has_trim_failures = !trim_failures.is_empty();
-    let trim_is_fatal = args.enforce_trim_regressions && has_trim_failures;
+    let trim_is_fatal = enforce_trim_regressions && has_trim_failures;
     let has_workspace_failure = workspace_coverage_failure.is_some();
 
     if !has_workspace_failure && !trim_is_fatal {
         println!(
             "Coverage gate: PASS ({} package(s)). Diff: {}",
-            comparisons.len(),
+            package_count,
             diff_path.display()
         );
         if has_trim_failures {
@@ -201,16 +232,6 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
         }
     }
     bail!(message.trim_end().to_string());
-}
-
-fn resolve_path(root: &Path, user_path: Option<&PathBuf>, default_rel: &str) -> PathBuf {
-    let path = user_path
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from(default_rel));
-    if path.is_absolute() {
-        return path;
-    }
-    root.join(path)
 }
 
 fn load_current_metrics(path: &Path) -> Result<BTreeMap<String, PackageGateMetrics>> {
@@ -393,6 +414,7 @@ fn build_comparisons(
     baseline: &CoverageTrimGateBaseline,
     current_metrics: &BTreeMap<String, PackageGateMetrics>,
     selected_packages: &[String],
+    strict_missing_current: bool,
 ) -> Result<Vec<GateComparison>> {
     let mut comparisons = Vec::new();
     for package in selected_packages {
@@ -403,10 +425,13 @@ fn build_comparisons(
             );
         };
         let Some(current) = current_metrics.get(package) else {
-            bail!(
-                "current trim candidates are missing package '{}' (check package filters)",
-                package
-            );
+            if strict_missing_current {
+                bail!(
+                    "current trim candidates are missing package '{}' (check package filters)",
+                    package
+                );
+            }
+            continue;
         };
         comparisons.push(GateComparison {
             package: package.clone(),

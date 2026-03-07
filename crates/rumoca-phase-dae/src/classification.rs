@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 
-use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
@@ -20,7 +19,7 @@ use rumoca_ir_flat as flat;
 /// a binding expression (e.g., `body.frame_a.R = Frames.from_Q(body.Q,
 /// Frames.Quaternions.angularVelocity2(body.Q, der(body.Q)))`), it would be
 /// missed without this scan.
-pub fn find_state_variables(flat: &flat::Model) -> HashSet<flat::VarName> {
+pub(crate) fn find_state_variables(flat: &flat::Model) -> HashSet<flat::VarName> {
     let mut states = HashSet::default();
 
     // Scan all equations for der() calls
@@ -51,12 +50,12 @@ pub fn find_state_variables(flat: &flat::Model) -> HashSet<flat::VarName> {
 /// Classify a variable based on its attributes.
 ///
 /// Classification priority (MLS Appendix B - DAE representation):
-/// 1. ast::Variability (constant/parameter) - fixed values, no equations needed
-/// 2. ast::Causality (input) - external inputs, determined by connections
-/// 3. ast::Variability (discrete) - discrete variables change only at events (MLS §4.5)
+/// 1. rumoca_ir_core::Variability (constant/parameter) - fixed values, no equations needed
+/// 2. rumoca_ir_core::Causality (input) - external inputs, determined by connections
+/// 3. rumoca_ir_core::Variability (discrete) - discrete variables change only at events (MLS §4.5)
 ///    This includes Integer/Boolean outputs which are discrete by default
 /// 4. State detection for continuous outputs - output variables with der() are states
-/// 5. ast::Causality (output) - continuous outputs without der() are algebraic outputs
+/// 5. rumoca_ir_core::Causality (output) - continuous outputs without der() are algebraic outputs
 /// 6. State detection for other variables - appear in der()
 /// 7. Default: algebraic
 ///
@@ -67,26 +66,26 @@ pub fn find_state_variables(flat: &flat::Model) -> HashSet<flat::VarName> {
 ///
 /// Integer and Boolean variables are discrete by default (MLS §4.5) and should
 /// not be counted as continuous unknowns, even if they have output causality.
-pub fn classify_variable(
+pub(crate) fn classify_variable(
     var: &flat::Variable,
     state_vars: &HashSet<flat::VarName>,
 ) -> dae::VariableKind {
     // Check variability for constant/parameter first - these are fixed values
     match &var.variability {
-        ast::Variability::Constant(_) => return dae::VariableKind::Constant,
-        ast::Variability::Parameter(_) => return dae::VariableKind::Parameter,
+        rumoca_ir_core::Variability::Constant(_) => return dae::VariableKind::Constant,
+        rumoca_ir_core::Variability::Parameter(_) => return dae::VariableKind::Parameter,
         _ => {}
     }
 
     // Check input causality - inputs stay inputs even if they appear in der()
     // (der(u) computes the derivative of the input, u is still determined externally)
-    if matches!(&var.causality, ast::Causality::Input(_)) {
+    if matches!(&var.causality, rumoca_ir_core::Causality::Input(_)) {
         return dae::VariableKind::Input;
     }
 
     // Check discrete variability BEFORE output causality (MLS §4.5)
     // Variables with explicit discrete variability prefix are discrete.
-    if matches!(&var.variability, ast::Variability::Discrete(_)) {
+    if matches!(&var.variability, rumoca_ir_core::Variability::Discrete(_)) {
         return dae::VariableKind::Discrete;
     }
 
@@ -99,7 +98,7 @@ pub fn classify_variable(
 
     // For output variables: if they appear in der(), they're states
     // (the ODE equation defines their time evolution)
-    if matches!(&var.causality, ast::Causality::Output(_)) {
+    if matches!(&var.causality, rumoca_ir_core::Causality::Output(_)) {
         if state_vars.contains(&var.name) {
             return dae::VariableKind::State;
         }
@@ -148,7 +147,7 @@ mod tests {
     fn test_flat_expression_finds_state() {
         // Test: der(x) - 1 should find x as state
         let expr = flat::Expression::Binary {
-            op: ast::OpBinary::Sub(Default::default()),
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
             lhs: Box::new(make_der("x")),
             rhs: Box::new(make_int(1)),
         };

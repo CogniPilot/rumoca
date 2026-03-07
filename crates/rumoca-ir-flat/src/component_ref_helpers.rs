@@ -7,7 +7,7 @@ use super::*;
 /// `Modelica.Electrical.Digital.Interfaces.Logic.'1'`.
 pub(super) fn from_component_ref_with_def_map_impl(
     cr: &ast::ComponentReference,
-    def_map: Option<&IndexMap<ast::DefId, String>>,
+    def_map: Option<&IndexMap<DefId, String>>,
 ) -> Expression {
     if cr.parts.is_empty()
         && let Some(def_id) = cr.def_id

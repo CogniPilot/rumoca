@@ -13,12 +13,6 @@ required-features = ["server"]
 
 [dependencies]
 rumoca-session = { workspace = true }
-rumoca-ir-ast = { workspace = true }
-rumoca-phase-parse = { workspace = true }
-rumoca-core = { workspace = true }
-rumoca-sim-diffsol = { workspace = true }
-rumoca-tool-lint = { workspace = true }
-rumoca-tool-fmt = { workspace = true }
 lsp-types = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

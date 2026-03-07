@@ -8,7 +8,7 @@ use rumoca_core::{Diagnostic, Label, SourceMap};
 use rumoca_ir_ast as ast;
 use std::collections::HashSet;
 
-type Causality = ast::Causality;
+type Causality = rumoca_ir_core::Causality;
 type ClassDef = ast::ClassDef;
 type ClassType = ast::ClassType;
 type ComponentReference = ast::ComponentReference;
@@ -16,12 +16,12 @@ type Connection = ast::Connection;
 type Equation = ast::Equation;
 type Expression = ast::Expression;
 type Import = ast::Import;
-type OpBinary = ast::OpBinary;
+type OpBinary = rumoca_ir_core::OpBinary;
 type Statement = ast::Statement;
 type Subscript = ast::Subscript;
 type StoredDefinition = ast::StoredDefinition;
 type TerminalType = ast::TerminalType;
-type Variability = ast::Variability;
+type Variability = rumoca_ir_core::Variability;
 
 // Resolve-phase semantic diagnostic codes (ER005+ reserved for semantic checks).
 const ER005_PARTIAL_CLASS_INSTANTIATION: &str = "ER005";
@@ -416,7 +416,7 @@ fn check_duplicate_imports(class: &ClassDef, source_map: &SourceMap, diags: &mut
 
 fn check_selective_import_dupes(
     class: &ClassDef,
-    names: &[rumoca_ir_ast::Token],
+    names: &[rumoca_ir_core::Token],
     source_map: &SourceMap,
     import_names: &mut HashSet<String>,
     diags: &mut Vec<Diagnostic>,
@@ -442,7 +442,11 @@ fn check_selective_import_dupes(
     }
 }
 
-fn label_for_token(token: &ast::Token, source_map: &SourceMap, message: String) -> Label {
+fn label_for_token(
+    token: &rumoca_ir_core::Token,
+    source_map: &SourceMap,
+    message: String,
+) -> Label {
     let start = token.location.start as usize;
     let mut end = token.location.end as usize;
     if end <= start {

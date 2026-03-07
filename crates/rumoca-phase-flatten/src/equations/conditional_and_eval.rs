@@ -428,8 +428,8 @@ fn try_eval_integer_with_ctx(
         ast::Expression::Unary { op, rhs } => {
             let val = try_eval_integer_with_ctx(ctx, rhs, prefix)?;
             match op {
-                rumoca_ir_ast::OpUnary::Minus(_) => Some(-val),
-                rumoca_ir_ast::OpUnary::Plus(_) => Some(val),
+                rumoca_ir_core::OpUnary::Minus(_) => Some(-val),
+                rumoca_ir_core::OpUnary::Plus(_) => Some(val),
                 _ => None,
             }
         }
@@ -472,12 +472,12 @@ fn try_eval_integer_with_ctx(
     result
 }
 
-fn eval_ast_integer_binary(op: &rumoca_ir_ast::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
+fn eval_ast_integer_binary(op: &rumoca_ir_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
     let operator = match op {
-        rumoca_ir_ast::OpBinary::Add(_) => rumoca_core::IntegerBinaryOperator::Add,
-        rumoca_ir_ast::OpBinary::Sub(_) => rumoca_core::IntegerBinaryOperator::Sub,
-        rumoca_ir_ast::OpBinary::Mul(_) => rumoca_core::IntegerBinaryOperator::Mul,
-        rumoca_ir_ast::OpBinary::Div(_) => rumoca_core::IntegerBinaryOperator::Div,
+        rumoca_ir_core::OpBinary::Add(_) => rumoca_core::IntegerBinaryOperator::Add,
+        rumoca_ir_core::OpBinary::Sub(_) => rumoca_core::IntegerBinaryOperator::Sub,
+        rumoca_ir_core::OpBinary::Mul(_) => rumoca_core::IntegerBinaryOperator::Mul,
+        rumoca_ir_core::OpBinary::Div(_) => rumoca_core::IntegerBinaryOperator::Div,
         _ => return None,
     };
     rumoca_core::eval_integer_binary(operator, lhs, rhs)
@@ -1094,13 +1094,13 @@ fn substitute_index_in_subscript(
     }
 }
 
-/// Build a rumoca_eval_const::EvalContext from the Context.
+/// Build a rumoca_eval_flat::constant::EvalContext from the Context.
 ///
 /// This allows using the rumoca_eval_const crate for more complex expression evaluation
 /// while still leveraging the parameter values collected during flattening.
 ///
 /// If a ClassTree is provided, functions will be looked up on-demand during evaluation.
-pub fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> EvalContext {
+pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> EvalContext {
     let mut eval_ctx = EvalContext::new();
 
     // Add integer parameters
@@ -1178,7 +1178,7 @@ fn try_eval_with_rumoca_eval_const(
     let eval_ctx = ctx.eval_fallback_context();
 
     // Try to evaluate
-    let result = rumoca_eval_const::try_eval_integer(&flat_expr, eval_ctx);
+    let result = rumoca_eval_flat::constant::try_eval_integer(&flat_expr, eval_ctx);
     crate::maybe_record_eval_fallback_timing(fallback_start);
     result
 }

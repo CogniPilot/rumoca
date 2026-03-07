@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 rumoca-core = { workspace = true }
-rumoca-ir-flat = { workspace = true }
+rumoca-ir-core = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }
 

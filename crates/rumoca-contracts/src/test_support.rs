@@ -3,8 +3,12 @@
 //! Provides convenience functions for compiling Modelica models
 //! and asserting success/failure/balance conditions.
 
-use rumoca_phase_parse::{ParseError, parse_to_ast, parse_to_ast_with_errors};
-use rumoca_session::{CompilationResult, FailedPhase, PhaseResult, Session, SessionConfig};
+use rumoca_session::compile::{CompilationResult, FailedPhase, PhaseResult};
+use rumoca_session::parsing::{
+    ParseError, parse_source_to_ast as parse_to_ast, parse_source_to_ast_with_errors,
+};
+use rumoca_session::runtime::dae_balance;
+use rumoca_session::{Session, SessionConfig};
 
 /// Compile a model from source, expecting success.
 /// Returns the CompilationResult for further assertions.
@@ -135,7 +139,7 @@ fn error_code_matches(actual: &str, expected: &str) -> bool {
 /// Panics if compilation fails or the system is not balanced.
 pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
     let result = expect_success(source, model);
-    let balance = result.dae.balance();
+    let balance = dae_balance(&result.dae);
     assert_eq!(
         balance, 0,
         "Expected balanced system for {model}, got balance={balance}"
@@ -180,7 +184,7 @@ pub fn expect_parse_ok(source: &str) {
 /// # Panics
 /// Panics if parsing succeeds or no parse diagnostic code matches.
 pub fn expect_parse_err_with_code(source: &str, expected_code: &str) {
-    match parse_to_ast_with_errors(source, "test.mo") {
+    match parse_source_to_ast_with_errors(source, "test.mo") {
         Ok(_) => panic!("Expected parse failure with code {expected_code}, but parsing succeeded"),
         Err(parse_errors) => {
             let codes: Vec<String> = parse_errors

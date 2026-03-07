@@ -904,7 +904,7 @@ pub trait ModelicaGrammarTrait {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IdentBasicIdent {
-    pub basic_ident: rumoca_ir_ast::Token, /* [_A-Za-z][_A-Za-z0-9]* */
+    pub basic_ident: crate::ParserToken, /* [_A-Za-z][_A-Za-z0-9]* */
 }
 
 ///
@@ -915,7 +915,7 @@ pub struct IdentBasicIdent {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IdentQIdent {
-    pub q_ident: rumoca_ir_ast::Token, /* \'([[:ascii:]&&[^\'\\]]|\\[\'\"\\ntrfabv?])*\' */
+    pub q_ident: crate::ParserToken, /* \'([[:ascii:]&&[^\'\\]]|\\[\'\"\\ntrfabv?])*\' */
 }
 
 ///
@@ -926,7 +926,7 @@ pub struct IdentQIdent {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedRealDecimal {
-    pub decimal: rumoca_ir_ast::Token, /* [0-9]+\.[0-9]+ */
+    pub decimal: crate::ParserToken, /* [0-9]+\.[0-9]+ */
 }
 
 ///
@@ -937,7 +937,7 @@ pub struct UnsignedRealDecimal {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedRealScientific {
-    pub scientific: rumoca_ir_ast::Token, /* [0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)? */
+    pub scientific: crate::ParserToken, /* [0-9]+\.([0-9]+)?([eE][+-]?[0-9]+)? */
 }
 
 ///
@@ -948,7 +948,7 @@ pub struct UnsignedRealScientific {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedRealScientific2 {
-    pub scientific2: rumoca_ir_ast::Token, /* \.[0-9]+([eE][+-]?[0-9]+)? */
+    pub scientific2: crate::ParserToken, /* \.[0-9]+([eE][+-]?[0-9]+)? */
 }
 
 ///
@@ -959,7 +959,7 @@ pub struct UnsignedRealScientific2 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedRealScientificInt {
-    pub scientific_int: rumoca_ir_ast::Token, /* [0-9]+[eE][+-]?[0-9]+ */
+    pub scientific_int: crate::ParserToken, /* [0-9]+[eE][+-]?[0-9]+ */
 }
 
 ///
@@ -1361,7 +1361,7 @@ pub struct ElementDefinitionGroupGroupComponentClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClauseGroupIdentEquImportClauseOptName {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub import_clause_opt: Option<ImportClauseOpt>,
     pub name: rumoca_ir_ast::Name,
 }
@@ -1387,7 +1387,7 @@ pub struct ImportClauseGroupImportClauseOpt0NameImportClauseOpt1 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClauseOpt1GroupDotStar {
-    pub dot_star: rumoca_ir_ast::Token, /* .* */
+    pub dot_star: crate::ParserToken, /* .* */
 }
 
 ///
@@ -1398,7 +1398,7 @@ pub struct ImportClauseOpt1GroupDotStar {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClauseOpt1GroupDotImportClauseOpt1GroupGroup {
-    pub dot: rumoca_ir_ast::Token, /* . */
+    pub dot: crate::ParserToken, /* . */
     pub import_clause_opt1_group_group: ImportClauseOpt1GroupGroup,
 }
 
@@ -1410,7 +1410,7 @@ pub struct ImportClauseOpt1GroupDotImportClauseOpt1GroupGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClauseOpt1GroupGroupStar {
-    pub star: rumoca_ir_ast::Token, /* * */
+    pub star: crate::ParserToken, /* * */
 }
 
 ///
@@ -1487,7 +1487,7 @@ pub struct InheritanceModificationGroupConnectEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InheritanceModificationGroupIdent {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
 }
 
 ///
@@ -1906,7 +1906,7 @@ pub struct ExpressionIfExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationalOperatorLT {
-    pub l_t: rumoca_ir_ast::Token, /* < */
+    pub l_t: crate::ParserToken, /* < */
 }
 
 ///
@@ -1917,7 +1917,7 @@ pub struct RelationalOperatorLT {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationalOperatorLTEqu {
-    pub l_t_equ: rumoca_ir_ast::Token, /* <= */
+    pub l_t_equ: crate::ParserToken, /* <= */
 }
 
 ///
@@ -1928,7 +1928,7 @@ pub struct RelationalOperatorLTEqu {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationalOperatorGT {
-    pub g_t: rumoca_ir_ast::Token, /* > */
+    pub g_t: crate::ParserToken, /* > */
 }
 
 ///
@@ -1939,7 +1939,7 @@ pub struct RelationalOperatorGT {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationalOperatorGTEqu {
-    pub g_t_equ: rumoca_ir_ast::Token, /* >= */
+    pub g_t_equ: crate::ParserToken, /* >= */
 }
 
 ///
@@ -1950,7 +1950,7 @@ pub struct RelationalOperatorGTEqu {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationalOperatorEquEqu {
-    pub equ_equ: rumoca_ir_ast::Token, /* == */
+    pub equ_equ: crate::ParserToken, /* == */
 }
 
 ///
@@ -1961,7 +1961,7 @@ pub struct RelationalOperatorEquEqu {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationalOperatorLTGT {
-    pub l_t_g_t: rumoca_ir_ast::Token, /* <> */
+    pub l_t_g_t: crate::ParserToken, /* <> */
 }
 
 ///
@@ -1972,7 +1972,7 @@ pub struct RelationalOperatorLTGT {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AddOperatorPlus {
-    pub plus: rumoca_ir_ast::Token, /* + */
+    pub plus: crate::ParserToken, /* + */
 }
 
 ///
@@ -1983,7 +1983,7 @@ pub struct AddOperatorPlus {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AddOperatorMinus {
-    pub minus: rumoca_ir_ast::Token, /* - */
+    pub minus: crate::ParserToken, /* - */
 }
 
 ///
@@ -1994,7 +1994,7 @@ pub struct AddOperatorMinus {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AddOperatorDotPlus {
-    pub dot_plus: rumoca_ir_ast::Token, /* .+ */
+    pub dot_plus: crate::ParserToken, /* .+ */
 }
 
 ///
@@ -2005,7 +2005,7 @@ pub struct AddOperatorDotPlus {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AddOperatorDotMinus {
-    pub dot_minus: rumoca_ir_ast::Token, /* .- */
+    pub dot_minus: crate::ParserToken, /* .- */
 }
 
 ///
@@ -2016,7 +2016,7 @@ pub struct AddOperatorDotMinus {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MulOperatorStar {
-    pub star: rumoca_ir_ast::Token, /* * */
+    pub star: crate::ParserToken, /* * */
 }
 
 ///
@@ -2027,7 +2027,7 @@ pub struct MulOperatorStar {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MulOperatorSlash {
-    pub slash: rumoca_ir_ast::Token, /* / */
+    pub slash: crate::ParserToken, /* / */
 }
 
 ///
@@ -2038,7 +2038,7 @@ pub struct MulOperatorSlash {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MulOperatorDotStar {
-    pub dot_star: rumoca_ir_ast::Token, /* .* */
+    pub dot_star: crate::ParserToken, /* .* */
 }
 
 ///
@@ -2049,7 +2049,7 @@ pub struct MulOperatorDotStar {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MulOperatorDotSlash {
-    pub dot_slash: rumoca_ir_ast::Token, /* ./ */
+    pub dot_slash: crate::ParserToken, /* ./ */
 }
 
 ///
@@ -2060,7 +2060,7 @@ pub struct MulOperatorDotSlash {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FactorListGroupCircumflex {
-    pub circumflex: rumoca_ir_ast::Token, /* ^ */
+    pub circumflex: crate::ParserToken, /* ^ */
 }
 
 ///
@@ -2071,7 +2071,7 @@ pub struct FactorListGroupCircumflex {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FactorListGroupDotCircumflex {
-    pub dot_circumflex: rumoca_ir_ast::Token, /* .^ */
+    pub dot_circumflex: crate::ParserToken, /* .^ */
 }
 
 ///
@@ -2093,7 +2093,7 @@ pub struct PrimaryUnsignedNumber {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryString {
-    pub string: rumoca_ir_ast::Token,
+    pub string: rumoca_ir_core::Token,
 }
 
 ///
@@ -2203,7 +2203,7 @@ pub struct OutputPrimaryOptGroupArraySubscripts {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputPrimaryOptGroupDotIdent {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
 }
 
 ///
@@ -2247,7 +2247,7 @@ pub struct GlobalFunctionCallGroupPure {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedNumberUnsignedInteger {
-    pub unsigned_integer: rumoca_ir_ast::Token,
+    pub unsigned_integer: rumoca_ir_core::Token,
 }
 
 ///
@@ -2258,7 +2258,7 @@ pub struct UnsignedNumberUnsignedInteger {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedNumberUnsignedReal {
-    pub unsigned_real: rumoca_ir_ast::Token,
+    pub unsigned_real: rumoca_ir_core::Token,
 }
 
 ///
@@ -2396,7 +2396,7 @@ pub struct FunctionArgumentExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SubscriptColon {
-    pub colon: rumoca_ir_ast::Token, /* : */
+    pub colon: crate::ParserToken, /* : */
 }
 
 ///
@@ -2433,7 +2433,7 @@ pub enum AddOperator {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Algorithm {
-    pub algorithm: rumoca_ir_ast::Token, /* algorithm */
+    pub algorithm: crate::ParserToken, /* algorithm */
 }
 
 ///
@@ -2471,7 +2471,7 @@ pub struct AlgorithmSectionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct And {
-    pub and: rumoca_ir_ast::Token, /* and */
+    pub and: crate::ParserToken, /* and */
 }
 
 ///
@@ -2480,7 +2480,7 @@ pub struct And {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Annotation {
-    pub annotation: rumoca_ir_ast::Token, /* annotation */
+    pub annotation: crate::ParserToken, /* annotation */
 }
 
 ///
@@ -2722,7 +2722,7 @@ pub enum BasePrefixOptGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub block: rumoca_ir_ast::Token, /* block */
+    pub block: crate::ParserToken, /* block */
 }
 
 ///
@@ -2731,7 +2731,7 @@ pub struct Block {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Break {
-    pub r#break: rumoca_ir_ast::Token, /* break */
+    pub r#break: crate::ParserToken, /* break */
 }
 
 ///
@@ -2740,7 +2740,7 @@ pub struct Break {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Class {
-    pub class: rumoca_ir_ast::Token, /* class */
+    pub class: crate::ParserToken, /* class */
 }
 
 ///
@@ -3008,7 +3008,7 @@ pub struct ComponentPrimaryOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentRefPart {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub component_ref_part_opt: Option<ComponentRefPartOpt>,
 }
 
@@ -3028,7 +3028,7 @@ pub struct ComponentRefPartOpt {
 #[derive(Debug, Clone)]
 pub struct ComponentReference {
     pub component_reference_opt: Option<ComponentReferenceOpt>,
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub component_reference_opt0: Option<ComponentReferenceOpt0>,
     pub component_reference_list: Vec<ComponentReferenceList>,
 }
@@ -3173,7 +3173,7 @@ pub struct ConditionAttribute {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Connect {
-    pub connect: rumoca_ir_ast::Token, /* connect */
+    pub connect: crate::ParserToken, /* connect */
 }
 
 ///
@@ -3192,7 +3192,7 @@ pub struct ConnectEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Connector {
-    pub connector: rumoca_ir_ast::Token, /* connector */
+    pub connector: crate::ParserToken, /* connector */
 }
 
 ///
@@ -3201,7 +3201,7 @@ pub struct Connector {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Constant {
-    pub constant: rumoca_ir_ast::Token, /* constant */
+    pub constant: crate::ParserToken, /* constant */
 }
 
 ///
@@ -3210,7 +3210,7 @@ pub struct Constant {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Constrainedby {
-    pub constrainedby: rumoca_ir_ast::Token, /* constrainedby */
+    pub constrainedby: crate::ParserToken, /* constrainedby */
 }
 
 ///
@@ -3238,7 +3238,7 @@ pub struct ConstrainingClauseOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Declaration {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub declaration_opt: Option<DeclarationOpt>,
     pub declaration_opt0: Option<DeclarationOpt0>,
 }
@@ -3267,7 +3267,7 @@ pub struct DeclarationOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Der {
-    pub der: rumoca_ir_ast::Token, /* der */
+    pub der: crate::ParserToken, /* der */
 }
 
 ///
@@ -3276,10 +3276,10 @@ pub struct Der {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DerClassSpecifier {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub der: Der,
     pub type_specifier: TypeSpecifier,
-    pub ident0: rumoca_ir_ast::Token,
+    pub ident0: rumoca_ir_core::Token,
     pub der_class_specifier_list: Vec<DerClassSpecifierList>,
     pub description: Description,
 }
@@ -3290,7 +3290,7 @@ pub struct DerClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DerClassSpecifierList {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
 }
 
 ///
@@ -3327,7 +3327,7 @@ pub struct DescriptionString {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DescriptionStringOpt {
-    pub string: rumoca_ir_ast::Token,
+    pub string: rumoca_ir_core::Token,
     pub description_string_opt_list: Vec<DescriptionStringOptList>,
 }
 
@@ -3337,7 +3337,7 @@ pub struct DescriptionStringOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DescriptionStringOptList {
-    pub string: rumoca_ir_ast::Token,
+    pub string: rumoca_ir_core::Token,
 }
 
 ///
@@ -3346,7 +3346,7 @@ pub struct DescriptionStringOptList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Discrete {
-    pub discrete: rumoca_ir_ast::Token, /* discrete */
+    pub discrete: crate::ParserToken, /* discrete */
 }
 
 ///
@@ -3355,7 +3355,7 @@ pub struct Discrete {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Each {
-    pub each: rumoca_ir_ast::Token, /* each */
+    pub each: crate::ParserToken, /* each */
 }
 
 ///
@@ -3605,7 +3605,7 @@ pub struct ElementReplaceableOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Else {
-    pub r#else: rumoca_ir_ast::Token, /* else */
+    pub r#else: crate::ParserToken, /* else */
 }
 
 ///
@@ -3614,7 +3614,7 @@ pub struct Else {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Elseif {
-    pub elseif: rumoca_ir_ast::Token, /* elseif */
+    pub elseif: crate::ParserToken, /* elseif */
 }
 
 ///
@@ -3623,7 +3623,7 @@ pub struct Elseif {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Elsewhen {
-    pub elsewhen: rumoca_ir_ast::Token, /* elsewhen */
+    pub elsewhen: crate::ParserToken, /* elsewhen */
 }
 
 ///
@@ -3632,7 +3632,7 @@ pub struct Elsewhen {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Encapsulated {
-    pub encapsulated: rumoca_ir_ast::Token, /* encapsulated */
+    pub encapsulated: crate::ParserToken, /* encapsulated */
 }
 
 ///
@@ -3641,7 +3641,7 @@ pub struct Encapsulated {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct End {
-    pub end: rumoca_ir_ast::Token, /* end */
+    pub end: crate::ParserToken, /* end */
 }
 
 ///
@@ -3650,7 +3650,7 @@ pub struct End {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnumClassSpecifier {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub enumeration: Enumeration,
     pub enum_class_specifier_group: EnumClassSpecifierGroup,
     pub description: Description,
@@ -3700,7 +3700,7 @@ pub struct EnumListList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Enumeration {
-    pub enumeration: rumoca_ir_ast::Token, /* enumeration */
+    pub enumeration: crate::ParserToken, /* enumeration */
 }
 
 ///
@@ -3709,7 +3709,7 @@ pub struct Enumeration {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnumerationLiteral {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub description: Description,
 }
 
@@ -3719,7 +3719,7 @@ pub struct EnumerationLiteral {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Equation {
-    pub equation: rumoca_ir_ast::Token, /* equation */
+    pub equation: crate::ParserToken, /* equation */
 }
 
 ///
@@ -3776,7 +3776,7 @@ pub struct EquationSectionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Expandable {
-    pub expandable: rumoca_ir_ast::Token, /* expandable */
+    pub expandable: crate::ParserToken, /* expandable */
 }
 
 ///
@@ -3814,7 +3814,7 @@ pub struct ExpressionListList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Extends {
-    pub extends: rumoca_ir_ast::Token, /* extends */
+    pub extends: crate::ParserToken, /* extends */
 }
 
 ///
@@ -3823,11 +3823,11 @@ pub struct Extends {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendsClassSpecifier {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub extends_class_specifier_opt: Option<ExtendsClassSpecifierOpt>,
     pub description_string: crate::TokenList,
     pub composition: crate::Composition,
-    pub ident0: rumoca_ir_ast::Token,
+    pub ident0: rumoca_ir_core::Token,
 }
 
 ///
@@ -3875,7 +3875,7 @@ pub struct ExtendsClauseOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct External {
-    pub external: rumoca_ir_ast::Token, /* external */
+    pub external: crate::ParserToken, /* external */
 }
 
 ///
@@ -3885,7 +3885,7 @@ pub struct External {
 #[derive(Debug, Clone)]
 pub struct ExternalFunctionCall {
     pub external_function_call_opt: Option<ExternalFunctionCallOpt>,
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub external_function_call_opt0: Option<ExternalFunctionCallOpt0>,
 }
 
@@ -3943,7 +3943,7 @@ pub enum FactorListGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct False {
-    pub r#false: rumoca_ir_ast::Token, /* false */
+    pub r#false: crate::ParserToken, /* false */
 }
 
 ///
@@ -3952,7 +3952,7 @@ pub struct False {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Final {
-    pub r#final: rumoca_ir_ast::Token, /* final */
+    pub r#final: crate::ParserToken, /* final */
 }
 
 ///
@@ -3961,7 +3961,7 @@ pub struct Final {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Flow {
-    pub flow: rumoca_ir_ast::Token, /* flow */
+    pub flow: crate::ParserToken, /* flow */
 }
 
 ///
@@ -3970,7 +3970,7 @@ pub struct Flow {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct For {
-    pub r#for: rumoca_ir_ast::Token, /* for */
+    pub r#for: crate::ParserToken, /* for */
 }
 
 ///
@@ -3998,7 +3998,7 @@ pub struct ForEquationList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForIndex {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub for_index_opt: Option<ForIndexOpt>,
 }
 
@@ -4055,7 +4055,7 @@ pub struct ForStatementList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub function: rumoca_ir_ast::Token, /* function */
+    pub function: crate::ParserToken, /* function */
 }
 
 ///
@@ -4185,7 +4185,7 @@ pub struct FunctionPartialApplicationOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionPartialClassSpecifier {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub function_partial_application: FunctionPartialApplication,
     pub description: Description,
 }
@@ -4237,7 +4237,7 @@ pub enum Ident {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct If {
-    pub r#if: rumoca_ir_ast::Token, /* if */
+    pub r#if: crate::ParserToken, /* if */
 }
 
 ///
@@ -4344,7 +4344,7 @@ pub struct IfStatementOptList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Import {
-    pub import: rumoca_ir_ast::Token, /* import */
+    pub import: crate::ParserToken, /* import */
 }
 
 ///
@@ -4417,7 +4417,7 @@ pub enum ImportClauseOpt1GroupGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportList {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub import_list_list: Vec<ImportListList>,
 }
 
@@ -4427,7 +4427,7 @@ pub struct ImportList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportListList {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
 }
 
 ///
@@ -4436,7 +4436,7 @@ pub struct ImportListList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Impure {
-    pub impure: rumoca_ir_ast::Token, /* impure */
+    pub impure: crate::ParserToken, /* impure */
 }
 
 ///
@@ -4445,7 +4445,7 @@ pub struct Impure {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct In {
-    pub r#in: rumoca_ir_ast::Token, /* in */
+    pub r#in: crate::ParserToken, /* in */
 }
 
 ///
@@ -4473,7 +4473,7 @@ pub enum InheritanceModificationGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Initial {
-    pub initial: rumoca_ir_ast::Token, /* initial */
+    pub initial: crate::ParserToken, /* initial */
 }
 
 ///
@@ -4482,7 +4482,7 @@ pub struct Initial {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Inner {
-    pub inner: rumoca_ir_ast::Token, /* inner */
+    pub inner: crate::ParserToken, /* inner */
 }
 
 ///
@@ -4491,7 +4491,7 @@ pub struct Inner {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Input {
-    pub input: rumoca_ir_ast::Token, /* input */
+    pub input: crate::ParserToken, /* input */
 }
 
 ///
@@ -4500,7 +4500,7 @@ pub struct Input {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LanguageSpecification {
-    pub string: rumoca_ir_ast::Token,
+    pub string: rumoca_ir_core::Token,
 }
 
 ///
@@ -4576,7 +4576,7 @@ pub enum LongClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Loop {
-    pub r#loop: rumoca_ir_ast::Token, /* loop */
+    pub r#loop: crate::ParserToken, /* loop */
 }
 
 ///
@@ -4585,7 +4585,7 @@ pub struct Loop {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Model {
-    pub model: rumoca_ir_ast::Token, /* model */
+    pub model: crate::ParserToken, /* model */
 }
 
 ///
@@ -4635,7 +4635,7 @@ pub enum MulOperator {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Name {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub name_list: Vec<NameList>,
 }
 
@@ -4645,7 +4645,7 @@ pub struct Name {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NameList {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
 }
 
 ///
@@ -4654,7 +4654,7 @@ pub struct NameList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NamedArgument {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub function_argument: rumoca_ir_ast::Expression,
 }
 
@@ -4683,7 +4683,7 @@ pub struct NamedArgumentsOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Not {
-    pub not: rumoca_ir_ast::Token, /* not */
+    pub not: crate::ParserToken, /* not */
 }
 
 ///
@@ -4692,7 +4692,7 @@ pub struct Not {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Operator {
-    pub operator: rumoca_ir_ast::Token, /* operator */
+    pub operator: crate::ParserToken, /* operator */
 }
 
 ///
@@ -4701,7 +4701,7 @@ pub struct Operator {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Or {
-    pub or: rumoca_ir_ast::Token, /* or */
+    pub or: crate::ParserToken, /* or */
 }
 
 ///
@@ -4710,7 +4710,7 @@ pub struct Or {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Outer {
-    pub outer: rumoca_ir_ast::Token, /* outer */
+    pub outer: crate::ParserToken, /* outer */
 }
 
 ///
@@ -4719,7 +4719,7 @@ pub struct Outer {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Output {
-    pub output: rumoca_ir_ast::Token, /* output */
+    pub output: crate::ParserToken, /* output */
 }
 
 ///
@@ -4794,7 +4794,7 @@ pub enum OutputPrimaryOptGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Package {
-    pub package: rumoca_ir_ast::Token, /* package */
+    pub package: crate::ParserToken, /* package */
 }
 
 ///
@@ -4803,7 +4803,7 @@ pub struct Package {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Parameter {
-    pub parameter: rumoca_ir_ast::Token, /* parameter */
+    pub parameter: crate::ParserToken, /* parameter */
 }
 
 ///
@@ -4812,7 +4812,7 @@ pub struct Parameter {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Partial {
-    pub partial: rumoca_ir_ast::Token, /* partial */
+    pub partial: crate::ParserToken, /* partial */
 }
 
 ///
@@ -4839,7 +4839,7 @@ pub enum Primary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Protected {
-    pub protected: rumoca_ir_ast::Token, /* protected */
+    pub protected: crate::ParserToken, /* protected */
 }
 
 ///
@@ -4848,7 +4848,7 @@ pub struct Protected {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Public {
-    pub public: rumoca_ir_ast::Token, /* public */
+    pub public: crate::ParserToken, /* public */
 }
 
 ///
@@ -4857,7 +4857,7 @@ pub struct Public {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Pure {
-    pub pure: rumoca_ir_ast::Token, /* pure */
+    pub pure: crate::ParserToken, /* pure */
 }
 
 ///
@@ -4885,7 +4885,7 @@ pub struct RangePrimaryList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Record {
-    pub record: rumoca_ir_ast::Token, /* record */
+    pub record: crate::ParserToken, /* record */
 }
 
 ///
@@ -4894,7 +4894,7 @@ pub struct Record {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Redeclare {
-    pub redeclare: rumoca_ir_ast::Token, /* redeclare */
+    pub redeclare: crate::ParserToken, /* redeclare */
 }
 
 ///
@@ -4937,7 +4937,7 @@ pub enum RelationalOperator {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Replaceable {
-    pub replaceable: rumoca_ir_ast::Token, /* replaceable */
+    pub replaceable: crate::ParserToken, /* replaceable */
 }
 
 ///
@@ -4946,7 +4946,7 @@ pub struct Replaceable {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Return {
-    pub r#return: rumoca_ir_ast::Token, /* return */
+    pub r#return: crate::ParserToken, /* return */
 }
 
 ///
@@ -5047,10 +5047,10 @@ pub enum SomeEquationOption {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StandardClassSpecifier {
-    pub name: rumoca_ir_ast::Token,
+    pub name: rumoca_ir_core::Token,
     pub description_string: crate::TokenList,
     pub composition: crate::Composition,
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
 }
 
 ///
@@ -5152,7 +5152,7 @@ pub struct StoredDefinitionOpt1 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Stream {
-    pub stream: rumoca_ir_ast::Token, /* stream */
+    pub stream: crate::ParserToken, /* stream */
 }
 
 ///
@@ -5161,7 +5161,7 @@ pub struct Stream {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct String {
-    pub string: rumoca_ir_ast::Token, /* "([^"\\]|\\[\s\S])*" */
+    pub string: crate::ParserToken, /* "([^"\\]|\\[\s\S])*" */
 }
 
 ///
@@ -5200,7 +5200,7 @@ pub struct TermList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Then {
-    pub then: rumoca_ir_ast::Token, /* then */
+    pub then: crate::ParserToken, /* then */
 }
 
 ///
@@ -5209,7 +5209,7 @@ pub struct Then {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct True {
-    pub r#true: rumoca_ir_ast::Token, /* true */
+    pub r#true: crate::ParserToken, /* true */
 }
 
 ///
@@ -5218,7 +5218,7 @@ pub struct True {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Type {
-    pub r#type: rumoca_ir_ast::Token, /* type */
+    pub r#type: crate::ParserToken, /* type */
 }
 
 ///
@@ -5227,7 +5227,7 @@ pub struct Type {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypeClassSpecifier {
-    pub ident: rumoca_ir_ast::Token,
+    pub ident: rumoca_ir_core::Token,
     pub base_prefix: BasePrefix,
     pub type_specifier: TypeSpecifier,
     pub type_class_specifier_opt: Option<TypeClassSpecifierOpt>,
@@ -5345,7 +5345,7 @@ pub struct TypeSpecifierOpt {}
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsignedInteger {
-    pub unsigned_integer: rumoca_ir_ast::Token, /* [0-9]+ */
+    pub unsigned_integer: crate::ParserToken, /* [0-9]+ */
 }
 
 ///
@@ -5376,7 +5376,7 @@ pub enum UnsignedReal {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct When {
-    pub when: rumoca_ir_ast::Token, /* when */
+    pub when: crate::ParserToken, /* when */
 }
 
 ///
@@ -5423,7 +5423,7 @@ pub struct WhenStatementList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct While {
-    pub r#while: rumoca_ir_ast::Token, /* while */
+    pub r#while: crate::ParserToken, /* while */
 }
 
 ///
@@ -5451,7 +5451,7 @@ pub struct WhileStatementList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Within {
-    pub within: rumoca_ir_ast::Token, /* within */
+    pub within: crate::ParserToken, /* within */
 }
 
 // -------------------------------------------------------------------------------------------------

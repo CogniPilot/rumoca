@@ -264,7 +264,7 @@ pub(crate) fn combine_elementwise_forms(
 }
 
 pub(crate) fn infer_binary_expression_form(
-    op: &rumoca_ir_ast::OpBinary,
+    op: &rumoca_ir_flat::OpBinary,
     lhs: &Expression,
     rhs: &Expression,
     flat: &Model,
@@ -273,38 +273,38 @@ pub(crate) fn infer_binary_expression_form(
     let lhs_form = infer_expression_form(lhs, flat, prefix_counts);
     let rhs_form = infer_expression_form(rhs, flat, prefix_counts);
     match op {
-        ast::OpBinary::Add(_)
-        | ast::OpBinary::Sub(_)
-        | ast::OpBinary::AddElem(_)
-        | ast::OpBinary::SubElem(_) => combine_additive_forms(lhs_form, rhs_form),
-        ast::OpBinary::Mul(_) => combine_mul_forms(lhs_form, rhs_form),
-        ast::OpBinary::MulElem(_) => combine_elementwise_forms(lhs_form, rhs_form),
-        ast::OpBinary::Div(_) => match (lhs_form, rhs_form) {
+        rumoca_ir_core::OpBinary::Add(_)
+        | rumoca_ir_core::OpBinary::Sub(_)
+        | rumoca_ir_core::OpBinary::AddElem(_)
+        | rumoca_ir_core::OpBinary::SubElem(_) => combine_additive_forms(lhs_form, rhs_form),
+        rumoca_ir_core::OpBinary::Mul(_) => combine_mul_forms(lhs_form, rhs_form),
+        rumoca_ir_core::OpBinary::MulElem(_) => combine_elementwise_forms(lhs_form, rhs_form),
+        rumoca_ir_core::OpBinary::Div(_) => match (lhs_form, rhs_form) {
             (ExpressionForm::Scalar, ExpressionForm::Scalar) => ExpressionForm::Scalar,
             (ExpressionForm::Vector(n), ExpressionForm::Scalar) => ExpressionForm::Vector(n),
             (ExpressionForm::Matrix(r, c), ExpressionForm::Scalar) => ExpressionForm::Matrix(r, c),
             _ => ExpressionForm::Other,
         },
-        ast::OpBinary::DivElem(_) | ast::OpBinary::ExpElem(_) => {
+        rumoca_ir_core::OpBinary::DivElem(_) | rumoca_ir_core::OpBinary::ExpElem(_) => {
             combine_elementwise_forms(lhs_form, rhs_form)
         }
-        ast::OpBinary::Exp(_) => match (lhs_form, rhs_form) {
+        rumoca_ir_core::OpBinary::Exp(_) => match (lhs_form, rhs_form) {
             (ExpressionForm::Scalar, ExpressionForm::Scalar) => ExpressionForm::Scalar,
             (ExpressionForm::Vector(n), ExpressionForm::Scalar) => ExpressionForm::Vector(n),
             (ExpressionForm::Matrix(r, c), ExpressionForm::Scalar) => ExpressionForm::Matrix(r, c),
             _ => ExpressionForm::Other,
         },
         // Relational/logical expressions are scalar.
-        ast::OpBinary::Eq(_)
-        | ast::OpBinary::Neq(_)
-        | ast::OpBinary::Lt(_)
-        | ast::OpBinary::Le(_)
-        | ast::OpBinary::Gt(_)
-        | ast::OpBinary::Ge(_)
-        | ast::OpBinary::And(_)
-        | ast::OpBinary::Or(_)
-        | ast::OpBinary::Assign(_)
-        | ast::OpBinary::Empty => ExpressionForm::Scalar,
+        rumoca_ir_core::OpBinary::Eq(_)
+        | rumoca_ir_core::OpBinary::Neq(_)
+        | rumoca_ir_core::OpBinary::Lt(_)
+        | rumoca_ir_core::OpBinary::Le(_)
+        | rumoca_ir_core::OpBinary::Gt(_)
+        | rumoca_ir_core::OpBinary::Ge(_)
+        | rumoca_ir_core::OpBinary::And(_)
+        | rumoca_ir_core::OpBinary::Or(_)
+        | rumoca_ir_core::OpBinary::Assign(_)
+        | rumoca_ir_core::OpBinary::Empty => ExpressionForm::Scalar,
     }
 }
 
@@ -422,7 +422,7 @@ pub(crate) fn infer_equation_scalar_count_from_forms(
     let Expression::Binary { op, lhs, rhs } = residual else {
         return None;
     };
-    if !matches!(op, ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
         return None;
     }
 
@@ -465,7 +465,7 @@ pub(crate) fn infer_equation_scalar_count(
     // prefer RHS-based inference. This avoids inflating scalar count from
     // record-typed function arguments on the LHS.
     if let Expression::Binary { op, lhs, rhs } = residual
-        && matches!(op, rumoca_ir_ast::OpBinary::Sub(_))
+        && matches!(op, rumoca_ir_flat::OpBinary::Sub(_))
         && matches!(lhs.as_ref(), Expression::FunctionCall { .. })
         && let Some(size) =
             infer_scalar_count_from_varrefs_skip_function_args(rhs, flat, prefix_counts)

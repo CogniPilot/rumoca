@@ -20,6 +20,8 @@ use parol_runtime::{Result, Token};
 use rumoca_core::{BytePos, Span};
 use std::collections::HashSet;
 use std::fmt::{Display, Error, Formatter};
+use std::ops::Deref;
+use std::sync::Arc;
 
 pub use errors::{ParseError, convert_parol_error, format_parse_error};
 
@@ -46,6 +48,56 @@ pub struct ParsedComment {
     pub column: u32,
     /// Whether this is a line comment (//) or block comment (/* */)
     pub is_line_comment: bool,
+}
+
+/// Parser-local terminal token type used by the generated grammar actions.
+///
+/// This keeps Parol coupling in the parser crate while the canonical token
+/// definition lives in `rumoca-ir-core` (re-exported by `rumoca-ir-ast`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParserToken(pub rumoca_ir_core::Token);
+
+impl Deref for ParserToken {
+    type Target = rumoca_ir_core::Token;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<ParserToken> for rumoca_ir_core::Token {
+    fn from(value: ParserToken) -> Self {
+        value.0
+    }
+}
+
+impl From<&ParserToken> for rumoca_ir_core::Token {
+    fn from(value: &ParserToken) -> Self {
+        value.0.clone()
+    }
+}
+
+impl TryFrom<&parol_runtime::Token<'_>> for ParserToken {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &parol_runtime::Token<'_>) -> std::result::Result<Self, Self::Error> {
+        Ok(Self(rumoca_ir_core::Token {
+            text: Arc::from(value.text()),
+            location: rumoca_ir_core::Location {
+                start_line: value.location.start_line,
+                start_column: value.location.start_column,
+                end_line: value.location.end_line,
+                end_column: value.location.end_column,
+                start: value.location.start,
+                end: value.location.end,
+                // Preserve full source path so cross-file features (goto definition,
+                // diagnostics attribution) can locate the real file, not only basename.
+                file_name: value.location.file_name.to_string_lossy().to_string(),
+            },
+            token_number: value.token_number,
+            token_type: value.token_type,
+        }))
+    }
 }
 
 #[derive(Debug, Default)]

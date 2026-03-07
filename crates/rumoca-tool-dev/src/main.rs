@@ -1,6 +1,7 @@
 mod completion_cmd;
 mod coverage_analysis;
 mod coverage_gate;
+mod crate_dag_cmd;
 mod msl_cmd;
 mod test_cmd;
 mod vscode_cmd;
@@ -17,8 +18,9 @@ use coverage_analysis::{
     is_opaque_symbol_name, owner_decision_for_label, render_coverage_trim_report,
 };
 use coverage_gate::CoverageGateArgs;
+use crate_dag_cmd::CrateDagArgs;
 use msl_cmd::MslArgs;
-use rumoca_core::workspace_root_from_manifest_dir;
+use rumoca_session::compile::core::workspace_root_from_manifest_dir;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::fs;
@@ -69,6 +71,8 @@ enum Commands {
     WasmTest(WasmTestArgs),
     /// WASM editor smoke checks
     WasmEditorSmokeCheck,
+    /// Generate workspace crate dependency DAG plots (html/dot/svg/png)
+    CrateDag(CrateDagArgs),
     /// Release version bump, optional commit/tag/push
     Release(ReleaseArgs),
 }
@@ -217,6 +221,7 @@ fn main() -> Result<()> {
         Commands::CoverageGate(args) => cmd_coverage_gate(args),
         Commands::WasmTest(args) => cmd_wasm_test(args),
         Commands::WasmEditorSmokeCheck => cmd_wasm_editor_smoke_check(),
+        Commands::CrateDag(args) => crate_dag_cmd::run(&repo_root(), args),
         Commands::Release(args) => cmd_release(args),
     }
 }
@@ -239,6 +244,7 @@ impl Commands {
             "coverage-gate",
             "wasm-test",
             "wasm-editor-smoke-check",
+            "crate-dag",
             "release",
         ]
     }

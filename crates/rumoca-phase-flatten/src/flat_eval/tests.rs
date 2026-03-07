@@ -1,5 +1,4 @@
 use super::*;
-use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
 fn var(name: &str) -> flat::Expression {
@@ -23,7 +22,7 @@ fn int(value: i64) -> flat::Expression {
 #[test]
 fn eval_integer_div_operator_requires_exact_quotient() {
     let expr = flat::Expression::Binary {
-        op: ast::OpBinary::Div(ast::Token::default()),
+        op: flat::OpBinary::Div(flat::Token::default()),
         lhs: Box::new(int(7)),
         rhs: Box::new(int(2)),
     };
@@ -78,7 +77,7 @@ fn eval_boolean_enum_eq_accepts_different_qualification_paths() {
     );
 
     let expr = flat::Expression::Binary {
-        op: ast::OpBinary::Eq(ast::Token::default()),
+        op: flat::OpBinary::Eq(flat::Token::default()),
         lhs: Box::new(var("pipe.modelStructure")),
         rhs: Box::new(var("pipe.Types.ModelStructure.a_vb")),
     };
@@ -102,7 +101,7 @@ fn eval_boolean_enum_eq_accepts_shared_type_literal_tail() {
     );
 
     let expr = flat::Expression::Binary {
-        op: ast::OpBinary::Eq(ast::Token::default()),
+        op: flat::OpBinary::Eq(flat::Token::default()),
         lhs: Box::new(var("frameResolve")),
         rhs: Box::new(var(
             "Modelica.Mechanics.MultiBody.Types.ResolveInFrameA.frame_resolve",
@@ -127,7 +126,7 @@ fn eval_boolean_enum_eq_rejects_different_enum_type() {
     );
 
     let expr = flat::Expression::Binary {
-        op: ast::OpBinary::Eq(ast::Token::default()),
+        op: flat::OpBinary::Eq(flat::Token::default()),
         lhs: Box::new(var("mode")),
         rhs: Box::new(var("Modelica.Blocks.Types.SimpleController.PI")),
     };
@@ -153,7 +152,7 @@ fn eval_integer_if_uses_canonicalized_enum_condition() {
     );
 
     let cond = flat::Expression::Binary {
-        op: ast::OpBinary::Eq(ast::Token::default()),
+        op: flat::OpBinary::Eq(flat::Token::default()),
         lhs: Box::new(var("pipe.modelStructure")),
         rhs: Box::new(var("pipe.Types.ModelStructure.a_vb")),
     };
@@ -162,7 +161,7 @@ fn eval_integer_if_uses_canonicalized_enum_condition() {
         branches: vec![(
             cond,
             flat::Expression::Binary {
-                op: ast::OpBinary::Add(ast::Token::default()),
+                op: flat::OpBinary::Add(flat::Token::default()),
                 lhs: Box::new(var("pipe.n")),
                 rhs: Box::new(flat::Expression::Literal(flat::Literal::Integer(1))),
             },
@@ -196,14 +195,14 @@ fn eval_integer_if_resolves_unqualified_enum_condition_with_var_context() {
     );
 
     let cond = flat::Expression::Binary {
-        op: ast::OpBinary::Or(ast::Token::default()),
+        op: flat::OpBinary::Or(flat::Token::default()),
         lhs: Box::new(flat::Expression::Binary {
-            op: ast::OpBinary::Eq(ast::Token::default()),
+            op: flat::OpBinary::Eq(flat::Token::default()),
             lhs: Box::new(var("filterType")),
             rhs: Box::new(var("Modelica.Blocks.Types.FilterType.BandPass")),
         }),
         rhs: Box::new(flat::Expression::Binary {
-            op: ast::OpBinary::Eq(ast::Token::default()),
+            op: flat::OpBinary::Eq(flat::Token::default()),
             lhs: Box::new(var("filterType")),
             rhs: Box::new(var("Modelica.Blocks.Types.FilterType.BandStop")),
         }),
@@ -213,7 +212,7 @@ fn eval_integer_if_resolves_unqualified_enum_condition_with_var_context() {
         branches: vec![(
             cond,
             flat::Expression::Binary {
-                op: ast::OpBinary::Mul(ast::Token::default()),
+                op: flat::OpBinary::Mul(flat::Token::default()),
                 lhs: Box::new(int(2)),
                 rhs: Box::new(var("order")),
             },
@@ -251,21 +250,21 @@ fn eval_integer_if_handles_integer_builtin_with_scoped_enum_conditions() {
     );
 
     let filter_is_band = flat::Expression::Binary {
-        op: ast::OpBinary::Or(ast::Token::default()),
+        op: flat::OpBinary::Or(flat::Token::default()),
         lhs: Box::new(flat::Expression::Binary {
-            op: ast::OpBinary::Eq(ast::Token::default()),
+            op: flat::OpBinary::Eq(flat::Token::default()),
             lhs: Box::new(var("filterType")),
             rhs: Box::new(var("Modelica.Blocks.Types.FilterType.BandPass")),
         }),
         rhs: Box::new(flat::Expression::Binary {
-            op: ast::OpBinary::Eq(ast::Token::default()),
+            op: flat::OpBinary::Eq(flat::Token::default()),
             lhs: Box::new(var("filterType")),
             rhs: Box::new(var("Modelica.Blocks.Types.FilterType.BandStop")),
         }),
     };
 
     let analog_is_cd = flat::Expression::Binary {
-        op: ast::OpBinary::Eq(ast::Token::default()),
+        op: flat::OpBinary::Eq(flat::Token::default()),
         lhs: Box::new(var("analogFilter")),
         rhs: Box::new(var("Modelica.Blocks.Types.AnalogFilter.CriticalDamping")),
     };
@@ -275,7 +274,7 @@ fn eval_integer_if_handles_integer_builtin_with_scoped_enum_conditions() {
         else_branch: Box::new(flat::Expression::BuiltinCall {
             function: flat::BuiltinFunction::Integer,
             args: vec![flat::Expression::Binary {
-                op: ast::OpBinary::Div(ast::Token::default()),
+                op: flat::OpBinary::Div(flat::Token::default()),
                 lhs: Box::new(var("order")),
                 rhs: Box::new(int(2)),
             }],
@@ -326,7 +325,7 @@ fn eval_boolean_enum_eq_does_not_guess_dotted_parameter_ref_literal() {
     );
 
     let expr = flat::Expression::Binary {
-        op: ast::OpBinary::Eq(ast::Token::default()),
+        op: flat::OpBinary::Eq(flat::Token::default()),
         lhs: Box::new(var("pipe.energyDynamics")),
         rhs: Box::new(var("pipe1.system.energyDynamics")),
     };
@@ -503,7 +502,7 @@ fn infer_array_dims_from_comprehension_returns_none_with_filter() {
             },
         }],
         filter: Some(Box::new(flat::Expression::Binary {
-            op: ast::OpBinary::Gt(ast::Token::default()),
+            op: flat::OpBinary::Gt(flat::Token::default()),
             lhs: Box::new(var("i")),
             rhs: Box::new(int(1)),
         })),

@@ -9,7 +9,7 @@ impl Context {
     }
 
     /// Create a new flatten context.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             parameter_values: rustc_hash::FxHashMap::default(),
             real_parameter_values: rustc_hash::FxHashMap::default(),
@@ -43,7 +43,7 @@ impl Context {
     /// 3. Repeat until no new values are found (fixpoint)
     ///
     /// Also tracks structural parameters (Evaluate=true or final) for safe branch selection.
-    pub fn build_parameter_lookup(&mut self, flat: &Model, tree: &ClassTree) {
+    pub(crate) fn build_parameter_lookup(&mut self, flat: &Model, tree: &ClassTree) {
         let _ = tree; // Used for function evaluation context
 
         self.seed_flat_parameter_constant_keys(flat);
@@ -66,7 +66,7 @@ impl Context {
                 .filter(|(_, var)| {
                     matches!(
                         var.variability,
-                        ast::Variability::Parameter(_) | ast::Variability::Constant(_)
+                        flat::Variability::Parameter(_) | flat::Variability::Constant(_)
                     )
                 })
                 .map(|(name, _)| name.to_string()),
@@ -77,7 +77,7 @@ impl Context {
     ///
     /// This is intentionally narrower than `build_parameter_lookup`: it only updates
     /// enum parameter bindings, preserving previously inferred integer/array metadata.
-    pub fn refresh_enum_parameter_lookup(&mut self, flat: &Model) {
+    pub(crate) fn refresh_enum_parameter_lookup(&mut self, flat: &Model) {
         let params = self.collect_parameters(flat);
         let _ = self.eval_enum_params(&params);
     }
@@ -94,7 +94,7 @@ impl Context {
                 // Include parameters and constants
                 matches!(
                     var.variability,
-                    ast::Variability::Parameter(_) | ast::Variability::Constant(_)
+                    flat::Variability::Parameter(_) | flat::Variability::Constant(_)
                 )
                 // Also include non-parameter Integer/Boolean variables with bindings.
                 // These may define compile-time values like `Integer nX = size(arr, 1)`
@@ -102,23 +102,23 @@ impl Context {
                 || var.is_discrete_type
             })
             .filter_map(|(name, var)| {
-                if matches!(var.variability, ast::Variability::Parameter(_))
+                if matches!(var.variability, flat::Variability::Parameter(_))
                     && var.fixed == Some(false)
                     && !var.evaluate
                 {
                     self.non_structural_params.insert(name.to_string());
                 }
-                let is_fixed_parameter = matches!(var.variability, ast::Variability::Parameter(_))
+                let is_fixed_parameter = matches!(var.variability, flat::Variability::Parameter(_))
                     && var.fixed != Some(false);
                 if var.evaluate
-                    || matches!(var.variability, ast::Variability::Constant(_))
+                    || matches!(var.variability, flat::Variability::Constant(_))
                     || is_fixed_parameter
                 {
                     self.structural_params.insert(name.to_string());
                 }
                 let is_param_or_const = matches!(
                     var.variability,
-                    ast::Variability::Parameter(_) | ast::Variability::Constant(_)
+                    flat::Variability::Parameter(_) | flat::Variability::Constant(_)
                 );
                 // For parameters/constants: use binding or start value as default.
                 // For non-parameter discrete types (Integer/Boolean variables):
@@ -438,7 +438,7 @@ impl Context {
                 }
 
                 // Fallback to rumoca_eval_const for complex expressions
-                rumoca_eval_const::try_eval_integer(binding, &eval_ctx)
+                rumoca_eval_flat::constant::try_eval_integer(binding, &eval_ctx)
                     .map(|val| (name.clone(), val))
             })
             .collect();
@@ -728,12 +728,12 @@ impl Context {
     ///
     /// Returns the dimensions vector if the variable has array dimensions,
     /// or None for scalar variables.
-    pub fn get_array_dimensions(&self, name: &str) -> Option<&Vec<i64>> {
+    pub(crate) fn get_array_dimensions(&self, name: &str) -> Option<&Vec<i64>> {
         self.array_dimensions.get(name)
     }
 
     /// Return the shared `rumoca_eval_const` context used by complex-expression fallback.
-    pub(crate) fn eval_fallback_context(&self) -> &rumoca_eval_const::EvalContext {
+    pub(crate) fn eval_fallback_context(&self) -> &rumoca_eval_flat::constant::EvalContext {
         self.eval_fallback_context
             .get_or_init(|| equations::build_eval_context(self, None))
     }
@@ -806,7 +806,7 @@ impl Context {
     }
 
     /// Look up an integer parameter value, resolving through aliases if needed.
-    pub fn get_integer_param(&self, name: &str) -> Option<i64> {
+    pub(crate) fn get_integer_param(&self, name: &str) -> Option<i64> {
         // Try direct lookup in integer parameters first
         if let Some(val) = self.parameter_values.get(name).copied() {
             // Prefer the evaluated real value when both maps disagree.
@@ -836,7 +836,7 @@ impl Context {
     }
 
     /// Look up a boolean parameter value, resolving through aliases if needed.
-    pub fn get_boolean_param(&self, name: &str) -> Option<bool> {
+    pub(crate) fn get_boolean_param(&self, name: &str) -> Option<bool> {
         // Try direct lookup first
         if let Some(val) = self.boolean_parameter_values.get(name) {
             return Some(*val);
@@ -850,7 +850,7 @@ impl Context {
     }
 
     /// Look up an enum parameter value, resolving through aliases if needed.
-    pub fn get_enum_param(&self, name: &str) -> Option<String> {
+    pub(crate) fn get_enum_param(&self, name: &str) -> Option<String> {
         // Try direct lookup first
         if let Some(val) = self.enum_parameter_values.get(name) {
             return Some(val.clone());
@@ -864,7 +864,7 @@ impl Context {
     }
 
     /// Look up array dimensions, resolving through aliases if needed.
-    pub fn get_array_dims(&self, name: &str) -> Option<Vec<i64>> {
+    pub(crate) fn get_array_dims(&self, name: &str) -> Option<Vec<i64>> {
         // Try direct lookup first
         if let Some(dims) = self.array_dimensions.get(name) {
             return Some(dims.clone());
@@ -1218,7 +1218,7 @@ pub(crate) fn process_component_instance(
 }
 
 /// Convert a QualifiedName to a flat VarName string.
-pub fn qualified_to_var_name(qn: &QualifiedName) -> VarName {
+pub(crate) fn qualified_to_var_name(qn: &QualifiedName) -> VarName {
     VarName::new(qn.to_flat_string())
 }
 
@@ -1230,7 +1230,7 @@ pub fn qualified_to_var_name(qn: &QualifiedName) -> VarName {
 ///
 /// Uses default options: does not skip local refs, resets def_id.
 /// Does NOT resolve imports — use `qualify_expression_imports` for that.
-pub fn qualify_expression(
+pub(crate) fn qualify_expression(
     expr: &ast::Expression,
     prefix: &QualifiedName,
 ) -> rumoca_ir_flat::Expression {
@@ -1243,7 +1243,7 @@ pub fn qualify_expression(
 /// fully-qualified forms using the provided import map. For example, if imports
 /// contain `("pi", "Modelica.Constants.pi")`, then `pi` becomes
 /// `Modelica.Constants.pi` instead of being prefixed with the component path.
-pub fn qualify_expression_imports(
+pub(crate) fn qualify_expression_imports(
     expr: &ast::Expression,
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
@@ -1255,7 +1255,7 @@ pub fn qualify_expression_imports(
 ///
 /// When a component reference carries a resolved `def_id` (notably function calls),
 /// `def_map` canonicalizes it to the fully-qualified declaration name.
-pub fn qualify_expression_imports_with_def_map(
+pub(crate) fn qualify_expression_imports_with_def_map(
     expr: &ast::Expression,
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
@@ -1267,5 +1267,5 @@ pub fn qualify_expression_imports_with_def_map(
         ..qualify::QualifyOptions::default()
     };
     let qualified = qualify::qualify_expression_with_imports(expr, prefix, opts, imports);
-    rumoca_ir_flat::Expression::from_ast_with_def_map(&qualified, def_map)
+    crate::ast_lower::expression_from_ast_with_def_map(&qualified, def_map)
 }

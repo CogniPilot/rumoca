@@ -4,6 +4,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
+use crate::flat_to_dae_expression;
+
 /// Determine scalar count for one initial equation.
 ///
 /// - Explicit zero-size equations are skipped.
@@ -39,7 +41,7 @@ pub(crate) fn convert_initial_equations<F>(
             continue;
         };
         let dae_eq = dae::Equation::residual_array(
-            eq.residual.clone(),
+            flat_to_dae_expression(&eq.residual),
             eq.span,
             eq.origin.to_string(),
             scalar_count,

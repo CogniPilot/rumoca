@@ -1,7 +1,9 @@
 //! Enhanced hover handler for Modelica files.
 
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
-use rumoca_ir_ast as ast;
+use rumoca_session::compile::core as rumoca_core;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 
 use crate::helpers::{find_class_at_position, find_component_at_position, get_word_at_position};
 
@@ -54,10 +56,10 @@ fn component_hover(ast: &ast::StoredDefinition, name: &str) -> Option<Hover> {
 fn format_component_info(comp: &ast::Component) -> String {
     let mut parts = Vec::new();
 
-    // ast::Variability prefix
+    // rumoca_ir_core::Variability prefix
     match &comp.variability {
-        ast::Variability::Parameter(_) => parts.push("parameter".to_string()),
-        ast::Variability::Constant(_) => parts.push("constant".to_string()),
+        rumoca_ir_core::Variability::Parameter(_) => parts.push("parameter".to_string()),
+        rumoca_ir_core::Variability::Constant(_) => parts.push("constant".to_string()),
         _ => {}
     }
 

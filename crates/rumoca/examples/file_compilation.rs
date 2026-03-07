@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     println!("States: {}", result.dae.states.len());
     println!("Algebraics: {}", result.dae.algebraics.len());
     println!("f_x equations: {}", result.dae.f_x.len());
-    println!("Balanced: {}", result.dae.is_balanced());
+    println!("Balanced: {}", result.is_balanced());
 
     if let Some(path) = cleanup_file {
         let _ = fs::remove_file(path);

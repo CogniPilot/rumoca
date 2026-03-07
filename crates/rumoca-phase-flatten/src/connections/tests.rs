@@ -184,7 +184,7 @@ fn test_create_equality_residual() {
     // Should be Binary { op: Sub, lhs: a, rhs: b }
     match residual {
         flat::Expression::Binary { op, .. } => {
-            assert!(matches!(op, ast::OpBinary::Sub(_)));
+            assert!(matches!(op, flat::OpBinary::Sub(_)));
         }
         _ => panic!("Expected Binary expression"),
     }
@@ -203,7 +203,7 @@ fn test_create_sum() {
     // Should be ((a + b) + c)
     match sum {
         flat::Expression::Binary { op, .. } => {
-            assert!(matches!(op, ast::OpBinary::Add(_)));
+            assert!(matches!(op, flat::OpBinary::Add(_)));
         }
         _ => panic!("Expected Binary expression"),
     }
@@ -675,14 +675,14 @@ fn test_validate_dimension_compatibility_io_mismatch_still_fails() {
 
     let v1 = flat::Variable {
         dims: vec![2],
-        causality: ast::Causality::Input(ast::Token::default()),
+        causality: flat::Causality::Input(flat::Token::default()),
         ..Default::default()
     };
     flat.add_variable(flat::VarName::new("u"), v1);
 
     let v2 = flat::Variable {
         dims: vec![3],
-        causality: ast::Causality::Output(ast::Token::default()),
+        causality: flat::Causality::Output(flat::Token::default()),
         ..Default::default()
     };
     flat.add_variable(flat::VarName::new("y"), v2);

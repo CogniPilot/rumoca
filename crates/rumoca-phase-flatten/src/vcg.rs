@@ -16,7 +16,7 @@ use crate::equations::build_qualified_name;
 use crate::path_utils::{find_last_top_level_dot, normalize_path_without_indices};
 
 /// Result of the VCG spanning tree computation.
-pub struct VcgResult {
+pub(crate) struct VcgResult {
     /// For each VCG node path, whether it is the root of its component.
     pub is_root: FxHashMap<String, bool>,
     /// For each VCG node path, whether it is on the "rooted" side
@@ -25,7 +25,7 @@ pub struct VcgResult {
 }
 
 /// Pre-scanned VCG data from equations before full flattening.
-pub struct VcgPreScanData {
+pub(crate) struct VcgPreScanData {
     /// Definite roots from `Connections.root(a)`.
     pub definite_roots: FxHashSet<String>,
     /// Branches from `Connections.branch(a, b)` — required edges.
@@ -38,7 +38,10 @@ pub struct VcgPreScanData {
 ///
 /// Iterates over all equations in all class instances, extracting
 /// VCG-related function calls. Handles both top-level and for-loop nested calls.
-pub fn pre_collect_vcg_data(overlay: &ast::InstanceOverlay, ctx: &Context) -> VcgPreScanData {
+pub(crate) fn pre_collect_vcg_data(
+    overlay: &ast::InstanceOverlay,
+    ctx: &Context,
+) -> VcgPreScanData {
     let mut data = VcgPreScanData {
         definite_roots: FxHashSet::default(),
         branches: Vec::new(),
@@ -267,7 +270,7 @@ fn get_connections_func(comp: &ast::ComponentReference) -> Option<(&str, &str)> 
 /// For each `connect(a, b)` where the connectors have overconstrained descendants,
 /// we create an optional edge between the overconstrained records.
 /// The overconstrained suffix is derived from the VCG node paths.
-pub fn derive_optional_edges(
+pub(crate) fn derive_optional_edges(
     overlay: &ast::InstanceOverlay,
     vcg_data: &VcgPreScanData,
 ) -> Vec<(String, String)> {
@@ -522,7 +525,7 @@ fn index_signature(path: &str) -> String {
 /// 4. BFS from root to build spanning tree
 /// 5. isRoot(N) = true iff N is the selected root
 /// 6. rooted(N) = true iff N has a parent in the spanning tree
-pub fn build_vcg(
+pub(crate) fn build_vcg(
     definite_roots: &FxHashSet<String>,
     potential_roots: &[(String, i64)],
     branches: &[(String, String)],
@@ -704,7 +707,7 @@ fn find_best_potential_root<'a>(
 ///
 /// Each break edge contributes one excess equality equation per scalar field in the
 /// overconstrained record (e.g., 1 for Reference.gamma, 12 for Orientation.T+w).
-pub fn compute_break_edge_scalar_count(
+pub(crate) fn compute_break_edge_scalar_count(
     branches: &[(String, String)],
     optional_edges: &[(String, String)],
     definite_roots: &FxHashSet<String>,

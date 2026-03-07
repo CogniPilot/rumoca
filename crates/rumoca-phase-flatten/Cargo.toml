@@ -12,9 +12,10 @@ tracing = ["dep:tracing"]
 
 [dependencies]
 rumoca-core = { path = "../rumoca-core" }
-rumoca-eval-const = { path = "../rumoca-eval-const" }
+rumoca-eval-flat = { workspace = true }
 rumoca-ir-ast = { path = "../rumoca-ir-ast" }
 rumoca-ir-flat = { path = "../rumoca-ir-flat" }
+rumoca-ir-core = { path = "../rumoca-ir-core" }
 indexmap = "2.2"
 rustc-hash = { workspace = true }
 thiserror = "2.0"

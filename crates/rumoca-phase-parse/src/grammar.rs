@@ -3,4 +3,4 @@
 //! This module exists to satisfy the parol-generated parser's import expectations.
 //! The actual implementation is in the crate root.
 
-pub use crate::ModelicaGrammar;
+pub(crate) use crate::ModelicaGrammar;

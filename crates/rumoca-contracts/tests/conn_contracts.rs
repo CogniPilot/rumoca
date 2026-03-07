@@ -6,7 +6,7 @@ use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
     expect_success,
 };
-use rumoca_session::FailedPhase;
+use rumoca_session::compile::FailedPhase;
 
 // =============================================================================
 // CONN-001: Homogeneity

@@ -2,7 +2,7 @@
 // Source: rumoca-contracts registry snapshot
 use super::*;
 
-pub static CONTRACTS_CLK: &[StaticContract] = &[
+pub(super) static CONTRACTS_CLK: &[StaticContract] = &[
     StaticContract {
         id: "CLK-001",
         category: ContractCategory::Clock,

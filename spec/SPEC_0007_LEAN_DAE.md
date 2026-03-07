@@ -51,7 +51,7 @@ pub struct Dae {
 |--------------|--------------|-------------|
 | Incidence matrix | O(n*m) storage, stale if equations change | Downstream structural analysis |
 | Sparsity patterns | Solver-specific | CasADi `jacobian_sparsity()`, diffsol |
-| BLT ordering | Depends on solver mode (DAE vs ODE) | `rumoca-phase-structural` |
+| BLT ordering | Depends on solver mode (DAE vs ODE) | `rumoca-phase-solve` |
 | Index reduction | May add dummy derivatives | Pantelides algorithm |
 | Alias elimination | Heuristic — "which variable is primary?" | Backend optimization |
 

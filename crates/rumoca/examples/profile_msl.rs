@@ -6,8 +6,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use rumoca::{Session, SessionConfig, parse_files_parallel_lenient};
 use rumoca_core::msl_cache_dir_from_manifest;
+use rumoca_session::compile::{PhaseResult, Session, SessionConfig};
+use rumoca_session::parsing::parse_files_parallel_lenient;
 use walkdir::WalkDir;
 
 const MSL_VERSION: &str = "v4.1.0";
@@ -77,7 +78,7 @@ fn main() {
     let elapsed = start.elapsed();
     let success_count = results
         .iter()
-        .filter(|(_, r)| matches!(r, rumoca::PhaseResult::Success(_)))
+        .filter(|(_, r)| matches!(r, PhaseResult::Success(_)))
         .count();
 
     println!(

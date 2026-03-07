@@ -8,7 +8,9 @@ repository.workspace = true
 
 [dependencies]
 rumoca-core = { workspace = true }
+rumoca-eval-ast = { workspace = true }
 rumoca-ir-ast = { workspace = true }
+rumoca-ir-core = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }

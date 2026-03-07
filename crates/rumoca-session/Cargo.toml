@@ -14,14 +14,17 @@ tracing = ["rumoca-phase-flatten/tracing"]
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
+rumoca-ir-core = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
 rumoca-phase-dae = { workspace = true }
+rumoca-phase-solve = { workspace = true }
+rumoca-phase-codegen = { workspace = true }
 rumoca-core = { workspace = true }
-rumoca-eval-runtime = { workspace = true }
+rumoca-sim = { workspace = true, features = ["diffsol"] }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
 rayon = { workspace = true }
@@ -29,6 +32,7 @@ miette = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 toml = { workspace = true }
+thiserror = { workspace = true }
 blake3 = { workspace = true }
 
 [dev-dependencies]

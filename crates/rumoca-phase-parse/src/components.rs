@@ -3,11 +3,11 @@
 use crate::generated::modelica_grammar_trait;
 
 //-----------------------------------------------------------------------------
-impl TryFrom<&modelica_grammar_trait::String> for rumoca_ir_ast::Token {
+impl TryFrom<&modelica_grammar_trait::String> for rumoca_ir_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::String) -> std::result::Result<Self, Self::Error> {
-        let mut tok = ast.string.clone();
+        let mut tok: rumoca_ir_core::Token = ast.string.clone().into();
         // remove quotes from string text (with bounds check for malformed input)
         if tok.text.len() >= 2 {
             tok.text = std::sync::Arc::from(&tok.text[1..tok.text.len() - 1]);
@@ -20,7 +20,7 @@ impl TryFrom<&modelica_grammar_trait::String> for rumoca_ir_ast::Token {
 #[derive(Default, Clone, Debug, PartialEq)]
 
 pub struct TokenList {
-    pub tokens: Vec<rumoca_ir_ast::Token>,
+    pub tokens: Vec<rumoca_ir_core::Token>,
 }
 
 impl TryFrom<&modelica_grammar_trait::DescriptionString> for TokenList {
