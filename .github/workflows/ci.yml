@@ -2,11 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ['**']
-    tags:
-      - 'v*'
+    branches: ['main']
   pull_request:
-    branches: ['**']
+    branches: ['main']
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,6 +21,40 @@ permissions:
   pages: write
 
 jobs:
+  detect-release-tag:
+    name: Detect release tag on commit
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.detect.outputs.is_release }}
+      tag: ${{ steps.detect.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Detect v* tag for current commit
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(git tag --points-at "$GITHUB_SHA" 'v*' | sort -V)
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "No v* tag detected on $GITHUB_SHA"
+            exit 0
+          fi
+
+          tag="${tags[$((${#tags[@]} - 1))]}"
+          if [ "${#tags[@]}" -gt 1 ]; then
+            echo "::warning::Multiple v* tags point at $GITHUB_SHA: ${tags[*]}. Using $tag."
+          fi
+
+          echo "is_release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Detected release tag: $tag"
+
   # ============================================================================
   # Rust Testing
   # ============================================================================
@@ -382,8 +414,8 @@ jobs:
 
   deploy-pages:
     name: Deploy to GitHub Pages
-    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-    needs: [build-wasm]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, build-wasm]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -398,8 +430,8 @@ jobs:
   # ============================================================================
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, modelica-fmt, msl-quality-gate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, lint, test, modelica-fmt, msl-quality-gate]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -567,8 +599,8 @@ jobs:
 
   build-vscode-extension:
     name: Build VS Code Extension (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test, build-rust-binaries]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, lint, test, build-rust-binaries]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -635,8 +667,8 @@ jobs:
   # ============================================================================
   publish:
     name: Publish Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-rust-binaries, build-python-wheels, build-python-sdist, build-vscode-extension, build-wasm, docs]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, build-rust-binaries, build-python-wheels, build-python-sdist, build-vscode-extension, build-wasm, docs]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -648,15 +680,15 @@ jobs:
 
       - name: Verify tag is on main
         run: |
-          if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
-            echo "::error::Tag must point to a commit on the main branch"
+          if ! git tag --points-at "${{ github.sha }}" | grep -Fx "${{ needs.detect-release-tag.outputs.tag }}" >/dev/null; then
+            echo "::error::Detected release tag '${{ needs.detect-release-tag.outputs.tag }}' is not on commit ${{ github.sha }}"
             exit 1
           fi
-          echo "Tag points to a commit on main"
+          echo "Release tag '${{ needs.detect-release-tag.outputs.tag }}' points to current main commit"
 
       - name: Get tag name
         id: tag
-        run: echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: echo "name=${{ needs.detect-release-tag.outputs.tag }}" >> $GITHUB_OUTPUT
 
       # Publish workspace crates to crates.io
       - name: Install Rust
