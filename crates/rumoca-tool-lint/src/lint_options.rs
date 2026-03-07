@@ -1,6 +1,6 @@
 //! Linter configuration options.
 
-use crate::analysis_lint_rules::LintLevel;
+use crate::lint_rules::LintLevel;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -170,6 +170,20 @@ mod tests {
         let merged = base.merge(overrides);
         assert_eq!(merged.min_level, LintLevel::Error);
         assert!(merged.disabled_rules.contains(&"test-rule".to_string()));
+    }
+
+    #[test]
+    fn test_merge_options_appends_disabled_rules() {
+        let base = LintOptions::with_disabled_rules(vec!["a".to_string()]);
+        let overrides = PartialLintOptions {
+            disabled_rules: Some(vec!["b".to_string()]),
+            ..Default::default()
+        };
+        let merged = base.merge(overrides);
+        assert_eq!(
+            merged.disabled_rules,
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 
     #[test]

@@ -29,9 +29,10 @@
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
 
-use rumoca_session::analysis::{LintLevel, LintOptions, lint_source};
 use rumoca_session::parsing::validate_source_syntax;
 use rumoca_session::runtime::render_dae_template_for_target;
+use rumoca_tool_fmt::FormatOptions;
+use rumoca_tool_lint::{LintLevel, LintOptions, lint as lint_source};
 
 #[derive(Debug)]
 struct PyRuntimeStringError(String);
@@ -165,6 +166,42 @@ fn lint(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
         .collect()
 }
 
+/// Format Modelica source code.
+///
+/// Args:
+///     source: Modelica source code as a string
+///     filename: Optional filename for diagnostics (default: "input.mo")
+///
+/// Returns:
+///     Formatted Modelica source code
+///
+/// Raises:
+///     RuntimeError: If source has syntax errors
+#[pyfunction(name = "format")]
+#[pyo3(signature = (source, filename=None))]
+fn format_source(source: &str, filename: Option<&str>) -> Result<String, PyRuntimeStringError> {
+    let filename = filename.unwrap_or("input.mo");
+    let options = FormatOptions::default();
+    rumoca_tool_fmt::format_with_source_name(source, &options, filename)
+        .map_err(|e| PyRuntimeStringError(format!("Format error: {e}")))
+}
+
+/// Format Modelica source code, returning original source on format/syntax error.
+///
+/// Args:
+///     source: Modelica source code as a string
+///     filename: Optional filename for diagnostics (default: "input.mo")
+///
+/// Returns:
+///     Formatted source, or original source if formatting fails
+#[pyfunction]
+#[pyo3(signature = (source, filename=None))]
+fn format_or_original(source: &str, filename: Option<&str>) -> String {
+    let filename = filename.unwrap_or("input.mo");
+    let options = FormatOptions::default();
+    rumoca_tool_fmt::format_or_original_with_source_name(source, &options, filename)
+}
+
 /// Check Modelica source code for errors and warnings.
 ///
 /// This combines parsing and linting, returning all issues found.
@@ -261,6 +298,8 @@ fn compile(
 fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
+    m.add_function(wrap_pyfunction!(format_source, m)?)?;
+    m.add_function(wrap_pyfunction!(format_or_original, m)?)?;
     m.add_function(wrap_pyfunction!(lint, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(compile, m)?)?;
@@ -299,5 +338,19 @@ mod tests {
         let messages = lint("model m Real x; end m;", None);
         // Should have naming convention warning
         assert!(!messages.is_empty());
+    }
+
+    #[test]
+    fn test_format_valid() {
+        let formatted = format_source("model M Real x; end M;", None).expect("format");
+        assert!(formatted.contains("model M"));
+        assert!(formatted.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_format_or_original_invalid() {
+        let source = "model M Real x end M;";
+        let out = format_or_original(source, None);
+        assert_eq!(out, source);
     }
 }

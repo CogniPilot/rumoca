@@ -12,7 +12,7 @@ pub enum FormatError {
 impl fmt::Display for FormatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FormatError::SyntaxError(msg) => write!(f, "syntax error: {}", msg),
+            FormatError::SyntaxError(msg) => write!(f, "syntax error: {msg}"),
         }
     }
 }

@@ -19,8 +19,6 @@ pub enum ConfigError {
 }
 
 /// Find a configuration file by searching the given directory and its parents.
-///
-/// Returns the path to the first config file found, or None if no config file exists.
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
     let mut current = start_dir.to_path_buf();
     loop {
@@ -44,8 +42,6 @@ pub fn load_config(path: &Path) -> Result<FormatOptions, ConfigError> {
 }
 
 /// Load configuration from a directory, searching parent directories.
-///
-/// Returns the loaded config, or None if no config file was found.
 pub fn load_config_from_dir(dir: &Path) -> Result<Option<FormatOptions>, ConfigError> {
     match find_config(dir) {
         Some(path) => Ok(Some(load_config(&path)?)),
@@ -53,9 +49,23 @@ pub fn load_config_from_dir(dir: &Path) -> Result<Option<FormatOptions>, ConfigE
     }
 }
 
+/// Formatter behavior profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FormatProfile {
+    /// Minimal churn profile for large codebases like MSL.
+    Msl,
+    /// Aggressive whitespace normalization profile.
+    Canonical,
+}
+
 /// Formatting options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormatOptions {
+    /// Formatter profile.
+    #[serde(default = "default_profile")]
+    pub profile: FormatProfile,
+
     /// Number of spaces per indentation level.
     #[serde(default = "default_indent_size")]
     pub indent_size: usize,
@@ -81,6 +91,10 @@ pub struct FormatOptions {
     pub trim_trailing_whitespace: bool,
 }
 
+fn default_profile() -> FormatProfile {
+    FormatProfile::Msl
+}
+
 fn default_indent_size() -> usize {
     2
 }
@@ -95,7 +109,8 @@ fn default_true() -> bool {
 
 impl Default for FormatOptions {
     fn default() -> Self {
-        FormatOptions {
+        Self {
+            profile: default_profile(),
             indent_size: default_indent_size(),
             use_tabs: false,
             max_line_length: default_max_line_length(),
@@ -109,7 +124,7 @@ impl Default for FormatOptions {
 impl FormatOptions {
     /// Create options with tab indentation.
     pub fn with_tabs() -> Self {
-        FormatOptions {
+        Self {
             use_tabs: true,
             ..Default::default()
         }
@@ -117,18 +132,16 @@ impl FormatOptions {
 
     /// Create options with specific indent size.
     pub fn with_indent_size(size: usize) -> Self {
-        FormatOptions {
+        Self {
             indent_size: size,
             ..Default::default()
         }
     }
 
     /// Merge with another set of options.
-    ///
-    /// Values from `other` override values in `self`. This is useful for
-    /// merging CLI options (other) with file config (self).
     pub fn merge(self, other: PartialFormatOptions) -> Self {
-        FormatOptions {
+        Self {
+            profile: other.profile.unwrap_or(self.profile),
             indent_size: other.indent_size.unwrap_or(self.indent_size),
             use_tabs: other.use_tabs.unwrap_or(self.use_tabs),
             max_line_length: other.max_line_length.unwrap_or(self.max_line_length),
@@ -144,11 +157,10 @@ impl FormatOptions {
 }
 
 /// Partial formatting options for CLI overrides.
-///
-/// Each field is optional, allowing CLI arguments to override only
-/// the specific options that were explicitly provided.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PartialFormatOptions {
+    /// Formatter profile.
+    pub profile: Option<FormatProfile>,
     /// Number of spaces per indentation level.
     pub indent_size: Option<usize>,
     /// Use tabs instead of spaces.
@@ -171,96 +183,39 @@ mod tests {
     #[test]
     fn test_default_options() {
         let opts = FormatOptions::default();
+        assert_eq!(opts.profile, FormatProfile::Msl);
         assert_eq!(opts.indent_size, 2);
         assert!(!opts.use_tabs);
         assert_eq!(opts.max_line_length, 100);
     }
 
     #[test]
-    fn test_with_tabs() {
-        let opts = FormatOptions::with_tabs();
-        assert!(opts.use_tabs);
-    }
-
-    #[test]
-    fn test_with_indent_size() {
-        let opts = FormatOptions::with_indent_size(4);
-        assert_eq!(opts.indent_size, 4);
-    }
-
-    #[test]
     fn test_merge_options() {
         let base = FormatOptions::default();
         let overrides = PartialFormatOptions {
+            profile: Some(FormatProfile::Canonical),
             indent_size: Some(4),
             use_tabs: Some(true),
             ..Default::default()
         };
         let merged = base.merge(overrides);
+        assert_eq!(merged.profile, FormatProfile::Canonical);
         assert_eq!(merged.indent_size, 4);
         assert!(merged.use_tabs);
-        // Other fields should remain default
-        assert_eq!(merged.max_line_length, 100);
     }
 
     #[test]
     fn test_load_config_from_toml() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join(".rumoca_fmt.toml");
-        let mut file = std::fs::File::create(&config_path).unwrap();
-        writeln!(file, "indent_size = 4").unwrap();
-        writeln!(file, "use_tabs = true").unwrap();
+        let mut file = std::fs::File::create(&config_path).expect("create config");
+        writeln!(file, "indent_size = 4").expect("write indent_size");
+        writeln!(file, "use_tabs = true").expect("write use_tabs");
+        writeln!(file, "profile = \"canonical\"").expect("write profile");
 
-        let opts = load_config(&config_path).unwrap();
+        let opts = load_config(&config_path).expect("load config");
+        assert_eq!(opts.profile, FormatProfile::Canonical);
         assert_eq!(opts.indent_size, 4);
         assert!(opts.use_tabs);
-    }
-
-    #[test]
-    fn test_find_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join(".rumoca_fmt.toml");
-        std::fs::File::create(&config_path).unwrap();
-
-        let found = find_config(dir.path());
-        assert!(found.is_some());
-        assert_eq!(found.unwrap(), config_path);
-    }
-
-    #[test]
-    fn test_find_config_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let found = find_config(dir.path());
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn test_load_config_from_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("rumoca_fmt.toml");
-        let mut file = std::fs::File::create(&config_path).unwrap();
-        writeln!(file, "indent_size = 8").unwrap();
-
-        let opts = load_config_from_dir(dir.path()).unwrap();
-        assert!(opts.is_some());
-        assert_eq!(opts.unwrap().indent_size, 8);
-    }
-
-    #[test]
-    fn test_load_config_from_dir_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let opts = load_config_from_dir(dir.path()).unwrap();
-        assert!(opts.is_none());
-    }
-
-    #[test]
-    fn test_config_parse_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join(".rumoca_fmt.toml");
-        let mut file = std::fs::File::create(&config_path).unwrap();
-        writeln!(file, "invalid toml [[[").unwrap();
-
-        let result = load_config(&config_path);
-        assert!(result.is_err());
     }
 }

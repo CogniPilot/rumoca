@@ -375,10 +375,16 @@ fn test_bind_wasm_uses_session_lsp_facades() {
     let cargo_toml = workspace_root().join("crates/rumoca-bind-wasm/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read bind-wasm Cargo.toml");
 
+    for required in ["rumoca-session", "rumoca-tool-lsp", "rumoca-tool-lint"] {
+        assert!(
+            section_contains_dependency(&content, "dependencies", required),
+            "rumoca-bind-wasm must depend on {required}"
+        );
+    }
+
     for banned in [
         "rumoca-phase-parse",
         "rumoca-phase-codegen",
-        "rumoca-tool-lint",
         "rumoca-ir-ast",
         "rumoca-eval-dae",
         "rumoca-ir-dae",
@@ -397,6 +403,14 @@ fn test_tool_lsp_uses_session_parsing_facade() {
     let cargo_toml = workspace_root().join("crates/rumoca-tool-lsp/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read tool-lsp Cargo.toml");
 
+    for required in ["rumoca-session", "rumoca-tool-fmt", "rumoca-tool-lint"] {
+        assert!(
+            section_contains_dependency(&content, "dependencies", required),
+            "rumoca-tool-lsp must depend on {required}; \
+Author reminder: route formatting/lint through tool crates, compile context through session."
+        );
+    }
+
     for banned in [
         "rumoca-phase-parse",
         "rumoca-ir-ast",
@@ -412,7 +426,7 @@ Author reminder: use rumoca-session facade APIs instead."
 }
 
 #[test]
-fn test_tool_fmt_uses_session_analysis_facade() {
+fn test_tool_fmt_uses_session_facade() {
     let cargo_toml = workspace_root().join("crates/rumoca-tool-fmt/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read tool-fmt Cargo.toml");
 
@@ -425,12 +439,12 @@ fn test_tool_fmt_uses_session_analysis_facade() {
     assert!(
         !section_contains_dependency(&content, "dependencies", banned),
         "rumoca-tool-fmt must not depend directly on {banned}; \
-Author reminder: use rumoca-session::analysis facade APIs."
+Author reminder: use rumoca-session parsing/session APIs."
     );
 }
 
 #[test]
-fn test_tool_lint_uses_session_analysis_facade() {
+fn test_tool_lint_uses_session_facade() {
     let cargo_toml = workspace_root().join("crates/rumoca-tool-lint/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read tool-lint Cargo.toml");
 
@@ -443,8 +457,29 @@ fn test_tool_lint_uses_session_analysis_facade() {
     assert!(
         !section_contains_dependency(&content, "dependencies", banned),
         "rumoca-tool-lint must not depend directly on {banned}; \
-Author reminder: use rumoca-session::analysis facade APIs."
+Author reminder: use rumoca-session parsing/session APIs."
     );
+}
+
+#[test]
+fn test_session_has_no_fmt_or_lint_surface() {
+    let session_lib = workspace_root().join("crates/rumoca-session/src/lib.rs");
+    let content = fs::read_to_string(&session_lib).expect("read rumoca-session lib.rs");
+
+    for banned in [
+        "FormatOptions",
+        "FormatError",
+        "format_source",
+        "LintOptions",
+        "LintMessage",
+        "lint_source",
+    ] {
+        assert!(
+            !content.contains(banned),
+            "rumoca-session must not expose {banned}; \
+Author reminder: fmt/lint APIs live in rumoca-tool-fmt and rumoca-tool-lint."
+        );
+    }
 }
 
 #[test]
