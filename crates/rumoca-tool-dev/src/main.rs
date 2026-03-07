@@ -180,7 +180,7 @@ struct ReleaseArgs {
     /// Create git tag vX.Y.Z
     #[arg(long)]
     tag: bool,
-    /// Push main and tag (implies --commit --tag)
+    /// Push main and tag in one git push (implies --commit --tag)
     #[arg(long)]
     push: bool,
 }
@@ -189,7 +189,6 @@ struct ReleaseArgs {
 struct ReleasePaths {
     cargo_toml: PathBuf,
     pyproject: PathBuf,
-    py_version: PathBuf,
     package_json: PathBuf,
 }
 
@@ -197,7 +196,6 @@ struct ReleasePaths {
 struct ReleaseEdits {
     cargo_toml: String,
     pyproject: String,
-    py_version: String,
     package_json: String,
 }
 
@@ -1416,6 +1414,7 @@ fn normalize_release_flags(args: &mut ReleaseArgs) {
 
 fn ensure_release_worktree_state(root: &Path, args: &ReleaseArgs) -> Result<()> {
     if args.allow_dirty {
+        ensure_release_push_branch(root, args)?;
         return Ok(());
     }
     let mut status = Command::new("git");
@@ -1425,14 +1424,33 @@ fn ensure_release_worktree_state(root: &Path, args: &ReleaseArgs) -> Result<()> 
         output.trim().is_empty(),
         "working tree is not clean; pass --allow-dirty to override"
     );
+    ensure_release_push_branch(root, args)?;
+    Ok(())
+}
+
+fn ensure_release_push_branch(root: &Path, args: &ReleaseArgs) -> Result<()> {
+    if !args.push {
+        return Ok(());
+    }
+    let mut branch = Command::new("git");
+    branch
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .current_dir(root);
+    let current_branch = run_capture(branch)?;
+    ensure!(
+        current_branch.trim() == "main",
+        "release --push must run from branch 'main' (current: '{}')",
+        current_branch.trim()
+    );
     Ok(())
 }
 
 fn release_paths(root: &Path) -> ReleasePaths {
     ReleasePaths {
         cargo_toml: root.join("Cargo.toml"),
-        pyproject: root.join("bindings/python/pyproject.toml"),
-        py_version: root.join("bindings/python/rumoca/version.py"),
+        pyproject: root.join("crates/rumoca-bind-python/pyproject.toml"),
         package_json: root.join("editors/vscode/package.json"),
     }
 }
@@ -1440,7 +1458,6 @@ fn release_paths(root: &Path) -> ReleasePaths {
 fn build_release_edits(paths: &ReleasePaths, version: &str) -> Result<ReleaseEdits> {
     let cargo_text = read_file_string(&paths.cargo_toml)?;
     let pyproject_text = read_file_string(&paths.pyproject)?;
-    let py_version_text = read_file_string(&paths.py_version)?;
     let package_text = read_file_string(&paths.package_json)?;
 
     let cargo_toml = replace_first_line_by_prefix(
@@ -1455,12 +1472,6 @@ fn build_release_edits(paths: &ReleasePaths, version: &str) -> Result<ReleaseEdi
         &format!("version = \"{version}\""),
     )
     .context("failed to update pyproject.toml version")?;
-    let py_version = replace_first_line_by_prefix(
-        &py_version_text,
-        "__version__ = \"",
-        &format!("__version__ = \"{version}\""),
-    )
-    .context("failed to update Python runtime version")?;
 
     let mut package_value: serde_json::Value =
         serde_json::from_str(&package_text).context("invalid VSCode package.json")?;
@@ -1474,7 +1485,6 @@ fn build_release_edits(paths: &ReleasePaths, version: &str) -> Result<ReleaseEdi
     Ok(ReleaseEdits {
         cargo_toml,
         pyproject,
-        py_version,
         package_json,
     })
 }
@@ -1484,8 +1494,6 @@ fn write_release_edits(paths: &ReleasePaths, edits: &ReleaseEdits) -> Result<()>
         .with_context(|| format!("failed to write {}", paths.cargo_toml.display()))?;
     fs::write(&paths.pyproject, &edits.pyproject)
         .with_context(|| format!("failed to write {}", paths.pyproject.display()))?;
-    fs::write(&paths.py_version, &edits.py_version)
-        .with_context(|| format!("failed to write {}", paths.py_version.display()))?;
     fs::write(&paths.package_json, format!("{}\n", edits.package_json))
         .with_context(|| format!("failed to write {}", paths.package_json.display()))?;
     Ok(())
@@ -1515,8 +1523,7 @@ fn run_release_git_commit(root: &Path, version: &str) -> Result<()> {
     add.arg("add")
         .arg("Cargo.toml")
         .arg("Cargo.lock")
-        .arg("bindings/python/pyproject.toml")
-        .arg("bindings/python/rumoca/version.py")
+        .arg("crates/rumoca-bind-python/pyproject.toml")
         .arg("editors/vscode/package.json")
         .current_dir(root);
     run_status(add)?;
@@ -1537,21 +1544,15 @@ fn run_release_git_tag(root: &Path, version: &str) -> Result<()> {
 }
 
 fn run_release_git_push(root: &Path, version: &str) -> Result<()> {
-    let mut push_main = Command::new("git");
-    push_main
+    // Push branch and release tag together so main-push CI can detect the v* tag on this SHA.
+    let mut push_main_and_tag = Command::new("git");
+    push_main_and_tag
         .arg("push")
         .arg("origin")
         .arg("main")
+        .arg(format!("refs/tags/v{version}"))
         .current_dir(root);
-    run_status(push_main)?;
-
-    let mut push_tag = Command::new("git");
-    push_tag
-        .arg("push")
-        .arg("origin")
-        .arg(format!("v{version}"))
-        .current_dir(root);
-    run_status(push_tag)
+    run_status(push_main_and_tag)
 }
 
 fn read_file_string(path: &Path) -> Result<String> {
