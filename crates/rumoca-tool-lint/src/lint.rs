@@ -28,22 +28,22 @@
 //! }
 //! ```
 
-use crate::analysis_lint_options::LintOptions;
-use crate::analysis_lint_rules::{
+use crate::lint_options::LintOptions;
+use crate::lint_rules::{
     LintLevel, LintMessage, LintRule, MagicNumberRule, MissingDocumentationRule,
     NamingConventionRule,
 };
 
-use rumoca_phase_parse::parse_string;
+use rumoca_session::parsing::validate_source_syntax;
 
 /// Lint Modelica source code.
 ///
 /// Returns a list of lint messages (warnings, errors, suggestions).
-pub(crate) fn lint(source: &str, file_name: &str, options: &LintOptions) -> Vec<LintMessage> {
+pub fn lint(source: &str, file_name: &str, options: &LintOptions) -> Vec<LintMessage> {
     let mut messages = Vec::new();
 
     // Check syntax first
-    if let Err(e) = parse_string(source, file_name) {
+    if let Err(e) = validate_source_syntax(source, file_name) {
         messages.push(LintMessage {
             rule: "syntax-error",
             level: LintLevel::Error,
@@ -117,11 +117,28 @@ mod tests {
     }
 
     #[test]
+    fn test_lint_syntax_error_keeps_filename() {
+        let source = "model M Real x end M;"; // Missing semicolon
+        let messages = lint(source, "named_input.mo", &LintOptions::default());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].rule, "syntax-error");
+        assert_eq!(messages[0].file, "named_input.mo");
+    }
+
+    #[test]
     fn test_lint_disabled_rule() {
         let source = "model m Real x; end m;"; // Lowercase model name
         let mut options = LintOptions::default();
         options.disabled_rules.push("naming-convention".to_string());
         let messages = lint(source, "test.mo", &options);
         assert!(messages.iter().all(|m| m.rule != "naming-convention"));
+    }
+
+    #[test]
+    fn test_lint_min_level_filters_warnings() {
+        let source = "model m Real x; end m;"; // Lowercase model name -> warning
+        let options = LintOptions::errors_only();
+        let messages = lint(source, "test.mo", &options);
+        assert!(messages.is_empty());
     }
 }

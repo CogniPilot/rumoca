@@ -10,10 +10,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
-# Prevent duplicate publish runs for same tag
+# Prevent duplicate runs
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -415,7 +415,7 @@ jobs:
   deploy-pages:
     name: Deploy to GitHub Pages
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, build-wasm]
+    needs: [detect-release-tag, build-wasm, modelica-fmt, coverage-gate, msl-quality-gate]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -431,7 +431,7 @@ jobs:
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, modelica-fmt, msl-quality-gate]
+    needs: [detect-release-tag, lint, test, modelica-fmt, coverage-gate, msl-quality-gate]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
