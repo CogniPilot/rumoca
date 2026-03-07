@@ -18,7 +18,7 @@ Crate boundaries serve as collaboration guardrails — hard compiler-enforced wa
 
 ### 1. Bounded Context Per Task
 
-Each crate's `Cargo.toml` defines exactly what it can see. A contributor working on `rumoca-phase-flatten` only needs to understand its dependencies (`rumoca-core`, `rumoca-eval-const`, `rumoca-ir-ast`, `rumoca-ir-flat`), not all 24 workspace crates. The dependency list is the reading list.
+Each crate's `Cargo.toml` defines exactly what it can see. A contributor working on `rumoca-phase-flatten` only needs to understand its dependencies (`rumoca-core`, `rumoca-eval-flat`, `rumoca-ir-ast`, `rumoca-ir-flat`), not all workspace crates. The dependency list is the reading list.
 
 ### 2. Strict DAG Dependency Graph
 
@@ -34,7 +34,7 @@ No circular dependencies between crates. The dependency tiers form an acyclic gr
 
 ### 5. Evaluation Decoupled from Representation
 
-`rumoca-eval-const` and `rumoca-eval-runtime` consume IRs but don't own them. This keeps evaluation strategies swappable without touching IR definitions. Constant evaluation (compile-time) and runtime evaluation (simulation-time) are separate concerns with different dependencies.
+Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`, `rumoca-eval-flat`, and `rumoca-eval-dae`. This keeps evaluation entry points explicit per representation and avoids cross-layer helper crates that hide where behavior lives.
 
 ### 6. Rules for Adding Dependencies
 
@@ -71,9 +71,33 @@ In non-IR crates:
 - Avoid direct IR type imports such as `use rumoca_ir_flat::{Expression, VarName}` outside the owning IR crate.
 
 Re-export guardrails:
-- Crates MUST NOT re-export other crates to tunnel around dependency boundaries.
-- Do not add patterns like `pub use some_lower_layer_crate as alias;` in higher layers.
-- Do not add wildcard forwarding such as `pub use some_lower_layer_crate::*;` across layers.
+- Low-level compiler crates (`rumoca-ir-*`, `rumoca-phase-*`, `rumoca-eval-*`) MUST NOT
+  re-export types from other Rumoca crates to tunnel around dependency boundaries.
+- Do not add wildcard forwarding such as `pub use some_lower_layer_crate::*;` in low-level crates.
+- Facade crates (for example `rumoca-session`) MAY re-export selected types intentionally to
+  provide ergonomic top-level APIs, but those exports must stay curated and namespaced.
+
+CI enforcement:
+- Violations of the low-level re-export guardrails MUST fail CI.
+- The workspace test `crates/rumoca/tests/architecture_hardening_test.rs::test_no_new_cross_crate_public_exports`
+  is the enforcement gate for `pub use rumoca_*::...` and `pub type X = rumoca_*::...`
+  in low-level crates.
+- Any new low-level cross-crate export not explicitly approved in that test must be treated
+  as a policy violation.
+
+### 9. Session Facade Root API
+
+`rumoca-session` is the orchestration facade crate for top-level entry points.
+Its root API MUST stay minimal:
+
+- Allowed root exports: `Session`, `SessionConfig`.
+- Compile result and helper types remain under explicit namespaces such as `rumoca_session::compile::*`.
+- Non-compile helper surfaces remain under explicit namespaces (`analysis`, `parsing`, `runtime`, `libraries`, `project`).
+
+CI enforcement:
+- Violations MUST fail CI.
+- The workspace test `crates/rumoca/tests/architecture_hardening_test.rs::test_session_root_facade_exports_are_minimal`
+  enforces this root export policy.
 
 ## Dependency Tiers
 
@@ -87,12 +111,11 @@ Tier 6 — Binary & Bindings (top-level entry points)
   rumoca-contracts          Specification contract tests
 
 Tier 5 — Integration (combine session + simulation/tools)
-  rumoca-sim-diffsol        ODE/DAE solver integration
+  rumoca-sim                Simulation runtime + solver integration
   rumoca-tool-lsp           Language server protocol
 
 Tier 4 — Orchestration (pipeline coordination)
   rumoca-session            Compilation pipeline orchestrator
-  rumoca-sim-core           Simulation runtime core
   rumoca-tool-fmt           Code formatter
   rumoca-tool-lint          Linter
 
@@ -103,10 +126,11 @@ Tier 3 — Phases & Evaluation (transformations)
   rumoca-phase-instantiate  Class instantiation, modifier merging
   rumoca-phase-flatten      Instance tree → flat equations
   rumoca-phase-dae          Flat equations → DAE system
-  rumoca-phase-structural   Structural analysis
+  rumoca-phase-solve   Structural analysis
   rumoca-phase-codegen      DAE → solver code
-  rumoca-eval-const         Compile-time expression evaluation
-  rumoca-eval-runtime       Simulation-time expression evaluation
+  rumoca-eval-ast           AST-level evaluation helpers
+  rumoca-eval-flat          Flat-IR evaluation
+  rumoca-eval-dae           DAE-IR runtime/compiled evaluation
 
 Tier 2 — IR (pure data, no logic)
   rumoca-ir-ast             Syntax tree, class definitions

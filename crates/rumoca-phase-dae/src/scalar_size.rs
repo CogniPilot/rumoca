@@ -1,5 +1,4 @@
 use crate::path_utils::last_top_level_subscript_span;
-use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use std::collections::HashSet;
 
@@ -139,7 +138,7 @@ pub(crate) fn residual_lhs_var_ref(
     let flat::Expression::Binary { op, lhs, .. } = residual else {
         return None;
     };
-    if !matches!(op, rumoca_ir_ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_flat::OpBinary::Sub(_)) {
         return None;
     }
     if let flat::Expression::VarRef { name, subscripts } = lhs.as_ref() {
@@ -364,7 +363,8 @@ pub(crate) fn try_eval_subscript_term(term: &str, flat: &flat::Model) -> Option<
         if var.evaluate
             || matches!(
                 var.variability,
-                ast::Variability::Parameter(_) | ast::Variability::Constant(_)
+                rumoca_ir_core::Variability::Parameter(_)
+                    | rumoca_ir_core::Variability::Constant(_)
             )
         {
             return var.start.as_ref();
@@ -446,12 +446,12 @@ pub(crate) fn try_eval_flat_expr_i64(
 }
 
 /// Evaluate a binary arithmetic operation on two integer values.
-pub(crate) fn eval_binary_op_i64(op: &rumoca_ir_ast::OpBinary, l: i64, r: i64) -> Option<i64> {
+pub(crate) fn eval_binary_op_i64(op: &rumoca_ir_flat::OpBinary, l: i64, r: i64) -> Option<i64> {
     match op {
-        rumoca_ir_ast::OpBinary::Add(_) | rumoca_ir_ast::OpBinary::AddElem(_) => Some(l + r),
-        rumoca_ir_ast::OpBinary::Sub(_) | rumoca_ir_ast::OpBinary::SubElem(_) => Some(l - r),
-        rumoca_ir_ast::OpBinary::Mul(_) | rumoca_ir_ast::OpBinary::MulElem(_) => Some(l * r),
-        rumoca_ir_ast::OpBinary::Div(_) | rumoca_ir_ast::OpBinary::DivElem(_) => {
+        rumoca_ir_flat::OpBinary::Add(_) | rumoca_ir_flat::OpBinary::AddElem(_) => Some(l + r),
+        rumoca_ir_flat::OpBinary::Sub(_) | rumoca_ir_flat::OpBinary::SubElem(_) => Some(l - r),
+        rumoca_ir_flat::OpBinary::Mul(_) | rumoca_ir_flat::OpBinary::MulElem(_) => Some(l * r),
+        rumoca_ir_flat::OpBinary::Div(_) | rumoca_ir_flat::OpBinary::DivElem(_) => {
             if r != 0 {
                 Some(l / r)
             } else {

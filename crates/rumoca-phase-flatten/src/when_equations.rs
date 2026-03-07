@@ -22,7 +22,7 @@ use crate::{Context, qualify_expression_imports_with_def_map};
 ///
 /// Each flat::WhenClause represents one "when" or "elsewhen" branch with its condition
 /// and the discrete equations that should be executed when the condition becomes true.
-pub fn flatten_when_equation(
+pub(crate) fn flatten_when_equation(
     ctx: &Context,
     inst_eq: &ast::InstanceEquation,
     prefix: &ast::QualifiedName,

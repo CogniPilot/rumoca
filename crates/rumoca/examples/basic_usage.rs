@@ -21,7 +21,7 @@ end Integrator;
     println!("States (x): {}", result.dae.states.len());
     println!("Algebraics (y): {}", result.dae.algebraics.len());
     println!("Continuous equations (f_x): {}", result.dae.f_x.len());
-    println!("Balance (eq - unknown): {}", result.dae.balance());
+    println!("Balance (eq - unknown): {}", result.balance());
     println!("DAE JSON bytes: {}", result.to_json()?.len());
 
     Ok(())

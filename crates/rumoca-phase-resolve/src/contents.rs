@@ -16,7 +16,7 @@ type Expression = ast::Expression;
 type ScopeKind = ast::ScopeKind;
 type Statement = ast::Statement;
 type StoredDefinition = ast::StoredDefinition;
-type Token = ast::Token;
+type Token = rumoca_ir_core::Token;
 
 impl Resolver {
     /// Resolve equations, statements, expressions in a StoredDefinition (Phase 2b).

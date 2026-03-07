@@ -14,7 +14,7 @@ fn test_classify_equations_embedded_range_zero_dimension_is_elided() {
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("ports_mXi_flow[1,:]")),
             rhs: Box::new(flat::Expression::Literal(Literal::Integer(0))),
         },
@@ -28,8 +28,8 @@ fn test_classify_equations_embedded_range_zero_dimension_is_elided() {
 
     let mut dae = Dae::new();
     dae.algebraics.insert(
-        VarName::new("ports_mXi_flow"),
-        Variable::new(VarName::new("ports_mXi_flow")),
+        dae::VarName::new("ports_mXi_flow"),
+        Variable::new(dae::VarName::new("ports_mXi_flow")),
     );
 
     let prefix_counts = build_prefix_counts(&flat);

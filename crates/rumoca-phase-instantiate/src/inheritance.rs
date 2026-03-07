@@ -612,7 +612,10 @@ pub fn find_class_in_tree<'a>(tree: &'a ast::ClassTree, name: &str) -> Option<&'
 /// because it ultimately resolves to `Real`.
 ///
 /// MLS §4.6: Type classes (short class definitions) create type aliases.
-pub fn is_effectively_primitive_transitive(tree: &ast::ClassTree, class: &ast::ClassDef) -> bool {
+pub(crate) fn is_effectively_primitive_transitive(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+) -> bool {
     // A class is effectively primitive if it:
     // 1. Has no components (not a container)
     // 2. Has no equations (not a model with behavior)
@@ -700,7 +703,7 @@ pub fn is_effectively_primitive_transitive(tree: &ast::ClassTree, class: &ast::C
 /// MLS §4.5: "A discrete-time variable is a variable that is discrete-valued
 /// (that is, not of Real type) or assigned in when-clauses."
 /// Integer and Boolean variables are discrete by definition.
-pub fn is_discrete_by_type(
+pub(crate) fn is_discrete_by_type(
     tree: &ast::ClassTree,
     type_name: &str,
     class_def: Option<&ast::ClassDef>,
@@ -973,7 +976,7 @@ fn resolve_base_class<'a>(
 /// Returns `Some(n)` where `n` is the scalar size of the function's output
 /// (e.g., 3 for `Orientation` whose `equalityConstraint` returns `Real[3]`).
 /// Returns `None` if the class has no `equalityConstraint` function.
-pub fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<usize> {
+pub(crate) fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<usize> {
     let eq_func = class.classes.values().find(|c| {
         c.class_type == rumoca_ir_ast::ClassType::Function
             && c.name.text.as_ref() == "equalityConstraint"
@@ -981,7 +984,7 @@ pub fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<usize> {
 
     // Find the output component of the function
     for comp in eq_func.components.values() {
-        if matches!(comp.causality, ast::Causality::Output(_)) {
+        if matches!(comp.causality, rumoca_ir_core::Causality::Output(_)) {
             // Compute the product of array dimensions (e.g., Real[3] → 3, Real[3,3] → 9)
             if comp.shape.is_empty() {
                 return Some(1); // scalar output
@@ -995,42 +998,55 @@ pub fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<usize> {
     Some(3)
 }
 
-/// Create a Span from a ast::Location using the source map for file resolution.
-pub fn location_to_span(loc: &rumoca_ir_ast::Location, source_map: &SourceMap) -> Span {
+/// Create a Span from a rumoca_ir_core::Location using the source map for file resolution.
+pub fn location_to_span(loc: &rumoca_ir_core::Location, source_map: &SourceMap) -> Span {
     source_map.location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
 }
 
-/// Create a Span from an Option<ast::Location> using the source map.
+/// Create a Span from an Option<rumoca_ir_core::Location> using the source map.
 /// Returns Span::DUMMY if the location is None.
-pub fn option_location_to_span(
-    loc: Option<&rumoca_ir_ast::Location>,
+pub(crate) fn option_location_to_span(
+    loc: Option<&rumoca_ir_core::Location>,
     source_map: &SourceMap,
 ) -> Span {
     loc.map(|l| location_to_span(l, source_map))
         .unwrap_or(Span::DUMMY)
 }
 
-/// Compare variability by semantic kind (ignoring ast::Token locations).
-fn variability_eq(a: &ast::Variability, b: &ast::Variability) -> bool {
+/// Compare variability by semantic kind (ignoring rumoca_ir_core::Token locations).
+fn variability_eq(a: &rumoca_ir_core::Variability, b: &rumoca_ir_core::Variability) -> bool {
     matches!(
         (a, b),
-        (ast::Variability::Empty, ast::Variability::Empty)
-            | (ast::Variability::Constant(_), ast::Variability::Constant(_))
-            | (ast::Variability::Discrete(_), ast::Variability::Discrete(_))
-            | (
-                ast::Variability::Parameter(_),
-                ast::Variability::Parameter(_)
-            )
+        (
+            rumoca_ir_core::Variability::Empty,
+            rumoca_ir_core::Variability::Empty
+        ) | (
+            rumoca_ir_core::Variability::Constant(_),
+            rumoca_ir_core::Variability::Constant(_)
+        ) | (
+            rumoca_ir_core::Variability::Discrete(_),
+            rumoca_ir_core::Variability::Discrete(_)
+        ) | (
+            rumoca_ir_core::Variability::Parameter(_),
+            rumoca_ir_core::Variability::Parameter(_)
+        )
     )
 }
 
-/// Compare causality by semantic kind (ignoring ast::Token locations).
-fn causality_eq(a: &ast::Causality, b: &ast::Causality) -> bool {
+/// Compare causality by semantic kind (ignoring rumoca_ir_core::Token locations).
+fn causality_eq(a: &rumoca_ir_core::Causality, b: &rumoca_ir_core::Causality) -> bool {
     matches!(
         (a, b),
-        (ast::Causality::Empty, ast::Causality::Empty)
-            | (ast::Causality::Input(_), ast::Causality::Input(_))
-            | (ast::Causality::Output(_), ast::Causality::Output(_))
+        (
+            rumoca_ir_core::Causality::Empty,
+            rumoca_ir_core::Causality::Empty
+        ) | (
+            rumoca_ir_core::Causality::Input(_),
+            rumoca_ir_core::Causality::Input(_)
+        ) | (
+            rumoca_ir_core::Causality::Output(_),
+            rumoca_ir_core::Causality::Output(_)
+        )
     )
 }
 
@@ -1062,9 +1078,9 @@ fn components_are_compatible(existing: &ast::Component, incoming: &ast::Componen
     }
 
     // MLS §5.6: Components with equivalent declarations are compatible.
-    // Compare by string representation (avoids ast::Location/token_number differences in ast::Token).
+    // Compare by string representation (avoids rumoca_ir_core::Location/token_number differences in rumoca_ir_core::Token).
     // Also verify variability and causality match for true equivalence.
-    // Use semantic comparison for variability/causality (ignoring ast::Token internals).
+    // Use semantic comparison for variability/causality (ignoring rumoca_ir_core::Token internals).
     existing.type_name.to_string() == incoming.type_name.to_string()
         && variability_eq(&existing.variability, &incoming.variability)
         && causality_eq(&existing.causality, &incoming.causality)
@@ -1241,9 +1257,9 @@ fn merge_class_content(
             comp.type_name = rumoca_ir_ast::Name {
                 name: new_type_name
                     .split('.')
-                    .map(|part| rumoca_ir_ast::Token {
+                    .map(|part| rumoca_ir_core::Token {
                         text: std::sync::Arc::from(part),
-                        location: rumoca_ir_ast::Location::default(),
+                        location: rumoca_ir_core::Location::default(),
                         token_number: 0,
                         token_type: 0,
                     })
@@ -1553,9 +1569,9 @@ mod tests {
         ast::ComponentReference {
             local: false,
             parts: vec![ast::ComponentRefPart {
-                ident: ast::Token {
+                ident: rumoca_ir_core::Token {
                     text: std::sync::Arc::from(name),
-                    location: ast::Location::default(),
+                    location: rumoca_ir_core::Location::default(),
                     token_number: 0,
                     token_type: 0,
                 },
@@ -1566,10 +1582,10 @@ mod tests {
     }
 
     /// Create a token for testing.
-    fn make_token(text: &str) -> ast::Token {
-        ast::Token {
+    fn make_token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: std::sync::Arc::from(text),
-            location: ast::Location::default(),
+            location: rumoca_ir_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }

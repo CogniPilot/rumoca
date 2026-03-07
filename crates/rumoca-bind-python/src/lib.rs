@@ -29,10 +29,9 @@
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
 
-use rumoca_phase_codegen::{render_template, templates};
-use rumoca_phase_parse::parse_string;
-use rumoca_session::Dae;
-use rumoca_tool_lint::{LintLevel, LintOptions, lint as run_lint};
+use rumoca_session::analysis::{LintLevel, LintOptions, lint_source};
+use rumoca_session::parsing::validate_source_syntax;
+use rumoca_session::runtime::render_dae_template_for_target;
 
 #[derive(Debug)]
 struct PyRuntimeStringError(String);
@@ -120,7 +119,7 @@ fn version() -> String {
 fn parse(source: &str, filename: Option<&str>) -> ParseResult {
     let filename = filename.unwrap_or("input.mo");
 
-    match parse_string(source, filename) {
+    match validate_source_syntax(source, filename) {
         Ok(()) => ParseResult {
             success: true,
             error: None,
@@ -145,7 +144,7 @@ fn parse(source: &str, filename: Option<&str>) -> ParseResult {
 fn lint(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
     let filename = filename.unwrap_or("input.mo");
     let options = LintOptions::default();
-    let messages = run_lint(source, filename, &options);
+    let messages = lint_source(source, filename, &options);
 
     messages
         .into_iter()
@@ -182,7 +181,7 @@ fn check(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
     let filename = filename.unwrap_or("input.mo");
 
     // First check for syntax errors
-    if let Err(e) = parse_string(source, filename) {
+    if let Err(e) = validate_source_syntax(source, filename) {
         return vec![LintMessage {
             rule: "syntax-error".to_string(),
             level: "error".to_string(),
@@ -211,20 +210,10 @@ fn check(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
 ///     RuntimeError: If JSON parsing or code generation fails
 #[pyfunction]
 fn generate_code(dae_json: &str, target: &str) -> Result<String, PyRuntimeStringError> {
-    let dae: Dae = serde_json::from_str(dae_json)
+    let dae_json: serde_json::Value = serde_json::from_str(dae_json)
         .map_err(|e| PyRuntimeStringError(format!("Invalid DAE JSON: {e}")))?;
 
-    let template = match target {
-        "casadi" => templates::CASADI_SX,
-        "cyecca" => templates::CYECCA,
-        "julia" => templates::JULIA_MTK,
-        "c" => templates::C_CODE,
-        "jax" => templates::JAX,
-        "onnx" => templates::ONNX,
-        _ => return Err(PyRuntimeStringError(format!("Unknown target: {target}"))),
-    };
-
-    render_template(&dae, template)
+    render_dae_template_for_target(&dae_json, target)
         .map_err(|e| PyRuntimeStringError(format!("Code generation error: {e}")))
 }
 
@@ -247,7 +236,8 @@ fn compile(
     model_name: &str,
     filename: Option<&str>,
 ) -> Result<String, PyRuntimeStringError> {
-    use rumoca_session::{PhaseResult, Session, SessionConfig};
+    use rumoca_session::compile::PhaseResult;
+    use rumoca_session::{Session, SessionConfig};
 
     let filename = filename.unwrap_or("input.mo");
     let mut session = Session::new(SessionConfig::default());

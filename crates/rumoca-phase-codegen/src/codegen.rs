@@ -9,6 +9,7 @@
 
 use crate::errors::{CodegenError, render_err};
 use minijinja::{Environment, UndefinedBehavior, Value};
+use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use serde_json::json;
@@ -16,6 +17,14 @@ use std::path::Path;
 
 /// Result type for internal render functions.
 type RenderResult = Result<String, minijinja::Error>;
+
+/// Supported IR roots for template rendering.
+#[derive(Debug, Clone, Copy)]
+pub enum CodegenInput<'a> {
+    Dae(&'a dae::Dae),
+    Flat(&'a flat::Model),
+    Ast(&'a ast::ClassTree),
+}
 
 pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
     json!({
@@ -59,6 +68,90 @@ fn dae_template_value(dae: &dae::Dae) -> Value {
     Value::from_serialize(dae_template_json(dae))
 }
 
+fn render_with_input_context(
+    tmpl: &minijinja::Template<'_, '_>,
+    input: CodegenInput<'_>,
+    model_name: Option<&str>,
+) -> Result<String, CodegenError> {
+    let rendered = match (input, model_name) {
+        (CodegenInput::Dae(dae_model), None) => {
+            let dae_value = dae_template_value(dae_model);
+            tmpl.render(minijinja::context! {
+                dae => dae_value.clone(),
+                ir => dae_value,
+                ir_kind => "dae",
+            })?
+        }
+        (CodegenInput::Dae(dae_model), Some(name)) => {
+            let dae_value = dae_template_value(dae_model);
+            tmpl.render(minijinja::context! {
+                dae => dae_value.clone(),
+                ir => dae_value,
+                ir_kind => "dae",
+                model_name => name,
+            })?
+        }
+        (CodegenInput::Flat(flat_model), None) => {
+            let flat_value = Value::from_serialize(flat_model);
+            tmpl.render(minijinja::context! {
+                flat => flat_value.clone(),
+                ir => flat_value,
+                ir_kind => "flat",
+            })?
+        }
+        (CodegenInput::Flat(flat_model), Some(name)) => {
+            let flat_value = Value::from_serialize(flat_model);
+            tmpl.render(minijinja::context! {
+                flat => flat_value.clone(),
+                ir => flat_value,
+                ir_kind => "flat",
+                model_name => name,
+            })?
+        }
+        (CodegenInput::Ast(ast_tree), None) => {
+            let ast_value = Value::from_serialize(ast_tree);
+            tmpl.render(minijinja::context! {
+                ast => ast_value.clone(),
+                ir => ast_value,
+                ir_kind => "ast",
+            })?
+        }
+        (CodegenInput::Ast(ast_tree), Some(name)) => {
+            let ast_value = Value::from_serialize(ast_tree);
+            tmpl.render(minijinja::context! {
+                ast => ast_value.clone(),
+                ir => ast_value,
+                ir_kind => "ast",
+                model_name => name,
+            })?
+        }
+    };
+    Ok(rendered)
+}
+
+/// Render any supported IR using a template string.
+pub fn render_template_for_input(
+    input: CodegenInput<'_>,
+    template: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    render_with_input_context(&tmpl, input, None)
+}
+
+/// Render any supported IR using a template string, with model name.
+pub fn render_template_with_name_for_input(
+    input: CodegenInput<'_>,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    render_with_input_context(&tmpl, input, Some(model_name))
+}
+
 /// Render a DAE using a template string.
 ///
 /// The template receives the full DAE structure as `dae` and can access
@@ -82,14 +175,7 @@ fn dae_template_value(dae: &dae::Dae) -> Value {
 /// - `sanitize` - Replace dots with underscores
 /// - Standard minijinja filters (length, upper, lower, etc.)
 pub fn render_template(dae: &dae::Dae, template: &str) -> Result<String, CodegenError> {
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-
-    let dae_value = dae_template_value(dae);
-    let tmpl = env.get_template("inline")?;
-    let result = tmpl.render(minijinja::context! { dae => dae_value })?;
-
-    Ok(result)
+    render_template_for_input(CodegenInput::Dae(dae), template)
 }
 
 /// Render a template using a pre-built `dae` JSON context object.
@@ -119,17 +205,7 @@ pub fn render_template_with_name(
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-
-    let dae_value = dae_template_value(dae);
-    let tmpl = env.get_template("inline")?;
-    let result = tmpl.render(minijinja::context! {
-        dae => dae_value,
-        model_name => model_name,
-    })?;
-
-    Ok(result)
+    render_template_with_name_for_input(CodegenInput::Dae(dae), template, model_name)
 }
 
 /// Render a DAE using a template file.
@@ -150,15 +226,10 @@ pub fn render_template_file(
         .map_err(|e| CodegenError::template(format!("Failed to read template: {e}")))?;
 
     let mut env = create_environment();
-    let tmpl_name = path_ref.to_string_lossy();
     env.add_template("file", &template)?;
 
-    let dae_value = dae_template_value(dae);
     let tmpl = env.get_template("file")?;
-    let _ = tmpl_name; // template name used for diagnostics via minijinja debug
-    let result = tmpl.render(minijinja::context! { dae => dae_value })?;
-
-    Ok(result)
+    render_with_input_context(&tmpl, CodegenInput::Dae(dae), None)
 }
 
 /// Render a Model using a template string, with an additional model name in context.
@@ -170,17 +241,25 @@ pub fn render_flat_template_with_name(
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
+    render_template_with_name_for_input(CodegenInput::Flat(flat), template, model_name)
+}
 
-    let flat_value = minijinja::Value::from_serialize(flat);
-    let tmpl = env.get_template("inline")?;
-    let result = tmpl.render(minijinja::context! {
-        flat => flat_value,
-        model_name => model_name,
-    })?;
+/// Render an AST class tree using a template string.
+///
+/// The template receives the AST structure as `ast`.
+pub fn render_ast_template(ast: &ast::ClassTree, template: &str) -> Result<String, CodegenError> {
+    render_template_for_input(CodegenInput::Ast(ast), template)
+}
 
-    Ok(result)
+/// Render an AST class tree using a template string and model name.
+///
+/// The template receives both `ast` and `model_name`.
+pub fn render_ast_template_with_name(
+    ast: &ast::ClassTree,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    render_template_with_name_for_input(CodegenInput::Ast(ast), template, model_name)
 }
 
 /// Create a minijinja environment with all custom filters and functions.

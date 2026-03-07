@@ -74,55 +74,55 @@ fn convert_expression_function_args(
 }
 
 /// Convert a MulOperator to OpBinary.
-fn mul_op_to_binary(op: &modelica_grammar_trait::MulOperator) -> rumoca_ir_ast::OpBinary {
+fn mul_op_to_binary(op: &modelica_grammar_trait::MulOperator) -> rumoca_ir_core::OpBinary {
     match op {
         modelica_grammar_trait::MulOperator::Star(o) => {
-            rumoca_ir_ast::OpBinary::Mul(o.star.clone())
+            rumoca_ir_core::OpBinary::Mul(o.star.clone().into())
         }
         modelica_grammar_trait::MulOperator::Slash(o) => {
-            rumoca_ir_ast::OpBinary::Div(o.slash.clone())
+            rumoca_ir_core::OpBinary::Div(o.slash.clone().into())
         }
         modelica_grammar_trait::MulOperator::DotSlash(o) => {
-            rumoca_ir_ast::OpBinary::DivElem(o.dot_slash.clone())
+            rumoca_ir_core::OpBinary::DivElem(o.dot_slash.clone().into())
         }
         modelica_grammar_trait::MulOperator::DotStar(o) => {
-            rumoca_ir_ast::OpBinary::MulElem(o.dot_star.clone())
+            rumoca_ir_core::OpBinary::MulElem(o.dot_star.clone().into())
         }
     }
 }
 
 /// Convert an AddOperator to OpBinary.
-fn add_op_to_binary(op: &modelica_grammar_trait::AddOperator) -> rumoca_ir_ast::OpBinary {
+fn add_op_to_binary(op: &modelica_grammar_trait::AddOperator) -> rumoca_ir_core::OpBinary {
     match op {
         modelica_grammar_trait::AddOperator::Plus(t) => {
-            rumoca_ir_ast::OpBinary::Add(t.plus.clone())
+            rumoca_ir_core::OpBinary::Add(t.plus.clone().into())
         }
         modelica_grammar_trait::AddOperator::Minus(t) => {
-            rumoca_ir_ast::OpBinary::Sub(t.minus.clone())
+            rumoca_ir_core::OpBinary::Sub(t.minus.clone().into())
         }
         modelica_grammar_trait::AddOperator::DotPlus(t) => {
-            rumoca_ir_ast::OpBinary::AddElem(t.dot_plus.clone())
+            rumoca_ir_core::OpBinary::AddElem(t.dot_plus.clone().into())
         }
         modelica_grammar_trait::AddOperator::DotMinus(t) => {
-            rumoca_ir_ast::OpBinary::SubElem(t.dot_minus.clone())
+            rumoca_ir_core::OpBinary::SubElem(t.dot_minus.clone().into())
         }
     }
 }
 
 /// Convert an AddOperator to OpUnary.
-fn add_op_to_unary(op: &modelica_grammar_trait::AddOperator) -> rumoca_ir_ast::OpUnary {
+fn add_op_to_unary(op: &modelica_grammar_trait::AddOperator) -> rumoca_ir_core::OpUnary {
     match op {
         modelica_grammar_trait::AddOperator::Minus(t) => {
-            rumoca_ir_ast::OpUnary::Minus(t.minus.clone())
+            rumoca_ir_core::OpUnary::Minus(t.minus.clone().into())
         }
         modelica_grammar_trait::AddOperator::Plus(t) => {
-            rumoca_ir_ast::OpUnary::Plus(t.plus.clone())
+            rumoca_ir_core::OpUnary::Plus(t.plus.clone().into())
         }
         modelica_grammar_trait::AddOperator::DotMinus(t) => {
-            rumoca_ir_ast::OpUnary::DotMinus(t.dot_minus.clone())
+            rumoca_ir_core::OpUnary::DotMinus(t.dot_minus.clone().into())
         }
         modelica_grammar_trait::AddOperator::DotPlus(t) => {
-            rumoca_ir_ast::OpUnary::DotPlus(t.dot_plus.clone())
+            rumoca_ir_core::OpUnary::DotPlus(t.dot_plus.clone().into())
         }
     }
 }
@@ -154,7 +154,7 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for rumoca_ir_ast::Subscript {
     fn try_from(ast: &modelica_grammar_trait::Subscript) -> std::result::Result<Self, Self::Error> {
         match ast {
             modelica_grammar_trait::Subscript::Colon(tok) => Ok(rumoca_ir_ast::Subscript::Range {
-                token: tok.colon.clone(),
+                token: tok.colon.clone().into(),
             }),
             modelica_grammar_trait::Subscript::Expression(expr) => Ok(
                 rumoca_ir_ast::Subscript::Expression(expr.expression.clone()),
@@ -376,7 +376,7 @@ fn ast_name_to_comp_ref(name: &rumoca_ir_ast::Name) -> rumoca_ir_ast::ComponentR
 }
 
 /// Build a single-part ComponentReference from an identifier token.
-fn ident_to_comp_ref(ident: &rumoca_ir_ast::Token) -> rumoca_ir_ast::ComponentReference {
+fn ident_to_comp_ref(ident: &rumoca_ir_core::Token) -> rumoca_ir_ast::ComponentReference {
     rumoca_ir_ast::ComponentReference {
         local: false,
         parts: vec![rumoca_ir_ast::ComponentRefPart {
@@ -681,7 +681,9 @@ fn convert_element_modification(
                     match &mod_opt.modification_expression {
                         modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                             Ok(rumoca_ir_ast::Expression::Binary {
-                                op: rumoca_ir_ast::OpBinary::Assign(rumoca_ir_ast::Token::default()),
+                                op: rumoca_ir_core::OpBinary::Assign(
+                                    rumoca_ir_core::Token::default(),
+                                ),
                                 lhs: Arc::new(mod_expr),
                                 rhs: Arc::new(expr.expression.clone()),
                             })
@@ -964,7 +966,7 @@ fn convert_global_function_call(
         modelica_grammar_trait::GlobalFunctionCallGroup::Pure(expr) => expr.pure.pure.clone(),
     };
     let part = rumoca_ir_ast::ComponentRefPart {
-        ident: tok,
+        ident: tok.into(),
         subs: None,
     };
     let func_call = rumoca_ir_ast::Expression::FunctionCall {
@@ -1039,18 +1041,18 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
             modelica_grammar_trait::Primary::True(bool) => {
                 Ok(rumoca_ir_ast::Expression::Terminal {
                     terminal_type: rumoca_ir_ast::TerminalType::Bool,
-                    token: bool.r#true.r#true.clone(),
+                    token: bool.r#true.r#true.clone().into(),
                 })
             }
             modelica_grammar_trait::Primary::False(bool) => {
                 Ok(rumoca_ir_ast::Expression::Terminal {
                     terminal_type: rumoca_ir_ast::TerminalType::Bool,
-                    token: bool.r#false.r#false.clone(),
+                    token: bool.r#false.r#false.clone().into(),
                 })
             }
             modelica_grammar_trait::Primary::End(end) => Ok(rumoca_ir_ast::Expression::Terminal {
                 terminal_type: rumoca_ir_ast::TerminalType::End,
-                token: end.end.end.clone(),
+                token: end.end.end.clone().into(),
             }),
             modelica_grammar_trait::Primary::ArrayPrimary(arr) => {
                 match &arr.array_primary.array_primary_opt {
@@ -1083,10 +1085,10 @@ impl TryFrom<&modelica_grammar_trait::Factor> for rumoca_ir_ast::Expression {
         } else {
             let op = match &ast.factor_list[0].factor_list_group {
                 modelica_grammar_trait::FactorListGroup::Circumflex(c) => {
-                    rumoca_ir_ast::OpBinary::Exp(c.circumflex.clone())
+                    rumoca_ir_core::OpBinary::Exp(c.circumflex.clone().into())
                 }
                 modelica_grammar_trait::FactorListGroup::DotCircumflex(dc) => {
-                    rumoca_ir_ast::OpBinary::ExpElem(dc.dot_circumflex.clone())
+                    rumoca_ir_core::OpBinary::ExpElem(dc.dot_circumflex.clone().into())
                 }
             };
             Ok(rumoca_ir_ast::Expression::Binary {
@@ -1153,22 +1155,22 @@ impl TryFrom<&modelica_grammar_trait::Relation> for rumoca_ir_ast::Expression {
                 lhs: Arc::new(ast.arithmetic_expression.clone()),
                 op: match &relation.relational_operator {
                     modelica_grammar_trait::RelationalOperator::EquEqu(tok) => {
-                        rumoca_ir_ast::OpBinary::Eq(tok.equ_equ.clone())
+                        rumoca_ir_core::OpBinary::Eq(tok.equ_equ.clone().into())
                     }
                     modelica_grammar_trait::RelationalOperator::GT(tok) => {
-                        rumoca_ir_ast::OpBinary::Gt(tok.g_t.clone())
+                        rumoca_ir_core::OpBinary::Gt(tok.g_t.clone().into())
                     }
                     modelica_grammar_trait::RelationalOperator::LT(tok) => {
-                        rumoca_ir_ast::OpBinary::Lt(tok.l_t.clone())
+                        rumoca_ir_core::OpBinary::Lt(tok.l_t.clone().into())
                     }
                     modelica_grammar_trait::RelationalOperator::GTEqu(tok) => {
-                        rumoca_ir_ast::OpBinary::Ge(tok.g_t_equ.clone())
+                        rumoca_ir_core::OpBinary::Ge(tok.g_t_equ.clone().into())
                     }
                     modelica_grammar_trait::RelationalOperator::LTEqu(tok) => {
-                        rumoca_ir_ast::OpBinary::Le(tok.l_t_equ.clone())
+                        rumoca_ir_core::OpBinary::Le(tok.l_t_equ.clone().into())
                     }
                     modelica_grammar_trait::RelationalOperator::LTGT(tok) => {
-                        rumoca_ir_ast::OpBinary::Neq(tok.l_t_g_t.clone())
+                        rumoca_ir_core::OpBinary::Neq(tok.l_t_g_t.clone().into())
                     }
                 },
                 rhs: Arc::new(relation.arithmetic_expression.clone()),
@@ -1186,9 +1188,9 @@ impl TryFrom<&modelica_grammar_trait::LogicalFactor> for rumoca_ir_ast::Expressi
     ) -> std::result::Result<Self, Self::Error> {
         match &ast.logical_factor_opt {
             Some(opt) => {
-                let not_tok = opt.not.not.clone();
+                let not_tok = opt.not.not.clone().into();
                 Ok(rumoca_ir_ast::Expression::Unary {
-                    op: rumoca_ir_ast::OpUnary::Not(not_tok),
+                    op: rumoca_ir_core::OpUnary::Not(not_tok),
                     rhs: Arc::new(ast.relation.clone()),
                 })
             }
@@ -1210,7 +1212,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalTerm> for rumoca_ir_ast::Expression
             for term in &ast.logical_term_list {
                 lhs = rumoca_ir_ast::Expression::Binary {
                     lhs: Arc::new(lhs),
-                    op: rumoca_ir_ast::OpBinary::And(rumoca_ir_ast::Token::default()),
+                    op: rumoca_ir_core::OpBinary::And(rumoca_ir_core::Token::default()),
                     rhs: Arc::new(term.logical_factor.clone()),
                 };
             }
@@ -1232,7 +1234,7 @@ impl TryFrom<&modelica_grammar_trait::LogicalExpression> for rumoca_ir_ast::Expr
             for term in &ast.logical_expression_list {
                 lhs = rumoca_ir_ast::Expression::Binary {
                     lhs: Arc::new(lhs),
-                    op: rumoca_ir_ast::OpBinary::Or(rumoca_ir_ast::Token::default()),
+                    op: rumoca_ir_core::OpBinary::Or(rumoca_ir_core::Token::default()),
                     rhs: Arc::new(term.logical_term.clone()),
                 };
             }

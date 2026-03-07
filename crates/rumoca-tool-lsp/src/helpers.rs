@@ -1,11 +1,12 @@
 //! Utility functions for LSP handlers.
 
 use lsp_types::{Position, Range};
-use rumoca_core::DefId;
-use rumoca_ir_ast as ast;
+use rumoca_session::compile::core::DefId;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 
-/// Convert a ast::Token to an LSP Range (0-indexed).
-pub fn token_to_range(token: &ast::Token) -> Range {
+/// Convert a rumoca_ir_core::Token to an LSP Range (0-indexed).
+pub fn token_to_range(token: &rumoca_ir_core::Token) -> Range {
     Range {
         start: Position {
             line: token.location.start_line.saturating_sub(1),
@@ -18,8 +19,8 @@ pub fn token_to_range(token: &ast::Token) -> Range {
     }
 }
 
-/// Convert a ast::Location to an LSP Range (0-indexed).
-pub fn location_to_range(loc: &ast::Location) -> Range {
+/// Convert a rumoca_ir_core::Location to an LSP Range (0-indexed).
+pub fn location_to_range(loc: &rumoca_ir_core::Location) -> Range {
     Range {
         start: Position {
             line: loc.start_line.saturating_sub(1),

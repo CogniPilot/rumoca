@@ -1,0 +1,1788 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rumoca Crate DAG</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #111827;
+      --border: #334155;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --edge: #64748b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      min-height: 100vh;
+    }
+    .sidebar {
+      padding: 16px;
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 18px;
+    }
+    .meta {
+      margin: 0 0 16px 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .layout-row {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .toggle-row {
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .toggle-row label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    select {
+      border: 1px solid var(--border);
+      background-color: #0f172a;
+      color: #f8fafc;
+      -webkit-text-fill-color: #f8fafc;
+      border-radius: 6px;
+      padding: 7px 8px;
+      font-size: 12px;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      color-scheme: dark;
+    }
+    option {
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    select:focus {
+      outline: 2px solid #60a5fa;
+      outline-offset: 1px;
+    }
+    select:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+    button {
+      border: 1px solid var(--border);
+      background: #1e293b;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button:hover { background: #273449; }
+    .kind-list {
+      display: grid;
+      gap: 8px;
+      max-height: 34vh;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .node-list {
+      display: grid;
+      gap: 6px;
+      max-height: 52vh;
+      overflow: auto;
+      padding-right: 4px;
+      margin-top: 8px;
+    }
+    .kind-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #0f172a;
+      font-size: 13px;
+    }
+    .node-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      background: #0f172a;
+      font-size: 12px;
+    }
+    .section-title {
+      margin-top: 12px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    details.section {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0f172a;
+      padding: 8px;
+      margin-bottom: 12px;
+    }
+    details.section > summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 0;
+    }
+    details.section > summary::-webkit-details-marker { display: none; }
+    .section-content {
+      margin-top: 8px;
+    }
+    .section-count {
+      font-variant-numeric: tabular-nums;
+      color: #cbd5e1;
+      font-weight: 600;
+    }
+    .empty-list {
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      background: #0f172a;
+    }
+    .swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(226,232,240,0.25);
+    }
+    .kind-name { text-transform: lowercase; }
+    .count {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .canvas-wrap {
+      position: relative;
+      overflow: hidden;
+      min-height: 100vh;
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(59,130,246,0.16), transparent 40%),
+        radial-gradient(circle at 80% 80%, rgba(236,72,153,0.12), transparent 42%),
+        #0b1220;
+      cursor: grab;
+    }
+    canvas.grabbing { cursor: grabbing; }
+    .hint {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      background: rgba(15,23,42,0.9);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      backdrop-filter: blur(2px);
+      pointer-events: none;
+    }
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
+      .kind-list { max-height: 180px; }
+      .node-list { max-height: 180px; }
+      .canvas-wrap { min-height: 65vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <h1>Workspace Crate DAG</h1>
+      <p class="meta">
+        Direction is <code>crate → dependency</code>.<br>
+        Arrows show dependency direction. Toggle groups to isolate layers.
+      </p>
+      <div class="layout-row">
+        <label for="layout-select">Layout</label>
+        <select id="layout-select">
+          <option value="top-down">top-down</option>
+          <option value="left-right">left-right</option>
+          <option value="force">force</option>
+        </select>
+      </div>
+      <div class="controls">
+        <button id="auto-layout-btn" type="button">Auto Layout</button>
+      </div>
+      <div class="toggle-row">
+        <label><input id="hover-trace-toggle" type="checkbox" checked> Hover trace</label>
+      </div>
+      <details id="views-section" class="section">
+        <summary>Views</summary>
+        <div class="section-content">
+          <div class="layout-row">
+            <label for="saved-view-select">Saved View</label>
+            <select id="saved-view-select"></select>
+          </div>
+          <div class="controls">
+            <button id="save-view-btn" type="button">Save</button>
+            <button id="load-view-btn" type="button">Load</button>
+            <button id="delete-view-btn" type="button">Delete</button>
+            <button id="export-view-btn" type="button">Export</button>
+          </div>
+        </div>
+      </details>
+      <details id="categories-section" class="section" open>
+        <summary>
+          <span>Categories</span>
+          <span id="categories-count" class="section-count">0</span>
+        </summary>
+        <div class="section-content">
+          <div class="controls">
+            <button id="all-btn" type="button">All</button>
+            <button id="none-btn" type="button">None</button>
+          </div>
+          <div id="kind-list" class="kind-list"></div>
+        </div>
+      </details>
+      <details id="hidden-section" class="section">
+        <summary>
+          <span>Hidden Nodes</span>
+          <span id="hidden-count" class="section-count">0</span>
+        </summary>
+        <div class="section-content">
+          <div class="controls">
+            <button id="nodes-hide-all-btn" type="button">Hide All</button>
+            <button id="nodes-show-all-btn" type="button">Show All</button>
+          </div>
+          <div id="hidden-node-list" class="node-list"></div>
+        </div>
+      </details>
+    </aside>
+    <main class="canvas-wrap">
+      <canvas id="graph"></canvas>
+      <div class="hint">Right-click node to hide. Hover to trace deps. Drag to move. Scroll to zoom.</div>
+    </main>
+  </div>
+  <script>
+    const GRAPH = __GRAPH_JSON__;
+
+    const canvas = document.getElementById('graph');
+    const ctx = canvas.getContext('2d');
+    const kindList = document.getElementById('kind-list');
+    const categoriesCount = document.getElementById('categories-count');
+    const hiddenNodeList = document.getElementById('hidden-node-list');
+    const hiddenSection = document.getElementById('hidden-section');
+    const hiddenCount = document.getElementById('hidden-count');
+    const allBtn = document.getElementById('all-btn');
+    const noneBtn = document.getElementById('none-btn');
+    const nodesHideAllBtn = document.getElementById('nodes-hide-all-btn');
+    const nodesShowAllBtn = document.getElementById('nodes-show-all-btn');
+    const layoutSelect = document.getElementById('layout-select');
+    const autoLayoutBtn = document.getElementById('auto-layout-btn');
+    const hoverTraceToggle = document.getElementById('hover-trace-toggle');
+    const savedViewSelect = document.getElementById('saved-view-select');
+    const saveViewBtn = document.getElementById('save-view-btn');
+    const loadViewBtn = document.getElementById('load-view-btn');
+    const deleteViewBtn = document.getElementById('delete-view-btn');
+    const exportViewBtn = document.getElementById('export-view-btn');
+
+    const state = {
+      enabledKinds: new Set(GRAPH.kinds.map(k => k.key)),
+      hiddenNodeIds: new Set(),
+      nodeById: new Map(),
+      edgeList: GRAPH.edges,
+      layout: GRAPH.initial_layout || 'force',
+      hoverTraceEnabled: true,
+      hoverNodeId: null,
+      scale: 1.0,
+      panX: 0,
+      panY: 0,
+      dragNodeId: null,
+      isPanning: false,
+      pointerStartX: 0,
+      pointerStartY: 0,
+      panStartX: 0,
+      panStartY: 0,
+      raf: null,
+      forceHandle: null,
+      persistHandle: null,
+      savedViews: new Map(),
+    };
+
+    const STORAGE_VERSION = 1;
+    const STORAGE_SCOPE = `rumoca-crate-dag:v3:${window.location.pathname}`;
+    const LAST_VIEW_KEY = `${STORAGE_SCOPE}:last`;
+    const SAVED_VIEWS_KEY = `${STORAGE_SCOPE}:views`;
+
+    function storageGet(key) {
+      try {
+        return window.localStorage.getItem(key);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function storageSet(key, value) {
+      try {
+        window.localStorage.setItem(key, value);
+      } catch (_) {
+        // ignore storage write failures
+      }
+    }
+
+    function captureSnapshot() {
+      const nodes = {};
+      for (const [id, node] of state.nodeById.entries()) {
+        if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
+        nodes[id] = {
+          x: Number(node.x),
+          y: Number(node.y),
+          fixed: Boolean(node.fixed),
+        };
+      }
+      return {
+        version: STORAGE_VERSION,
+        layout: state.layout,
+        hoverTraceEnabled: state.hoverTraceEnabled,
+        enabledKinds: Array.from(state.enabledKinds),
+        hiddenNodeIds: Array.from(state.hiddenNodeIds),
+        scale: Number(state.scale),
+        panX: Number(state.panX),
+        panY: Number(state.panY),
+        nodes,
+      };
+    }
+
+    function applySnapshot(snapshot, options = {}) {
+      if (!snapshot || typeof snapshot !== 'object') return false;
+      const includeViewport = options.includeViewport !== false;
+
+      const validLayouts = new Set(GRAPH.layouts || []);
+      if (typeof snapshot.layout === 'string' && validLayouts.has(snapshot.layout)) {
+        state.layout = snapshot.layout;
+      }
+      if (typeof snapshot.hoverTraceEnabled === 'boolean') {
+        state.hoverTraceEnabled = snapshot.hoverTraceEnabled;
+      }
+
+      const validKinds = new Set(GRAPH.kinds.map(kind => kind.key));
+      if (Array.isArray(snapshot.enabledKinds)) {
+        const enabled = snapshot.enabledKinds.filter(kind => validKinds.has(kind));
+        state.enabledKinds = enabled.length > 0 ? new Set(enabled) : new Set(validKinds);
+      }
+
+      const validNodeIds = new Set(GRAPH.nodes.map(node => node.id));
+      if (Array.isArray(snapshot.hiddenNodeIds)) {
+        state.hiddenNodeIds = new Set(snapshot.hiddenNodeIds.filter(id => validNodeIds.has(id)));
+      }
+
+      if (snapshot.nodes && typeof snapshot.nodes === 'object') {
+        for (const [id, saved] of Object.entries(snapshot.nodes)) {
+          const node = state.nodeById.get(id);
+          if (!node || !saved || typeof saved !== 'object') continue;
+          if (Number.isFinite(saved.x)) node.x = saved.x;
+          if (Number.isFinite(saved.y)) node.y = saved.y;
+          if (typeof saved.fixed === 'boolean') node.fixed = saved.fixed;
+          node.vx = 0;
+          node.vy = 0;
+        }
+      }
+
+      if (includeViewport) {
+        if (Number.isFinite(snapshot.scale)) state.scale = snapshot.scale;
+        if (Number.isFinite(snapshot.panX)) state.panX = snapshot.panX;
+        if (Number.isFinite(snapshot.panY)) state.panY = snapshot.panY;
+      }
+      return true;
+    }
+
+    function persistLastViewNow() {
+      const snapshot = captureSnapshot();
+      storageSet(LAST_VIEW_KEY, JSON.stringify(snapshot));
+    }
+
+    function schedulePersist() {
+      if (state.persistHandle != null) return;
+      state.persistHandle = window.setTimeout(() => {
+        state.persistHandle = null;
+        persistLastViewNow();
+      }, 180);
+    }
+
+    function restoreLastView() {
+      const raw = storageGet(LAST_VIEW_KEY);
+      if (!raw) return false;
+      try {
+        const parsed = JSON.parse(raw);
+        return applySnapshot(parsed, { includeViewport: true });
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function applySharedDefaultView() {
+      if (!GRAPH.shared_default_view || typeof GRAPH.shared_default_view !== 'object') {
+        return false;
+      }
+      return applySnapshot(GRAPH.shared_default_view, { includeViewport: true });
+    }
+
+    function loadSavedViews() {
+      state.savedViews.clear();
+      const raw = storageGet(SAVED_VIEWS_KEY);
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        const entries = Array.isArray(parsed?.views) ? parsed.views : [];
+        for (const entry of entries) {
+          if (!entry || typeof entry !== 'object') continue;
+          const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+          if (!name) continue;
+          state.savedViews.set(name, {
+            name,
+            updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+            snapshot: entry.snapshot,
+          });
+        }
+      } catch (_) {
+        // ignore malformed saved views
+      }
+    }
+
+    function saveSavedViews() {
+      const views = Array.from(state.savedViews.values())
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(view => ({
+          name: view.name,
+          updatedAt: view.updatedAt,
+          snapshot: view.snapshot,
+        }));
+      storageSet(SAVED_VIEWS_KEY, JSON.stringify({ version: STORAGE_VERSION, views }));
+    }
+
+    function refreshSavedViewControls(preferredName) {
+      const previous = preferredName || savedViewSelect.value;
+      savedViewSelect.innerHTML = '';
+      const names = Array.from(state.savedViews.keys()).sort((a, b) => a.localeCompare(b));
+      if (names.length === 0) {
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = '(none)';
+        savedViewSelect.appendChild(empty);
+      } else {
+        for (const name of names) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          if (name === previous) option.selected = true;
+          savedViewSelect.appendChild(option);
+        }
+      }
+      loadViewBtn.disabled = names.length === 0;
+      deleteViewBtn.disabled = names.length === 0;
+    }
+
+    function seedLayout() {
+      const n = GRAPH.nodes.length || 1;
+      const ring = 260;
+      GRAPH.nodes.forEach((node, idx) => {
+        const angle = (idx / n) * Math.PI * 2;
+        const x = Math.cos(angle) * ring + (idx % 4) * 28;
+        const y = Math.sin(angle) * ring + ((idx * 7) % 5) * 24;
+        state.nodeById.set(node.id, {
+          ...node,
+          x, y,
+          vx: 0,
+          vy: 0,
+          fixed: false,
+        });
+      });
+    }
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      requestDraw();
+    }
+
+    function visibleNode(node) {
+      return state.enabledKinds.has(node.kind) && !state.hiddenNodeIds.has(node.id);
+    }
+
+    function visibleNodes() {
+      return GRAPH.nodes
+        .map(node => state.nodeById.get(node.id))
+        .filter(node => node && visibleNode(node));
+    }
+
+    function visibleEdges() {
+      return state.edgeList.filter(edge => {
+        const a = state.nodeById.get(edge.from);
+        const b = state.nodeById.get(edge.to);
+        return a && b && visibleNode(a) && visibleNode(b);
+      });
+    }
+
+    function worldToScreen(x, y) {
+      return {
+        x: x * state.scale + state.panX,
+        y: y * state.scale + state.panY,
+      };
+    }
+
+    function screenToWorld(x, y) {
+      return {
+        x: (x - state.panX) / state.scale,
+        y: (y - state.panY) / state.scale,
+      };
+    }
+
+    const LABEL_FONT_FAMILY = 'ui-sans-serif, system-ui, sans-serif';
+
+    function nodeDimensionsPx(node) {
+      const labelScale = Math.max(0.85, Math.min(1.35, state.scale * 0.9));
+      const fontSize = 12 * labelScale;
+      const padX = 8 * labelScale;
+      const padY = 5 * labelScale;
+      ctx.font = `${fontSize}px ${LABEL_FONT_FAMILY}`;
+      const textWidth = ctx.measureText(node.label).width;
+      const width = Math.max(36 * labelScale, textWidth + padX * 2);
+      const height = Math.max(22 * labelScale, fontSize + padY * 2);
+      return {
+        fontSize,
+        width,
+        height,
+        halfW: width * 0.5,
+        halfH: height * 0.5,
+      };
+    }
+
+    function drawRoundedRect(x, y, width, height, radius) {
+      const r = Math.min(radius, width * 0.5, height * 0.5);
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + width - r, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+      ctx.lineTo(x + width, y + height - r);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+      ctx.lineTo(x + r, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    function distanceToBoxEdgeAlongUnitVector(ux, uy, halfW, halfH) {
+      const tx = Math.abs(ux) > 1e-6 ? halfW / Math.abs(ux) : Number.POSITIVE_INFINITY;
+      const ty = Math.abs(uy) > 1e-6 ? halfH / Math.abs(uy) : Number.POSITIVE_INFINITY;
+      return Math.min(tx, ty);
+    }
+
+    function drawArrowHead(from, to, color) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1) return;
+      const ux = dx / len;
+      const uy = dy / len;
+      const size = 8;
+      const leftX = to.x - ux * size - uy * (size * 0.6);
+      const leftY = to.y - uy * size + ux * (size * 0.6);
+      const rightX = to.x - ux * size + uy * (size * 0.6);
+      const rightY = to.y - uy * size - ux * (size * 0.6);
+      ctx.beginPath();
+      ctx.fillStyle = color;
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(leftX, leftY);
+      ctx.lineTo(rightX, rightY);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function edgeKey(edge) {
+      return `${edge.from}|${edge.to}|${edge.kind}`;
+    }
+
+    function slotOffsetPx(index, total, span) {
+      if (total <= 1) return 0;
+      return ((index / (total - 1)) - 0.5) * span;
+    }
+
+    function slotAngleOffset(index, total, maxAbsRadians) {
+      if (total <= 1 || maxAbsRadians <= 0) return 0;
+      return ((index / (total - 1)) - 0.5) * maxAbsRadians;
+    }
+
+    function rotateUnitVector(x, y, radians) {
+      const c = Math.cos(radians);
+      const s = Math.sin(radians);
+      return {
+        x: x * c - y * s,
+        y: x * s + y * c,
+      };
+    }
+
+    function portSpanForTotal(total, baseSpan, maxSpan) {
+      if (total <= 1) return baseSpan;
+      const expanded = 20 + (total - 1) * 10;
+      return Math.max(baseSpan, Math.min(maxSpan, expanded));
+    }
+
+    function stableLaneOffset(edge) {
+      const text = `${edge.from}:${edge.to}:${edge.kind}`;
+      let hash = 0;
+      for (let idx = 0; idx < text.length; idx++) {
+        hash = ((hash * 31) + text.charCodeAt(idx)) >>> 0;
+      }
+      return ((hash % 9) - 4) * 4;
+    }
+
+    function hexToRgba(hex, alpha) {
+      const raw = hex.replace('#', '');
+      const expanded = raw.length === 3
+        ? raw.split('').map(ch => ch + ch).join('')
+        : raw;
+      const value = Number.parseInt(expanded, 16);
+      const r = (value >> 16) & 255;
+      const g = (value >> 8) & 255;
+      const b = value & 255;
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    function buildEdgeSlots(edges) {
+      function cmpNumber(a, b) {
+        if (a < b) return -1;
+        if (a > b) return 1;
+        return 0;
+      }
+
+      function safeAxis(value) {
+        if (Math.abs(value) < 1e-6) return value < 0 ? -1e-6 : 1e-6;
+        return value;
+      }
+
+      function outgoingFanAngle(fromNode, toNode) {
+        const dx = toNode.x - fromNode.x;
+        const dy = toNode.y - fromNode.y;
+        if (state.layout === 'top-down') {
+          return Math.atan2(dx, safeAxis(dy));
+        }
+        if (state.layout === 'left-right') {
+          return Math.atan2(dy, safeAxis(dx));
+        }
+        return Math.atan2(dy, dx);
+      }
+
+      function incomingFanAngle(toNode, fromNode) {
+        const dx = fromNode.x - toNode.x;
+        const dy = fromNode.y - toNode.y;
+        if (state.layout === 'top-down') {
+          return Math.atan2(dx, safeAxis(-dy));
+        }
+        if (state.layout === 'left-right') {
+          return Math.atan2(dy, safeAxis(-dx));
+        }
+        return Math.atan2(dy, dx);
+      }
+
+      function sortOutgoingForLayout(fromId, a, b) {
+        const fromNode = state.nodeById.get(fromId) || { x: 0, y: 0 };
+        const aTarget = state.nodeById.get(a.to) || { x: 0, y: 0, label: a.to };
+        const bTarget = state.nodeById.get(b.to) || { x: 0, y: 0, label: b.to };
+        const aAngle = outgoingFanAngle(fromNode, aTarget);
+        const bAngle = outgoingFanAngle(fromNode, bTarget);
+        const aDx = aTarget.x - fromNode.x;
+        const aDy = aTarget.y - fromNode.y;
+        const bDx = bTarget.x - fromNode.x;
+        const bDy = bTarget.y - fromNode.y;
+        const aDist = aDx * aDx + aDy * aDy;
+        const bDist = bDx * bDx + bDy * bDy;
+        return (
+          cmpNumber(aAngle, bAngle) ||
+          cmpNumber(aDist, bDist) ||
+          (aTarget.label || a.to).localeCompare(bTarget.label || b.to)
+        );
+      }
+
+      function sortIncomingForLayout(toId, a, b) {
+        const toNode = state.nodeById.get(toId) || { x: 0, y: 0 };
+        const aSource = state.nodeById.get(a.from) || { x: 0, y: 0, label: a.from };
+        const bSource = state.nodeById.get(b.from) || { x: 0, y: 0, label: b.from };
+        const aAngle = incomingFanAngle(toNode, aSource);
+        const bAngle = incomingFanAngle(toNode, bSource);
+        const aDx = aSource.x - toNode.x;
+        const aDy = aSource.y - toNode.y;
+        const bDx = bSource.x - toNode.x;
+        const bDy = bSource.y - toNode.y;
+        const aDist = aDx * aDx + aDy * aDy;
+        const bDist = bDx * bDx + bDy * bDy;
+        return (
+          cmpNumber(aAngle, bAngle) ||
+          cmpNumber(aDist, bDist) ||
+          (aSource.label || a.from).localeCompare(bSource.label || b.from)
+        );
+      }
+
+      const outgoing = new Map();
+      const incoming = new Map();
+      for (const edge of edges) {
+        if (!outgoing.has(edge.from)) outgoing.set(edge.from, []);
+        if (!incoming.has(edge.to)) incoming.set(edge.to, []);
+        outgoing.get(edge.from).push(edge);
+        incoming.get(edge.to).push(edge);
+      }
+      const outSlots = new Map();
+      const inSlots = new Map();
+      const outCountByNode = new Map();
+      const inCountByNode = new Map();
+      for (const [fromId, list] of outgoing) {
+        list.sort((a, b) => sortOutgoingForLayout(fromId, a, b));
+        const total = list.length;
+        outCountByNode.set(fromId, total);
+        list.forEach((edge, index) => {
+          outSlots.set(edgeKey(edge), { index, total });
+        });
+      }
+      for (const [toId, list] of incoming) {
+        list.sort((a, b) => sortIncomingForLayout(toId, a, b));
+        const total = list.length;
+        inCountByNode.set(toId, total);
+        list.forEach((edge, index) => {
+          inSlots.set(edgeKey(edge), { index, total });
+        });
+      }
+      return { outSlots, inSlots, outCountByNode, inCountByNode };
+    }
+
+    function draw() {
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      ctx.clearRect(0, 0, width, height);
+
+      const nodes = visibleNodes();
+      const screenNodes = new Map();
+      for (const node of nodes) {
+        const center = worldToScreen(node.x, node.y);
+        const dims = nodeDimensionsPx(node);
+        screenNodes.set(node.id, { node, center, dims });
+      }
+
+      const edges = visibleEdges();
+      const traceNodeId =
+        state.hoverTraceEnabled && state.hoverNodeId && screenNodes.has(state.hoverNodeId)
+          ? state.hoverNodeId
+          : null;
+      const tracedNodes = new Set();
+      if (traceNodeId) {
+        tracedNodes.add(traceNodeId);
+      }
+      const { outSlots, inSlots, outCountByNode, inCountByNode } = buildEdgeSlots(edges);
+      const ioBars = new Map();
+      const pendingArrowHeads = [];
+      for (const edge of edges) {
+        const source = screenNodes.get(edge.from);
+        const target = screenNodes.get(edge.to);
+        if (!source || !target) continue;
+
+        const key = edgeKey(edge);
+        const outSlot = outSlots.get(key) || { index: 0, total: 1 };
+        const inSlot = inSlots.get(key) || { index: 0, total: 1 };
+
+        const sourceEdgeTotal = outCountByNode.get(edge.from) || outSlot.total;
+        const targetEdgeTotal = inCountByNode.get(edge.to) || inSlot.total;
+        const sourcePortSpan =
+          state.layout === 'left-right'
+            ? portSpanForTotal(sourceEdgeTotal, Math.max(18, source.dims.height * 0.9), 200)
+            : portSpanForTotal(outSlot.total, Math.min(source.dims.width * 0.74, 58), 120);
+        const targetPortSpan =
+          state.layout === 'left-right'
+            ? portSpanForTotal(targetEdgeTotal, Math.max(18, target.dims.height * 0.9), 200)
+            : portSpanForTotal(inSlot.total, Math.min(target.dims.width * 0.74, 58), 120);
+        const sourceOffset = slotOffsetPx(outSlot.index, outSlot.total, sourcePortSpan);
+        const targetOffset = slotOffsetPx(inSlot.index, inSlot.total, targetPortSpan);
+
+        const laneOffset =
+          state.layout === 'force'
+            ? stableLaneOffset(edge)
+            : slotOffsetPx(outSlot.index, outSlot.total, 30) - slotOffsetPx(inSlot.index, inSlot.total, 30);
+        let stroke = hexToRgba(source.node.fill, 0.48);
+        let lineWidth = 1.25;
+        let traced = false;
+        if (traceNodeId) {
+          if (edge.from === traceNodeId) {
+            traced = true;
+            stroke = '#fbbf24';
+            lineWidth = 2.2;
+            tracedNodes.add(edge.to);
+          } else if (edge.to === traceNodeId) {
+            traced = true;
+            stroke = '#60a5fa';
+            lineWidth = 2.2;
+            tracedNodes.add(edge.from);
+          } else {
+            stroke = 'rgba(148,163,184,0.14)';
+            lineWidth = 1.0;
+          }
+        }
+        if (edge.kind === 'dev') {
+          if (!traceNodeId || !traced) stroke = '#90a4b9';
+          ctx.setLineDash([6, 5]);
+        } else if (edge.kind === 'build') {
+          if (!traceNodeId || !traced) stroke = '#66788d';
+          ctx.setLineDash([2, 4]);
+        } else {
+          ctx.setLineDash([]);
+        }
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = lineWidth;
+
+        let arrowFrom;
+        let arrowTo;
+        ctx.beginPath();
+        if (state.layout === 'top-down') {
+          const sourceBarY = source.center.y + source.dims.halfH + 9;
+          const targetBarY = target.center.y - target.dims.halfH - 9;
+          if (sourceEdgeTotal > 1) {
+            ioBars.set(`${edge.from}:out`, {
+              axis: 'h',
+              x: source.center.x,
+              y: sourceBarY,
+              span: sourcePortSpan,
+              color: hexToRgba(source.node.fill, 0.78),
+            });
+          }
+          if (targetEdgeTotal > 1) {
+            ioBars.set(`${edge.to}:in`, {
+              axis: 'h',
+              x: target.center.x,
+              y: targetBarY,
+              span: targetPortSpan,
+              color: hexToRgba(target.node.fill, 0.78),
+            });
+          }
+          const start = {
+            x: source.center.x + sourceOffset,
+            y: sourceBarY,
+          };
+          const end = {
+            x: target.center.x + targetOffset,
+            y: targetBarY,
+          };
+          ctx.moveTo(start.x, start.y);
+          const majorDelta = Math.abs(end.y - start.y);
+          const minorDelta = Math.abs(end.x - start.x);
+          if (minorDelta < 22 || majorDelta < 28) {
+            ctx.lineTo(end.x, end.y);
+            arrowFrom = start;
+            arrowTo = end;
+          } else {
+            const bend = Math.max(16, Math.min(110, majorDelta * 0.30));
+            const c1 = {
+              x: start.x + laneOffset * 0.18,
+              y: start.y + bend,
+            };
+            const c2 = {
+              x: end.x - laneOffset * 0.18,
+              y: end.y - bend,
+            };
+            ctx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, end.x, end.y);
+            arrowFrom = c2;
+            arrowTo = end;
+          }
+        } else if (state.layout === 'left-right') {
+          const sourceBarX = source.center.x + source.dims.halfW + 9;
+          const targetBarX = target.center.x - target.dims.halfW - 9;
+          if (sourceEdgeTotal > 1) {
+            ioBars.set(`${edge.from}:out`, {
+              axis: 'v',
+              x: sourceBarX,
+              y: source.center.y,
+              span: sourcePortSpan,
+              color: hexToRgba(source.node.fill, 0.78),
+            });
+          }
+          if (targetEdgeTotal > 1) {
+            ioBars.set(`${edge.to}:in`, {
+              axis: 'v',
+              x: targetBarX,
+              y: target.center.y,
+              span: targetPortSpan,
+              color: hexToRgba(target.node.fill, 0.78),
+            });
+          }
+          const start = {
+            x: sourceBarX,
+            y: source.center.y + sourceOffset,
+          };
+          const end = {
+            x: targetBarX,
+            y: target.center.y + targetOffset,
+          };
+          ctx.moveTo(start.x, start.y);
+          const majorDelta = Math.abs(end.x - start.x);
+          const minorDelta = Math.abs(end.y - start.y);
+          if (minorDelta < 22 || majorDelta < 28) {
+            ctx.lineTo(end.x, end.y);
+            arrowFrom = start;
+            arrowTo = end;
+          } else {
+            const bend = Math.max(16, Math.min(110, majorDelta * 0.30));
+            const c1 = {
+              x: start.x + bend,
+              y: start.y + laneOffset * 0.18,
+            };
+            const c2 = {
+              x: end.x - bend,
+              y: end.y - laneOffset * 0.18,
+            };
+            ctx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, end.x, end.y);
+            arrowFrom = c2;
+            arrowTo = end;
+          }
+        } else {
+          const dx = target.center.x - source.center.x;
+          const dy = target.center.y - source.center.y;
+          const distance = Math.hypot(dx, dy);
+          if (distance < 1) {
+            continue;
+          }
+          const ux = dx / distance;
+          const uy = dy / distance;
+          const sourceSpread = Math.min(0.36, Math.max(0, (outSlot.total - 1) * 0.07));
+          const targetSpread = Math.min(0.52, Math.max(0, (inSlot.total - 1) * 0.08));
+          const distanceScale = Math.max(0.45, Math.min(1, distance / 220));
+          const sourceAngle =
+            slotAngleOffset(outSlot.index, outSlot.total, sourceSpread) * distanceScale;
+          const targetAngle =
+            slotAngleOffset(inSlot.index, inSlot.total, targetSpread) * distanceScale;
+          const sourceDir = rotateUnitVector(ux, uy, sourceAngle);
+          const targetDir = rotateUnitVector(-ux, -uy, targetAngle);
+          const sourceEdgeRaw = distanceToBoxEdgeAlongUnitVector(
+            sourceDir.x,
+            sourceDir.y,
+            source.dims.halfW,
+            source.dims.halfH
+          ) + 2;
+          const targetEdgeRaw = distanceToBoxEdgeAlongUnitVector(
+            targetDir.x,
+            targetDir.y,
+            target.dims.halfW,
+            target.dims.halfH
+          ) + 8;
+          const available = Math.max(0, distance - 10);
+          const sourceEdge = Math.min(sourceEdgeRaw, available * 0.48);
+          const targetEdge = Math.min(targetEdgeRaw, available * 0.52);
+          const start = {
+            x: source.center.x + sourceDir.x * sourceEdge,
+            y: source.center.y + sourceDir.y * sourceEdge,
+          };
+          const end = {
+            x: target.center.x + targetDir.x * targetEdge,
+            y: target.center.y + targetDir.y * targetEdge,
+          };
+          if (Math.hypot(end.x - start.x, end.y - start.y) < 2) continue;
+          ctx.moveTo(start.x, start.y);
+          ctx.lineTo(end.x, end.y);
+          arrowFrom = start;
+          arrowTo = end;
+        }
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.stroke();
+        pendingArrowHeads.push({ from: arrowFrom, to: arrowTo, color: stroke });
+      }
+      ctx.setLineDash([]);
+
+      if (state.layout === 'left-right' || state.layout === 'top-down') {
+        for (const bar of ioBars.values()) {
+          const half = Math.max(8, Math.min(96, bar.span * 0.48));
+          ctx.beginPath();
+          ctx.strokeStyle = bar.color;
+          ctx.lineWidth = 2.0;
+          if (bar.axis === 'h') {
+            ctx.moveTo(bar.x - half, bar.y);
+            ctx.lineTo(bar.x + half, bar.y);
+          } else {
+            ctx.moveTo(bar.x, bar.y - half);
+            ctx.lineTo(bar.x, bar.y + half);
+          }
+          ctx.stroke();
+        }
+      }
+
+      for (const node of nodes) {
+        const item = screenNodes.get(node.id);
+        if (!item) continue;
+        const { center, dims } = item;
+        const nodeTraced = !traceNodeId || tracedNodes.has(node.id);
+        ctx.globalAlpha = nodeTraced ? 1.0 : 0.28;
+        drawRoundedRect(
+          center.x - dims.halfW,
+          center.y - dims.halfH,
+          dims.width,
+          dims.height,
+          8
+        );
+        ctx.fillStyle = node.fill;
+        if (traceNodeId && node.id === traceNodeId) {
+          ctx.strokeStyle = '#f8fafc';
+          ctx.lineWidth = 1.8;
+        } else {
+          ctx.strokeStyle = '#334155';
+          ctx.lineWidth = 1.0;
+        }
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = `${dims.fontSize}px ${LABEL_FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = node.text;
+        ctx.fillText(node.label, center.x, center.y);
+      }
+      ctx.globalAlpha = 1.0;
+
+      for (const arrow of pendingArrowHeads) {
+        drawArrowHead(arrow.from, arrow.to, arrow.color);
+      }
+    }
+
+    function simulateForceStep() {
+      const nodes = visibleNodes();
+      const edges = visibleEdges();
+      if (nodes.length === 0) return;
+
+      const repel = 6000;
+      const spring = 0.015;
+      const target = 140;
+      const damp = 0.88;
+
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i];
+          const b = nodes[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d2 = Math.max(30, dx * dx + dy * dy);
+          const f = repel / d2;
+          const fx = (dx / Math.sqrt(d2)) * f;
+          const fy = (dy / Math.sqrt(d2)) * f;
+          if (!a.fixed) { a.vx -= fx; a.vy -= fy; }
+          if (!b.fixed) { b.vx += fx; b.vy += fy; }
+        }
+      }
+
+      for (const edge of edges) {
+        const a = state.nodeById.get(edge.from);
+        const b = state.nodeById.get(edge.to);
+        if (!a || !b) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.max(1, Math.hypot(dx, dy));
+        const f = (dist - target) * spring;
+        const fx = (dx / dist) * f;
+        const fy = (dy / dist) * f;
+        if (!a.fixed) { a.vx += fx; a.vy += fy; }
+        if (!b.fixed) { b.vx -= fx; b.vy -= fy; }
+      }
+
+      for (const node of nodes) {
+        if (node.fixed) {
+          node.vx = 0;
+          node.vy = 0;
+          continue;
+        }
+        node.vx += (-node.x) * 0.0008;
+        node.vy += (-node.y) * 0.0008;
+        node.vx *= damp;
+        node.vy *= damp;
+        node.x += node.vx;
+        node.y += node.vy;
+      }
+    }
+
+    function forceLoop() {
+      if (state.layout !== 'force') {
+        state.forceHandle = null;
+        return;
+      }
+      simulateForceStep();
+      requestDraw();
+      state.forceHandle = requestAnimationFrame(forceLoop);
+    }
+
+    function startForceLoop() {
+      if (state.forceHandle != null) return;
+      state.forceHandle = requestAnimationFrame(forceLoop);
+    }
+
+    function stopForceLoop() {
+      if (state.forceHandle == null) return;
+      cancelAnimationFrame(state.forceHandle);
+      state.forceHandle = null;
+    }
+
+    function requestDraw() {
+      if (state.raf != null) return;
+      state.raf = requestAnimationFrame(() => {
+        state.raf = null;
+        draw();
+      });
+    }
+
+    function centerViewport(nodes, fitScale) {
+      if (nodes.length === 0) return;
+      let minX = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      for (const node of nodes) {
+        minX = Math.min(minX, node.x);
+        maxX = Math.max(maxX, node.x);
+        minY = Math.min(minY, node.y);
+        maxY = Math.max(maxY, node.y);
+      }
+      const rect = canvas.getBoundingClientRect();
+      if (fitScale) {
+        const width = Math.max(1, maxX - minX);
+        const height = Math.max(1, maxY - minY);
+        const margin = 90;
+        const sx = Math.max(0.1, (rect.width - margin) / width);
+        const sy = Math.max(0.1, (rect.height - margin) / height);
+        const nextScale = Math.min(sx, sy);
+        state.scale = Math.max(0.35, Math.min(1.5, nextScale));
+      }
+      const cx = (minX + maxX) * 0.5;
+      const cy = (minY + maxY) * 0.5;
+      state.panX = rect.width * 0.5 - cx * state.scale;
+      state.panY = rect.height * 0.5 - cy * state.scale;
+    }
+
+    function computeRanks(nodes, edges) {
+      const ids = nodes.map(node => node.id).sort();
+      const indeg = new Map(ids.map(id => [id, 0]));
+      const outgoing = new Map(ids.map(id => [id, []]));
+      for (const edge of edges) {
+        if (!indeg.has(edge.from) || !indeg.has(edge.to)) continue;
+        indeg.set(edge.to, indeg.get(edge.to) + 1);
+        outgoing.get(edge.from).push(edge.to);
+      }
+      let queue = ids.filter(id => indeg.get(id) === 0);
+      const rank = new Map(ids.map(id => [id, 0]));
+      while (queue.length > 0) {
+        queue.sort();
+        const id = queue.shift();
+        const base = rank.get(id) || 0;
+        for (const to of outgoing.get(id) || []) {
+          const next = base + 1;
+          if (next > (rank.get(to) || 0)) rank.set(to, next);
+          indeg.set(to, indeg.get(to) - 1);
+          if (indeg.get(to) === 0) queue.push(to);
+        }
+      }
+      let maxRank = 0;
+      for (const value of rank.values()) maxRank = Math.max(maxRank, value);
+      for (const id of ids) {
+        if ((indeg.get(id) || 0) > 0) {
+          maxRank += 1;
+          rank.set(id, maxRank);
+        }
+      }
+      return rank;
+    }
+
+    function optimizeLayerOrder(groups, ranks, edges) {
+      const outgoing = new Map();
+      const incoming = new Map();
+      for (const rank of ranks) {
+        for (const node of groups.get(rank) || []) {
+          outgoing.set(node.id, []);
+          incoming.set(node.id, []);
+        }
+      }
+      for (const edge of edges) {
+        if (!outgoing.has(edge.from) || !incoming.has(edge.to)) continue;
+        outgoing.get(edge.from).push(edge.to);
+        incoming.get(edge.to).push(edge.from);
+      }
+
+      const layers = new Map();
+      for (const rank of ranks) {
+        const layer = (groups.get(rank) || []).slice();
+        layer.sort((a, b) => a.label.localeCompare(b.label));
+        layers.set(rank, layer);
+      }
+
+      function indexMap(rank) {
+        const map = new Map();
+        const layer = layers.get(rank) || [];
+        layer.forEach((node, idx) => map.set(node.id, idx));
+        return map;
+      }
+
+      function barycenter(neighbors, refIndex) {
+        let sum = 0;
+        let count = 0;
+        for (const id of neighbors) {
+          const index = refIndex.get(id);
+          if (index == null) continue;
+          sum += index;
+          count += 1;
+        }
+        return count === 0 ? Number.POSITIVE_INFINITY : sum / count;
+      }
+
+      function countCrossingsBetween(upperRank, lowerRank) {
+        const upper = layers.get(upperRank) || [];
+        const lower = layers.get(lowerRank) || [];
+        if (upper.length <= 1 || lower.length <= 1) return 0;
+
+        const upperPos = new Map();
+        const lowerPos = new Map();
+        upper.forEach((node, idx) => upperPos.set(node.id, idx));
+        lower.forEach((node, idx) => lowerPos.set(node.id, idx));
+
+        const segments = [];
+        for (const fromNode of upper) {
+          const fromPos = upperPos.get(fromNode.id);
+          for (const toId of outgoing.get(fromNode.id) || []) {
+            const toPos = lowerPos.get(toId);
+            if (toPos == null) continue;
+            segments.push({ from: fromPos, to: toPos });
+          }
+        }
+        let crossings = 0;
+        for (let i = 0; i < segments.length; i++) {
+          const a = segments[i];
+          for (let j = i + 1; j < segments.length; j++) {
+            const b = segments[j];
+            if ((a.from - b.from) * (a.to - b.to) < 0) crossings += 1;
+          }
+        }
+        return crossings;
+      }
+
+      function localCrossingScore(rankIndex) {
+        const rank = ranks[rankIndex];
+        let score = 0;
+        if (rankIndex > 0) score += countCrossingsBetween(ranks[rankIndex - 1], rank);
+        if (rankIndex + 1 < ranks.length) score += countCrossingsBetween(rank, ranks[rankIndex + 1]);
+        return score;
+      }
+
+      function reduceCrossingsByAdjacentSwaps(rankIndex) {
+        const rank = ranks[rankIndex];
+        const layer = layers.get(rank) || [];
+        if (layer.length <= 2) return;
+        let improved = true;
+        while (improved) {
+          improved = false;
+          for (let i = 0; i + 1 < layer.length; i++) {
+            const before = localCrossingScore(rankIndex);
+            const left = layer[i];
+            layer[i] = layer[i + 1];
+            layer[i + 1] = left;
+            const after = localCrossingScore(rankIndex);
+            if (after < before) {
+              improved = true;
+            } else {
+              const right = layer[i];
+              layer[i] = layer[i + 1];
+              layer[i + 1] = right;
+            }
+          }
+        }
+      }
+
+      for (let pass = 0; pass < 8; pass++) {
+        for (let idx = 1; idx < ranks.length; idx++) {
+          const rank = ranks[idx];
+          const prev = ranks[idx - 1];
+          const prevIndex = indexMap(prev);
+          const layer = layers.get(rank) || [];
+          layer.sort((a, b) => {
+            const ac = barycenter(incoming.get(a.id) || [], prevIndex);
+            const bc = barycenter(incoming.get(b.id) || [], prevIndex);
+            return ac === bc ? a.label.localeCompare(b.label) : ac - bc;
+          });
+        }
+        for (let idx = ranks.length - 2; idx >= 0; idx--) {
+          const rank = ranks[idx];
+          const next = ranks[idx + 1];
+          const nextIndex = indexMap(next);
+          const layer = layers.get(rank) || [];
+          layer.sort((a, b) => {
+            const ac = barycenter(outgoing.get(a.id) || [], nextIndex);
+            const bc = barycenter(outgoing.get(b.id) || [], nextIndex);
+            return ac === bc ? a.label.localeCompare(b.label) : ac - bc;
+          });
+        }
+        for (let idx = 1; idx < ranks.length - 1; idx++) {
+          reduceCrossingsByAdjacentSwaps(idx);
+        }
+      }
+      return layers;
+    }
+
+    function applyPresetLayout(layout, recenter) {
+      const nodes = visibleNodes();
+      if (nodes.length === 0) return;
+      const edges = visibleEdges();
+      if (layout === 'force') {
+        if (recenter) centerViewport(nodes, true);
+        return;
+      }
+
+      const rankById = computeRanks(nodes, edges);
+      const groups = new Map();
+      for (const node of nodes) {
+        const rank = rankById.get(node.id) || 0;
+        if (!groups.has(rank)) groups.set(rank, []);
+        groups.get(rank).push(node);
+      }
+      const ranks = Array.from(groups.keys()).sort((a, b) => a - b);
+      const layers = optimizeLayerOrder(groups, ranks, edges);
+
+      const majorGap = 220;
+      const baseMinorGap = 185;
+      for (const rank of ranks) {
+        const layer = layers.get(rank) || [];
+        const maxLabelChars = layer.reduce((max, node) => Math.max(max, node.label.length), 4);
+        const minorGap = Math.max(baseMinorGap, maxLabelChars * 11 + 44);
+        const span = (layer.length - 1) * minorGap;
+        for (let idx = 0; idx < layer.length; idx++) {
+          const node = layer[idx];
+          const minor = idx * minorGap - span * 0.5;
+          if (layout === 'top-down') {
+            node.x = minor;
+            node.y = rank * majorGap;
+          } else {
+            node.x = rank * majorGap;
+            node.y = minor;
+          }
+          node.vx = 0;
+          node.vy = 0;
+        }
+      }
+
+      if (recenter) centerViewport(nodes, true);
+    }
+
+    function relayoutVisibleGraph(recenter) {
+      if (state.layout === 'force') {
+        if (recenter) centerViewport(visibleNodes(), true);
+        requestDraw();
+        return;
+      }
+      applyPresetLayout(state.layout, recenter);
+      requestDraw();
+    }
+
+    function setLayout(layout, recenter, preservePositions = false) {
+      state.layout = layout;
+      layoutSelect.value = layout;
+      if (layout === 'force') {
+        if (recenter) centerViewport(visibleNodes(), true);
+        startForceLoop();
+        requestDraw();
+      } else {
+        stopForceLoop();
+        if (preservePositions) {
+          if (recenter) centerViewport(visibleNodes(), true);
+          requestDraw();
+        } else {
+          relayoutVisibleGraph(recenter);
+        }
+      }
+      schedulePersist();
+    }
+
+    function stableNodeHash(id) {
+      let hash = 0;
+      for (let idx = 0; idx < id.length; idx++) {
+        hash = ((hash * 33) ^ id.charCodeAt(idx)) >>> 0;
+      }
+      return hash;
+    }
+
+    function autoLayoutVisibleGraph() {
+      const nodes = visibleNodes();
+      if (nodes.length === 0) return;
+
+      if (state.layout === 'force') {
+        stopForceLoop();
+        // Warm-start force from a DAG-aware layered ordering.
+        applyPresetLayout('top-down', false);
+        for (const node of nodes) {
+          const hash = stableNodeHash(node.id);
+          const jx = ((hash & 0xff) / 255 - 0.5) * 24;
+          const jy = (((hash >> 8) & 0xff) / 255 - 0.5) * 24;
+          node.x += jx;
+          node.y += jy;
+          node.vx = 0;
+          node.vy = 0;
+          node.fixed = false;
+        }
+        const iterations = Math.max(140, Math.min(520, nodes.length * 16));
+        for (let step = 0; step < iterations; step++) {
+          simulateForceStep();
+        }
+        centerViewport(nodes, true);
+        requestDraw();
+        startForceLoop();
+      } else {
+        relayoutVisibleGraph(true);
+      }
+
+      schedulePersist();
+    }
+
+    function nodeAtClientPoint(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+      let found = null;
+      let best = Number.POSITIVE_INFINITY;
+      for (const node of visibleNodes()) {
+        const center = worldToScreen(node.x, node.y);
+        const dims = nodeDimensionsPx(node);
+        const dx = sx - center.x;
+        const dy = sy - center.y;
+        if (Math.abs(dx) > dims.halfW || Math.abs(dy) > dims.halfH) continue;
+        const distance = dx * dx + dy * dy;
+        if (distance < best) {
+          best = distance;
+          found = node;
+        }
+      }
+      return found;
+    }
+
+    function hideNode(nodeId) {
+      if (!state.nodeById.has(nodeId)) return;
+      state.hiddenNodeIds.add(nodeId);
+      if (state.dragNodeId === nodeId) state.dragNodeId = null;
+      rebuildNodeMenus();
+      requestDraw();
+      schedulePersist();
+    }
+
+    function showNode(nodeId) {
+      state.hiddenNodeIds.delete(nodeId);
+      rebuildNodeMenus();
+      requestDraw();
+      schedulePersist();
+    }
+
+    function rebuildNodeMenus() {
+      buildHiddenNodeControls();
+    }
+
+    function updateCategoriesCount() {
+      if (!categoriesCount) return;
+      const total = GRAPH.kinds.length;
+      const enabled = state.enabledKinds.size;
+      categoriesCount.textContent = `${enabled}/${total}`;
+    }
+
+    function buildKindControls() {
+      kindList.innerHTML = '';
+      for (const kind of GRAPH.kinds) {
+        const row = document.createElement('label');
+        row.className = 'kind-item';
+
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = kind.fill;
+        row.appendChild(swatch);
+
+        const name = document.createElement('span');
+        name.className = 'kind-name';
+        name.textContent = kind.label;
+        row.appendChild(name);
+
+        const right = document.createElement('div');
+        right.style.display = 'flex';
+        right.style.gap = '8px';
+        right.style.alignItems = 'center';
+
+        const count = document.createElement('span');
+        count.className = 'count';
+        count.textContent = String(kind.count);
+        right.appendChild(count);
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = state.enabledKinds.has(kind.key);
+        cb.addEventListener('change', () => {
+          if (cb.checked) state.enabledKinds.add(kind.key);
+          else state.enabledKinds.delete(kind.key);
+          updateCategoriesCount();
+          requestDraw();
+          schedulePersist();
+        });
+        right.appendChild(cb);
+        row.appendChild(right);
+        kindList.appendChild(row);
+      }
+      updateCategoriesCount();
+    }
+
+    function buildHiddenNodeControls() {
+      hiddenNodeList.innerHTML = '';
+      const nodes = GRAPH.nodes
+        .filter(node => state.hiddenNodeIds.has(node.id))
+        .slice()
+        .sort((a, b) => a.label.localeCompare(b.label));
+      hiddenCount.textContent = String(nodes.length);
+      hiddenSection.open = nodes.length > 0;
+      if (nodes.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-list';
+        empty.textContent = 'No hidden nodes. Right-click a node in the graph to hide it.';
+        hiddenNodeList.appendChild(empty);
+        return;
+      }
+      for (const node of nodes) {
+        const row = document.createElement('div');
+        row.className = 'node-item';
+
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = node.fill;
+        row.appendChild(swatch);
+
+        const name = document.createElement('span');
+        name.textContent = node.label;
+        row.appendChild(name);
+
+        const show = document.createElement('button');
+        show.type = 'button';
+        show.textContent = 'Show';
+        show.addEventListener('click', () => showNode(node.id));
+        row.appendChild(show);
+        hiddenNodeList.appendChild(row);
+      }
+    }
+
+    function setAllKinds(enabled) {
+      if (enabled) state.enabledKinds = new Set(GRAPH.kinds.map(k => k.key));
+      else state.enabledKinds = new Set();
+      const checkboxes = kindList.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach((cb, idx) => {
+        cb.checked = enabled && idx < GRAPH.kinds.length;
+      });
+      updateCategoriesCount();
+      requestDraw();
+      schedulePersist();
+    }
+
+    canvas.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      const node = nodeAtClientPoint(event.clientX, event.clientY);
+      state.pointerStartX = event.clientX;
+      state.pointerStartY = event.clientY;
+      if (node) {
+        state.dragNodeId = node.id;
+        if (state.layout === 'force') node.fixed = true;
+      } else {
+        state.isPanning = true;
+        state.panStartX = state.panX;
+        state.panStartY = state.panY;
+        canvas.classList.add('grabbing');
+      }
+    });
+
+    canvas.addEventListener('contextmenu', (event) => {
+      const node = nodeAtClientPoint(event.clientX, event.clientY);
+      if (!node) return;
+      event.preventDefault();
+      hideNode(node.id);
+    });
+
+    window.addEventListener('mousemove', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      if (state.dragNodeId) {
+        const node = state.nodeById.get(state.dragNodeId);
+        if (!node) return;
+        const world = screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+        node.x = world.x;
+        node.y = world.y;
+        requestDraw();
+      } else if (state.isPanning) {
+        state.panX = state.panStartX + (event.clientX - state.pointerStartX);
+        state.panY = state.panStartY + (event.clientY - state.pointerStartY);
+        requestDraw();
+      } else {
+        const hovered = nodeAtClientPoint(event.clientX, event.clientY);
+        const hoveredId = hovered ? hovered.id : null;
+        if (hoveredId !== state.hoverNodeId) {
+          state.hoverNodeId = hoveredId;
+          requestDraw();
+        }
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      const changed = state.dragNodeId != null || state.isPanning;
+      state.dragNodeId = null;
+      state.isPanning = false;
+      canvas.classList.remove('grabbing');
+      if (changed) {
+        schedulePersist();
+      }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      if (state.hoverNodeId != null) {
+        state.hoverNodeId = null;
+        requestDraw();
+      }
+    });
+
+    canvas.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
+      const before = screenToWorld(mouseX, mouseY);
+      const factor = event.deltaY < 0 ? 1.08 : 0.92;
+      state.scale = Math.max(0.3, Math.min(3.5, state.scale * factor));
+      const after = worldToScreen(before.x, before.y);
+      state.panX += mouseX - after.x;
+      state.panY += mouseY - after.y;
+      requestDraw();
+      schedulePersist();
+    }, { passive: false });
+
+    allBtn.addEventListener('click', () => setAllKinds(true));
+    noneBtn.addEventListener('click', () => setAllKinds(false));
+    nodesShowAllBtn.addEventListener('click', () => {
+      state.hiddenNodeIds.clear();
+      rebuildNodeMenus();
+      requestDraw();
+      schedulePersist();
+    });
+    nodesHideAllBtn.addEventListener('click', () => {
+      for (const node of GRAPH.nodes) {
+        state.hiddenNodeIds.add(node.id);
+      }
+      rebuildNodeMenus();
+      requestDraw();
+      schedulePersist();
+    });
+    hoverTraceToggle.addEventListener('change', () => {
+      state.hoverTraceEnabled = hoverTraceToggle.checked;
+      requestDraw();
+      schedulePersist();
+    });
+    saveViewBtn.addEventListener('click', () => {
+      const current = savedViewSelect.value || 'default';
+      const rawName = window.prompt('Save view as', current);
+      if (!rawName) return;
+      const name = rawName.trim();
+      if (!name) return;
+      state.savedViews.set(name, {
+        name,
+        updatedAt: Date.now(),
+        snapshot: captureSnapshot(),
+      });
+      saveSavedViews();
+      refreshSavedViewControls(name);
+      schedulePersist();
+    });
+    loadViewBtn.addEventListener('click', () => {
+      const name = savedViewSelect.value;
+      if (!name) return;
+      const entry = state.savedViews.get(name);
+      if (!entry) return;
+      if (!applySnapshot(entry.snapshot, { includeViewport: true })) return;
+      hoverTraceToggle.checked = state.hoverTraceEnabled;
+      buildKindControls();
+      rebuildNodeMenus();
+      setLayout(state.layout, false, true);
+      requestDraw();
+      schedulePersist();
+    });
+    deleteViewBtn.addEventListener('click', () => {
+      const name = savedViewSelect.value;
+      if (!name) return;
+      state.savedViews.delete(name);
+      saveSavedViews();
+      refreshSavedViewControls();
+    });
+    exportViewBtn.addEventListener('click', () => {
+      const payload = JSON.stringify(captureSnapshot(), null, 2);
+      const blob = new Blob([payload], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'crate-dag-default-view.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    });
+    autoLayoutBtn.addEventListener('click', () => autoLayoutVisibleGraph());
+    layoutSelect.addEventListener('change', () => setLayout(layoutSelect.value, true));
+    window.addEventListener('resize', resize);
+    window.addEventListener('beforeunload', persistLastViewNow);
+
+    seedLayout();
+    loadSavedViews();
+    applySharedDefaultView();
+    const restored = restoreLastView();
+    hoverTraceToggle.checked = state.hoverTraceEnabled;
+    refreshSavedViewControls();
+    buildKindControls();
+    rebuildNodeMenus();
+    resize();
+    if (restored) {
+      setLayout(state.layout, false, true);
+      requestDraw();
+    } else {
+      setLayout(state.layout, true);
+    }
+  </script>
+</body>
+</html>

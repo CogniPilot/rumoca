@@ -40,9 +40,9 @@ fn test_todae_inherits_scalarized_element_start_from_array_base() {
 
     let inherited = dae
         .algebraics
-        .get(&VarName::new("arr[1]"))
-        .or_else(|| dae.discrete_reals.get(&VarName::new("arr[1]")))
-        .or_else(|| dae.discrete_valued.get(&VarName::new("arr[1]")))
+        .get(&dae::VarName::new("arr[1]"))
+        .or_else(|| dae.discrete_reals.get(&dae::VarName::new("arr[1]")))
+        .or_else(|| dae.discrete_valued.get(&dae::VarName::new("arr[1]")))
         .and_then(|v| v.start.as_ref())
         .map(|expr| format!("{expr:?}"));
     assert_eq!(
@@ -61,8 +61,8 @@ fn test_todae_keeps_non_primitive_leaf_outputs() {
         VarName::new("leafOut"),
         flat::Variable {
             name: VarName::new("leafOut"),
-            causality: ast::Causality::Output(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: false,
             ..Default::default()
         },
@@ -71,15 +71,15 @@ fn test_todae_keeps_non_primitive_leaf_outputs() {
         VarName::new("u"),
         flat::Variable {
             name: VarName::new("u"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("leafOut")),
             rhs: Box::new(make_var_ref("u")),
         },
@@ -99,7 +99,7 @@ fn test_todae_keeps_non_primitive_leaf_outputs() {
     .expect("todae should keep non-primitive leaf output variables");
 
     assert!(
-        dae.outputs.contains_key(&VarName::new("leafOut")),
+        dae.outputs.contains_key(&dae::VarName::new("leafOut")),
         "non-primitive leaf outputs must be preserved in DAE output unknowns"
     );
 }
@@ -118,7 +118,7 @@ fn test_classify_equations_non_linearized_embedded_subscript_keeps_slice_size() 
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("matrix[1]")),
             rhs: Box::new(Expression::Array {
                 elements: vec![
@@ -138,8 +138,8 @@ fn test_classify_equations_non_linearized_embedded_subscript_keeps_slice_size() 
 
     let mut dae = Dae::new();
     dae.algebraics.insert(
-        VarName::new("matrix"),
-        Variable::new(VarName::new("matrix")),
+        dae::VarName::new("matrix"),
+        Variable::new(dae::VarName::new("matrix")),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -163,7 +163,7 @@ fn test_todae_classifies_clocked_flat_assignment_as_discrete_real_and_routes_to_
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("d")),
             rhs: Box::new(Expression::FunctionCall {
                 name: VarName::new("previous"),
@@ -187,11 +187,12 @@ fn test_todae_classifies_clocked_flat_assignment_as_discrete_real_and_routes_to_
     .expect("clocked assignment should convert");
 
     assert!(
-        dae.discrete_reals.contains_key(&name),
+        dae.discrete_reals
+            .contains_key(&flat_to_dae_var_name(&name)),
         "clocked assignment target must be discrete"
     );
     assert!(
-        !dae.algebraics.contains_key(&name),
+        !dae.algebraics.contains_key(&flat_to_dae_var_name(&name)),
         "clocked assignment target must not remain algebraic"
     );
     assert!(
@@ -243,7 +244,7 @@ fn test_todae_routes_if_lhs_clocked_assignment_with_supersample_to_f_z() {
     };
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(lhs_if),
             rhs: Box::new(rhs_if),
         },
@@ -263,7 +264,7 @@ fn test_todae_routes_if_lhs_clocked_assignment_with_supersample_to_f_z() {
     .expect("if-lhs clocked superSample assignment should convert");
 
     assert!(
-        dae.discrete_reals.contains_key(&VarName::new("d")),
+        dae.discrete_reals.contains_key(&dae::VarName::new("d")),
         "clocked if-assignment target must be discrete"
     );
     assert!(
@@ -310,7 +311,8 @@ fn test_todae_routes_clocked_binding_out_of_fx_even_without_discrete_type_flag()
     .expect("clocked binding must not remain in f_x");
 
     assert!(
-        dae.discrete_reals.contains_key(&VarName::new("usedFactor")),
+        dae.discrete_reals
+            .contains_key(&dae::VarName::new("usedFactor")),
         "clocked binding variable should be classified as discrete real"
     );
     assert!(
@@ -322,7 +324,7 @@ fn test_todae_routes_clocked_binding_out_of_fx_even_without_discrete_type_flag()
     assert!(
         dae.f_z
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&VarName::new("usedFactor"))),
+            .any(|eq| eq.lhs.as_ref() == Some(&dae::VarName::new("usedFactor"))),
         "clocked binding must be routed to discrete-real updates"
     );
 }
@@ -362,13 +364,14 @@ fn test_todae_routes_discrete_valued_clocked_binding_to_fm() {
     .expect("clocked discrete-valued binding should convert");
 
     assert!(
-        dae.discrete_valued.contains_key(&VarName::new("ticks")),
+        dae.discrete_valued
+            .contains_key(&dae::VarName::new("ticks")),
         "discrete-valued variable must be classified into m partition"
     );
     assert!(
         dae.f_m
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&VarName::new("ticks"))),
+            .any(|eq| eq.lhs.as_ref() == Some(&dae::VarName::new("ticks"))),
         "clocked discrete-valued binding must be emitted as explicit f_m assignment"
     );
 }
@@ -396,7 +399,7 @@ fn test_todae_routes_clocked_tuple_assignment_to_f_z() {
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(Expression::Tuple {
                 elements: vec![make_var_ref("noise"), make_var_ref("seedState")],
             }),
@@ -425,8 +428,11 @@ fn test_todae_routes_clocked_tuple_assignment_to_f_z() {
     )
     .expect("clocked tuple assignment should convert");
 
-    assert!(dae.discrete_reals.contains_key(&VarName::new("noise")));
-    assert!(dae.discrete_valued.contains_key(&VarName::new("seedState")));
+    assert!(dae.discrete_reals.contains_key(&dae::VarName::new("noise")));
+    assert!(
+        dae.discrete_valued
+            .contains_key(&dae::VarName::new("seedState"))
+    );
     assert!(
         dae.f_x.is_empty(),
         "clocked tuple assignment should not remain in f_x"
@@ -446,7 +452,7 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
         VarName::new("samplePeriod"),
         flat::Variable {
             name: VarName::new("samplePeriod"),
-            variability: ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
             binding: Some(Expression::Literal(Literal::Real(0.1))),
             is_primitive: true,
             ..Default::default()
@@ -456,7 +462,7 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
         VarName::new("r"),
         flat::Variable {
             name: VarName::new("r"),
-            causality: ast::Causality::Output(ast::Token::default()),
+            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
             is_primitive: true,
             ..Default::default()
         },
@@ -491,7 +497,7 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
     .expect("algorithm when sample assignment should lower to discrete partition");
 
     assert!(
-        dae.discrete_reals.contains_key(&VarName::new("r")),
+        dae.discrete_reals.contains_key(&dae::VarName::new("r")),
         "algorithm when-assigned Real output must be discrete"
     );
     assert!(
@@ -501,7 +507,7 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
     assert!(
         dae.f_z
             .iter()
-            .any(|eq| eq.lhs.as_ref() == Some(&VarName::new("r"))),
+            .any(|eq| eq.lhs.as_ref() == Some(&dae::VarName::new("r"))),
         "algorithm when-assigned Real output must be routed to f_z"
     );
 }
@@ -522,7 +528,7 @@ fn add_tick_based_discrete_vars(flat: &mut Model) {
         VarName::new("startTick"),
         flat::Variable {
             name: VarName::new("startTick"),
-            variability: ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
             binding: Some(Expression::Literal(Literal::Integer(4))),
             is_primitive: true,
             ..Default::default()
@@ -540,7 +546,7 @@ fn previous_call(name: &str) -> Expression {
 
 fn sub_expr(lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
@@ -548,7 +554,7 @@ fn sub_expr(lhs: Expression, rhs: Expression) -> Expression {
 
 fn add_expr(lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Add(ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Add(rumoca_ir_core::Token::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
@@ -556,7 +562,7 @@ fn add_expr(lhs: Expression, rhs: Expression) -> Expression {
 
 fn ge_expr(lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Ge(ast::Token::default()),
+        op: rumoca_ir_flat::OpBinary::Ge(rumoca_ir_core::Token::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
@@ -633,10 +639,13 @@ fn test_todae_routes_zero_minus_if_discrete_assignments_to_f_m() {
             panic!("clocked if-residual assignment should convert ({label}): {err:?}")
         });
 
-        assert!(dae.discrete_valued.contains_key(&VarName::new("counter")));
         assert!(
             dae.discrete_valued
-                .contains_key(&VarName::new("startOutput"))
+                .contains_key(&dae::VarName::new("counter"))
+        );
+        assert!(
+            dae.discrete_valued
+                .contains_key(&dae::VarName::new("startOutput"))
         );
         assert_eq!(
             dae.f_m.len(),
@@ -656,22 +665,42 @@ fn test_top_level_connector_members_use_component_anchoring() {
     flat.top_level_connectors.insert("controlBus".to_string());
 
     for (name, causality, from_expandable_connector) in [
-        ("controlBus.axis1", ast::Causality::Empty, true),
-        ("path.controlBus.axis1", ast::Causality::Empty, true),
-        ("axis.controlBus.axis1", ast::Causality::Empty, true),
-        ("controlBus.axis2", ast::Causality::Empty, true),
-        ("path.controlBus.axis2", ast::Causality::Empty, true),
-        ("controlBus.axis3", ast::Causality::Empty, true),
-        ("path.controlBus.axis3", ast::Causality::Empty, true),
-        ("axis.controlBus.axis3", ast::Causality::Empty, true),
+        ("controlBus.axis1", rumoca_ir_core::Causality::Empty, true),
+        (
+            "path.controlBus.axis1",
+            rumoca_ir_core::Causality::Empty,
+            true,
+        ),
+        (
+            "axis.controlBus.axis1",
+            rumoca_ir_core::Causality::Empty,
+            true,
+        ),
+        ("controlBus.axis2", rumoca_ir_core::Causality::Empty, true),
+        (
+            "path.controlBus.axis2",
+            rumoca_ir_core::Causality::Empty,
+            true,
+        ),
+        ("controlBus.axis3", rumoca_ir_core::Causality::Empty, true),
+        (
+            "path.controlBus.axis3",
+            rumoca_ir_core::Causality::Empty,
+            true,
+        ),
+        (
+            "axis.controlBus.axis3",
+            rumoca_ir_core::Causality::Empty,
+            true,
+        ),
         (
             "sink.u",
-            ast::Causality::Input(ast::Token::default()),
+            rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
             false,
         ),
         (
             "internal.source",
-            ast::Causality::Output(ast::Token::default()),
+            rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
             false,
         ),
     ] {
@@ -679,7 +708,7 @@ fn test_top_level_connector_members_use_component_anchoring() {
             VarName::new(name),
             flat::Variable {
                 name: VarName::new(name),
-                variability: ast::Variability::Empty,
+                variability: rumoca_ir_core::Variability::Empty,
                 causality,
                 is_primitive: true,
                 connected: true,
@@ -729,7 +758,7 @@ fn test_top_level_connector_members_use_component_anchoring() {
 
     let dae = to_dae(&flat).expect("to_dae should succeed");
     assert_eq!(
-        dae.balance(),
+        rumoca_eval_dae::analysis::balance(&dae),
         0,
         "component-anchored and unanchored connector sets should both balance"
     );
@@ -750,7 +779,7 @@ fn test_classify_equations_linearized_embedded_subscript_is_scalarized() {
     for idx in 1..=4 {
         flat.add_equation(rumoca_ir_flat::Equation {
             residual: Expression::Binary {
-                op: ast::OpBinary::Sub(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
                 lhs: Box::new(make_var_ref(&format!("interp[{idx}]"))),
                 rhs: Box::new(Expression::Literal(Literal::Integer(idx.into()))),
             },
@@ -764,8 +793,8 @@ fn test_classify_equations_linearized_embedded_subscript_is_scalarized() {
 
     let mut dae = Dae::new();
     dae.algebraics.insert(
-        VarName::new("interp"),
-        Variable::new(VarName::new("interp")),
+        dae::VarName::new("interp"),
+        Variable::new(dae::VarName::new("interp")),
     );
 
     let prefix_counts = build_prefix_counts(&flat);
@@ -783,8 +812,8 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
         VarName::new("inner.flag"),
         flat::Variable {
             name: VarName::new("inner.flag"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
@@ -794,8 +823,8 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
         VarName::new("inner.flagAlias"),
         flat::Variable {
             name: VarName::new("inner.flagAlias"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
@@ -813,7 +842,7 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
     .expect("to_dae should succeed for connected discrete input aliases");
 
     for name in ["inner.flag", "inner.flagAlias"] {
-        let var = VarName::new(name);
+        let var = dae::VarName::new(name);
         assert!(
             dae.discrete_valued.contains_key(&var),
             "discrete connected input {name} should be classified to m"
@@ -830,7 +859,7 @@ fn test_connected_discrete_input_alias_keeps_discrete_partition() {
         "connected discrete input alias must contribute one discrete-valued equation"
     );
     assert_eq!(
-        dae.balance(),
+        rumoca_eval_dae::analysis::balance(&dae),
         0,
         "discrete connected input aliases must not affect continuous balance"
     );
@@ -843,8 +872,8 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
         VarName::new("inner.clocked"),
         flat::Variable {
             name: VarName::new("inner.clocked"),
-            causality: ast::Causality::Output(ast::Token::default()),
-            variability: ast::Variability::Discrete(ast::Token::default()),
+            causality: rumoca_ir_core::Causality::Output(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Discrete(rumoca_ir_core::Token::default()),
             is_primitive: true,
             ..Default::default()
         },
@@ -853,8 +882,8 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
         VarName::new("inner.u"),
         flat::Variable {
             name: VarName::new("inner.u"),
-            causality: ast::Causality::Input(ast::Token::default()),
-            variability: ast::Variability::Empty,
+            causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             ..Default::default()
         },
@@ -871,15 +900,16 @@ fn test_connected_real_input_propagates_discrete_partition_from_peer() {
     .expect("to_dae should succeed for connected clocked real inputs");
 
     assert!(
-        dae.discrete_reals.contains_key(&VarName::new("inner.u")),
+        dae.discrete_reals
+            .contains_key(&dae::VarName::new("inner.u")),
         "connected real input should become discrete when tied to a discrete peer"
     );
     assert!(
-        !dae.algebraics.contains_key(&VarName::new("inner.u")),
+        !dae.algebraics.contains_key(&dae::VarName::new("inner.u")),
         "connected real input should not remain continuous algebraic"
     );
     assert_eq!(
-        dae.balance(),
+        rumoca_eval_dae::analysis::balance(&dae),
         0,
         "discrete connection propagation should avoid continuous balance deficits"
     );
@@ -892,7 +922,7 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
         VarName::new("flag"),
         flat::Variable {
             name: VarName::new("flag"),
-            variability: ast::Variability::Discrete(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Discrete(rumoca_ir_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             start: Some(Expression::Literal(Literal::Boolean(false))),
@@ -903,7 +933,7 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
         VarName::new("x"),
         flat::Variable {
             name: VarName::new("x"),
-            variability: ast::Variability::Discrete(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Discrete(rumoca_ir_core::Token::default()),
             is_primitive: true,
             start: Some(Expression::Literal(Literal::Real(0.0))),
             ..Default::default()
@@ -933,18 +963,18 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
         .find(|eq| eq.lhs.as_ref().is_some_and(|name| name.as_str() == "x"))
         .expect("expected guarded when equation for x in f_z");
 
-    let Expression::If { branches, .. } = &guarded.rhs else {
+    let dae::Expression::If { branches, .. } = &guarded.rhs else {
         panic!("guarded when equation should lower to if-expression");
     };
     assert_eq!(branches.len(), 1);
     let cond = &branches[0].0;
-    let Expression::BuiltinCall { function, args } = cond else {
+    let dae::Expression::BuiltinCall { function, args } = cond else {
         panic!("guard condition should be lowered to edge(...)");
     };
-    assert_eq!(*function, BuiltinFunction::Edge);
+    assert_eq!(*function, dae::BuiltinFunction::Edge);
     assert_eq!(args.len(), 1);
     match &args[0] {
-        Expression::VarRef { name, subscripts } => {
+        dae::Expression::VarRef { name, subscripts } => {
             assert_eq!(name.as_str(), "flag");
             assert!(subscripts.is_empty());
         }
@@ -954,7 +984,7 @@ fn test_when_clause_guard_for_var_condition_uses_edge_activation() {
 
 fn make_lt_expr(lhs: &str, rhs: i64) -> Expression {
     Expression::Binary {
-        op: ast::OpBinary::Lt(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Lt(rumoca_ir_core::Token::default()),
         lhs: Box::new(make_var_ref(lhs)),
         rhs: Box::new(Expression::Literal(Literal::Integer(rhs))),
     }
@@ -974,7 +1004,7 @@ fn build_when_condition_alias_model(use_alias_guard: bool) -> Model {
         VarName::new("belowGround"),
         flat::Variable {
             name: VarName::new("belowGround"),
-            variability: ast::Variability::Discrete(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Discrete(rumoca_ir_core::Token::default()),
             is_discrete_type: true,
             is_primitive: true,
             ..Default::default()
@@ -991,7 +1021,7 @@ fn build_when_condition_alias_model(use_alias_guard: bool) -> Model {
 
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("belowGround")),
             rhs: Box::new(make_lt_expr("x", 0)),
         },
@@ -1018,7 +1048,7 @@ fn build_when_condition_alias_model(use_alias_guard: bool) -> Model {
     flat
 }
 
-fn extract_guard_expr_for_lhs<'a>(dae: &'a Dae, lhs: &str) -> &'a Expression {
+fn extract_guard_expr_for_lhs<'a>(dae: &'a Dae, lhs: &str) -> &'a dae::Expression {
     let guarded = dae
         .f_z
         .iter()
@@ -1026,7 +1056,7 @@ fn extract_guard_expr_for_lhs<'a>(dae: &'a Dae, lhs: &str) -> &'a Expression {
         .find(|eq| eq.lhs.as_ref().is_some_and(|name| name.as_str() == lhs))
         .expect("expected guarded equation target");
 
-    let Expression::If { branches, .. } = &guarded.rhs else {
+    let dae::Expression::If { branches, .. } = &guarded.rhs else {
         panic!("guarded equation should lower to if-expression");
     };
     branches
@@ -1072,9 +1102,9 @@ fn test_when_boolean_alias_guard_matches_inline_relational_guard() {
 
     let edge_alias_condition = format!(
         "{:?}",
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Edge,
-            args: vec![make_var_ref("belowGround")]
+        dae::Expression::BuiltinCall {
+            function: dae::BuiltinFunction::Edge,
+            args: vec![flat_to_dae_expression(&make_var_ref("belowGround"))]
         }
     );
     let relation_set = alias_dae

@@ -1,11 +1,12 @@
-//! Document formatting handler via rumoca-tool-fmt.
+//! Document formatting handler via session analysis API.
 
 use lsp_types::{Position, Range, TextEdit};
+use rumoca_session::analysis::{FormatOptions, format_source};
 
 /// Handle document formatting request.
 pub fn handle_formatting(source: &str) -> Option<Vec<TextEdit>> {
-    let options = rumoca_tool_fmt::FormatOptions::default();
-    let formatted = rumoca_tool_fmt::format(source, &options).ok()?;
+    let options = FormatOptions::default();
+    let formatted = format_source(source, &options).ok()?;
 
     if formatted == source {
         return None;

@@ -7,15 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-flat = { workspace = true }
+rumoca-ir-core = { workspace = true }
 minijinja = { workspace = true }
 miette = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-rumoca-ir-ast = { workspace = true }
 
 [lints]
 workspace = true

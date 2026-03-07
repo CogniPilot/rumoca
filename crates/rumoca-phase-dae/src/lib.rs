@@ -27,6 +27,7 @@ mod binding_conversion;
 mod classification;
 mod condition_lowering;
 mod connector_input_analysis;
+mod convert;
 mod definition_analysis;
 mod discrete_partition;
 mod equation_conversion;
@@ -48,6 +49,10 @@ use algorithm_lowering::{
     route_discrete_event_equations,
 };
 use condition_lowering::populate_canonical_conditions;
+pub(crate) use convert::{
+    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_function_map,
+    flat_to_dae_var_name,
+};
 use indexmap::{IndexMap, IndexSet};
 #[cfg(test)]
 use path_utils::strip_subscript;
@@ -57,7 +62,6 @@ use path_utils::{
 };
 use reference_validation::{validate_dae_constructor_field_projections, validate_dae_references};
 use rumoca_core::Span;
-use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use runtime_precompute::populate_runtime_precompute;
@@ -83,7 +87,7 @@ type Statement = flat::Statement;
 type StatementBlock = flat::StatementBlock;
 type Subscript = flat::Subscript;
 type VarName = flat::VarName;
-type Variability = ast::Variability;
+type Variability = rumoca_ir_core::Variability;
 
 /// Options controlling ToDAE conversion strictness.
 #[derive(Debug, Clone, Copy)]
@@ -110,7 +114,8 @@ fn filter_state_variables(der_vars: HashSet<VarName>, flat: &Model) -> HashSet<V
         .into_iter()
         .filter(|name| {
             flat.variables.get(name).is_none_or(|v| {
-                !matches!(&v.causality, ast::Causality::Input(_)) || is_internal_input(name, flat)
+                !matches!(&v.causality, rumoca_ir_core::Causality::Input(_))
+                    || is_internal_input(name, flat)
             })
         })
         .collect()
@@ -176,7 +181,7 @@ fn extract_equation_lhs(residual: &Expression) -> Option<VarName> {
         return None;
     };
 
-    if !matches!(op, ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
         return None;
     }
 
@@ -194,7 +199,7 @@ fn connection_alias_pair(eq: &flat::Equation) -> Option<(VarName, VarName)> {
     let Expression::Binary { op, lhs, rhs } = &eq.residual else {
         return None;
     };
-    if !matches!(op, ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
         return None;
     }
     let Expression::VarRef { name: lhs_name, .. } = lhs.as_ref() else {
@@ -384,7 +389,8 @@ fn is_continuous_unknown(flat: &Model, state_vars: &HashSet<VarName>, name: &Var
         || flat.variables.get(name).is_some_and(|v| {
             !matches!(
                 v.variability,
-                rumoca_ir_ast::Variability::Constant(_) | rumoca_ir_ast::Variability::Parameter(_)
+                rumoca_ir_flat::Variability::Constant(_)
+                    | rumoca_ir_flat::Variability::Parameter(_)
             )
         })
 }
@@ -400,7 +406,7 @@ fn is_internal_input(name: &VarName, flat: &Model) -> bool {
         Some(v) => v,
         None => return false,
     };
-    if !matches!(&var.causality, ast::Causality::Input(_)) {
+    if !matches!(&var.causality, rumoca_ir_core::Causality::Input(_)) {
         return false;
     }
     // Sub-component inputs (with dots) are internal, UNLESS the top-level
@@ -574,7 +580,7 @@ fn find_discrete_connected_internal_inputs(
     for (name, var) in &flat.variables {
         if is_when_only_var(name, when_only_vars)
             || var.is_discrete_type
-            || matches!(var.variability, ast::Variability::Discrete(_))
+            || matches!(var.variability, rumoca_ir_core::Variability::Discrete(_))
         {
             visited.insert(name.clone());
             queue.push_back(name.clone());
@@ -712,7 +718,7 @@ fn find_equation_defined_inputs(flat: &Model) -> HashSet<VarName> {
         let Expression::Binary { op, lhs, rhs } = &eq.residual else {
             continue;
         };
-        if !matches!(op, ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             continue;
         }
         // Check LHS for internal input VarRef (always valid)
@@ -1127,7 +1133,7 @@ fn validate_flat_function_calls(flat: &Model) -> Result<(), ToDaeError> {
     for variable in flat.variables.values() {
         let is_param_or_const = matches!(
             variable.variability,
-            rumoca_ir_ast::Variability::Parameter(_) | rumoca_ir_ast::Variability::Constant(_)
+            rumoca_ir_flat::Variability::Parameter(_) | rumoca_ir_flat::Variability::Constant(_)
         );
         if is_param_or_const {
             continue;
@@ -1317,7 +1323,7 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
     lower_algorithms_to_equations(&mut dae, flat)?;
     canonicalize_discrete_assignment_equations(&mut dae);
     populate_canonical_conditions(&mut dae, flat);
-    dae.functions = flat.functions.clone();
+    dae.functions = flat_to_dae_function_map(&flat.functions);
     dae.enum_literal_ordinals = flat.enum_literal_ordinals.clone();
     populate_runtime_precompute(&mut dae)?;
     appendix_b_validation::validate_appendix_b_invariants(&dae)?;
@@ -1351,7 +1357,10 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
         .collect();
     validate_dae_references(&dae, &known_flat_var_names)?;
 
-    if options.error_on_unbalanced && !dae.is_partial && dae.balance() != 0 {
+    if options.error_on_unbalanced
+        && !dae.is_partial
+        && rumoca_eval_dae::analysis::balance(&dae) != 0
+    {
         let (equations, unknowns) = balance_counting::compute_balance_counts(&dae);
         return Err(ToDaeError::unbalanced(equations, unknowns));
     }
@@ -1431,13 +1440,13 @@ fn classify_variables(dae: &mut Dae, flat: &Model, inputs: &ClassificationInputs
         // Top-level connector members connected only to internal inputs act as
         // external values and should remain inputs (not algebraic unknowns).
         if inputs.connector_input_members.contains(name) {
-            dae.inputs.insert(name.clone(), dae_var);
+            dae.inputs.insert(flat_to_dae_var_name(name), dae_var);
             continue;
         }
 
         match kind {
             VariableKind::State => {
-                dae.states.insert(name.clone(), dae_var);
+                dae.states.insert(flat_to_dae_var_name(name), dae_var);
             }
             VariableKind::Algebraic => {
                 if has_clocked_or_event_binding(var) {
@@ -1455,10 +1464,11 @@ fn classify_variables(dae: &mut Dae, flat: &Model, inputs: &ClassificationInputs
                         insert_discrete_var(dae, name, dae_var, var);
                     }
                     AlgebraicCategory::DerivativeAlias => {
-                        dae.derivative_aliases.insert(name.clone(), dae_var);
+                        dae.derivative_aliases
+                            .insert(flat_to_dae_var_name(name), dae_var);
                     }
                     AlgebraicCategory::Regular => {
-                        dae.algebraics.insert(name.clone(), dae_var);
+                        dae.algebraics.insert(flat_to_dae_var_name(name), dae_var);
                     }
                 };
             }
@@ -1478,12 +1488,12 @@ fn classify_variables(dae: &mut Dae, flat: &Model, inputs: &ClassificationInputs
                 // Internal inputs that appear in der() are local dynamic unknowns.
                 // External interface inputs remain inputs (handled below).
                 if inputs.state_vars.contains(name) && is_internal_input(name, flat) {
-                    dae.states.insert(name.clone(), dae_var);
+                    dae.states.insert(flat_to_dae_var_name(name), dae_var);
                     continue;
                 }
                 // Connected inputs or inputs with bindings become algebraic (MLS §4.4.1)
                 if !(inputs.connected_inputs.contains(name) || var.binding.is_some()) {
-                    dae.inputs.insert(name.clone(), dae_var);
+                    dae.inputs.insert(flat_to_dae_var_name(name), dae_var);
                     continue;
                 }
 
@@ -1492,12 +1502,12 @@ fn classify_variables(dae: &mut Dae, flat: &Model, inputs: &ClassificationInputs
                 // algebraics creates false balance deficits because their
                 // defining equations are routed to f_m/f_z (MLS Appendix B).
                 let is_discrete_input = var.is_discrete_type
-                    || matches!(var.variability, ast::Variability::Discrete(_));
+                    || matches!(var.variability, rumoca_ir_core::Variability::Discrete(_));
                 if is_discrete_input {
                     insert_discrete_var(dae, name, dae_var, var);
                     continue;
                 }
-                dae.algebraics.insert(name.clone(), dae_var);
+                dae.algebraics.insert(flat_to_dae_var_name(name), dae_var);
             }
             VariableKind::Output => {
                 if is_when_only_var(name, inputs.when_only_vars)
@@ -1505,14 +1515,14 @@ fn classify_variables(dae: &mut Dae, flat: &Model, inputs: &ClassificationInputs
                 {
                     insert_discrete_var(dae, name, dae_var, var);
                 } else {
-                    dae.outputs.insert(name.clone(), dae_var);
+                    dae.outputs.insert(flat_to_dae_var_name(name), dae_var);
                 }
             }
             VariableKind::Parameter => {
-                dae.parameters.insert(name.clone(), dae_var);
+                dae.parameters.insert(flat_to_dae_var_name(name), dae_var);
             }
             VariableKind::Constant => {
-                dae.constants.insert(name.clone(), dae_var);
+                dae.constants.insert(flat_to_dae_var_name(name), dae_var);
             }
             VariableKind::Discrete => {
                 insert_discrete_var(dae, name, dae_var, var);
@@ -1555,10 +1565,10 @@ fn inherit_scalarized_start_from_base(
     }
 
     let projected_start = project_scalarized_start_expr(base_start, &base_name, name.as_str());
-    dae_var.start = Some(rewrite_start_expr_missing_refs(
+    dae_var.start = Some(flat_to_dae_expression(&rewrite_start_expr_missing_refs(
         &projected_start,
         known_var_names,
-    ));
+    )));
     if dae_var.fixed.is_none() {
         dae_var.fixed = base_var.fixed;
     }
@@ -1599,9 +1609,11 @@ fn insert_discrete_var(
     var: &flat::Variable,
 ) {
     if var.is_discrete_type {
-        dae.discrete_valued.insert(name.clone(), dae_var);
+        dae.discrete_valued
+            .insert(flat_to_dae_var_name(name), dae_var);
     } else {
-        dae.discrete_reals.insert(name.clone(), dae_var);
+        dae.discrete_reals
+            .insert(flat_to_dae_var_name(name), dae_var);
     }
 }
 fn convert_bindings_to_equations(

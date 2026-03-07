@@ -14,11 +14,11 @@ pub struct ParseSemanticError {
 }
 
 impl ParseSemanticError {
-    pub fn from_token(message: impl Into<String>, token: &ast::Token) -> Self {
+    pub fn from_token(message: impl Into<String>, token: &rumoca_ir_core::Token) -> Self {
         Self::from_location(message, &token.location)
     }
 
-    pub fn from_location(message: impl Into<String>, location: &ast::Location) -> Self {
+    pub fn from_location(message: impl Into<String>, location: &rumoca_ir_core::Location) -> Self {
         Self {
             message: message.into(),
             span: ast_location_to_span(location),
@@ -35,14 +35,17 @@ impl std::fmt::Display for ParseSemanticError {
 impl std::error::Error for ParseSemanticError {}
 
 /// Build an anyhow error that retains parse semantic span information.
-pub fn semantic_error_from_token(message: impl Into<String>, token: &ast::Token) -> anyhow::Error {
+pub fn semantic_error_from_token(
+    message: impl Into<String>,
+    token: &rumoca_ir_core::Token,
+) -> anyhow::Error {
     anyhow::Error::new(ParseSemanticError::from_token(message, token))
 }
 
 /// Build an anyhow error that retains parse semantic span information.
 pub fn semantic_error_from_location(
     message: impl Into<String>,
-    location: &ast::Location,
+    location: &rumoca_ir_core::Location,
 ) -> anyhow::Error {
     anyhow::Error::new(ParseSemanticError::from_location(message, location))
 }
@@ -50,7 +53,7 @@ pub fn semantic_error_from_location(
 /// Build a parse semantic error when a source location may be unavailable.
 pub fn semantic_error_from_optional_location(
     message: impl Into<String>,
-    location: Option<&ast::Location>,
+    location: Option<&rumoca_ir_core::Location>,
 ) -> anyhow::Error {
     let message = message.into();
     match location {
@@ -591,7 +594,7 @@ fn location_to_span(loc: &parol_runtime::lexer::Location) -> Span {
     Span::new(SourceId(0), start, end)
 }
 
-fn ast_location_to_span(location: &ast::Location) -> Span {
+fn ast_location_to_span(location: &rumoca_ir_core::Location) -> Span {
     let start = BytePos(location.start as usize);
     let mut end = BytePos(location.end as usize);
     if end.0 <= start.0 {

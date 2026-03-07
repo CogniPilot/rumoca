@@ -97,7 +97,7 @@ fn evaluate_component_condition_with_depth(
 
     // Case 3: Unary 'not' operator
     if let ast::Expression::Unary { op, rhs } = condition
-        && matches!(op, rumoca_ir_ast::OpUnary::Not(_))
+        && matches!(op, rumoca_ir_core::OpUnary::Not(_))
         && let Some(inner) = evaluate_component_condition_with_depth(
             rhs,
             mod_env,
@@ -203,7 +203,7 @@ fn build_qualified_path(comp_ref: &ast::ComponentReference) -> ast::QualifiedNam
 /// MLS §4.8: Conditional component conditions must be evaluable at compile time.
 /// Supports enum comparison, integer comparison, and relational operators.
 fn eval_binary_condition(
-    op: &rumoca_ir_ast::OpBinary,
+    op: &rumoca_ir_core::OpBinary,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
@@ -221,7 +221,7 @@ fn eval_binary_condition(
         |e| try_eval_integer_expr_with_depth(e, mod_env, effective_components, tree, depth + 1);
 
     match op {
-        ast::OpBinary::Or(_) => {
+        rumoca_ir_core::OpBinary::Or(_) => {
             let (l, r) = (eval(lhs), eval(rhs));
             if l == Some(true) || r == Some(true) {
                 return Some(true);
@@ -230,7 +230,7 @@ fn eval_binary_condition(
                 return Some(false);
             }
         }
-        ast::OpBinary::And(_) => {
+        rumoca_ir_core::OpBinary::And(_) => {
             let (l, r) = (eval(lhs), eval(rhs));
             if l == Some(false) || r == Some(false) {
                 return Some(false);
@@ -239,7 +239,7 @@ fn eval_binary_condition(
                 return Some(true);
             }
         }
-        ast::OpBinary::Eq(_) => {
+        rumoca_ir_core::OpBinary::Eq(_) => {
             // Try enum comparison first, then fall back to integer comparison
             if let Some(val) = enum_eq() {
                 return Some(val);
@@ -248,7 +248,7 @@ fn eval_binary_condition(
                 return Some(l == r);
             }
         }
-        ast::OpBinary::Neq(_) => {
+        rumoca_ir_core::OpBinary::Neq(_) => {
             if let Some(val) = enum_eq() {
                 return Some(!val);
             }
@@ -256,22 +256,22 @@ fn eval_binary_condition(
                 return Some(l != r);
             }
         }
-        ast::OpBinary::Lt(_) => {
+        rumoca_ir_core::OpBinary::Lt(_) => {
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l < r);
             }
         }
-        ast::OpBinary::Le(_) => {
+        rumoca_ir_core::OpBinary::Le(_) => {
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l <= r);
             }
         }
-        ast::OpBinary::Gt(_) => {
+        rumoca_ir_core::OpBinary::Gt(_) => {
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l > r);
             }
         }
-        ast::OpBinary::Ge(_) => {
+        rumoca_ir_core::OpBinary::Ge(_) => {
             if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
                 return Some(l >= r);
             }
@@ -645,7 +645,7 @@ fn eval_scoped_string_condition_with_depth(
 
     match condition {
         ast::Expression::Unary {
-            op: rumoca_ir_ast::OpUnary::Not(_),
+            op: rumoca_ir_core::OpUnary::Not(_),
             rhs,
         } => recurse(rhs).map(|v| !v),
         ast::Expression::Parenthesized { inner } => recurse(inner),
@@ -686,7 +686,7 @@ struct ScopedEvalState<'a> {
 }
 
 fn eval_scoped_string_binary_condition(
-    op: &rumoca_ir_ast::OpBinary,
+    op: &rumoca_ir_core::OpBinary,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
@@ -695,7 +695,7 @@ fn eval_scoped_string_binary_condition(
     state: ScopedEvalState<'_>,
 ) -> Option<bool> {
     match op {
-        rumoca_ir_ast::OpBinary::Or(_) => eval_scoped_or(
+        rumoca_ir_core::OpBinary::Or(_) => eval_scoped_or(
             lhs,
             rhs,
             mod_env,
@@ -704,7 +704,7 @@ fn eval_scoped_string_binary_condition(
             state.scope_prefix,
             state.depth,
         ),
-        rumoca_ir_ast::OpBinary::And(_) => eval_scoped_and(
+        rumoca_ir_core::OpBinary::And(_) => eval_scoped_and(
             lhs,
             rhs,
             mod_env,
@@ -713,7 +713,7 @@ fn eval_scoped_string_binary_condition(
             state.scope_prefix,
             state.depth,
         ),
-        rumoca_ir_ast::OpBinary::Eq(_) => eval_scoped_enum_equality(
+        rumoca_ir_core::OpBinary::Eq(_) => eval_scoped_enum_equality(
             lhs,
             rhs,
             mod_env,
@@ -722,7 +722,7 @@ fn eval_scoped_string_binary_condition(
             state.scope_prefix,
             state.depth,
         ),
-        rumoca_ir_ast::OpBinary::Neq(_) => eval_scoped_enum_equality(
+        rumoca_ir_core::OpBinary::Neq(_) => eval_scoped_enum_equality(
             lhs,
             rhs,
             mod_env,
@@ -973,7 +973,7 @@ pub(crate) fn extract_bool_params_with_mods(
 
     for (name, comp) in effective_components {
         // Only look at boolean parameters
-        if !matches!(comp.variability, rumoca_ir_ast::Variability::Parameter(_)) {
+        if !matches!(comp.variability, rumoca_ir_core::Variability::Parameter(_)) {
             continue;
         }
 
@@ -1021,7 +1021,7 @@ pub(crate) fn extract_int_params_with_mods(
         // Only look at parameters (including constants which might have integer values)
         if !matches!(
             comp.variability,
-            rumoca_ir_ast::Variability::Parameter(_) | rumoca_ir_ast::Variability::Constant(_)
+            rumoca_ir_core::Variability::Parameter(_) | rumoca_ir_core::Variability::Constant(_)
         ) {
             continue;
         }
@@ -1270,8 +1270,8 @@ fn try_eval_integer_expr_with_depth_and_locals(
         ast::Expression::Unary { op, rhs } => {
             let r = recurse(rhs)?;
             match op {
-                rumoca_ir_ast::OpUnary::Minus(_) => Some(-r),
-                rumoca_ir_ast::OpUnary::Plus(_) => Some(r),
+                rumoca_ir_core::OpUnary::Minus(_) => Some(-r),
+                rumoca_ir_core::OpUnary::Plus(_) => Some(r),
                 _ => None,
             }
         }
@@ -1695,12 +1695,12 @@ fn extract_field_override_from_class_modification<'a>(
     resolved
 }
 
-fn eval_integer_binary(op: &rumoca_ir_ast::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
+fn eval_integer_binary(op: &rumoca_ir_core::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
     let operator = match op {
-        rumoca_ir_ast::OpBinary::Add(_) => IntegerBinaryOperator::Add,
-        rumoca_ir_ast::OpBinary::Sub(_) => IntegerBinaryOperator::Sub,
-        rumoca_ir_ast::OpBinary::Mul(_) => IntegerBinaryOperator::Mul,
-        rumoca_ir_ast::OpBinary::Div(_) => IntegerBinaryOperator::Div,
+        rumoca_ir_core::OpBinary::Add(_) => IntegerBinaryOperator::Add,
+        rumoca_ir_core::OpBinary::Sub(_) => IntegerBinaryOperator::Sub,
+        rumoca_ir_core::OpBinary::Mul(_) => IntegerBinaryOperator::Mul,
+        rumoca_ir_core::OpBinary::Div(_) => IntegerBinaryOperator::Div,
         _ => return None,
     };
     eval_common_integer_binary(operator, lhs, rhs)

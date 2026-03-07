@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
+use crate::flat_to_dae_var_name;
 use crate::path_utils::subscript_fallback_chain;
 
 /// Resolve a variable reference name against a DAE variable set.
@@ -45,22 +46,27 @@ pub(crate) fn extract_varref_name(expr: &flat::Expression) -> Option<flat::VarNa
 }
 
 pub(crate) fn is_dae_input_name(dae: &dae::Dae, name: &flat::VarName) -> bool {
-    resolve_var_name_with_subscript_fallback(name, |n| dae.inputs.contains_key(n)).is_some()
+    resolve_var_name_with_subscript_fallback(name, |n| {
+        dae.inputs.contains_key(&flat_to_dae_var_name(n))
+    })
+    .is_some()
 }
 
 pub(crate) fn is_dae_continuous_unknown_name(dae: &dae::Dae, name: &flat::VarName) -> bool {
     resolve_var_name_with_subscript_fallback(name, |n| {
-        dae.states.contains_key(n) || dae.algebraics.contains_key(n) || dae.outputs.contains_key(n)
+        dae.states.contains_key(&flat_to_dae_var_name(n))
+            || dae.algebraics.contains_key(&flat_to_dae_var_name(n))
+            || dae.outputs.contains_key(&flat_to_dae_var_name(n))
     })
     .is_some()
 }
 
 pub(crate) fn is_dae_fixed_value_name(dae: &dae::Dae, name: &flat::VarName) -> bool {
     resolve_var_name_with_subscript_fallback(name, |n| {
-        dae.parameters.contains_key(n)
-            || dae.constants.contains_key(n)
-            || dae.discrete_reals.contains_key(n)
-            || dae.discrete_valued.contains_key(n)
+        dae.parameters.contains_key(&flat_to_dae_var_name(n))
+            || dae.constants.contains_key(&flat_to_dae_var_name(n))
+            || dae.discrete_reals.contains_key(&flat_to_dae_var_name(n))
+            || dae.discrete_valued.contains_key(&flat_to_dae_var_name(n))
     })
     .is_some()
 }
@@ -87,8 +93,8 @@ mod tests {
     fn test_is_dae_input_name_uses_subscript_fallback() {
         let mut dae = dae::Dae::new();
         dae.inputs.insert(
-            flat::VarName::new("u"),
-            dae::Variable::new(flat::VarName::new("u")),
+            dae::VarName::new("u"),
+            dae::Variable::new(dae::VarName::new("u")),
         );
         assert!(is_dae_input_name(&dae, &flat::VarName::new("u[1]")));
     }

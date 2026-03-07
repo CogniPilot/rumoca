@@ -1,5 +1,8 @@
 use super::*;
 use crate::when_guard::when_guard_activation_expr;
+use crate::{
+    dae_to_flat_expression, dae_to_flat_var_name, flat_to_dae_expression, flat_to_dae_var_name,
+};
 mod substitution;
 use substitution::*;
 
@@ -12,24 +15,26 @@ fn discrete_equation_bucket_for_lhs(dae: &Dae, lhs: &VarName) -> Option<Discrete
     // MLS Appendix B notes reinit as a special case outside B.1b/B.1c.
     // Solver-facing DAE stores state resets in the event partition (`f_z`) so
     // runtime event updates can apply them without high-level when clauses.
-    if dae.states.contains_key(lhs)
+    if dae.states.contains_key(&flat_to_dae_var_name(lhs))
         || subscript_fallback_chain(lhs)
             .into_iter()
-            .any(|candidate| dae.states.contains_key(&candidate))
+            .any(|candidate| dae.states.contains_key(&flat_to_dae_var_name(&candidate)))
     {
         return Some(DiscreteEquationBucket::DiscreteReal);
     }
-    if dae.discrete_valued.contains_key(lhs)
-        || subscript_fallback_chain(lhs)
-            .into_iter()
-            .any(|candidate| dae.discrete_valued.contains_key(&candidate))
+    if dae.discrete_valued.contains_key(&flat_to_dae_var_name(lhs))
+        || subscript_fallback_chain(lhs).into_iter().any(|candidate| {
+            dae.discrete_valued
+                .contains_key(&flat_to_dae_var_name(&candidate))
+        })
     {
         return Some(DiscreteEquationBucket::DiscreteValued);
     }
-    if dae.discrete_reals.contains_key(lhs)
-        || subscript_fallback_chain(lhs)
-            .into_iter()
-            .any(|candidate| dae.discrete_reals.contains_key(&candidate))
+    if dae.discrete_reals.contains_key(&flat_to_dae_var_name(lhs))
+        || subscript_fallback_chain(lhs).into_iter().any(|candidate| {
+            dae.discrete_reals
+                .contains_key(&flat_to_dae_var_name(&candidate))
+        })
     {
         return Some(DiscreteEquationBucket::DiscreteReal);
     }
@@ -68,19 +73,28 @@ pub(super) fn route_discrete_event_equations(
     dae: &mut Dae,
     when_clause: &rumoca_ir_dae::WhenClause,
 ) {
+    let when_condition = dae_to_flat_expression(&when_clause.condition);
     for eq in &when_clause.equations {
         let Some(lhs) = &eq.lhs else {
             continue;
         };
+        let lhs = dae_to_flat_var_name(lhs);
+        let rhs = dae_to_flat_expression(&eq.rhs);
         let use_pre_else = !eq.origin.starts_with("reinit");
         let guarded = rumoca_ir_dae::Equation::explicit_with_scalar_count(
-            lhs.clone(),
-            guarded_when_rhs(dae, &when_clause.condition, lhs, &eq.rhs, use_pre_else),
+            flat_to_dae_var_name(&lhs),
+            flat_to_dae_expression(&guarded_when_rhs(
+                dae,
+                &when_condition,
+                &lhs,
+                &rhs,
+                use_pre_else,
+            )),
             eq.span,
             format!("guarded {}", eq.origin),
             eq.scalar_count,
         );
-        match discrete_equation_bucket_for_lhs(dae, lhs) {
+        match discrete_equation_bucket_for_lhs(dae, &lhs) {
             Some(DiscreteEquationBucket::DiscreteValued) => dae.f_m.push(guarded),
             Some(DiscreteEquationBucket::DiscreteReal) => dae.f_z.push(guarded),
             None => {}
@@ -158,7 +172,7 @@ fn rewrite_discrete_var_ref(
 }
 
 fn rewrite_discrete_binary_expr(
-    op: &ast::OpBinary,
+    op: &rumoca_ir_core::OpBinary,
     lhs: &Expression,
     rhs: &Expression,
     target: &VarName,
@@ -171,7 +185,7 @@ fn rewrite_discrete_binary_expr(
 }
 
 fn rewrite_discrete_unary_expr(
-    op: &ast::OpUnary,
+    op: &rumoca_ir_core::OpUnary,
     rhs: &Expression,
     target: &VarName,
 ) -> Expression {
@@ -346,7 +360,8 @@ fn choose_collision_keep_index(
     flipped_once: &std::collections::HashSet<(String, String, String)>,
 ) -> Option<usize> {
     for (idx, equation) in equations.iter().enumerate() {
-        let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+        let rhs_expr = dae_to_flat_expression(&equation.rhs);
+        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
             continue;
         };
         let reverse_key = flip_edge_key(&equation.origin, &rhs_target, lhs);
@@ -356,7 +371,8 @@ fn choose_collision_keep_index(
     }
 
     for (idx, equation) in equations.iter().enumerate() {
-        let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+        let rhs_expr = dae_to_flat_expression(&equation.rhs);
+        let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
             continue;
         };
         if anchored_targets.contains(&rhs_target) {
@@ -376,7 +392,8 @@ fn has_reverse_connection_alias(
             if !is_connection_equation_origin(&rhs_equation.origin) {
                 return false;
             }
-            discrete_assignment_rhs_var_name(&rhs_equation.rhs)
+            let rhs_expr = dae_to_flat_expression(&rhs_equation.rhs);
+            discrete_assignment_rhs_var_name(&rhs_expr)
                 .as_ref()
                 .is_some_and(|candidate| candidate == lhs)
         })
@@ -416,7 +433,8 @@ fn process_collision_equation(
     flipped_once: &mut std::collections::HashSet<(String, String, String)>,
     debug_canonicalize: bool,
 ) -> bool {
-    let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+    let rhs_expr = dae_to_flat_expression(&equation.rhs);
+    let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
         if debug_canonicalize {
             eprintln!(
                 "f_m canonicalize no-rhs-var lhs={} origin={}",
@@ -452,11 +470,11 @@ fn process_collision_equation(
 
     flipped_once.insert(flip_edge_key(&equation.origin, lhs, &rhs_target));
     let mut flipped = equation;
-    flipped.lhs = Some(resolved_target.clone());
-    flipped.rhs = Expression::VarRef {
+    flipped.lhs = Some(flat_to_dae_var_name(&resolved_target));
+    flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
         name: lhs.clone(),
         subscripts: vec![],
-    };
+    });
     if debug_canonicalize {
         eprintln!(
             "f_m canonicalize flip lhs={} -> lhs={} origin={}",
@@ -565,7 +583,10 @@ fn drain_grouped_discrete_assignments(
     let mut passthrough = Vec::new();
     for equation in dae.f_m.drain(..) {
         if let Some(lhs) = equation.lhs.as_ref() {
-            grouped.entry(lhs.clone()).or_default().push(equation);
+            grouped
+                .entry(dae_to_flat_var_name(lhs))
+                .or_default()
+                .push(equation);
         } else {
             passthrough.push(equation);
         }
@@ -591,18 +612,19 @@ fn reroute_connection_aliases_for_defined_targets(
             .iter()
             .filter(|equation| is_connection_equation_origin(&equation.origin))
         {
-            let Some(rhs_target) = discrete_assignment_rhs_var_name(&equation.rhs) else {
+            let rhs_expr = dae_to_flat_expression(&equation.rhs);
+            let Some(rhs_target) = discrete_assignment_rhs_var_name(&rhs_expr) else {
                 continue;
             };
             if keep_collision_equation_without_flip(dae, lhs, &rhs_target) {
                 continue;
             }
             let mut flipped = equation.clone();
-            flipped.lhs = Some(rhs_target.clone());
-            flipped.rhs = Expression::VarRef {
+            flipped.lhs = Some(flat_to_dae_var_name(&rhs_target));
+            flipped.rhs = flat_to_dae_expression(&Expression::VarRef {
                 name: lhs.clone(),
                 subscripts: vec![],
-            };
+            });
             rerouted.entry(rhs_target).or_default().push(flipped);
         }
     }
@@ -617,7 +639,9 @@ fn canonicalize_assignment_group(
 ) -> Vec<rumoca_ir_dae::Equation> {
     if equations.len() == 1 {
         let mut equation = equations.remove(0);
-        equation.rhs = rewrite_discrete_self_refs_to_pre(&equation.rhs, &lhs);
+        let rewritten =
+            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
+        equation.rhs = flat_to_dae_expression(&rewritten);
         return vec![equation];
     }
 
@@ -634,7 +658,9 @@ fn canonicalize_assignment_group(
     let mut seen_rhs = HashSet::<String>::default();
     let mut deduped = Vec::new();
     for mut equation in equations {
-        equation.rhs = rewrite_discrete_self_refs_to_pre(&equation.rhs, &lhs);
+        let rewritten =
+            rewrite_discrete_self_refs_to_pre(&dae_to_flat_expression(&equation.rhs), &lhs);
+        equation.rhs = flat_to_dae_expression(&rewritten);
         let rhs_key = format!("{:?}", equation.rhs);
         if seen_rhs.insert(rhs_key) {
             deduped.push(equation);
@@ -679,14 +705,15 @@ fn debug_log_final_duplicates(debug_canonicalize: bool, equations: &[rumoca_ir_d
 }
 
 fn lookup_algorithm_target_scalar_count(dae: &Dae, target: &VarName) -> usize {
+    let target_key = flat_to_dae_var_name(target);
     dae.states
-        .get(target)
-        .or_else(|| dae.algebraics.get(target))
-        .or_else(|| dae.outputs.get(target))
-        .or_else(|| dae.inputs.get(target))
-        .or_else(|| dae.discrete_reals.get(target))
-        .or_else(|| dae.discrete_valued.get(target))
-        .or_else(|| dae.derivative_aliases.get(target))
+        .get(&target_key)
+        .or_else(|| dae.algebraics.get(&target_key))
+        .or_else(|| dae.outputs.get(&target_key))
+        .or_else(|| dae.inputs.get(&target_key))
+        .or_else(|| dae.discrete_reals.get(&target_key))
+        .or_else(|| dae.discrete_valued.get(&target_key))
+        .or_else(|| dae.derivative_aliases.get(&target_key))
         .map(|var| var.size())
         .unwrap_or(1)
         .max(1)
@@ -739,7 +766,7 @@ fn not_expr(expr: Expression) -> Expression {
         return bool_expr(!flag);
     }
     Expression::Unary {
-        op: ast::OpUnary::Not(Default::default()),
+        op: rumoca_ir_core::OpUnary::Not(Default::default()),
         rhs: Box::new(expr),
     }
 }
@@ -755,7 +782,7 @@ fn and_expr(lhs: Expression, rhs: Expression) -> Expression {
         return lhs;
     }
     Expression::Binary {
-        op: ast::OpBinary::And(Default::default()),
+        op: rumoca_ir_core::OpBinary::And(Default::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
@@ -772,7 +799,7 @@ fn or_expr(lhs: Expression, rhs: Expression) -> Expression {
         return lhs;
     }
     Expression::Binary {
-        op: ast::OpBinary::Or(Default::default()),
+        op: rumoca_ir_core::OpBinary::Or(Default::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
@@ -907,13 +934,20 @@ fn current_target_expr(target: &VarName) -> Expression {
 }
 
 fn algorithm_if_fallback_expr(dae: &Dae, target: &VarName) -> Expression {
-    let is_discrete_target = dae.discrete_reals.contains_key(target)
-        || dae.discrete_valued.contains_key(target)
+    let is_discrete_target = dae
+        .discrete_reals
+        .contains_key(&flat_to_dae_var_name(target))
+        || dae
+            .discrete_valued
+            .contains_key(&flat_to_dae_var_name(target))
         || subscript_fallback_chain(target)
             .into_iter()
             .any(|candidate| {
-                dae.discrete_reals.contains_key(&candidate)
-                    || dae.discrete_valued.contains_key(&candidate)
+                dae.discrete_reals
+                    .contains_key(&flat_to_dae_var_name(&candidate))
+                    || dae
+                        .discrete_valued
+                        .contains_key(&flat_to_dae_var_name(&candidate))
             });
     if is_discrete_target {
         pre_target_expr(target)
@@ -988,8 +1022,12 @@ fn algorithm_assignment_to_target_expr(
                 else_value
             } else {
                 let target_name = target.as_ref()?;
-                if !dae.discrete_reals.contains_key(target_name)
-                    && !dae.discrete_valued.contains_key(target_name)
+                if !dae
+                    .discrete_reals
+                    .contains_key(&flat_to_dae_var_name(target_name))
+                    && !dae
+                        .discrete_valued
+                        .contains_key(&flat_to_dae_var_name(target_name))
                 {
                     return None;
                 }
@@ -1411,11 +1449,11 @@ fn lower_when_statement_to_event_equations(
     let mut lowered = Vec::with_capacity(targets.len());
     for (target, branches) in targets {
         let eq = rumoca_ir_dae::Equation::explicit_with_scalar_count(
-            target.clone(),
-            Expression::If {
+            flat_to_dae_var_name(&target),
+            flat_to_dae_expression(&Expression::If {
                 branches,
                 else_branch: Box::new(pre_target_expr(&target)),
-            },
+            }),
             Span::DUMMY,
             format!("algorithm when-assignment ({algorithm_origin})"),
             lookup_algorithm_target_scalar_count(dae, &target),
@@ -1458,13 +1496,13 @@ fn lower_algorithm_to_equations(
             subscripts: vec![],
         };
         let residual = Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(Default::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(Default::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(value),
         };
 
         lowered.main.push(rumoca_ir_dae::Equation::residual_array(
-            residual,
+            flat_to_dae_expression(&residual),
             span,
             format!("{} ({})", origin, algorithm.origin),
             lookup_algorithm_target_scalar_count(dae, &target),
@@ -1482,7 +1520,8 @@ fn route_lowered_when_equation(
     let Some(lhs) = eq.lhs.as_ref() else {
         return;
     };
-    match discrete_equation_bucket_for_lhs(dae, lhs) {
+    let lhs = dae_to_flat_var_name(lhs);
+    match discrete_equation_bucket_for_lhs(dae, &lhs) {
         Some(DiscreteEquationBucket::DiscreteValued) => lowered.f_m.push(eq),
         Some(DiscreteEquationBucket::DiscreteReal) => lowered.f_z.push(eq),
         None => lowered.main.push(eq),
@@ -1537,7 +1576,13 @@ mod tests {
     use super::*;
 
     fn explicit(lhs: &str, rhs: Expression, origin: &str) -> rumoca_ir_dae::Equation {
-        rumoca_ir_dae::Equation::explicit(VarName::new(lhs), rhs, Span::DUMMY, origin.to_string())
+        let lhs = VarName::new(lhs);
+        rumoca_ir_dae::Equation::explicit(
+            flat_to_dae_var_name(&lhs),
+            flat_to_dae_expression(&rhs),
+            Span::DUMMY,
+            origin.to_string(),
+        )
     }
 
     fn reaches_source_alias_chain(
@@ -1563,8 +1608,10 @@ mod tests {
     fn canonicalize_discrete_assignments_reroutes_connection_aliases_for_defined_target() {
         let mut dae = Dae::new();
         for name in ["y", "u", "v"] {
-            dae.discrete_valued
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            dae.discrete_valued.insert(
+                dae::VarName::new(name),
+                dae::Variable::new(dae::VarName::new(name)),
+            );
         }
 
         dae.f_m.push(explicit(
@@ -1600,7 +1647,8 @@ mod tests {
             };
             match lhs.as_str() {
                 "y" => {
-                    has_source |= matches!(eq.rhs, Expression::Literal(Literal::Integer(1)));
+                    has_source |=
+                        matches!(eq.rhs, dae::Expression::Literal(dae::Literal::Integer(1)));
                     assert!(
                         !is_connection_equation_origin(&eq.origin),
                         "y should keep only non-connection defining equation"
@@ -1609,14 +1657,14 @@ mod tests {
                 "u" => {
                     has_u_alias |= matches!(
                         eq.rhs,
-                        Expression::VarRef { ref name, ref subscripts }
+                        dae::Expression::VarRef { ref name, ref subscripts }
                             if name.as_str() == "y" && subscripts.is_empty()
                     );
                 }
                 "v" => {
                     has_v_alias |= matches!(
                         eq.rhs,
-                        Expression::VarRef { ref name, ref subscripts }
+                        dae::Expression::VarRef { ref name, ref subscripts }
                             if name.as_str() == "y" && subscripts.is_empty()
                     );
                 }
@@ -1633,8 +1681,10 @@ mod tests {
     fn canonicalize_discrete_assignments_resolves_reroute_target_collisions() {
         let mut dae = Dae::new();
         for name in ["y", "u", "v"] {
-            dae.discrete_valued
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            dae.discrete_valued.insert(
+                dae::VarName::new(name),
+                dae::Variable::new(dae::VarName::new(name)),
+            );
         }
 
         // Source definition + alias into u.
@@ -1672,21 +1722,22 @@ mod tests {
             if let Some(lhs) = eq.lhs.as_ref() {
                 *lhs_counts.entry(lhs.as_str().to_string()).or_default() += 1;
             }
-            match eq.lhs.as_ref().map(VarName::as_str) {
+            match eq.lhs.as_ref().map(|name| name.as_str()) {
                 Some("y") => {
-                    has_y_source |= matches!(eq.rhs, Expression::Literal(Literal::Integer(1)));
+                    has_y_source |=
+                        matches!(eq.rhs, dae::Expression::Literal(dae::Literal::Integer(1)));
                 }
                 Some("u") => {
                     has_u_from_y |= matches!(
                         eq.rhs,
-                        Expression::VarRef { ref name, ref subscripts }
+                        dae::Expression::VarRef { ref name, ref subscripts }
                             if name.as_str() == "y" && subscripts.is_empty()
                     );
                 }
                 Some("v") => {
                     has_v_from_u |= matches!(
                         eq.rhs,
-                        Expression::VarRef { ref name, ref subscripts }
+                        dae::Expression::VarRef { ref name, ref subscripts }
                             if name.as_str() == "u" && subscripts.is_empty()
                     );
                 }
@@ -1709,8 +1760,10 @@ mod tests {
     fn canonicalize_discrete_assignments_preserves_chain_connectivity_to_source() {
         let mut dae = Dae::new();
         for name in ["src", "a", "b", "c"] {
-            dae.discrete_valued
-                .insert(VarName::new(name), dae::Variable::new(VarName::new(name)));
+            dae.discrete_valued.insert(
+                dae::VarName::new(name),
+                dae::Variable::new(dae::VarName::new(name)),
+            );
         }
 
         // Source definition plus a connection chain that can oscillate under
@@ -1756,9 +1809,9 @@ mod tests {
             };
             *lhs_counts.entry(lhs.as_str().to_string()).or_default() += 1;
             if lhs.as_str() == "src" {
-                has_source |= matches!(eq.rhs, Expression::Literal(Literal::Integer(1)));
+                has_source |= matches!(eq.rhs, dae::Expression::Literal(dae::Literal::Integer(1)));
             }
-            if let Expression::VarRef { name, subscripts } = &eq.rhs
+            if let dae::Expression::VarRef { name, subscripts } = &eq.rhs
                 && subscripts.is_empty()
             {
                 aliases.insert(lhs.as_str().to_string(), name.as_str().to_string());

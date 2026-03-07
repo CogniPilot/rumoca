@@ -8,11 +8,17 @@ use std::sync::Mutex;
 use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
 use wasm_bindgen::prelude::*;
 
-use rumoca_ir_ast::{
-    Causality, ClassDef, ClassType, ComponentReference, Expression, OpBinary, StoredDefinition,
-    TerminalType, Variability,
-};
 use rumoca_session::Session;
+use rumoca_session::analysis::{LintOptions, lint_source};
+use rumoca_session::compile::CompilationResult;
+use rumoca_session::parsing::{
+    Causality, ClassDef, ClassType, ComponentReference, Expression, OpBinary, StoredDefinition,
+    TerminalType, Token, Variability, parse_source_to_ast, validate_source_syntax,
+};
+use rumoca_session::runtime::{
+    SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_for_target,
+    render_dae_template_with_json, simulate_dae,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -110,7 +116,7 @@ struct WasmClassInfo {
 /// Parse Modelica source code and return whether it's valid.
 #[wasm_bindgen]
 pub fn parse(source: &str) -> JsValue {
-    let result = match rumoca_phase_parse::parse_string(source, "input.mo") {
+    let result = match validate_source_syntax(source, "input.mo") {
         Ok(()) => ParseResult {
             success: true,
             error: None,
@@ -136,8 +142,8 @@ struct WasmLintMessage {
 /// Lint Modelica source code and return messages.
 #[wasm_bindgen]
 pub fn lint(source: &str) -> JsValue {
-    let options = rumoca_tool_lint::LintOptions::default();
-    let messages = rumoca_tool_lint::lint(source, "input.mo", &options);
+    let options = LintOptions::default();
+    let messages = lint_source(source, "input.mo", &options);
     let wasm_messages: Vec<WasmLintMessage> = messages
         .into_iter()
         .map(|m| WasmLintMessage {
@@ -155,7 +161,7 @@ pub fn lint(source: &str) -> JsValue {
 /// Check Modelica source code and return all diagnostics.
 #[wasm_bindgen]
 pub fn check(source: &str) -> JsValue {
-    if let Err(e) = rumoca_phase_parse::parse_string(source, "input.mo") {
+    if let Err(e) = validate_source_syntax(source, "input.mo") {
         let error = WasmLintMessage {
             rule: "syntax-error".to_string(),
             level: "error".to_string(),
@@ -507,10 +513,11 @@ fn augment_prepared_with_native_observables(
 }
 
 /// Build a rich compile response with DAE, balance info, and pretty output.
-fn build_compile_response(dae: &rumoca_session::Dae) -> Result<String, JsValue> {
+fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue> {
+    let dae = &result.dae;
     let dae_native_json = serde_json::to_value(dae).ok();
     let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rumoca_sim_diffsol::prepare_dae_for_template_codegen(dae, true)
+        prepare_dae_for_template_codegen(dae, true)
     }));
     let (dae_prepared, dae_prepared_error) = match prepared {
         Ok(Ok(prepped)) => {
@@ -542,7 +549,7 @@ fn build_compile_response(dae: &rumoca_session::Dae) -> Result<String, JsValue> 
     };
 
     let num_eqs = dae.num_equations();
-    let balance_val = dae.balance();
+    let balance_val = dae_balance(dae);
     let num_unknowns = num_eqs as i64 - balance_val;
     let balance = serde_json::json!({
         "is_balanced": balance_val == 0,
@@ -568,7 +575,7 @@ fn build_compile_response(dae: &rumoca_session::Dae) -> Result<String, JsValue> 
 fn compile_requested_model(
     session: &mut Session,
     model_name: &str,
-) -> Result<rumoca_session::CompilationResult, JsValue> {
+) -> Result<CompilationResult, JsValue> {
     session
         .compile_model(model_name)
         .map_err(|e| JsValue::from_str(&format!("Compilation error: {}", e)))
@@ -583,7 +590,7 @@ pub fn compile(source: &str, model_name: &str) -> Result<String, JsValue> {
     let session = lock.get_or_insert_with(Session::default);
     session.update_document("input.mo", source);
     let result = compile_requested_model(session, model_name)?;
-    build_compile_response(&result.dae)
+    build_compile_response(&result)
 }
 
 /// Compile Modelica source code to DAE JSON (alias for worker compatibility).
@@ -644,7 +651,7 @@ pub fn load_libraries(libraries_json: &str) -> Result<String, JsValue> {
 /// Parse a single library file and return serialized AST.
 #[wasm_bindgen]
 pub fn parse_library_file(source: &str, filename: &str) -> Result<String, JsValue> {
-    let def = rumoca_phase_parse::parse_to_ast(source, filename)
+    let def = parse_source_to_ast(source, filename)
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
     serde_json::to_string(&def)
         .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
@@ -694,7 +701,7 @@ fn class_type_label(class_type: &ClassType) -> String {
     class_type.as_str().to_string()
 }
 
-fn token_list_to_text(tokens: &[rumoca_ir_ast::Token]) -> Option<String> {
+fn token_list_to_text(tokens: &[Token]) -> Option<String> {
     let text = tokens
         .iter()
         .map(|tok| tok.text.as_ref())
@@ -978,23 +985,9 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, JsValue> {
 /// Load a DAE from JSON and generate code for a target.
 #[wasm_bindgen]
 pub fn generate_code(dae_json: &str, target: &str) -> Result<String, JsValue> {
-    use rumoca_phase_codegen::templates;
-    use rumoca_session::Dae;
-
-    let dae: Dae = serde_json::from_str(dae_json)
+    let dae_value: serde_json::Value = serde_json::from_str(dae_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {}", e)))?;
-
-    let template = match target {
-        "casadi" => templates::CASADI_SX,
-        "cyecca" => templates::CYECCA,
-        "julia" => templates::JULIA_MTK,
-        "c" => templates::C_CODE,
-        "jax" => templates::JAX,
-        "onnx" => templates::ONNX,
-        _ => return Err(JsValue::from_str(&format!("Unknown target: {}", target))),
-    };
-
-    rumoca_phase_codegen::render_template(&dae, template)
+    render_dae_template_for_target(&dae_value, target)
         .map_err(|e| JsValue::from_str(&format!("Code generation error: {}", e)))
 }
 
@@ -1003,7 +996,7 @@ pub fn generate_code(dae_json: &str, target: &str) -> Result<String, JsValue> {
 pub fn render_template(dae_json: &str, template: &str) -> Result<String, JsValue> {
     let dae_value: serde_json::Value = serde_json::from_str(dae_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {}", e)))?;
-    rumoca_phase_codegen::render_template_with_dae_json(&dae_value, template)
+    render_dae_template_with_json(&dae_value, template)
         .map_err(|e| JsValue::from_str(&format!("Template error: {}", e)))
 }
 
@@ -1026,7 +1019,7 @@ pub fn lsp_diagnostics(source: &str) -> Result<String, JsValue> {
 /// Get hover information for a position.
 #[wasm_bindgen]
 pub fn lsp_hover(source: &str, line: u32, character: u32) -> Result<String, JsValue> {
-    let ast = rumoca_phase_parse::parse_to_ast(source, "input.mo").ok();
+    let ast = parse_source_to_ast(source, "input.mo").ok();
     let hover = rumoca_tool_lsp::handle_hover(source, ast.as_ref(), line, character);
     serde_json::to_string(&hover).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
@@ -1034,7 +1027,7 @@ pub fn lsp_hover(source: &str, line: u32, character: u32) -> Result<String, JsVa
 /// Get code completion suggestions.
 #[wasm_bindgen]
 pub fn lsp_completion(source: &str, line: u32, character: u32) -> Result<String, JsValue> {
-    let ast = rumoca_phase_parse::parse_to_ast(source, "input.mo").ok();
+    let ast = parse_source_to_ast(source, "input.mo").ok();
     let lock = SESSION
         .lock()
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -1071,7 +1064,7 @@ pub fn lsp_definition(source: &str, line: u32, character: u32) -> Result<String,
 /// Get document symbols (outline).
 #[wasm_bindgen]
 pub fn lsp_document_symbols(source: &str) -> Result<String, JsValue> {
-    let ast = rumoca_phase_parse::parse_to_ast(source, "input.mo")
+    let ast = parse_source_to_ast(source, "input.mo")
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
     let symbols = rumoca_tool_lsp::handle_document_symbols(&ast);
     serde_json::to_string(&symbols).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
@@ -1108,7 +1101,7 @@ pub fn lsp_code_actions(
 /// Get semantic tokens for syntax highlighting.
 #[wasm_bindgen]
 pub fn lsp_semantic_tokens(source: &str) -> Result<String, JsValue> {
-    let ast = rumoca_phase_parse::parse_to_ast(source, "input.mo")
+    let ast = parse_source_to_ast(source, "input.mo")
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
     let tokens = rumoca_tool_lsp::handle_semantic_tokens(&ast);
     serde_json::to_string(&tokens).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
@@ -1133,8 +1126,6 @@ pub fn simulate_model(
     t_end: f64,
     dt: f64,
 ) -> Result<String, JsValue> {
-    use rumoca_sim_diffsol::{SimOptions, simulate};
-
     let mut lock = SESSION
         .lock()
         .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
@@ -1148,7 +1139,7 @@ pub fn simulate_model(
         dt: dt_opt,
         ..SimOptions::default()
     };
-    let sim = simulate(&result.dae, &opts)
+    let sim = simulate_dae(&result.dae, &opts)
         .map_err(|e| JsValue::from_str(&format!("Simulation error: {}", e)))?;
 
     let output = serde_json::json!({
@@ -1184,13 +1175,13 @@ mod tests {
 
     #[test]
     fn test_parse_valid() {
-        let result = rumoca_phase_parse::parse_string("model M Real x; end M;", "test.mo");
+        let result = validate_source_syntax("model M Real x; end M;", "test.mo");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_parse_invalid() {
-        let result = rumoca_phase_parse::parse_string("model M Real x end M;", "test.mo");
+        let result = validate_source_syntax("model M Real x end M;", "test.mo");
         assert!(result.is_err());
     }
 
@@ -1287,8 +1278,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_extract_documentation_annotation_fields_native() {
-        let parsed = rumoca_phase_parse::parse_to_ast(DOC_MODEL_SOURCE, "input.mo")
-            .expect("parse should succeed");
+        let parsed =
+            parse_source_to_ast(DOC_MODEL_SOURCE, "input.mo").expect("parse should succeed");
         let class =
             find_class_by_qualified_name(&parsed, "DocModel").expect("DocModel should be present");
         let docs = extract_documentation_fields(&class.annotation);

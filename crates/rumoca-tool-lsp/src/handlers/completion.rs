@@ -1,8 +1,10 @@
 //! Enhanced completion handler for Modelica files.
 
 use lsp_types::{CompletionItem, CompletionItemKind, Position};
-use rumoca_ir_ast as ast;
 use rumoca_session::Session;
+use rumoca_session::compile::core as rumoca_core;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 use std::collections::HashSet;
 
 use crate::helpers::{find_enclosing_class, get_text_before_cursor};
@@ -232,12 +234,11 @@ fn dot_completion(
     None
 }
 
-fn component_completion_kind(comp: &rumoca_ir_ast::Component) -> CompletionItemKind {
+fn component_completion_kind(comp: &ast::Component) -> CompletionItemKind {
     match (&comp.variability, &comp.causality) {
-        (ast::Variability::Parameter(_), _) | (ast::Variability::Constant(_), _) => {
-            CompletionItemKind::CONSTANT
-        }
-        (_, ast::Causality::Input(_)) | (_, ast::Causality::Output(_)) => {
+        (rumoca_ir_core::Variability::Parameter(_), _)
+        | (rumoca_ir_core::Variability::Constant(_), _) => CompletionItemKind::CONSTANT,
+        (_, rumoca_ir_core::Causality::Input(_)) | (_, rumoca_ir_core::Causality::Output(_)) => {
             CompletionItemKind::PROPERTY
         }
         _ => CompletionItemKind::VARIABLE,
@@ -497,9 +498,10 @@ fn keyword_completions(partial: &str) -> Vec<CompletionItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_session::parsing::parse_source_to_ast;
 
     fn parse_ast(source: &str) -> ast::StoredDefinition {
-        rumoca_phase_parse::parse_to_ast(source, "input.mo").expect("parse should succeed")
+        parse_source_to_ast(source, "input.mo").expect("parse should succeed")
     }
 
     #[test]

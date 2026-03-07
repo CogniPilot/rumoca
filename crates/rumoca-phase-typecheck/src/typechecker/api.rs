@@ -12,7 +12,7 @@ pub(crate) fn collect_structural_refs_from_equations(
         match eq {
             Equation::For { indices, equations } => {
                 for index in indices {
-                    refs.extend(eval::collect_variable_refs(&index.range));
+                    refs.extend(rumoca_eval_ast::eval::collect_variable_refs(&index.range));
                 }
                 collect_structural_refs_from_equations(equations, refs);
             }
@@ -21,7 +21,7 @@ pub(crate) fn collect_structural_refs_from_equations(
                 else_block,
             } => {
                 for block in cond_blocks {
-                    refs.extend(eval::collect_variable_refs(&block.cond));
+                    refs.extend(rumoca_eval_ast::eval::collect_variable_refs(&block.cond));
                     collect_structural_refs_from_equations(&block.eqs, refs);
                 }
                 if let Some(else_eqs) = else_block {

@@ -30,6 +30,7 @@
 
 mod algorithms;
 mod array_comprehension;
+mod ast_lower;
 mod boolean_eval;
 mod connections;
 #[cfg(test)]
@@ -64,8 +65,8 @@ type ClassInstanceData = ast::ClassInstanceData;
 type ClassTree = ast::ClassTree;
 type InstanceOverlay = ast::InstanceOverlay;
 type InstanceStatement = ast::InstanceStatement;
-type OpBinary = ast::OpBinary;
-type OpUnary = ast::OpUnary;
+type OpBinary = rumoca_ir_core::OpBinary;
+type OpUnary = rumoca_ir_core::OpUnary;
 type QualifiedName = ast::QualifiedName;
 type Algorithm = flat::Algorithm;
 type Expression = flat::Expression;
@@ -691,7 +692,7 @@ fn compute_closure_iterations(
 /// This replaces hardcoded constant values with values from the actual parsed library.
 fn resolve_constants_from_tree(
     tree: &ast::ClassTree,
-    eval_ctx: &mut rumoca_eval_const::EvalContext,
+    eval_ctx: &mut rumoca_eval_flat::constant::EvalContext,
 ) {
     // Well-known constant packages to resolve.
     // ModelicaServices.Machine must come first since Modelica.Constants.eps
@@ -711,7 +712,7 @@ fn resolve_constants_from_tree(
                 continue;
             };
             let flat_binding = qualify_expression(binding, &ast::QualifiedName::new());
-            let Ok(val) = rumoca_eval_const::eval_expr(&flat_binding, eval_ctx) else {
+            let Ok(val) = rumoca_eval_flat::constant::eval_expr(&flat_binding, eval_ctx) else {
                 continue;
             };
             eval_ctx.add_parameter(qualified, val);
@@ -1515,7 +1516,7 @@ fn extract_extends_modification_expr(
             );
         } else if let ast::Expression::ComponentReference(_) = &qualified_value {
             let symbolic =
-                rumoca_ir_flat::Expression::from_ast_with_def_map(&qualified_value, None);
+                crate::ast_lower::expression_from_ast_with_def_map(&qualified_value, None);
             insert_with_prefix(
                 &mut ctx.constant_values,
                 prefix,
@@ -1555,7 +1556,7 @@ fn extract_constants_from_class_with_prefix(
     for (name, comp) in &class_def.components {
         if !matches!(
             comp.variability,
-            ast::Variability::Constant(_) | ast::Variability::Parameter(_)
+            rumoca_ir_core::Variability::Constant(_) | rumoca_ir_core::Variability::Parameter(_)
         ) {
             continue;
         }
@@ -1713,7 +1714,7 @@ fn synthesize_component_modification_binding(comp: &ast::Component) -> Option<as
             .to_string()
             .split('.')
             .map(|part| ast::ComponentRefPart {
-                ident: ast::Token {
+                ident: rumoca_ir_core::Token {
                     text: std::sync::Arc::from(part),
                     ..Default::default()
                 },
@@ -1726,7 +1727,7 @@ fn synthesize_component_modification_binding(comp: &ast::Component) -> Option<as
         .modifications
         .iter()
         .map(|(field, value)| ast::Expression::NamedArgument {
-            name: ast::Token {
+            name: rumoca_ir_core::Token {
                 text: std::sync::Arc::from(field.as_str()),
                 ..Default::default()
             },
@@ -1794,10 +1795,10 @@ mod nested_class_constant_scope_tests {
     use super::*;
     use std::sync::Arc;
 
-    fn token(text: &str) -> ast::Token {
-        ast::Token {
+    fn token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: Arc::from(text.to_string()),
-            ..ast::Token::default()
+            ..rumoca_ir_core::Token::default()
         }
     }
 
@@ -1829,7 +1830,9 @@ mod nested_class_constant_scope_tests {
             ast::Component {
                 name: "nX".to_string(),
                 type_name: ast::Name::from_string("Integer"),
-                variability: ast::Variability::Parameter(ast::Token::default()),
+                variability: rumoca_ir_core::Variability::Parameter(
+                    rumoca_ir_core::Token::default(),
+                ),
                 binding: Some(unsigned_integer("2")),
                 has_explicit_binding: true,
                 ..Default::default()
@@ -1847,7 +1850,7 @@ mod nested_class_constant_scope_tests {
             type_name: ast::Name::from_string(
                 "Modelica.Electrical.Batteries.ParameterRecords.ExampleData",
             ),
-            variability: ast::Variability::Parameter(ast::Token::default()),
+            variability: rumoca_ir_core::Variability::Parameter(rumoca_ir_core::Token::default()),
             ..Default::default()
         };
         leaked_component

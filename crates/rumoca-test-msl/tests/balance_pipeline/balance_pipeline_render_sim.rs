@@ -6,7 +6,7 @@ use super::*;
 
 pub(super) fn maybe_render_model_outputs(
     name: &str,
-    result: &rumoca_session::CompilationResult,
+    result: &rumoca_session::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
 ) {
     if !msl_render_enabled() {
@@ -61,7 +61,7 @@ pub(super) fn simulation_stop_time_override() -> Option<f64> {
 }
 
 pub(super) fn simulation_settings_from_result(
-    result: &rumoca_session::CompilationResult,
+    result: &rumoca_session::compile::CompilationResult,
 ) -> SimExecutionSettings {
     let mut t_start = result
         .experiment_start_time
@@ -103,7 +103,7 @@ pub(super) fn simulation_settings_from_result(
 
 pub(super) fn maybe_run_simulation(
     name: &str,
-    result: &rumoca_session::CompilationResult,
+    result: &rumoca_session::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
     remaining_budget_secs: Option<f64>,
 ) -> Option<MslSimModelResult> {

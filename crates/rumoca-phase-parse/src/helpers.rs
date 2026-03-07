@@ -4,7 +4,7 @@ use crate::generated::modelica_grammar_trait;
 use std::sync::Arc;
 
 /// Helper to format location info from a token for error messages
-pub fn loc_info(token: &rumoca_ir_ast::Token) -> String {
+pub(crate) fn loc_info(token: &rumoca_ir_core::Token) -> String {
     let loc = &token.location;
     format!(
         " at {}:{}:{}",
@@ -13,11 +13,11 @@ pub fn loc_info(token: &rumoca_ir_ast::Token) -> String {
 }
 
 /// Create a location spanning from the start of one token to the end of another
-pub fn span_location(
-    start: &rumoca_ir_ast::Token,
-    end: &rumoca_ir_ast::Token,
-) -> rumoca_ir_ast::Location {
-    rumoca_ir_ast::Location {
+pub(crate) fn span_location(
+    start: &rumoca_ir_core::Token,
+    end: &rumoca_ir_core::Token,
+) -> rumoca_ir_core::Location {
+    rumoca_ir_core::Location {
         start_line: start.location.start_line,
         start_column: start.location.start_column,
         end_line: end.location.end_line,
@@ -30,7 +30,7 @@ pub fn span_location(
 
 /// Helper to collect elements from array_arguments into an Expression
 /// Handles both simple arrays like {1, 2, 3} and array comprehensions like {i for i in 1:10}
-pub fn collect_array_elements(
+pub(crate) fn collect_array_elements(
     args: &modelica_grammar_trait::ArrayArguments,
 ) -> anyhow::Result<rumoca_ir_ast::Expression> {
     // Check if this is an array comprehension or a simple array
@@ -73,7 +73,7 @@ pub fn collect_array_elements(
 }
 
 /// Convert grammar ForIndices to AST ForIndex vec
-pub fn convert_for_indices(
+pub(crate) fn convert_for_indices(
     indices: &modelica_grammar_trait::ForIndices,
 ) -> Vec<rumoca_ir_ast::ForIndex> {
     let mut result = Vec::new();
@@ -104,7 +104,7 @@ fn convert_for_index(index: &modelica_grammar_trait::ForIndex) -> rumoca_ir_ast:
 }
 
 /// Helper to recursively collect elements from array_arguments_non_first chain
-pub fn collect_array_non_first(
+pub(crate) fn collect_array_non_first(
     args: &modelica_grammar_trait::ArrayArgumentsNonFirst,
     elements: &mut Vec<rumoca_ir_ast::Expression>,
 ) {

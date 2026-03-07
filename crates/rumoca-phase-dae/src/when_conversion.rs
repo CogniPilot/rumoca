@@ -7,7 +7,10 @@ use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
-use crate::{ToDaeError, compute_var_size, resolve_embedded_subscript_size};
+use crate::{
+    ToDaeError, compute_var_size, dae_to_flat_expression, dae_to_flat_var_name,
+    flat_to_dae_expression, flat_to_dae_var_name, resolve_embedded_subscript_size,
+};
 
 /// Compute scalar count for a when-equation target variable.
 fn when_target_scalar_count(target: &flat::VarName, flat: &flat::Model) -> usize {
@@ -45,8 +48,8 @@ fn build_when_assignment_eq(
         return None;
     }
     Some(dae::Equation::explicit_with_scalar_count(
-        target.clone(),
-        rhs.clone(),
+        flat_to_dae_var_name(target),
+        flat_to_dae_expression(rhs),
         span,
         origin.to_string(),
         scalar_count,
@@ -63,6 +66,7 @@ fn insert_when_assignment(
             "internal error: when-equation conversion produced equation without LHS",
         ));
     };
+    let target = dae_to_flat_var_name(&target);
 
     if assignments.insert(target.clone(), equation).is_some() {
         return Err(ToDaeError::internal(format!(
@@ -99,7 +103,7 @@ fn build_conditional_when_rhs(
         .map(|(condition, assignments)| {
             let rhs = assignments
                 .get(target)
-                .map(|eq| eq.rhs.clone())
+                .map(|eq| dae_to_flat_expression(&eq.rhs))
                 .unwrap_or_else(|| pre_of_target(target));
             (condition.clone(), rhs)
         })
@@ -107,7 +111,7 @@ fn build_conditional_when_rhs(
 
     let else_rhs = else_branch
         .get(target)
-        .map(|eq| eq.rhs.clone())
+        .map(|eq| dae_to_flat_expression(&eq.rhs))
         .unwrap_or_else(|| pre_of_target(target));
 
     flat::Expression::If {
@@ -164,8 +168,11 @@ pub(crate) fn convert_when_clause(
     state_vars: &HashSet<flat::VarName>,
     flat: &flat::Model,
 ) -> Result<dae::WhenClause, ToDaeError> {
-    let mut dae_when =
-        dae::WhenClause::new(when.condition.clone(), when.span, "when clause".to_string());
+    let mut dae_when = dae::WhenClause::new(
+        flat_to_dae_expression(&when.condition),
+        when.span,
+        "when clause".to_string(),
+    );
 
     for weq in &when.equations {
         for dae_eq in convert_when_equation(weq, state_vars, flat)? {
@@ -248,8 +255,10 @@ mod tests {
         let mut assignments = IndexMap::new();
         let target = flat::VarName::new("x");
         let eq = dae::Equation::explicit(
-            target.clone(),
-            flat::Expression::Literal(rumoca_ir_flat::Literal::Integer(1)),
+            flat_to_dae_var_name(&target),
+            flat_to_dae_expression(&flat::Expression::Literal(
+                rumoca_ir_flat::Literal::Integer(1),
+            )),
             Span::default(),
             "test".to_string(),
         );

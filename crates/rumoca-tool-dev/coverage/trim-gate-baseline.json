@@ -36,24 +36,6 @@
       "dead_likely_candidates": 5,
       "needs_targeted_test_candidates": 4
     },
-    "rumoca-eval-compiled": {
-      "zero_count_functions_total": 171,
-      "candidates_total": 118,
-      "dead_likely_candidates": 49,
-      "needs_targeted_test_candidates": 55
-    },
-    "rumoca-eval-const": {
-      "zero_count_functions_total": 183,
-      "candidates_total": 101,
-      "dead_likely_candidates": 54,
-      "needs_targeted_test_candidates": 25
-    },
-    "rumoca-eval-runtime": {
-      "zero_count_functions_total": 634,
-      "candidates_total": 205,
-      "dead_likely_candidates": 80,
-      "needs_targeted_test_candidates": 91
-    },
     "rumoca-ir-ast": {
       "zero_count_functions_total": 416,
       "candidates_total": 181,
@@ -108,7 +90,7 @@
       "dead_likely_candidates": 9,
       "needs_targeted_test_candidates": 10
     },
-    "rumoca-phase-structural": {
+    "rumoca-phase-solve": {
       "zero_count_functions_total": 16,
       "candidates_total": 14,
       "dead_likely_candidates": 8,
@@ -126,17 +108,11 @@
       "dead_likely_candidates": 5,
       "needs_targeted_test_candidates": 20
     },
-    "rumoca-sim-core": {
-      "zero_count_functions_total": 383,
-      "candidates_total": 299,
-      "dead_likely_candidates": 67,
-      "needs_targeted_test_candidates": 86
-    },
-    "rumoca-sim-diffsol": {
-      "zero_count_functions_total": 260,
-      "candidates_total": 153,
-      "dead_likely_candidates": 39,
-      "needs_targeted_test_candidates": 37
+    "rumoca-sim": {
+      "zero_count_functions_total": 643,
+      "candidates_total": 452,
+      "dead_likely_candidates": 106,
+      "needs_targeted_test_candidates": 123
     },
     "rumoca-test-msl": {
       "zero_count_functions_total": 516,

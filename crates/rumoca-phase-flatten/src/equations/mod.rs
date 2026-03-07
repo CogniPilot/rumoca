@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 // Conditional tracing support (SPEC_0024)
-use rumoca_eval_const::{EvalContext, Value};
+use rumoca_eval_flat::constant::{EvalContext, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 #[cfg(feature = "tracing")]
@@ -32,10 +32,10 @@ type ComponentRefPart = ast::ComponentRefPart;
 type ComponentReference = ast::ComponentReference;
 type EquationBlock = ast::EquationBlock;
 type ForIndex = ast::ForIndex;
-type OpBinary = ast::OpBinary;
+type OpBinary = rumoca_ir_core::OpBinary;
 type QualifiedName = ast::QualifiedName;
 type TerminalType = ast::TerminalType;
-type Token = ast::Token;
+type Token = rumoca_ir_core::Token;
 #[cfg(test)]
 type InstanceEquation = ast::InstanceEquation;
 type AssertEquation = flat::AssertEquation;
@@ -43,7 +43,7 @@ type AssertEquation = flat::AssertEquation;
 /// Result of flattening equations, containing both regular equations and when-clauses.
 /// This is needed because for/if-equations can contain when-equations inside them.
 #[derive(Default)]
-pub struct FlattenedEquations {
+pub(crate) struct FlattenedEquations {
     /// Regular flat equations (continuous, discrete)
     pub equations: Vec<flat::Equation>,
     /// Preserved `for`-equation grouping metadata (MLS §8.3.3).
@@ -456,7 +456,7 @@ fn infer_size_constant_from_dims(
 }
 
 /// Flatten an equation with optional def-map canonicalization for function references.
-pub fn flatten_equation_with_def_map(
+pub(crate) fn flatten_equation_with_def_map(
     ctx: &Context,
     inst_eq: &ast::InstanceEquation,
     prefix: &ast::QualifiedName,
@@ -676,7 +676,7 @@ fn make_residual(
 ) -> flat::Expression {
     // Create: lhs - rhs
     let residual = ast::Expression::Binary {
-        op: ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Arc::new(lhs.clone()),
         rhs: Arc::new(rhs.clone()),
     };
@@ -1045,6 +1045,48 @@ fn combine_elementwise_shapes(lhs: ExpressionShape, rhs: ExpressionShape) -> Exp
     }
 }
 
+fn infer_scalar_rhs_shape(
+    lhs_shape: ExpressionShape,
+    rhs_shape: ExpressionShape,
+) -> ExpressionShape {
+    match (lhs_shape, rhs_shape) {
+        (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
+        (ExpressionShape::Vector(n), ExpressionShape::Scalar) => ExpressionShape::Vector(n),
+        (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar) => ExpressionShape::Matrix(r, c),
+        _ => ExpressionShape::Other,
+    }
+}
+
+fn infer_binary_shape(
+    op: &rumoca_ir_core::OpBinary,
+    lhs_shape: ExpressionShape,
+    rhs_shape: ExpressionShape,
+) -> ExpressionShape {
+    match op {
+        rumoca_ir_core::OpBinary::Add(_)
+        | rumoca_ir_core::OpBinary::Sub(_)
+        | rumoca_ir_core::OpBinary::AddElem(_)
+        | rumoca_ir_core::OpBinary::SubElem(_) => combine_additive_shapes(lhs_shape, rhs_shape),
+        rumoca_ir_core::OpBinary::Mul(_) => combine_mul_shapes(lhs_shape, rhs_shape),
+        rumoca_ir_core::OpBinary::MulElem(_)
+        | rumoca_ir_core::OpBinary::DivElem(_)
+        | rumoca_ir_core::OpBinary::ExpElem(_) => combine_elementwise_shapes(lhs_shape, rhs_shape),
+        rumoca_ir_core::OpBinary::Div(_) | rumoca_ir_core::OpBinary::Exp(_) => {
+            infer_scalar_rhs_shape(lhs_shape, rhs_shape)
+        }
+        rumoca_ir_core::OpBinary::Eq(_)
+        | rumoca_ir_core::OpBinary::Neq(_)
+        | rumoca_ir_core::OpBinary::Lt(_)
+        | rumoca_ir_core::OpBinary::Le(_)
+        | rumoca_ir_core::OpBinary::Gt(_)
+        | rumoca_ir_core::OpBinary::Ge(_)
+        | rumoca_ir_core::OpBinary::And(_)
+        | rumoca_ir_core::OpBinary::Or(_)
+        | rumoca_ir_core::OpBinary::Assign(_)
+        | rumoca_ir_core::OpBinary::Empty => ExpressionShape::Scalar,
+    }
+}
+
 fn infer_expression_shape(
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
@@ -1059,47 +1101,7 @@ fn infer_expression_shape(
         ast::Expression::Binary { op, lhs, rhs } => {
             let lhs_shape = infer_expression_shape(lhs, prefix, ctx);
             let rhs_shape = infer_expression_shape(rhs, prefix, ctx);
-            match op {
-                ast::OpBinary::Add(_)
-                | ast::OpBinary::Sub(_)
-                | ast::OpBinary::AddElem(_)
-                | ast::OpBinary::SubElem(_) => combine_additive_shapes(lhs_shape, rhs_shape),
-                ast::OpBinary::Mul(_) => combine_mul_shapes(lhs_shape, rhs_shape),
-                ast::OpBinary::MulElem(_) => combine_elementwise_shapes(lhs_shape, rhs_shape),
-                ast::OpBinary::Div(_) => match (lhs_shape, rhs_shape) {
-                    (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
-                    (ExpressionShape::Vector(n), ExpressionShape::Scalar) => {
-                        ExpressionShape::Vector(n)
-                    }
-                    (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar) => {
-                        ExpressionShape::Matrix(r, c)
-                    }
-                    _ => ExpressionShape::Other,
-                },
-                ast::OpBinary::DivElem(_) | ast::OpBinary::ExpElem(_) => {
-                    combine_elementwise_shapes(lhs_shape, rhs_shape)
-                }
-                ast::OpBinary::Exp(_) => match (lhs_shape, rhs_shape) {
-                    (ExpressionShape::Scalar, ExpressionShape::Scalar) => ExpressionShape::Scalar,
-                    (ExpressionShape::Vector(n), ExpressionShape::Scalar) => {
-                        ExpressionShape::Vector(n)
-                    }
-                    (ExpressionShape::Matrix(r, c), ExpressionShape::Scalar) => {
-                        ExpressionShape::Matrix(r, c)
-                    }
-                    _ => ExpressionShape::Other,
-                },
-                ast::OpBinary::Eq(_)
-                | ast::OpBinary::Neq(_)
-                | ast::OpBinary::Lt(_)
-                | ast::OpBinary::Le(_)
-                | ast::OpBinary::Gt(_)
-                | ast::OpBinary::Ge(_)
-                | ast::OpBinary::And(_)
-                | ast::OpBinary::Or(_)
-                | ast::OpBinary::Assign(_)
-                | ast::OpBinary::Empty => ExpressionShape::Scalar,
-            }
+            infer_binary_shape(op, lhs_shape, rhs_shape)
         }
         ast::Expression::FunctionCall { comp, .. } => {
             if is_reduction_operator(comp) {
@@ -1793,7 +1795,7 @@ fn add_subscript_to_component_ref(
     if let Some(last) = new_cr.parts.last_mut() {
         let sub = ast::Subscript::Expression(ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
-            token: ast::Token {
+            token: rumoca_ir_core::Token {
                 text: std::sync::Arc::from(index.to_string()),
                 ..Default::default()
             },

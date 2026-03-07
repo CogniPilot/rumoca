@@ -344,7 +344,7 @@ impl Resolver {
     fn resolve_selective_names(
         &self,
         pkg_qualified: &str,
-        names: &[ast::Token],
+        names: &[rumoca_ir_core::Token],
     ) -> IndexMap<String, DefId> {
         let mut resolved_names = IndexMap::new();
         for name_token in names {

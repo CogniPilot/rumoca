@@ -2,7 +2,7 @@
 // Source: rumoca-contracts registry snapshot
 use super::*;
 
-pub static CONTRACTS_EQN: &[StaticContract] = &[
+pub(super) static CONTRACTS_EQN: &[StaticContract] = &[
     StaticContract {
         id: "EQN-001",
         category: ContractCategory::Equation,

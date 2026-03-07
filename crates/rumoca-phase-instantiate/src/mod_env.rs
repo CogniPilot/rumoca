@@ -238,7 +238,7 @@ fn apply_component_modifier(
         // Nested class modification WITH binding: field(start=X) = expr.
         // MLS §7.2: process both nested attribute modifications and binding.
         ast::Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Assign(_),
+            op: rumoca_ir_core::OpBinary::Assign(_),
             lhs,
             rhs,
         } => {
@@ -336,7 +336,7 @@ fn collect_structural_integer_fields_from_sibling_reference(
                     field_name.clone(),
                     ast::Expression::Terminal {
                         terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                        token: rumoca_ir_ast::Token {
+                        token: rumoca_ir_core::Token {
                             text: value.to_string().into(),
                             ..Default::default()
                         },
@@ -481,7 +481,7 @@ fn resolve_modification_expr_with_depth(
     if let Some(value) = evaluate_component_condition(expr, mod_env, effective_components, tree) {
         return Ok(ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::Bool,
-            token: rumoca_ir_ast::Token {
+            token: rumoca_ir_core::Token {
                 text: value.to_string().into(),
                 ..Default::default()
             },
@@ -495,7 +495,7 @@ fn resolve_modification_expr_with_depth(
     {
         return Ok(ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::String,
-            token: rumoca_ir_ast::Token {
+            token: rumoca_ir_core::Token {
                 text: format!("\"{value}\"").into(),
                 ..Default::default()
             },
@@ -506,7 +506,7 @@ fn resolve_modification_expr_with_depth(
     if let Some(value) = try_eval_integer_expr(expr, mod_env, effective_components, tree) {
         return Ok(ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            token: rumoca_ir_ast::Token {
+            token: rumoca_ir_core::Token {
                 text: value.to_string().into(),
                 ..Default::default()
             },
@@ -663,10 +663,10 @@ fn process_nested_modifications_recursive(
 mod tests {
     use super::*;
 
-    fn make_token(text: &str) -> ast::Token {
-        ast::Token {
+    fn make_token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: std::sync::Arc::from(text),
-            location: ast::Location::default(),
+            location: rumoca_ir_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }

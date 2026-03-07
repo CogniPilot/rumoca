@@ -40,11 +40,11 @@ fn extract_numeric_literal(expr: &ast::Expression) -> Option<f64> {
             token,
         } => token.text.parse::<f64>().ok(),
         ast::Expression::Unary {
-            op: ast::OpUnary::Minus(_),
+            op: rumoca_ir_core::OpUnary::Minus(_),
             rhs,
         } => extract_numeric_literal(rhs).map(|v| -v),
         ast::Expression::Unary {
-            op: ast::OpUnary::Plus(_),
+            op: rumoca_ir_core::OpUnary::Plus(_),
             rhs,
         } => extract_numeric_literal(rhs),
         ast::Expression::Parenthesized { inner } => extract_numeric_literal(inner),

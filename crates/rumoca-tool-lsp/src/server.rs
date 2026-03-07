@@ -4,16 +4,24 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rumoca_session::{
-    EffectiveSimulationConfig, EffectiveSimulationPreset, FailedPhase, LibraryCacheStatus,
-    PhaseResult, ProjectConfig, ProjectFileMoveHint, Session, SessionConfig,
-    SimulationModelOverride, clear_model_simulation_preset, collect_model_names,
-    compile_phase_timing_stats, infer_library_roots, load_plot_views_for_model,
-    load_simulation_snapshot_for_model, merge_stored_definitions, parse_library_with_cache,
-    resync_model_sidecars_with_move_hints, should_load_library_for_source,
-    write_model_simulation_preset, write_plot_views_for_model,
+use rumoca_session::compile::{
+    FailedPhase, PhaseResult, Session, SessionConfig, compile_phase_timing_stats,
 };
-use rumoca_sim_diffsol::{SimOptions, SimResult, SimSolverMode, simulate};
+use rumoca_session::libraries::{
+    LibraryCacheStatus, infer_library_roots, parse_library_with_cache,
+    should_load_library_for_source,
+};
+use rumoca_session::parsing::{ast, collect_model_names, merge_stored_definitions};
+use rumoca_session::project::{
+    EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
+    ProjectFileMoveHint, SimulationModelOverride, clear_model_simulation_preset,
+    load_plot_views_for_model, load_simulation_snapshot_for_model,
+    resync_model_sidecars_with_move_hints, write_model_simulation_preset,
+    write_plot_views_for_model,
+};
+use rumoca_session::runtime::{
+    SimOptions, SimResult, SimSolverMode, dae_balance, dae_balance_detail, simulate_dae,
+};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
@@ -340,7 +348,7 @@ impl ModelicaLanguageServer {
     async fn compile_model_for_simulation(
         &self,
         model: &str,
-    ) -> std::result::Result<Box<rumoca_session::CompilationResult>, String> {
+    ) -> std::result::Result<Box<rumoca_session::compile::CompilationResult>, String> {
         let mut session = self.session.write().await;
         let mut report = session.compile_model_best_effort(model);
         match report.requested_result.take() {
@@ -364,7 +372,7 @@ impl ModelicaLanguageServer {
 
     fn simulation_options_from_settings(
         settings: &SimulationRequestSettings,
-        compiled: &rumoca_session::CompilationResult,
+        compiled: &rumoca_session::compile::CompilationResult,
     ) -> SimOptions {
         let mut opts = SimOptions {
             t_end: settings.t_end,
@@ -524,7 +532,7 @@ impl ModelicaLanguageServer {
 
         let opts = Self::simulation_options_from_settings(&settings, &compiled);
         let sim_start = std::time::Instant::now();
-        let sim = match simulate(&compiled.dae, &opts) {
+        let sim = match simulate_dae(&compiled.dae, &opts) {
             Ok(value) => value,
             Err(error) => {
                 return Some(Self::simulation_error_value(format!(
@@ -925,7 +933,7 @@ fn simulation_override_from_json(value: &Value) -> Option<SimulationModelOverrid
     })
 }
 
-fn parse_views_payload(value: &Value) -> Option<Vec<rumoca_session::PlotViewConfig>> {
+fn parse_views_payload(value: &Value) -> Option<Vec<PlotViewConfig>> {
     serde_json::from_value(value.clone()).ok()
 }
 
@@ -1046,7 +1054,7 @@ fn collect_workspace_known_models_from_session(
     session: &Session,
     workspace_root: &Path,
 ) -> Vec<String> {
-    let mut parsed_docs: Vec<(String, rumoca_session::StoredDefinition)> = Vec::new();
+    let mut parsed_docs: Vec<(String, ast::StoredDefinition)> = Vec::new();
     for uri in session.document_uris() {
         let Some(document) = session.get_document(uri) else {
             continue;
@@ -1485,10 +1493,10 @@ impl LanguageServer for ModelicaLanguageServer {
         for (model_name, range) in model_names {
             let title = match session.compile_model_phases(&model_name) {
                 Ok(PhaseResult::Success(result)) => {
-                    let detail = result.dae.balance_detail();
+                    let detail = dae_balance_detail(&result.dae);
                     let unknowns =
                         detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
-                    let balance = result.dae.balance();
+                    let balance = dae_balance(&result.dae);
                     let equations = (unknowns as i64 + balance).max(0) as usize;
                     if balance == 0 {
                         format!("Balanced ({unknowns} unknowns, {equations} eqs)")
@@ -1587,13 +1595,11 @@ impl LanguageServer for ModelicaLanguageServer {
     }
 }
 
-fn is_hover_preview_candidate(ast: &rumoca_ir_ast::StoredDefinition, word: &str) -> bool {
+fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str) -> bool {
     ast.classes.get(word).is_some_and(|class| {
         matches!(
             class.class_type,
-            rumoca_ir_ast::ClassType::Model
-                | rumoca_ir_ast::ClassType::Block
-                | rumoca_ir_ast::ClassType::Class
+            ast::ClassType::Model | ast::ClassType::Block | ast::ClassType::Class
         )
     })
 }
@@ -1610,7 +1616,7 @@ fn flattened_preview_for_model(session: &mut Session, model_name: &str) -> Optio
         result.dae.f_z.len(),
         result.dae.f_m.len(),
         result.dae.discrete_valued.len(),
-        result.dae.balance()
+        dae_balance(&result.dae)
     ));
     lines.push(format!("f_x ({}):", result.dae.f_x.len()));
     for (idx, eq) in result.dae.f_x.iter().take(6).enumerate() {

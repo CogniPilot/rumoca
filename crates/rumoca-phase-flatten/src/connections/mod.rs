@@ -225,7 +225,7 @@ impl ConnectionSubMatchIndex {
 ///     flow Real i;    // Flow variable
 /// end Pin;
 /// ```
-pub fn is_flow_variable(flat: &flat::Model, var_name: &flat::VarName) -> bool {
+pub(crate) fn is_flow_variable(flat: &flat::Model, var_name: &flat::VarName) -> bool {
     if let Some(v) = flat.variables.get(var_name) {
         return v.flow;
     }
@@ -980,7 +980,7 @@ fn connect_output_to_array_element(
     let is_output_array = |base: &flat::VarName| -> bool {
         flat.variables
             .get(base)
-            .is_some_and(|v| matches!(v.causality, ast::Causality::Output(_)))
+            .is_some_and(|v| matches!(v.causality, flat::Causality::Output(_)))
     };
 
     match (
@@ -1124,7 +1124,7 @@ fn connect_sub_variable(
     if let Some(var_info) = ctx.flat.variables.get(sub_a)
         && matches!(
             var_info.variability,
-            rumoca_ir_ast::Variability::Parameter(_) | rumoca_ir_ast::Variability::Constant(_)
+            flat::Variability::Parameter(_) | flat::Variability::Constant(_)
         )
     {
         return;
@@ -1285,7 +1285,7 @@ fn connect_primitive_vars(
         if let Some(info) = flat.variables.get(var)
             && matches!(
                 info.variability,
-                rumoca_ir_ast::Variability::Parameter(_) | rumoca_ir_ast::Variability::Constant(_)
+                flat::Variability::Parameter(_) | flat::Variability::Constant(_)
             )
         {
             return;
@@ -1330,7 +1330,7 @@ fn collect_existing_lhs_vars(flat: &flat::Model) -> std::collections::HashSet<fl
         let flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, ast::OpBinary::Sub(_)) {
+        if !matches!(op, flat::OpBinary::Sub(_)) {
             continue;
         }
         if let flat::Expression::VarRef { name, .. } = lhs.as_ref() {
@@ -1568,7 +1568,7 @@ fn var_to_expr(var_name: &flat::VarName) -> flat::Expression {
 /// Create a residual expression: lhs - rhs (for equation lhs = rhs).
 fn create_equality_residual(lhs: flat::Expression, rhs: flat::Expression) -> flat::Expression {
     flat::Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: flat::OpBinary::Sub(flat::Token::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
@@ -1586,7 +1586,7 @@ fn create_sum(exprs: Vec<flat::Expression>) -> flat::Expression {
 
     for expr in iter {
         result = flat::Expression::Binary {
-            op: ast::OpBinary::Add(ast::Token::default()),
+            op: flat::OpBinary::Add(flat::Token::default()),
             lhs: Box::new(result),
             rhs: Box::new(expr),
         };

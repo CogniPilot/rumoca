@@ -21,10 +21,10 @@ fn extract_connection(
     };
     match &opt.type_prefix_opt_group {
         modelica_grammar_trait::TypePrefixOptGroup::Flow(flow) => {
-            rumoca_ir_ast::Connection::Flow(flow.flow.flow.clone())
+            rumoca_ir_ast::Connection::Flow(flow.flow.flow.clone().into())
         }
         modelica_grammar_trait::TypePrefixOptGroup::Stream(stream) => {
-            rumoca_ir_ast::Connection::Stream(stream.stream.stream.clone())
+            rumoca_ir_ast::Connection::Stream(stream.stream.stream.clone().into())
         }
     }
 }
@@ -32,34 +32,36 @@ fn extract_connection(
 /// Extract variability from type prefix.
 fn extract_variability(
     type_prefix: &modelica_grammar_trait::TypePrefix,
-) -> rumoca_ir_ast::Variability {
+) -> rumoca_ir_core::Variability {
     let Some(opt) = &type_prefix.type_prefix_opt0 else {
-        return rumoca_ir_ast::Variability::Empty;
+        return rumoca_ir_core::Variability::Empty;
     };
     match &opt.type_prefix_opt0_group {
         modelica_grammar_trait::TypePrefixOpt0Group::Constant(c) => {
-            rumoca_ir_ast::Variability::Constant(c.constant.constant.clone())
+            rumoca_ir_core::Variability::Constant(c.constant.constant.clone().into())
         }
         modelica_grammar_trait::TypePrefixOpt0Group::Discrete(c) => {
-            rumoca_ir_ast::Variability::Discrete(c.discrete.discrete.clone())
+            rumoca_ir_core::Variability::Discrete(c.discrete.discrete.clone().into())
         }
         modelica_grammar_trait::TypePrefixOpt0Group::Parameter(c) => {
-            rumoca_ir_ast::Variability::Parameter(c.parameter.parameter.clone())
+            rumoca_ir_core::Variability::Parameter(c.parameter.parameter.clone().into())
         }
     }
 }
 
 /// Extract causality from type prefix.
-fn extract_causality(type_prefix: &modelica_grammar_trait::TypePrefix) -> rumoca_ir_ast::Causality {
+fn extract_causality(
+    type_prefix: &modelica_grammar_trait::TypePrefix,
+) -> rumoca_ir_core::Causality {
     let Some(opt) = &type_prefix.type_prefix_opt1 else {
-        return rumoca_ir_ast::Causality::Empty;
+        return rumoca_ir_core::Causality::Empty;
     };
     match &opt.type_prefix_opt1_group {
         modelica_grammar_trait::TypePrefixOpt1Group::Input(c) => {
-            rumoca_ir_ast::Causality::Input(c.input.input.clone())
+            rumoca_ir_core::Causality::Input(c.input.input.clone().into())
         }
         modelica_grammar_trait::TypePrefixOpt1Group::Output(c) => {
-            rumoca_ir_ast::Causality::Output(c.output.output.clone())
+            rumoca_ir_core::Causality::Output(c.output.output.clone().into())
         }
     }
 }
@@ -113,21 +115,21 @@ fn default_start_value(type_name: &str) -> rumoca_ir_ast::Expression {
     match type_name {
         "Real" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
-            token: rumoca_ir_ast::Token {
+            token: rumoca_ir_core::Token {
                 text: Arc::from("0.0"),
                 ..Default::default()
             },
         },
         "Integer" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            token: rumoca_ir_ast::Token {
+            token: rumoca_ir_core::Token {
                 text: Arc::from("0"),
                 ..Default::default()
             },
         },
         "Boolean" => rumoca_ir_ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::Bool,
-            token: rumoca_ir_ast::Token {
+            token: rumoca_ir_core::Token {
                 text: Arc::from("false"),
                 ..Default::default()
             },
@@ -156,7 +158,7 @@ fn extract_annotation(
 /// Check if an outer component has illegal bindings or modifications.
 fn check_outer_component_restrictions(
     value: &rumoca_ir_ast::Component,
-    ident: &rumoca_ir_ast::Token,
+    ident: &rumoca_ir_core::Token,
 ) -> anyhow::Result<()> {
     // Check for binding equation (= expr)
     let has_real_binding = if matches!(value.start, rumoca_ir_ast::Expression::Empty) {
@@ -195,7 +197,7 @@ fn check_outer_component_restrictions(
 fn check_duplicate_component(
     def: &ElementList,
     comp_name: &str,
-    ident: &rumoca_ir_ast::Token,
+    ident: &rumoca_ir_core::Token,
 ) -> anyhow::Result<()> {
     if let Some(existing) = def.components.get(comp_name) {
         return Err(semantic_error_from_token(
@@ -247,7 +249,7 @@ fn process_import_clause(
 fn process_import_suffix(
     opt: &Option<modelica_grammar_trait::ImportClauseOpt1>,
     path: rumoca_ir_ast::Name,
-    location: rumoca_ir_ast::Location,
+    location: rumoca_ir_core::Location,
     global_scope: bool,
 ) -> rumoca_ir_ast::Import {
     let Some(suffix) = opt else {
@@ -390,8 +392,8 @@ fn process_class_definition(
 
 /// Context for component processing.
 struct ComponentContext {
-    variability: rumoca_ir_ast::Variability,
-    causality: rumoca_ir_ast::Causality,
+    variability: rumoca_ir_core::Variability,
+    causality: rumoca_ir_core::Causality,
     connection: rumoca_ir_ast::Connection,
     type_name: rumoca_ir_ast::Name,
     type_level_shape: Vec<usize>,
@@ -639,7 +641,7 @@ fn constraining_arg_target_name(arg: &rumoca_ir_ast::Expression) -> Option<Strin
         rumoca_ir_ast::Expression::Modification { target, .. }
         | rumoca_ir_ast::Expression::ClassModification { target, .. } => Some(target.to_string()),
         rumoca_ir_ast::Expression::Binary { op, lhs, .. }
-            if matches!(op, rumoca_ir_ast::OpBinary::Assign(_))
+            if matches!(op, rumoca_ir_core::OpBinary::Assign(_))
                 && matches!(
                     lhs.as_ref(),
                     rumoca_ir_ast::Expression::ClassModification { .. }
@@ -672,7 +674,7 @@ fn normalized_constraining_arg_value(
         // Nested component mods/bindings are stored as full expression.
         rumoca_ir_ast::Expression::ClassModification { .. } => Some(arg.clone()),
         rumoca_ir_ast::Expression::Binary { op, lhs, .. }
-            if matches!(op, rumoca_ir_ast::OpBinary::Assign(_))
+            if matches!(op, rumoca_ir_core::OpBinary::Assign(_))
                 && matches!(
                     lhs.as_ref(),
                     rumoca_ir_ast::Expression::ClassModification { .. }
@@ -974,7 +976,7 @@ fn process_mod_arg(
 
     // Handle named argument (param = value)
     if let rumoca_ir_ast::Expression::Binary { op, lhs, rhs } = arg
-        && matches!(op, rumoca_ir_ast::OpBinary::Assign(_))
+        && matches!(op, rumoca_ir_core::OpBinary::Assign(_))
         && let rumoca_ir_ast::Expression::ComponentReference(comp) = &**lhs
     {
         let param_name = comp.to_string();
@@ -1032,7 +1034,7 @@ fn process_mod_arg(
     // Handle nested modifications WITH binding: field(start=X)=expr
     // The parser produces Binary { Assign, ClassModification { target, mods }, rhs }
     if let rumoca_ir_ast::Expression::Binary { op, lhs, rhs: _ } = arg
-        && matches!(op, rumoca_ir_ast::OpBinary::Assign(_))
+        && matches!(op, rumoca_ir_core::OpBinary::Assign(_))
         && let rumoca_ir_ast::Expression::ClassModification { target, .. } = &**lhs
     {
         let param_name = target.to_string();

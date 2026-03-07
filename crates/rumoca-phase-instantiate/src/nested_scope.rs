@@ -257,7 +257,7 @@ pub(super) fn remap_redeclare_class_modifier(
         let new_parts: Vec<ast::ComponentRefPart> = qualified_name
             .split('.')
             .map(|segment| {
-                let mut ident: ast::Token = template_ident.clone();
+                let mut ident: rumoca_ir_core::Token = template_ident.clone();
                 ident.text = segment.to_string().into();
                 ast::ComponentRefPart { ident, subs: None }
             })
@@ -334,10 +334,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    fn make_token(text: &str) -> ast::Token {
-        ast::Token {
+    fn make_token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: Arc::from(text),
-            location: ast::Location::default(),
+            location: rumoca_ir_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }

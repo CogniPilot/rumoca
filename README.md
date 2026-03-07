@@ -24,8 +24,8 @@ It provides:
 
 - Full compiler pipeline: parse -> resolve -> typecheck -> instantiate -> flatten -> DAE
 - Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-session`)
-- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim-diffsol`)
-- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim-core`)
+- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim`)
+- Structural preparation and IC planning for robust initialization (`rumoca-phase-solve`, `rumoca-sim`)
 - Template-based codegen to CasADi, C, JAX, Julia MTK, ONNX, and Modelica render targets
 - MLS contract test framework (`rumoca-contracts`)
 - Spec-driven quality gates (including SPEC_0021 and SPEC_0025)
@@ -150,8 +150,8 @@ pip install rumoca
 | Instantiate | `rumoca-phase-instantiate`              | Extends/modifier application, model instantiation              |
 | Flatten     | `rumoca-phase-flatten`                  | Hierarchy flattening, connection expansion, residual equations |
 | ToDAE       | `rumoca-phase-dae`                      | Variable classification and DAE construction                   |
-| Structural  | `rumoca-phase-structural`               | BLT, incidence/matching, IC plan generation                    |
-| Simulate    | `rumoca-sim-core`, `rumoca-sim-diffsol` | IC solving + runtime integration                               |
+| Structural  | `rumoca-phase-solve`               | BLT, incidence/matching, IC plan generation                    |
+| Simulate    | `rumoca-sim`                            | IC solving + runtime integration                               |
 | Codegen     | `rumoca-phase-codegen`                  | Template-driven target generation                              |
 
 Session pipeline invariants and failure contracts:
@@ -178,11 +178,13 @@ Session pipeline invariants and failure contracts:
 | Crate                 | Key Features                                                                    |
 | --------------------- | ------------------------------------------------------------------------------- |
 | `rumoca-core`         | Shared types, IDs, diagnostics utilities, MSL cache path resolution             |
+| `rumoca-ir-core`      | Shared IR enums/tokens/operators used across AST/flat/DAE layers                |
 | `rumoca-ir-ast`       | Class-tree IR structures for parsed/resolved/typed model representation         |
 | `rumoca-ir-flat`      | Flat model IR with globally unique variables/equations                          |
 | `rumoca-ir-dae`       | Canonical hybrid DAE IR (continuous + discrete equations)                       |
-| `rumoca-eval-const`   | Compile-time expression evaluation (dimensions, parameters, constant functions) |
-| `rumoca-eval-runtime` | Runtime evaluator with `SimFloat` abstraction and dual-number AD support        |
+| `rumoca-eval-ast`     | AST-level compile-time/runtime expression evaluation utilities                   |
+| `rumoca-eval-flat`    | Flat IR evaluator helpers and constant evaluation support                        |
+| `rumoca-eval-dae`     | DAE runtime/compiled evaluation, AD support, and simulation-time evaluators     |
 
 ### Compiler Phases
 
@@ -194,15 +196,14 @@ Session pipeline invariants and failure contracts:
 | `rumoca-phase-instantiate` | Model instantiation and modification propagation                               |
 | `rumoca-phase-flatten`     | Connection equation generation, algorithm handling, flat equation construction |
 | `rumoca-phase-dae`         | Flat-to-DAE transformation with balance-oriented variable/equation accounting  |
-| `rumoca-phase-structural`  | Structural analysis, BLT decomposition, IC plan creation                       |
+| `rumoca-phase-solve`  | Structural analysis, BLT decomposition, IC plan creation                       |
 | `rumoca-phase-codegen`     | Minijinja-based template rendering for code and model outputs                  |
 
 ### Simulation and Quality
 
 | Crate                | Key Features                                                                                  |
 | -------------------- | --------------------------------------------------------------------------------------------- |
-| `rumoca-sim-core`    | BLT-guided IC solver blocks (direct/newton/torn/coupled paths)                                |
-| `rumoca-sim-diffsol` | DAE runtime integration, solver fallbacks, timeout budgeting, diagnostics/introspection hooks |
+| `rumoca-sim`         | DAE runtime integration, BLT-guided IC solving, solver fallbacks, timeout budgeting, diagnostics/introspection hooks |
 | `rumoca-contracts`   | MLS contract registry, execution, and compliance reporting framework                          |
 
 ## Code Generation Targets

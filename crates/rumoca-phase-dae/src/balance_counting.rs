@@ -8,7 +8,7 @@ use rumoca_ir_dae as dae;
 /// only close deficits, while break-edge correction only reduces overdetermined
 /// systems.
 pub(crate) fn compute_balance_counts(dae: &dae::Dae) -> (usize, usize) {
-    let detail = dae.balance_detail();
+    let detail = rumoca_eval_dae::analysis::balance_detail(dae);
     compute_balance_counts_from_detail(&detail)
 }
 

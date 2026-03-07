@@ -1,5 +1,18 @@
 use super::*;
 use indexmap::IndexMap;
+use rumoca_ir_dae as dae;
+use rumoca_ir_flat as flat;
+
+type ComponentReference = dae::ComponentReference;
+type ComprehensionIndex = dae::ComprehensionIndex;
+type Dae = dae::Dae;
+type Expression = dae::Expression;
+type ForIndex = dae::ForIndex;
+type Function = dae::Function;
+type Statement = dae::Statement;
+type StatementBlock = dae::StatementBlock;
+type Subscript = dae::Subscript;
+type VarName = dae::VarName;
 
 fn short_leaf_matches(candidate: &str, short: &str) -> bool {
     candidate
@@ -517,7 +530,7 @@ fn validate_assignment_statement_references(
 }
 
 fn validate_for_statement_references(
-    indices: &[flat::ForIndex],
+    indices: &[ForIndex],
     equations: &[Statement],
     dae: &Dae,
     span: Span,
@@ -547,7 +560,7 @@ fn validate_for_statement_references(
 }
 
 fn validate_block_statement_references(
-    block: &flat::StatementBlock,
+    block: &StatementBlock,
     dae: &Dae,
     span: Span,
     function_scope: Option<&HashSet<&str>>,
@@ -564,7 +577,7 @@ fn validate_block_statement_references(
 }
 
 fn validate_if_statement_references(
-    cond_blocks: &[flat::StatementBlock],
+    cond_blocks: &[StatementBlock],
     else_block: Option<&[Statement]>,
     dae: &Dae,
     span: Span,
@@ -593,7 +606,7 @@ fn validate_if_statement_references(
 }
 
 fn validate_when_statement_references(
-    blocks: &[flat::StatementBlock],
+    blocks: &[StatementBlock],
     dae: &Dae,
     span: Span,
     function_scope: Option<&HashSet<&str>>,
@@ -929,19 +942,35 @@ fn is_known_dae_reference(
         return true;
     }
 
-    name_resolution::resolve_var_name_with_subscript_fallback(name, |candidate| {
-        known_flat_var_names.contains(candidate.as_str())
-            || dae.states.contains_key(candidate)
-            || dae.algebraics.contains_key(candidate)
-            || dae.inputs.contains_key(candidate)
-            || dae.outputs.contains_key(candidate)
-            || dae.parameters.contains_key(candidate)
-            || dae.constants.contains_key(candidate)
-            || dae.discrete_reals.contains_key(candidate)
-            || dae.discrete_valued.contains_key(candidate)
-            || dae.derivative_aliases.contains_key(candidate)
-    })
-    .is_some()
+    if known_flat_var_names.contains(raw)
+        || dae.states.contains_key(name)
+        || dae.algebraics.contains_key(name)
+        || dae.inputs.contains_key(name)
+        || dae.outputs.contains_key(name)
+        || dae.parameters.contains_key(name)
+        || dae.constants.contains_key(name)
+        || dae.discrete_reals.contains_key(name)
+        || dae.discrete_valued.contains_key(name)
+        || dae.derivative_aliases.contains_key(name)
+    {
+        return true;
+    }
+
+    path_utils::subscript_fallback_chain(&dae_to_flat_var_name(name))
+        .into_iter()
+        .any(|candidate| {
+            let dae_candidate = flat_to_dae_var_name(&candidate);
+            known_flat_var_names.contains(candidate.as_str())
+                || dae.states.contains_key(&dae_candidate)
+                || dae.algebraics.contains_key(&dae_candidate)
+                || dae.inputs.contains_key(&dae_candidate)
+                || dae.outputs.contains_key(&dae_candidate)
+                || dae.parameters.contains_key(&dae_candidate)
+                || dae.constants.contains_key(&dae_candidate)
+                || dae.discrete_reals.contains_key(&dae_candidate)
+                || dae.discrete_valued.contains_key(&dae_candidate)
+                || dae.derivative_aliases.contains_key(&dae_candidate)
+        })
 }
 
 fn is_known_flat_reference_name(name: &str, known_flat_var_names: &HashSet<String>) -> bool {
@@ -955,10 +984,10 @@ fn is_known_flat_reference_name(name: &str, known_flat_var_names: &HashSet<Strin
         return true;
     }
 
-    let fallback_name = VarName::new(name);
+    let fallback_name = flat::VarName::new(name);
     path_utils::subscript_fallback_chain(&fallback_name)
         .iter()
-        .map(VarName::as_str)
+        .map(flat::VarName::as_str)
         .any(|candidate| {
             known_flat_var_names.contains(candidate)
                 || has_known_descendant_in_names(candidate, known_flat_var_names)

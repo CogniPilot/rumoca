@@ -8,9 +8,12 @@ repository.workspace = true
 
 [dependencies]
 rumoca-core = { workspace = true }
-rumoca-ir-ast = { workspace = true }
+rumoca-ir-core = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+rumoca-ir-ast = { workspace = true }
 
 [lints]
 workspace = true

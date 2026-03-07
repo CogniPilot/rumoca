@@ -70,9 +70,9 @@ end UsesForwardedMedium;
     );
 
     assert!(
-        result.dae.is_balanced(),
+        rumoca_eval_dae::analysis::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        result.dae.balance_detail()
+        rumoca_eval_dae::analysis::balance_detail(&result.dae)
     );
 }
 
@@ -243,9 +243,9 @@ end UsesMedium;
     let result = session.compile_model("UsesMedium").expect("compile failed");
 
     assert!(
-        result.dae.is_balanced(),
+        rumoca_eval_dae::analysis::is_balanced(&result.dae),
         "Model should be balanced when fixedX=false disables the no-else branch: {}",
-        result.dae.balance_detail()
+        rumoca_eval_dae::analysis::balance_detail(&result.dae)
     );
 }
 
@@ -314,7 +314,7 @@ end BoundaryLike;
             let rumoca_ir_flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
                 return None;
             };
-            if !matches!(op, rumoca_ir_ast::OpBinary::Sub(_)) {
+            if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
                 return None;
             }
             if let rumoca_ir_flat::Expression::VarRef { name, .. } = lhs.as_ref() {
@@ -410,7 +410,7 @@ fn test_component_redeclare_specializes_alias_enum_constants_for_if_branch() {
             let rumoca_ir_flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
                 return None;
             };
-            if !matches!(op, rumoca_ir_ast::OpBinary::Sub(_)) {
+            if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
                 return None;
             }
             if let rumoca_ir_flat::Expression::VarRef { name, .. } = lhs.as_ref() {
@@ -429,7 +429,7 @@ fn test_component_redeclare_specializes_alias_enum_constants_for_if_branch() {
             let rumoca_ir_flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
                 return None;
             };
-            if !matches!(op, rumoca_ir_ast::OpBinary::Sub(_)) {
+            if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
                 return None;
             }
             let rumoca_ir_flat::Expression::VarRef { name, .. } = lhs.as_ref() else {
@@ -451,7 +451,7 @@ fn test_component_redeclare_specializes_alias_enum_constants_for_if_branch() {
         let rumoca_ir_flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
             return false;
         };
-        if !matches!(op, rumoca_ir_ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             return false;
         }
         matches!(
@@ -525,9 +525,9 @@ end UsesRangeInBaseProperties;
     );
 
     assert!(
-        result.dae.is_balanced(),
+        rumoca_eval_dae::analysis::is_balanced(&result.dae),
         "Model should remain balanced: {}",
-        result.dae.balance_detail()
+        rumoca_eval_dae::analysis::balance_detail(&result.dae)
     );
 }
 
