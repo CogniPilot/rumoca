@@ -3,7 +3,8 @@
 //! Ported from the main branch's `src/lsp/handlers/document_symbols.rs`.
 
 use lsp_types::{DocumentSymbol, DocumentSymbolResponse, Position, Range, SymbolKind};
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 
 use crate::helpers::{location_to_range, token_to_range};
 
@@ -38,10 +39,14 @@ fn build_class_symbol(name: &str, class: &ast::ClassDef) -> Option<DocumentSymbo
 
     for (comp_name, comp) in &class.components {
         let (comp_kind, category) = match (&comp.variability, &comp.causality) {
-            (ast::Variability::Parameter(_), _) => (SymbolKind::CONSTANT, &mut parameters),
-            (ast::Variability::Constant(_), _) => (SymbolKind::CONSTANT, &mut parameters),
-            (_, ast::Causality::Input(_)) => (SymbolKind::PROPERTY, &mut inputs),
-            (_, ast::Causality::Output(_)) => (SymbolKind::PROPERTY, &mut outputs),
+            (rumoca_ir_core::Variability::Parameter(_), _) => {
+                (SymbolKind::CONSTANT, &mut parameters)
+            }
+            (rumoca_ir_core::Variability::Constant(_), _) => {
+                (SymbolKind::CONSTANT, &mut parameters)
+            }
+            (_, rumoca_ir_core::Causality::Input(_)) => (SymbolKind::PROPERTY, &mut inputs),
+            (_, rumoca_ir_core::Causality::Output(_)) => (SymbolKind::PROPERTY, &mut outputs),
             _ => (SymbolKind::VARIABLE, &mut variables),
         };
 

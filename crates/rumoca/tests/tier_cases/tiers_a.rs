@@ -1018,7 +1018,7 @@ end InputFunctionCallConstraint;
 mod tier_5_conditionals {
     use super::*;
 
-    fn condition_observer_count(dae: &rumoca::Dae) -> usize {
+    fn condition_observer_count(dae: &rumoca_ir_dae::Dae) -> usize {
         dae.relation.len() + dae.synthetic_root_conditions.len()
     }
 

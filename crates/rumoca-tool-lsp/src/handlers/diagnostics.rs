@@ -2,13 +2,14 @@
 
 use crate::helpers::location_to_range;
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
-use rumoca_core::{
+use rumoca_session::Session;
+use rumoca_session::analysis::{LintLevel, LintMessage, LintOptions, lint_source};
+use rumoca_session::compile::core as rumoca_core;
+use rumoca_session::compile::core::{
     Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
 };
-use rumoca_ir_ast as ast;
-use rumoca_phase_parse::ParseError;
-use rumoca_session::Session;
-use rumoca_tool_lint::{LintLevel, LintOptions, lint};
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::{ParseError, parse_source_to_ast_with_errors};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
@@ -27,7 +28,7 @@ pub fn compute_diagnostics(
     let mut diagnostics = Vec::new();
 
     // Parse check with structured errors (for precise ranges in editor markers).
-    let ast = match rumoca_phase_parse::parse_to_ast_with_errors(source, file_name) {
+    let ast = match parse_source_to_ast_with_errors(source, file_name) {
         Ok(ast) => ast,
         Err(parse_errors) => {
             for error in parse_errors.iter().take(MAX_PARSE_DIAGNOSTICS) {
@@ -40,7 +41,7 @@ pub fn compute_diagnostics(
 
     // Run linter on successfully parsed source
     let lint_options = LintOptions::default();
-    let lint_messages = lint(source, file_name, &lint_options);
+    let lint_messages = lint_source(source, file_name, &lint_options);
     for msg in lint_messages {
         diagnostics.push(lint_to_diagnostic(&msg));
     }
@@ -801,7 +802,7 @@ fn byte_offset_to_position(source: &str, byte_offset: usize) -> Position {
 }
 
 /// Convert a lint message to LSP diagnostic.
-fn lint_to_diagnostic(msg: &rumoca_tool_lint::LintMessage) -> Diagnostic {
+fn lint_to_diagnostic(msg: &LintMessage) -> Diagnostic {
     let severity = match msg.level {
         LintLevel::Error => DiagnosticSeverity::ERROR,
         LintLevel::Warning => DiagnosticSeverity::WARNING,
@@ -831,7 +832,7 @@ fn lint_to_diagnostic(msg: &rumoca_tool_lint::LintMessage) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::{Label, Span};
+    use rumoca_session::compile::core::{Label, Span};
 
     #[test]
     fn parse_diagnostics_include_precise_range_and_compact_message() {
@@ -1001,7 +1002,8 @@ mod tests {
     #[test]
     fn diagnostics_without_labels_are_marked_imprecise() {
         let source = "model M\n  Real x;\nend M;\n";
-        let ast = rumoca_phase_parse::parse_to_ast(source, "input.mo").expect("parse should work");
+        let ast = rumoca_session::parsing::parse_source_to_ast(source, "input.mo")
+            .expect("parse should work");
         let fallback_ranges = collect_class_ranges(&ast);
         let fallback = fallback_ranges.get("M").cloned();
         let diag = CommonDiagnostic::error("model-level failure without source labels");

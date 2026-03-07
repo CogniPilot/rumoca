@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
-use rumoca_core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir};
+use rumoca_session::compile::core::{
+    msl_cache_dir_from_manifest, workspace_root_from_manifest_dir,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};

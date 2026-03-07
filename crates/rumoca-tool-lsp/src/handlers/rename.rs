@@ -1,7 +1,8 @@
 //! Rename handler for Modelica files.
 
 use lsp_types::{Position, PrepareRenameResponse, TextEdit, Url, WorkspaceEdit};
-use rumoca_ir_ast as ast;
+use rumoca_session::compile::core as rumoca_core;
+use rumoca_session::parsing::ast;
 
 use crate::helpers::get_word_at_position;
 

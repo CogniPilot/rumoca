@@ -6961,7 +6961,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 221,
         production: &[ParseType::N(144)],
     },
-    // 106 - standard_class_specifier: ident@name : rumoca_ir_ast::Token  description_string : crate::TokenList  composition : crate::Composition  end^ /* Clipped */ ident : rumoca_ir_ast::Token ;
+    // 106 - standard_class_specifier: ident@name : rumoca_ir_core::Token  description_string : crate::TokenList  composition : crate::Composition  end^ /* Clipped */ ident : rumoca_ir_core::Token ;
     Production {
         lhs: 270,
         production: &[
@@ -6972,7 +6972,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
             ParseType::N(185),
         ],
     },
-    // 107 - extends_class_specifier: extends^ /* Clipped */ ident : rumoca_ir_ast::Token  extends_class_specifierOpt /* Option */ description_string : crate::TokenList  composition : crate::Composition  end^ /* Clipped */ ident : rumoca_ir_ast::Token ;
+    // 107 - extends_class_specifier: extends^ /* Clipped */ ident : rumoca_ir_core::Token  extends_class_specifierOpt /* Option */ description_string : crate::TokenList  composition : crate::Composition  end^ /* Clipped */ ident : rumoca_ir_core::Token ;
     Production {
         lhs: 144,
         production: &[
@@ -7010,7 +7010,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 262,
         production: &[ParseType::N(181)],
     },
-    // 113 - function_partial_class_specifier: ident : rumoca_ir_ast::Token  '='^ /* Clipped */ function_partial_application description;
+    // 113 - function_partial_class_specifier: ident : rumoca_ir_core::Token  '='^ /* Clipped */ function_partial_application description;
     Production {
         lhs: 181,
         production: &[
@@ -7020,7 +7020,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
             ParseType::N(185),
         ],
     },
-    // 114 - type_class_specifier: ident : rumoca_ir_ast::Token  '='^ /* Clipped */ base_prefix type_specifier type_class_specifierOpt /* Option */ type_class_specifierOpt0 /* Option */ description;
+    // 114 - type_class_specifier: ident : rumoca_ir_core::Token  '='^ /* Clipped */ base_prefix type_specifier type_class_specifierOpt /* Option */ type_class_specifierOpt0 /* Option */ description;
     Production {
         lhs: 288,
         production: &[
@@ -7053,7 +7053,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 289,
         production: &[],
     },
-    // 119 - enum_class_specifier: ident : rumoca_ir_ast::Token  '='^ /* Clipped */ enumeration '('^ /* Clipped */ enum_class_specifierGroup ')'^ /* Clipped */ description;
+    // 119 - enum_class_specifier: ident : rumoca_ir_core::Token  '='^ /* Clipped */ enumeration '('^ /* Clipped */ enum_class_specifierGroup ')'^ /* Clipped */ description;
     Production {
         lhs: 126,
         production: &[
@@ -7086,7 +7086,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 128,
         production: &[],
     },
-    // 124 - der_class_specifier: ident : rumoca_ir_ast::Token  '='^ /* Clipped */ der '('^ /* Clipped */ type_specifier ','^ /* Clipped */ ident : rumoca_ir_ast::Token  der_class_specifierList /* Vec */ ')'^ /* Clipped */ description;
+    // 124 - der_class_specifier: ident : rumoca_ir_core::Token  '='^ /* Clipped */ der '('^ /* Clipped */ type_specifier ','^ /* Clipped */ ident : rumoca_ir_core::Token  der_class_specifierList /* Vec */ ')'^ /* Clipped */ description;
     Production {
         lhs: 88,
         production: &[
@@ -7102,7 +7102,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
             ParseType::N(185),
         ],
     },
-    // 125 - der_class_specifierList: ','^ /* Clipped */ ident : rumoca_ir_ast::Token  der_class_specifierList;
+    // 125 - der_class_specifierList: ','^ /* Clipped */ ident : rumoca_ir_core::Token  der_class_specifierList;
     Production {
         lhs: 89,
         production: &[ParseType::N(89), ParseType::N(185), ParseType::T(77)],
@@ -7152,7 +7152,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 130,
         production: &[],
     },
-    // 135 - enumeration_literal: ident : rumoca_ir_ast::Token  description;
+    // 135 - enumeration_literal: ident : rumoca_ir_core::Token  description;
     Production {
         lhs: 132,
         production: &[ParseType::N(90), ParseType::N(185)],
@@ -7253,12 +7253,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 71,
         production: &[],
     },
-    // 153 - language_specification: string : rumoca_ir_ast::Token ;
+    // 153 - language_specification: string : rumoca_ir_core::Token ;
     Production {
         lhs: 214,
         production: &[ParseType::N(281)],
     },
-    // 154 - external_function_call: external_function_callOpt /* Option */ ident : rumoca_ir_ast::Token  '('^ /* Clipped */ external_function_callOpt0 /* Option */ ')'^ /* Clipped */;
+    // 154 - external_function_call: external_function_callOpt /* Option */ ident : rumoca_ir_core::Token  '('^ /* Clipped */ external_function_callOpt0 /* Option */ ')'^ /* Clipped */;
     Production {
         lhs: 150,
         production: &[
@@ -7410,7 +7410,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 198,
         production: &[ParseType::N(90), ParseType::N(199), ParseType::N(197)],
     },
-    // 182 - import_clauseGroup: ident : rumoca_ir_ast::Token  '='^ /* Clipped */ import_clauseOpt /* Option */ name : rumoca_ir_ast::Name ;
+    // 182 - import_clauseGroup: ident : rumoca_ir_core::Token  '='^ /* Clipped */ import_clauseOpt /* Option */ name : rumoca_ir_ast::Name ;
     Production {
         lhs: 199,
         production: &[
@@ -7475,12 +7475,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 200,
         production: &[],
     },
-    // 194 - import_list: ident : rumoca_ir_ast::Token  import_listList /* Vec */;
+    // 194 - import_list: ident : rumoca_ir_core::Token  import_listList /* Vec */;
     Production {
         lhs: 205,
         production: &[ParseType::N(206), ParseType::N(185)],
     },
-    // 195 - import_listList: ','^ /* Clipped */ ident : rumoca_ir_ast::Token  import_listList;
+    // 195 - import_listList: ','^ /* Clipped */ ident : rumoca_ir_core::Token  import_listList;
     Production {
         lhs: 206,
         production: &[ParseType::N(206), ParseType::N(185), ParseType::T(77)],
@@ -7595,7 +7595,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 210,
         production: &[ParseType::N(78)],
     },
-    // 217 - inheritance_modificationGroup: ident : rumoca_ir_ast::Token ;
+    // 217 - inheritance_modificationGroup: ident : rumoca_ir_core::Token ;
     Production {
         lhs: 210,
         production: &[ParseType::N(185)],
@@ -7725,7 +7725,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 76,
         production: &[ParseType::N(140), ParseType::N(186)],
     },
-    // 242 - declaration: ident : rumoca_ir_ast::Token  declarationOpt /* Option */ declarationOpt0 /* Option */;
+    // 242 - declaration: ident : rumoca_ir_core::Token  declarationOpt /* Option */ declarationOpt0 /* Option */;
     Production {
         lhs: 84,
         production: &[ParseType::N(86), ParseType::N(85), ParseType::N(185)],
@@ -8295,7 +8295,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 165,
         production: &[],
     },
-    // 348 - for_index: ident : rumoca_ir_ast::Token  for_indexOpt /* Option */;
+    // 348 - for_index: ident : rumoca_ir_core::Token  for_indexOpt /* Option */;
     Production {
         lhs: 162,
         production: &[ParseType::N(163), ParseType::N(185)],
@@ -8650,7 +8650,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 248,
         production: &[ParseType::N(301)],
     },
-    // 411 - primary: string : rumoca_ir_ast::Token ;
+    // 411 - primary: string : rumoca_ir_core::Token ;
     Production {
         lhs: 248,
         production: &[ParseType::N(281)],
@@ -8740,7 +8740,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 244,
         production: &[ParseType::N(26)],
     },
-    // 428 - output_primaryOptGroup: '.'^ /* Clipped */ ident : rumoca_ir_ast::Token ;
+    // 428 - output_primaryOptGroup: '.'^ /* Clipped */ ident : rumoca_ir_core::Token ;
     Production {
         lhs: 244,
         production: &[ParseType::N(185), ParseType::T(79)],
@@ -8815,12 +8815,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 184,
         production: &[],
     },
-    // 442 - unsigned_number: unsigned_integer : rumoca_ir_ast::Token ;
+    // 442 - unsigned_number: unsigned_integer : rumoca_ir_core::Token ;
     Production {
         lhs: 301,
         production: &[ParseType::N(300)],
     },
-    // 443 - unsigned_number: unsigned_real : rumoca_ir_ast::Token ;
+    // 443 - unsigned_number: unsigned_real : rumoca_ir_core::Token ;
     Production {
         lhs: 301,
         production: &[ParseType::N(302)],
@@ -8840,12 +8840,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 299,
         production: &[],
     },
-    // 447 - name: ident : rumoca_ir_ast::Token  nameList /* Vec */;
+    // 447 - name: ident : rumoca_ir_core::Token  nameList /* Vec */;
     Production {
         lhs: 228,
         production: &[ParseType::N(229), ParseType::N(185)],
     },
-    // 448 - nameList: '.'^ /* Clipped */ ident : rumoca_ir_ast::Token  nameList;
+    // 448 - nameList: '.'^ /* Clipped */ ident : rumoca_ir_core::Token  nameList;
     Production {
         lhs: 229,
         production: &[ParseType::N(229), ParseType::N(185), ParseType::T(79)],
@@ -8855,7 +8855,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 229,
         production: &[],
     },
-    // 450 - component_reference: component_referenceOpt /* Option */ ident : rumoca_ir_ast::Token  component_referenceOpt0 /* Option */ component_referenceList /* Vec */;
+    // 450 - component_reference: component_referenceOpt /* Option */ ident : rumoca_ir_core::Token  component_referenceOpt0 /* Option */ component_referenceList /* Vec */;
     Production {
         lhs: 62,
         production: &[
@@ -8895,7 +8895,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 64,
         production: &[],
     },
-    // 457 - component_ref_part: '.'^ /* Clipped */ ident : rumoca_ir_ast::Token  component_ref_partOpt /* Option */;
+    // 457 - component_ref_part: '.'^ /* Clipped */ ident : rumoca_ir_core::Token  component_ref_partOpt /* Option */;
     Production {
         lhs: 60,
         production: &[ParseType::N(61), ParseType::N(185), ParseType::T(79)],
@@ -9055,7 +9055,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 232,
         production: &[],
     },
-    // 489 - named_argument: ident : rumoca_ir_ast::Token  '='^ /* Clipped */ function_argument : rumoca_ir_ast::Expression ;
+    // 489 - named_argument: ident : rumoca_ir_core::Token  '='^ /* Clipped */ function_argument : rumoca_ir_ast::Expression ;
     Production {
         lhs: 230,
         production: &[ParseType::N(169), ParseType::T(73), ParseType::N(185)],
@@ -9191,12 +9191,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 92,
         production: &[ParseType::N(93)],
     },
-    // 514 - description_stringOpt: string : rumoca_ir_ast::Token  description_stringOptList /* Vec */;
+    // 514 - description_stringOpt: string : rumoca_ir_core::Token  description_stringOptList /* Vec */;
     Production {
         lhs: 93,
         production: &[ParseType::N(94), ParseType::N(281)],
     },
-    // 515 - description_stringOptList: '+'^ /* Clipped */ string : rumoca_ir_ast::Token  description_stringOptList;
+    // 515 - description_stringOptList: '+'^ /* Clipped */ string : rumoca_ir_core::Token  description_stringOptList;
     Production {
         lhs: 94,
         production: &[ParseType::N(94), ParseType::N(281), ParseType::T(90)],

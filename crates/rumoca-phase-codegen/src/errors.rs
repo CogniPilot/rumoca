@@ -43,7 +43,7 @@ impl CodegenError {
 /// Create a `minijinja::Error` from a message string.
 ///
 /// Use this inside render functions that return `Result<String, minijinja::Error>`.
-pub fn render_err(msg: impl std::fmt::Display) -> minijinja::Error {
+pub(crate) fn render_err(msg: impl std::fmt::Display) -> minijinja::Error {
     minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, format!("{msg}"))
 }
 

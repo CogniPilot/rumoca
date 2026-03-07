@@ -1,7 +1,7 @@
 //! Find-all-references handler for Modelica files.
 
 use lsp_types::{Location, Position, Url};
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
 
 use crate::helpers::get_word_at_position;
 

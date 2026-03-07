@@ -6,7 +6,9 @@ members = [
     "crates/rumoca-core",
     "crates/rumoca-contracts",
     "crates/rumoca-ir-dae",
-    "crates/rumoca-eval-const",
+    "crates/rumoca-ir-core",
+    "crates/rumoca-eval-ast",
+    "crates/rumoca-eval-flat",
     "crates/rumoca-ir-ast",
     "crates/rumoca-ir-flat",
     "crates/rumoca-phase-codegen",
@@ -15,11 +17,9 @@ members = [
     "crates/rumoca-phase-parse",
     "crates/rumoca-phase-resolve",
     "crates/rumoca-phase-dae",
-    "crates/rumoca-phase-structural",
-    "crates/rumoca-eval-runtime",
-    "crates/rumoca-eval-compiled",
-    "crates/rumoca-sim-core",
-    "crates/rumoca-sim-diffsol",
+    "crates/rumoca-phase-solve",
+    "crates/rumoca-eval-dae",
+    "crates/rumoca-sim",
     "crates/rumoca-phase-typecheck",
     # Session and tools
     "crates/rumoca-session",
@@ -45,7 +45,9 @@ rumoca = { path = "crates/rumoca" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
-rumoca-eval-const = { path = "crates/rumoca-eval-const" }
+rumoca-ir-core = { path = "crates/rumoca-ir-core" }
+rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
+rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
 rumoca-ir-ast = { path = "crates/rumoca-ir-ast" }
 rumoca-ir-flat = { path = "crates/rumoca-ir-flat" }
 rumoca-phase-flatten = { path = "crates/rumoca-phase-flatten" }
@@ -53,12 +55,10 @@ rumoca-phase-instantiate = { path = "crates/rumoca-phase-instantiate" }
 rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }
 rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
-rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
+rumoca-phase-solve = { path = "crates/rumoca-phase-solve" }
+rumoca-eval-dae = { path = "crates/rumoca-eval-dae", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
-rumoca-eval-runtime = { path = "crates/rumoca-eval-runtime" }
-rumoca-eval-compiled = { path = "crates/rumoca-eval-compiled", default-features = false }
-rumoca-sim-core = { path = "crates/rumoca-sim-core" }
-rumoca-sim-diffsol = { path = "crates/rumoca-sim-diffsol" }
+rumoca-sim = { path = "crates/rumoca-sim" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-session = { path = "crates/rumoca-session" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
@@ -106,12 +106,17 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+unreachable_pub = "deny"
+unnameable_types = "deny"
+private_interfaces = "deny"
+private_bounds = "deny"
+exported_private_dependencies = "deny"
 
 # Code complexity lints (SPEC_0021)
 # Thresholds configured in clippy.toml
 [workspace.lints.clippy]
 # Enable lint groups - deny to make warnings into compile errors
-all = "deny"
+all = { level = "deny", priority = -1 }
 # Intentionally not enabling `cargo`/`pedantic` as workspace-wide lint groups.
 # They produce high-noise warnings under our `-D warnings` CI mode; we prefer
 # targeted deny rules and incremental lint hardening.
@@ -119,6 +124,13 @@ all = "deny"
 excessive_nesting = "deny"
 too_many_lines = "deny"
 too_many_arguments = "deny"
+# Crate-boundary hardening
+# Do not blanket-ban re-exports; SPEC_0029 is enforced by targeted architecture tests.
+pub_use = "allow"
+# Visibility shorthand style lints are orthogonal to architecture; leave them off.
+pub_with_shorthand = "allow"
+pub_without_shorthand = "allow"
+missing_enforced_import_renames = "deny"
 
 # For faster builds
 [profile.dev]

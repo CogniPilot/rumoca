@@ -187,7 +187,7 @@ self.onmessage = async (e) => {
                 result = render_template(daeJson, template);
                 break;
             case 'simulate':
-                if (!simulate_model) throw new Error('Simulation not available in this WASM build. Rebuild with rumoca-sim-diffsol.');
+                if (!simulate_model) throw new Error('Simulation not available in this WASM build. Rebuild with rumoca-sim (diffsol feature enabled).');
                 result = simulate_model(source, modelName || 'Model', tEnd || 1.0, dt || 0);
                 break;
             default:

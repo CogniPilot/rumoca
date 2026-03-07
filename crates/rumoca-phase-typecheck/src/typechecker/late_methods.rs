@@ -119,7 +119,7 @@ impl TypeChecker {
         instance_scope: &str,
         type_scope_hints: &HashMap<String, String>,
     ) -> Option<i64> {
-        eval::eval_dimension_with_scope(sub, &self.eval_ctx, instance_scope)
+        rumoca_eval_ast::eval::eval_dimension_with_scope(sub, &self.eval_ctx, instance_scope)
             .or_else(|| {
                 Self::eval_dimension_with_type_scope_fallback(
                     sub,
@@ -160,7 +160,7 @@ impl TypeChecker {
         sub: &rumoca_ir_ast::Subscript,
         instance_scope: &str,
         type_scope_hints: &HashMap<String, String>,
-        ctx: &eval::TypeCheckEvalContext,
+        ctx: &rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) -> Option<usize> {
         if instance_scope.is_empty() {
             return None;
@@ -168,7 +168,8 @@ impl TypeChecker {
         let mut current = instance_scope;
         loop {
             if let Some(type_scope) = type_scope_hints.get(current)
-                && let Some(v) = eval::eval_dimension_with_scope(sub, ctx, type_scope)
+                && let Some(v) =
+                    rumoca_eval_ast::eval::eval_dimension_with_scope(sub, ctx, type_scope)
             {
                 return Some(v);
             }
@@ -195,16 +196,17 @@ impl TypeChecker {
             // MLS §10.1 dependency chains can reveal better values in later passes;
             // keep updating until reaching a fixed point instead of keeping stale
             // early values from fallback scope resolution.
-            let computed = instance_data
-                .binding
-                .as_ref()
-                .and_then(|binding| eval::eval_integer_with_scope(binding, &self.eval_ctx, scope));
-            let computed = computed.or_else(|| {
-                instance_data
-                    .start
-                    .as_ref()
-                    .and_then(|start| eval::eval_integer_with_scope(start, &self.eval_ctx, scope))
-            });
+            let mut computed = None;
+            if let Some(binding) = instance_data.binding.as_ref() {
+                computed =
+                    rumoca_eval_ast::eval::eval_integer_with_scope(binding, &self.eval_ctx, scope);
+            }
+            if computed.is_none()
+                && let Some(start) = instance_data.start.as_ref()
+            {
+                computed =
+                    rumoca_eval_ast::eval::eval_integer_with_scope(start, &self.eval_ctx, scope);
+            }
             if let Some(value) = computed
                 && self.eval_ctx.get_integer(&name) != Some(value)
             {
@@ -253,11 +255,11 @@ impl TypeChecker {
         let binding_val = data
             .binding
             .as_ref()
-            .and_then(|b| eval::eval_boolean_with_scope(b, &self.eval_ctx, scope));
+            .and_then(|b| rumoca_eval_ast::eval::eval_boolean_with_scope(b, &self.eval_ctx, scope));
         let start_val = data
             .start
             .as_ref()
-            .and_then(|s| eval::eval_boolean_with_scope(s, &self.eval_ctx, scope));
+            .and_then(|s| rumoca_eval_ast::eval::eval_boolean_with_scope(s, &self.eval_ctx, scope));
         if let Some(value) = binding_val.or(start_val) {
             self.eval_ctx.booleans.insert(name.to_string(), value);
             return true;
@@ -275,11 +277,11 @@ impl TypeChecker {
         let binding_val = data
             .binding
             .as_ref()
-            .and_then(|b| eval::eval_real_with_scope(b, &self.eval_ctx, scope));
+            .and_then(|b| rumoca_eval_ast::eval::eval_real_with_scope(b, &self.eval_ctx, scope));
         let start_val = data
             .start
             .as_ref()
-            .and_then(|s| eval::eval_real_with_scope(s, &self.eval_ctx, scope));
+            .and_then(|s| rumoca_eval_ast::eval::eval_real_with_scope(s, &self.eval_ctx, scope));
         if let Some(value) = binding_val.or(start_val) {
             self.eval_ctx.reals.insert(name.to_string(), value);
             return true;
@@ -335,8 +337,11 @@ impl TypeChecker {
 
         // Try to infer from binding first
         if let Some(ref binding) = instance_data.binding
-            && let Some(dims) =
-                eval::infer_dimensions_from_binding_with_scope(binding, &self.eval_ctx, scope)
+            && let Some(dims) = rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+                binding,
+                &self.eval_ctx,
+                scope,
+            )
         {
             instance_data.dims = dims.iter().map(|&d| d as i64).collect();
             self.eval_ctx.add_dimensions(&name, dims);
@@ -345,8 +350,11 @@ impl TypeChecker {
 
         // Fallback: try to infer from start value of a record element binding
         if let Some(ref start) = instance_data.start
-            && let Some(dims) =
-                eval::infer_dimensions_from_binding_with_scope(start, &self.eval_ctx, scope)
+            && let Some(dims) = rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+                start,
+                &self.eval_ctx,
+                scope,
+            )
         {
             instance_data.dims = dims.iter().map(|&d| d as i64).collect();
             self.eval_ctx.add_dimensions(&name, dims);
@@ -384,7 +392,7 @@ impl TypeChecker {
                 .dims_expr
                 .iter()
                 .any(|s| matches!(s, ast::Subscript::Range { .. }));
-            let is_input = matches!(instance_data.causality, ast::Causality::Input(_));
+            let is_input = matches!(instance_data.causality, rumoca_ir_core::Causality::Input(_));
             if is_input && has_colon_dim {
                 continue;
             }
@@ -430,7 +438,7 @@ impl TypeChecker {
     /// Type check a ClassDef.
     pub(crate) fn check_class(&mut self, class: &mut ClassDef, type_table: &mut TypeTable) {
         // Collect constants from this class for dimension evaluation
-        self.eval_ctx = eval::collect_constants(class, "");
+        self.eval_ctx = rumoca_eval_ast::eval::collect_constants(class, "");
 
         // Resolve component types and evaluate dimensions
         for (name, comp) in class.components.iter_mut() {
@@ -1148,7 +1156,9 @@ impl TypeChecker {
         let Some(binding) = &comp.binding else {
             return false;
         };
-        let Some(dims) = eval::infer_dimensions_from_binding(binding, &self.eval_ctx) else {
+        let Some(dims) =
+            rumoca_eval_ast::eval::infer_dimensions_from_binding(binding, &self.eval_ctx)
+        else {
             return false;
         };
 
@@ -1162,7 +1172,7 @@ impl TypeChecker {
         let evaluated: Option<Vec<usize>> = comp
             .shape_expr
             .iter()
-            .map(|sub| eval::eval_dimension(sub, &self.eval_ctx))
+            .map(|sub| rumoca_eval_ast::eval::eval_dimension(sub, &self.eval_ctx))
             .collect();
 
         if let Some(dims) = evaluated
@@ -1182,7 +1192,7 @@ impl TypeChecker {
         let mut structural_refs = std::collections::HashSet::new();
         for (_name, comp) in class.components.iter() {
             for sub in &comp.shape_expr {
-                structural_refs.extend(eval::collect_subscript_refs(sub));
+                structural_refs.extend(rumoca_eval_ast::eval::collect_subscript_refs(sub));
             }
         }
 
@@ -1195,7 +1205,7 @@ impl TypeChecker {
 
         // Mark referenced parameters as structural
         for (name, comp) in class.components.iter_mut() {
-            let is_param = matches!(comp.variability, rumoca_ir_ast::Variability::Parameter(_));
+            let is_param = matches!(comp.variability, rumoca_ir_core::Variability::Parameter(_));
             if structural_refs.contains(name) && is_param {
                 comp.is_structural = true;
             }
@@ -1208,7 +1218,8 @@ impl TypeChecker {
     /// constant < parameter < discrete < continuous
     pub(crate) fn validate_variability_constraints(&mut self, class: &ClassDef) {
         for (name, comp) in &class.components {
-            let comp_level = eval::VariabilityLevel::from_variability(&comp.variability);
+            let comp_level =
+                rumoca_eval_ast::eval::VariabilityLevel::from_variability(&comp.variability);
 
             // Check binding expression
             if let Some(binding) = &comp.binding {
@@ -1233,11 +1244,11 @@ impl TypeChecker {
         &mut self,
         comp_name: &str,
         expr: &Expression,
-        comp_level: eval::VariabilityLevel,
+        comp_level: rumoca_eval_ast::eval::VariabilityLevel,
         class: &ClassDef,
-        location: &rumoca_ir_ast::Location,
+        location: &rumoca_ir_core::Location,
     ) {
-        let expr_level = eval::max_variability_in_expr(expr, class);
+        let expr_level = rumoca_eval_ast::eval::max_variability_in_expr(expr, class);
 
         if expr_level > comp_level {
             // Convert location to span for proper error reporting
@@ -1269,7 +1280,7 @@ impl TypeChecker {
     pub(crate) fn validate_causality_constraints(&mut self, class: &ClassDef) {
         for (name, comp) in &class.components {
             // Check if input has explicit binding
-            if matches!(comp.causality, rumoca_ir_ast::Causality::Input(_))
+            if matches!(comp.causality, rumoca_ir_core::Causality::Input(_))
                 && comp.binding.is_some()
             {
                 let span = self.source_map.location_to_span(

@@ -54,7 +54,7 @@ fn is_root_msl_example_model_name(model_name: &str) -> bool {
 /// - no unbound fixed parameters (fixed=true by default for parameters)
 fn is_root_standalone_msl_example_model(
     model_name: &str,
-    result: &rumoca_session::CompilationResult,
+    result: &rumoca_session::compile::CompilationResult,
 ) -> bool {
     is_root_msl_example_model_name(model_name)
         && !result.dae.is_partial
@@ -519,7 +519,7 @@ fn is_non_sim_failure(phase: FailedPhase, error_code: Option<&str>) -> bool {
 pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> MslModelResult {
     match phase_result {
         PhaseResult::Success(result) => {
-            let detail = result.dae.balance_detail();
+            let detail = rumoca_eval_dae::analysis::balance_detail(&result.dae);
             // Start from the exact DAE-balance basis (continuous unknowns/equations).
             let scalar_unknowns =
                 (detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns) as i64;

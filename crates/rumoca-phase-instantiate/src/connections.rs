@@ -505,7 +505,7 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
                 // Replace with integer literal
                 ast::Expression::Terminal {
                     terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: rumoca_ir_ast::Token {
+                    token: rumoca_ir_core::Token {
                         text: std::sync::Arc::from(value.to_string()),
                         location: cr.parts[0].ident.location.clone(),
                         token_number: 0,
@@ -615,13 +615,13 @@ fn try_eval_bool_expr(
 
         // Not expression
         ast::Expression::Unary {
-            op: rumoca_ir_ast::OpUnary::Not(_),
+            op: rumoca_ir_core::OpUnary::Not(_),
             rhs: inner,
         } => try_eval_bool_expr(inner, bool_params, int_params).map(|v| !v),
 
         // And expression
         ast::Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::And(_),
+            op: rumoca_ir_core::OpBinary::And(_),
             lhs,
             rhs,
         } => {
@@ -632,7 +632,7 @@ fn try_eval_bool_expr(
 
         // Or expression
         ast::Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Or(_),
+            op: rumoca_ir_core::OpBinary::Or(_),
             lhs,
             rhs,
         } => {
@@ -646,12 +646,12 @@ fn try_eval_bool_expr(
             let l = expr_to_i64_with_params(lhs, int_params)?;
             let r = expr_to_i64_with_params(rhs, int_params)?;
             match op {
-                rumoca_ir_ast::OpBinary::Gt(_) => Some(l > r),
-                rumoca_ir_ast::OpBinary::Ge(_) => Some(l >= r),
-                rumoca_ir_ast::OpBinary::Lt(_) => Some(l < r),
-                rumoca_ir_ast::OpBinary::Le(_) => Some(l <= r),
-                rumoca_ir_ast::OpBinary::Eq(_) => Some(l == r),
-                rumoca_ir_ast::OpBinary::Neq(_) => Some(l != r),
+                rumoca_ir_core::OpBinary::Gt(_) => Some(l > r),
+                rumoca_ir_core::OpBinary::Ge(_) => Some(l >= r),
+                rumoca_ir_core::OpBinary::Lt(_) => Some(l < r),
+                rumoca_ir_core::OpBinary::Le(_) => Some(l <= r),
+                rumoca_ir_core::OpBinary::Eq(_) => Some(l == r),
+                rumoca_ir_core::OpBinary::Neq(_) => Some(l != r),
                 _ => None,
             }
         }
@@ -704,12 +704,12 @@ fn subscript_to_i64(
 }
 
 /// Evaluate a binary integer operation.
-fn eval_binary_i64(op: &rumoca_ir_ast::OpBinary, l: i64, r: i64) -> Option<i64> {
+fn eval_binary_i64(op: &rumoca_ir_core::OpBinary, l: i64, r: i64) -> Option<i64> {
     match op {
-        ast::OpBinary::Add(_) | ast::OpBinary::AddElem(_) => Some(l + r),
-        ast::OpBinary::Sub(_) | ast::OpBinary::SubElem(_) => Some(l - r),
-        ast::OpBinary::Mul(_) | ast::OpBinary::MulElem(_) => Some(l * r),
-        ast::OpBinary::Div(_) | ast::OpBinary::DivElem(_) => {
+        rumoca_ir_core::OpBinary::Add(_) | rumoca_ir_core::OpBinary::AddElem(_) => Some(l + r),
+        rumoca_ir_core::OpBinary::Sub(_) | rumoca_ir_core::OpBinary::SubElem(_) => Some(l - r),
+        rumoca_ir_core::OpBinary::Mul(_) | rumoca_ir_core::OpBinary::MulElem(_) => Some(l * r),
+        rumoca_ir_core::OpBinary::Div(_) | rumoca_ir_core::OpBinary::DivElem(_) => {
             if r == 0 {
                 None
             } else {
@@ -721,10 +721,10 @@ fn eval_binary_i64(op: &rumoca_ir_ast::OpBinary, l: i64, r: i64) -> Option<i64> 
 }
 
 /// Evaluate a unary integer operation.
-fn eval_unary_i64(op: &rumoca_ir_ast::OpUnary, val: i64) -> Option<i64> {
+fn eval_unary_i64(op: &rumoca_ir_core::OpUnary, val: i64) -> Option<i64> {
     match op {
-        ast::OpUnary::Minus(_) | ast::OpUnary::DotMinus(_) => Some(-val),
-        ast::OpUnary::Plus(_) | ast::OpUnary::DotPlus(_) => Some(val),
+        rumoca_ir_core::OpUnary::Minus(_) | rumoca_ir_core::OpUnary::DotMinus(_) => Some(-val),
+        rumoca_ir_core::OpUnary::Plus(_) | rumoca_ir_core::OpUnary::DotPlus(_) => Some(val),
         _ => None,
     }
 }
@@ -893,7 +893,7 @@ fn replace_range_with_index(
                         subs: Some(vec![ast::Subscript::Expression(
                             ast::Expression::Terminal {
                                 terminal_type: ast::TerminalType::UnsignedInteger,
-                                token: rumoca_ir_ast::Token {
+                                token: rumoca_ir_core::Token {
                                     text: std::sync::Arc::from(value.to_string()),
                                     location: part.ident.location.clone(),
                                     token_number: 0,
@@ -921,7 +921,7 @@ fn add_index_to_qualified_name(qn: &ast::QualifiedName, index: i64) -> ast::Qual
 }
 
 /// Check if an equation is a connect statement.
-pub fn is_connect_equation(eq: &ast::Equation) -> bool {
+pub(crate) fn is_connect_equation(eq: &ast::Equation) -> bool {
     matches!(eq, ast::Equation::Connect { .. })
 }
 
@@ -938,10 +938,10 @@ pub fn filter_out_connections(equations: &[ast::Equation]) -> Vec<ast::Equation>
 mod tests {
     use super::*;
 
-    fn make_token(text: &str) -> ast::Token {
-        ast::Token {
+    fn make_token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: std::sync::Arc::from(text),
-            location: ast::Location::default(),
+            location: rumoca_ir_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }
@@ -1074,7 +1074,7 @@ mod tests {
             ident: make_token("i"),
             range: ast::Expression::Range {
                 start: std::sync::Arc::new(ast::Expression::Binary {
-                    op: rumoca_ir_ast::OpBinary::Add(make_token("+")),
+                    op: rumoca_ir_core::OpBinary::Add(make_token("+")),
                     lhs: std::sync::Arc::new(ast::Expression::ComponentReference(
                         ast::ComponentReference {
                             local: false,

@@ -9,7 +9,7 @@ fn make_var(name: &str) -> ast::Expression {
     ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![ast::ComponentRefPart {
-            ident: ast::Token {
+            ident: rumoca_ir_core::Token {
                 text: Arc::from(name),
                 ..Default::default()
             },
@@ -22,7 +22,7 @@ fn make_var(name: &str) -> ast::Expression {
 fn make_int(value: i64) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
-        token: ast::Token {
+        token: rumoca_ir_core::Token {
             text: Arc::from(value.to_string()),
             ..Default::default()
         },
@@ -31,7 +31,7 @@ fn make_int(value: i64) -> ast::Expression {
 
 fn make_named_arg(name: &str, value: ast::Expression) -> ast::Expression {
     ast::Expression::NamedArgument {
-        name: ast::Token {
+        name: rumoca_ir_core::Token {
             text: Arc::from(name),
             ..Default::default()
         },
@@ -44,7 +44,7 @@ fn make_der(var_name: &str) -> ast::Expression {
         comp: ast::ComponentReference {
             local: false,
             parts: vec![ast::ComponentRefPart {
-                ident: ast::Token {
+                ident: rumoca_ir_core::Token {
                     text: Arc::from("der"),
                     ..Default::default()
                 },
@@ -58,7 +58,7 @@ fn make_der(var_name: &str) -> ast::Expression {
 
 fn make_for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
     ast::ForIndex {
-        ident: ast::Token {
+        ident: rumoca_ir_core::Token {
             text: Arc::from(name),
             ..Default::default()
         },
@@ -72,7 +72,7 @@ fn make_for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
 
 fn make_component_ref_part(name: &str) -> ast::ComponentRefPart {
     ast::ComponentRefPart {
-        ident: ast::Token {
+        ident: rumoca_ir_core::Token {
             text: Arc::from(name),
             ..Default::default()
         },
@@ -84,7 +84,7 @@ fn make_subscripted_ref_expr(name: &str, subscript_value: i64) -> ast::Expressio
     ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![ast::ComponentRefPart {
-            ident: ast::Token {
+            ident: rumoca_ir_core::Token {
                 text: Arc::from(name),
                 ..Default::default()
             },
@@ -268,7 +268,7 @@ fn test_function_call_named_arguments_preserved_as_internal_named_args() {
 #[test]
 fn test_flat_expression_binary() {
     let expr = ast::Expression::Binary {
-        op: ast::OpBinary::Add(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
         lhs: Arc::new(make_var("x")),
         rhs: Arc::new(make_int(1)),
     };
@@ -313,7 +313,7 @@ fn test_flat_expression_preserves_array_comprehension_structure() {
 #[test]
 fn test_flat_expression_contains_der() {
     let expr_with_der = ast::Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Arc::new(make_der("x")),
         rhs: Arc::new(make_var("y")),
     };
@@ -321,7 +321,7 @@ fn test_flat_expression_contains_der() {
     assert!(flat.contains_der());
 
     let expr_without_der = ast::Expression::Binary {
-        op: ast::OpBinary::Add(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
         lhs: Arc::new(make_var("x")),
         rhs: Arc::new(make_int(1)),
     };
@@ -333,9 +333,9 @@ fn test_flat_expression_contains_der() {
 fn test_flat_expression_collect_state_variables() {
     // der(x) + der(y) - z
     let expr = ast::Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Arc::new(ast::Expression::Binary {
-            op: ast::OpBinary::Add(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Add(rumoca_ir_core::Token::default()),
             lhs: Arc::new(make_der("x")),
             rhs: Arc::new(make_der("y")),
         }),
@@ -380,7 +380,7 @@ fn test_builtin_function_from_name() {
 fn make_parameter_var(name: &str, fixed: Option<bool>, has_binding: bool) -> flat::Variable {
     flat::Variable {
         name: VarName::new(name),
-        variability: ast::Variability::Parameter(ast::Token::default()),
+        variability: Variability::Parameter(Token::default()),
         fixed,
         binding: has_binding.then_some(Expression::Literal(Literal::Real(1.0))),
         ..Default::default()
@@ -452,7 +452,7 @@ fn test_extract_algorithm_outputs_keeps_function_call_targets() {
 
 #[test]
 fn test_component_ref_from_ast_uses_def_map_when_parts_empty() {
-    let def_id = ast::DefId::new(42);
+    let def_id = DefId::new(42);
     let ast_ref = ast::ComponentReference {
         local: false,
         parts: Vec::new(),
@@ -468,7 +468,7 @@ fn test_component_ref_from_ast_uses_def_map_when_parts_empty() {
 
 #[test]
 fn test_component_ref_from_ast_preserves_non_empty_parts_over_def_map() {
-    let def_id = ast::DefId::new(7);
+    let def_id = DefId::new(7);
     let ast_ref = ast::ComponentReference {
         local: false,
         parts: vec![
@@ -487,7 +487,7 @@ fn test_component_ref_from_ast_preserves_non_empty_parts_over_def_map() {
 
 #[test]
 fn test_flat_expression_component_ref_canonicalizes_enum_literal_with_def_map() {
-    let def_id = ast::DefId::new(314);
+    let def_id = DefId::new(314);
     let expr = ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![make_component_ref_part("L"), make_component_ref_part("'1'")],
@@ -512,7 +512,7 @@ fn test_flat_expression_component_ref_canonicalizes_enum_literal_with_def_map() 
 
 #[test]
 fn test_flat_expression_component_ref_preserves_non_enum_textual_path() {
-    let def_id = ast::DefId::new(2718);
+    let def_id = DefId::new(2718);
     let expr = ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![
@@ -537,7 +537,7 @@ fn test_flat_expression_component_ref_encodes_final_segment_subscripts_in_name()
     let expr = ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![ast::ComponentRefPart {
-            ident: ast::Token {
+            ident: rumoca_ir_core::Token {
                 text: Arc::from("A"),
                 ..Default::default()
             },
@@ -559,7 +559,7 @@ fn test_flat_expression_component_ref_preserves_nested_subscripts_in_subscript_e
     let expr = ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![ast::ComponentRefPart {
-            ident: ast::Token {
+            ident: rumoca_ir_core::Token {
                 text: Arc::from("T"),
                 ..Default::default()
             },

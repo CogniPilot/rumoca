@@ -10,6 +10,7 @@ build = "build.rs"
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-ast = { workspace = true }
+rumoca-ir-core = { workspace = true }
 anyhow = { workspace = true }
 miette = { workspace = true }
 parol_runtime = { workspace = true }

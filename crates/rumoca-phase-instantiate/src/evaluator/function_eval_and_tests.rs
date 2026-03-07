@@ -11,7 +11,7 @@ pub(super) fn bind_function_inputs(
     let inputs: Vec<_> = function_def
         .components
         .iter()
-        .filter(|(_, comp)| matches!(comp.causality, ast::Causality::Input(_)))
+        .filter(|(_, comp)| matches!(comp.causality, rumoca_ir_core::Causality::Input(_)))
         .collect();
 
     let mut positional_idx = 0usize;
@@ -123,7 +123,7 @@ pub(super) fn find_function_output_name(function_def: &ast::ClassDef) -> Option<
     function_def
         .components
         .iter()
-        .find(|(_, comp)| matches!(comp.causality, ast::Causality::Output(_)))
+        .find(|(_, comp)| matches!(comp.causality, rumoca_ir_core::Causality::Output(_)))
         .map(|(name, _)| name.clone())
 }
 
@@ -354,19 +354,19 @@ fn try_eval_bool_expr_with_depth_and_locals(
             _ => None,
         },
         ast::Expression::Unary {
-            op: rumoca_ir_ast::OpUnary::Not(_),
+            op: rumoca_ir_core::OpUnary::Not(_),
             rhs,
         } => Some(!recurse(rhs)?),
         ast::Expression::Parenthesized { inner } => recurse(inner),
         ast::Expression::Binary { op, lhs, rhs } => match op {
-            rumoca_ir_ast::OpBinary::And(_) => Some(recurse(lhs)? && recurse(rhs)?),
-            rumoca_ir_ast::OpBinary::Or(_) => Some(recurse(lhs)? || recurse(rhs)?),
-            rumoca_ir_ast::OpBinary::Eq(_) => Some(int_eval(lhs)? == int_eval(rhs)?),
-            rumoca_ir_ast::OpBinary::Neq(_) => Some(int_eval(lhs)? != int_eval(rhs)?),
-            rumoca_ir_ast::OpBinary::Lt(_) => Some(int_eval(lhs)? < int_eval(rhs)?),
-            rumoca_ir_ast::OpBinary::Le(_) => Some(int_eval(lhs)? <= int_eval(rhs)?),
-            rumoca_ir_ast::OpBinary::Gt(_) => Some(int_eval(lhs)? > int_eval(rhs)?),
-            rumoca_ir_ast::OpBinary::Ge(_) => Some(int_eval(lhs)? >= int_eval(rhs)?),
+            rumoca_ir_core::OpBinary::And(_) => Some(recurse(lhs)? && recurse(rhs)?),
+            rumoca_ir_core::OpBinary::Or(_) => Some(recurse(lhs)? || recurse(rhs)?),
+            rumoca_ir_core::OpBinary::Eq(_) => Some(int_eval(lhs)? == int_eval(rhs)?),
+            rumoca_ir_core::OpBinary::Neq(_) => Some(int_eval(lhs)? != int_eval(rhs)?),
+            rumoca_ir_core::OpBinary::Lt(_) => Some(int_eval(lhs)? < int_eval(rhs)?),
+            rumoca_ir_core::OpBinary::Le(_) => Some(int_eval(lhs)? <= int_eval(rhs)?),
+            rumoca_ir_core::OpBinary::Gt(_) => Some(int_eval(lhs)? > int_eval(rhs)?),
+            rumoca_ir_core::OpBinary::Ge(_) => Some(int_eval(lhs)? >= int_eval(rhs)?),
             _ => None,
         },
         _ => None,
@@ -493,8 +493,8 @@ fn try_eval_integer_shape_expr_with_depth(
         ast::Expression::Unary { op, rhs } => {
             let value = recurse(rhs)?;
             match op {
-                rumoca_ir_ast::OpUnary::Minus(_) => Some(-value),
-                rumoca_ir_ast::OpUnary::Plus(_) => Some(value),
+                rumoca_ir_core::OpUnary::Minus(_) => Some(-value),
+                rumoca_ir_core::OpUnary::Plus(_) => Some(value),
                 _ => None,
             }
         }
@@ -644,7 +644,8 @@ fn shape_component_ref_is_static(
         component.is_structural
             || matches!(
                 component.variability,
-                rumoca_ir_ast::Variability::Parameter(_) | rumoca_ir_ast::Variability::Constant(_)
+                rumoca_ir_core::Variability::Parameter(_)
+                    | rumoca_ir_core::Variability::Constant(_)
             )
     };
 
@@ -761,10 +762,10 @@ mod tests {
         assert!(!enum_values_equal(a, b));
     }
 
-    fn token(text: &str) -> ast::Token {
-        ast::Token {
+    fn token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: Arc::from(text),
-            ..ast::Token::default()
+            ..rumoca_ir_core::Token::default()
         }
     }
 
@@ -784,7 +785,7 @@ mod tests {
 
     fn eq_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
         ast::Expression::Binary {
-            op: ast::OpBinary::Eq(token("==")),
+            op: rumoca_ir_core::OpBinary::Eq(token("==")),
             lhs: Arc::new(lhs),
             rhs: Arc::new(rhs),
         }
@@ -792,7 +793,7 @@ mod tests {
 
     fn add_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
         ast::Expression::Binary {
-            op: ast::OpBinary::Add(token("+")),
+            op: rumoca_ir_core::OpBinary::Add(token("+")),
             lhs: Arc::new(lhs),
             rhs: Arc::new(rhs),
         }
@@ -825,11 +826,11 @@ mod tests {
     #[test]
     fn integer_div_operator_requires_exact_quotient() {
         assert_eq!(
-            eval_integer_binary(&ast::OpBinary::Div(token("/")), 8, 2),
+            eval_integer_binary(&rumoca_ir_core::OpBinary::Div(token("/")), 8, 2),
             Some(4)
         );
         assert_eq!(
-            eval_integer_binary(&ast::OpBinary::Div(token("/")), 7, 2),
+            eval_integer_binary(&rumoca_ir_core::OpBinary::Div(token("/")), 7, 2),
             None
         );
     }
@@ -907,7 +908,7 @@ mod tests {
             "useLumpedPressure".to_string(),
             ast::Component {
                 name: "useLumpedPressure".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 start: bool_expr(false),
                 ..ast::Component::default()
             },
@@ -916,7 +917,7 @@ mod tests {
             "nFMLumped".to_string(),
             ast::Component {
                 name: "nFMLumped".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 start: int_expr(2),
                 ..ast::Component::default()
             },
@@ -925,7 +926,7 @@ mod tests {
             "nFMDistributed".to_string(),
             ast::Component {
                 name: "nFMDistributed".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 start: int_expr(1),
                 ..ast::Component::default()
             },
@@ -974,7 +975,7 @@ mod tests {
             "nA".to_string(),
             ast::Component {
                 name: "nA".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 start: int_expr(2),
                 ..ast::Component::default()
             },
@@ -983,7 +984,7 @@ mod tests {
             "nB".to_string(),
             ast::Component {
                 name: "nB".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 start: int_expr(1),
                 ..ast::Component::default()
             },
@@ -1026,7 +1027,7 @@ mod tests {
             "n".to_string(),
             ast::Component {
                 name: "n".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 // Unresolvable start should not override explicit binding.
                 start: ast::Expression::ComponentReference(cref("missing.scope.value")),
                 binding: Some(int_expr(1)),
@@ -1052,7 +1053,7 @@ mod tests {
             "m".to_string(),
             ast::Component {
                 name: "m".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 // Keep start unresolved and provide the structural value via binding.
                 start: ast::Expression::ComponentReference(cref("missing.scope.value")),
                 binding: Some(int_expr(1)),
@@ -1082,7 +1083,7 @@ mod tests {
             "stackData".to_string(),
             ast::Component {
                 name: "stackData".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 ..ast::Component::default()
             },
         );
@@ -1131,7 +1132,7 @@ mod tests {
             "pipe2.nFM".to_string(),
             ast::Component {
                 name: "pipe2.nFM".to_string(),
-                variability: rumoca_ir_ast::Variability::Parameter(token("parameter")),
+                variability: rumoca_ir_core::Variability::Parameter(token("parameter")),
                 start: int_expr(1),
                 binding: Some(int_expr(1)),
                 has_explicit_binding: true,

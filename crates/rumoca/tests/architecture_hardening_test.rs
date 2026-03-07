@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,167 @@ fn collect_direct_import_offenders(path: &Path) -> Vec<String> {
         .map(|(line_idx, _)| format!("{}:{}", path.display(), line_idx + 1))
         .collect()
 }
+
+fn section_contains_dependency(content: &str, section: &str, dependency: &str) -> bool {
+    let header = format!("[{section}]");
+    let mut in_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed == header;
+            continue;
+        }
+        if !in_section || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _)) = trimmed.split_once('=')
+            && name.trim() == dependency
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn section_dependency_names(content: &str, section: &str) -> Vec<String> {
+    let header = format!("[{section}]");
+    let mut in_section = false;
+    let mut names = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed == header;
+            continue;
+        }
+        if !in_section || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _)) = trimmed.split_once('=') {
+            names.push(name.trim().to_string());
+        }
+    }
+
+    names
+}
+
+fn is_cross_crate_pub_type_alias(trimmed: &str) -> bool {
+    if !trimmed.starts_with("pub type ") {
+        return false;
+    }
+    let Some((_, rhs)) = trimmed.split_once('=') else {
+        return false;
+    };
+    let rhs = rhs.trim_start();
+    rhs.starts_with("rumoca_") || rhs.starts_with("::rumoca_")
+}
+
+fn cross_crate_public_export_statement(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("pub use rumoca_") || is_cross_crate_pub_type_alias(trimmed) {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+fn normalized_rel_path(rel: &Path) -> String {
+    rel.to_string_lossy().replace('\\', "/")
+}
+
+fn is_low_level_crate_file(rel: &Path) -> bool {
+    let rel = normalized_rel_path(rel);
+    rel.starts_with("crates/rumoca-ir-")
+        || rel.starts_with("crates/rumoca-phase-")
+        || rel.starts_with("crates/rumoca-eval-")
+}
+
+fn collect_root_pub_use_statements(content: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut lines = content.lines();
+
+    while let Some(line) = lines.next() {
+        if !line.starts_with("pub use ") {
+            continue;
+        }
+        let mut statement = line.trim().to_string();
+        while !statement.trim_end().ends_with(';') {
+            let Some(next_line) = lines.next() else {
+                break;
+            };
+            statement.push(' ');
+            statement.push_str(next_line.trim());
+        }
+        statements.push(statement);
+    }
+
+    statements
+}
+
+const ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS: &[(&str, &str)] = &[
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type Causality = rumoca_ir_core::Causality;",
+    ),
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type ClassType = rumoca_ir_core::ClassType;",
+    ),
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type Location = rumoca_ir_core::Location;",
+    ),
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type OpBinary = rumoca_ir_core::OpBinary;",
+    ),
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type OpUnary = rumoca_ir_core::OpUnary;",
+    ),
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type StateSelect = rumoca_ir_core::StateSelect;",
+    ),
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type Token = rumoca_ir_core::Token;",
+    ),
+    (
+        "crates/rumoca-ir-ast/src/lib.rs",
+        "pub type Variability = rumoca_ir_core::Variability;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type Causality = rumoca_ir_core::Causality;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type ClassType = rumoca_ir_core::ClassType;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type OpBinary = rumoca_ir_core::OpBinary;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type OpUnary = rumoca_ir_core::OpUnary;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type StateSelect = rumoca_ir_core::StateSelect;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type Token = rumoca_ir_core::Token;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type Variability = rumoca_ir_core::Variability;",
+    ),
+];
 
 #[test]
 fn test_no_tail_rs_files_in_crates() {
@@ -102,10 +264,7 @@ fn test_no_manual_msl_ignore_markers() {
 #[test]
 fn test_sim_sources_use_ir_namespace_aliases() {
     let root = workspace_root();
-    let sim_dirs = [
-        root.join("crates/rumoca-sim-core/src"),
-        root.join("crates/rumoca-sim-diffsol/src"),
-    ];
+    let sim_dirs = [root.join("crates/rumoca-sim/src")];
 
     let mut offenders = Vec::new();
     for dir in sim_dirs {
@@ -124,15 +283,407 @@ fn test_sim_sources_use_ir_namespace_aliases() {
 
 #[test]
 fn test_sim_diffsol_dag_boundary_no_flat_or_ast_dependency() {
-    let cargo_toml = workspace_root().join("crates/rumoca-sim-diffsol/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read sim-diffsol Cargo.toml");
+    let cargo_toml = workspace_root().join("crates/rumoca-sim/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim Cargo.toml");
 
     assert!(
         !content.contains("rumoca-ir-flat"),
-        "sim-diffsol must not depend on rumoca-ir-flat"
+        "rumoca-sim must not depend on rumoca-ir-flat"
     );
     assert!(
         !content.contains("rumoca-ir-ast"),
-        "sim-diffsol must not depend on rumoca-ir-ast"
+        "rumoca-sim must not depend on rumoca-ir-ast"
+    );
+}
+
+#[test]
+fn test_ir_flat_dag_boundary_no_ast_dependency() {
+    let cargo_toml = workspace_root().join("crates/rumoca-ir-flat/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read ir-flat Cargo.toml");
+
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "rumoca-ir-ast"),
+        "ir-flat must not depend on rumoca-ir-ast in [dependencies]; \
+AST->Flat conversion belongs in rumoca-phase-flatten"
+    );
+}
+
+#[test]
+fn test_eval_crates_follow_ir_layer_mapping() {
+    let root = workspace_root();
+
+    let eval_ast = fs::read_to_string(root.join("crates/rumoca-eval-ast/Cargo.toml"))
+        .expect("read eval-ast Cargo.toml");
+    assert!(
+        section_contains_dependency(&eval_ast, "dependencies", "rumoca-ir-ast"),
+        "eval-ast must depend on rumoca-ir-ast"
+    );
+    assert!(
+        section_contains_dependency(&eval_ast, "dependencies", "rumoca-ir-core"),
+        "eval-ast must depend on rumoca-ir-core"
+    );
+    assert!(
+        !section_contains_dependency(&eval_ast, "dependencies", "rumoca-ir-flat"),
+        "eval-ast must not depend on rumoca-ir-flat"
+    );
+    assert!(
+        !section_contains_dependency(&eval_ast, "dependencies", "rumoca-ir-dae"),
+        "eval-ast must not depend on rumoca-ir-dae"
+    );
+    assert!(
+        !section_contains_dependency(&eval_ast, "dependencies", "rumoca-phase-typecheck"),
+        "eval-ast must own AST eval logic directly; do not depend on rumoca-phase-typecheck"
+    );
+
+    let eval_flat = fs::read_to_string(root.join("crates/rumoca-eval-flat/Cargo.toml"))
+        .expect("read eval-flat Cargo.toml");
+    assert!(
+        section_contains_dependency(&eval_flat, "dependencies", "rumoca-ir-flat"),
+        "eval-flat must depend on rumoca-ir-flat"
+    );
+    assert!(
+        section_contains_dependency(&eval_flat, "dependencies", "rumoca-ir-core"),
+        "eval-flat must depend on rumoca-ir-core"
+    );
+    assert!(
+        !section_contains_dependency(&eval_flat, "dependencies", "rumoca-ir-ast"),
+        "eval-flat must not depend on rumoca-ir-ast"
+    );
+    assert!(
+        !section_contains_dependency(&eval_flat, "dependencies", "rumoca-ir-dae"),
+        "eval-flat must not depend on rumoca-ir-dae"
+    );
+
+    let eval_dae = fs::read_to_string(root.join("crates/rumoca-eval-dae/Cargo.toml"))
+        .expect("read eval-dae Cargo.toml");
+    assert!(
+        section_contains_dependency(&eval_dae, "dependencies", "rumoca-ir-dae"),
+        "eval-dae must depend on rumoca-ir-dae"
+    );
+    assert!(
+        !section_contains_dependency(&eval_dae, "dependencies", "rumoca-ir-ast"),
+        "eval-dae must not depend on rumoca-ir-ast"
+    );
+    assert!(
+        !section_contains_dependency(&eval_dae, "dependencies", "rumoca-ir-flat"),
+        "eval-dae must not depend on rumoca-ir-flat"
+    );
+}
+
+#[test]
+fn test_bind_wasm_uses_session_lsp_facades() {
+    let cargo_toml = workspace_root().join("crates/rumoca-bind-wasm/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read bind-wasm Cargo.toml");
+
+    for banned in [
+        "rumoca-phase-parse",
+        "rumoca-phase-codegen",
+        "rumoca-tool-lint",
+        "rumoca-ir-ast",
+        "rumoca-eval-dae",
+        "rumoca-ir-dae",
+        "rumoca-ir-core",
+    ] {
+        assert!(
+            !section_contains_dependency(&content, "dependencies", banned),
+            "rumoca-bind-wasm must not depend on {banned}; \
+Author reminder: bind-wasm should use rumoca-session/rumoca-tool-lsp facade APIs."
+        );
+    }
+}
+
+#[test]
+fn test_tool_lsp_uses_session_parsing_facade() {
+    let cargo_toml = workspace_root().join("crates/rumoca-tool-lsp/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read tool-lsp Cargo.toml");
+
+    for banned in [
+        "rumoca-phase-parse",
+        "rumoca-ir-ast",
+        "rumoca-ir-core",
+        "rumoca-core",
+    ] {
+        assert!(
+            !section_contains_dependency(&content, "dependencies", banned),
+            "rumoca-tool-lsp must not depend directly on {banned}; \
+Author reminder: use rumoca-session facade APIs instead."
+        );
+    }
+}
+
+#[test]
+fn test_tool_fmt_uses_session_analysis_facade() {
+    let cargo_toml = workspace_root().join("crates/rumoca-tool-fmt/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read tool-fmt Cargo.toml");
+
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-session"),
+        "rumoca-tool-fmt must depend on rumoca-session"
+    );
+
+    let banned = "rumoca-phase-parse";
+    assert!(
+        !section_contains_dependency(&content, "dependencies", banned),
+        "rumoca-tool-fmt must not depend directly on {banned}; \
+Author reminder: use rumoca-session::analysis facade APIs."
+    );
+}
+
+#[test]
+fn test_tool_lint_uses_session_analysis_facade() {
+    let cargo_toml = workspace_root().join("crates/rumoca-tool-lint/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read tool-lint Cargo.toml");
+
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-session"),
+        "rumoca-tool-lint must depend on rumoca-session"
+    );
+
+    let banned = "rumoca-phase-parse";
+    assert!(
+        !section_contains_dependency(&content, "dependencies", banned),
+        "rumoca-tool-lint must not depend directly on {banned}; \
+Author reminder: use rumoca-session::analysis facade APIs."
+    );
+}
+
+#[test]
+fn test_tool_dev_uses_session_facade() {
+    let cargo_toml = workspace_root().join("crates/rumoca-tool-dev/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read tool-dev Cargo.toml");
+
+    for banned in [
+        "rumoca",
+        "rumoca-core",
+        "rumoca-eval-dae",
+        "rumoca-ir-ast",
+        "rumoca-ir-flat",
+        "rumoca-ir-dae",
+        "rumoca-phase-parse",
+    ] {
+        assert!(
+            !section_contains_dependency(&content, "dependencies", banned),
+            "rumoca-tool-dev must not depend directly on {banned}; \
+Author reminder: use rumoca-session facade APIs instead."
+        );
+    }
+}
+
+#[test]
+fn test_session_runtime_uses_sim_facade() {
+    let cargo_toml = workspace_root().join("crates/rumoca-session/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-session Cargo.toml");
+
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-sim"),
+        "rumoca-session must depend on rumoca-sim for runtime/simulation APIs"
+    );
+    assert!(
+        section_contains_dependency(&content, "dependencies", "rumoca-phase-solve"),
+        "rumoca-session must depend on rumoca-phase-solve for structural solve APIs"
+    );
+    assert!(
+        content.contains("rumoca-sim = { workspace = true, features = [\"diffsol\"] }"),
+        "rumoca-session must enable rumoca-sim `diffsol` feature for runtime simulation APIs"
+    );
+
+    let banned = "rumoca-eval-dae";
+    assert!(
+        !section_contains_dependency(&content, "dependencies", banned),
+        "rumoca-session must not depend directly on {banned} in [dependencies]; \
+Author reminder: use rumoca-sim facade APIs from rumoca-session::runtime."
+    );
+}
+
+#[test]
+fn test_session_has_no_direct_eval_dependencies() {
+    let cargo_toml = workspace_root().join("crates/rumoca-session/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-session Cargo.toml");
+    let deps = section_dependency_names(&content, "dependencies");
+
+    let direct_eval_deps: Vec<_> = deps
+        .into_iter()
+        .filter(|name| name.starts_with("rumoca-eval-"))
+        .collect();
+
+    assert!(
+        direct_eval_deps.is_empty(),
+        "rumoca-session must not directly depend on eval crates ({direct_eval_deps:?}); \
+Author reminder: session should orchestrate and expose facades, not implement evaluation internals."
+    );
+}
+
+#[test]
+fn test_sim_facade_models_diffsol_as_feature() {
+    let cargo_toml = workspace_root().join("crates/rumoca-sim/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-sim Cargo.toml");
+
+    assert!(
+        content.contains("[features]"),
+        "rumoca-sim must declare crate features"
+    );
+    assert!(
+        content.contains("default = [\"diffsol\"]"),
+        "rumoca-sim should default-enable the `diffsol` backend feature"
+    );
+    assert!(
+        content.contains("diffsol = [\"dep:diffsol\"]"),
+        "rumoca-sim must model diffsol backend as a crate feature"
+    );
+    assert!(
+        content.contains("diffsol = { version = \"0.10\", optional = true }"),
+        "diffsol dependency must be optional behind the `diffsol` feature"
+    );
+    assert!(
+        !section_contains_dependency(&content, "dependencies", "rumoca-phase-codegen"),
+        "rumoca-sim must not depend on rumoca-phase-codegen; \
+Author reminder: keep codegen/template rendering in session/runtime facade, not sim."
+    );
+}
+
+#[test]
+fn test_rumoca_entry_uses_session_facade_for_ir() {
+    let cargo_toml = workspace_root().join("crates/rumoca/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca Cargo.toml");
+
+    for required in ["rumoca-session", "rumoca-tool-fmt", "rumoca-tool-lint"] {
+        assert!(
+            section_contains_dependency(&content, "dependencies", required),
+            "rumoca must depend on {required}; \
+Author reminder: rumoca CLI delegates fmt/lint via tool crates and compile/runtime via session."
+        );
+    }
+
+    for banned in ["rumoca-ir-ast", "rumoca-ir-flat", "rumoca-ir-dae"] {
+        assert!(
+            !section_contains_dependency(&content, "dependencies", banned),
+            "rumoca must not depend directly on {banned} in [dependencies]; \
+Author reminder: use rumoca-session facade types/APIs instead."
+        );
+    }
+}
+
+#[test]
+fn test_test_msl_uses_session_runtime_facade() {
+    let cargo_toml = workspace_root().join("crates/rumoca-test-msl/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-test-msl Cargo.toml");
+
+    for banned in ["rumoca", "rumoca-ir-dae", "rumoca-eval-dae", "rumoca-core"] {
+        assert!(
+            !section_contains_dependency(&content, "dependencies", banned),
+            "rumoca-test-msl must not depend directly on {banned} in [dependencies]; \
+Author reminder: use rumoca-session::runtime and rumoca-session::compile facade APIs."
+        );
+    }
+    assert!(
+        !section_contains_dependency(&content, "dev-dependencies", "rumoca"),
+        "rumoca-test-msl must not depend directly on rumoca in [dev-dependencies]; \
+Author reminder: use rumoca-session facade APIs."
+    );
+    assert!(
+        !section_contains_dependency(&content, "dev-dependencies", "rumoca-core"),
+        "rumoca-test-msl must not depend directly on rumoca-core in [dev-dependencies]; \
+Author reminder: use rumoca-session::compile::core facade APIs."
+    );
+}
+
+#[test]
+fn test_contracts_use_session_facade() {
+    let cargo_toml = workspace_root().join("crates/rumoca-contracts/Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml).expect("read rumoca-contracts Cargo.toml");
+
+    for banned in ["rumoca-phase-parse", "rumoca-eval-dae", "rumoca-ir-ast"] {
+        assert!(
+            !section_contains_dependency(&content, "dependencies", banned),
+            "rumoca-contracts must not depend directly on {banned} in [dependencies]; \
+Author reminder: use rumoca-session facade APIs instead."
+        );
+    }
+}
+
+#[test]
+fn test_ir_dae_no_behavioral_analysis_methods() {
+    let path = workspace_root().join("crates/rumoca-ir-dae/src/lib.rs");
+    let content = fs::read_to_string(&path).expect("read ir-dae lib.rs");
+
+    for banned in [
+        "pub fn is_balanced(&self)",
+        "pub fn balance(&self)",
+        "pub fn balance_detail(&self)",
+        "pub fn runtime_defined_unknown_names(&self)",
+        "pub fn runtime_defined_continuous_unknown_names(&self)",
+        "fn runtime_assignment_target_names(",
+        "fn expression_contains_clocked_or_event_operators(",
+        "fn is_connection_origin(",
+    ] {
+        assert!(
+            !content.contains(banned),
+            "found behavior in rumoca-ir-dae ({banned}). \
+Author reminder: SPEC_0029_CRATE_BOUNDARIES.md §3 requires IR crates to stay data-only; \
+move analysis/evaluation helpers to rumoca-eval-dae."
+        );
+    }
+}
+
+#[test]
+fn test_no_new_cross_crate_public_exports() {
+    let root = workspace_root();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+
+    let mut actual = BTreeSet::new();
+    for path in rs_files {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let rel = path.strip_prefix(&root).unwrap_or(&path);
+        if !is_low_level_crate_file(rel) {
+            continue;
+        }
+        let rel_display = normalized_rel_path(rel);
+        for line in content.lines() {
+            if let Some(statement) = cross_crate_public_export_statement(line) {
+                actual.insert(format!("{rel_display}|{statement}"));
+            }
+        }
+    }
+
+    let allowed: BTreeSet<String> = ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS
+        .iter()
+        .map(|(path, statement)| format!("{path}|{statement}"))
+        .collect();
+
+    let unexpected: Vec<String> = actual.difference(&allowed).cloned().collect();
+    let stale_allowlist: Vec<String> = allowed.difference(&actual).cloned().collect();
+
+    assert!(
+        unexpected.is_empty(),
+        "found disallowed cross-crate public aliases. \
+Author reminder: SPEC_0029_CRATE_BOUNDARIES.md §8 forbids this in low-level crates \
+(ir/phase/eval). \
+Do not expose another Rumoca crate's symbols via `pub use rumoca_*::...` or \
+`pub type X = rumoca_*::...`; import from the owning crate directly. \
+Violations: {unexpected:#?}"
+    );
+    assert!(
+        stale_allowlist.is_empty(),
+        "stale cross-crate re-export allowlist entries; remove these from \
+ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS: {stale_allowlist:#?}"
+    );
+}
+
+#[test]
+fn test_session_root_facade_exports_are_minimal() {
+    let session_lib = workspace_root().join("crates/rumoca-session/src/lib.rs");
+    let content = fs::read_to_string(&session_lib).expect("read rumoca-session lib.rs");
+    let root_pub_uses = collect_root_pub_use_statements(&content);
+
+    let expected = vec!["pub use compile::{Session, SessionConfig};".to_string()];
+
+    assert_eq!(
+        root_pub_uses, expected,
+        "unexpected rumoca-session root exports. \
+Author reminder: SPEC_0029_CRATE_BOUNDARIES.md §9 requires `rumoca-session` \
+root exports to stay minimal (`Session`, `SessionConfig`) and to keep other APIs namespaced."
     );
 }

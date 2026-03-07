@@ -205,7 +205,7 @@ fn collect_nonconnection_lhs_paths(flat: &flat::Model) -> HashSet<String> {
         let flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, rumoca_ir_ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_flat::OpBinary::Sub(_)) {
             continue;
         }
         if let flat::Expression::VarRef { name, .. } = lhs.as_ref() {
@@ -254,7 +254,6 @@ fn relabel_component_ids(comp_of: &mut FxHashMap<&str, usize>, keep: usize, repl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_ir_ast as ast;
     use rumoca_ir_flat as flat;
     use std::collections::HashSet;
 
@@ -266,7 +265,7 @@ mod tests {
                 flat::Variable {
                     name: flat::VarName::new(&name),
                     dims,
-                    variability: ast::Variability::Empty,
+                    variability: rumoca_ir_core::Variability::Empty,
                     is_primitive: true,
                     is_overconstrained: true,
                     oc_record_path: Some(rec_path.to_string()),

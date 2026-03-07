@@ -1,23 +1,24 @@
 //! Code lens handler for Modelica files.
 
 use lsp_types::{CodeLens, Command, Url};
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 
 use super::workspace_symbols::collect_model_names;
 
 /// Cached balance information for a model.
-pub struct BalanceInfo {
+struct BalanceInfo {
     pub name: String,
     pub n_unknowns: usize,
     pub n_equations: usize,
 }
 
 impl BalanceInfo {
-    pub fn is_balanced(&self) -> bool {
+    fn is_balanced(&self) -> bool {
         self.n_unknowns == self.n_equations
     }
 
-    pub fn label(&self) -> String {
+    fn label(&self) -> String {
         if self.is_balanced() {
             format!(
                 "Balanced ({} states, {} eqs)",
@@ -33,7 +34,7 @@ impl BalanceInfo {
 }
 
 /// Compute balance info from AST (simple heuristic based on component/equation counts).
-pub fn compute_balance_info(ast: &ast::StoredDefinition) -> Vec<BalanceInfo> {
+fn compute_balance_info(ast: &ast::StoredDefinition) -> Vec<BalanceInfo> {
     let mut results = Vec::new();
     for (name, class) in &ast.classes {
         if !matches!(
@@ -49,7 +50,8 @@ pub fn compute_balance_info(ast: &ast::StoredDefinition) -> Vec<BalanceInfo> {
             .filter(|c| {
                 !matches!(
                     c.variability,
-                    ast::Variability::Parameter(_) | ast::Variability::Constant(_)
+                    rumoca_ir_core::Variability::Parameter(_)
+                        | rumoca_ir_core::Variability::Constant(_)
                 )
             })
             .count();

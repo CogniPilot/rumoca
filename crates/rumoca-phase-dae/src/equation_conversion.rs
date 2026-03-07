@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
@@ -13,6 +12,7 @@ use crate::path_utils::{
     get_top_level_prefix, normalized_top_level_names, path_is_in_top_level_set,
     subscript_fallback_chain,
 };
+use crate::{flat_to_dae_expression, flat_to_dae_var_name};
 
 pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> bool {
     // Only check connection equations
@@ -24,7 +24,7 @@ pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> 
     let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
         return false;
     };
-    if !matches!(op, ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
         return false;
     }
 
@@ -62,7 +62,7 @@ pub(super) fn is_input_default_equation(
     let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
         return false;
     };
-    if !matches!(op, ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
         return false;
     }
 
@@ -117,7 +117,7 @@ pub(super) fn get_component_alias_connection_side(
     let flat::Expression::Binary { op, lhs, rhs } = &eq.residual else {
         return None;
     };
-    if !matches!(op, ast::OpBinary::Sub(_)) {
+    if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
         return None;
     }
 
@@ -166,10 +166,14 @@ fn output_alias_skip_reason(
     // block output). Dropping these can disconnect runtime-discrete signal paths.
     let is_discrete_signal = |name: &flat::VarName| {
         name_resolution::resolve_var_name_with_subscript_fallback(name, |candidate| {
-            dae.discrete_valued.contains_key(candidate)
-                || dae.discrete_reals.contains_key(candidate)
+            dae.discrete_valued
+                .contains_key(&flat_to_dae_var_name(candidate))
+                || dae
+                    .discrete_reals
+                    .contains_key(&flat_to_dae_var_name(candidate))
                 || ctx.flat.variables.get(candidate).is_some_and(|var| {
-                    var.is_discrete_type || matches!(var.variability, ast::Variability::Discrete(_))
+                    var.is_discrete_type
+                        || matches!(var.variability, rumoca_ir_core::Variability::Discrete(_))
                 })
         })
         .is_some()
@@ -183,11 +187,14 @@ fn output_alias_skip_reason(
     let preserve_internal_input_alias = peer_name.as_ref().is_some_and(|peer| {
         let peer_is_discrete =
             name_resolution::resolve_var_name_with_subscript_fallback(peer, |candidate| {
-                dae.discrete_valued.contains_key(candidate)
-                    || dae.discrete_reals.contains_key(candidate)
+                dae.discrete_valued
+                    .contains_key(&flat_to_dae_var_name(candidate))
+                    || dae
+                        .discrete_reals
+                        .contains_key(&flat_to_dae_var_name(candidate))
                     || ctx.flat.variables.get(candidate).is_some_and(|var| {
                         var.is_discrete_type
-                            || matches!(var.variability, ast::Variability::Discrete(_))
+                            || matches!(var.variability, rumoca_ir_core::Variability::Discrete(_))
                     })
             })
             .is_some();
@@ -221,7 +228,7 @@ fn collect_vars_with_component_equations(flat: &flat::Model) -> HashSet<flat::Va
         let flat::Expression::Binary { op, lhs, .. } = &eq.residual else {
             continue;
         };
-        if !matches!(op, ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             continue;
         }
 
@@ -250,7 +257,7 @@ fn collect_non_connection_rhs_var_refs(flat: &flat::Model) -> HashSet<flat::VarN
 
         match &eq.residual {
             flat::Expression::Binary {
-                op: ast::OpBinary::Sub(_),
+                op: rumoca_ir_core::OpBinary::Sub(_),
                 rhs,
                 ..
             } => {
@@ -555,7 +562,7 @@ fn collect_explicit_discrete_assignments(
 ) -> Option<HashMap<flat::VarName, flat::Expression>> {
     match expr {
         flat::Expression::Binary {
-            op: ast::OpBinary::Sub(_),
+            op: rumoca_ir_core::OpBinary::Sub(_),
             lhs,
             rhs,
         } => {
@@ -632,7 +639,7 @@ fn collect_explicit_discrete_assignments(
             Some(result)
         }
         flat::Expression::Unary {
-            op: ast::OpUnary::Minus(_),
+            op: rumoca_ir_core::OpUnary::Minus(_),
             rhs,
         } => collect_explicit_discrete_assignments(rhs),
         _ => None,
@@ -655,13 +662,16 @@ fn discrete_target_scalar_count(
     target: &flat::VarName,
     fallback_scalar_count: usize,
 ) -> usize {
-    if let Some(variable) = dae.discrete_valued.get(target) {
+    if let Some(variable) = dae.discrete_valued.get(&flat_to_dae_var_name(target)) {
         return variable.size().max(1);
     }
 
     // Subscripted assignments should count as scalar updates.
     for candidate in subscript_fallback_chain(target) {
-        if dae.discrete_valued.contains_key(&candidate) {
+        if dae
+            .discrete_valued
+            .contains_key(&flat_to_dae_var_name(&candidate))
+        {
             return 1;
         }
     }
@@ -674,7 +684,8 @@ fn push_explicit_discrete_assignments(
     equation: &dae::Equation,
     discrete_valued: bool,
 ) -> bool {
-    let Some(assignments) = collect_explicit_discrete_assignments(&equation.rhs) else {
+    let rhs = crate::dae_to_flat_expression(&equation.rhs);
+    let Some(assignments) = collect_explicit_discrete_assignments(&rhs) else {
         return false;
     };
 
@@ -688,8 +699,8 @@ fn push_explicit_discrete_assignments(
             equation.scalar_count.max(1)
         };
         let explicit = dae::Equation::explicit_with_scalar_count(
-            target,
-            rhs,
+            flat_to_dae_var_name(&target),
+            flat_to_dae_expression(&rhs),
             equation.span,
             format!("explicit {}", equation.origin),
             scalar_count,
@@ -744,7 +755,7 @@ pub(super) fn classify_equations(
             stats.record_kept(&eq.origin);
         }
         let dae_eq = dae::Equation::residual_array(
-            eq.residual.clone(),
+            flat_to_dae_expression(&eq.residual),
             eq.span,
             eq.origin.to_string(),
             scalar_count,
@@ -807,12 +818,12 @@ mod tests {
 
         let mut dae_model = dae::Dae::new();
         dae_model.inputs.insert(
-            flat::VarName::new("multiSwitch1.u"),
-            dae::Variable::new(flat::VarName::new("multiSwitch1.u")),
+            dae::VarName::new("multiSwitch1.u"),
+            dae::Variable::new(dae::VarName::new("multiSwitch1.u")),
         );
         dae_model.discrete_valued.insert(
-            flat::VarName::new("multiSwitch1.u"),
-            dae::Variable::new(flat::VarName::new("multiSwitch1.u")),
+            dae::VarName::new("multiSwitch1.u"),
+            dae::Variable::new(dae::VarName::new("multiSwitch1.u")),
         );
 
         let eq = flat::Equation::new(
@@ -876,20 +887,20 @@ mod tests {
 
         let mut dae_model = dae::Dae::new();
         dae_model.outputs.insert(
-            flat::VarName::new("table1.y"),
-            dae::Variable::new(flat::VarName::new("table1.y")),
+            dae::VarName::new("table1.y"),
+            dae::Variable::new(dae::VarName::new("table1.y")),
         );
         dae_model.outputs.insert(
-            flat::VarName::new("table1.realToBoolean.y"),
-            dae::Variable::new(flat::VarName::new("table1.realToBoolean.y")),
+            dae::VarName::new("table1.realToBoolean.y"),
+            dae::Variable::new(dae::VarName::new("table1.realToBoolean.y")),
         );
         dae_model.discrete_valued.insert(
-            flat::VarName::new("table1.y"),
-            dae::Variable::new(flat::VarName::new("table1.y")),
+            dae::VarName::new("table1.y"),
+            dae::Variable::new(dae::VarName::new("table1.y")),
         );
         dae_model.discrete_valued.insert(
-            flat::VarName::new("table1.realToBoolean.y"),
-            dae::Variable::new(flat::VarName::new("table1.realToBoolean.y")),
+            dae::VarName::new("table1.realToBoolean.y"),
+            dae::Variable::new(dae::VarName::new("table1.realToBoolean.y")),
         );
 
         let eq = flat::Equation::new(

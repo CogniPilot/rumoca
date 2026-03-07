@@ -18,7 +18,7 @@ impl Resolver {
     pub(crate) fn check_inheritance_cycles(&mut self, _def: &ast::StoredDefinition) {
         // Build adjacency list from inheritance edges
         // Map from class DefId to list of (base DefId, location)
-        let mut graph: HashMap<DefId, Vec<(DefId, ast::Location)>> = HashMap::new();
+        let mut graph: HashMap<DefId, Vec<(DefId, rumoca_ir_core::Location)>> = HashMap::new();
         for (class_id, base_id, location) in &self.inheritance_edges {
             graph
                 .entry(*class_id)
@@ -44,7 +44,7 @@ impl Resolver {
     fn detect_cycle_dfs(
         &mut self,
         node: DefId,
-        graph: &HashMap<DefId, Vec<(DefId, ast::Location)>>,
+        graph: &HashMap<DefId, Vec<(DefId, rumoca_ir_core::Location)>>,
         visited: &mut HashSet<DefId>,
         in_path: &mut HashSet<DefId>,
         path: &mut Vec<DefId>,
@@ -65,8 +65,8 @@ impl Resolver {
     fn process_cycle_edges(
         &mut self,
         node: DefId,
-        edges: &[(DefId, ast::Location)],
-        graph: &HashMap<DefId, Vec<(DefId, ast::Location)>>,
+        edges: &[(DefId, rumoca_ir_core::Location)],
+        graph: &HashMap<DefId, Vec<(DefId, rumoca_ir_core::Location)>>,
         visited: &mut HashSet<DefId>,
         in_path: &mut HashSet<DefId>,
         path: &mut Vec<DefId>,
@@ -85,7 +85,7 @@ impl Resolver {
         &mut self,
         node: DefId,
         base_id: DefId,
-        location: &ast::Location,
+        location: &rumoca_ir_core::Location,
         path: &[DefId],
     ) {
         let cycle_start_idx = path.iter().position(|&id| id == base_id).unwrap_or(0);

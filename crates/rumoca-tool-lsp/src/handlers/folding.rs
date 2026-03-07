@@ -1,7 +1,7 @@
 //! Folding ranges handler for Modelica files.
 
 use lsp_types::{FoldingRange, FoldingRangeKind};
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
 
 /// Handle folding ranges request.
 pub fn handle_folding_ranges(ast: &ast::StoredDefinition, source: &str) -> Vec<FoldingRange> {

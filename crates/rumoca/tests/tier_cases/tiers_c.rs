@@ -1,7 +1,6 @@
 use super::*;
 
 mod tier_10h6_range_subscript_der {
-    use rumoca_ir_ast as ast;
     use rumoca_ir_flat as flat;
     use rumoca_phase_dae::to_dae;
     type BuiltinFunction = flat::BuiltinFunction;
@@ -11,12 +10,12 @@ mod tier_10h6_range_subscript_der {
     type Literal = flat::Literal;
     type Model = flat::Model;
     type VarName = flat::VarName;
-    type Variability = ast::Variability;
+    type Variability = rumoca_ir_core::Variability;
 
     fn make_residual_eq(lhs: Expression, rhs: Expression) -> Equation {
         Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },
@@ -73,7 +72,7 @@ mod tier_10h6_range_subscript_der {
             VarName::new("u"),
             flat::Variable {
                 name: VarName::new("u"),
-                causality: ast::Causality::Input(Default::default()),
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -116,7 +115,7 @@ mod tier_10h6_range_subscript_der {
 
         // der(x[2:n]) should count as 3 scalars (4-2+1=3), not 1
         assert_eq!(
-            dae.balance(),
+            rumoca_eval_dae::analysis::balance(&dae),
             0,
             "der(x[2:n]) should count as 3 scalar equations (range 2:4 = 3 elements); \
              f_x scalar counts: {:?}",
@@ -165,7 +164,7 @@ mod tier_10h6_range_subscript_der {
                 name: VarName::new("nx"),
                 variability: Variability::Parameter(Default::default()),
                 binding: Some(Expression::Binary {
-                    op: rumoca_ir_ast::OpBinary::Sub(Default::default()),
+                    op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                     lhs: Box::new(Expression::BuiltinCall {
                         function: BuiltinFunction::Size,
                         args: vec![
@@ -199,7 +198,7 @@ mod tier_10h6_range_subscript_der {
             VarName::new("u"),
             flat::Variable {
                 name: VarName::new("u"),
-                causality: ast::Causality::Input(Default::default()),
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -242,7 +241,7 @@ mod tier_10h6_range_subscript_der {
 
         // der(x_scaled[2:nx]) where nx=size(a,1)-1=2, range 2:2 = 1 element
         assert_eq!(
-            dae.balance(),
+            rumoca_eval_dae::analysis::balance(&dae),
             0,
             "der(x_scaled[2:nx]) with nx=size(a,1)-1=2 should count as 1 scalar; \
              f_x scalar counts: {:?}",
@@ -289,7 +288,7 @@ mod tier_10h6_range_subscript_der {
             VarName::new("u"),
             flat::Variable {
                 name: VarName::new("u"),
-                causality: ast::Causality::Input(Default::default()),
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -322,7 +321,7 @@ mod tier_10h6_range_subscript_der {
             Expression::BuiltinCall {
                 function: BuiltinFunction::Zeros,
                 args: vec![Expression::Binary {
-                    op: rumoca_ir_ast::OpBinary::Sub(Default::default()),
+                    op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                     lhs: Box::new(Expression::VarRef {
                         name: VarName::new("nx"),
                         subscripts: vec![],
@@ -338,7 +337,7 @@ mod tier_10h6_range_subscript_der {
         // der(x[1:(nx-1)]) where nx=3, range 1:2 = 2 elements
         // Total: 1 + 2 = 3 scalar equations for 3 scalar unknowns
         assert_eq!(
-            dae.balance(),
+            rumoca_eval_dae::analysis::balance(&dae),
             0,
             "der(x[1:(nx-1)]) with nx=3 should count as 2 scalar equations; \
              f_x scalar counts: {:?}",

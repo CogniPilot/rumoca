@@ -3,12 +3,14 @@
 use std::collections::HashSet;
 
 use rumoca_core::Span;
-use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
-use crate::{classification, name_resolution, path_utils::split_path_with_indices};
+use crate::{
+    classification, flat_to_dae_expression, flat_to_dae_var_name, name_resolution,
+    path_utils::split_path_with_indices,
+};
 
 type Dae = dae::Dae;
 type VariableKind = dae::VariableKind;
@@ -67,12 +69,15 @@ pub(super) fn convert_bindings_to_equations(
             continue;
         }
 
-        let kind =
-            if dae.discrete_reals.contains_key(name) || dae.discrete_valued.contains_key(name) {
-                VariableKind::Discrete
-            } else {
-                classification::classify_variable(var, state_vars)
-            };
+        let kind = if dae.discrete_reals.contains_key(&flat_to_dae_var_name(name))
+            || dae
+                .discrete_valued
+                .contains_key(&flat_to_dae_var_name(name))
+        {
+            VariableKind::Discrete
+        } else {
+            classification::classify_variable(var, state_vars)
+        };
 
         // Connected input-only alias sets (MLS §9.1) must preserve their value anchor
         // from declaration bindings; otherwise the system can become underdetermined.
@@ -266,7 +271,7 @@ pub(super) fn collect_vars_with_unknown_rhs(
         let Expression::Binary { op, lhs, rhs } = &eq.residual else {
             continue;
         };
-        if !matches!(op, ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             continue;
         }
         let Expression::VarRef { name: lhs_name, .. } = lhs.as_ref() else {
@@ -311,7 +316,7 @@ fn build_duplicate_binding_set(flat: &Model) -> HashSet<VarName> {
         let Expression::Binary { op, lhs, rhs } = &eq.residual else {
             continue;
         };
-        if !matches!(op, ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             continue;
         }
         let Expression::VarRef { name, .. } = lhs.as_ref() else {
@@ -506,7 +511,7 @@ fn find_connected_inputs_only_connected_to_inputs(flat: &Model) -> HashSet<VarNa
         let Expression::Binary { op, lhs, rhs } = &eq.residual else {
             continue;
         };
-        if !matches!(op, ast::OpBinary::Sub(_)) {
+        if !matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
             continue;
         }
 
@@ -592,8 +597,8 @@ fn add_binding_equation(
 
     if *kind == VariableKind::Discrete {
         let explicit = dae::Equation::explicit_with_scalar_count(
-            name.clone(),
-            projected_binding,
+            flat_to_dae_var_name(name),
+            flat_to_dae_expression(&projected_binding),
             Span::DUMMY,
             origin,
             scalar_count,
@@ -607,7 +612,12 @@ fn add_binding_equation(
     }
 
     let residual = create_binding_residual(name, &projected_binding);
-    let dae_eq = dae::Equation::residual_array(residual, Span::DUMMY, origin, scalar_count);
+    let dae_eq = dae::Equation::residual_array(
+        flat_to_dae_expression(&residual),
+        Span::DUMMY,
+        origin,
+        scalar_count,
+    );
 
     // All continuous equations go into f_x (MLS B.1a) — no ODE/algebraic/output split.
     dae.f_x.push(dae_eq);
@@ -657,7 +667,7 @@ fn create_binding_residual(name: &VarName, binding: &Expression) -> Expression {
     };
 
     Expression::Binary {
-        op: ast::OpBinary::Sub(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
         lhs: Box::new(var_ref),
         rhs: Box::new(binding.clone()),
     }
@@ -719,7 +729,7 @@ mod tests {
 
         let var = flat::Variable {
             name: VarName::new("self"),
-            variability: ast::Variability::Empty,
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             binding: Some(Expression::VarRef {
                 name: VarName::new("port_p.v"),
@@ -745,7 +755,7 @@ mod tests {
 
         let var = flat::Variable {
             name: VarName::new("x"),
-            variability: ast::Variability::Empty,
+            variability: rumoca_ir_core::Variability::Empty,
             is_primitive: true,
             binding: Some(Expression::Literal(flat::Literal::Real(1.0))),
             ..Default::default()
@@ -772,7 +782,7 @@ mod tests {
         );
         flat.add_equation(rumoca_ir_flat::Equation {
             residual: Expression::Binary {
-                op: ast::OpBinary::Sub(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new("x"),
                     subscripts: vec![],

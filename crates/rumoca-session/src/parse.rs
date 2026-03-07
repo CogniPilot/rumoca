@@ -40,6 +40,27 @@ pub type ParseResult = Result<ParseSuccess>;
 /// Combined results from lenient parsing: (successes, failures)
 pub type LenientParseResult = (Vec<ParseSuccess>, Vec<ParseFailure>);
 
+/// Structured parse errors surfaced by the parser phase.
+pub use rumoca_phase_parse::ParseError;
+
+/// Parse a single Modelica source string into AST.
+pub fn parse_source_to_ast(source: &str, file_name: &str) -> Result<ast::StoredDefinition> {
+    rumoca_phase_parse::parse_to_ast(source, file_name)
+}
+
+/// Parse a single Modelica source with structured parse errors.
+pub fn parse_source_to_ast_with_errors(
+    source: &str,
+    file_name: &str,
+) -> std::result::Result<ast::StoredDefinition, Vec<ParseError>> {
+    rumoca_phase_parse::parse_to_ast_with_errors(source, file_name)
+}
+
+/// Validate Modelica syntax for a source string.
+pub fn validate_source_syntax(source: &str, file_name: &str) -> Result<()> {
+    parse_source_to_ast(source, file_name).map(|_| ())
+}
+
 /// Parse multiple Modelica files in parallel using rayon.
 ///
 /// Each file is parsed independently on its own thread, with results collected

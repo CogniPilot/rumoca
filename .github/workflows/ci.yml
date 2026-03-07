@@ -670,19 +670,22 @@ jobs:
           for crate in \
             rumoca-core \
             rumoca-contracts \
+            rumoca-ir-core \
             rumoca-ir-ast \
             rumoca-ir-flat \
             rumoca-ir-dae \
-            rumoca-eval \
+            rumoca-eval-ast \
+            rumoca-eval-flat \
+            rumoca-eval-dae \
             rumoca-phase-parse \
             rumoca-phase-resolve \
             rumoca-phase-typecheck \
             rumoca-phase-instantiate \
             rumoca-phase-flatten \
-            rumoca-phase-structural \
+            rumoca-phase-solve \
             rumoca-phase-dae \
             rumoca-phase-codegen \
-            rumoca-sim-diffsol \
+            rumoca-sim \
             rumoca-session \
             rumoca-tool-lint \
             rumoca-tool-fmt \

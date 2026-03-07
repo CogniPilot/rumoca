@@ -70,16 +70,16 @@ fn make_enum_literal(
 /// Extract causality from a BasePrefix.
 fn extract_causality_from_base_prefix(
     base_prefix: &modelica_grammar_trait::BasePrefix,
-) -> rumoca_ir_ast::Causality {
+) -> rumoca_ir_core::Causality {
     let Some(opt) = &base_prefix.base_prefix_opt else {
-        return rumoca_ir_ast::Causality::Empty;
+        return rumoca_ir_core::Causality::Empty;
     };
     match &opt.base_prefix_opt_group {
         modelica_grammar_trait::BasePrefixOptGroup::Input(inp) => {
-            rumoca_ir_ast::Causality::Input(inp.input.input.clone())
+            rumoca_ir_core::Causality::Input(inp.input.input.clone().into())
         }
         modelica_grammar_trait::BasePrefixOptGroup::Output(out) => {
-            rumoca_ir_ast::Causality::Output(out.output.output.clone())
+            rumoca_ir_core::Causality::Output(out.output.output.clone().into())
         }
     }
 }
@@ -136,7 +136,7 @@ fn collect_named_args(
     });
     let rhs = arg.function_argument.clone();
     mods.push(rumoca_ir_ast::Expression::Binary {
-        op: rumoca_ir_ast::OpBinary::Assign(arg.ident.clone()),
+        op: rumoca_ir_core::OpBinary::Assign(arg.ident.clone()),
         lhs: Arc::new(lhs),
         rhs: Arc::new(rhs),
     });
@@ -242,7 +242,7 @@ fn process_algorithm_section(comp: &mut Composition, sec: &AlgorithmSection) {
 /// Validate annotation modifiers - 'each' and 'final' are forbidden in annotations (MLS §18.1).
 fn validate_annotation_modifiers(
     arg_list: &ExpressionList,
-    annotation_token: &rumoca_ir_ast::Token,
+    annotation_token: &rumoca_ir_core::Token,
 ) -> Result<(), anyhow::Error> {
     for each in &arg_list.each_flags {
         if *each {
@@ -393,7 +393,7 @@ fn validate_package_restrictions(class_def: &rumoca_ir_ast::ClassDef) -> anyhow:
         ));
     }
     for (name, comp) in &class_def.components {
-        if !matches!(comp.variability, rumoca_ir_ast::Variability::Constant(_)) {
+        if !matches!(comp.variability, rumoca_ir_core::Variability::Constant(_)) {
             return Err(class_restriction_error(
                 class_def,
                 format!(
@@ -511,21 +511,21 @@ fn is_pure_function(class_type: &modelica_grammar_trait::ClassType) -> bool {
 }
 
 /// Extract the keyword token from grammar ClassType for semantic highlighting
-fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> rumoca_ir_ast::Token {
+fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> rumoca_ir_core::Token {
     match class_type {
-        modelica_grammar_trait::ClassType::Class(c) => c.class.class.clone(),
-        modelica_grammar_trait::ClassType::Model(m) => m.model.model.clone(),
-        modelica_grammar_trait::ClassType::ClassTypeOptRecord(r) => r.record.record.clone(),
-        modelica_grammar_trait::ClassType::Block(b) => b.block.block.clone(),
+        modelica_grammar_trait::ClassType::Class(c) => c.class.class.clone().into(),
+        modelica_grammar_trait::ClassType::Model(m) => m.model.model.clone().into(),
+        modelica_grammar_trait::ClassType::ClassTypeOptRecord(r) => r.record.record.clone().into(),
+        modelica_grammar_trait::ClassType::Block(b) => b.block.block.clone().into(),
         modelica_grammar_trait::ClassType::ClassTypeOpt0Connector(c) => {
-            c.connector.connector.clone()
+            c.connector.connector.clone().into()
         }
-        modelica_grammar_trait::ClassType::Type(t) => t.r#type.r#type.clone(),
-        modelica_grammar_trait::ClassType::Package(p) => p.package.package.clone(),
+        modelica_grammar_trait::ClassType::Type(t) => t.r#type.r#type.clone().into(),
+        modelica_grammar_trait::ClassType::Package(p) => p.package.package.clone().into(),
         modelica_grammar_trait::ClassType::ClassTypeOpt1ClassTypeOpt2Function(f) => {
-            f.function.function.clone()
+            f.function.function.clone().into()
         }
-        modelica_grammar_trait::ClassType::Operator(o) => o.operator.operator.clone(),
+        modelica_grammar_trait::ClassType::Operator(o) => o.operator.operator.clone().into(),
     }
 }
 
@@ -535,7 +535,7 @@ fn get_class_type_token(class_type: &modelica_grammar_trait::ClassType) -> rumoc
 /// Context for class conversion - common fields from ClassDefinition
 struct ClassConversionContext {
     class_type: rumoca_ir_ast::ClassType,
-    class_type_token: rumoca_ir_ast::Token,
+    class_type_token: rumoca_ir_core::Token,
     encapsulated: bool,
     partial: bool,
     expandable: bool,
@@ -584,7 +584,7 @@ fn convert_standard_class_specifier(
         expandable: ctx.expandable,
         operator_record: ctx.operator_record,
         pure: ctx.pure,
-        causality: rumoca_ir_ast::Causality::Empty,
+        causality: rumoca_ir_core::Causality::Empty,
         equation_keyword: spec.composition.equation_keyword.clone(),
         initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
         algorithm_keyword: spec.composition.algorithm_keyword.clone(),
@@ -649,7 +649,7 @@ fn convert_extends_class_specifier(
         expandable: ctx.expandable,
         operator_record: ctx.operator_record,
         pure: ctx.pure,
-        causality: rumoca_ir_ast::Causality::Empty,
+        causality: rumoca_ir_core::Causality::Empty,
         equation_keyword: spec.composition.equation_keyword.clone(),
         initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
         algorithm_keyword: spec.composition.algorithm_keyword.clone(),
@@ -695,7 +695,7 @@ fn convert_enum_class_specifier(
         expandable: false,
         operator_record: false,
         pure: true, // Enums are not functions
-        causality: rumoca_ir_ast::Causality::Empty,
+        causality: rumoca_ir_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
         algorithm_keyword: None,
@@ -827,7 +827,7 @@ fn convert_function_partial_class_specifier(
         expandable: false,
         operator_record: false,
         pure: ctx.pure,
-        causality: rumoca_ir_ast::Causality::Empty,
+        causality: rumoca_ir_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
         algorithm_keyword: None,
@@ -887,7 +887,7 @@ fn convert_der_class_specifier(
         expandable: false,
         operator_record: false,
         pure: ctx.pure,
-        causality: rumoca_ir_ast::Causality::Empty,
+        causality: rumoca_ir_core::Causality::Empty,
         equation_keyword: None,
         initial_equation_keyword: None,
         algorithm_keyword: None,
@@ -960,13 +960,13 @@ pub struct Composition {
     pub algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
     pub initial_algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
     /// Token for "equation" keyword (if present)
-    pub equation_keyword: Option<rumoca_ir_ast::Token>,
+    pub equation_keyword: Option<rumoca_ir_core::Token>,
     /// Token for "initial equation" keyword (if present)
-    pub initial_equation_keyword: Option<rumoca_ir_ast::Token>,
+    pub initial_equation_keyword: Option<rumoca_ir_core::Token>,
     /// Token for "algorithm" keyword (if present)
-    pub algorithm_keyword: Option<rumoca_ir_ast::Token>,
+    pub algorithm_keyword: Option<rumoca_ir_core::Token>,
     /// Token for "initial algorithm" keyword (if present)
-    pub initial_algorithm_keyword: Option<rumoca_ir_ast::Token>,
+    pub initial_algorithm_keyword: Option<rumoca_ir_core::Token>,
     /// Annotation clause for this class
     pub annotation: Vec<rumoca_ir_ast::Expression>,
     /// External function declaration (MLS §12.9)

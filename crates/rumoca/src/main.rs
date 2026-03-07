@@ -27,7 +27,8 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use rumoca::{CompilationResult, Compiler, sim_report};
-use rumoca_session::{ProjectFileMoveHint, resync_model_sidecars_with_move_hints};
+use rumoca_session::project::{ProjectFileMoveHint, resync_model_sidecars_with_move_hints};
+use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
 use walkdir::WalkDir;
 
 /// Git version string
@@ -164,12 +165,12 @@ enum SimulateSolverMode {
     RkLike,
 }
 
-impl From<SimulateSolverMode> for rumoca_sim_diffsol::SimSolverMode {
+impl From<SimulateSolverMode> for rumoca_session::runtime::SimSolverMode {
     fn from(value: SimulateSolverMode) -> Self {
         match value {
-            SimulateSolverMode::Auto => rumoca_sim_diffsol::SimSolverMode::Auto,
-            SimulateSolverMode::Bdf => rumoca_sim_diffsol::SimSolverMode::Bdf,
-            SimulateSolverMode::RkLike => rumoca_sim_diffsol::SimSolverMode::RkLike,
+            SimulateSolverMode::Auto => rumoca_session::runtime::SimSolverMode::Auto,
+            SimulateSolverMode::Bdf => rumoca_session::runtime::SimSolverMode::Bdf,
+            SimulateSolverMode::RkLike => rumoca_session::runtime::SimSolverMode::RkLike,
         }
     }
 }
@@ -233,13 +234,13 @@ enum LintLevelArg {
     Error,
 }
 
-impl From<LintLevelArg> for rumoca_tool_lint::LintLevel {
+impl From<LintLevelArg> for LintLevel {
     fn from(value: LintLevelArg) -> Self {
         match value {
-            LintLevelArg::Help => rumoca_tool_lint::LintLevel::Help,
-            LintLevelArg::Note => rumoca_tool_lint::LintLevel::Note,
-            LintLevelArg::Warning => rumoca_tool_lint::LintLevel::Warning,
-            LintLevelArg::Error => rumoca_tool_lint::LintLevel::Error,
+            LintLevelArg::Help => LintLevel::Help,
+            LintLevelArg::Note => LintLevel::Note,
+            LintLevelArg::Warning => LintLevel::Warning,
+            LintLevelArg::Error => LintLevel::Error,
         }
     }
 }
@@ -452,7 +453,7 @@ fn run_lint(args: LintArgs) -> Result<()> {
     let base_options = rumoca_tool_lint::load_config_from_dir(&config_dir)
         .map_err(|e| anyhow::anyhow!("Failed to load lint config: {e}"))?
         .unwrap_or_default();
-    let cli_overrides = rumoca_tool_lint::PartialLintOptions {
+    let cli_overrides = PartialLintOptions {
         min_level: args.min_level.map(Into::into),
         disabled_rules: (!args.disable_rules.is_empty()).then_some(args.disable_rules.clone()),
         warnings_as_errors: args.warnings_as_errors.then_some(true),
@@ -466,7 +467,7 @@ fn run_lint(args: LintArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut total_messages = Vec::<rumoca_tool_lint::LintMessage>::new();
+    let mut total_messages = Vec::<LintMessage>::new();
     let mut io_errors = 0usize;
     for file in &files {
         let source = match std::fs::read_to_string(file) {
@@ -506,12 +507,12 @@ fn run_lint(args: LintArgs) -> Result<()> {
 
     let error_count = limited
         .iter()
-        .filter(|m| m.level >= rumoca_tool_lint::LintLevel::Error)
+        .filter(|m| m.level >= LintLevel::Error)
         .count()
         + io_errors;
     let warning_count = limited
         .iter()
-        .filter(|m| m.level == rumoca_tool_lint::LintLevel::Warning)
+        .filter(|m| m.level == LintLevel::Warning)
         .count();
 
     eprintln!(
@@ -568,7 +569,7 @@ fn compile_with_inferred_model(args: &ModelInputArgs) -> Result<(CompilationResu
 }
 
 fn infer_model_name(model_file: &str) -> Result<String> {
-    let parsed = rumoca::parse_files_parallel(&[model_file])?;
+    let parsed = rumoca_session::parsing::parse_files_parallel(&[model_file])?;
     let top_level_names = parsed
         .first()
         .map(|(_, def)| {
@@ -586,8 +587,8 @@ fn infer_model_name(model_file: &str) -> Result<String> {
         })
         .unwrap_or_default();
 
-    let merged = rumoca::merge_stored_definitions(parsed)?;
-    let mut candidates = rumoca::collect_model_names(&merged);
+    let merged = rumoca_session::parsing::merge_stored_definitions(parsed)?;
+    let mut candidates = rumoca_session::parsing::collect_model_names(&merged);
     candidates.sort();
     candidates.dedup();
     if candidates.is_empty() {
@@ -716,8 +717,8 @@ fn print_summary(model: &str, result: &CompilationResult) {
     println!("Continuous equations (f_x): {}", result.dae.f_x.len());
     println!("Initial equations: {}", result.dae.initial_equations.len());
     println!();
-    println!("Balance: {} (equations - unknowns)", result.dae.balance());
-    if result.dae.is_balanced() {
+    println!("Balance: {} (equations - unknowns)", result.balance());
+    if result.is_balanced() {
         println!("Status: BALANCED");
     } else {
         println!("Status: UNBALANCED");
@@ -735,7 +736,7 @@ fn run_simulation(
     solver: SimulateSolverMode,
     output: Option<&str>,
 ) -> Result<()> {
-    use rumoca_sim_diffsol::{SimOptions, simulate};
+    use rumoca_session::runtime::{SimOptions, simulate_dae};
 
     let opts = SimOptions {
         t_end,
@@ -745,7 +746,7 @@ fn run_simulation(
     };
 
     eprintln!("Simulating {} to t={}...", model, t_end);
-    let sim = simulate(&result.dae, &opts)?;
+    let sim = simulate_dae(&result.dae, &opts).map_err(anyhow::Error::msg)?;
     eprintln!(
         "Simulation complete: {} time points, {} variables",
         sim.times.len(),

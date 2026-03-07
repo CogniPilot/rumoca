@@ -79,10 +79,11 @@ use type_overrides::{apply_type_override, build_type_override_map};
 pub use connections::{ConnectionParams, extract_connections, filter_out_connections};
 pub use errors::{InstantiateError, InstantiateResult, InstantiationOutcome};
 pub use inheritance::{
-    InheritanceCache, SubtypeCache, class_extends, class_extends_cached, find_class_in_tree,
-    get_effective_components, get_effective_components_with_cache, get_effective_equations,
-    get_effective_equations_with_cache, is_type_subtype, is_type_subtype_cached, location_to_span,
-    process_extends, process_extends_with_cache, type_names_match,
+    InheritanceCache, InheritedContent, SubtypeCache, class_extends, class_extends_cached,
+    find_class_in_tree, get_effective_components, get_effective_components_with_cache,
+    get_effective_equations, get_effective_equations_with_cache, is_type_subtype,
+    is_type_subtype_cached, location_to_span, process_extends, process_extends_with_cache,
+    type_names_match,
 };
 pub use templates::{ClassTemplate, ClassTemplateCache};
 
@@ -154,11 +155,11 @@ pub struct InstantiateContext {
     /// Stack of inherited variabilities from parent components.
     /// When a record is declared as `parameter Record r`, all nested fields
     /// inherit the `parameter` variability (MLS §4.4.2.1).
-    variability_stack: Vec<rumoca_ir_ast::Variability>,
+    variability_stack: Vec<rumoca_ir_core::Variability>,
     /// Stack of inherited causalities from parent components.
     /// When a record is declared as `input Record r` or `output Record r`,
     /// all nested fields inherit the causality (MLS §4.4.2.2).
-    causality_stack: Vec<rumoca_ir_ast::Causality>,
+    causality_stack: Vec<rumoca_ir_core::Causality>,
     /// Stack of inherited flow prefixes from parent components.
     /// When a record is declared as `flow Record r`, all nested fields
     /// inherit the `flow` prefix (MLS §9.3).
@@ -346,7 +347,7 @@ impl InstantiateContext {
 
     /// Push a variability onto the stack (for nested record fields).
     /// MLS §4.4.2.1: Fields of a parameter/constant record inherit variability.
-    fn push_variability(&mut self, v: rumoca_ir_ast::Variability) {
+    fn push_variability(&mut self, v: rumoca_ir_core::Variability) {
         self.variability_stack.push(v);
     }
 
@@ -357,13 +358,13 @@ impl InstantiateContext {
 
     /// Get the inherited variability from the stack.
     /// Returns the most restrictive variability (parameter or constant).
-    fn inherited_variability(&self) -> Option<&rumoca_ir_ast::Variability> {
+    fn inherited_variability(&self) -> Option<&rumoca_ir_core::Variability> {
         self.variability_stack.last()
     }
 
     /// Push a causality onto the stack (for nested record fields).
     /// MLS §4.4.2.2: Fields of an input/output record inherit causality.
-    fn push_causality(&mut self, c: rumoca_ir_ast::Causality) {
+    fn push_causality(&mut self, c: rumoca_ir_core::Causality) {
         self.causality_stack.push(c);
     }
 
@@ -374,7 +375,7 @@ impl InstantiateContext {
 
     /// Get the inherited causality from the stack.
     /// MLS §4.4.2.2: Record fields inherit input/output causality from parent.
-    fn inherited_causality(&self) -> Option<&rumoca_ir_ast::Causality> {
+    fn inherited_causality(&self) -> Option<&rumoca_ir_core::Causality> {
         self.causality_stack.last()
     }
 
@@ -386,19 +387,19 @@ impl InstantiateContext {
     /// MLS §9.1.3: Track expandable connector membership
     fn push_inheritance(
         &mut self,
-        variability: &rumoca_ir_ast::Variability,
-        causality: &rumoca_ir_ast::Causality,
+        variability: &rumoca_ir_core::Variability,
+        causality: &rumoca_ir_core::Causality,
         flow: bool,
         stream: bool,
         expandable: bool,
     ) -> InheritanceFlags {
         let push_variability = matches!(
             variability,
-            rumoca_ir_ast::Variability::Parameter(_) | rumoca_ir_ast::Variability::Constant(_)
+            rumoca_ir_core::Variability::Parameter(_) | rumoca_ir_core::Variability::Constant(_)
         );
         let push_causality = matches!(
             causality,
-            rumoca_ir_ast::Causality::Input(_) | rumoca_ir_ast::Causality::Output(_)
+            rumoca_ir_core::Causality::Input(_) | rumoca_ir_core::Causality::Output(_)
         );
         let push_connection = flow || stream;
 
@@ -645,9 +646,9 @@ fn create_synthetic_inner_component(
             name: mi
                 .type_name
                 .split('.')
-                .map(|s| ast::Token {
+                .map(|s| rumoca_ir_core::Token {
                     text: s.to_string().into(),
-                    ..ast::Token::default()
+                    ..rumoca_ir_core::Token::default()
                 })
                 .collect(),
             def_id: mi.type_def_id,
@@ -660,7 +661,7 @@ fn create_synthetic_inner_component(
     }
 }
 
-fn description_tokens_to_string(tokens: &[ast::Token]) -> Option<String> {
+fn description_tokens_to_string(tokens: &[rumoca_ir_core::Token]) -> Option<String> {
     if tokens.is_empty() {
         return None;
     }
@@ -1153,8 +1154,8 @@ struct InstanceDataBuild<'a> {
     type_def_id: Option<DefId>,
     class_overrides: IndexMap<String, DefId>,
     has_forwarding_class_redeclare: bool,
-    effective_variability: rumoca_ir_ast::Variability,
-    causality: rumoca_ir_ast::Causality,
+    effective_variability: rumoca_ir_core::Variability,
+    causality: rumoca_ir_core::Causality,
     flow: bool,
     stream: bool,
     attrs: ExtractedAttributes,
@@ -1233,11 +1234,11 @@ fn build_instance_data(
 fn resolve_component_causality(
     comp: &ast::Component,
     class_def: Option<&ast::ClassDef>,
-    inherited_causality: Option<&rumoca_ir_ast::Causality>,
-) -> rumoca_ir_ast::Causality {
+    inherited_causality: Option<&rumoca_ir_core::Causality>,
+) -> rumoca_ir_core::Causality {
     // MLS §4.4.2.2: record fields inherit input/output from the enclosing component.
     // Connector aliases like `RealInput = input Real` also propagate causality.
-    if !matches!(comp.causality, rumoca_ir_ast::Causality::Empty) {
+    if !matches!(comp.causality, rumoca_ir_core::Causality::Empty) {
         return comp.causality.clone();
     }
 
@@ -1250,10 +1251,10 @@ fn resolve_component_causality(
 
 fn resolve_effective_variability(
     comp: &ast::Component,
-    inherited_variability: Option<&rumoca_ir_ast::Variability>,
-) -> rumoca_ir_ast::Variability {
+    inherited_variability: Option<&rumoca_ir_core::Variability>,
+) -> rumoca_ir_core::Variability {
     // MLS §4.4.2.1: fields of parameter/constant records inherit variability.
-    if matches!(comp.variability, rumoca_ir_ast::Variability::Empty) {
+    if matches!(comp.variability, rumoca_ir_core::Variability::Empty) {
         inherited_variability
             .cloned()
             .unwrap_or_else(|| comp.variability.clone())
@@ -1432,7 +1433,7 @@ fn should_promote_binding_to_start(
 ) -> bool {
     matches!(
         comp.variability,
-        rumoca_ir_ast::Variability::Parameter(_) | rumoca_ir_ast::Variability::Constant(_)
+        rumoca_ir_core::Variability::Parameter(_) | rumoca_ir_core::Variability::Constant(_)
     ) && attrs.start.is_none()
         && !binding_from_modification
 }
@@ -1577,8 +1578,8 @@ fn instantiate_component(
 struct NestedInstantiationInput<'a> {
     nested_class: &'a ast::ClassDef,
     comp: &'a ast::Component,
-    effective_variability: &'a rumoca_ir_ast::Variability,
-    causality: &'a rumoca_ir_ast::Causality,
+    effective_variability: &'a rumoca_ir_core::Variability,
+    causality: &'a rumoca_ir_core::Causality,
     flow: bool,
     stream: bool,
     binding_for_record_expansion: Option<&'a ast::Expression>,

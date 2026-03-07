@@ -48,11 +48,21 @@ pub mod types;
 pub mod visitor;
 
 use indexmap::IndexMap;
-pub use rumoca_core::{DefId, ScopeId, TypeId};
+use rumoca_core::{DefId, ScopeId, TypeId};
 use rustc_hash::FxBuildHasher;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
 use std::{fmt::Debug, fmt::Display};
+
+pub type Causality = rumoca_ir_core::Causality;
+pub type ClassType = rumoca_ir_core::ClassType;
+pub type Location = rumoca_ir_core::Location;
+pub type OpBinary = rumoca_ir_core::OpBinary;
+pub type OpUnary = rumoca_ir_core::OpUnary;
+pub type StateSelect = rumoca_ir_core::StateSelect;
+pub type Token = rumoca_ir_core::Token;
+pub type Variability = rumoca_ir_core::Variability;
+
 pub use visitor::{
     ExpressionTransformer, Visitor, collect_component_refs, contains_component_ref,
     contains_function_call,
@@ -87,7 +97,7 @@ impl ClassLookupCache {
 pub use instance::{
     ClassInstanceData, InstanceConnection, InstanceData, InstanceEquation, InstanceId,
     InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment, ModificationValue,
-    QualifiedName, StateSelect,
+    QualifiedName,
 };
 pub use scope::{Import as ScopeImport, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};
@@ -414,43 +424,6 @@ impl std::ops::DerefMut for TypedTree {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Location {
-    pub start_line: u32,
-    pub start_column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-    pub start: u32,
-    pub end: u32,
-    pub file_name: String,
-}
-
-impl Display for Location {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}:{}:{}",
-            self.file_name, self.start_line, self.start_column
-        )
-    }
-}
-
-#[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
-
-pub struct Token {
-    /// The token text. Using `Arc<str>` for O(1) cloning during inheritance processing.
-    pub text: Arc<str>,
-    pub location: Location,
-    pub token_number: u32,
-    pub token_type: u16,
-}
-
-impl Debug for Token {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.text)
-    }
-}
-
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct Name {
@@ -649,38 +622,6 @@ pub struct EnumLiteral {
     pub ident: Token,
     /// Optional description strings (e.g., "Uninitialized")
     pub description: Vec<Token>,
-}
-
-/// Type of class (model, function, connector, etc.)
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ClassType {
-    #[default]
-    Model,
-    Class,
-    Block,
-    Connector,
-    Record,
-    Type,
-    Package,
-    Function,
-    Operator,
-}
-
-impl ClassType {
-    /// Get the human-readable name for this class type
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ClassType::Model => "model",
-            ClassType::Class => "class",
-            ClassType::Block => "block",
-            ClassType::Connector => "connector",
-            ClassType::Record => "record",
-            ClassType::Type => "type",
-            ClassType::Package => "package",
-            ClassType::Function => "function",
-            ClassType::Operator => "operator",
-        }
-    }
 }
 
 /// External function declaration (MLS §12.9).
@@ -1078,84 +1019,6 @@ impl Equation {
             }
             Equation::FunctionCall { comp, .. } => comp.get_location(),
             Equation::Assert { condition, .. } => condition.get_location(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub enum OpBinary {
-    #[default]
-    Empty,
-    Add(Token),
-    Sub(Token),
-    Mul(Token),
-    Div(Token),
-    Eq(Token),
-    Neq(Token),
-    Lt(Token),
-    Le(Token),
-    Gt(Token),
-    Ge(Token),
-    And(Token),
-    Or(Token),
-    Exp(Token),
-    ExpElem(Token),
-    AddElem(Token),
-    SubElem(Token),
-    MulElem(Token),
-    DivElem(Token),
-    /// Assignment/modification operator `=` (not equality `==`)
-    /// Used in named arguments and modifications like `annotation(HideResult=true)`
-    Assign(Token),
-}
-
-impl Display for OpBinary {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OpBinary::Empty => write!(f, ""),
-            OpBinary::Add(_) => write!(f, "+"),
-            OpBinary::Sub(_) => write!(f, "-"),
-            OpBinary::Mul(_) => write!(f, "*"),
-            OpBinary::Div(_) => write!(f, "/"),
-            OpBinary::Eq(_) => write!(f, "=="),
-            OpBinary::Neq(_) => write!(f, "<>"),
-            OpBinary::Lt(_) => write!(f, "<"),
-            OpBinary::Le(_) => write!(f, "<="),
-            OpBinary::Gt(_) => write!(f, ">"),
-            OpBinary::Ge(_) => write!(f, ">="),
-            OpBinary::And(_) => write!(f, "and"),
-            OpBinary::Or(_) => write!(f, "or"),
-            OpBinary::Exp(_) => write!(f, "^"),
-            OpBinary::ExpElem(_) => write!(f, ".^"),
-            OpBinary::AddElem(_) => write!(f, ".+"),
-            OpBinary::SubElem(_) => write!(f, ".-"),
-            OpBinary::MulElem(_) => write!(f, ".*"),
-            OpBinary::DivElem(_) => write!(f, "./"),
-            OpBinary::Assign(_) => write!(f, "="),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub enum OpUnary {
-    #[default]
-    Empty,
-    Minus(Token),
-    Plus(Token),
-    DotMinus(Token),
-    DotPlus(Token),
-    Not(Token),
-}
-
-impl Display for OpUnary {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OpUnary::Empty => write!(f, ""),
-            OpUnary::Minus(_) => write!(f, "-"),
-            OpUnary::Plus(_) => write!(f, "+"),
-            OpUnary::DotMinus(_) => write!(f, ".-"),
-            OpUnary::DotPlus(_) => write!(f, ".+"),
-            OpUnary::Not(_) => write!(f, "not "),
         }
     }
 }
@@ -1747,30 +1610,11 @@ impl Display for Subscript {
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 
-pub enum Variability {
-    #[default]
-    Empty,
-    Constant(Token),
-    Discrete(Token),
-    Parameter(Token),
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-
 pub enum Connection {
     #[default]
     Empty,
     Flow(Token),
     Stream(Token),
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-
-pub enum Causality {
-    #[default]
-    Empty,
-    Input(Token),
-    Output(Token),
 }
 
 /// Annotation - modification list for annotations
@@ -1788,30 +1632,6 @@ pub struct Modification {
     pub sub_modifications: Vec<Modification>,
     pub each: bool,
     pub final_: bool,
-}
-
-// Conversion from parol_runtime::Token to our Token
-impl TryFrom<&parol_runtime::Token<'_>> for Token {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &parol_runtime::Token<'_>) -> std::result::Result<Self, Self::Error> {
-        Ok(Token {
-            text: Arc::from(value.text()),
-            location: Location {
-                start_line: value.location.start_line,
-                start_column: value.location.start_column,
-                end_line: value.location.end_line,
-                end_column: value.location.end_column,
-                start: value.location.start,
-                end: value.location.end,
-                // Preserve full source path so cross-file features (goto definition,
-                // diagnostics attribution) can locate the real file, not only basename.
-                file_name: value.location.file_name.to_string_lossy().to_string(),
-            },
-            token_number: value.token_number,
-            token_type: value.token_type,
-        })
-    }
 }
 
 #[cfg(test)]

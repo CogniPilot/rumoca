@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
-use rumoca_core::DefId;
-use rumoca_ir_ast as ast;
+use rumoca_session::compile::core::DefId;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 
 use crate::helpers::{get_word_at_position, resolve_at_position};
 
@@ -134,7 +135,7 @@ fn goto_response_for_def_id(
     }))
 }
 
-fn target_uri_for_location(loc: &ast::Location, fallback_uri: &Url) -> Url {
+fn target_uri_for_location(loc: &rumoca_ir_core::Location, fallback_uri: &Url) -> Url {
     if loc.file_name.is_empty() {
         return fallback_uri.clone();
     }
@@ -241,7 +242,7 @@ impl FoundLocation {
     }
 }
 
-fn find_declaration_in_class(class: &rumoca_ir_ast::ClassDef, name: &str) -> Option<FoundLocation> {
+fn find_declaration_in_class(class: &ast::ClassDef, name: &str) -> Option<FoundLocation> {
     if let Some(comp) = class.components.get(name) {
         let loc = &comp.name_token.location;
         return Some(FoundLocation {
@@ -268,7 +269,7 @@ fn find_declaration_in_class(class: &rumoca_ir_ast::ClassDef, name: &str) -> Opt
     None
 }
 
-fn find_class_in_class(class: &rumoca_ir_ast::ClassDef, name: &str) -> Option<FoundLocation> {
+fn find_class_in_class(class: &ast::ClassDef, name: &str) -> Option<FoundLocation> {
     for (nested_name, nested) in &class.classes {
         if nested_name == name {
             let loc = &nested.name.location;

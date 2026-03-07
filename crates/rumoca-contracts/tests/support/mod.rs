@@ -1,1 +1,1 @@
-pub mod contract_cases_manifest;
+pub(crate) mod contract_cases_manifest;

@@ -2,7 +2,7 @@
 // Source: rumoca-contracts registry snapshot
 use super::*;
 
-pub static CONTRACTS_EXPR: &[StaticContract] = &[
+pub(super) static CONTRACTS_EXPR: &[StaticContract] = &[
     StaticContract {
         id: "EXPR-001",
         category: ContractCategory::Expression,
