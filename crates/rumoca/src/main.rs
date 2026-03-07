@@ -203,8 +203,31 @@ struct FmtArgs {
     #[arg(long)]
     indent_size: Option<usize>,
     /// Use tabs instead of spaces.
-    #[arg(long)]
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
     use_tabs: Option<bool>,
+    /// Formatting profile.
+    #[arg(long, value_enum)]
+    profile: Option<FmtProfileArg>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FmtProfileArg {
+    Msl,
+    Canonical,
+}
+
+impl From<FmtProfileArg> for rumoca_tool_fmt::FormatProfile {
+    fn from(value: FmtProfileArg) -> Self {
+        match value {
+            FmtProfileArg::Msl => rumoca_tool_fmt::FormatProfile::Msl,
+            FmtProfileArg::Canonical => rumoca_tool_fmt::FormatProfile::Canonical,
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -385,6 +408,9 @@ fn run_fmt(args: FmtArgs) -> Result<()> {
     if let Some(use_tabs) = args.use_tabs {
         options.use_tabs = use_tabs;
     }
+    if let Some(profile) = args.profile {
+        options.profile = profile.into();
+    }
 
     let files = collect_modelica_files(&paths);
     if files.is_empty() {
@@ -404,14 +430,16 @@ fn run_fmt(args: FmtArgs) -> Result<()> {
             }
         };
 
-        let formatted = match rumoca_tool_fmt::format(&source, &options) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Error formatting {}: {e}", file.display());
-                errors += 1;
-                continue;
-            }
-        };
+        let source_name = file.display().to_string();
+        let formatted =
+            match rumoca_tool_fmt::format_with_source_name(&source, &options, &source_name) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("Error formatting {}: {e}", file.display());
+                    errors += 1;
+                    continue;
+                }
+            };
         if formatted == source {
             continue;
         }

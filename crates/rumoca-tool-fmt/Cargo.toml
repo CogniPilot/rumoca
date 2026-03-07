@@ -6,15 +6,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "rumoca-fmt"
-path = "src/main.rs"
-
 [dependencies]
 rumoca-session = { workspace = true }
-clap = { workspace = true }
-walkdir = { workspace = true }
-miette = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

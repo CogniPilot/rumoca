@@ -3,13 +3,13 @@
 use crate::helpers::location_to_range;
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use rumoca_session::Session;
-use rumoca_session::analysis::{LintLevel, LintMessage, LintOptions, lint_source};
 use rumoca_session::compile::core as rumoca_core;
 use rumoca_session::compile::core::{
     Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
 };
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::{ParseError, parse_source_to_ast_with_errors};
+use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
@@ -41,7 +41,7 @@ pub fn compute_diagnostics(
 
     // Run linter on successfully parsed source
     let lint_options = LintOptions::default();
-    let lint_messages = lint_source(source, file_name, &lint_options);
+    let lint_messages = lint(source, file_name, &lint_options);
     for msg in lint_messages {
         diagnostics.push(lint_to_diagnostic(&msg));
     }

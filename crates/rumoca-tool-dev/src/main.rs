@@ -510,6 +510,7 @@ fn cmd_dev_check() -> Result<()> {
 fn cmd_coverage(args: CoverageArgs) -> Result<()> {
     let root = repo_root();
     ensure_cargo_llvm_cov_available(&root)?;
+    ensure_llvm_tools_preview_available(&root)?;
 
     let output_dir = root.join("target/llvm-cov");
     fs::create_dir_all(&output_dir)
@@ -1208,6 +1209,65 @@ fn ensure_cargo_llvm_cov_available(root: &Path) -> Result<()> {
     let _ = run_capture(cmd)
         .context("cargo-llvm-cov is required. Install with: cargo install cargo-llvm-cov")?;
     Ok(())
+}
+
+fn ensure_llvm_tools_preview_available(root: &Path) -> Result<()> {
+    let mut rustc_info = Command::new("rustc");
+    rustc_info.arg("-vV").current_dir(root);
+    let rustc_info =
+        run_capture(rustc_info).context("failed to run `rustc -vV` for coverage preflight")?;
+    let host = parse_rustc_host(&rustc_info)
+        .context("failed to parse host triple from `rustc -vV` output")?;
+
+    let mut rustc_sysroot = Command::new("rustc");
+    rustc_sysroot
+        .arg("--print")
+        .arg("sysroot")
+        .current_dir(root);
+    let sysroot = run_capture(rustc_sysroot)
+        .context("failed to run `rustc --print sysroot` for coverage preflight")?;
+    let rustlib_bin = Path::new(sysroot.trim())
+        .join("lib")
+        .join("rustlib")
+        .join(host)
+        .join("bin");
+    let llvm_cov = rustlib_bin.join(exe_name("llvm-cov"));
+    let llvm_profdata = rustlib_bin.join(exe_name("llvm-profdata"));
+    if llvm_cov.is_file() && llvm_profdata.is_file() {
+        return Ok(());
+    }
+
+    let install_cmd = active_toolchain(root)
+        .map(|toolchain| format!("rustup component add llvm-tools-preview --toolchain {toolchain}"))
+        .unwrap_or_else(|| "rustup component add llvm-tools-preview".to_string());
+    bail!(
+        "missing rustup component `llvm-tools-preview` for the active toolchain.\n\
+expected tools:\n  {}\n  {}\n\
+install with:\n  {}\n\
+then re-run:\n  cargo run --bin rum -- coverage",
+        llvm_cov.display(),
+        llvm_profdata.display(),
+        install_cmd
+    );
+}
+
+fn parse_rustc_host(rustc_info: &str) -> Option<&str> {
+    rustc_info
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+}
+
+fn active_toolchain(root: &Path) -> Option<String> {
+    let mut cmd = Command::new("rustup");
+    cmd.arg("show").arg("active-toolchain").current_dir(root);
+    let output = run_capture(cmd).ok()?;
+    output
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+        .filter(|toolchain| !toolchain.is_empty())
 }
 
 fn workspace_package_infos(root: &Path) -> Result<Vec<WorkspacePackageInfo>> {

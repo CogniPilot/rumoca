@@ -2778,6 +2778,8 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "rumoca-session",
+ "rumoca-tool-fmt",
+ "rumoca-tool-lint",
  "serde_json",
 ]
 
@@ -2789,6 +2791,7 @@ dependencies = [
  "getrandom 0.3.4",
  "lsp-types",
  "rumoca-session",
+ "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
  "serde-wasm-bindgen",
@@ -3111,11 +3114,11 @@ dependencies = [
 name = "rumoca-tool-fmt"
 version = "0.8.0"
 dependencies = [
- "clap",
- "miette",
  "rumoca-session",
+ "serde",
  "tempfile",
- "walkdir",
+ "thiserror 2.0.17",
+ "toml",
 ]
 
 [[package]]
@@ -3123,7 +3126,10 @@ name = "rumoca-tool-lint"
 version = "0.8.0"
 dependencies = [
  "rumoca-session",
+ "serde",
  "tempfile",
+ "thiserror 2.0.17",
+ "toml",
 ]
 
 [[package]]
@@ -3133,6 +3139,8 @@ dependencies = [
  "anyhow",
  "lsp-types",
  "rumoca-session",
+ "rumoca-tool-fmt",
+ "rumoca-tool-lint",
  "serde",
  "serde_json",
  "tokio",

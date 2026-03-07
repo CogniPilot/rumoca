@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-session = { workspace = true }
+rumoca-tool-lint = { workspace = true }
 rumoca-tool-lsp = { workspace = true }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 wasm-bindgen = "0.2"
