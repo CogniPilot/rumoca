@@ -18,6 +18,7 @@ use rumoca_ir_flat as flat;
 use std::collections::{HashMap, HashSet};
 
 use crate::algorithms;
+use crate::ast_lower;
 use crate::errors::FlattenError;
 use crate::qualify;
 
@@ -32,7 +33,7 @@ fn is_callable_class_type(class_type: &ast::ClassType) -> bool {
 ///
 /// Walks through all equations and expressions to find function calls,
 /// returning a set of unique function names that need definitions.
-pub fn collect_function_calls(flat: &flat::Model) -> HashSet<String> {
+pub(crate) fn collect_function_calls(flat: &flat::Model) -> HashSet<String> {
     let mut calls = HashSet::new();
 
     // Collect from equations
@@ -163,7 +164,7 @@ fn collect_from_expression(expr: &flat::Expression, calls: &mut HashSet<String>)
 ///
 /// This finds all function calls in the model, looks up their definitions
 /// in the ast::ClassTree, and converts them to flat::Function objects.
-pub fn collect_functions(
+pub(crate) fn collect_functions(
     flat: &mut flat::Model,
     tree: &ast::ClassTree,
 ) -> Result<(), FlattenError> {
@@ -226,7 +227,7 @@ pub fn collect_functions(
 ///
 /// This is useful for lazy function lookup during constant evaluation.
 /// Returns None if the function is not found or is not a function type.
-pub fn lookup_function(tree: &ast::ClassTree, func_name: &str) -> Option<flat::Function> {
+pub(crate) fn lookup_function(tree: &ast::ClassTree, func_name: &str) -> Option<flat::Function> {
     let (_, func) = lookup_function_with_name(tree, func_name)?;
     Some(func)
 }
@@ -589,7 +590,7 @@ fn convert_callable(
     class_def: &ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &indexmap::IndexMap<rumoca_ir_ast::DefId, String>,
+    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
 ) -> Option<flat::Function> {
     match &class_def.class_type {
         ast::ClassType::Function => {
@@ -612,7 +613,7 @@ fn convert_function(
     class_def: &ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &indexmap::IndexMap<rumoca_ir_ast::DefId, String>,
+    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
 ) -> Result<flat::Function, FlattenError> {
     // Use the location from class definition
     let span = source_map.location_to_span(
@@ -642,9 +643,9 @@ fn convert_function(
         );
 
         match &component.causality {
-            ast::Causality::Input(_) => func.add_input(param),
-            ast::Causality::Output(_) => func.add_output(param),
-            ast::Causality::Empty => func.add_local(param),
+            rumoca_ir_core::Causality::Input(_) => func.add_input(param),
+            rumoca_ir_core::Causality::Output(_) => func.add_output(param),
+            rumoca_ir_core::Causality::Empty => func.add_local(param),
         }
     }
 
@@ -690,7 +691,8 @@ fn collect_lexical_constant_aliases(
         for (name, component) in &class_def.components {
             if matches!(
                 component.variability,
-                ast::Variability::Constant(_) | ast::Variability::Parameter(_)
+                rumoca_ir_core::Variability::Constant(_)
+                    | rumoca_ir_core::Variability::Parameter(_)
             ) {
                 imports
                     .entry(name.clone())
@@ -706,7 +708,7 @@ fn collect_constructor_params(
     visited_classes: &mut HashSet<usize>,
     params: &mut Vec<flat::FunctionParam>,
     param_index: &mut HashMap<String, usize>,
-    def_map: &indexmap::IndexMap<rumoca_ir_ast::DefId, String>,
+    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
 ) {
     let class_ptr = class_def as *const ast::ClassDef as usize;
     if !visited_classes.insert(class_ptr) {
@@ -756,7 +758,7 @@ fn convert_constructor_signature(
     class_def: &ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &indexmap::IndexMap<rumoca_ir_ast::DefId, String>,
+    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
 ) -> flat::Function {
     let span = source_map.location_to_span(
         &class_def.location.file_name,
@@ -1050,7 +1052,7 @@ fn extract_integer_from_subscript(sub: &rumoca_ir_ast::Subscript) -> Option<i64>
 fn convert_component_to_param(
     name: &str,
     component: &ast::Component,
-    def_map: &indexmap::IndexMap<rumoca_ir_ast::DefId, String>,
+    def_map: &indexmap::IndexMap<rumoca_core::DefId, String>,
     imports: &qualify::ImportMap,
     locals: &HashSet<String>,
 ) -> flat::FunctionParam {
@@ -1090,13 +1092,13 @@ fn convert_component_to_param(
             && !matches!(binding_expr, ast::Expression::Empty)
         {
             let qualified = qualify_function_expr(binding_expr, imports, locals);
-            param = param.with_default(flat::Expression::from_ast_with_def_map(
+            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
                 &qualified,
                 Some(def_map),
             ));
         } else if !matches!(component.start, ast::Expression::Empty) {
             let qualified = qualify_function_expr(&component.start, imports, locals);
-            param = param.with_default(flat::Expression::from_ast_with_def_map(
+            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
                 &qualified,
                 Some(def_map),
             ));
@@ -1160,7 +1162,7 @@ mod tests {
             is_constructor: false,
         };
         let residual = flat::Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
             lhs: Box::new(func_call),
             rhs: Box::new(flat::Expression::VarRef {
                 name: flat::VarName::new("y"),
@@ -1199,7 +1201,7 @@ mod tests {
             is_constructor: false,
         };
         let residual = flat::Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+            op: rumoca_ir_flat::OpBinary::Sub(rumoca_ir_flat::Token::default()),
             lhs: Box::new(outer_call),
             rhs: Box::new(flat::Expression::VarRef {
                 name: flat::VarName::new("y"),
@@ -1227,14 +1229,14 @@ mod tests {
             has_explicit_binding: true,
             start: ast::Expression::Terminal {
                 terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                token: rumoca_ir_ast::Token {
+                token: rumoca_ir_core::Token {
                     text: "0".into(),
                     ..Default::default()
                 },
             },
             binding: Some(ast::Expression::Terminal {
                 terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                token: rumoca_ir_ast::Token {
+                token: rumoca_ir_core::Token {
                     text: "3".into(),
                     ..Default::default()
                 },

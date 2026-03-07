@@ -755,7 +755,7 @@ mod tests {
 
         let expr = Expression::ArrayComprehension {
             expr: Arc::new(Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Add(Token::default()),
+                op: rumoca_ir_core::OpBinary::Add(Token::default()),
                 lhs: Arc::new(Expression::ComponentReference(make_comp_ref(&["i"]))),
                 rhs: Arc::new(Expression::ComponentReference(make_comp_ref(&["j"]))),
             }),

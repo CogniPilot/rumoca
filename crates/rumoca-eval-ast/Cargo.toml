@@ -1,0 +1,17 @@
+[package]
+name = "rumoca-eval-ast"
+description = "AST-level evaluation surface for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+rumoca-ir-core = { workspace = true }
+rustc-hash = { workspace = true }
+
+[lints]
+workspace = true

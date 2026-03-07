@@ -1,7 +1,7 @@
 //! Workspace symbols handler for Modelica files.
 
 use lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Url};
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
 
 use crate::helpers::location_to_range;
 

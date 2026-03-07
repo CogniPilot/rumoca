@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
@@ -12,6 +13,42 @@ fn test_render_simple_template() {
     let template = "# States: {{ dae.states | length }}";
     let result = render_template(&dae, template).unwrap();
     assert!(result.contains("# States: 0"));
+}
+
+#[test]
+fn test_render_template_for_input_supports_dae_flat_and_ast() {
+    let dae = dae::Dae::new();
+    let dae_rendered = render_template_for_input(
+        CodegenInput::Dae(&dae),
+        "{{ ir_kind }} {{ dae.states | length }} {{ ir.states | length }}",
+    )
+    .unwrap();
+    assert_eq!(dae_rendered, "dae 0 0");
+
+    let flat = flat::Model::new();
+    let flat_rendered = render_template_for_input(
+        CodegenInput::Flat(&flat),
+        "{{ ir_kind }} {{ flat.variables | length }} {{ ir.variables | length }}",
+    )
+    .unwrap();
+    assert_eq!(flat_rendered, "flat 0 0");
+
+    let ast = ast::ClassTree::new();
+    let ast_rendered = render_template_for_input(
+        CodegenInput::Ast(&ast),
+        "{{ ir_kind }} {{ ast.definitions.classes | length }} {{ ir.definitions.classes | length }}",
+    )
+    .unwrap();
+    assert_eq!(ast_rendered, "ast 0 0");
+}
+
+#[test]
+fn test_render_ast_template_with_name() {
+    let ast = ast::ClassTree::new();
+    let rendered =
+        render_ast_template_with_name(&ast, "model {{ model_name }} end {{ model_name }};", "M")
+            .unwrap();
+    assert_eq!(rendered, "model M end M;");
 }
 
 #[test]
@@ -159,10 +196,10 @@ fn test_casadi_mx_template_flattens_array_start_values_for_x0() {
         rumoca_ir_dae::Variable {
             name: "x".into(),
             dims: vec![2],
-            start: Some(rumoca_ir_flat::Expression::Array {
+            start: Some(rumoca_ir_dae::Expression::Array {
                 elements: vec![
-                    rumoca_ir_flat::Expression::Literal(rumoca_ir_flat::Literal::Real(1.0)),
-                    rumoca_ir_flat::Expression::Literal(rumoca_ir_flat::Literal::Real(2.0)),
+                    rumoca_ir_dae::Expression::Literal(rumoca_ir_dae::Literal::Real(1.0)),
+                    rumoca_ir_dae::Expression::Literal(rumoca_ir_dae::Literal::Real(2.0)),
                 ],
                 is_matrix: false,
             }),
@@ -173,8 +210,8 @@ fn test_casadi_mx_template_flattens_array_start_values_for_x0() {
         "y".into(),
         rumoca_ir_dae::Variable {
             name: "y".into(),
-            start: Some(rumoca_ir_flat::Expression::Literal(
-                rumoca_ir_flat::Literal::Real(3.0),
+            start: Some(rumoca_ir_dae::Expression::Literal(
+                rumoca_ir_dae::Literal::Real(3.0),
             )),
             ..Default::default()
         },
@@ -273,7 +310,7 @@ fn test_flat_template_uses_parameter_start_as_default_binding() {
     let mut flat = flat::Model::new();
     let mut var = rumoca_ir_flat::Variable {
         name: "T".into(),
-        variability: rumoca_ir_ast::Variability::Parameter(Default::default()),
+        variability: rumoca_ir_core::Variability::Parameter(Default::default()),
         start: Some(rumoca_ir_flat::Expression::Literal(
             rumoca_ir_flat::Literal::Integer(1),
         )),
@@ -295,7 +332,7 @@ fn test_flat_template_does_not_materialize_start_binding_when_fixed_false() {
     let mut flat = flat::Model::new();
     let var = rumoca_ir_flat::Variable {
         name: "p".into(),
-        variability: rumoca_ir_ast::Variability::Parameter(Default::default()),
+        variability: rumoca_ir_core::Variability::Parameter(Default::default()),
         start: Some(rumoca_ir_flat::Expression::Literal(
             rumoca_ir_flat::Literal::Integer(1),
         )),

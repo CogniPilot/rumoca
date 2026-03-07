@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-eval-flat"
+description = "Flat-IR evaluation surface for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-core = { workspace = true }
+rumoca-ir-flat = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

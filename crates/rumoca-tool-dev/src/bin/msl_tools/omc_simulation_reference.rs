@@ -8,7 +8,7 @@ use crate::common::{
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
-use rumoca::sim_trace_compare::{
+use rumoca_session::analysis::{
     ModelDeviationMetric, SimTrace, compare_model_traces, load_trace_json,
 };
 use serde::{Deserialize, Serialize};

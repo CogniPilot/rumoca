@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
 
-use crate::{ToDaeError, path_utils::subscript_fallback_chain};
+use crate::{
+    ToDaeError, dae_to_flat_var_name, flat_to_dae_var_name, path_utils::subscript_fallback_chain,
+};
 
 pub(super) fn validate_appendix_b_invariants(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     validate_runtime_contract_invariants(dae_model)?;
@@ -342,18 +344,25 @@ fn validate_discrete_real_solved_form(dae_model: &dae::Dae) -> Result<(), ToDaeE
 
 fn is_discrete_valued_name(dae_model: &dae::Dae, name: &dae::VarName) -> bool {
     dae_model.discrete_valued.contains_key(name)
-        || subscript_fallback_chain(name)
+        || subscript_fallback_chain(&dae_to_flat_var_name(name))
             .into_iter()
-            .any(|candidate| dae_model.discrete_valued.contains_key(&candidate))
+            .any(|candidate| {
+                dae_model
+                    .discrete_valued
+                    .contains_key(&flat_to_dae_var_name(&candidate))
+            })
 }
 
 fn is_discrete_real_or_state_name(dae_model: &dae::Dae, name: &dae::VarName) -> bool {
     dae_model.discrete_reals.contains_key(name)
         || dae_model.states.contains_key(name)
-        || subscript_fallback_chain(name).into_iter().any(|candidate| {
-            dae_model.discrete_reals.contains_key(&candidate)
-                || dae_model.states.contains_key(&candidate)
-        })
+        || subscript_fallback_chain(&dae_to_flat_var_name(name))
+            .into_iter()
+            .any(|candidate| {
+                let candidate = flat_to_dae_var_name(&candidate);
+                dae_model.discrete_reals.contains_key(&candidate)
+                    || dae_model.states.contains_key(&candidate)
+            })
 }
 
 fn resolve_assignment_target(
@@ -363,8 +372,9 @@ fn resolve_assignment_target(
     if targets.contains(name) {
         return Some(name.clone());
     }
-    subscript_fallback_chain(name)
+    subscript_fallback_chain(&dae_to_flat_var_name(name))
         .into_iter()
+        .map(|candidate| flat_to_dae_var_name(&candidate))
         .find(|candidate| targets.contains(candidate))
 }
 
@@ -546,7 +556,6 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_ir_ast as ast;
 
     fn bool_var(name: &str) -> dae::Variable {
         dae::Variable {
@@ -583,7 +592,7 @@ mod tests {
 
     fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
         dae::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         }

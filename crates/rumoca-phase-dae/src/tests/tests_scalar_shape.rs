@@ -31,10 +31,10 @@ fn test_classify_equations_prefers_lhs_scalar_shape_over_flat_scalar_count() {
     );
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: flat::Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(make_var_ref("x")),
             rhs: Box::new(flat::Expression::Binary {
-                op: ast::OpBinary::Mul(ast::Token::default()),
+                op: rumoca_ir_core::OpBinary::Mul(rumoca_ir_core::Token::default()),
                 lhs: Box::new(make_var_ref("a")),
                 rhs: Box::new(make_var_ref("b")),
             }),
@@ -48,12 +48,18 @@ fn test_classify_equations_prefers_lhs_scalar_shape_over_flat_scalar_count() {
     });
 
     let mut dae = Dae::new();
-    dae.algebraics
-        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
-    dae.algebraics
-        .insert(VarName::new("a"), Variable::new(VarName::new("a")));
-    dae.algebraics
-        .insert(VarName::new("b"), Variable::new(VarName::new("b")));
+    dae.algebraics.insert(
+        dae::VarName::new("x"),
+        Variable::new(dae::VarName::new("x")),
+    );
+    dae.algebraics.insert(
+        dae::VarName::new("a"),
+        Variable::new(dae::VarName::new("a")),
+    );
+    dae.algebraics.insert(
+        dae::VarName::new("b"),
+        Variable::new(dae::VarName::new("b")),
+    );
 
     let prefix_counts = build_prefix_counts(&flat);
     classify_equations(&mut dae, &flat, &prefix_counts);

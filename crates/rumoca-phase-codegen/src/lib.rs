@@ -1,16 +1,16 @@
 //! Template-based code generation phase for the Rumoca compiler.
 //!
-//! This crate implements code generation from DAE to various target languages
-//! using the minijinja template engine.
+//! This crate implements code generation from AST/Flat/DAE IR to various
+//! target languages using the minijinja template engine.
 //!
 //! # Design Philosophy
 //!
-//! Templates receive the full DAE structure and can walk the expression tree
-//! themselves. This provides maximum flexibility - any target can be supported
-//! by writing a new template, with no Rust code changes needed.
+//! Templates receive the full selected IR structure and can walk the expression
+//! tree themselves. This provides maximum flexibility - any target can be
+//! supported by writing a new template, with no Rust code changes needed.
 //!
-//! The DAE is serialized and passed to minijinja, which allows templates
-//! to access any field using standard Jinja2 syntax.
+//! The selected IR is serialized and passed to minijinja, which allows
+//! templates to access any field using standard Jinja2 syntax.
 //!
 //! # Template Loading
 //!
@@ -58,13 +58,12 @@ mod codegen;
 mod errors;
 
 pub use codegen::{
-    dae_template_json, render_flat_template_with_name, render_template, render_template_file,
-    render_template_with_dae_json, render_template_with_name,
+    CodegenInput, dae_template_json, render_ast_template, render_ast_template_with_name,
+    render_flat_template_with_name, render_template, render_template_file,
+    render_template_for_input, render_template_with_dae_json, render_template_with_name,
+    render_template_with_name_for_input,
 };
 pub use errors::CodegenError;
-
-// Re-export for convenience
-pub use rumoca_ir_dae::Dae;
 
 /// Built-in template sources.
 ///

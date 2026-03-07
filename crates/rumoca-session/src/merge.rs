@@ -18,7 +18,7 @@ pub(crate) struct MergeSemanticError {
 }
 
 impl MergeSemanticError {
-    fn from_token(message: impl Into<String>, token: &ast::Token) -> Self {
+    fn from_token(message: impl Into<String>, token: &rumoca_ir_core::Token) -> Self {
         let start = BytePos(token.location.start as usize);
         let mut end = BytePos(token.location.end as usize);
         if end.0 <= start.0 {
@@ -39,7 +39,10 @@ impl std::fmt::Display for MergeSemanticError {
 
 impl std::error::Error for MergeSemanticError {}
 
-fn merge_error_from_token(message: impl Into<String>, token: &ast::Token) -> anyhow::Error {
+fn merge_error_from_token(
+    message: impl Into<String>,
+    token: &rumoca_ir_core::Token,
+) -> anyhow::Error {
     anyhow::Error::new(MergeSemanticError::from_token(message, token))
 }
 
@@ -153,7 +156,7 @@ fn place_class_in_hierarchy(
             if !current_map.contains_key(*part) {
                 // Create the package
                 let pkg = ast::ClassDef {
-                    name: ast::Token {
+                    name: rumoca_ir_core::Token {
                         text: std::sync::Arc::from(*part),
                         ..Default::default()
                     },
@@ -175,7 +178,7 @@ fn place_class_in_hierarchy(
             // Nested package
             if !current_map.contains_key(*part) {
                 let pkg = ast::ClassDef {
-                    name: ast::Token {
+                    name: rumoca_ir_core::Token {
                         text: std::sync::Arc::from(*part),
                         ..Default::default()
                     },
@@ -409,8 +412,8 @@ fn count_class_types_recursive(
 mod tests {
     use super::*;
 
-    fn token(text: &str) -> ast::Token {
-        ast::Token {
+    fn token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: std::sync::Arc::from(text),
             ..Default::default()
         }

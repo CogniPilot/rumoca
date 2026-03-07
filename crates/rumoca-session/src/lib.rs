@@ -18,6 +18,12 @@
 //! The orchestrator phase ordering and failure contracts are documented in:
 //! `crates/rumoca-session/PIPELINE_INVARIANTS.md`
 //!
+//! ## Public API Surface
+//!
+//! `Session` and `SessionConfig` are intentionally available at the crate root.
+//! All other APIs are namespaced (`compile`, `parsing`, `runtime`, `analysis`,
+//! `libraries`, `project`) to prevent root facade growth.
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -33,46 +39,104 @@
 //! let result = session.compile_model("MyPackage.MyModel")?;
 //! ```
 
+mod analysis_api;
+mod analysis_fmt;
+mod analysis_fmt_errors;
+mod analysis_fmt_options;
+mod analysis_lint;
+mod analysis_lint_options;
+mod analysis_lint_rules;
 mod experiment;
 mod library;
 mod library_cache;
 mod merge;
 mod parse;
 mod project_config;
+mod runtime_api;
 mod session;
 
-pub use library::{
-    extract_declared_roots, infer_library_roots, should_load_library_for_source,
-    source_contains_identifier,
-};
-pub use library_cache::{
-    LibraryCacheStatus, ParsedLibrary, parse_library_with_cache, parse_library_with_cache_in,
-    resolve_library_cache_dir,
-};
-pub use merge::{collect_class_type_counts, collect_model_names, merge_stored_definitions};
-pub use parse::{
-    ParseFailure, ParseResult, ParseSuccess, parse_and_merge_parallel, parse_files_parallel,
-    parse_files_parallel_lenient,
-};
-pub use project_config::{
-    EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
-    ProjectConfigFile, ProjectFileMoveHint, ProjectGcCandidate, ProjectGcReport,
-    ProjectResyncRemap, ProjectResyncReport, ProjectSimulationSnapshot, SimulationDefaults,
-    SimulationModelOverride, clear_model_simulation_preset, gc_orphan_model_sidecars,
-    load_last_simulation_result_for_model, load_plot_views_for_model, load_simulation_run,
-    load_simulation_snapshot_for_model, resync_model_sidecars,
-    resync_model_sidecars_with_known_models, resync_model_sidecars_with_move_hints,
-    write_last_simulation_result_for_model, write_model_simulation_preset,
-    write_plot_views_for_model, write_simulation_run,
-};
-pub use session::{
-    BestEffortCompilationReport, CompilationResult, CompilationSummary, CompilePhaseTimingSnapshot,
-    CompilePhaseTimingStat, CompiledLibrary, Document, FailedPhase, ModelFailureDiagnostic,
-    PhaseResult, Session, SessionConfig, compile_phase_timing_stats,
-    reset_compile_phase_timing_stats,
-};
+/// Analysis helpers (formatting and linting facade).
+pub mod analysis {
+    pub use crate::analysis_api::{
+        FMT_CONFIG_FILE_NAMES, FmtConfigError, FormatError, FormatOptions, LINT_CONFIG_FILE_NAMES,
+        LintConfigError, LintLevel, LintMessage, LintOptions, LintRule, PartialFormatOptions,
+        PartialLintOptions, find_fmt_config, find_lint_config, format_source,
+        format_source_or_original, lint_source, load_fmt_config, load_fmt_config_from_dir,
+        load_lint_config, load_lint_config_from_dir,
+    };
+    pub use rumoca_sim::sim_trace_compare::{
+        ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces,
+        count_agreement_bands_default, load_trace_json,
+    };
+}
 
-// Re-export key types for convenience
-pub use rumoca_ir_ast::{ClassTree, ResolvedTree, StoredDefinition, TypedTree};
-pub use rumoca_ir_dae::Dae;
-pub use rumoca_ir_flat::Model;
+/// Library discovery and cache helpers.
+pub mod libraries {
+    pub use crate::library::{
+        extract_declared_roots, infer_library_roots, should_load_library_for_source,
+        source_contains_identifier,
+    };
+    pub use crate::library_cache::{
+        LibraryCacheStatus, ParsedLibrary, parse_library_with_cache, parse_library_with_cache_in,
+        resolve_library_cache_dir,
+    };
+}
+
+/// Parsing and merge helpers.
+pub mod parsing {
+    pub use rumoca_ir_ast as ast;
+    pub use rumoca_ir_core as ir_core;
+
+    pub use rumoca_ir_ast::{
+        Causality, ClassDef, ClassType, ComponentReference, Expression, OpBinary, StoredDefinition,
+        TerminalType, Token, Variability,
+    };
+
+    pub use crate::merge::{
+        collect_class_type_counts, collect_model_names, merge_stored_definitions,
+    };
+    pub use crate::parse::{
+        LenientParseResult, ParseError, ParseFailure, ParseResult, ParseSuccess,
+        parse_and_merge_parallel, parse_files_parallel, parse_files_parallel_lenient,
+        parse_source_to_ast, parse_source_to_ast_with_errors, validate_source_syntax,
+    };
+}
+
+/// Workspace project config and sidecar helpers.
+pub mod project {
+    pub use crate::project_config::{
+        EffectiveSimulationConfig, EffectiveSimulationPreset, LibrariesConfig, ModelIdentityRecord,
+        PlotConfig, PlotDefaults, PlotModelConfig, PlotViewConfig, ProjectConfig,
+        ProjectConfigFile, ProjectFileMoveHint, ProjectGcCandidate, ProjectGcReport, ProjectMeta,
+        ProjectResyncRemap, ProjectResyncReport, ProjectSimulationSnapshot, SimulationConfig,
+        SimulationDefaults, SimulationModelOverride, Viewer3dConfig, clear_model_simulation_preset,
+        gc_orphan_model_sidecars, load_last_simulation_result_for_model, load_plot_views_for_model,
+        load_simulation_run, load_simulation_snapshot_for_model, resync_model_sidecars,
+        resync_model_sidecars_with_known_models, resync_model_sidecars_with_move_hints,
+        write_last_simulation_result_for_model, write_model_simulation_preset,
+        write_plot_views_for_model, write_simulation_run,
+    };
+}
+
+/// Runtime and codegen helpers operating on compiled DAE.
+pub mod runtime {
+    pub use crate::runtime_api::*;
+}
+
+/// Compilation session API and result structures.
+pub mod compile {
+    pub use rumoca_core as core;
+    pub use rumoca_ir_ast::ResolvedTree;
+    pub use rumoca_ir_dae::Dae;
+    pub use rumoca_ir_flat::Model as FlatModel;
+
+    pub use crate::session::{
+        BestEffortCompilationReport, CompilationResult, CompilationSummary,
+        CompilePhaseTimingSnapshot, CompilePhaseTimingStat, CompiledLibrary, Document, FailedPhase,
+        ModelDiagnostics, ModelFailureDiagnostic, PhaseResult, Session, SessionConfig,
+        compile_phase_timing_stats, reset_compile_phase_timing_stats,
+    };
+}
+
+// Root exports intentionally kept minimal to avoid a "god facade".
+pub use compile::{Session, SessionConfig};

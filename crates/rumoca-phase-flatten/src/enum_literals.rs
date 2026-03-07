@@ -237,7 +237,7 @@ mod tests {
         );
         flat.equations.push(rumoca_ir_flat::Equation::new(
             flat::Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Eq(ast::Token::default()),
+                op: flat::OpBinary::Eq(flat::Token::default()),
                 lhs: Box::new(var_ref("y")),
                 rhs: Box::new(var_ref("Init.NoInit")),
             },

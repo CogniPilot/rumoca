@@ -3,7 +3,7 @@
 use crate::equations::{expand_range_indices, substitute_index_in_expression};
 use crate::flat_eval::infer_array_dimensions;
 use crate::qualify::{QualifyOptions, qualify_expression};
-use crate::{Context, variables};
+use crate::{Context, ast_lower, variables};
 use rumoca_core::Span;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
@@ -121,7 +121,7 @@ pub(crate) fn expand_array_comprehension_bindings(
 
         let opts = QualifyOptions::default();
         let qualified = qualify_expression(&expanded_array, &prefix, opts);
-        let flat_binding = flat::Expression::from_ast_with_def_map(&qualified, Some(def_map));
+        let flat_binding = ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map));
 
         flat_var.binding = Some(flat_binding.clone());
 

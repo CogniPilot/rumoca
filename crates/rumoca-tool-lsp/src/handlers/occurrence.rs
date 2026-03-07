@@ -1,6 +1,7 @@
 //! Shared AST walker for finding name occurrences.
 
-use rumoca_ir_ast as ast;
+use rumoca_session::parsing::ast;
+use rumoca_session::parsing::ir_core as rumoca_ir_core;
 use std::ops::ControlFlow::{self, Continue};
 
 use lsp_types::Range;
@@ -12,7 +13,7 @@ type Component = ast::Component;
 type ComponentReference = ast::ComponentReference;
 type Expression = ast::Expression;
 type StoredDefinition = ast::StoredDefinition;
-type Token = ast::Token;
+type Token = rumoca_ir_core::Token;
 
 /// The kind of occurrence found.
 #[derive(Debug, Clone, PartialEq, Eq)]

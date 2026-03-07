@@ -1,6 +1,6 @@
 //! Regression tests for interface-flow balance accounting.
 
-use rumoca::{Session, SessionConfig};
+use rumoca_session::{Session, SessionConfig};
 
 #[test]
 fn test_interface_flow_does_not_double_count_closed_boundary() {
@@ -51,7 +51,7 @@ end BoundaryWithDelta;
         .expect("model should compile");
 
     let dae = &result.dae;
-    let detail = dae.balance_detail();
+    let detail = rumoca_eval_dae::analysis::balance_detail(dae);
     let unknown_scalars = detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
     let boundary_flow_zero_scalars: usize = dae
         .f_x
@@ -81,7 +81,7 @@ end BoundaryWithDelta;
         "effective interface-flow contribution must not double-count flows already closed by explicit flow=0 equations"
     );
     assert_eq!(
-        dae.balance(),
+        rumoca_eval_dae::analysis::balance(dae),
         0,
         "interface-flow terms must not overconstrain already-closed systems"
     );

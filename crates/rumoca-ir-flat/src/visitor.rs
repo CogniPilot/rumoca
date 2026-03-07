@@ -24,8 +24,9 @@
 //! collector.visit_expression(&expr);
 //! ```
 
-use crate::{BuiltinFunction, ComprehensionIndex, Expression, Literal, Subscript, VarName};
-use rumoca_ir_ast as ast;
+use crate::{
+    BuiltinFunction, ComprehensionIndex, Expression, Literal, OpBinary, Subscript, VarName,
+};
 
 /// Trait for visiting Expression trees without modification.
 ///
@@ -109,12 +110,12 @@ pub trait ExpressionVisitor {
     }
 
     /// Visit a binary expression.
-    fn visit_binary(&mut self, op: &ast::OpBinary, lhs: &Expression, rhs: &Expression) {
+    fn visit_binary(&mut self, op: &OpBinary, lhs: &Expression, rhs: &Expression) {
         self.walk_binary(op, lhs, rhs);
     }
 
     /// Walk children of a binary expression.
-    fn walk_binary(&mut self, _op: &ast::OpBinary, lhs: &Expression, rhs: &Expression) {
+    fn walk_binary(&mut self, _op: &OpBinary, lhs: &Expression, rhs: &Expression) {
         self.visit_expression(lhs);
         self.visit_expression(rhs);
     }
@@ -567,9 +568,9 @@ mod tests {
     fn test_state_variable_collector() {
         // der(x) + der(y) - z
         let expr = Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Sub(rumoca_ir_ast::Token::default()),
+            op: OpBinary::Sub(crate::Token::default()),
             lhs: Box::new(Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Add(rumoca_ir_ast::Token::default()),
+                op: OpBinary::Add(crate::Token::default()),
                 lhs: Box::new(make_der("x")),
                 rhs: Box::new(make_der("y")),
             }),
@@ -590,7 +591,7 @@ mod tests {
     fn test_contains_der_checker() {
         // Expression with der(): der(x) + y
         let with_der = Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Add(rumoca_ir_ast::Token::default()),
+            op: OpBinary::Add(crate::Token::default()),
             lhs: Box::new(make_der("x")),
             rhs: Box::new(make_var("y")),
         };
@@ -598,7 +599,7 @@ mod tests {
 
         // Expression without der(): x + y
         let without_der = Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Add(rumoca_ir_ast::Token::default()),
+            op: OpBinary::Add(crate::Token::default()),
             lhs: Box::new(make_var("x")),
             rhs: Box::new(make_var("y")),
         };
@@ -613,10 +614,10 @@ mod tests {
     fn test_var_ref_collector() {
         // x + y * z
         let expr = Expression::Binary {
-            op: rumoca_ir_ast::OpBinary::Add(rumoca_ir_ast::Token::default()),
+            op: OpBinary::Add(crate::Token::default()),
             lhs: Box::new(make_var("x")),
             rhs: Box::new(Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Mul(rumoca_ir_ast::Token::default()),
+                op: OpBinary::Mul(crate::Token::default()),
                 lhs: Box::new(make_var("y")),
                 rhs: Box::new(make_var("z")),
             }),

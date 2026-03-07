@@ -12,12 +12,8 @@ indexmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# For contract tests - Session provides the compilation API
+# Session facade provides parsing/compile/runtime contract APIs
 rumoca-session = { workspace = true }
-# Direct parser access needed for lexical contract tests
-rumoca-phase-parse = { workspace = true }
-# AST types for inspecting parse results
-rumoca-ir-ast = { workspace = true }
 
 [lints]
 workspace = true

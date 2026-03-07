@@ -173,7 +173,7 @@ pub(super) fn generate_flow_equation(
             if is_outside_flow_var_for_scope(var, scope, interface_flow_vars_by_scope) {
                 // Outside connector: negate (sign = -1)
                 flat::Expression::Unary {
-                    op: ast::OpUnary::Minus(ast::Token::default()),
+                    op: flat::OpUnary::Minus(flat::Token::default()),
                     rhs: Box::new(expr),
                 }
             } else {
@@ -282,7 +282,7 @@ pub(super) fn build_prefix_children(flat: &flat::Model) -> FxHashMap<String, Vec
     children
 }
 
-pub fn process_connections(
+pub(crate) fn process_connections(
     flat: &mut flat::Model,
     overlay: &ast::InstanceOverlay,
     strict_validation: bool,

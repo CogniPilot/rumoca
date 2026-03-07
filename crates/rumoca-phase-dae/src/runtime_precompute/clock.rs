@@ -3,7 +3,6 @@ use super::{eval_scalar_const_expr, extract_time_event_instant};
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
-use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 
 type SourceMap<'a> = HashMap<String, Vec<&'a dae::Expression>>;
@@ -299,10 +298,10 @@ fn is_relational_condition(expr: &dae::Expression) -> bool {
     matches!(
         expr,
         dae::Expression::Binary {
-            op: ast::OpBinary::Lt(_)
-                | ast::OpBinary::Le(_)
-                | ast::OpBinary::Gt(_)
-                | ast::OpBinary::Ge(_),
+            op: rumoca_ir_core::OpBinary::Lt(_)
+                | rumoca_ir_core::OpBinary::Le(_)
+                | rumoca_ir_core::OpBinary::Gt(_)
+                | rumoca_ir_core::OpBinary::Ge(_),
             ..
         }
     )
@@ -440,20 +439,20 @@ fn expression_is_event_clock_condition(expr: &dae::Expression, dae_model: &dae::
                 || dae_model.enum_literal_ordinals.contains_key(name.as_str())
         }
         dae::Expression::Unary { op, rhs } => {
-            matches!(op, ast::OpUnary::Not(_))
+            matches!(op, rumoca_ir_core::OpUnary::Not(_))
                 || expression_is_event_clock_condition(rhs, dae_model)
         }
         dae::Expression::Binary { op, lhs, rhs } => {
             matches!(
                 op,
-                ast::OpBinary::And(_)
-                    | ast::OpBinary::Or(_)
-                    | ast::OpBinary::Lt(_)
-                    | ast::OpBinary::Le(_)
-                    | ast::OpBinary::Gt(_)
-                    | ast::OpBinary::Ge(_)
-                    | ast::OpBinary::Eq(_)
-                    | ast::OpBinary::Neq(_)
+                rumoca_ir_core::OpBinary::And(_)
+                    | rumoca_ir_core::OpBinary::Or(_)
+                    | rumoca_ir_core::OpBinary::Lt(_)
+                    | rumoca_ir_core::OpBinary::Le(_)
+                    | rumoca_ir_core::OpBinary::Gt(_)
+                    | rumoca_ir_core::OpBinary::Ge(_)
+                    | rumoca_ir_core::OpBinary::Eq(_)
+                    | rumoca_ir_core::OpBinary::Neq(_)
             ) || expression_is_event_clock_condition(lhs, dae_model)
                 || expression_is_event_clock_condition(rhs, dae_model)
         }
@@ -580,12 +579,12 @@ fn eval_clock_scalar_with_sources(
             visiting,
         ),
         dae::Expression::Unary {
-            op: ast::OpUnary::Minus(_),
+            op: rumoca_ir_core::OpUnary::Minus(_),
             rhs,
         } => eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)
             .map(|value| -value),
         dae::Expression::Binary {
-            op: ast::OpBinary::Add(_),
+            op: rumoca_ir_core::OpBinary::Add(_),
             lhs,
             rhs,
         } => Some(
@@ -593,7 +592,7 @@ fn eval_clock_scalar_with_sources(
                 + eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)?,
         ),
         dae::Expression::Binary {
-            op: ast::OpBinary::Sub(_),
+            op: rumoca_ir_core::OpBinary::Sub(_),
             lhs,
             rhs,
         } => Some(
@@ -601,7 +600,7 @@ fn eval_clock_scalar_with_sources(
                 - eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)?,
         ),
         dae::Expression::Binary {
-            op: ast::OpBinary::Mul(_),
+            op: rumoca_ir_core::OpBinary::Mul(_),
             lhs,
             rhs,
         } => Some(
@@ -609,7 +608,7 @@ fn eval_clock_scalar_with_sources(
                 * eval_clock_scalar_child(rhs, constants, sources, remaining_depth, visiting)?,
         ),
         dae::Expression::Binary {
-            op: ast::OpBinary::Div(_),
+            op: rumoca_ir_core::OpBinary::Div(_),
             lhs,
             rhs,
         } => {
@@ -670,7 +669,7 @@ fn extract_assignment_from_simple_residual<'a>(
     constants: &HashMap<String, f64>,
 ) -> Option<(String, &'a dae::Expression)> {
     let dae::Expression::Binary {
-        op: ast::OpBinary::Sub(_),
+        op: rumoca_ir_core::OpBinary::Sub(_),
         lhs,
         rhs,
     } = expr

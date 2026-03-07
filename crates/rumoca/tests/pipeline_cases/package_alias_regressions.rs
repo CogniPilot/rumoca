@@ -321,9 +321,9 @@ end Top;
     let result = session.compile_model("Top").expect("compile failed");
 
     assert!(
-        result.dae.is_balanced(),
+        rumoca_eval_dae::analysis::is_balanced(&result.dae),
         "for-range should expand with Medium.nXi=2 from redeclared package: {}",
-        result.dae.balance_detail()
+        rumoca_eval_dae::analysis::balance_detail(&result.dae)
     );
 }
 
@@ -376,9 +376,9 @@ end Derived;
 
     let result = session.compile_model("Derived").expect("compile failed");
     assert!(
-        result.dae.is_balanced(),
+        rumoca_eval_dae::analysis::is_balanced(&result.dae),
         "equation with 1:Medium.nXi should not be dropped after extends modifiers: {}",
-        result.dae.balance_detail()
+        rumoca_eval_dae::analysis::balance_detail(&result.dae)
     );
 }
 

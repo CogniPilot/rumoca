@@ -6,10 +6,14 @@
 //! The Flat Model is produced by the flatten phase from the Instance Tree.
 
 pub mod clocks;
+#[cfg(test)]
 mod component_ref_helpers;
 pub mod connections;
+#[cfg(test)]
+mod convert_from_ast;
 mod function;
 pub mod name_utils;
+#[cfg(test)]
 mod subscripts;
 pub mod visitor;
 mod when_equations;
@@ -17,13 +21,93 @@ mod when_equations;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+use convert_from_ast::{
+    convert_array_comprehension_with_def_map, convert_class_modification_with_def_map,
+    convert_comprehension_indices, convert_constructor_arg, convert_expr_vec_with_def_map,
+    convert_function_call, convert_function_call_with_def_map, convert_if_with_def_map,
+    convert_terminal, function_component_ref_from_ast,
+};
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{Span, TypeId};
+use rumoca_core::{DefId, Span, TypeId};
+#[cfg(test)]
 use rumoca_ir_ast as ast;
-pub use rumoca_ir_ast::{ClassType, OpBinary, OpUnary, StateSelect};
 use serde::{Deserialize, Serialize};
 
+pub type Causality = rumoca_ir_core::Causality;
+pub type ClassType = rumoca_ir_core::ClassType;
+pub type OpBinary = rumoca_ir_core::OpBinary;
+pub type OpUnary = rumoca_ir_core::OpUnary;
+pub type StateSelect = rumoca_ir_core::StateSelect;
+pub type Token = rumoca_ir_core::Token;
+pub type Variability = rumoca_ir_core::Variability;
+
+fn token_from_ast(token: &rumoca_ir_core::Token) -> Token {
+    token.clone()
+}
+
+pub fn op_binary_from_ast(op: &rumoca_ir_core::OpBinary) -> OpBinary {
+    match op {
+        rumoca_ir_core::OpBinary::Empty => OpBinary::Empty,
+        rumoca_ir_core::OpBinary::Add(token) => OpBinary::Add(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Sub(token) => OpBinary::Sub(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Mul(token) => OpBinary::Mul(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Div(token) => OpBinary::Div(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Eq(token) => OpBinary::Eq(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Neq(token) => OpBinary::Neq(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Lt(token) => OpBinary::Lt(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Le(token) => OpBinary::Le(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Gt(token) => OpBinary::Gt(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Ge(token) => OpBinary::Ge(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::And(token) => OpBinary::And(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Or(token) => OpBinary::Or(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Exp(token) => OpBinary::Exp(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::ExpElem(token) => OpBinary::ExpElem(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::AddElem(token) => OpBinary::AddElem(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::SubElem(token) => OpBinary::SubElem(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::MulElem(token) => OpBinary::MulElem(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::DivElem(token) => OpBinary::DivElem(token_from_ast(token)),
+        rumoca_ir_core::OpBinary::Assign(token) => OpBinary::Assign(token_from_ast(token)),
+    }
+}
+
+pub fn op_unary_from_ast(op: &rumoca_ir_core::OpUnary) -> OpUnary {
+    match op {
+        rumoca_ir_core::OpUnary::Empty => OpUnary::Empty,
+        rumoca_ir_core::OpUnary::Minus(token) => OpUnary::Minus(token_from_ast(token)),
+        rumoca_ir_core::OpUnary::Plus(token) => OpUnary::Plus(token_from_ast(token)),
+        rumoca_ir_core::OpUnary::DotMinus(token) => OpUnary::DotMinus(token_from_ast(token)),
+        rumoca_ir_core::OpUnary::DotPlus(token) => OpUnary::DotPlus(token_from_ast(token)),
+        rumoca_ir_core::OpUnary::Not(token) => OpUnary::Not(token_from_ast(token)),
+    }
+}
+
+pub fn variability_from_ast(variability: &rumoca_ir_core::Variability) -> Variability {
+    match variability {
+        rumoca_ir_core::Variability::Empty => Variability::Empty,
+        rumoca_ir_core::Variability::Constant(token) => {
+            Variability::Constant(token_from_ast(token))
+        }
+        rumoca_ir_core::Variability::Discrete(token) => {
+            Variability::Discrete(token_from_ast(token))
+        }
+        rumoca_ir_core::Variability::Parameter(token) => {
+            Variability::Parameter(token_from_ast(token))
+        }
+    }
+}
+
+pub fn causality_from_ast(causality: &rumoca_ir_core::Causality) -> Causality {
+    match causality {
+        rumoca_ir_core::Causality::Empty => Causality::Empty,
+        rumoca_ir_core::Causality::Input(token) => Causality::Input(token_from_ast(token)),
+        rumoca_ir_core::Causality::Output(token) => Causality::Output(token_from_ast(token)),
+    }
+}
+
+#[cfg(test)]
 use component_ref_helpers::from_component_ref_with_def_map_impl;
+#[cfg(test)]
 use subscripts::subscript_to_string;
 
 // Re-export connection types
@@ -661,7 +745,7 @@ impl Model {
         self.variables
             .iter()
             .filter_map(|(name, var)| {
-                if matches!(var.variability, ast::Variability::Parameter(_))
+                if matches!(var.variability, Variability::Parameter(_))
                     && var.fixed.unwrap_or(true)
                     && var.binding.is_none()
                 {
@@ -676,7 +760,7 @@ impl Model {
     /// True if any fixed parameter has no binding equation.
     pub fn has_unbound_fixed_parameters(&self) -> bool {
         self.variables.values().any(|var| {
-            matches!(var.variability, ast::Variability::Parameter(_))
+            matches!(var.variability, Variability::Parameter(_))
                 && var.fixed.unwrap_or(true)
                 && var.binding.is_none()
         })
@@ -691,9 +775,9 @@ pub struct Variable {
     /// Reference to the type in the TypeTable.
     pub type_id: TypeId,
     /// Variability (constant, parameter, discrete, continuous).
-    pub variability: ast::Variability,
+    pub variability: Variability,
     /// Causality (input, output, or empty).
-    pub causality: ast::Causality,
+    pub causality: Causality,
     /// Flow prefix.
     pub flow: bool,
     /// Stream prefix.
@@ -797,14 +881,15 @@ pub struct ComponentReference {
     pub parts: Vec<ComponentRefPart>,
     /// Optional resolved definition ID carried from resolve.
     #[serde(default)]
-    pub def_id: Option<ast::DefId>,
+    pub def_id: Option<DefId>,
 }
 
 impl ComponentReference {
     /// Build a flattened component reference from AST.
+    #[cfg(test)]
     pub fn from_ast_with_def_map(
         comp: &ast::ComponentReference,
-        def_map: Option<&IndexMap<ast::DefId, String>>,
+        def_map: Option<&IndexMap<DefId, String>>,
     ) -> Self {
         // Some resolved/local references can carry only def_id with empty path parts.
         // In that case, use def_map as a fallback to recover a concrete name.
@@ -847,6 +932,7 @@ impl ComponentReference {
     }
 
     /// Build a flattened component reference from AST without a def-map.
+    #[cfg(test)]
     pub fn from_ast(comp: &ast::ComponentReference) -> Self {
         Self::from_ast_with_def_map(comp, None)
     }
@@ -998,6 +1084,7 @@ fn collect_algorithm_outputs_from_statement(stmt: &Statement, outputs: &mut Inde
 }
 
 /// Strip surrounding quotes from a string if present.
+#[cfg(test)]
 fn strip_quotes(text: &str) -> String {
     if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
         text[1..text.len() - 1].to_string()
@@ -1006,11 +1093,12 @@ fn strip_quotes(text: &str) -> String {
     }
 }
 
+#[cfg(test)]
 impl ForIndex {
     /// Convert from an AST for-index.
     pub fn from_ast_with_def_map(
         index: &ast::ForIndex,
-        def_map: Option<&IndexMap<ast::DefId, String>>,
+        def_map: Option<&IndexMap<DefId, String>>,
     ) -> Self {
         Self {
             ident: index.ident.text.to_string(),
@@ -1019,11 +1107,12 @@ impl ForIndex {
     }
 }
 
+#[cfg(test)]
 impl StatementBlock {
     /// Convert from an AST statement block.
     pub fn from_ast_with_def_map(
         block: &ast::StatementBlock,
-        def_map: Option<&IndexMap<ast::DefId, String>>,
+        def_map: Option<&IndexMap<DefId, String>>,
     ) -> Self {
         Self {
             cond: Expression::from_ast_with_def_map(&block.cond, def_map),
@@ -1036,11 +1125,12 @@ impl StatementBlock {
     }
 }
 
+#[cfg(test)]
 impl Statement {
     /// Convert from an AST statement.
     pub fn from_ast_with_def_map(
         stmt: &ast::Statement,
-        def_map: Option<&IndexMap<ast::DefId, String>>,
+        def_map: Option<&IndexMap<DefId, String>>,
     ) -> Self {
         match stmt {
             ast::Statement::Empty => Statement::Empty,
@@ -1118,216 +1208,6 @@ impl Statement {
     }
 }
 
-fn function_component_ref_from_ast(
-    comp: &ast::ComponentReference,
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> ComponentReference {
-    if let Some(def_id) = comp.def_id
-        && let Some(path) = def_map.and_then(|map| map.get(&def_id))
-    {
-        return ComponentReference {
-            local: comp.local,
-            parts: path
-                .split('.')
-                .map(|segment| ComponentRefPart {
-                    ident: segment.to_string(),
-                    subs: Vec::new(),
-                })
-                .collect(),
-            def_id: Some(def_id),
-        };
-    }
-
-    ComponentReference::from_ast_with_def_map(comp, None)
-}
-
-/// Convert a function call to either a builtin call or user function call.
-fn convert_function_call(comp: &ast::ComponentReference, args: &[ast::Expression]) -> Expression {
-    convert_function_call_with_def_map(comp, args, None)
-}
-
-/// Convert a function call, using def_map to resolve the fully qualified name if available.
-fn convert_function_call_with_def_map(
-    comp: &ast::ComponentReference,
-    args: &[ast::Expression],
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Expression {
-    // Check if this is a builtin function (single-part name)
-    if comp.parts.len() == 1 {
-        let func_name = &comp.parts[0].ident.text;
-        if let Some(builtin) = BuiltinFunction::from_name(func_name) {
-            return Expression::BuiltinCall {
-                function: builtin,
-                args: args
-                    .iter()
-                    .map(|a| Expression::from_ast_with_def_map(a, def_map))
-                    .collect(),
-            };
-        }
-    }
-
-    // For user-defined functions, use the resolved DefId when available.
-    // Resolve phase canonicalizes function references to their concrete target.
-    let textual_name = comp
-        .parts
-        .iter()
-        .map(|p| p.ident.text.clone())
-        .collect::<Vec<_>>()
-        .join(".");
-
-    let func_name = comp
-        .def_id
-        .and_then(|def_id| def_map.and_then(|map| map.get(&def_id).cloned()))
-        .unwrap_or(textual_name);
-
-    Expression::FunctionCall {
-        name: VarName::new(func_name),
-        args: args
-            .iter()
-            .map(|a| convert_call_arg_with_def_map(a, def_map))
-            .collect(),
-        is_constructor: false,
-    }
-}
-
-/// Convert a terminal token to a literal.
-fn convert_terminal(terminal_type: &ast::TerminalType, token: &ast::Token) -> Literal {
-    match terminal_type {
-        ast::TerminalType::UnsignedReal => Literal::Real(token.text.parse().unwrap_or(0.0)),
-        ast::TerminalType::UnsignedInteger => Literal::Integer(token.text.parse().unwrap_or(0)),
-        ast::TerminalType::Bool => Literal::Boolean(token.text.eq_ignore_ascii_case("true")),
-        ast::TerminalType::String => Literal::String(strip_quotes(&token.text)),
-        ast::TerminalType::End | ast::TerminalType::Empty => Literal::Integer(0),
-    }
-}
-
-fn convert_comprehension_indices(
-    indices: &[ast::ForIndex],
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Vec<ComprehensionIndex> {
-    indices
-        .iter()
-        .map(|index| ComprehensionIndex {
-            name: index.ident.text.to_string(),
-            range: Expression::from_ast_with_def_map(&index.range, def_map),
-        })
-        .collect()
-}
-
-fn convert_expr_vec_with_def_map(
-    exprs: &[ast::Expression],
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Vec<Expression> {
-    exprs
-        .iter()
-        .map(|expr| Expression::from_ast_with_def_map(expr, def_map))
-        .collect()
-}
-
-fn convert_if_with_def_map(
-    branches: &[(ast::Expression, ast::Expression)],
-    else_branch: &ast::Expression,
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Expression {
-    Expression::If {
-        branches: branches
-            .iter()
-            .map(|(cond, then_expr)| {
-                (
-                    Expression::from_ast_with_def_map(cond, def_map),
-                    Expression::from_ast_with_def_map(then_expr, def_map),
-                )
-            })
-            .collect(),
-        else_branch: Box::new(Expression::from_ast_with_def_map(else_branch, def_map)),
-    }
-}
-
-fn convert_array_comprehension_with_def_map(
-    expr: &ast::Expression,
-    indices: &[ast::ForIndex],
-    filter: &Option<std::sync::Arc<ast::Expression>>,
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Expression {
-    Expression::ArrayComprehension {
-        expr: Box::new(Expression::from_ast_with_def_map(expr, def_map)),
-        indices: convert_comprehension_indices(indices, def_map),
-        filter: filter
-            .as_ref()
-            .map(|cond| Box::new(Expression::from_ast_with_def_map(cond, def_map))),
-    }
-}
-
-const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
-
-fn wrap_named_constructor_arg(name: &str, value: Expression) -> Expression {
-    Expression::FunctionCall {
-        name: VarName::new(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{name}")),
-        args: vec![value],
-        // Mark as constructor-like so downstream function preflight does not
-        // treat this internal marker as a normal function call.
-        is_constructor: true,
-    }
-}
-
-fn convert_constructor_arg_with_def_map(
-    expr: &ast::Expression,
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Expression {
-    convert_call_arg_with_def_map(expr, def_map)
-}
-
-fn convert_call_arg_with_def_map(
-    expr: &ast::Expression,
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Expression {
-    match expr {
-        ast::Expression::NamedArgument { name, value } => wrap_named_constructor_arg(
-            &name.text,
-            Expression::from_ast_with_def_map(value, def_map),
-        ),
-        ast::Expression::Modification { target, value } => {
-            let arg_name = target
-                .parts
-                .iter()
-                .map(|p| p.ident.text.to_string())
-                .collect::<Vec<_>>()
-                .join(".");
-            wrap_named_constructor_arg(&arg_name, Expression::from_ast_with_def_map(value, def_map))
-        }
-        _ => Expression::from_ast_with_def_map(expr, def_map),
-    }
-}
-
-fn convert_constructor_arg(expr: &ast::Expression) -> Expression {
-    convert_constructor_arg_with_def_map(expr, None)
-}
-
-fn convert_class_modification_with_def_map(
-    target: &ast::ComponentReference,
-    modifications: &[ast::Expression],
-    def_map: Option<&IndexMap<ast::DefId, String>>,
-) -> Expression {
-    let textual_name = target
-        .parts
-        .iter()
-        .map(|p| p.ident.text.clone())
-        .collect::<Vec<_>>()
-        .join(".");
-    let constructor_name = target
-        .def_id
-        .and_then(|def_id| def_map.and_then(|map| map.get(&def_id).cloned()))
-        .unwrap_or(textual_name);
-    Expression::FunctionCall {
-        name: VarName::new(constructor_name),
-        args: modifications
-            .iter()
-            .map(|expr| convert_constructor_arg_with_def_map(expr, def_map))
-            .collect(),
-        is_constructor: true,
-    }
-}
-
 impl Expression {
     /// Convert an AST Expression to a Expression.
     ///
@@ -1336,18 +1216,19 @@ impl Expression {
     /// - FunctionCall → BuiltinCall or FunctionCall
     /// - Terminal → Literal
     /// - Parenthesized is unwrapped
+    #[cfg(test)]
     pub fn from_ast(expr: &ast::Expression) -> Self {
         match expr {
             ast::Expression::Empty => Expression::Empty,
 
             ast::Expression::Binary { op, lhs, rhs } => Expression::Binary {
-                op: op.clone(),
+                op: op_binary_from_ast(op),
                 lhs: Box::new(Expression::from_ast(lhs)),
                 rhs: Box::new(Expression::from_ast(rhs)),
             },
 
             ast::Expression::Unary { op, rhs } => Expression::Unary {
-                op: op.clone(),
+                op: op_unary_from_ast(op),
                 rhs: Box::new(Expression::from_ast(rhs)),
             },
 
@@ -1446,21 +1327,22 @@ impl Expression {
     ///
     /// This variant uses the def_id from function calls to resolve fully qualified names,
     /// which is essential for correctly looking up user-defined functions that were imported.
+    #[cfg(test)]
     pub fn from_ast_with_def_map(
         expr: &ast::Expression,
-        def_map: Option<&IndexMap<ast::DefId, String>>,
+        def_map: Option<&IndexMap<DefId, String>>,
     ) -> Self {
         match expr {
             ast::Expression::Empty => Expression::Empty,
 
             ast::Expression::Binary { op, lhs, rhs } => Expression::Binary {
-                op: op.clone(),
+                op: op_binary_from_ast(op),
                 lhs: Box::new(Expression::from_ast_with_def_map(lhs, def_map)),
                 rhs: Box::new(Expression::from_ast_with_def_map(rhs, def_map)),
             },
 
             ast::Expression::Unary { op, rhs } => Expression::Unary {
-                op: op.clone(),
+                op: op_unary_from_ast(op),
                 rhs: Box::new(Expression::from_ast_with_def_map(rhs, def_map)),
             },
 
@@ -1545,6 +1427,7 @@ impl Expression {
     ///
     /// MLS §10.1: Array subscripts are part of the variable identity.
     /// For `r[1].p.v`, the name is "r[1].p.v" (subscripts included in name).
+    #[cfg(test)]
     fn from_component_ref(cr: &ast::ComponentReference) -> Self {
         // Build name with subscripts included for each part
         let name_parts: Vec<String> = cr
@@ -1571,9 +1454,10 @@ impl Expression {
         }
     }
 
+    #[cfg(test)]
     fn from_component_ref_with_def_map(
         cr: &ast::ComponentReference,
-        def_map: Option<&IndexMap<ast::DefId, String>>,
+        def_map: Option<&IndexMap<DefId, String>>,
     ) -> Self {
         from_component_ref_with_def_map_impl(cr, def_map)
     }

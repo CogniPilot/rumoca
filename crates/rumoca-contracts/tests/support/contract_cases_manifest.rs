@@ -4,20 +4,20 @@
 //! It replaces heuristic discovery from test function names.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContractCaseKind {
+pub(crate) enum ContractCaseKind {
     Parse,
     Compile,
     Balance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContractCaseOutcome {
+pub(crate) enum ContractCaseOutcome {
     Accept,
     Reject,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContractCase {
+pub(crate) struct ContractCase {
     pub contract_id: &'static str,
     pub case_id: &'static str,
     pub test_file: &'static str,
@@ -25,7 +25,7 @@ pub struct ContractCase {
     pub outcome: ContractCaseOutcome,
 }
 
-pub static IMPLEMENTED_CONTRACT_CASES: &[ContractCase] = &[
+pub(crate) static IMPLEMENTED_CONTRACT_CASES: &[ContractCase] = &[
     ContractCase {
         contract_id: "ALG-001",
         case_id: "alg_001_assignment_in_algorithm",

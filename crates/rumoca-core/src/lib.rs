@@ -810,12 +810,12 @@ macro_rules! error_constructor {
 }
 
 #[cfg(test)]
-mod error_macro_tests {
+pub mod error_macro_tests {
     use super::*;
 
     // Test enum for the macro
     #[derive(Debug, Clone)]
-    enum TestError {
+    pub enum TestError {
         SingleField {
             name: String,
             span: SourceSpan,

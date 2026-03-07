@@ -38,9 +38,16 @@ use std::fs;
 use std::path::Path;
 use std::{collections::HashMap, collections::HashSet};
 
-use rumoca_session::{
-    Dae, FailedPhase, LibraryCacheStatus, Model, PhaseResult, ResolvedTree, Session, SessionConfig,
-    infer_library_roots, parse_library_with_cache, should_load_library_for_source,
+use rumoca_session::compile::{
+    Dae, FailedPhase, FlatModel, PhaseResult, ResolvedTree, Session, SessionConfig,
+};
+use rumoca_session::libraries::{
+    LibraryCacheStatus, infer_library_roots, parse_library_with_cache,
+    should_load_library_for_source,
+};
+use rumoca_session::runtime::{
+    dae_balance, dae_is_balanced, dae_to_template_json, prepare_dae_for_template_codegen,
+    render_dae_template, render_dae_template_with_json,
 };
 use serde_json::{Map, Value};
 
@@ -367,7 +374,7 @@ pub struct CompilationResult {
     /// The DAE representation.
     pub dae: Dae,
     /// The flat model (intermediate).
-    pub flat: Model,
+    pub flat: FlatModel,
     /// The resolved tree (intermediate, before instantiation and typechecking).
     pub resolved: ResolvedTree,
 }
@@ -572,8 +579,7 @@ impl CompilationResult {
     pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
         // Use the codegen module's render function which sets up the context properly
         // with the DAE as `dae` and includes custom filters/functions
-        rumoca_phase_codegen::render_template(&self.dae, template)
-            .map_err(|e| CompilerError::TemplateError(e.to_string()))
+        render_dae_template(&self.dae, template).map_err(CompilerError::TemplateError)
     }
 
     /// Render a structurally prepared DAE using a template string.
@@ -582,13 +588,23 @@ impl CompilationResult {
         template: &str,
         scalarize: bool,
     ) -> Result<String, CompilerError> {
-        let prepared = rumoca_sim_diffsol::prepare_dae_for_template_codegen(&self.dae, scalarize)
-            .map_err(|e| CompilerError::TemplateError(e.to_string()))?;
-        let native_json = rumoca_phase_codegen::dae_template_json(&self.dae);
-        let mut prepared_json = rumoca_phase_codegen::dae_template_json(&prepared);
+        let prepared = prepare_dae_for_template_codegen(&self.dae, scalarize)
+            .map_err(CompilerError::TemplateError)?;
+        let native_json = dae_to_template_json(&self.dae);
+        let mut prepared_json = dae_to_template_json(&prepared);
         let _ = augment_prepared_with_native_observables(&native_json, &mut prepared_json);
-        rumoca_phase_codegen::render_template_with_dae_json(&prepared_json, template)
-            .map_err(|e| CompilerError::TemplateError(e.to_string()))
+        render_dae_template_with_json(&prepared_json, template)
+            .map_err(CompilerError::TemplateError)
+    }
+
+    /// Equation balance (equations - unknowns).
+    pub fn balance(&self) -> i64 {
+        dae_balance(&self.dae)
+    }
+
+    /// Whether equation/unknown balance is exact.
+    pub fn is_balanced(&self) -> bool {
+        dae_is_balanced(&self.dae)
     }
 
     /// Convert the DAE to JSON.
@@ -880,7 +896,7 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 result.dae.f_x.len()
             );
-            eprintln!("[rumoca]   Balance: {}", result.dae.balance());
+            eprintln!("[rumoca]   Balance: {}", dae_balance(&result.dae));
         }
 
         Ok(CompilationResult {

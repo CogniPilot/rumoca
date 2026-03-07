@@ -3,7 +3,7 @@
 %comment "Modelica grammar 3.7-dev for `parol`"
 %line_comment "//"
 %block_comment "/\*" "\*/"
-%t_type rumoca_ir_ast::Token
+%t_type crate::ParserToken
 %nt_type algorithm_section = crate::AlgorithmSection
 %nt_type argument = crate::ModificationArg
 %nt_type argument_list = crate::ExpressionList
@@ -24,7 +24,7 @@
 %nt_type function_argument = rumoca_ir_ast::Expression
 %nt_type function_arguments = crate::ExpressionList
 %nt_type function_arguments_non_first = crate::ExpressionList
-%nt_type ident = rumoca_ir_ast::Token
+%nt_type ident = rumoca_ir_core::Token
 %nt_type logical_expression = rumoca_ir_ast::Expression
 %nt_type logical_factor = rumoca_ir_ast::Expression
 %nt_type logical_term = rumoca_ir_ast::Expression
@@ -37,11 +37,11 @@
 %nt_type statement = rumoca_ir_ast::Statement
 %nt_type statement_block = rumoca_ir_ast::StatementBlock
 %nt_type stored_definition = rumoca_ir_ast::StoredDefinition
-%nt_type string = rumoca_ir_ast::Token
+%nt_type string = rumoca_ir_core::Token
 %nt_type subscript = rumoca_ir_ast::Subscript
 %nt_type term = rumoca_ir_ast::Expression
-%nt_type unsigned_integer = rumoca_ir_ast::Token
-%nt_type unsigned_real = rumoca_ir_ast::Token
+%nt_type unsigned_integer = rumoca_ir_core::Token
+%nt_type unsigned_real = rumoca_ir_core::Token
 
 %%
 

@@ -5,9 +5,9 @@ use super::*;
 // =============================================================================
 
 /// Print unknowns that appear in no equation (diagnostic helper).
-pub(super) fn print_orphaned_unknowns(dae: &rumoca::Dae) {
+pub(super) fn print_orphaned_unknowns(dae: &rumoca_ir_dae::Dae) {
     use std::collections::HashSet as StdHashSet;
-    let mut eq_refs = StdHashSet::<rumoca_ir_flat::VarName>::new();
+    let mut eq_refs = StdHashSet::<rumoca_ir_dae::VarName>::new();
     for eq in &dae.f_x {
         eq.rhs.collect_var_refs(&mut eq_refs);
     }
@@ -151,8 +151,8 @@ pub(super) fn print_dae_equations(dae: &Dae, eq_limit: usize) {
     );
     for (i, eq) in dae.f_x.iter().take(eq_limit).enumerate() {
         let lhs_name = match &eq.rhs {
-            rumoca_ir_flat::Expression::Binary { lhs, .. } => match lhs.as_ref() {
-                rumoca_ir_flat::Expression::VarRef { name, .. } => name.as_str().to_string(),
+            rumoca_ir_dae::Expression::Binary { lhs, .. } => match lhs.as_ref() {
+                rumoca_ir_dae::Expression::VarRef { name, .. } => name.as_str().to_string(),
                 _ => "??".to_string(),
             },
             _ => "??".to_string(),
@@ -190,7 +190,7 @@ pub(super) fn print_dae_equations(dae: &Dae, eq_limit: usize) {
 pub(super) fn print_equations_without_unknowns(dae: &Dae) {
     use std::collections::HashSet;
 
-    let unknowns: HashSet<rumoca_ir_flat::VarName> = dae
+    let unknowns: HashSet<rumoca_ir_dae::VarName> = dae
         .states
         .keys()
         .chain(dae.algebraics.keys())
@@ -230,7 +230,10 @@ pub(super) fn print_compiled_debug_with_limit(
     flat: &rumoca_ir_flat::Model,
     eq_limit: usize,
 ) {
-    println!("Success! {}", dae.balance_detail());
+    println!(
+        "Success! {}",
+        rumoca_eval_dae::analysis::balance_detail(dae)
+    );
     println!(
         "active_discrete_scalar_count = {}",
         active_discrete_scalar_count(flat, dae)
@@ -250,7 +253,7 @@ pub(super) fn print_compiled_debug_with_limit(
 
 pub(super) fn maybe_dump_model_introspection(
     name: &str,
-    result: &rumoca_session::CompilationResult,
+    result: &rumoca_session::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
 ) {
     if !msl_introspect_enabled() || !should_introspect_model(name) {

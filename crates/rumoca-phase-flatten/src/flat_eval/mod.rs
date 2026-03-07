@@ -13,8 +13,7 @@
 use rustc_hash::FxHashMap;
 
 use rumoca_core::{IntegerBinaryOperator, eval_integer_binary, eval_integer_div_builtin};
-use rumoca_eval_const::{EvalContext, Value};
-use rumoca_ir_ast as ast;
+use rumoca_eval_flat::constant::{EvalContext, Value};
 use rumoca_ir_flat as flat;
 
 use crate::path_utils::{parent_scope, parse_path_with_indices};
@@ -113,8 +112,8 @@ pub(crate) fn try_eval_integer_with_context(
         flat::Expression::Unary { op, rhs } => {
             let val = try_eval_integer_with_context(rhs, ctx)?;
             match op {
-                ast::OpUnary::Minus(_) => Some(-val),
-                ast::OpUnary::Plus(_) => Some(val),
+                flat::OpUnary::Minus(_) => Some(-val),
+                flat::OpUnary::Plus(_) => Some(val),
                 _ => None,
             }
         }
@@ -155,12 +154,12 @@ pub(crate) fn try_eval_integer_with_context(
     result
 }
 
-fn eval_ast_integer_binary(op: &ast::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
+fn eval_ast_integer_binary(op: &flat::OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
     let operator = match op {
-        ast::OpBinary::Add(_) => IntegerBinaryOperator::Add,
-        ast::OpBinary::Sub(_) => IntegerBinaryOperator::Sub,
-        ast::OpBinary::Mul(_) => IntegerBinaryOperator::Mul,
-        ast::OpBinary::Div(_) => IntegerBinaryOperator::Div,
+        flat::OpBinary::Add(_) => IntegerBinaryOperator::Add,
+        flat::OpBinary::Sub(_) => IntegerBinaryOperator::Sub,
+        flat::OpBinary::Mul(_) => IntegerBinaryOperator::Mul,
+        flat::OpBinary::Div(_) => IntegerBinaryOperator::Div,
         _ => return None,
     };
     eval_integer_binary(operator, lhs, rhs)
@@ -218,7 +217,7 @@ fn try_eval_flat_expr_boolean_with_context(
             resolve_varref_boolean(&name.to_string(), ctx)
         }
         flat::Expression::Unary {
-            op: ast::OpUnary::Not(_),
+            op: flat::OpUnary::Not(_),
             rhs,
         } => try_eval_flat_expr_boolean_with_context(rhs, ctx).map(|v| !v),
         flat::Expression::Binary { op, lhs, rhs } => {
@@ -242,22 +241,22 @@ fn try_eval_flat_expr_boolean_with_context(
 }
 
 fn try_eval_flat_expr_boolean_binary_with_context(
-    op: &ast::OpBinary,
+    op: &flat::OpBinary,
     lhs: &flat::Expression,
     rhs: &flat::Expression,
     ctx: &ParamEvalContext,
 ) -> Option<bool> {
     match op {
-        ast::OpBinary::And(_) => Some(
+        flat::OpBinary::And(_) => Some(
             try_eval_flat_expr_boolean_with_context(lhs, ctx)?
                 && try_eval_flat_expr_boolean_with_context(rhs, ctx)?,
         ),
-        ast::OpBinary::Or(_) => Some(
+        flat::OpBinary::Or(_) => Some(
             try_eval_flat_expr_boolean_with_context(lhs, ctx)?
                 || try_eval_flat_expr_boolean_with_context(rhs, ctx)?,
         ),
-        ast::OpBinary::Eq(_) | ast::OpBinary::Neq(_) => {
-            let is_eq = matches!(op, ast::OpBinary::Eq(_));
+        flat::OpBinary::Eq(_) | flat::OpBinary::Neq(_) => {
+            let is_eq = matches!(op, flat::OpBinary::Eq(_));
 
             // Try integer comparison first.
             if let (Some(l), Some(r)) = (
@@ -288,16 +287,16 @@ fn try_eval_flat_expr_boolean_binary_with_context(
 
             None
         }
-        ast::OpBinary::Lt(_) => Some(
+        flat::OpBinary::Lt(_) => Some(
             try_eval_integer_with_context(lhs, ctx)? < try_eval_integer_with_context(rhs, ctx)?,
         ),
-        ast::OpBinary::Le(_) => Some(
+        flat::OpBinary::Le(_) => Some(
             try_eval_integer_with_context(lhs, ctx)? <= try_eval_integer_with_context(rhs, ctx)?,
         ),
-        ast::OpBinary::Gt(_) => Some(
+        flat::OpBinary::Gt(_) => Some(
             try_eval_integer_with_context(lhs, ctx)? > try_eval_integer_with_context(rhs, ctx)?,
         ),
-        ast::OpBinary::Ge(_) => Some(
+        flat::OpBinary::Ge(_) => Some(
             try_eval_integer_with_context(lhs, ctx)? >= try_eval_integer_with_context(rhs, ctx)?,
         ),
         _ => None,
@@ -526,8 +525,8 @@ fn try_eval_real_with_context(expr: &flat::Expression, ctx: &ParamEvalContext) -
         flat::Expression::Unary { op, rhs } => {
             let val = try_eval_real_with_context(rhs, ctx)?;
             match op {
-                ast::OpUnary::Minus(_) => Some(-val),
-                ast::OpUnary::Plus(_) => Some(val),
+                flat::OpUnary::Minus(_) => Some(-val),
+                flat::OpUnary::Plus(_) => Some(val),
                 _ => None,
             }
         }
@@ -535,10 +534,10 @@ fn try_eval_real_with_context(expr: &flat::Expression, ctx: &ParamEvalContext) -
             let l = try_eval_real_with_context(lhs, ctx)?;
             let r = try_eval_real_with_context(rhs, ctx)?;
             match op {
-                ast::OpBinary::Add(_) => Some(l + r),
-                ast::OpBinary::Sub(_) => Some(l - r),
-                ast::OpBinary::Mul(_) => Some(l * r),
-                ast::OpBinary::Div(_) => (r != 0.0).then_some(l / r),
+                flat::OpBinary::Add(_) => Some(l + r),
+                flat::OpBinary::Sub(_) => Some(l - r),
+                flat::OpBinary::Mul(_) => Some(l * r),
+                flat::OpBinary::Div(_) => (r != 0.0).then_some(l / r),
                 _ => None,
             }
         }
@@ -1191,11 +1190,11 @@ fn eval_user_func_integer(
     let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
 
-    let result = rumoca_eval_const::function_eval::eval_function(
+    let result = rumoca_eval_flat::constant::function_eval::eval_function(
         func,
         arg_values,
         &eval_ctx,
-        &rumoca_eval_const::function_eval::EvalLimits::default(),
+        &rumoca_eval_flat::constant::function_eval::EvalLimits::default(),
         0,
         rumoca_core::Span::DUMMY,
     );
@@ -1217,11 +1216,11 @@ pub(crate) fn eval_user_func_real(
     let eval_ctx = build_user_func_eval_ctx(ctx);
     let arg_values = eval_func_args(args, ctx)?;
 
-    let result = rumoca_eval_const::function_eval::eval_function(
+    let result = rumoca_eval_flat::constant::function_eval::eval_function(
         func,
         arg_values,
         &eval_ctx,
-        &rumoca_eval_const::function_eval::EvalLimits::default(),
+        &rumoca_eval_flat::constant::function_eval::EvalLimits::default(),
         0,
         rumoca_core::Span::DUMMY,
     );
@@ -1286,8 +1285,8 @@ pub(crate) fn try_eval_flat_expr_real(
         flat::Expression::Unary { op, rhs } => {
             let val = try_eval_flat_expr_real(rhs, known_ints, known_reals)?;
             match op {
-                ast::OpUnary::Minus(_) => Some(-val),
-                ast::OpUnary::Plus(_) => Some(val),
+                flat::OpUnary::Minus(_) => Some(-val),
+                flat::OpUnary::Plus(_) => Some(val),
                 _ => None,
             }
         }
@@ -1295,10 +1294,10 @@ pub(crate) fn try_eval_flat_expr_real(
             let l = try_eval_flat_expr_real(lhs, known_ints, known_reals)?;
             let r = try_eval_flat_expr_real(rhs, known_ints, known_reals)?;
             match op {
-                ast::OpBinary::Add(_) => Some(l + r),
-                ast::OpBinary::Sub(_) => Some(l - r),
-                ast::OpBinary::Mul(_) => Some(l * r),
-                ast::OpBinary::Div(_) => {
+                flat::OpBinary::Add(_) => Some(l + r),
+                flat::OpBinary::Sub(_) => Some(l - r),
+                flat::OpBinary::Mul(_) => Some(l * r),
+                flat::OpBinary::Div(_) => {
                     if r != 0.0 {
                         Some(l / r)
                     } else {
@@ -1515,7 +1514,7 @@ fn eval_bool_inner(expr: &flat::Expression, ctx: &BoolEvalContext) -> Option<boo
             ctx.known_bools.get(&name.to_string()).copied()
         }
         flat::Expression::Unary {
-            op: ast::OpUnary::Not(_),
+            op: flat::OpUnary::Not(_),
             rhs,
         } => eval_bool_inner(rhs, ctx).map(|v| !v),
         flat::Expression::Binary { op, lhs, rhs } => eval_bool_binary(op, lhs, rhs, ctx),
@@ -1529,20 +1528,20 @@ fn eval_bool_inner(expr: &flat::Expression, ctx: &BoolEvalContext) -> Option<boo
 
 /// Evaluate binary boolean operations.
 fn eval_bool_binary(
-    op: &ast::OpBinary,
+    op: &flat::OpBinary,
     lhs: &flat::Expression,
     rhs: &flat::Expression,
     ctx: &BoolEvalContext,
 ) -> Option<bool> {
     match op {
-        ast::OpBinary::And(_) => Some(eval_bool_inner(lhs, ctx)? && eval_bool_inner(rhs, ctx)?),
-        ast::OpBinary::Or(_) => Some(eval_bool_inner(lhs, ctx)? || eval_bool_inner(rhs, ctx)?),
-        ast::OpBinary::Eq(_) => eval_equality(lhs, rhs, ctx, true),
-        ast::OpBinary::Neq(_) => eval_equality(lhs, rhs, ctx, false),
-        ast::OpBinary::Lt(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l < r),
-        ast::OpBinary::Le(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l <= r),
-        ast::OpBinary::Gt(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l > r),
-        ast::OpBinary::Ge(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l >= r),
+        flat::OpBinary::And(_) => Some(eval_bool_inner(lhs, ctx)? && eval_bool_inner(rhs, ctx)?),
+        flat::OpBinary::Or(_) => Some(eval_bool_inner(lhs, ctx)? || eval_bool_inner(rhs, ctx)?),
+        flat::OpBinary::Eq(_) => eval_equality(lhs, rhs, ctx, true),
+        flat::OpBinary::Neq(_) => eval_equality(lhs, rhs, ctx, false),
+        flat::OpBinary::Lt(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l < r),
+        flat::OpBinary::Le(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l <= r),
+        flat::OpBinary::Gt(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l > r),
+        flat::OpBinary::Ge(_) => eval_int_compare(lhs, rhs, ctx.known_ints, |l, r| l >= r),
         _ => None,
     }
 }

@@ -13,9 +13,9 @@ mod tests {
         let parts = crate::path_utils::parse_path_with_indices(path)
             .into_iter()
             .map(|segment| ast::ComponentRefPart {
-                ident: ast::Token {
+                ident: rumoca_ir_core::Token {
                     text: Arc::from(segment),
-                    ..ast::Token::default()
+                    ..rumoca_ir_core::Token::default()
                 },
                 subs: None,
             })
@@ -153,7 +153,7 @@ mod tests {
         let params = vec![(
             "pipe.flowModel.n".to_string(),
             Expression::Binary {
-                op: OpBinary::Sub(rumoca_ir_ast::Token::default()),
+                op: flat::OpBinary::Sub(flat::Token::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: flat::VarName::new("pipe.n"),
                     subscripts: vec![],
@@ -699,10 +699,10 @@ mod tests {
         assert_eq!(infer_expr_dims(&expr, &DimMap::new(), &DimMap::new()), None);
     }
 
-    fn token(name: &str) -> ast::Token {
-        ast::Token {
+    fn token(name: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: Arc::from(name.to_string()),
-            ..ast::Token::default()
+            ..rumoca_ir_core::Token::default()
         }
     }
 

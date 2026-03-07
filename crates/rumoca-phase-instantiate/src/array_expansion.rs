@@ -316,9 +316,9 @@ fn try_eval_array_constructor(
     let func = comp.parts[0].ident.text.as_ref();
     let make_int_lit = |value: i64| ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
-        token: ast::Token {
+        token: rumoca_ir_core::Token {
             text: value.to_string().into(),
-            ..ast::Token::default()
+            ..rumoca_ir_core::Token::default()
         },
     };
 
@@ -519,9 +519,9 @@ fn replace_component_reference_with_integer(
 
     Some(ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
-        token: ast::Token {
+        token: rumoca_ir_core::Token {
             text: Arc::from(value.to_string().as_str()),
-            ..ast::Token::default()
+            ..rumoca_ir_core::Token::default()
         },
     })
 }
@@ -614,9 +614,9 @@ pub(super) fn index_binding_for_element(
             .map(|&i| {
                 ast::Subscript::Expression(ast::Expression::Terminal {
                     terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: ast::Token {
+                    token: rumoca_ir_core::Token {
                         text: i.to_string().into(),
-                        ..ast::Token::default()
+                        ..rumoca_ir_core::Token::default()
                     },
                 })
             })
@@ -769,10 +769,10 @@ mod tests {
     use rumoca_ir_ast as ast;
     use std::sync::Arc;
 
-    fn make_token(text: &str) -> ast::Token {
-        ast::Token {
+    fn make_token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: Arc::from(text),
-            location: ast::Location::default(),
+            location: rumoca_ir_core::Location::default(),
             token_number: 0,
             token_type: 0,
         }

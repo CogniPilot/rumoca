@@ -12,6 +12,7 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use std::collections::HashSet;
 
+use crate::ast_lower;
 use crate::errors::FlattenError;
 use crate::qualify::{self, ImportMap, QualifyOptions};
 
@@ -23,7 +24,7 @@ use crate::qualify::{self, ImportMap, QualifyOptions};
 ///
 /// Per ALG-001: All variable references become globally qualified names.
 /// For example, `x := y + 1` in component `comp` becomes `comp.x := comp.y + 1`.
-pub fn qualify_algorithm(
+pub(crate) fn qualify_algorithm(
     statements: &[ast::Statement],
     prefix: &ast::QualifiedName,
     imports: &ImportMap,
@@ -214,7 +215,7 @@ fn qualify_expr(
 ///
 /// Per SPEC_0020: Track which variables are assigned in algorithms.
 /// This is needed for balance checking and causality analysis.
-pub fn extract_outputs(statements: &[flat::Statement]) -> Vec<flat::VarName> {
+pub(crate) fn extract_outputs(statements: &[flat::Statement]) -> Vec<flat::VarName> {
     rumoca_ir_flat::extract_algorithm_outputs(statements)
 }
 
@@ -226,7 +227,7 @@ pub fn extract_outputs(statements: &[flat::Statement]) -> Vec<flat::VarName> {
 ///
 /// This is the main entry point for algorithm flattening, implementing
 /// Tasks 3.1 (qualification) and 3.2 (outputs).
-pub fn flatten_algorithm_section(
+pub(crate) fn flatten_algorithm_section(
     statements: &[ast::Statement],
     prefix: &ast::QualifiedName,
     span: Span,
@@ -239,7 +240,7 @@ pub fn flatten_algorithm_section(
     let qualified_ast = qualify_algorithm(statements, prefix, imports, initial_locals);
     let qualified_statements: Vec<flat::Statement> = qualified_ast
         .iter()
-        .map(|stmt| flat::Statement::from_ast_with_def_map(stmt, def_map))
+        .map(|stmt| ast_lower::statement_from_ast_with_def_map(stmt, def_map))
         .collect();
 
     // Task 3.2: Extract output variables
@@ -288,7 +289,7 @@ mod tests {
     fn ast_to_flat(stmts: &[ast::Statement]) -> Vec<flat::Statement> {
         stmts
             .iter()
-            .map(|stmt| flat::Statement::from_ast_with_def_map(stmt, None))
+            .map(|stmt| ast_lower::statement_from_ast_with_def_map(stmt, None))
             .collect()
     }
 

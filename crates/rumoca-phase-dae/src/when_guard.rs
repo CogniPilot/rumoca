@@ -1,14 +1,14 @@
 use super::*;
 
-fn is_relational_binary_op(op: &ast::OpBinary) -> bool {
+fn is_relational_binary_op(op: &rumoca_ir_core::OpBinary) -> bool {
     matches!(
         op,
-        ast::OpBinary::Lt(_)
-            | ast::OpBinary::Le(_)
-            | ast::OpBinary::Gt(_)
-            | ast::OpBinary::Ge(_)
-            | ast::OpBinary::Eq(_)
-            | ast::OpBinary::Neq(_)
+        rumoca_ir_core::OpBinary::Lt(_)
+            | rumoca_ir_core::OpBinary::Le(_)
+            | rumoca_ir_core::OpBinary::Gt(_)
+            | rumoca_ir_core::OpBinary::Ge(_)
+            | rumoca_ir_core::OpBinary::Eq(_)
+            | rumoca_ir_core::OpBinary::Neq(_)
     )
 }
 
@@ -68,26 +68,29 @@ fn expression_contains_relational_operator(expr: &Expression) -> bool {
 }
 
 fn discrete_valued_name_exists(dae: &Dae, name: &VarName) -> bool {
-    dae.discrete_valued.contains_key(name)
-        || subscript_fallback_chain(name)
-            .into_iter()
-            .any(|candidate| dae.discrete_valued.contains_key(&candidate))
+    dae.discrete_valued
+        .contains_key(&flat_to_dae_var_name(name))
+        || subscript_fallback_chain(name).into_iter().any(|candidate| {
+            dae.discrete_valued
+                .contains_key(&flat_to_dae_var_name(&candidate))
+        })
 }
 
-fn find_condition_definition_rhs<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Expression> {
+fn find_condition_definition_rhs(dae: &Dae, name: &VarName) -> Option<Expression> {
     dae.f_m
         .iter()
         .chain(dae.f_z.iter())
         .chain(dae.f_x.iter())
         .find_map(|equation| {
             let lhs = equation.lhs.as_ref()?;
-            if lhs != name {
+            let lhs = dae_to_flat_var_name(lhs);
+            if lhs != *name {
                 return None;
             }
             if equation.origin.starts_with("guarded ") {
                 return None;
             }
-            Some(&equation.rhs)
+            Some(dae_to_flat_expression(&equation.rhs))
         })
 }
 
@@ -110,7 +113,7 @@ fn unfold_boolean_alias_condition_expr(
         return None;
     }
     let result = find_condition_definition_rhs(dae, name).and_then(|rhs| {
-        let unfolded = unfold_boolean_aliases_in_expr(dae, rhs, visiting, depth + 1);
+        let unfolded = unfold_boolean_aliases_in_expr(dae, &rhs, visiting, depth + 1);
         if expression_contains_relational_operator(&unfolded) {
             Some(unfolded)
         } else {
@@ -191,7 +194,7 @@ fn unfold_boolean_aliases_expr_vec(
 
 fn unfold_boolean_aliases_binary(
     dae: &Dae,
-    op: &ast::OpBinary,
+    op: &rumoca_ir_core::OpBinary,
     lhs: &Expression,
     rhs: &Expression,
     visiting: &mut HashSet<VarName>,
@@ -216,7 +219,7 @@ fn unfold_boolean_aliases_binary(
 
 fn unfold_boolean_aliases_unary(
     dae: &Dae,
-    op: &ast::OpUnary,
+    op: &rumoca_ir_core::OpUnary,
     rhs: &Expression,
     visiting: &mut HashSet<VarName>,
     depth: usize,

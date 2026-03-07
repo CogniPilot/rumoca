@@ -8,10 +8,9 @@ repository.workspace = true
 
 [dependencies]
 rumoca-core = { workspace = true }
+rumoca-ir-core = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }
-parol_runtime = { workspace = true }
-anyhow = { workspace = true }
 rustc-hash = { workspace = true }
 
 [lints]

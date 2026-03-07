@@ -3,7 +3,6 @@
 use super::ToDaeError;
 use std::collections::{HashMap, HashSet};
 
-use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 
 mod clock;
@@ -240,38 +239,38 @@ fn eval_scalar_named_function(
 }
 
 fn eval_scalar_unary(
-    op: &ast::OpUnary,
+    op: &rumoca_ir_core::OpUnary,
     rhs: &dae::Expression,
     constants: &HashMap<String, f64>,
 ) -> Option<f64> {
     let value = eval_scalar_const_expr(rhs, constants)?;
     match op {
-        ast::OpUnary::Plus(_) | ast::OpUnary::DotPlus(_) => Some(value),
-        ast::OpUnary::Minus(_) | ast::OpUnary::DotMinus(_) => Some(-value),
-        ast::OpUnary::Not(_) => scalar_to_bool(value).map(|flag| bool_to_scalar(!flag)),
+        rumoca_ir_core::OpUnary::Plus(_) | rumoca_ir_core::OpUnary::DotPlus(_) => Some(value),
+        rumoca_ir_core::OpUnary::Minus(_) | rumoca_ir_core::OpUnary::DotMinus(_) => Some(-value),
+        rumoca_ir_core::OpUnary::Not(_) => scalar_to_bool(value).map(|flag| bool_to_scalar(!flag)),
         _ => None,
     }
 }
 
-fn eval_scalar_relation(op: &ast::OpBinary, lhs: f64, rhs: f64) -> Option<f64> {
+fn eval_scalar_relation(op: &rumoca_ir_core::OpBinary, lhs: f64, rhs: f64) -> Option<f64> {
     let flag = match op {
-        ast::OpBinary::Lt(_) => lhs < rhs,
-        ast::OpBinary::Le(_) => lhs <= rhs,
-        ast::OpBinary::Gt(_) => lhs > rhs,
-        ast::OpBinary::Ge(_) => lhs >= rhs,
-        ast::OpBinary::Eq(_) => scalar_almost_eq(lhs, rhs),
-        ast::OpBinary::Neq(_) => !scalar_almost_eq(lhs, rhs),
+        rumoca_ir_core::OpBinary::Lt(_) => lhs < rhs,
+        rumoca_ir_core::OpBinary::Le(_) => lhs <= rhs,
+        rumoca_ir_core::OpBinary::Gt(_) => lhs > rhs,
+        rumoca_ir_core::OpBinary::Ge(_) => lhs >= rhs,
+        rumoca_ir_core::OpBinary::Eq(_) => scalar_almost_eq(lhs, rhs),
+        rumoca_ir_core::OpBinary::Neq(_) => !scalar_almost_eq(lhs, rhs),
         _ => return None,
     };
     Some(bool_to_scalar(flag))
 }
 
-fn eval_scalar_logical(op: &ast::OpBinary, lhs: f64, rhs: f64) -> Option<f64> {
+fn eval_scalar_logical(op: &rumoca_ir_core::OpBinary, lhs: f64, rhs: f64) -> Option<f64> {
     let lhs_flag = scalar_to_bool(lhs)?;
     let rhs_flag = scalar_to_bool(rhs)?;
     let flag = match op {
-        ast::OpBinary::And(_) => lhs_flag && rhs_flag,
-        ast::OpBinary::Or(_) => lhs_flag || rhs_flag,
+        rumoca_ir_core::OpBinary::And(_) => lhs_flag && rhs_flag,
+        rumoca_ir_core::OpBinary::Or(_) => lhs_flag || rhs_flag,
         _ => return None,
     };
     Some(bool_to_scalar(flag))
@@ -282,7 +281,7 @@ fn eval_scalar_division(lhs: f64, rhs: f64) -> Option<f64> {
 }
 
 fn eval_scalar_binary(
-    op: &ast::OpBinary,
+    op: &rumoca_ir_core::OpBinary,
     lhs: &dae::Expression,
     rhs: &dae::Expression,
     constants: &HashMap<String, f64>,
@@ -290,22 +289,30 @@ fn eval_scalar_binary(
     let lhs_value = eval_scalar_const_expr(lhs, constants)?;
     let rhs_value = eval_scalar_const_expr(rhs, constants)?;
     match op {
-        ast::OpBinary::Add(_) | ast::OpBinary::AddElem(_) => Some(lhs_value + rhs_value),
-        ast::OpBinary::Sub(_) | ast::OpBinary::SubElem(_) => Some(lhs_value - rhs_value),
-        ast::OpBinary::Mul(_) | ast::OpBinary::MulElem(_) => Some(lhs_value * rhs_value),
-        ast::OpBinary::Div(_) | ast::OpBinary::DivElem(_) => {
+        rumoca_ir_core::OpBinary::Add(_) | rumoca_ir_core::OpBinary::AddElem(_) => {
+            Some(lhs_value + rhs_value)
+        }
+        rumoca_ir_core::OpBinary::Sub(_) | rumoca_ir_core::OpBinary::SubElem(_) => {
+            Some(lhs_value - rhs_value)
+        }
+        rumoca_ir_core::OpBinary::Mul(_) | rumoca_ir_core::OpBinary::MulElem(_) => {
+            Some(lhs_value * rhs_value)
+        }
+        rumoca_ir_core::OpBinary::Div(_) | rumoca_ir_core::OpBinary::DivElem(_) => {
             eval_scalar_division(lhs_value, rhs_value)
         }
-        ast::OpBinary::Exp(_) | ast::OpBinary::ExpElem(_) => Some(lhs_value.powf(rhs_value)),
-        ast::OpBinary::And(_) | ast::OpBinary::Or(_) => {
+        rumoca_ir_core::OpBinary::Exp(_) | rumoca_ir_core::OpBinary::ExpElem(_) => {
+            Some(lhs_value.powf(rhs_value))
+        }
+        rumoca_ir_core::OpBinary::And(_) | rumoca_ir_core::OpBinary::Or(_) => {
             eval_scalar_logical(op, lhs_value, rhs_value)
         }
-        ast::OpBinary::Lt(_)
-        | ast::OpBinary::Le(_)
-        | ast::OpBinary::Gt(_)
-        | ast::OpBinary::Ge(_)
-        | ast::OpBinary::Eq(_)
-        | ast::OpBinary::Neq(_) => eval_scalar_relation(op, lhs_value, rhs_value),
+        rumoca_ir_core::OpBinary::Lt(_)
+        | rumoca_ir_core::OpBinary::Le(_)
+        | rumoca_ir_core::OpBinary::Gt(_)
+        | rumoca_ir_core::OpBinary::Ge(_)
+        | rumoca_ir_core::OpBinary::Eq(_)
+        | rumoca_ir_core::OpBinary::Neq(_) => eval_scalar_relation(op, lhs_value, rhs_value),
         _ => None,
     }
 }
@@ -391,7 +398,10 @@ fn extract_time_event_instant(
     };
     if !matches!(
         op,
-        ast::OpBinary::Lt(_) | ast::OpBinary::Le(_) | ast::OpBinary::Gt(_) | ast::OpBinary::Ge(_)
+        rumoca_ir_core::OpBinary::Lt(_)
+            | rumoca_ir_core::OpBinary::Le(_)
+            | rumoca_ir_core::OpBinary::Gt(_)
+            | rumoca_ir_core::OpBinary::Ge(_)
     ) {
         return None;
     }
@@ -420,11 +430,11 @@ fn affine_time_coefficients(
         dae::Expression::Literal(dae::Literal::Integer(value)) => Some((0.0, *value as f64)),
         dae::Expression::Literal(dae::Literal::Real(value)) => Some((0.0, *value)),
         dae::Expression::Unary {
-            op: ast::OpUnary::Minus(_),
+            op: rumoca_ir_core::OpUnary::Minus(_),
             rhs,
         } => affine_time_coefficients(rhs, constants).map(|(a, b)| (-a, -b)),
         dae::Expression::Binary {
-            op: ast::OpBinary::Add(_),
+            op: rumoca_ir_core::OpBinary::Add(_),
             lhs,
             rhs,
         } => {
@@ -433,7 +443,7 @@ fn affine_time_coefficients(
             Some((a_lhs + a_rhs, b_lhs + b_rhs))
         }
         dae::Expression::Binary {
-            op: ast::OpBinary::Sub(_),
+            op: rumoca_ir_core::OpBinary::Sub(_),
             lhs,
             rhs,
         } => {
@@ -442,7 +452,7 @@ fn affine_time_coefficients(
             Some((a_lhs - a_rhs, b_lhs - b_rhs))
         }
         dae::Expression::Binary {
-            op: ast::OpBinary::Mul(_),
+            op: rumoca_ir_core::OpBinary::Mul(_),
             lhs,
             rhs,
         } => {
@@ -457,7 +467,7 @@ fn affine_time_coefficients(
             None
         }
         dae::Expression::Binary {
-            op: ast::OpBinary::Div(_),
+            op: rumoca_ir_core::OpBinary::Div(_),
             lhs,
             rhs,
         } => {
@@ -663,7 +673,7 @@ mod tests {
 
     fn time_gt(value: f64) -> dae::Expression {
         dae::Expression::Binary {
-            op: ast::OpBinary::Gt(Default::default()),
+            op: rumoca_ir_core::OpBinary::Gt(Default::default()),
             lhs: Box::new(dae::Expression::VarRef {
                 name: dae::VarName::new("time"),
                 subscripts: vec![],
@@ -737,7 +747,7 @@ mod tests {
     #[test]
     fn test_runtime_precompute_dedupes_and_orders_root_and_time_event_metadata() {
         let root_cond = dae::Expression::Binary {
-            op: ast::OpBinary::Gt(Default::default()),
+            op: rumoca_ir_core::OpBinary::Gt(Default::default()),
             lhs: Box::new(var("x")),
             rhs: Box::new(lit(0.0)),
         };
@@ -747,7 +757,7 @@ mod tests {
             dae::Expression::If {
                 branches: vec![(
                     dae::Expression::Binary {
-                        op: ast::OpBinary::Gt(Default::default()),
+                        op: rumoca_ir_core::OpBinary::Gt(Default::default()),
                         lhs: Box::new(var("x")),
                         rhs: Box::new(lit(0.0)),
                     },
@@ -829,7 +839,7 @@ mod tests {
     #[test]
     fn test_runtime_precompute_skips_time_vs_parameter_synthetic_roots() {
         let cond = dae::Expression::Binary {
-            op: ast::OpBinary::Lt(Default::default()),
+            op: rumoca_ir_core::OpBinary::Lt(Default::default()),
             lhs: Box::new(var("time")),
             rhs: Box::new(var("switch_time")),
         };
@@ -855,7 +865,7 @@ mod tests {
     #[test]
     fn test_runtime_precompute_keeps_time_vs_state_synthetic_roots() {
         let cond = dae::Expression::Binary {
-            op: ast::OpBinary::Lt(Default::default()),
+            op: rumoca_ir_core::OpBinary::Lt(Default::default()),
             lhs: Box::new(var("time")),
             rhs: Box::new(var("x")),
         };
@@ -878,9 +888,9 @@ mod tests {
     #[test]
     fn test_runtime_precompute_extracts_affine_time_event() {
         let cond = dae::Expression::Binary {
-            op: ast::OpBinary::Le(Default::default()),
+            op: rumoca_ir_core::OpBinary::Le(Default::default()),
             lhs: Box::new(dae::Expression::Binary {
-                op: ast::OpBinary::Add(Default::default()),
+                op: rumoca_ir_core::OpBinary::Add(Default::default()),
                 lhs: Box::new(var("time")),
                 rhs: Box::new(var("delay")),
             }),
@@ -912,10 +922,10 @@ mod tests {
         );
         dae_model.f_m.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("c")),
                 rhs: Box::new(dae::Expression::Binary {
-                    op: ast::OpBinary::Gt(Default::default()),
+                    op: rumoca_ir_core::OpBinary::Gt(Default::default()),
                     lhs: Box::new(var("time")),
                     rhs: Box::new(lit(0.5)),
                 }),
@@ -937,7 +947,7 @@ mod tests {
         );
         dae_model.f_z.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(dae::Expression::VarRef {
                     name: dae::VarName::new("s"),
                     subscripts: vec![],
@@ -985,7 +995,7 @@ mod tests {
         // simTime = sample(time) (implicit clock sample form)
         dae_model.f_z.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("simTime")),
                 rhs: Box::new(dae::Expression::BuiltinCall {
                     function: dae::BuiltinFunction::Sample,
@@ -999,7 +1009,7 @@ mod tests {
         // clockY = Clock(0.1) gives the unique static schedule in this model.
         dae_model.f_z.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("clockY")),
                 rhs: Box::new(dae::Expression::FunctionCall {
                     name: dae::VarName::new("Clock"),
@@ -1031,7 +1041,7 @@ mod tests {
         // b = pre(b) is discrete/event logic, not an implicit sample(..) form.
         dae_model.f_m.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("b")),
                 rhs: Box::new(dae::Expression::BuiltinCall {
                     function: dae::BuiltinFunction::Pre,
@@ -1045,7 +1055,7 @@ mod tests {
         // Add one static periodic schedule in the model.
         dae_model.f_z.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("clockY")),
                 rhs: Box::new(dae::Expression::FunctionCall {
                     name: dae::VarName::new("Clock"),
@@ -1070,7 +1080,7 @@ mod tests {
         let mut dae_model = dae::Dae::default();
         dae_model.f_m.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(dae::Expression::VarRef {
                     name: dae::VarName::new("b"),
                     subscripts: vec![],
@@ -1123,7 +1133,7 @@ mod tests {
 
         dae_model.f_x.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("periodicClock.y")),
                 rhs: Box::new(var("periodicClock.c")),
             },
@@ -1132,7 +1142,7 @@ mod tests {
         ));
         dae_model.f_x.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("sample1.clock")),
                 rhs: Box::new(var("periodicClock.y")),
             },
@@ -1141,7 +1151,7 @@ mod tests {
         ));
         dae_model.f_x.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("sample1.y")),
                 rhs: Box::new(dae::Expression::BuiltinCall {
                     function: dae::BuiltinFunction::Sample,
@@ -1153,7 +1163,7 @@ mod tests {
         ));
         dae_model.f_x.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("shiftSample1.u")),
                 rhs: Box::new(var("sample1.y")),
             },
@@ -1292,7 +1302,7 @@ mod tests {
         }
 
         let cond = dae::Expression::Binary {
-            op: ast::OpBinary::Lt(Default::default()),
+            op: rumoca_ir_core::OpBinary::Lt(Default::default()),
             lhs: Box::new(var("resolution")),
             rhs: Box::new(var("threshold")),
         };
@@ -1358,12 +1368,12 @@ mod tests {
             dae::Expression::If {
                 branches: vec![(
                     dae::Expression::Binary {
-                        op: ast::OpBinary::Lt(Default::default()),
+                        op: rumoca_ir_core::OpBinary::Lt(Default::default()),
                         lhs: Box::new(var("periodicClock.resolution")),
                         rhs: Box::new(var("threshold")),
                     },
                     dae::Expression::Binary {
-                        op: ast::OpBinary::Sub(Default::default()),
+                        op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                         lhs: Box::new(var("periodicClock.c")),
                         rhs: Box::new(dae::Expression::FunctionCall {
                             name: dae::VarName::new("subSample"),
@@ -1380,7 +1390,7 @@ mod tests {
                     },
                 )],
                 else_branch: Box::new(dae::Expression::Binary {
-                    op: ast::OpBinary::Sub(Default::default()),
+                    op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                     lhs: Box::new(var("periodicClock.c")),
                     rhs: Box::new(dae::Expression::FunctionCall {
                         name: dae::VarName::new("Clock"),
@@ -1540,7 +1550,7 @@ mod tests {
                         is_constructor: false,
                     },
                     dae::Expression::Unary {
-                        op: ast::OpUnary::Not(Default::default()),
+                        op: rumoca_ir_core::OpUnary::Not(Default::default()),
                         rhs: Box::new(dae::Expression::BuiltinCall {
                             function: dae::BuiltinFunction::Pre,
                             args: vec![var("b")],
@@ -1657,7 +1667,7 @@ mod tests {
         let mut dae_model = dae::Dae::default();
         dae_model.f_z.push(dae::Equation::residual(
             dae::Expression::Binary {
-                op: ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(var("s")),
                 rhs: Box::new(dae::Expression::BuiltinCall {
                     function: dae::BuiltinFunction::Sample,

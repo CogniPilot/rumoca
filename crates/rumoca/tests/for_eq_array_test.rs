@@ -1,5 +1,7 @@
 //! Test for for-equation parameter lookup in array components.
 
+use rumoca_session::compile::{CompiledLibrary, PhaseResult};
+
 /// Test with MSL-style imports and SISO.
 #[test]
 fn test_msl_style_imports() {
@@ -77,14 +79,14 @@ end TestPkg;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = rumoca::CompiledLibrary::from_stored_definition(def).unwrap();
+    let library = CompiledLibrary::from_stored_definition(def).unwrap();
 
     // Test Dimmer
     println!("\n=== Compiling TestPkg.Dimmer ===");
     match library.compile_model_phases("TestPkg.Dimmer") {
-        rumoca::PhaseResult::Success(result) => {
+        PhaseResult::Success(result) => {
             println!("Success!");
-            let balance = result.dae.balance();
+            let balance = rumoca_eval_dae::analysis::balance(&result.dae);
             println!("Balance: {}", balance);
 
             // List all variables
@@ -99,10 +101,10 @@ end TestPkg;
                 println!("  {:?}", eq);
             }
         }
-        rumoca::PhaseResult::NeedsInner { missing_inners } => {
+        PhaseResult::NeedsInner { missing_inners } => {
             println!("Needs inner: {:?}", missing_inners);
         }
-        rumoca::PhaseResult::Failed { phase, error, .. } => {
+        PhaseResult::Failed { phase, error, .. } => {
             println!("Failed at {:?}: {}", phase, error);
         }
     }

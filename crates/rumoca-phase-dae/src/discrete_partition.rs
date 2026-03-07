@@ -6,10 +6,10 @@
 
 use std::collections::HashSet;
 
-use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
+use crate::flat_to_dae_var_name;
 use crate::path_utils::subscript_fallback_chain;
 
 /// Discrete bucket for equations with explicit LHS targets.
@@ -40,7 +40,7 @@ pub(crate) fn residual_lhs_targets(residual: &flat::Expression) -> Vec<flat::Var
     let mut targets = Vec::new();
     match residual {
         flat::Expression::Binary {
-            op: ast::OpBinary::Sub(_),
+            op: rumoca_ir_core::OpBinary::Sub(_),
             lhs,
             rhs,
         } => {
@@ -52,7 +52,7 @@ pub(crate) fn residual_lhs_targets(residual: &flat::Expression) -> Vec<flat::Var
         // branch residuals so discrete partitioning remains spec-aligned.
         flat::Expression::If { .. }
         | flat::Expression::Unary {
-            op: ast::OpUnary::Minus(_),
+            op: rumoca_ir_core::OpUnary::Minus(_),
             ..
         } => {
             let _ = collect_assignment_targets_from_residual_rhs(residual, &mut targets);
@@ -103,7 +103,7 @@ fn collect_assignment_targets_from_residual_rhs(
 ) -> bool {
     match expr {
         flat::Expression::Binary {
-            op: ast::OpBinary::Sub(_),
+            op: rumoca_ir_core::OpBinary::Sub(_),
             lhs,
             ..
         } => {
@@ -112,7 +112,7 @@ fn collect_assignment_targets_from_residual_rhs(
             out.len() > before
         }
         flat::Expression::Unary {
-            op: ast::OpUnary::Minus(_),
+            op: rumoca_ir_core::OpUnary::Minus(_),
             rhs,
         } => collect_assignment_targets_from_residual_rhs(rhs, out),
         flat::Expression::If {
@@ -208,17 +208,21 @@ fn collect_lhs_targets(lhs: &flat::Expression, out: &mut Vec<flat::VarName>) {
 }
 
 fn discrete_bucket_for_name(dae: &dae::Dae, name: &flat::VarName) -> Option<NameDiscreteBucket> {
-    if dae.discrete_valued.contains_key(name)
-        || subscript_fallback_chain(name)
-            .into_iter()
-            .any(|candidate| dae.discrete_valued.contains_key(&candidate))
+    if dae
+        .discrete_valued
+        .contains_key(&flat_to_dae_var_name(name))
+        || subscript_fallback_chain(name).into_iter().any(|candidate| {
+            dae.discrete_valued
+                .contains_key(&flat_to_dae_var_name(&candidate))
+        })
     {
         return Some(NameDiscreteBucket::DiscreteValued);
     }
-    if dae.discrete_reals.contains_key(name)
-        || subscript_fallback_chain(name)
-            .into_iter()
-            .any(|candidate| dae.discrete_reals.contains_key(&candidate))
+    if dae.discrete_reals.contains_key(&flat_to_dae_var_name(name))
+        || subscript_fallback_chain(name).into_iter().any(|candidate| {
+            dae.discrete_reals
+                .contains_key(&flat_to_dae_var_name(&candidate))
+        })
     {
         return Some(NameDiscreteBucket::DiscreteReal);
     }

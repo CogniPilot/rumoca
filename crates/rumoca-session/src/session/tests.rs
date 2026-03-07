@@ -183,28 +183,28 @@ fn test_record_forwarding_rebinds_dependent_record_fields() {
     let mid_rb = result
         .dae
         .parameters
-        .get(&flat::VarName::new("mid.r.b"))
+        .get(&dae::VarName::new("mid.r.b"))
         .expect("mid.r.b must exist in DAE parameters");
     let mid_irb = result
         .dae
         .parameters
-        .get(&flat::VarName::new("mid.i.r.b"))
+        .get(&dae::VarName::new("mid.i.r.b"))
         .expect("mid.i.r.b must exist in DAE parameters");
 
     let mid_rb_start = mid_rb.start.as_ref().expect("mid.r.b start expected");
     let mid_irb_start = mid_irb.start.as_ref().expect("mid.i.r.b start expected");
 
     match mid_rb_start {
-        flat::Expression::Literal(flat::Literal::Integer(5)) => {}
-        flat::Expression::Literal(flat::Literal::Real(v)) if (v - 5.0).abs() <= f64::EPSILON => {}
+        dae::Expression::Literal(dae::Literal::Integer(5)) => {}
+        dae::Expression::Literal(dae::Literal::Real(v)) if (v - 5.0).abs() <= f64::EPSILON => {}
         other => panic!(
             "record forwarding must propagate dependent field b via overridden a, got {:?}",
             other
         ),
     }
     match mid_irb_start {
-        flat::Expression::Literal(flat::Literal::Integer(5)) => {}
-        flat::Expression::Literal(flat::Literal::Real(v)) if (v - 5.0).abs() <= f64::EPSILON => {}
+        dae::Expression::Literal(dae::Literal::Integer(5)) => {}
+        dae::Expression::Literal(dae::Literal::Real(v)) if (v - 5.0).abs() <= f64::EPSILON => {}
         other => panic!(
             "nested forwarding must preserve dependent record field values, got {:?}",
             other

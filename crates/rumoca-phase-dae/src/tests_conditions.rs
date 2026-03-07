@@ -1,6 +1,5 @@
 use super::*;
 use rumoca_core::Span;
-use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use std::collections::HashSet;
 
@@ -15,7 +14,7 @@ fn scalar_var(name: &str) -> flat::Variable {
 fn input_var(name: &str) -> flat::Variable {
     flat::Variable {
         name: VarName::new(name),
-        causality: ast::Causality::Input(ast::Token::default()),
+        causality: rumoca_ir_core::Causality::Input(rumoca_ir_core::Token::default()),
         is_primitive: true,
         ..Default::default()
     }
@@ -34,7 +33,7 @@ fn int(value: i64) -> Expression {
 
 fn gt(lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
-        op: ast::OpBinary::Gt(ast::Token::default()),
+        op: rumoca_ir_core::OpBinary::Gt(rumoca_ir_core::Token::default()),
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
     }
@@ -50,7 +49,7 @@ fn if_expr(condition: Expression, when_true: Expression, when_false: Expression)
 fn residual_eq(lhs: Expression, rhs: Expression, component: &str) -> flat::Equation {
     flat::Equation {
         residual: Expression::Binary {
-            op: ast::OpBinary::Sub(ast::Token::default()),
+            op: rumoca_ir_core::OpBinary::Sub(rumoca_ir_core::Token::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         },

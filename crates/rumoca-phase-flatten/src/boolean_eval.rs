@@ -152,7 +152,7 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
         }
 
         ast::Expression::Unary {
-            op: ast::OpUnary::Not(_),
+            op: rumoca_ir_core::OpUnary::Not(_),
             rhs,
         } => {
             let val = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
@@ -183,45 +183,45 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
 
 /// Evaluate a binary boolean operation.
 pub(crate) fn eval_boolean_binary_op(
-    op: &ast::OpBinary,
+    op: &rumoca_ir_core::OpBinary,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
     ctx: Option<&Context>,
     prefix: &ast::QualifiedName,
 ) -> Option<bool> {
     match op {
-        ast::OpBinary::And(_) => {
+        rumoca_ir_core::OpBinary::And(_) => {
             let l = try_eval_boolean_with_ctx_inner(lhs, ctx, prefix)?;
             let r = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
             Some(l && r)
         }
-        ast::OpBinary::Or(_) => {
+        rumoca_ir_core::OpBinary::Or(_) => {
             let l = try_eval_boolean_with_ctx_inner(lhs, ctx, prefix)?;
             let r = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
             Some(l || r)
         }
-        ast::OpBinary::Lt(_) => {
+        rumoca_ir_core::OpBinary::Lt(_) => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l < r)
         }
-        ast::OpBinary::Le(_) => {
+        rumoca_ir_core::OpBinary::Le(_) => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l <= r)
         }
-        ast::OpBinary::Gt(_) => {
+        rumoca_ir_core::OpBinary::Gt(_) => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l > r)
         }
-        ast::OpBinary::Ge(_) => {
+        rumoca_ir_core::OpBinary::Ge(_) => {
             let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
             let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
             Some(l >= r)
         }
-        ast::OpBinary::Eq(_) => eval_equality(lhs, rhs, ctx, prefix, true),
-        ast::OpBinary::Neq(_) => eval_equality(lhs, rhs, ctx, prefix, false),
+        rumoca_ir_core::OpBinary::Eq(_) => eval_equality(lhs, rhs, ctx, prefix, true),
+        rumoca_ir_core::OpBinary::Neq(_) => eval_equality(lhs, rhs, ctx, prefix, false),
         _ => None,
     }
 }
@@ -340,7 +340,7 @@ fn try_eval_integer_for_comparison(
         }
 
         ast::Expression::Unary {
-            op: ast::OpUnary::Minus(_),
+            op: rumoca_ir_core::OpUnary::Minus(_),
             rhs,
         } => {
             let val = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
@@ -511,10 +511,10 @@ mod tests {
         );
     }
 
-    fn token(text: &str) -> ast::Token {
-        ast::Token {
+    fn token(text: &str) -> rumoca_ir_core::Token {
+        rumoca_ir_core::Token {
             text: Arc::from(text.to_string()),
-            ..ast::Token::default()
+            ..rumoca_ir_core::Token::default()
         }
     }
 
@@ -538,7 +538,7 @@ mod tests {
 
     fn eq_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
         ast::Expression::Binary {
-            op: ast::OpBinary::Eq(token("==")),
+            op: rumoca_ir_core::OpBinary::Eq(token("==")),
             lhs: Arc::new(lhs),
             rhs: Arc::new(rhs),
         }

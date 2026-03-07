@@ -8,12 +8,15 @@
 
 use flate2::read::GzDecoder;
 use rayon::prelude::*;
-use rumoca::{
-    CompiledLibrary, Dae, FailedPhase, PhaseResult, Session, SessionConfig,
-    compile_phase_timing_stats, parse_files_parallel_lenient, reset_compile_phase_timing_stats,
-};
-use rumoca_core::msl_cache_dir_from_manifest;
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
+use rumoca_session::{
+    compile::core::msl_cache_dir_from_manifest,
+    compile::{
+        CompiledLibrary, Dae, FailedPhase, PhaseResult, Session, SessionConfig,
+        compile_phase_timing_stats, reset_compile_phase_timing_stats,
+    },
+    parsing::parse_files_parallel_lenient,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -126,57 +129,75 @@ fn names_match_via_component_prefix(active_name: &str, discrete_name: &str) -> b
         || has_component_boundary_prefix(active_name, discrete_name)
 }
 
-fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<rumoca_ir_flat::VarName>) {
+fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
     for eq in &dae.f_x {
         if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.clone());
+            active.insert(lhs.as_str().to_string());
         }
-        eq.rhs.collect_var_refs(active);
+        let mut refs = HashSet::new();
+        eq.rhs.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
     for eq in &dae.initial_equations {
         if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.clone());
+            active.insert(lhs.as_str().to_string());
         }
-        eq.rhs.collect_var_refs(active);
+        let mut refs = HashSet::new();
+        eq.rhs.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
     for eq in &dae.f_z {
         if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.clone());
+            active.insert(lhs.as_str().to_string());
         }
-        eq.rhs.collect_var_refs(active);
+        let mut refs = HashSet::new();
+        eq.rhs.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
     for eq in &dae.f_m {
         if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.clone());
+            active.insert(lhs.as_str().to_string());
         }
-        eq.rhs.collect_var_refs(active);
+        let mut refs = HashSet::new();
+        eq.rhs.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
     for eq in &dae.f_c {
         if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.clone());
+            active.insert(lhs.as_str().to_string());
         }
-        eq.rhs.collect_var_refs(active);
+        let mut refs = HashSet::new();
+        eq.rhs.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
     for relation in &dae.relation {
-        relation.collect_var_refs(active);
+        let mut refs = HashSet::new();
+        relation.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
 }
 
 fn collect_active_refs_from_flat_when_equation(
     equation: &rumoca_ir_flat::WhenEquation,
-    active: &mut HashSet<rumoca_ir_flat::VarName>,
+    active: &mut HashSet<String>,
 ) {
     match equation {
         rumoca_ir_flat::WhenEquation::Assign { target, value, .. } => {
-            active.insert(target.clone());
-            value.collect_var_refs(active);
+            active.insert(target.as_str().to_string());
+            let mut refs = HashSet::new();
+            value.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
         rumoca_ir_flat::WhenEquation::Reinit { state, value, .. } => {
-            active.insert(state.clone());
-            value.collect_var_refs(active);
+            active.insert(state.as_str().to_string());
+            let mut refs = HashSet::new();
+            value.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
         rumoca_ir_flat::WhenEquation::Assert { condition, .. } => {
-            condition.collect_var_refs(active);
+            let mut refs = HashSet::new();
+            condition.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
         rumoca_ir_flat::WhenEquation::Terminate { .. } => {}
         rumoca_ir_flat::WhenEquation::Conditional {
@@ -185,7 +206,9 @@ fn collect_active_refs_from_flat_when_equation(
             ..
         } => {
             for (condition, equations) in branches {
-                condition.collect_var_refs(active);
+                let mut refs = HashSet::new();
+                condition.collect_var_refs(&mut refs);
+                active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
                 for nested in equations {
                     collect_active_refs_from_flat_when_equation(nested, active);
                 }
@@ -198,19 +221,20 @@ fn collect_active_refs_from_flat_when_equation(
             outputs, function, ..
         } => {
             for out in outputs {
-                active.insert(out.clone());
+                active.insert(out.as_str().to_string());
             }
-            function.collect_var_refs(active);
+            let mut refs = HashSet::new();
+            function.collect_var_refs(&mut refs);
+            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         }
     }
 }
 
-fn collect_active_refs_from_flat(
-    flat: &rumoca_ir_flat::Model,
-    active: &mut HashSet<rumoca_ir_flat::VarName>,
-) {
+fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut HashSet<String>) {
     for when in &flat.when_clauses {
-        when.condition.collect_var_refs(active);
+        let mut refs = HashSet::new();
+        when.condition.collect_var_refs(&mut refs);
+        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
         for equation in &when.equations {
             collect_active_refs_from_flat_when_equation(equation, active);
         }
@@ -218,7 +242,7 @@ fn collect_active_refs_from_flat(
 }
 
 fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 {
-    let mut active: HashSet<rumoca_ir_flat::VarName> = HashSet::new();
+    let mut active: HashSet<String> = HashSet::new();
     collect_active_refs_from_dae(dae, &mut active);
     collect_active_refs_from_flat(flat, &mut active);
 
@@ -226,9 +250,9 @@ fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 
         .discrete_reals
         .iter()
         .filter(|(name, _)| {
-            active.iter().any(|active_name| {
-                names_match_via_component_prefix(active_name.as_str(), name.as_str())
-            })
+            active
+                .iter()
+                .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
         })
         .map(|(_, v)| v.size())
         .sum::<usize>()
@@ -236,9 +260,9 @@ fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 
             .discrete_valued
             .iter()
             .filter(|(name, _)| {
-                active.iter().any(|active_name| {
-                    names_match_via_component_prefix(active_name.as_str(), name.as_str())
-                })
+                active
+                    .iter()
+                    .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
             })
             .map(|(_, v)| v.size())
             .sum::<usize>();

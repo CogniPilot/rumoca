@@ -1167,7 +1167,7 @@ algorithm
 end AlgArrayOutput;
 "#;
         let r = assert_compiles(source, "AlgArrayOutput");
-        let detail = r.dae.balance_detail();
+        let detail = rumoca_eval_dae::analysis::balance_detail(&r.dae);
         assert_eq!(
             detail.algorithm_outputs, 0,
             "Lowered model algorithms should not contribute algorithm_outputs directly"
@@ -1319,7 +1319,6 @@ end TupleArrayCount;
 // =============================================================================
 
 mod tier_10h4_subscripted_record_scalar_count {
-    use rumoca_ir_ast as ast;
     use rumoca_ir_flat as flat;
     use rumoca_phase_dae::to_dae;
     type Equation = flat::Equation;
@@ -1332,7 +1331,7 @@ mod tier_10h4_subscripted_record_scalar_count {
     fn make_residual_eq(lhs: Expression, rhs: Expression) -> Equation {
         Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },
@@ -1386,7 +1385,7 @@ mod tier_10h4_subscripted_record_scalar_count {
             VarName::new("y.re"),
             flat::Variable {
                 name: VarName::new("y.re"),
-                causality: ast::Causality::Output(Default::default()),
+                causality: rumoca_ir_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -1395,7 +1394,7 @@ mod tier_10h4_subscripted_record_scalar_count {
             VarName::new("y.im"),
             flat::Variable {
                 name: VarName::new("y.im"),
-                causality: ast::Causality::Output(Default::default()),
+                causality: rumoca_ir_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -1458,7 +1457,7 @@ mod tier_10h4_subscripted_record_scalar_count {
             dae.f_x.iter().map(|eq| eq.scalar_count).collect::<Vec<_>>()
         );
         assert_eq!(
-            dae.balance(),
+            rumoca_eval_dae::analysis::balance(&dae),
             0,
             "balance should be 0 (4 scalars = 4 unknowns)"
         );
@@ -1472,7 +1471,6 @@ mod tier_10h4_subscripted_record_scalar_count {
 /// (e.g., `sub.u.re = u.re`), they remain inputs — the connection propagates
 /// the external value inward, it does not make the input an unknown.
 mod tier_10h5_connected_toplevel_input {
-    use rumoca_ir_ast as ast;
     use rumoca_ir_flat as flat;
     use rumoca_phase_dae::to_dae;
     type Equation = flat::Equation;
@@ -1484,7 +1482,7 @@ mod tier_10h5_connected_toplevel_input {
     fn make_connection_eq(lhs_name: &str, rhs_name: &str) -> Equation {
         Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new(lhs_name),
                     subscripts: vec![],
@@ -1506,7 +1504,7 @@ mod tier_10h5_connected_toplevel_input {
     fn make_component_eq(lhs_name: &str, rhs_name: &str) -> Equation {
         Equation {
             residual: Expression::Binary {
-                op: rumoca_ir_ast::OpBinary::Sub(Default::default()),
+                op: rumoca_ir_core::OpBinary::Sub(Default::default()),
                 lhs: Box::new(Expression::VarRef {
                     name: VarName::new(lhs_name),
                     subscripts: vec![],
@@ -1544,7 +1542,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("u.re"),
             flat::Variable {
                 name: VarName::new("u.re"),
-                causality: ast::Causality::Input(Default::default()),
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1554,7 +1552,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("u.im"),
             flat::Variable {
                 name: VarName::new("u.im"),
-                causality: ast::Causality::Input(Default::default()),
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1566,7 +1564,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("division.u1.re"),
             flat::Variable {
                 name: VarName::new("division.u1.re"),
-                causality: ast::Causality::Input(Default::default()),
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1576,7 +1574,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("division.u1.im"),
             flat::Variable {
                 name: VarName::new("division.u1.im"),
-                causality: ast::Causality::Input(Default::default()),
+                causality: rumoca_ir_core::Causality::Input(Default::default()),
                 is_primitive: true,
                 connected: true,
                 ..Default::default()
@@ -1588,7 +1586,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("y.re"),
             flat::Variable {
                 name: VarName::new("y.re"),
-                causality: ast::Causality::Output(Default::default()),
+                causality: rumoca_ir_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -1597,7 +1595,7 @@ mod tier_10h5_connected_toplevel_input {
             VarName::new("y.im"),
             flat::Variable {
                 name: VarName::new("y.im"),
-                causality: ast::Causality::Output(Default::default()),
+                causality: rumoca_ir_core::Causality::Output(Default::default()),
                 is_primitive: true,
                 ..Default::default()
             },
@@ -1625,11 +1623,13 @@ mod tier_10h5_connected_toplevel_input {
             dae.algebraics.keys().collect::<Vec<_>>()
         );
         assert!(
-            dae.inputs.contains_key(&VarName::new("u.re")),
+            dae.inputs
+                .contains_key(&rumoca_ir_dae::VarName::new("u.re")),
             "u.re should be input"
         );
         assert!(
-            dae.inputs.contains_key(&VarName::new("u.im")),
+            dae.inputs
+                .contains_key(&rumoca_ir_dae::VarName::new("u.im")),
             "u.im should be input"
         );
 
@@ -1643,7 +1643,11 @@ mod tier_10h5_connected_toplevel_input {
 
         // Balance: 4 equations, 4 unknowns (2 algebraics + 2 outputs)
         assert_eq!(dae.f_x.len(), 4);
-        assert_eq!(dae.balance(), 0, "balance should be 0");
+        assert_eq!(
+            rumoca_eval_dae::analysis::balance(&dae),
+            0,
+            "balance should be 0"
+        );
     }
 }
 
@@ -1791,12 +1795,12 @@ end RecordArrayDimTest;
         let z_re = r
             .dae
             .algebraics
-            .get(&flat::VarName::new("tf.z.re"))
+            .get(&rumoca_ir_dae::VarName::new("tf.z.re"))
             .expect("expected tf.z.re algebraic field");
         let z_im = r
             .dae
             .algebraics
-            .get(&flat::VarName::new("tf.z.im"))
+            .get(&rumoca_ir_dae::VarName::new("tf.z.im"))
             .expect("expected tf.z.im algebraic field");
         assert_eq!(
             z_re.dims,

@@ -10,6 +10,7 @@ use rumoca_core::TypeId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
+use crate::ast_lower;
 use crate::errors::FlattenError;
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
 
@@ -28,7 +29,7 @@ fn parent_prefix(qn: &ast::QualifiedName) -> ast::QualifiedName {
 }
 
 /// Public wrapper for parent_prefix.
-pub fn parent_prefix_pub(qn: &ast::QualifiedName) -> ast::QualifiedName {
+pub(crate) fn parent_prefix_pub(qn: &ast::QualifiedName) -> ast::QualifiedName {
     parent_prefix(qn)
 }
 
@@ -58,7 +59,7 @@ fn modification_binding_prefix(instance: &ast::InstanceData) -> ast::QualifiedNa
 }
 
 /// Public wrapper for modification_binding_prefix.
-pub fn modification_binding_prefix_pub(instance: &ast::InstanceData) -> ast::QualifiedName {
+pub(crate) fn modification_binding_prefix_pub(instance: &ast::InstanceData) -> ast::QualifiedName {
     modification_binding_prefix(instance)
 }
 
@@ -112,7 +113,7 @@ pub(crate) fn flat_output_type_name(instance: &ast::InstanceData, tree: &ast::Cl
 ///
 /// Function calls in bindings use def_id to resolve fully qualified names,
 /// ensuring that imported functions are correctly looked up by name.
-pub fn create_flat_variable(
+pub(crate) fn create_flat_variable(
     instance: &ast::InstanceData,
     tree: &ast::ClassTree,
     imports: &ImportMap,
@@ -133,7 +134,7 @@ pub fn create_flat_variable(
     // instead of being incorrectly prefixed with the component path.
     let qualify_and_convert = |expr: &ast::Expression| {
         let qualified = qualify_expression_with_imports(expr, &prefix, opts, imports);
-        flat::Expression::from_ast_with_def_map(&qualified, Some(def_map))
+        ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
     };
 
     // Convert attributes with qualification
@@ -160,7 +161,7 @@ pub fn create_flat_variable(
             // Modification bindings: qualify using captured modifier source scope.
             let mod_prefix = modification_binding_prefix(instance);
             let qualified = qualify_expression_with_imports(e, &mod_prefix, opts, imports);
-            flat::Expression::from_ast_with_def_map(&qualified, Some(def_map))
+            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
         } else {
             // Declaration bindings: qualify to resolve sibling references
             qualify_and_convert(e)
@@ -171,8 +172,8 @@ pub fn create_flat_variable(
         name,
         type_id: instance.type_id,
         // Type prefixes from component declaration (MLS §4.4.2)
-        variability: instance.variability.clone(),
-        causality: instance.causality.clone(),
+        variability: flat::variability_from_ast(&instance.variability),
+        causality: flat::causality_from_ast(&instance.causality),
         flow: instance.flow,
         stream: instance.stream,
         dims: instance.dims.clone(),
@@ -213,9 +214,9 @@ mod tests {
             parts: path
                 .iter()
                 .map(|segment| ast::ComponentRefPart {
-                    ident: ast::Token {
+                    ident: rumoca_ir_core::Token {
                         text: Arc::from(*segment),
-                        ..ast::Token::default()
+                        ..rumoca_ir_core::Token::default()
                     },
                     subs: None,
                 })
