@@ -12,6 +12,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rumoca-session = { workspace = true }
+rumoca-tool-fmt = { workspace = true }
+rumoca-tool-lint = { workspace = true }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 serde_json = { workspace = true }
 

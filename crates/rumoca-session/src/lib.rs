@@ -39,13 +39,6 @@
 //! let result = session.compile_model("MyPackage.MyModel")?;
 //! ```
 
-mod analysis_api;
-mod analysis_fmt;
-mod analysis_fmt_errors;
-mod analysis_fmt_options;
-mod analysis_lint;
-mod analysis_lint_options;
-mod analysis_lint_rules;
 mod experiment;
 mod library;
 mod library_cache;
@@ -55,15 +48,8 @@ mod project_config;
 mod runtime_api;
 mod session;
 
-/// Analysis helpers (formatting and linting facade).
+/// Analysis helpers.
 pub mod analysis {
-    pub use crate::analysis_api::{
-        FMT_CONFIG_FILE_NAMES, FmtConfigError, FormatError, FormatOptions, LINT_CONFIG_FILE_NAMES,
-        LintConfigError, LintLevel, LintMessage, LintOptions, LintRule, PartialFormatOptions,
-        PartialLintOptions, find_fmt_config, find_lint_config, format_source,
-        format_source_or_original, lint_source, load_fmt_config, load_fmt_config_from_dir,
-        load_lint_config, load_lint_config_from_dir,
-    };
     pub use rumoca_sim::sim_trace_compare::{
         ModelDeviationMetric, SimTrace, SimTraceVariableMeta, compare_model_traces,
         count_agreement_bands_default, load_trace_json,

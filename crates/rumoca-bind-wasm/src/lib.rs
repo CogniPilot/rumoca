@@ -9,7 +9,6 @@ use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
 use wasm_bindgen::prelude::*;
 
 use rumoca_session::Session;
-use rumoca_session::analysis::{LintOptions, lint_source};
 use rumoca_session::compile::CompilationResult;
 use rumoca_session::parsing::{
     Causality, ClassDef, ClassType, ComponentReference, Expression, OpBinary, StoredDefinition,
@@ -19,6 +18,7 @@ use rumoca_session::runtime::{
     SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_for_target,
     render_dae_template_with_json, simulate_dae,
 };
+use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
