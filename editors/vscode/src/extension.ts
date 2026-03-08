@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { execSync, spawn } from 'child_process';
 import {
@@ -11,7 +12,6 @@ import {
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel;
-let notebookController: vscode.NotebookController | undefined;
 
 // ============================================================================
 // Virtual Document Provider for %%modelica blocks in Python cells
@@ -531,18 +531,68 @@ function inferModelNameFromSource(source: string): string | undefined {
     return match ? match[1] : undefined;
 }
 
+function mergeLibraryPathLists(primary: readonly string[], secondary: readonly string[]): string[] {
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of [...primary, ...secondary]) {
+        const trimmed = String(entry).trim();
+        if (!trimmed) {
+            continue;
+        }
+        const key = process.platform === 'win32' ? trimmed.toLowerCase() : trimmed;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        merged.push(trimmed);
+    }
+    return merged;
+}
+
+function parsePathListEnvVar(name: string): string[] {
+    const raw = process.env[name];
+    if (!raw) {
+        return [];
+    }
+    return raw
+        .split(path.delimiter)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+}
+
+function resolveModelicaPathSources(config: vscode.WorkspaceConfiguration): {
+    configuredPaths: string[];
+    environmentPaths: string[];
+    mergedPaths: string[];
+    usedLegacyAlias: boolean;
+} {
+    const configuredPaths = (config.get<string[]>('modelicaPath') ?? [])
+        .map((entry) => String(entry).trim())
+        .filter(Boolean);
+    const envModelicaPath = parsePathListEnvVar('MODELICAPATH');
+    const envLegacyPath = parsePathListEnvVar('MODELICPATH');
+    const environmentPaths = mergeLibraryPathLists(envModelicaPath, envLegacyPath);
+    return {
+        configuredPaths,
+        environmentPaths,
+        mergedPaths: mergeLibraryPathLists(configuredPaths, environmentPaths),
+        usedLegacyAlias: envLegacyPath.length > 0,
+    };
+}
+
 function getSimulationSettings(config: vscode.WorkspaceConfiguration): SimulationSettings {
     const dtRaw = config.get<number>('simulation.dt');
     const dt = Number.isFinite(dtRaw) && (dtRaw ?? 0) > 0 ? dtRaw : undefined;
     const solverRaw = (config.get<string>('simulation.solver') ?? 'auto').toLowerCase();
     const solver = solverRaw === 'bdf' || solverRaw === 'rk-like' ? solverRaw : 'auto';
+    const modelicaPathSources = resolveModelicaPathSources(config);
     return {
         model: (config.get<string>('simulation.model') ?? '').trim(),
         tEnd: config.get<number>('simulation.tEnd') ?? 10.0,
         dt,
         solver,
         outputDir: (config.get<string>('simulation.outputDir') ?? '').trim(),
-        modelicaPath: config.get<string[]>('modelicaPath') ?? [],
+        modelicaPath: modelicaPathSources.mergedPaths,
     };
 }
 
@@ -819,7 +869,7 @@ function normalizeVisualizationViews(raw: unknown): VisualizationView[] {
         const normalizedX = type === '3d' ? undefined : x;
         const normalizedY = type === '3d' ? [] : y;
         let normalizedScatterSeries = type === 'scatter' ? [...scatterSeries] : undefined;
-        if (type === 'scatter' && normalizedScatterSeries.length === 0) {
+        if (type === 'scatter' && (normalizedScatterSeries?.length ?? 0) === 0) {
             const fallbackX = normalizedX && normalizedX.length > 0 ? normalizedX : 'time';
             const fallbackY = normalizedY.length > 0 ? normalizedY[0] : '';
             if (fallbackY.length > 0) {
@@ -4388,9 +4438,9 @@ async function showSimulationSettingsPanel(
         <button id="clearLibs" class="ghost">Clear</button>
       </div>
       <div class="field">
-        <label for="modelicaPath">Library Overrides For This Model</label>
+        <label for="modelicaPath">Additional Library Paths For This Model</label>
         <textarea id="modelicaPath" placeholder="/path/to/ModelicaStandardLibrary">${escapeHtml(current.libraryOverrides.join('\n'))}</textarea>
-        <div class="hint">If set, these override default library paths for this model.</div>
+        <div class="hint">If set, these are appended to the default library paths for this model.</div>
       </div>
     </div>
 
@@ -5373,7 +5423,7 @@ async function executeModelicaCell(
         }
 
         // Create a temporary file for the Modelica code
-        const tmpDir = require('os').tmpdir();
+        const tmpDir = os.tmpdir();
         const tmpFile = path.join(tmpDir, `rumoca_cell_${Date.now()}.mo`);
 
         try {
@@ -5715,10 +5765,17 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     };
 
-    // Get library paths configuration
-    const modelicaPath = config.get<string[]>('modelicaPath') ?? [];
-    if (modelicaPath.length > 0) {
-        debugLog(`[${elapsed()}] Configured modelicaPath: ${modelicaPath.join(', ')}`);
+    // Get library paths from configuration + environment.
+    const modelicaPathSources = resolveModelicaPathSources(config);
+    const modelicaPath = modelicaPathSources.mergedPaths;
+    if (modelicaPathSources.configuredPaths.length > 0) {
+        debugLog(`[${elapsed()}] Configured modelicaPath: ${modelicaPathSources.configuredPaths.join(', ')}`);
+    }
+    if (modelicaPathSources.environmentPaths.length > 0) {
+        debugLog(`[${elapsed()}] Environment MODELICAPATH: ${modelicaPathSources.environmentPaths.join(', ')}`);
+    }
+    if (modelicaPathSources.usedLegacyAlias) {
+        log('Warning: MODELICPATH is deprecated; use MODELICAPATH instead.');
     }
 
     const clientOptions: LanguageClientOptions = {
@@ -5843,7 +5900,7 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.Uri.joinPath(context.extensionUri, 'media', 'vendor'),
     ];
 
-    const resultsWebviewOptions = (): vscode.WebviewOptions => ({
+    const resultsWebviewOptions = (): vscode.WebviewOptions & vscode.WebviewPanelOptions => ({
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: resultsWebviewLocalRoots,
@@ -6173,7 +6230,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // This allows executing Modelica code and getting JSON output for Python interop
     const rumocaExecutable = serverPath.replace('-lsp', '');
     if (fs.existsSync(rumocaExecutable)) {
-        notebookController = createNotebookController(context, rumocaExecutable, modelicaPath, log);
+        createNotebookController(context, rumocaExecutable, modelicaPath, log);
         debugLog(`[${elapsed()}] Notebook controller created using: ${rumocaExecutable}`);
     } else {
         debugLog(`[${elapsed()}] Skipping notebook controller - rumoca executable not found at: ${rumocaExecutable}`);
