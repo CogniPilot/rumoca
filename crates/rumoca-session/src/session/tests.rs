@@ -536,7 +536,7 @@ fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiati
 }
 
 #[test]
-fn test_best_effort_reports_related_failures_when_requested_succeeds() {
+fn test_strict_reachable_reports_related_failures_when_requested_succeeds() {
     let mut session = Session::default();
     let source = r#"
             package P
@@ -561,7 +561,7 @@ fn test_best_effort_reports_related_failures_when_requested_succeeds() {
         "#;
     session.add_document("test.mo", source).unwrap();
 
-    let report = session.compile_model_best_effort("P.Good");
+    let report = session.compile_model_strict_reachable_with_recovery("P.Good");
     assert!(report.requested_succeeded());
 
     let failed_models: std::collections::HashSet<_> = report
@@ -574,7 +574,7 @@ fn test_best_effort_reports_related_failures_when_requested_succeeds() {
 }
 
 #[test]
-fn test_best_effort_keeps_collecting_when_requested_fails() {
+fn test_strict_reachable_keeps_collecting_when_requested_fails() {
     let mut session = Session::default();
     let source = r#"
             package P
@@ -599,7 +599,7 @@ fn test_best_effort_keeps_collecting_when_requested_fails() {
         "#;
     session.add_document("test.mo", source).unwrap();
 
-    let report = session.compile_model_best_effort("P.BadNeedsInner");
+    let report = session.compile_model_strict_reachable_with_recovery("P.BadNeedsInner");
     assert!(!report.requested_succeeded());
 
     let failed_models: std::collections::HashSet<_> = report
@@ -613,7 +613,7 @@ fn test_best_effort_keeps_collecting_when_requested_fails() {
 }
 
 #[test]
-fn test_best_effort_failure_summary_surfaces_resolve_root_cause() {
+fn test_strict_reachable_failure_summary_surfaces_resolve_root_cause() {
     let mut session = Session::default();
     let source = r#"
 model Ball
@@ -623,7 +623,7 @@ end Ball;
 "#;
     session.add_document("Ball.mo", source).unwrap();
 
-    let report = session.compile_model_best_effort("Ball");
+    let report = session.compile_model_strict_reachable_with_recovery("Ball");
     assert!(!report.requested_succeeded());
     let summary = report.failure_summary(8);
     let first_line = summary.lines().next().unwrap_or_default();
@@ -1011,7 +1011,7 @@ fn test_compile_models_parallel_reuses_cache() {
 }
 
 #[test]
-fn test_compile_model_best_effort_reuses_cache() {
+fn test_compile_model_strict_reachable_with_recovery_reuses_cache() {
     let mut session = Session::default();
     session
         .add_document(
@@ -1034,7 +1034,7 @@ fn test_compile_model_best_effort_reuses_cache() {
         )
         .expect("package should parse");
 
-    let first = session.compile_model_best_effort("P.A");
+    let first = session.compile_model_strict_reachable_with_recovery("P.A");
     assert!(first.requested_succeeded(), "P.A should compile");
     session
         .compile_cache
@@ -1044,7 +1044,7 @@ fn test_compile_model_best_effort_reuses_cache() {
         missing_inners: vec!["cached-P.A".to_string()],
     };
 
-    let second = session.compile_model_best_effort("P.A");
+    let second = session.compile_model_strict_reachable_with_recovery("P.A");
     assert!(
         !second.requested_succeeded(),
         "requested result should come from cache override"
@@ -1053,6 +1053,6 @@ fn test_compile_model_best_effort_reuses_cache() {
         Some(PhaseResult::NeedsInner { missing_inners }) => {
             assert_eq!(missing_inners, vec!["cached-P.A".to_string()]);
         }
-        other => panic!("expected cached best-effort requested result, got {other:?}"),
+        other => panic!("expected cached strict requested result, got {other:?}"),
     }
 }
