@@ -173,10 +173,21 @@ impl BestEffortCompilationReport {
             Some(PhaseResult::Failed { phase, error, .. }) => {
                 format!("{} failed in {}: {}", self.requested_model, phase, error)
             }
-            None => format!(
-                "{} could not be compiled because resolve/parse failed",
-                self.requested_model
-            ),
+            None => self
+                .failures
+                .first()
+                .map(|failure| {
+                    format!(
+                        "{} could not be compiled: {}",
+                        self.requested_model, failure.error
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format!(
+                        "{} could not be compiled because resolve/parse failed",
+                        self.requested_model
+                    )
+                }),
         };
 
         let related: Vec<_> = self
