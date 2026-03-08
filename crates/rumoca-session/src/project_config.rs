@@ -402,10 +402,27 @@ impl ProjectConfig {
         if let Some(output_dir) = model_override.output_dir.as_deref() {
             effective.output_dir = output_dir.to_string();
         }
-        let lib_paths =
+        let additional_lib_paths =
             resolve_and_dedup_paths(&self.workspace_root, &model_override.library_overrides);
-        if !lib_paths.is_empty() {
-            effective.library_paths = lib_paths;
+        if !additional_lib_paths.is_empty() {
+            let mut merged = effective.library_paths.clone();
+            let mut seen: HashSet<String> = merged
+                .iter()
+                .map(|path| {
+                    fs::canonicalize(path)
+                        .map(|value| value.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.clone())
+                })
+                .collect();
+            for path in additional_lib_paths {
+                let key = fs::canonicalize(&path)
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.clone());
+                if seen.insert(key) {
+                    merged.push(path);
+                }
+            }
+            effective.library_paths = merged;
         }
     }
 
