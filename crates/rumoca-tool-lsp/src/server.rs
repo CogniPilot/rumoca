@@ -351,6 +351,9 @@ impl ModelicaLanguageServer {
     ) -> std::result::Result<Box<rumoca_session::compile::CompilationResult>, String> {
         let mut session = self.session.write().await;
         let mut report = session.compile_model_strict_reachable_with_recovery(model);
+        if !report.failures.is_empty() {
+            return Err(report.failure_summary(8));
+        }
         match report.requested_result.take() {
             Some(PhaseResult::Success(result)) => Ok(result),
             Some(PhaseResult::NeedsInner { missing_inners }) => Err(format!(

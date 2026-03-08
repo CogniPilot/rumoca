@@ -48,6 +48,10 @@ impl DependencyFingerprintCache {
         self.model_fingerprint_recursive(model_name, &mut visiting)
     }
 
+    pub(crate) fn class_dependencies(&self) -> &IndexMap<String, IndexSet<String>> {
+        &self.class_deps
+    }
+
     fn model_fingerprint_recursive(
         &mut self,
         model_name: &str,
@@ -452,7 +456,14 @@ fn collect_subscript_class_deps(
 fn add_class_dep_from_name(tree: &ast::ClassTree, deps: &mut IndexSet<String>, name: &ast::Name) {
     if let Some(def_id) = name.def_id {
         add_class_dep_by_def_id(tree, deps, def_id);
+        return;
     }
+
+    let qualified = name.to_string();
+    let Some(&def_id) = tree.name_map.get(&qualified) else {
+        return;
+    };
+    add_class_dep_by_def_id(tree, deps, def_id);
 }
 
 fn add_class_dep_by_def_id(tree: &ast::ClassTree, deps: &mut IndexSet<String>, def_id: DefId) {
@@ -506,4 +517,51 @@ fn class_source_fingerprint(
     hasher.update(format!("{:?}", class.class_type).as_bytes());
     hasher.update(class.name.text.as_bytes());
     *hasher.finalize().as_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Session;
+
+    #[test]
+    fn add_class_dep_from_name_uses_qualified_fallback_lookup() {
+        let source = r#"
+            package P
+              model Dep
+                Real y;
+              equation
+                y = 1;
+              end Dep;
+
+              model Root
+                import P.Dep;
+                Real x;
+              equation
+                x = 1;
+              end Root;
+            end P;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("test.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let tree = &session
+            .ensure_resolved()
+            .expect("resolved tree should be cached")
+            .0;
+        let import_name = ast::Name::from_string("P.Dep");
+
+        let mut deps = IndexSet::new();
+        add_class_dep_from_name(tree, &mut deps, &import_name);
+
+        assert!(
+            deps.iter().any(|dep| dep == "P.Dep"),
+            "qualified fallback lookup should resolve import dependency"
+        );
+    }
 }

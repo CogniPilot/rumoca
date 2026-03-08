@@ -284,6 +284,9 @@ fn compile(
         .map_err(|e| PyRuntimeStringError(format!("Parse error: {e}")))?;
 
     let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
+    if !report.failures.is_empty() {
+        return Err(PyRuntimeStringError(report.failure_summary(10)));
+    }
     let result = match report.requested_result.take() {
         Some(PhaseResult::Success(result)) => *result,
         _ => return Err(PyRuntimeStringError(report.failure_summary(10))),

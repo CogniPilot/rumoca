@@ -30,6 +30,8 @@ use crate::merge::{
 
 mod dependency_fingerprint;
 use dependency_fingerprint::{CompileCacheEntry, DependencyFingerprintCache, Fingerprint};
+mod reachability;
+use reachability::ReachabilityPlanner;
 
 static RAYON_INIT: Once = Once::new();
 
@@ -91,8 +93,7 @@ pub struct SessionConfig {
 
 /// Targeted compilation execution mode.
 ///
-/// Phase 1 note: both variants currently use the same behavior path while the
-/// strict reachable planner is being extracted.
+/// Both variants currently use the same behavior path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompilationMode {
     /// Strict compile semantics for target and reachable dependencies.
@@ -176,9 +177,9 @@ pub struct StrictCompileReport {
 }
 
 impl StrictCompileReport {
-    /// Returns true when the requested model compiled successfully.
+    /// Returns true when strict compile succeeded for the requested closure.
     pub fn requested_succeeded(&self) -> bool {
-        matches!(self.requested_result, Some(PhaseResult::Success(_)))
+        matches!(self.requested_result, Some(PhaseResult::Success(_))) && self.failures.is_empty()
     }
 
     /// Build a concise failure summary for user-facing diagnostics.
@@ -748,23 +749,31 @@ impl Session {
     fn build_resolved_with_diagnostics(
         &mut self,
     ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
-        let parse_error_diags: Vec<_> = self
-            .documents
-            .values()
-            .filter_map(|doc| {
-                doc.parse_error.as_ref().map(|err| {
-                    CommonDiagnostic::error(err.clone())
-                        .with_code("syntax-error")
-                        .with_note(format!("document: {}", doc.uri))
-                })
-            })
-            .collect();
-        if !parse_error_diags.is_empty() {
-            let mut diags = CommonDiagnostics::new();
-            for diag in parse_error_diags {
-                diags.emit(diag);
+        self.build_resolved_with_diagnostics_inner(true, true)
+    }
+
+    /// Build the resolved tree for strict target compilation.
+    ///
+    /// Unlike generic build flows, this ignores parse-error diagnostics from
+    /// unrelated documents and resolves from available parsed ASTs. Unresolved
+    /// name errors stay tolerant here so closure planning is not blocked by
+    /// unrelated symbols.
+    fn build_resolved_for_strict_compile_with_diagnostics(
+        &mut self,
+    ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
+        self.build_resolved_with_diagnostics_inner(false, false)
+    }
+
+    fn build_resolved_with_diagnostics_inner(
+        &mut self,
+        include_parse_error_diags: bool,
+        strict_unresolved_in_single_document: bool,
+    ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
+        if include_parse_error_diags {
+            let parse_error_diags = collect_parse_error_diagnostics(&self.documents);
+            if !parse_error_diags.is_empty() {
+                return Err(diagnostics_from_vec(parse_error_diags));
             }
-            return Err(diags);
         }
 
         if let Some(resolved) = &self.resolved {
@@ -789,12 +798,10 @@ impl Session {
         }
 
         let parsed = ast::ParsedTree::new(tree);
+        let unresolved_are_errors = strict_unresolved_in_single_document && !multi_document_session;
         let resolve_options = ResolveOptions {
-            // Single-document diagnostics should be strict so unresolved names
-            // surface at the actual source site. Multi-document/library indexing
-            // stays tolerant to avoid aborting on unrelated library symbols.
-            unresolved_component_refs_are_errors: !multi_document_session,
-            unresolved_function_calls_are_errors: !multi_document_session,
+            unresolved_component_refs_are_errors: unresolved_are_errors,
+            unresolved_function_calls_are_errors: unresolved_are_errors,
         };
         let resolved = resolve_with_options(parsed, resolve_options)?;
 
@@ -969,17 +976,16 @@ impl Session {
     /// Compile the requested model using strict-reachable semantics with
     /// internal recovery to surface additional diagnostics.
     ///
-    /// Phase 1 behavior compiles the requested model strictly while collecting
-    /// related failures within the same package scope.
+    /// This compiles the requested model strictly and collects diagnostics from
+    /// the target's reachable transitive dependency closure.
     pub fn compile_model_strict_reachable_with_recovery(
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        let mut failures = collect_parse_failures(&self.documents);
-
-        let resolved = match self.build_resolved_with_diagnostics() {
+        let resolved = match self.build_resolved_for_strict_compile_with_diagnostics() {
             Ok(tree) => tree,
             Err(diags) => {
+                let mut failures = Vec::new();
                 failures.extend(diags.iter().map(|diag| ModelFailureDiagnostic {
                     model_name: "<resolve>".to_string(),
                     phase: None,
@@ -1002,13 +1008,15 @@ impl Session {
         };
 
         let tree = &resolved.0;
-        let targets = collect_related_model_names(&self.model_names, model_name);
+        let targets = self.strict_compile_targets(tree, model_name);
+        let target_source_files = collect_target_source_files(tree, &targets);
+        let mut failures = collect_parse_failures_for_files(&self.documents, &target_source_files);
         let results = self.compile_models_with_cache(tree, &targets);
         let summary = CompilationSummary::from_results(&results);
 
         let mut requested_result = None;
         for (name, result) in results {
-            if let Some(failure) = phase_result_to_failure(&name, &result) {
+            if let Some(failure) = phase_result_to_failure(tree, &name, &result) {
                 failures.push(failure);
             }
             if name == model_name {
@@ -1025,9 +1033,21 @@ impl Session {
         }
     }
 
+    fn strict_compile_targets(&mut self, tree: &ast::ClassTree, model_name: &str) -> Vec<String> {
+        if self.dependency_fingerprints.is_none() {
+            self.dependency_fingerprints = Some(DependencyFingerprintCache::from_tree(tree));
+        }
+        let dep_cache = self
+            .dependency_fingerprints
+            .as_ref()
+            .expect("dependency cache initialized above");
+        let planner = ReachabilityPlanner::new(dep_cache.class_dependencies(), &self.model_names);
+        planner.compile_targets(model_name)
+    }
+
     /// Compile a model with an explicit compilation mode.
     ///
-    /// Phase 1 note: both strict-reachable variants currently share behavior.
+    /// Both strict-reachable variants currently share behavior.
     pub fn compile_model_with_mode(
         &mut self,
         model_name: &str,
@@ -1349,7 +1369,16 @@ fn diagnostics_to_anyhow(diags: &CommonDiagnostics) -> anyhow::Error {
     }
 }
 
+fn diagnostics_from_vec(diags: Vec<CommonDiagnostic>) -> CommonDiagnostics {
+    let mut out = CommonDiagnostics::new();
+    for diag in diags {
+        out.emit(diag);
+    }
+    out
+}
+
 fn phase_result_to_failure(
+    tree: &ast::ClassTree,
     model_name: &str,
     result: &PhaseResult,
 ) -> Option<ModelFailureDiagnostic> {
@@ -1363,7 +1392,7 @@ fn phase_result_to_failure(
                 "model needs inner declarations: {}",
                 missing_inners.join(", ")
             ),
-            primary_label: None,
+            primary_label: class_primary_label(tree, model_name, "model needs inner declarations"),
         }),
         PhaseResult::Failed {
             phase,
@@ -1374,15 +1403,33 @@ fn phase_result_to_failure(
             phase: Some(*phase),
             error_code: error_code.clone(),
             error: error.clone(),
-            primary_label: None,
+            primary_label: class_primary_label(tree, model_name, "phase failed"),
         }),
     }
 }
 
-fn collect_parse_failures(documents: &IndexMap<String, Document>) -> Vec<ModelFailureDiagnostic> {
+fn class_primary_label(tree: &ast::ClassTree, model_name: &str, message: &str) -> Option<Label> {
+    let class = tree.get_class_by_qualified_name(model_name)?;
+    let source_id = tree.source_map.get_id(&class.location.file_name)?;
+    let start = class.location.start as usize;
+    let end = (class.location.end as usize).max(start.saturating_add(1));
+    Some(Label::primary(Span::from_offsets(source_id, start, end)).with_message(message))
+}
+
+fn collect_parse_failures_for_files(
+    documents: &IndexMap<String, Document>,
+    files: &IndexSet<String>,
+) -> Vec<ModelFailureDiagnostic> {
+    if files.is_empty() {
+        return Vec::new();
+    }
     documents
         .values()
         .filter_map(|doc| {
+            let is_target_file = files.iter().any(|file| same_path(file, &doc.uri));
+            if !is_target_file {
+                return None;
+            }
             doc.parse_error.as_ref().map(|err| ModelFailureDiagnostic {
                 model_name: doc.uri.clone(),
                 phase: None,
@@ -1394,29 +1441,32 @@ fn collect_parse_failures(documents: &IndexMap<String, Document>) -> Vec<ModelFa
         .collect()
 }
 
-fn collect_related_model_names(model_names: &[String], requested_model: &str) -> Vec<String> {
-    let mut targets = IndexSet::new();
-    targets.insert(requested_model.to_string());
-
-    let requested_prefix = format!("{requested_model}.");
-    let parent = requested_model.rsplit_once('.').map(|(prefix, _)| prefix);
-    let parent_prefix = parent.map(|prefix| format!("{prefix}."));
-
-    for name in model_names {
-        let same_or_nested_requested =
-            name == requested_model || name.starts_with(&requested_prefix);
-        let parent_related = match (parent, parent_prefix.as_deref()) {
-            (Some(parent), Some(parent_prefix)) => {
-                name == parent || name.starts_with(parent_prefix)
-            }
-            _ => false,
+fn collect_parse_error_diagnostics(
+    documents: &IndexMap<String, Document>,
+) -> Vec<CommonDiagnostic> {
+    let mut out = Vec::new();
+    for doc in documents.values() {
+        let Some(err) = doc.parse_error.as_ref() else {
+            continue;
         };
-        if same_or_nested_requested || parent_related {
-            targets.insert(name.clone());
-        }
+        out.push(
+            CommonDiagnostic::error(err.clone())
+                .with_code("syntax-error")
+                .with_note(format!("document: {}", doc.uri)),
+        );
     }
+    out
+}
 
-    targets.into_iter().collect()
+fn collect_target_source_files(tree: &ast::ClassTree, targets: &[String]) -> IndexSet<String> {
+    let mut files = IndexSet::new();
+    for target in targets {
+        let Some(class) = tree.get_class_by_qualified_name(target) else {
+            continue;
+        };
+        files.insert(class.location.file_name.clone());
+    }
+    files
 }
 
 fn same_path(left: &str, right: &str) -> bool {
