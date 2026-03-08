@@ -1,6 +1,5 @@
 //! Diagnostics handler for Modelica files.
 
-use crate::helpers::location_to_range;
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use rumoca_session::Session;
 use rumoca_session::compile::core as rumoca_core;
@@ -11,7 +10,7 @@ use rumoca_session::parsing::ast;
 use rumoca_session::parsing::{ParseError, parse_source_to_ast_with_errors};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 const MAX_PARSE_DIAGNOSTICS: usize = 8;
 
@@ -52,16 +51,13 @@ pub fn compute_diagnostics(
 
     // Compilation diagnostics (session available).
     session.update_document(file_name, source);
-    let fallback_ranges = collect_class_ranges(&ast);
     let mut seen_keys = HashSet::new();
     for model_name in collect_diagnostic_target_names(&ast) {
         let model_diags = session.compile_model_diagnostics(&model_name);
         let source_map = model_diags.source_map.as_ref();
-        let fallback_range = fallback_ranges.get(&model_name).cloned();
         let is_global_resolution_failure = source_map.is_none();
         for diag in model_diags.diagnostics {
-            let Some(lsp_diag) =
-                common_diagnostic_to_lsp(&diag, source, file_name, source_map, fallback_range)
+            let Some(lsp_diag) = common_diagnostic_to_lsp(&diag, source, file_name, source_map)
             else {
                 continue;
             };
@@ -260,85 +256,14 @@ fn is_builtin_operator(name: &str) -> bool {
         || name.contains("Connections.rooted")
 }
 
-fn collect_class_ranges(ast: &ast::StoredDefinition) -> HashMap<String, Range> {
-    let mut ranges = HashMap::new();
-    for (name, class) in &ast.classes {
-        collect_class_ranges_for_class("", name, class, &mut ranges);
-    }
-    ranges
-}
-
-fn collect_class_ranges_for_class(
-    prefix: &str,
-    name: &str,
-    class: &ast::ClassDef,
-    ranges: &mut HashMap<String, Range>,
-) {
-    let qualified = if prefix.is_empty() {
-        name.to_string()
-    } else {
-        format!("{prefix}.{name}")
-    };
-    ranges.insert(qualified.clone(), class_name_range(class));
-    for (nested_name, nested_class) in &class.classes {
-        collect_class_ranges_for_class(&qualified, nested_name, nested_class, ranges);
-    }
-}
-
-fn class_name_range(class: &ast::ClassDef) -> Range {
-    let name_loc = &class.name.location;
-    if name_loc.start_line > 0
-        && name_loc.end_line > 0
-        && name_loc.start_column > 0
-        && name_loc.end_column > 0
-    {
-        location_to_range(name_loc)
-    } else {
-        location_to_range(&class.location)
-    }
-}
-
 fn common_diagnostic_to_lsp(
     diag: &CommonDiagnostic,
     source: &str,
     file_name: &str,
     source_map: Option<&SourceMap>,
-    fallback_range: Option<Range>,
 ) -> Option<Diagnostic> {
-    let heuristic_range = heuristic_range_from_message(diag, source);
-    let (range, precise_range) = if diag.labels.is_empty() {
-        if let Some(heuristic_range) = heuristic_range {
-            (heuristic_range, true)
-        } else {
-            (
-                fallback_range.unwrap_or(Range {
-                    start: Position::new(0, 0),
-                    end: Position::new(0, 1),
-                }),
-                false,
-            )
-        }
-    } else if let Some(range) = preferred_range(diag, source, file_name, source_map) {
-        if should_prefer_heuristic_over_label(diag, &range) {
-            if let Some(heuristic_range) = heuristic_range {
-                (heuristic_range, true)
-            } else {
-                (range, true)
-            }
-        } else {
-            (range, true)
-        }
-    } else if let Some(heuristic_range) = heuristic_range {
-        (heuristic_range, true)
-    } else {
-        (
-            fallback_range.unwrap_or(Range {
-                start: Position::new(0, 0),
-                end: Position::new(0, 1),
-            }),
-            false,
-        )
-    };
+    let range = preferred_range(diag, source, file_name, source_map)?;
+    let precise_range = true;
     let severity = match diag.severity {
         CommonSeverity::Error => DiagnosticSeverity::ERROR,
         CommonSeverity::Warning => DiagnosticSeverity::WARNING,
@@ -365,52 +290,23 @@ fn preferred_range(
     source_map: Option<&SourceMap>,
 ) -> Option<Range> {
     if diag.labels.is_empty() {
-        return None;
+        panic!(
+            "diagnostic must include at least one label: code={:?} message={}",
+            diag.code, diag.message
+        );
     }
 
     // Prefer labels that belong to the current file.
-    let mut labels_in_file = diag.labels.iter().filter(|label| {
-        label_in_file(label, file_name, source_map) && label_offset_in_source(label, source)
-    });
-    if let Some(primary) = labels_in_file.find(|label| label.primary) {
-        return Some(span_to_range(
-            source,
-            primary.span.start.0,
-            primary.span.end.0,
-        ));
-    }
-
-    let mut labels_in_file = diag.labels.iter().filter(|label| {
-        label_in_file(label, file_name, source_map) && label_offset_in_source(label, source)
-    });
-    if let Some(first) = labels_in_file.next() {
-        return Some(span_to_range(source, first.span.start.0, first.span.end.0));
-    }
-
-    // If source-id mapping is ambiguous (e.g., synthetic SourceId(0)), still
-    // use labels that point to a plausible offset in the current source.
-    if let Some(primary) = diag
+    let mut labels_in_file = diag
         .labels
         .iter()
-        .filter(|label| label_offset_in_source(label, source))
-        .find(|label| label.primary)
-    {
-        return Some(span_to_range(
-            source,
-            primary.span.start.0,
-            primary.span.end.0,
-        ));
-    }
-
-    if let Some(first) = diag
-        .labels
-        .iter()
-        .find(|label| label_offset_in_source(label, source))
-    {
-        return Some(span_to_range(source, first.span.start.0, first.span.end.0));
-    }
-
-    None
+        .filter(|label| label_in_file(label, file_name, source_map));
+    let label = labels_in_file.find(|label| label.primary).or_else(|| {
+        diag.labels
+            .iter()
+            .find(|label| label_in_file(label, file_name, source_map))
+    })?;
+    Some(strict_span_to_range(diag, source, label))
 }
 
 fn label_in_file(
@@ -427,10 +323,6 @@ fn label_in_file(
         .unwrap_or(false)
 }
 
-fn label_offset_in_source(label: &rumoca_core::Label, source: &str) -> bool {
-    label.span.start.0 <= source.len()
-}
-
 fn span_to_range(source: &str, start_byte: usize, end_byte: usize) -> Range {
     let start = byte_offset_to_position(source, start_byte);
     let mut end = byte_offset_to_position(source, end_byte);
@@ -438,6 +330,26 @@ fn span_to_range(source: &str, start_byte: usize, end_byte: usize) -> Range {
         end = Position::new(start.line, start.character.saturating_add(1));
     }
     Range { start, end }
+}
+
+fn strict_span_to_range(
+    diag: &CommonDiagnostic,
+    source: &str,
+    label: &rumoca_core::Label,
+) -> Range {
+    let start = label.span.start.0;
+    let end = label.span.end.0;
+    if end <= start || end > source.len() {
+        panic!(
+            "diagnostic label span is invalid: code={:?} message={} start={} end={} source_len={}",
+            diag.code,
+            diag.message,
+            start,
+            end,
+            source.len()
+        );
+    }
+    span_to_range(source, start, end)
 }
 
 fn is_placeholder_parse_span(start_byte: usize, end_byte: usize) -> bool {
@@ -492,116 +404,6 @@ fn truncate_message(message: &str, max_len: usize) -> String {
     }
     out.push_str("...");
     out
-}
-
-fn heuristic_range_from_message(diag: &CommonDiagnostic, source: &str) -> Option<Range> {
-    if !is_unresolved_diagnostic(diag) {
-        return None;
-    }
-    if is_unresolved_import_diagnostic(diag) {
-        return None;
-    }
-
-    let ident = extract_quoted_identifier(&diag.message)?;
-    let (start, end) = find_best_identifier_occurrence(source, &ident)?;
-    Some(span_to_range(source, start, end))
-}
-
-fn should_prefer_heuristic_over_label(diag: &CommonDiagnostic, label_range: &Range) -> bool {
-    is_unresolved_diagnostic(diag)
-        && !is_unresolved_import_diagnostic(diag)
-        && range_is_top_left(label_range)
-}
-
-fn is_unresolved_diagnostic(diag: &CommonDiagnostic) -> bool {
-    let code = diag.code.as_deref().unwrap_or_default();
-    let lowered = diag.message.to_ascii_lowercase();
-    code == "ER002"
-        || lowered.contains("unresolved component reference")
-        || lowered.contains("unresolved function")
-}
-
-fn is_unresolved_import_diagnostic(diag: &CommonDiagnostic) -> bool {
-    diag.message
-        .to_ascii_lowercase()
-        .contains("unresolved import")
-}
-
-fn extract_quoted_identifier(message: &str) -> Option<String> {
-    extract_between_delimiter(message, '\'').or_else(|| extract_between_delimiter(message, '`'))
-}
-
-fn extract_between_delimiter(text: &str, delimiter: char) -> Option<String> {
-    let start = text.find(delimiter)?;
-    let rest = &text[start + delimiter.len_utf8()..];
-    let end_rel = rest.find(delimiter)?;
-    let candidate = rest[..end_rel].trim();
-    if candidate.is_empty() {
-        None
-    } else {
-        Some(candidate.to_string())
-    }
-}
-
-fn find_best_identifier_occurrence(source: &str, ident: &str) -> Option<(usize, usize)> {
-    let mut matches: Vec<(usize, usize)> = source
-        .match_indices(ident)
-        .filter_map(|(start, _)| {
-            let end = start + ident.len();
-            is_identifier_boundary(source, start, end).then_some((start, end))
-        })
-        .collect();
-    if matches.is_empty() {
-        return None;
-    }
-    if matches.len() == 1 {
-        return matches.pop();
-    }
-
-    if let Some(eq_idx) = source.find("\nequation") {
-        for m in &matches {
-            if m.0 >= eq_idx {
-                return Some(*m);
-            }
-        }
-    }
-
-    for m in &matches {
-        if !is_on_import_line(source, m.0) {
-            return Some(*m);
-        }
-    }
-
-    matches.into_iter().next()
-}
-
-fn is_on_import_line(source: &str, byte_offset: usize) -> bool {
-    if byte_offset >= source.len() {
-        return false;
-    }
-    let line_start = source[..byte_offset].rfind('\n').map_or(0, |idx| idx + 1);
-    let line_end = source[byte_offset..]
-        .find('\n')
-        .map_or(source.len(), |idx| byte_offset + idx);
-    source[line_start..line_end]
-        .trim_start()
-        .starts_with("import ")
-}
-
-fn is_identifier_boundary(source: &str, start: usize, end: usize) -> bool {
-    let left_ok = source[..start]
-        .chars()
-        .next_back()
-        .is_none_or(|c| !is_identifier_char(c));
-    let right_ok = source[end..]
-        .chars()
-        .next()
-        .is_none_or(|c| !is_identifier_char(c));
-    left_ok && right_ok
-}
-
-fn is_identifier_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
 }
 
 fn normalize_parse_message(message: &str) -> String {
@@ -712,6 +514,22 @@ fn range_from_textual_line_hint(message: &str, source: &str) -> Option<Range> {
     range_for_line_start(source, line_number)
 }
 
+fn extract_quoted_identifier(message: &str) -> Option<String> {
+    extract_between_delimiter(message, '\'').or_else(|| extract_between_delimiter(message, '`'))
+}
+
+fn extract_between_delimiter(text: &str, delimiter: char) -> Option<String> {
+    let start = text.find(delimiter)?;
+    let rest = &text[start + delimiter.len_utf8()..];
+    let end_rel = rest.find(delimiter)?;
+    let candidate = rest[..end_rel].trim();
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(candidate.to_string())
+    }
+}
+
 fn extract_first_line_number(message: &str) -> Option<u32> {
     let lowered = message.to_ascii_lowercase();
     let mut words = lowered.split_whitespace();
@@ -750,6 +568,22 @@ fn find_identifier_on_line(source: &str, line_number: u32, ident: &str) -> Optio
         }
     }
     found
+}
+
+fn is_identifier_boundary(source: &str, start: usize, end: usize) -> bool {
+    let left_ok = source[..start]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !is_identifier_char(c));
+    let right_ok = source[end..]
+        .chars()
+        .next()
+        .is_none_or(|c| !is_identifier_char(c));
+    left_ok && right_ok
+}
+
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 fn range_for_line_start(source: &str, line_number: u32) -> Option<Range> {
@@ -1014,9 +848,8 @@ mod tests {
             .with_code("ET001")
             .with_label(Label::primary(span));
 
-        let converted =
-            common_diagnostic_to_lsp(&diag, source, "input.mo", Some(&source_map), None)
-                .expect("expected span-based diagnostic conversion");
+        let converted = common_diagnostic_to_lsp(&diag, source, "input.mo", Some(&source_map))
+            .expect("expected span-based diagnostic conversion");
         assert_eq!(
             converted.code,
             Some(NumberOrString::String("ET001".to_string()))
@@ -1030,20 +863,11 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_without_labels_are_marked_imprecise() {
+    #[should_panic(expected = "diagnostic must include at least one label")]
+    fn diagnostics_without_labels_panic() {
         let source = "model M\n  Real x;\nend M;\n";
-        let ast = rumoca_session::parsing::parse_source_to_ast(source, "input.mo")
-            .expect("parse should work");
-        let fallback_ranges = collect_class_ranges(&ast);
-        let fallback = fallback_ranges.get("M").cloned();
         let diag = CommonDiagnostic::error("model-level failure without source labels");
-        let converted =
-            common_diagnostic_to_lsp(&diag, source, "input.mo", None, fallback).expect("diag");
-        assert_eq!(converted.range.start.line, 0);
-        assert_eq!(converted.range.start.character, 6);
-        assert_eq!(converted.range.end.line, 0);
-        assert_eq!(converted.range.end.character, 7);
-        assert_eq!(converted.data, Some(json!({ "precise_range": false })));
+        let _ = common_diagnostic_to_lsp(&diag, source, "input.mo", None);
     }
 
     #[test]
@@ -1106,62 +930,6 @@ end Ball;
             dump
         );
         assert_eq!(unresolved.data, Some(json!({ "precise_range": true })));
-    }
-
-    #[test]
-    fn unresolved_component_label_at_top_left_prefers_identifier_heuristic() {
-        let source = r#"
-model Ball
-  Real x(start=0);
-  Real v(start=1);
-equation
-  der(xdf) = v;
-  der(v) = -9.81;
-end Ball;
-"#;
-        let diag = CommonDiagnostic::error("Ball: unresolved component reference: `xdf` at Ball")
-            .with_code("ER002")
-            .with_label(Label::primary(Span::from_offsets(
-                rumoca_core::SourceId(0),
-                0,
-                1,
-            )));
-        let converted = common_diagnostic_to_lsp(&diag, source, "input.mo", None, None)
-            .expect("expected unresolved diagnostic conversion");
-        assert!(
-            converted.range.start.line >= 4,
-            "expected heuristic unresolved range, got {:?}",
-            converted.range
-        );
-        assert_eq!(converted.data, Some(json!({ "precise_range": true })));
-    }
-
-    #[test]
-    fn unresolved_import_label_does_not_use_identifier_heuristic() {
-        let source = r#"
-model Ball
-  import Modelica.Blocks.Continuous.PID;
-  PID pid();
-end Ball;
-"#;
-        let diag = CommonDiagnostic::error(
-            "unresolved import: 'Modelica.Blocks.Continuous.PID' at input.mo:2:3",
-        )
-        .with_code("ER002")
-        .with_label(Label::primary(Span::from_offsets(
-            rumoca_core::SourceId(0),
-            0,
-            1,
-        )));
-        let converted = common_diagnostic_to_lsp(&diag, source, "input.mo", None, None)
-            .expect("expected unresolved import conversion");
-        assert_eq!(converted.range.start, Position::new(0, 0));
-        assert!(
-            converted.range.end.line <= 1,
-            "expected top-left label range, got {:?}",
-            converted.range
-        );
-        assert_eq!(converted.data, Some(json!({ "precise_range": true })));
     }
 
     #[test]

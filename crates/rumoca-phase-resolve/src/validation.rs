@@ -2,8 +2,8 @@
 //!
 //! Provides a visitor to find unresolved symbols after resolution.
 
-use indexmap::IndexSet;
 use rumoca_ir_ast as ast;
+use rumoca_ir_core::Location;
 use std::ops::ControlFlow;
 
 type ClassDef = ast::ClassDef;
@@ -17,11 +17,12 @@ type Statement = ast::Statement;
 type StoredDefinition = ast::StoredDefinition;
 
 /// An unresolved symbol found during validation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedSymbol {
     pub name: String,
     pub kind: UnresolvedKind,
-    pub location: String,
+    pub scope_path: String,
+    pub source_location: Location,
 }
 
 /// The kind of unresolved symbol.
@@ -35,7 +36,11 @@ pub enum UnresolvedKind {
 
 impl std::fmt::Display for UnresolvedSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?} '{}' at {}", self.kind, self.name, self.location)
+        write!(
+            f,
+            "{:?} '{}' at {}",
+            self.kind, self.name, self.source_location
+        )
     }
 }
 
@@ -67,7 +72,7 @@ pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
 #[derive(Default)]
 struct Validator {
     path: Vec<String>,
-    unresolved: IndexSet<UnresolvedSymbol>,
+    unresolved: Vec<UnresolvedSymbol>,
 }
 
 /// Expression visitor adapter for validation.
@@ -92,7 +97,12 @@ impl ast::Visitor for ExprVisitor<'_> {
     ) -> ControlFlow<()> {
         // Function calls should have def_id set (builtins are registered)
         if comp.def_id.is_none() && !comp.parts.is_empty() {
-            self.0.add(comp.to_string(), UnresolvedKind::FunctionCall);
+            let source_location = comp.parts[0].ident.location.clone();
+            self.0.add(
+                comp.to_string(),
+                UnresolvedKind::FunctionCall,
+                source_location,
+            );
         }
         // Visit subscript expressions inside the component path, but avoid
         // re-reporting the function as an unresolved component reference.
@@ -116,11 +126,25 @@ impl Validator {
         }
     }
 
-    fn add(&mut self, name: String, kind: UnresolvedKind) {
-        self.unresolved.insert(UnresolvedSymbol {
+    fn add(&mut self, name: String, kind: UnresolvedKind, source_location: Location) {
+        assert!(
+            has_valid_location(&source_location),
+            "invalid AST location for unresolved {:?} '{}': file='{}' start={} end={} start_line={} start_col={} end_line={} end_col={}",
+            kind,
+            name,
+            source_location.file_name,
+            source_location.start,
+            source_location.end,
+            source_location.start_line,
+            source_location.start_column,
+            source_location.end_line,
+            source_location.end_column
+        );
+        self.unresolved.push(UnresolvedSymbol {
             name,
             kind,
-            location: self.location(),
+            scope_path: self.location(),
+            source_location,
         });
     }
 
@@ -169,14 +193,28 @@ impl Validator {
     fn visit_extend(&mut self, ext: &Extend) {
         // Extends should have base_def_id set (builtins are now registered with DefIds)
         if ext.base_def_id.is_none() {
-            self.add(ext.base_name.to_string(), UnresolvedKind::ExtendsBase);
+            self.add(
+                ext.base_name.to_string(),
+                UnresolvedKind::ExtendsBase,
+                ext.location.clone(),
+            );
         }
     }
 
     fn visit_component(&mut self, comp: &Component) {
         // Component type should have def_id set (builtins are now registered with DefIds)
         if comp.type_def_id.is_none() && comp.type_name.def_id.is_none() {
-            self.add(comp.type_name.to_string(), UnresolvedKind::TypeReference);
+            let source_location = comp
+                .type_name
+                .name
+                .first()
+                .map(|token| token.location.clone())
+                .expect("component type name must include at least one token");
+            self.add(
+                comp.type_name.to_string(),
+                UnresolvedKind::TypeReference,
+                source_location,
+            );
         }
         if !matches!(comp.start, Expression::Empty) {
             self.visit_expr(&comp.start);
@@ -290,12 +328,23 @@ impl Validator {
     fn visit_comp_ref(&mut self, cr: &ComponentReference) {
         // Component references should have def_id set (builtins are registered)
         if cr.def_id.is_none() && !cr.parts.is_empty() {
+            let source_location = cr.parts[0].ident.location.clone();
             self.add(
                 cr.parts[0].ident.text.to_string(),
                 UnresolvedKind::ComponentReference,
+                source_location,
             );
         }
     }
+}
+
+fn has_valid_location(location: &Location) -> bool {
+    !location.file_name.is_empty()
+        && location.end > location.start
+        && location.start_line > 0
+        && location.start_column > 0
+        && location.end_line > 0
+        && location.end_column > 0
 }
 
 #[cfg(test)]

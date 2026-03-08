@@ -1,6 +1,7 @@
 //! Error types for the rumoca compiler.
 
 use miette::Diagnostic;
+use rumoca_session::compile::{ModelFailureDiagnostic, core::SourceMap};
 use thiserror::Error;
 
 /// Errors that can occur during compilation.
@@ -65,9 +66,13 @@ pub enum CompilerError {
     JsonError(String),
 
     /// Best-effort compilation failure with aggregated diagnostics.
-    #[error("best-effort compilation failed: {0}")]
+    #[error("best-effort compilation failed: {summary}")]
     #[diagnostic(code(rumoca::compiler::E012))]
-    BestEffortError(String),
+    BestEffortError {
+        summary: String,
+        failures: Vec<ModelFailureDiagnostic>,
+        source_map: Option<SourceMap>,
+    },
 }
 
 impl CompilerError {
