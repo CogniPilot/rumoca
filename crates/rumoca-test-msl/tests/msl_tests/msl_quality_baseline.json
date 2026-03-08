@@ -15,7 +15,7 @@
   "sim_ok": 126,
   "sim_success_rate": 0.7241379310344828,
   "trace_accuracy_stats": {
-    "models_compared": 114,
+    "models_compared": 111,
     "missing_trace_models": 1,
     "skipped_models": 7,
     "agreement_high": 52,
