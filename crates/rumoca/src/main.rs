@@ -333,13 +333,27 @@ fn build_cli_miette_report(error: &anyhow::Error) -> Option<Report> {
     let start = line_col_to_byte_offset(&source, line, column)?;
     let end = statement_end_offset(&source, start);
 
+    let label = miette_label_for_message(&message).to_string();
     let diagnostic = CliSourceDiagnostic {
         message,
         source_code: NamedSource::new(file_name.clone(), source),
         span: (start, end.saturating_sub(start).max(1)).into(),
-        label: "root cause".to_string(),
+        label,
     };
     Some(Report::new(diagnostic))
+}
+
+fn miette_label_for_message(message: &str) -> &str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("unresolved import") {
+        "unresolved import"
+    } else if lower.contains("unresolved type reference") {
+        "unresolved type reference"
+    } else if lower.contains("parse error") {
+        "parse error"
+    } else {
+        "root cause"
+    }
 }
 
 fn extract_message_location(message: &str) -> Option<(String, usize, usize)> {
