@@ -315,45 +315,120 @@ fn try_main() -> Result<()> {
 }
 
 fn print_cli_error(error: &anyhow::Error) {
-    if let Some(report) = build_cli_miette_report(error) {
-        eprintln!("{report:?}");
-    } else {
-        eprintln!("Error: {error}");
+    if let Some(failures) = extract_best_effort_failures(error) {
+        let mut printed_any = false;
+        for failure in &failures {
+            if printed_any {
+                eprintln!();
+            }
+            if let Some(report) = build_failure_report(failure) {
+                eprintln!("{report:?}");
+            } else {
+                eprintln!("Error: {}", failure.message);
+            }
+            printed_any = true;
+        }
+        if printed_any {
+            return;
+        }
     }
+    eprintln!("Error: {error}");
 }
 
-fn build_cli_miette_report(error: &anyhow::Error) -> Option<Report> {
+#[derive(Debug, Clone)]
+struct ParsedCliFailure {
+    message: String,
+    label: String,
+    location: Option<(String, usize, usize)>,
+}
+
+fn extract_best_effort_failures(error: &anyhow::Error) -> Option<Vec<ParsedCliFailure>> {
     let message = error.to_string();
     if !message.contains("best-effort compilation failed") {
         return None;
     }
 
-    let (file_name, line, column) = extract_message_location(&message)?;
-    let source = std::fs::read_to_string(&file_name).ok()?;
-    let start = line_col_to_byte_offset(&source, line, column)?;
-    let end = statement_end_offset(&source, start);
+    let mut failures = message
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('-'))
+        .map(normalize_failure_line)
+        .filter(|line| !line.is_empty())
+        .map(parsed_failure_from_line)
+        .collect::<Vec<_>>();
 
-    let label = miette_label_for_message(&message).to_string();
-    let diagnostic = CliSourceDiagnostic {
-        message,
-        source_code: NamedSource::new(file_name.clone(), source),
-        span: (start, end.saturating_sub(start).max(1)).into(),
-        label,
-    };
-    Some(Report::new(diagnostic))
+    if failures.is_empty() {
+        let summary = message
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches("best-effort compilation failed:")
+            .trim()
+            .to_string();
+        if !summary.is_empty() {
+            failures.push(parsed_failure_from_line(summary));
+        }
+    }
+
+    Some(failures)
 }
 
-fn miette_label_for_message(message: &str) -> &str {
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("unresolved import") {
-        "unresolved import"
-    } else if lower.contains("unresolved type reference") {
-        "unresolved type reference"
-    } else if lower.contains("parse error") {
-        "parse error"
-    } else {
-        "root cause"
+fn normalize_failure_line(line: &str) -> String {
+    let mut text = line.trim_start_matches('-').trim();
+    if text.starts_with('<')
+        && let Some((_, rest)) = text.split_once("]: ")
+    {
+        text = rest.trim();
     }
+    text.to_string()
+}
+
+fn parsed_failure_from_line(message: String) -> ParsedCliFailure {
+    let location = extract_message_location(&message).and_then(|(file_name, line, column)| {
+        Path::new(&file_name)
+            .exists()
+            .then_some((file_name, line, column))
+    });
+    let label = label_from_failure_message(&message);
+    ParsedCliFailure {
+        message,
+        label,
+        location,
+    }
+}
+
+fn label_from_failure_message(message: &str) -> String {
+    let before_location = message
+        .rsplit_once(" at ")
+        .map(|(head, _)| head.trim())
+        .unwrap_or(message.trim());
+
+    if let Some((prefix, _)) = before_location.split_once(':') {
+        let label = prefix.trim();
+        if !label.is_empty() {
+            return label.to_string();
+        }
+    }
+
+    if before_location.is_empty() {
+        "error".to_string()
+    } else {
+        before_location.to_string()
+    }
+}
+
+fn build_failure_report(failure: &ParsedCliFailure) -> Option<Report> {
+    let (file_name, line, column) = failure.location.as_ref()?;
+    let source = std::fs::read_to_string(file_name).ok()?;
+    let start = line_col_to_byte_offset(&source, *line, *column)?;
+    let end = statement_end_offset(&source, start);
+    let diagnostic = CliSourceDiagnostic {
+        message: failure.message.clone(),
+        source_code: NamedSource::new(file_name.clone(), source),
+        span: (start, end.saturating_sub(start).max(1)).into(),
+        label: failure.label.clone(),
+    };
+    Some(Report::new(diagnostic))
 }
 
 fn extract_message_location(message: &str) -> Option<(String, usize, usize)> {
