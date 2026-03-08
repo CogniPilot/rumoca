@@ -613,6 +613,28 @@ fn test_best_effort_keeps_collecting_when_requested_fails() {
 }
 
 #[test]
+fn test_best_effort_failure_summary_surfaces_resolve_root_cause() {
+    let mut session = Session::default();
+    let source = r#"
+model Ball
+  import Modelica.Blocks.Continuous.PID;
+  PID pid();
+end Ball;
+"#;
+    session.add_document("Ball.mo", source).unwrap();
+
+    let report = session.compile_model_best_effort("Ball");
+    assert!(!report.requested_succeeded());
+    let summary = report.failure_summary(8);
+    let first_line = summary.lines().next().unwrap_or_default();
+
+    assert!(
+        first_line.contains("unresolved import"),
+        "expected first line to include unresolved import root cause, got: {summary}"
+    );
+}
+
+#[test]
 fn test_compile_phase_timing_stats_record_single_compile() {
     let before = compile_phase_timing_stats();
     let before_flatten = rumoca_phase_flatten::flatten_phase_timing_stats();

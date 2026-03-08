@@ -275,7 +275,7 @@ impl Resolver {
     ///
     /// Converts AST `Import` to `scope::Import` with resolved DefIds,
     /// and adds it to the scope's imports list.
-    /// Returns None if resolution fails (import might reference something not yet available).
+    /// Returns None if resolution fails.
     pub(crate) fn resolve_import(&mut self, import: &ast::Import, scope: ScopeId) -> Option<()> {
         // Determine the starting scope for resolution
         // For global scope imports (leading dot), start from global scope
@@ -288,7 +288,10 @@ impl Resolver {
         let scope_import = match import {
             ast::Import::Qualified { path, .. } => {
                 // import A.B.C; -> makes C available as C
-                let def_id = self.resolve_qualified_name(path, resolve_scope)?;
+                let Some(def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                    self.emit_unresolved_import(import);
+                    return None;
+                };
                 let path_strs: Vec<String> = path.name.iter().map(|t| t.text.to_string()).collect();
                 ast::scope::Import::Qualified {
                     path: path_strs,
@@ -297,7 +300,10 @@ impl Resolver {
             }
             ast::Import::Renamed { alias, path, .. } => {
                 // import D = A.B.C; -> makes C available as D
-                let def_id = self.resolve_qualified_name(path, resolve_scope)?;
+                let Some(def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                    self.emit_unresolved_import(import);
+                    return None;
+                };
                 ast::scope::Import::Renamed {
                     alias: alias.text.to_string(),
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
@@ -306,8 +312,14 @@ impl Resolver {
             }
             ast::Import::Unqualified { path, .. } => {
                 // import A.B.*; -> imports all public names from A.B
-                let pkg_def_id = self.resolve_qualified_name(path, resolve_scope)?;
-                let pkg_qualified = self.def_names.get(&pkg_def_id)?;
+                let Some(pkg_def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                    self.emit_unresolved_import(import);
+                    return None;
+                };
+                let Some(pkg_qualified) = self.def_names.get(&pkg_def_id) else {
+                    self.emit_unresolved_import(import);
+                    return None;
+                };
                 let names = self.collect_package_children(pkg_qualified);
                 ast::scope::Import::Unqualified {
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
@@ -316,8 +328,14 @@ impl Resolver {
             }
             ast::Import::Selective { path, names, .. } => {
                 // import A.B.{C, D}; -> imports specific names from A.B
-                let pkg_def_id = self.resolve_qualified_name(path, resolve_scope)?;
-                let pkg_qualified = self.def_names.get(&pkg_def_id)?;
+                let Some(pkg_def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                    self.emit_unresolved_import(import);
+                    return None;
+                };
+                let Some(pkg_qualified) = self.def_names.get(&pkg_def_id) else {
+                    self.emit_unresolved_import(import);
+                    return None;
+                };
                 let resolved_names = self.resolve_selective_names(pkg_qualified, names);
                 ast::scope::Import::Unqualified {
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
@@ -326,8 +344,63 @@ impl Resolver {
             }
         };
 
-        self.scope_tree.get_mut(scope)?.imports.push(scope_import);
+        let Some(scope_node) = self.scope_tree.get_mut(scope) else {
+            self.emit_unresolved_import(import);
+            return None;
+        };
+        scope_node.imports.push(scope_import);
         Some(())
+    }
+
+    fn emit_unresolved_import(&mut self, import: &ast::Import) {
+        let span = crate::location_to_span(import.location(), &self.source_map);
+        self.diagnostics.emit(
+            Diagnostic::error(format!(
+                "unresolved import: '{}' at {}",
+                Self::format_import_clause(import),
+                import.location()
+            ))
+            .with_code("ER002")
+            .with_label(Label::primary(span).with_message("import could not be resolved")),
+        );
+    }
+
+    fn format_import_clause(import: &ast::Import) -> String {
+        fn format_path(path: &ast::Name, global_scope: bool) -> String {
+            if global_scope {
+                format!(".{path}")
+            } else {
+                path.to_string()
+            }
+        }
+
+        match import {
+            ast::Import::Qualified {
+                path, global_scope, ..
+            } => format_path(path, *global_scope),
+            ast::Import::Renamed {
+                alias,
+                path,
+                global_scope,
+                ..
+            } => format!("{} = {}", alias.text, format_path(path, *global_scope)),
+            ast::Import::Unqualified {
+                path, global_scope, ..
+            } => format!("{}.*", format_path(path, *global_scope)),
+            ast::Import::Selective {
+                path,
+                names,
+                global_scope,
+                ..
+            } => {
+                let names = names
+                    .iter()
+                    .map(|name| name.text.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}.{{{names}}}", format_path(path, *global_scope))
+            }
+        }
     }
 
     /// Collect all direct children of a package.

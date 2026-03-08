@@ -630,6 +630,43 @@ end Test;
     }
 
     #[test]
+    fn test_unresolved_import_is_emitted_before_unresolved_type_reference() {
+        let source = r#"
+model Ball
+    import Modelica.Blocks.Continuous.PID;
+    PID pid();
+end Ball;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(result.is_err(), "resolution should fail");
+
+        let diags = result.expect_err("expected resolve diagnostics");
+        let messages: Vec<_> = diags.iter().map(|d| d.message.as_str()).collect();
+
+        let import_pos = messages
+            .iter()
+            .position(|msg| msg.contains("unresolved import") && msg.contains("PID"));
+        let type_pos = messages
+            .iter()
+            .position(|msg| msg.contains("unresolved type reference") && msg.contains("PID"));
+
+        assert!(
+            import_pos.is_some(),
+            "expected unresolved import diagnostic, got: {messages:?}"
+        );
+        assert!(
+            type_pos.is_some(),
+            "expected unresolved type reference diagnostic, got: {messages:?}"
+        );
+        assert!(
+            import_pos.expect("import diagnostic index")
+                < type_pos.expect("unresolved type diagnostic index"),
+            "expected import diagnostic before unresolved type reference, got: {messages:?}"
+        );
+    }
+
+    #[test]
     fn test_unresolved_function_call_is_error() {
         let source = r#"
 model Test
