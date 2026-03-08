@@ -861,7 +861,7 @@ impl Compiler {
         }
 
         let mut best_effort = session.compile_model_best_effort(model_name);
-        let failure_summary = best_effort.failure_summary(8);
+        let failure_summary = best_effort.failure_summary(usize::MAX);
         let result = match best_effort.requested_result.take() {
             Some(PhaseResult::Success(result)) => *result,
             Some(PhaseResult::NeedsInner { .. }) => {
