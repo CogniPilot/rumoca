@@ -224,7 +224,7 @@ fn check_duplicate_component(
 fn process_import_clause(
     import_clause: &modelica_grammar_trait::ImportClause,
 ) -> rumoca_ir_ast::Import {
-    let location = import_clause.import.import.location.clone();
+    let location = import_clause_location(import_clause);
     match &import_clause.import_clause_group {
         modelica_grammar_trait::ImportClauseGroup::IdentEquImportClauseOptName(renamed) => {
             let global_scope = renamed.import_clause_opt.is_some();
@@ -242,6 +242,74 @@ fn process_import_clause(
             let global_scope = name_opt.import_clause_opt0.is_some();
             process_import_suffix(&name_opt.import_clause_opt1, path, location, global_scope)
         }
+    }
+}
+
+fn import_clause_location(
+    import_clause: &modelica_grammar_trait::ImportClause,
+) -> rumoca_ir_core::Location {
+    let mut location = import_clause.import.import.location.clone();
+    match &import_clause.import_clause_group {
+        modelica_grammar_trait::ImportClauseGroup::IdentEquImportClauseOptName(renamed) => {
+            extend_location_end_with_name(&mut location, &renamed.name);
+            extend_location_end_with_token(&mut location, &renamed.ident);
+        }
+        modelica_grammar_trait::ImportClauseGroup::ImportClauseOpt0NameImportClauseOpt1(
+            name_opt,
+        ) => {
+            extend_location_end_with_name(&mut location, &name_opt.name);
+            if let Some(suffix) = &name_opt.import_clause_opt1 {
+                match &suffix.import_clause_opt1_group {
+                    modelica_grammar_trait::ImportClauseOpt1Group::DotStar(dot_star) => {
+                        extend_location_end_with_token(&mut location, &dot_star.dot_star);
+                    }
+                    modelica_grammar_trait::ImportClauseOpt1Group::DotImportClauseOpt1GroupGroup(
+                        dot_group,
+                    ) => match &dot_group.import_clause_opt1_group_group {
+                        modelica_grammar_trait::ImportClauseOpt1GroupGroup::Star(star) => {
+                            extend_location_end_with_token(&mut location, &star.star);
+                        }
+                        modelica_grammar_trait::ImportClauseOpt1GroupGroup::LBraceImportListRBrace(
+                            list,
+                        ) => {
+                            let last_name = list
+                                .import_list
+                                .import_list_list
+                                .last()
+                                .map(|item| &item.ident)
+                                .unwrap_or(&list.import_list.ident);
+                            extend_location_end_with_token(&mut location, last_name);
+                        }
+                    },
+                }
+            }
+        }
+    }
+    location
+}
+
+fn extend_location_end_with_name(
+    location: &mut rumoca_ir_core::Location,
+    name: &rumoca_ir_ast::Name,
+) {
+    if let Some(last) = name.name.last() {
+        extend_location_end_with_token(location, last);
+    }
+}
+
+fn extend_location_end_with_token(
+    location: &mut rumoca_ir_core::Location,
+    token: &rumoca_ir_core::Token,
+) {
+    let token_loc = &token.location;
+    if token_loc.end > location.end
+        || (token_loc.end == location.end
+            && (token_loc.end_line, token_loc.end_column)
+                > (location.end_line, location.end_column))
+    {
+        location.end_line = token_loc.end_line;
+        location.end_column = token_loc.end_column;
+        location.end = token_loc.end;
     }
 }
 

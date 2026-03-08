@@ -34,8 +34,8 @@ pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validat
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, ScopeId, SourceMap,
-    Span,
+    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, Label, ScopeId,
+    SourceMap, Span,
 };
 use rumoca_ir_ast as ast;
 
@@ -66,7 +66,27 @@ impl Default for ResolveOptions {
 
 /// Convert a Location to a Span for error reporting using the source map.
 fn location_to_span(loc: &Location, source_map: &SourceMap) -> Span {
+    assert!(
+        location_has_valid_span(loc),
+        "invalid AST location for span conversion: file='{}' start={} end={} start_line={} start_col={} end_line={} end_col={}",
+        loc.file_name,
+        loc.start,
+        loc.end,
+        loc.start_line,
+        loc.start_column,
+        loc.end_line,
+        loc.end_column
+    );
     source_map.location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+}
+
+fn location_has_valid_span(loc: &Location) -> bool {
+    !loc.file_name.is_empty()
+        && loc.end > loc.start
+        && loc.start_line > 0
+        && loc.start_column > 0
+        && loc.end_line > 0
+        && loc.end_column > 0
 }
 
 /// Statistics collected during name resolution.
@@ -454,7 +474,7 @@ fn emit_unresolved_symbol_diagnostics(
 ) {
     for unresolved in &validation.unresolved {
         if unresolved.kind == UnresolvedKind::ComponentReference
-            && has_inherited_match(resolver, &unresolved.location, &unresolved.name)
+            && has_inherited_match(resolver, &unresolved.scope_path, &unresolved.name)
         {
             continue;
         }
@@ -474,18 +494,15 @@ fn emit_unresolved_symbol_diagnostics(
             ),
         };
 
-        let diag = if is_error {
-            rumoca_core::Diagnostic::error(format!(
-                "unresolved {kind}: '{}' at {}",
-                unresolved.name, unresolved.location
-            ))
+        let mut diag = if is_error {
+            rumoca_core::Diagnostic::error(format!("unresolved {kind}: '{}'", unresolved.name))
         } else {
-            rumoca_core::Diagnostic::warning(format!(
-                "unresolved {kind}: '{}' at {}",
-                unresolved.name, unresolved.location
-            ))
+            rumoca_core::Diagnostic::warning(format!("unresolved {kind}: '{}'", unresolved.name))
         }
         .with_code(code);
+
+        let span = location_to_span(&unresolved.source_location, &resolver.source_map);
+        diag = diag.with_label(Label::primary(span).with_message(format!("unresolved {kind}")));
         resolver.diagnostics.emit(diag);
     }
 }
@@ -663,6 +680,40 @@ end Ball;
             import_pos.expect("import diagnostic index")
                 < type_pos.expect("unresolved type diagnostic index"),
             "expected import diagnostic before unresolved type reference, got: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn test_unresolved_diagnostics_include_source_labels() {
+        let source = r#"
+model Ball
+    import Modelica.Blocks.Continuous.PID;
+    PID pid();
+equation
+    der(x) = x;
+end Ball;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(result.is_err(), "resolution should fail");
+
+        let diags = result.expect_err("expected resolve diagnostics");
+        let import = diags
+            .iter()
+            .find(|d| d.message.contains("unresolved import"))
+            .expect("missing unresolved import diagnostic");
+        let unresolved_type = diags
+            .iter()
+            .find(|d| d.message.contains("unresolved type reference"))
+            .expect("missing unresolved type reference diagnostic");
+
+        assert!(
+            !import.labels.is_empty(),
+            "unresolved import should include a source label"
+        );
+        assert!(
+            !unresolved_type.labels.is_empty(),
+            "unresolved type reference should include a source label"
         );
     }
 

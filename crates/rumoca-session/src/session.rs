@@ -137,6 +137,7 @@ pub struct ModelFailureDiagnostic {
     pub phase: Option<FailedPhase>,
     pub error_code: Option<String>,
     pub error: String,
+    pub primary_label: Option<Label>,
 }
 
 /// Report from compiling a requested model in best-effort mode.
@@ -959,13 +960,18 @@ impl Session {
                     phase: None,
                     error_code: diag.code.clone(),
                     error: diag.message.clone(),
+                    primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
                 }));
+                let mut source_map = SourceMap::new();
+                for doc in self.documents.values() {
+                    source_map.add(&doc.uri, &doc.content);
+                }
                 return BestEffortCompilationReport {
                     requested_model: model_name.to_string(),
                     requested_result: None,
                     summary: CompilationSummary::default(),
                     failures,
-                    source_map: None,
+                    source_map: Some(source_map),
                 };
             }
         };
@@ -1317,6 +1323,7 @@ fn phase_result_to_failure(
                 "model needs inner declarations: {}",
                 missing_inners.join(", ")
             ),
+            primary_label: None,
         }),
         PhaseResult::Failed {
             phase,
@@ -1327,6 +1334,7 @@ fn phase_result_to_failure(
             phase: Some(*phase),
             error_code: error_code.clone(),
             error: error.clone(),
+            primary_label: None,
         }),
     }
 }
@@ -1340,6 +1348,7 @@ fn collect_parse_failures(documents: &IndexMap<String, Document>) -> Vec<ModelFa
                 phase: None,
                 error_code: Some("syntax-error".to_string()),
                 error: err.clone(),
+                primary_label: None,
             })
         })
         .collect()

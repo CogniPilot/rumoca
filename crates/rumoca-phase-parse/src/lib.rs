@@ -466,8 +466,15 @@ end Test;
         let model = ast.classes.get("Test").expect("Test should exist");
 
         assert!(!model.imports.is_empty(), "Model should have imports");
-        if let Import::Qualified { path, .. } = &model.imports[0] {
+        if let Import::Qualified { path, location, .. } = &model.imports[0] {
             assert_eq!(path.to_string(), "MyPackage.SomeClass");
+            // Import span should cover the full qualified path, not just `import`.
+            assert!(location.end > location.start);
+            assert!(
+                location.end_column > location.start_column + 6,
+                "import span should extend beyond keyword: {:?}",
+                location
+            );
         }
     }
 

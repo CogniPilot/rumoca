@@ -356,9 +356,8 @@ impl Resolver {
         let span = self.import_span(import);
         self.diagnostics.emit(
             Diagnostic::error(format!(
-                "unresolved import: '{}' at {}",
-                Self::format_import_clause(import),
-                import.location()
+                "unresolved import: '{}'",
+                Self::format_import_clause(import)
             ))
             .with_code("ER002")
             .with_label(Label::primary(span).with_message("import could not be resolved")),
@@ -366,49 +365,7 @@ impl Resolver {
     }
 
     fn import_span(&self, import: &ast::Import) -> rumoca_core::Span {
-        let mut file_name = import.location().file_name.clone();
-        let mut start = import.location().start as usize;
-        let mut end = import.location().end as usize;
-
-        let mut update_bounds = |loc: &rumoca_ir_core::Location| {
-            if file_name.is_empty() && !loc.file_name.is_empty() {
-                file_name = loc.file_name.clone();
-            }
-            if loc.start > 0 && (start == 0 || (loc.start as usize) < start) {
-                start = loc.start as usize;
-            }
-            if loc.end as usize > end {
-                end = loc.end as usize;
-            }
-        };
-
-        match import {
-            ast::Import::Qualified { path, .. } | ast::Import::Unqualified { path, .. } => {
-                for token in &path.name {
-                    update_bounds(&token.location);
-                }
-            }
-            ast::Import::Renamed { alias, path, .. } => {
-                update_bounds(&alias.location);
-                for token in &path.name {
-                    update_bounds(&token.location);
-                }
-            }
-            ast::Import::Selective { path, names, .. } => {
-                for token in &path.name {
-                    update_bounds(&token.location);
-                }
-                for name in names {
-                    update_bounds(&name.location);
-                }
-            }
-        }
-
-        if end <= start {
-            end = start.saturating_add(1);
-        }
-
-        self.source_map.location_to_span(&file_name, start, end)
+        crate::location_to_span(import.location(), &self.source_map)
     }
 
     fn format_import_clause(import: &ast::Import) -> String {
