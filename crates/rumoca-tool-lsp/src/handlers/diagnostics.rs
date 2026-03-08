@@ -498,6 +498,9 @@ fn heuristic_range_from_message(diag: &CommonDiagnostic, source: &str) -> Option
     if !is_unresolved_diagnostic(diag) {
         return None;
     }
+    if is_unresolved_import_diagnostic(diag) {
+        return None;
+    }
 
     let ident = extract_quoted_identifier(&diag.message)?;
     let (start, end) = find_best_identifier_occurrence(source, &ident)?;
@@ -505,7 +508,9 @@ fn heuristic_range_from_message(diag: &CommonDiagnostic, source: &str) -> Option
 }
 
 fn should_prefer_heuristic_over_label(diag: &CommonDiagnostic, label_range: &Range) -> bool {
-    is_unresolved_diagnostic(diag) && range_is_top_left(label_range)
+    is_unresolved_diagnostic(diag)
+        && !is_unresolved_import_diagnostic(diag)
+        && range_is_top_left(label_range)
 }
 
 fn is_unresolved_diagnostic(diag: &CommonDiagnostic) -> bool {
@@ -514,6 +519,12 @@ fn is_unresolved_diagnostic(diag: &CommonDiagnostic) -> bool {
     code == "ER002"
         || lowered.contains("unresolved component reference")
         || lowered.contains("unresolved function")
+}
+
+fn is_unresolved_import_diagnostic(diag: &CommonDiagnostic) -> bool {
+    diag.message
+        .to_ascii_lowercase()
+        .contains("unresolved import")
 }
 
 fn extract_quoted_identifier(message: &str) -> Option<String> {
@@ -555,7 +566,26 @@ fn find_best_identifier_occurrence(source: &str, ident: &str) -> Option<(usize, 
         }
     }
 
+    for m in &matches {
+        if !is_on_import_line(source, m.0) {
+            return Some(*m);
+        }
+    }
+
     matches.into_iter().next()
+}
+
+fn is_on_import_line(source: &str, byte_offset: usize) -> bool {
+    if byte_offset >= source.len() {
+        return false;
+    }
+    let line_start = source[..byte_offset].rfind('\n').map_or(0, |idx| idx + 1);
+    let line_end = source[byte_offset..]
+        .find('\n')
+        .map_or(source.len(), |idx| byte_offset + idx);
+    source[line_start..line_end]
+        .trim_start()
+        .starts_with("import ")
 }
 
 fn is_identifier_boundary(source: &str, start: usize, end: usize) -> bool {
@@ -1104,6 +1134,69 @@ end Ball;
             converted.range
         );
         assert_eq!(converted.data, Some(json!({ "precise_range": true })));
+    }
+
+    #[test]
+    fn unresolved_import_label_does_not_use_identifier_heuristic() {
+        let source = r#"
+model Ball
+  import Modelica.Blocks.Continuous.PID;
+  PID pid();
+end Ball;
+"#;
+        let diag = CommonDiagnostic::error(
+            "unresolved import: 'Modelica.Blocks.Continuous.PID' at input.mo:2:3",
+        )
+        .with_code("ER002")
+        .with_label(Label::primary(Span::from_offsets(
+            rumoca_core::SourceId(0),
+            0,
+            1,
+        )));
+        let converted = common_diagnostic_to_lsp(&diag, source, "input.mo", None, None)
+            .expect("expected unresolved import conversion");
+        assert_eq!(converted.range.start, Position::new(0, 0));
+        assert!(
+            converted.range.end.line <= 1,
+            "expected top-left label range, got {:?}",
+            converted.range
+        );
+        assert_eq!(converted.data, Some(json!({ "precise_range": true })));
+    }
+
+    #[test]
+    fn unresolved_import_and_type_reference_map_to_distinct_sites() {
+        let source = r#"
+model Ball
+  import Modelica.Blocks.Continuous.PID;
+  PID pid();
+end Ball;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+
+        let unresolved_import = diagnostics
+            .iter()
+            .find(|d| d.message.contains("unresolved import"))
+            .unwrap_or_else(|| {
+                panic!("expected unresolved import diagnostic, got: {diagnostics:?}")
+            });
+        let unresolved_type = diagnostics
+            .iter()
+            .find(|d| d.message.contains("unresolved type reference"))
+            .unwrap_or_else(|| panic!("expected unresolved type diagnostic, got: {diagnostics:?}"));
+
+        assert!(
+            unresolved_import.range.start.line >= 2,
+            "expected unresolved import near import line, got {:?}",
+            unresolved_import.range
+        );
+        assert!(
+            unresolved_type.range.start.line > unresolved_import.range.start.line,
+            "expected unresolved type reference to map after import line, got import={:?}, type={:?}",
+            unresolved_import.range,
+            unresolved_type.range
+        );
     }
 
     #[test]
