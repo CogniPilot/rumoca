@@ -877,7 +877,11 @@ impl Compiler {
                 return Err(err);
             }
             None => {
-                return Err(CompilerError::BestEffortError(failure_summary));
+                return Err(CompilerError::BestEffortError {
+                    summary: failure_summary,
+                    failures: best_effort.failures,
+                    source_map: best_effort.source_map,
+                });
             }
         };
 
