@@ -863,7 +863,16 @@ impl Compiler {
         let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
         let failure_summary = report.failure_summary(usize::MAX);
         let result = match report.requested_result.take() {
-            Some(PhaseResult::Success(result)) => *result,
+            Some(PhaseResult::Success(result)) => {
+                if !report.failures.is_empty() {
+                    return Err(CompilerError::CompileDiagnosticsError {
+                        summary: failure_summary,
+                        failures: report.failures,
+                        source_map: report.source_map,
+                    });
+                }
+                *result
+            }
             Some(PhaseResult::NeedsInner { .. }) => {
                 return Err(CompilerError::InstantiateError(failure_summary));
             }
@@ -1104,7 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn test_strict_reachable_requested_success_with_related_failures() {
+    fn test_strict_reachable_requested_success_ignores_unreachable_failures() {
         let source = r#"
             package P
               model Good
@@ -1132,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn test_strict_reachable_requested_failure_includes_related_context() {
+    fn test_strict_reachable_requested_failure_excludes_unreachable_context() {
         let source = r#"
             package P
               model Good
@@ -1160,7 +1169,35 @@ mod tests {
             .compile_str(source, "test.mo")
             .expect_err("Requested model should fail");
         let msg = err.to_string();
-        assert!(msg.contains("Related failures"));
-        assert!(msg.contains("P.BadNeedsInner2"));
+        assert!(!msg.contains("Related failures"));
+        assert!(!msg.contains("P.BadNeedsInner2"));
+    }
+
+    #[test]
+    fn test_strict_reachable_fails_when_reachable_dependency_fails() {
+        let source = r#"
+            package P
+              model BadDep
+                outer Real shared;
+              equation
+                shared = 1;
+              end BadDep;
+
+              model Root
+                import P.BadDep;
+                Real x(start=0);
+              equation
+                der(x) = 1;
+              end Root;
+            end P;
+        "#;
+
+        let err = Compiler::new()
+            .model("P.Root")
+            .compile_str(source, "test.mo")
+            .expect_err("reachable dependency failure must fail strict compile");
+        let msg = err.to_string();
+        assert!(msg.contains("Related failures"), "actual message: {msg}");
+        assert!(msg.contains("P.BadDep"), "actual message: {msg}");
     }
 }

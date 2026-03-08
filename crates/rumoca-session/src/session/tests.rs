@@ -536,7 +536,7 @@ fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiati
 }
 
 #[test]
-fn test_strict_reachable_reports_related_failures_when_requested_succeeds() {
+fn test_strict_reachable_ignores_unreachable_failures_when_requested_succeeds() {
     let mut session = Session::default();
     let source = r#"
             package P
@@ -563,14 +563,10 @@ fn test_strict_reachable_reports_related_failures_when_requested_succeeds() {
 
     let report = session.compile_model_strict_reachable_with_recovery("P.Good");
     assert!(report.requested_succeeded());
-
-    let failed_models: std::collections::HashSet<_> = report
-        .failures
-        .iter()
-        .map(|f| f.model_name.as_str())
-        .collect();
-    assert!(failed_models.contains("P.BadNeedsInner"));
-    assert!(failed_models.contains("P.BadNeedsInner2"));
+    assert!(
+        report.failures.is_empty(),
+        "unreachable package siblings must not affect strict compile targets"
+    );
 }
 
 #[test]
@@ -608,8 +604,240 @@ fn test_strict_reachable_keeps_collecting_when_requested_fails() {
         .map(|f| f.model_name.as_str())
         .collect();
     assert!(failed_models.contains("P.BadNeedsInner"));
-    assert!(failed_models.contains("P.BadNeedsInner2"));
-    assert!(report.summary.total() >= 3);
+    assert!(!failed_models.contains("P.BadNeedsInner2"));
+    assert!(report.summary.total() >= 1);
+}
+
+#[test]
+fn test_strict_reachable_ignores_unrelated_parse_errors() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "root.mo",
+            r#"
+            model Root
+              Real x;
+            equation
+              x = 1;
+            end Root;
+            "#,
+        )
+        .expect("root should parse");
+
+    let parse_err = session.update_document(
+        "bad.mo",
+        r#"
+        model Bad
+          Real x
+        equation
+          x = 1;
+        end Bad;
+        "#,
+    );
+    assert!(parse_err.is_some(), "bad.mo should fail to parse");
+
+    let report = session.compile_model_strict_reachable_with_recovery("Root");
+    assert!(report.requested_succeeded());
+    assert!(report.failures.is_empty());
+}
+
+#[test]
+fn test_strict_reachable_reports_parse_errors_in_target_closure() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "root.mo",
+            r#"
+            model Root
+              Real x;
+            equation
+              x = 1;
+            end Root;
+            "#,
+        )
+        .expect("root should parse");
+
+    let parse_err = session.update_document(
+        "root.mo",
+        r#"
+        model Root
+          Real x
+        equation
+          x = 1;
+        end Root;
+        "#,
+    );
+    assert!(parse_err.is_some(), "root.mo should fail to parse");
+
+    let report = session.compile_model_strict_reachable_with_recovery("Root");
+    assert!(!report.requested_succeeded());
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.model_name == "root.mo"),
+        "target parse errors should be reported as strict compile failures"
+    );
+}
+
+fn planned_reachability(
+    session: &mut Session,
+    requested_model: &str,
+) -> (Vec<String>, Vec<String>) {
+    session
+        .build_resolved()
+        .expect("session should resolve for planner test");
+    let tree = &session
+        .ensure_resolved()
+        .expect("resolved tree should be available")
+        .0;
+    let dep_cache = super::dependency_fingerprint::DependencyFingerprintCache::from_tree(tree);
+    let planner = super::reachability::ReachabilityPlanner::new(
+        dep_cache.class_dependencies(),
+        &session.model_names,
+    );
+    (
+        planner.reachable_classes(requested_model),
+        planner.compile_targets(requested_model),
+    )
+}
+
+#[test]
+fn test_reachability_planner_tracks_import_dependencies() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+            package P
+              model Dep
+                Real y;
+              equation
+                y = 1;
+              end Dep;
+
+              model Root
+                import P.Dep;
+                Real x;
+              equation
+                x = 2;
+              end Root;
+
+              model Unused
+                Real z;
+              equation
+                z = 3;
+              end Unused;
+            end P;
+            "#,
+        )
+        .expect("test document should parse");
+
+    let (reachable_classes, compile_targets) = planned_reachability(&mut session, "P.Root");
+    assert!(reachable_classes.iter().any(|name| name == "P.Dep"));
+    assert!(compile_targets.iter().any(|name| name == "P.Dep"));
+    assert!(!compile_targets.iter().any(|name| name == "P.Unused"));
+}
+
+#[test]
+fn test_reachability_planner_tracks_extends_dependencies() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+            package P
+              model Base
+                Real x;
+              equation
+                x = 1;
+              end Base;
+
+              model Child
+                extends Base;
+              end Child;
+
+              model Unused
+                Real z;
+              equation
+                z = 3;
+              end Unused;
+            end P;
+            "#,
+        )
+        .expect("test document should parse");
+
+    let (reachable_classes, compile_targets) = planned_reachability(&mut session, "P.Child");
+    assert!(reachable_classes.iter().any(|name| name == "P.Base"));
+    assert!(compile_targets.iter().any(|name| name == "P.Base"));
+    assert!(!compile_targets.iter().any(|name| name == "P.Unused"));
+}
+
+#[test]
+fn test_reachability_planner_tracks_component_type_dependencies() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+            package P
+              model Helper
+                Real y;
+              equation
+                y = 1;
+              end Helper;
+
+              model Root
+                Helper h;
+              equation
+                h.y = 2;
+              end Root;
+
+              model Unused
+                Real z;
+              equation
+                z = 3;
+              end Unused;
+            end P;
+            "#,
+        )
+        .expect("test document should parse");
+
+    let (reachable_classes, compile_targets) = planned_reachability(&mut session, "P.Root");
+    assert!(reachable_classes.iter().any(|name| name == "P.Helper"));
+    assert!(compile_targets.iter().any(|name| name == "P.Helper"));
+    assert!(!compile_targets.iter().any(|name| name == "P.Unused"));
+}
+
+#[test]
+fn test_reachability_planner_tracks_function_call_dependencies() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+            package P
+              function F
+                input Real u;
+                output Real y;
+              algorithm
+                y := u;
+              end F;
+
+              model Root
+                Real x;
+              equation
+                x = F(time);
+              end Root;
+            end P;
+            "#,
+        )
+        .expect("test document should parse");
+
+    let (reachable_classes, compile_targets) = planned_reachability(&mut session, "P.Root");
+    assert!(reachable_classes.iter().any(|name| name == "P.F"));
+    assert!(!compile_targets.iter().any(|name| name == "P.F"));
+    assert_eq!(compile_targets, vec!["P.Root".to_string()]);
 }
 
 #[test]
