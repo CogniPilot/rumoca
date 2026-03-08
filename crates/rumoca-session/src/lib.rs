@@ -117,10 +117,10 @@ pub mod compile {
     pub use rumoca_ir_flat::Model as FlatModel;
 
     pub use crate::session::{
-        BestEffortCompilationReport, CompilationResult, CompilationSummary,
-        CompilePhaseTimingSnapshot, CompilePhaseTimingStat, CompiledLibrary, Document, FailedPhase,
+        CompilationMode, CompilationResult, CompilationSummary, CompilePhaseTimingSnapshot,
+        CompilePhaseTimingStat, CompiledLibrary, Document, FailedPhase, IndexingMode,
         ModelDiagnostics, ModelFailureDiagnostic, PhaseResult, Session, SessionConfig,
-        compile_phase_timing_stats, reset_compile_phase_timing_stats,
+        StrictCompileReport, compile_phase_timing_stats, reset_compile_phase_timing_stats,
     };
 }
 

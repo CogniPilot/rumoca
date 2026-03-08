@@ -319,19 +319,19 @@ fn try_main() -> Result<()> {
 }
 
 fn print_cli_error(error: &anyhow::Error) {
-    if let Some(CompilerError::BestEffortError {
+    if let Some(CompilerError::CompileDiagnosticsError {
         failures,
         source_map,
         ..
     }) = error.downcast_ref::<CompilerError>()
-        && print_best_effort_failures(failures, source_map.as_ref())
+        && print_compile_failures(failures, source_map.as_ref())
     {
         return;
     }
     eprintln!("Error: {error}");
 }
 
-fn print_best_effort_failures(
+fn print_compile_failures(
     failures: &[rumoca_session::compile::ModelFailureDiagnostic],
     source_map: Option<&rumoca_session::compile::core::SourceMap>,
 ) -> bool {
@@ -344,24 +344,24 @@ fn print_best_effort_failures(
         if printed_any {
             eprintln!();
         }
-        let report = build_best_effort_failure_report(failure, source_map);
+        let report = build_compile_failure_report(failure, source_map);
         eprintln!("{report:?}");
         printed_any = true;
     }
     printed_any
 }
 
-fn build_best_effort_failure_report(
+fn build_compile_failure_report(
     failure: &rumoca_session::compile::ModelFailureDiagnostic,
     source_map: &rumoca_session::compile::core::SourceMap,
 ) -> Report {
     let label = failure
         .primary_label
         .as_ref()
-        .unwrap_or_else(|| panic!("best-effort failure must include a primary label"));
+        .unwrap_or_else(|| panic!("compile failure must include a primary label"));
     let (file_name, source) = source_map
         .get_source(label.span.source)
-        .unwrap_or_else(|| panic!("best-effort label source must exist in source map"));
+        .unwrap_or_else(|| panic!("compile failure label source must exist in source map"));
     let start = label.span.start.0.min(source.len());
     let end = label.span.end.0.max(start + 1).min(source.len());
     let label_text = label.message.clone().unwrap_or_else(|| "error".to_string());

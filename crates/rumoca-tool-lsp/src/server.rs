@@ -350,7 +350,7 @@ impl ModelicaLanguageServer {
         model: &str,
     ) -> std::result::Result<Box<rumoca_session::compile::CompilationResult>, String> {
         let mut session = self.session.write().await;
-        let mut report = session.compile_model_best_effort(model);
+        let mut report = session.compile_model_strict_reachable_with_recovery(model);
         match report.requested_result.take() {
             Some(PhaseResult::Success(result)) => Ok(result),
             Some(PhaseResult::NeedsInner { missing_inners }) => Err(format!(
@@ -512,7 +512,7 @@ impl ModelicaLanguageServer {
             Ok(result) => result,
             Err(error) => {
                 return Some(Self::simulation_error_value(format!(
-                    "best-effort compilation failed: {error}",
+                    "compilation failed: {error}",
                 )));
             }
         };

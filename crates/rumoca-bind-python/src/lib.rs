@@ -283,7 +283,7 @@ fn compile(
         .add_document(filename, source)
         .map_err(|e| PyRuntimeStringError(format!("Parse error: {e}")))?;
 
-    let mut report = session.compile_model_best_effort(model_name);
+    let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
     let result = match report.requested_result.take() {
         Some(PhaseResult::Success(result)) => *result,
         _ => return Err(PyRuntimeStringError(report.failure_summary(10))),

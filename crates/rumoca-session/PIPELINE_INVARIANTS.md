@@ -20,7 +20,7 @@ with full modification context (MLS behavior for evaluated dimensions).
 
 - `build_resolved_with_diagnostics()` is the canonical tree-build API for diagnostic-first flows.
 - Single-document sessions use strict unresolved-name/function behavior.
-- Multi-document/library sessions use best-effort resolve flags to avoid aborting on unrelated
+- Multi-document/library indexing flows use tolerant resolve flags to avoid aborting on unrelated
   external library symbols.
 
 ## Per-Model Compile Contract
@@ -31,12 +31,19 @@ with full modification context (MLS behavior for evaluated dimensions).
 - `compile_model_phases()` is structured: returns `PhaseResult` so callers can classify
   success vs `NeedsInner` vs phase failure.
 - `compile_model_internal()` is the single phase pipeline entry point used by strict and
-  best-effort flows.
+  strict-reachable-with-recovery flows.
 
-## Best-Effort Compile Contract
+## Mode Vocabulary Contract
 
-- `compile_model_best_effort()` must preserve requested-model status while collecting related
-  failures in the same package scope.
+- `CompilationMode::StrictReachable` and
+  `CompilationMode::StrictReachableWithRecovery` are the compile-mode vocabulary.
+- `IndexingMode::Tolerant` is the indexing-mode vocabulary.
+- In Phase 1, strict-reachable variants currently share the same behavior path.
+
+## Strict-Reachable-With-Recovery Contract
+
+- `compile_model_strict_reachable_with_recovery()` must preserve requested-model status while
+  collecting related failures in the same package scope.
 - Parse and resolve diagnostics are included as `ModelFailureDiagnostic` entries.
 - The requested model is still treated strictly (`requested_result` and `requested_succeeded()`).
 
@@ -69,5 +76,5 @@ Normalization rules:
 - Resolved tree and model names are cached and invalidated on document mutation.
 - Parallel compile helpers (`compile_models_parallel`, `compile_all_parallel`) must share
   the same resolved snapshot.
-- Global phase timing counters are additive, resettable, and must remain best-effort
+- Global phase timing counters are additive, resettable, and must remain non-normative
   instrumentation only (no behavior changes).

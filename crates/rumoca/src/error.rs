@@ -65,10 +65,10 @@ pub enum CompilerError {
     #[diagnostic(code(rumoca::compiler::E011))]
     JsonError(String),
 
-    /// Best-effort compilation failure with aggregated diagnostics.
-    #[error("best-effort compilation failed: {summary}")]
+    /// Strict compile failure with aggregated diagnostics.
+    #[error("compilation failed: {summary}")]
     #[diagnostic(code(rumoca::compiler::E012))]
-    BestEffortError {
+    CompileDiagnosticsError {
         summary: String,
         failures: Vec<ModelFailureDiagnostic>,
         source_map: Option<SourceMap>,
