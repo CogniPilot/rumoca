@@ -27,9 +27,11 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use miette::{Diagnostic, NamedSource, Report, SourceSpan};
 use rumoca::{CompilationResult, Compiler, sim_report};
 use rumoca_session::project::{ProjectFileMoveHint, resync_model_sidecars_with_move_hints};
 use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
+use thiserror::Error;
 use walkdir::WalkDir;
 
 /// Git version string
@@ -278,7 +280,25 @@ enum CompletionShell {
     PowerShell,
 }
 
-fn main() -> Result<()> {
+#[derive(Debug, Error, Diagnostic)]
+#[error("{message}")]
+struct CliSourceDiagnostic {
+    message: String,
+    #[source_code]
+    source_code: NamedSource<String>,
+    #[label("{label}")]
+    span: SourceSpan,
+    label: String,
+}
+
+fn main() {
+    if let Err(error) = try_main() {
+        print_cli_error(&error);
+        std::process::exit(1);
+    }
+}
+
+fn try_main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Compile(args) => run_compile(args),
@@ -292,6 +312,110 @@ fn main() -> Result<()> {
         }
         Commands::Project(args) => run_project(args),
     }
+}
+
+fn print_cli_error(error: &anyhow::Error) {
+    if let Some(report) = build_cli_miette_report(error) {
+        eprintln!("{report:?}");
+    } else {
+        eprintln!("Error: {error}");
+    }
+}
+
+fn build_cli_miette_report(error: &anyhow::Error) -> Option<Report> {
+    let message = error.to_string();
+    if !message.contains("best-effort compilation failed") {
+        return None;
+    }
+
+    let (file_name, line, column) = extract_message_location(&message)?;
+    let source = std::fs::read_to_string(&file_name).ok()?;
+    let start = line_col_to_byte_offset(&source, line, column)?;
+    let end = statement_end_offset(&source, start);
+
+    let diagnostic = CliSourceDiagnostic {
+        message,
+        source_code: NamedSource::new(file_name.clone(), source),
+        span: (start, end.saturating_sub(start).max(1)).into(),
+        label: "root cause".to_string(),
+    };
+    Some(Report::new(diagnostic))
+}
+
+fn extract_message_location(message: &str) -> Option<(String, usize, usize)> {
+    let mut fallback = None;
+
+    for (offset, _) in message.match_indices(" at ") {
+        let location = message[offset + " at ".len()..]
+            .split_whitespace()
+            .next()
+            .map(|token| token.trim_end_matches([',', ';']))?;
+        let Some(parsed) = parse_location_token(location) else {
+            continue;
+        };
+
+        if Path::new(&parsed.0).exists() {
+            return Some(parsed);
+        }
+        if fallback.is_none() {
+            fallback = Some(parsed);
+        }
+    }
+
+    fallback
+}
+
+fn parse_location_token(token: &str) -> Option<(String, usize, usize)> {
+    let col_sep = token.rfind(':')?;
+    let (file_and_line, col_raw) = token.split_at(col_sep);
+    let line_sep = file_and_line.rfind(':')?;
+    let (file_raw, line_raw) = file_and_line.split_at(line_sep);
+    let line = line_raw.trim_start_matches(':').parse::<usize>().ok()?;
+    let column = col_raw.trim_start_matches(':').parse::<usize>().ok()?;
+    if line == 0 || column == 0 {
+        return None;
+    }
+    Some((file_raw.to_string(), line, column))
+}
+
+fn line_col_to_byte_offset(source: &str, line: usize, column: usize) -> Option<usize> {
+    if line == 0 || column == 0 {
+        return None;
+    }
+
+    let mut current_line = 1usize;
+    let mut line_start = 0usize;
+
+    for segment in source.split_inclusive('\n') {
+        let segment_len = segment.len();
+        let line_end = line_start + segment_len;
+        if current_line == line {
+            let line_content = segment.trim_end_matches('\n');
+            let column_offset = column.saturating_sub(1).min(line_content.len());
+            return Some(line_start + column_offset);
+        }
+        line_start = line_end;
+        current_line += 1;
+    }
+
+    if current_line == line {
+        let column_offset = column.saturating_sub(1).min(source.len() - line_start);
+        return Some(line_start + column_offset);
+    }
+
+    None
+}
+
+fn statement_end_offset(source: &str, start: usize) -> usize {
+    if start >= source.len() {
+        return source.len();
+    }
+    let line_end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |idx| start + idx);
+    source[start..line_end]
+        .find(';')
+        .map_or(line_end, |idx| start + idx + 1)
 }
 
 fn run_project(args: ProjectArgs) -> Result<()> {
@@ -1027,5 +1151,28 @@ mod tests {
                 "/tmp/libC".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn parse_location_token_extracts_path_line_column() {
+        let parsed = parse_location_token("dev/sample/Ball.mo:2:5").expect("parse location");
+        assert_eq!(parsed.0, "dev/sample/Ball.mo");
+        assert_eq!(parsed.1, 2);
+        assert_eq!(parsed.2, 5);
+    }
+
+    #[test]
+    fn line_col_to_byte_offset_maps_to_requested_position() {
+        let source = "model Ball\n  import X;\nend Ball;\n";
+        let offset = line_col_to_byte_offset(source, 2, 3).expect("offset");
+        assert_eq!(&source[offset..offset + 6], "import");
+    }
+
+    #[test]
+    fn statement_end_offset_extends_to_semicolon() {
+        let source = "model Ball\n  import A.B.C;\nend Ball;\n";
+        let start = source.find("import").expect("import keyword");
+        let end = statement_end_offset(source, start);
+        assert_eq!(&source[start..end], "import A.B.C;");
     }
 }
