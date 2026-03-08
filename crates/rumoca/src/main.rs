@@ -21,6 +21,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -588,12 +589,63 @@ fn compile_with_inferred_model(args: &ModelInputArgs) -> Result<(CompilationResu
         None => infer_model_name(&args.model_file)?,
     };
 
+    let (libraries, used_legacy_modelica_path_alias) = merged_library_paths(&args.libraries);
+    if used_legacy_modelica_path_alias && args.verbose {
+        eprintln!("[rumoca] MODELICPATH is deprecated; prefer MODELICAPATH.");
+    }
+
     let compiler = Compiler::new()
         .model(&model)
         .verbose(args.verbose)
-        .libraries(&args.libraries);
+        .libraries(&libraries);
     let result = compiler.compile_file(&args.model_file)?;
     Ok((result, model))
+}
+
+fn split_path_list(raw: Option<OsString>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    std::env::split_paths(&raw)
+        .filter(|entry| !entry.as_os_str().is_empty())
+        .map(|entry| entry.to_string_lossy().to_string())
+        .collect()
+}
+
+fn merged_library_paths(cli_paths: &[String]) -> (Vec<String>, bool) {
+    let env_modelica_paths = split_path_list(std::env::var_os("MODELICAPATH"));
+    let env_legacy_paths = split_path_list(std::env::var_os("MODELICPATH"));
+    merge_library_path_sources(cli_paths, &env_modelica_paths, &env_legacy_paths)
+}
+
+fn merge_library_path_sources(
+    cli_paths: &[String],
+    env_modelica_paths: &[String],
+    env_legacy_paths: &[String],
+) -> (Vec<String>, bool) {
+    let used_legacy_alias = !env_legacy_paths.is_empty();
+
+    let mut merged = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in env_modelica_paths
+        .iter()
+        .chain(env_legacy_paths.iter())
+        .chain(cli_paths.iter())
+    {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let key = if cfg!(windows) {
+            trimmed.to_ascii_lowercase()
+        } else {
+            trimmed.to_string()
+        };
+        if seen.insert(key) {
+            merged.push(trimmed.to_string());
+        }
+    }
+    (merged, used_legacy_alias)
 }
 
 fn infer_model_name(model_file: &str) -> Result<String> {
@@ -948,6 +1000,32 @@ mod tests {
         assert!(
             error.to_string().contains("Pass --model <NAME>"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn split_path_list_parses_multiple_entries() {
+        let joined = std::env::join_paths([PathBuf::from("libA"), PathBuf::from("libB")])
+            .expect("join paths");
+        let parsed = split_path_list(Some(joined));
+        assert_eq!(parsed, vec!["libA".to_string(), "libB".to_string()]);
+    }
+
+    #[test]
+    fn merged_library_paths_prefers_cli_and_dedups() {
+        let cli = vec!["/tmp/libA".to_string(), "/tmp/libA".to_string()];
+        let env_modelica = vec!["/tmp/libB".to_string()];
+        let env_legacy = vec!["/tmp/libA".to_string(), "/tmp/libC".to_string()];
+        let (merged, used_legacy_alias) =
+            merge_library_path_sources(&cli, &env_modelica, &env_legacy);
+        assert!(used_legacy_alias);
+        assert_eq!(
+            merged,
+            vec![
+                "/tmp/libB".to_string(),
+                "/tmp/libA".to_string(),
+                "/tmp/libC".to_string()
+            ]
         );
     }
 }

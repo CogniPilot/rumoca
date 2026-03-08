@@ -59,11 +59,22 @@ library_overrides = ["libs/custom"]
     assert_eq!(effective.solver, "bdf");
     assert_eq!(effective.t_end, 12.0);
     assert_eq!(effective.dt, Some(0.01));
-    assert_eq!(effective.library_paths.len(), 1);
+    assert_eq!(effective.library_paths.len(), 2);
     assert!(
-        effective.library_paths[0].ends_with("libs/custom"),
-        "resolved path: {}",
-        effective.library_paths[0]
+        effective
+            .library_paths
+            .iter()
+            .any(|path| path.ends_with("libs/msl")),
+        "resolved paths: {:?}",
+        effective.library_paths
+    );
+    assert!(
+        effective
+            .library_paths
+            .iter()
+            .any(|path| path.ends_with("libs/custom")),
+        "resolved paths: {:?}",
+        effective.library_paths
     );
 
     let all_paths = config.resolve_all_library_paths();
