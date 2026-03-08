@@ -165,7 +165,7 @@ Session pipeline invariants and failure contracts:
 | Crate                | Key Features                                                                                                                            |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `rumoca`             | Primary compiler crate and end-user CLI (`check/compile/simulate/fmt/lint/project`) plus compiler API (`Compiler`, `CompilationResult`) |
-| `rumoca-session`     | Unified multi-file session API, parallel parse/compile helpers, best-effort compile reports                                             |
+| `rumoca-session`     | Unified multi-file session API, parallel parse/compile helpers, and explicit strict-reachable compile mode vocabulary                     |
 | `rumoca-tool-fmt`    | Modelica formatter engine used by `rumoca fmt` and dev tooling                                                                          |
 | `rumoca-tool-lint`   | Modelica lint engine (library API) with configurable rules and severity levels                                                          |
 | `rumoca-tool-lsp`    | Language server (`rumoca-lsp`) with diagnostics, completion, hover, symbols, formatting, code actions                                   |
