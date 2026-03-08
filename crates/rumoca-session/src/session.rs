@@ -89,6 +89,27 @@ pub struct SessionConfig {
     pub parallel: bool,
 }
 
+/// Targeted compilation execution mode.
+///
+/// Phase 1 note: both variants currently use the same behavior path while the
+/// strict reachable planner is being extracted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompilationMode {
+    /// Strict compile semantics for target and reachable dependencies.
+    StrictReachable,
+    /// Strict compile semantics with internal recovery to collect diagnostics.
+    #[default]
+    StrictReachableWithRecovery,
+}
+
+/// Library/workspace indexing execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndexingMode {
+    /// Continue indexing with partial results when some files fail.
+    #[default]
+    Tolerant,
+}
+
 /// A document in the session.
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -130,7 +151,7 @@ pub struct ModelDiagnostics {
     pub source_map: Option<SourceMap>,
 }
 
-/// Failure diagnostic for a single model in a best-effort compilation pass.
+/// Failure diagnostic for a single model in a strict-reachable-with-recovery pass.
 #[derive(Debug, Clone)]
 pub struct ModelFailureDiagnostic {
     pub model_name: String,
@@ -140,13 +161,13 @@ pub struct ModelFailureDiagnostic {
     pub primary_label: Option<Label>,
 }
 
-/// Report from compiling a requested model in best-effort mode.
+/// Report type from strict-reachable-with-recovery compilation.
 ///
 /// The requested model remains strict: it must compile successfully for callers
 /// to treat the compile as successful. Other related models are still compiled
 /// so additional diagnostics can be surfaced to the user.
 #[derive(Debug)]
-pub struct BestEffortCompilationReport {
+pub struct StrictCompileReport {
     pub requested_model: String,
     pub requested_result: Option<PhaseResult>,
     pub summary: CompilationSummary,
@@ -154,7 +175,7 @@ pub struct BestEffortCompilationReport {
     pub source_map: Option<SourceMap>,
 }
 
-impl BestEffortCompilationReport {
+impl StrictCompileReport {
     /// Returns true when the requested model compiled successfully.
     pub fn requested_succeeded(&self) -> bool {
         matches!(self.requested_result, Some(PhaseResult::Success(_)))
@@ -770,8 +791,8 @@ impl Session {
         let parsed = ast::ParsedTree::new(tree);
         let resolve_options = ResolveOptions {
             // Single-document diagnostics should be strict so unresolved names
-            // surface at the actual source site. Multi-document/library sessions
-            // remain best-effort to avoid aborting on unrelated library symbols.
+            // surface at the actual source site. Multi-document/library indexing
+            // stays tolerant to avoid aborting on unrelated library symbols.
             unresolved_component_refs_are_errors: !multi_document_session,
             unresolved_function_calls_are_errors: !multi_document_session,
         };
@@ -945,11 +966,15 @@ impl Session {
         Ok((results, summary))
     }
 
-    /// Compile the requested model and related models in best-effort mode.
+    /// Compile the requested model using strict-reachable semantics with
+    /// internal recovery to surface additional diagnostics.
     ///
-    /// This compiles the requested model strictly, but also compiles models in
-    /// the same package scope so users get a broader, actionable diagnostic set.
-    pub fn compile_model_best_effort(&mut self, model_name: &str) -> BestEffortCompilationReport {
+    /// Phase 1 behavior compiles the requested model strictly while collecting
+    /// related failures within the same package scope.
+    pub fn compile_model_strict_reachable_with_recovery(
+        &mut self,
+        model_name: &str,
+    ) -> StrictCompileReport {
         let mut failures = collect_parse_failures(&self.documents);
 
         let resolved = match self.build_resolved_with_diagnostics() {
@@ -966,7 +991,7 @@ impl Session {
                 for doc in self.documents.values() {
                     source_map.add(&doc.uri, &doc.content);
                 }
-                return BestEffortCompilationReport {
+                return StrictCompileReport {
                     requested_model: model_name.to_string(),
                     requested_result: None,
                     summary: CompilationSummary::default(),
@@ -991,12 +1016,27 @@ impl Session {
             }
         }
 
-        BestEffortCompilationReport {
+        StrictCompileReport {
             requested_model: model_name.to_string(),
             requested_result,
             summary,
             failures,
             source_map: Some(tree.source_map.clone()),
+        }
+    }
+
+    /// Compile a model with an explicit compilation mode.
+    ///
+    /// Phase 1 note: both strict-reachable variants currently share behavior.
+    pub fn compile_model_with_mode(
+        &mut self,
+        model_name: &str,
+        mode: CompilationMode,
+    ) -> StrictCompileReport {
+        match mode {
+            CompilationMode::StrictReachable | CompilationMode::StrictReachableWithRecovery => {
+                self.compile_model_strict_reachable_with_recovery(model_name)
+            }
         }
     }
 

@@ -856,13 +856,13 @@ impl Compiler {
 
         if self.verbose {
             eprintln!(
-                "[rumoca] Phase 3-6: Best-effort compile (requested model + related models)..."
+                "[rumoca] Phase 3-6: Strict-reachable compile (with recovery diagnostics)..."
             );
         }
 
-        let mut best_effort = session.compile_model_best_effort(model_name);
-        let failure_summary = best_effort.failure_summary(usize::MAX);
-        let result = match best_effort.requested_result.take() {
+        let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
+        let failure_summary = report.failure_summary(usize::MAX);
+        let result = match report.requested_result.take() {
             Some(PhaseResult::Success(result)) => *result,
             Some(PhaseResult::NeedsInner { .. }) => {
                 return Err(CompilerError::InstantiateError(failure_summary));
@@ -877,10 +877,10 @@ impl Compiler {
                 return Err(err);
             }
             None => {
-                return Err(CompilerError::BestEffortError {
+                return Err(CompilerError::CompileDiagnosticsError {
                     summary: failure_summary,
-                    failures: best_effort.failures,
-                    source_map: best_effort.source_map,
+                    failures: report.failures,
+                    source_map: report.source_map,
                 });
             }
         };
@@ -1104,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn test_best_effort_requested_success_with_related_failures() {
+    fn test_strict_reachable_requested_success_with_related_failures() {
         let source = r#"
             package P
               model Good
@@ -1132,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_best_effort_requested_failure_includes_related_context() {
+    fn test_strict_reachable_requested_failure_includes_related_context() {
         let source = r#"
             package P
               model Good
