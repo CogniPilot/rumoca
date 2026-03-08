@@ -38,12 +38,14 @@ with full modification context (MLS behavior for evaluated dimensions).
 - `CompilationMode::StrictReachable` and
   `CompilationMode::StrictReachableWithRecovery` are the compile-mode vocabulary.
 - `IndexingMode::Tolerant` is the indexing-mode vocabulary.
-- In Phase 1, strict-reachable variants currently share the same behavior path.
+- Strict-reachable variants currently share the same behavior path.
 
 ## Strict-Reachable-With-Recovery Contract
 
 - `compile_model_strict_reachable_with_recovery()` must preserve requested-model status while
-  collecting related failures in the same package scope.
+  collecting failures from the requested model's reachable transitive dependency closure.
+- Parse failures from documents outside that closure must not be surfaced as strict-compile
+  failures.
 - Parse and resolve diagnostics are included as `ModelFailureDiagnostic` entries.
 - The requested model is still treated strictly (`requested_result` and `requested_succeeded()`).
 
