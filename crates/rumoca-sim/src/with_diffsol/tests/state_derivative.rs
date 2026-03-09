@@ -222,6 +222,203 @@ fn test_compute_mass_matrix_keeps_coupled_derivative_offdiagonals() {
 }
 
 #[test]
+fn test_compute_mass_matrix_errors_when_state_row_has_no_derivative_term() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.algebraics
+        .insert(VarName::new("z"), Variable::new(VarName::new("z")));
+
+    // No der(x) term in the state row.
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(var_ref("x"), var_ref("z")),
+        span: Span::DUMMY,
+        origin: "alg_x".to_string(),
+        scalar_count: 1,
+    });
+
+    let budget = TimeoutBudget::new(None);
+    let err = crate::compute_mass_matrix(&dae, 1, &[], &budget)
+        .expect_err("mass matrix derivation should fail when a state row has no derivative term");
+    match err {
+        crate::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+            row,
+            state_name,
+            origin,
+            reason,
+        } => {
+            assert_eq!(row, 0);
+            assert_eq!(state_name, "x");
+            assert_eq!(origin, "alg_x");
+            assert!(
+                reason.contains("does not contain any der(state) term"),
+                "unexpected reason: {reason}"
+            );
+        }
+        other => panic!("expected NonDerivable error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_compute_mass_matrix_errors_when_derivative_coefficients_collapse_to_zero() {
+    fn der(name: &str) -> Expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var_ref(name)],
+        }
+    }
+    fn mul(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: OpBinary::Mul(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+    fn add(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: OpBinary::Add(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+
+    // Contains der(x), but with zero coefficient.
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(add(mul(real(0.0), der("x")), var_ref("x")), real(0.0)),
+        span: Span::DUMMY,
+        origin: "degenerate_derivative".to_string(),
+        scalar_count: 1,
+    });
+
+    let budget = TimeoutBudget::new(None);
+    let err = crate::compute_mass_matrix(&dae, 1, &[], &budget)
+        .expect_err("zero-derivative coefficient row should be rejected");
+    match err {
+        crate::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+            row,
+            state_name,
+            origin,
+            reason,
+        } => {
+            assert_eq!(row, 0);
+            assert_eq!(state_name, "x");
+            assert_eq!(origin, "degenerate_derivative");
+            assert!(
+                reason.contains("approximately zero"),
+                "unexpected reason: {reason}"
+            );
+        }
+        other => panic!("expected NonDerivable error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_compute_mass_matrix_errors_on_unsupported_derivative_expression_shape() {
+    fn der(name: &str) -> Expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var_ref(name)],
+        }
+    }
+
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+
+    // Derivative appears under an if-expression.
+    // This is intentionally rejected for DiffSol mass-matrix derivation.
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: Expression::If {
+            branches: vec![(Expression::Literal(Literal::Boolean(true)), der("x"))],
+            else_branch: Box::new(real(0.0)),
+        },
+        span: Span::DUMMY,
+        origin: "piecewise_derivative".to_string(),
+        scalar_count: 1,
+    });
+
+    let budget = TimeoutBudget::new(None);
+    let err = crate::compute_mass_matrix(&dae, 1, &[], &budget).expect_err(
+        "unsupported derivative-dependent expression shape should fail mass-matrix derivation",
+    );
+    match err {
+        crate::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+            row,
+            state_name,
+            origin,
+            reason,
+        } => {
+            assert_eq!(row, 0);
+            assert_eq!(state_name, "x");
+            assert_eq!(origin, "piecewise_derivative");
+            assert!(
+                reason.contains("unsupported derivative-dependent expression shape"),
+                "unexpected reason: {reason}"
+            );
+        }
+        other => panic!("expected NonDerivable error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_simulate_errors_when_mass_matrix_form_cannot_be_derived() {
+    fn der(name: &str) -> Expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var_ref(name)],
+        }
+    }
+    fn mul(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: OpBinary::Mul(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+    fn add(lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op: OpBinary::Add(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+
+    // der(x) exists syntactically, but the coefficient is identically zero.
+    // DiffSol mass-matrix preparation must fail loudly.
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(add(mul(real(0.0), der("x")), var_ref("x")), real(0.0)),
+        span: Span::DUMMY,
+        origin: "degenerate_derivative".to_string(),
+        scalar_count: 1,
+    });
+
+    let result = simulate(&dae, &SimOptions::default());
+    assert!(
+        matches!(
+            result,
+            Err(SimError::MassMatrixForm {
+                row: 0,
+                ref state_name,
+                ..
+            }) if state_name == "x"
+        ),
+        "expected explicit mass-matrix derivation failure, got: {result:?}"
+    );
+}
+
+#[test]
 fn test_index_reduction_does_nothing_without_state_constraint_candidate() {
     let mut dae = Dae::new();
     dae.states

@@ -1082,7 +1082,6 @@ fn test_index_library_tolerant_reports_parse_failure_without_inserting_docs() {
 
 #[test]
 fn test_compile_model_phases_uses_cache_until_session_invalidated() {
-    reset_compile_phase_timing_stats();
     let mut session = Session::default();
     session
         .add_document(
@@ -1091,26 +1090,27 @@ fn test_compile_model_phases_uses_cache_until_session_invalidated() {
         )
         .expect("test setup should parse");
 
-    let before = compile_phase_timing_stats();
     let first = session
         .compile_model_phases("M")
         .expect("first compile should run");
     assert!(matches!(first, PhaseResult::Success(_)));
-    let after_first = compile_phase_timing_stats();
-    assert!(
-        after_first.instantiate.calls > before.instantiate.calls,
-        "first compile should execute instantiate"
-    );
+    let cache_entry = session
+        .compile_cache
+        .get_mut("M")
+        .expect("M should have compile cache entry after first compile");
+    cache_entry.result = PhaseResult::NeedsInner {
+        missing_inners: vec!["cached-M".to_string()],
+    };
 
     let second = session
         .compile_model_phases("M")
         .expect("second compile should use cache");
-    assert!(matches!(second, PhaseResult::Success(_)));
-    let after_second = compile_phase_timing_stats();
-    assert_eq!(
-        after_second.instantiate.calls, after_first.instantiate.calls,
-        "second compile should be served from cache"
-    );
+    match second {
+        PhaseResult::NeedsInner { missing_inners } => {
+            assert_eq!(missing_inners, vec!["cached-M".to_string()]);
+        }
+        other => panic!("expected cached result on second compile, got {other:?}"),
+    }
 
     let parse_err = session.update_document(
         "test.mo",
@@ -1124,10 +1124,8 @@ fn test_compile_model_phases_uses_cache_until_session_invalidated() {
     let third = session
         .compile_model_phases("M")
         .expect("third compile should run after invalidation");
-    assert!(matches!(third, PhaseResult::Success(_)));
-    let after_third = compile_phase_timing_stats();
     assert!(
-        after_third.instantiate.calls > after_second.instantiate.calls,
+        matches!(third, PhaseResult::Success(_)),
         "cache should invalidate after document update"
     );
 }
