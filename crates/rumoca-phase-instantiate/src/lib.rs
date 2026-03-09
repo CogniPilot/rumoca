@@ -1179,6 +1179,7 @@ fn build_instance_data(
     let instance_data = ast::InstanceData {
         instance_id: args.instance_id,
         qualified_name: args.qualified_name,
+        source_location: args.comp.location.clone(),
         dims: args.dims,
         dims_expr: args.dims_expr,
         type_id: args.type_id,

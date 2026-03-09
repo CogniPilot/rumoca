@@ -216,8 +216,13 @@ fn collapse_whitespace(message: &str) -> String {
 
 fn collect_diagnostic_target_names(ast: &ast::StoredDefinition) -> Vec<String> {
     let mut names = Vec::new();
+    let root_prefix = ast
+        .within
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
     for (name, class) in &ast.classes {
-        collect_diagnostic_targets_from_class("", name, class, &mut names);
+        collect_diagnostic_targets_from_class(&root_prefix, name, class, &mut names);
     }
     names
 }
@@ -290,10 +295,11 @@ fn preferred_range(
     source_map: Option<&SourceMap>,
 ) -> Option<Range> {
     if diag.labels.is_empty() {
-        panic!(
-            "diagnostic must include at least one label: code={:?} message={}",
+        eprintln!(
+            "[rumoca-lsp] unlabeled diagnostic, using top-left range: code={:?} message={}",
             diag.code, diag.message
         );
+        return Some(top_left_range(source));
     }
 
     // Prefer labels that belong to the current file.
@@ -306,7 +312,9 @@ fn preferred_range(
             .iter()
             .find(|label| label_in_file(label, file_name, source_map))
     })?;
-    Some(strict_span_to_range(diag, source, label))
+    let label_source = label_source_text(source, file_name, source_map, label);
+    strict_span_to_range(diag, label_source, label)
+        .or_else(|| strict_span_to_range(diag, source, label))
 }
 
 fn label_in_file(
@@ -332,24 +340,48 @@ fn span_to_range(source: &str, start_byte: usize, end_byte: usize) -> Range {
     Range { start, end }
 }
 
+fn label_source_text<'a>(
+    source: &'a str,
+    file_name: &str,
+    source_map: Option<&'a SourceMap>,
+    label: &rumoca_core::Label,
+) -> &'a str {
+    let Some(source_map) = source_map else {
+        return source;
+    };
+    let Some((name, content)) = source_map.get_source(label.span.source) else {
+        return source;
+    };
+    if name == file_name { content } else { source }
+}
+
 fn strict_span_to_range(
     diag: &CommonDiagnostic,
     source: &str,
     label: &rumoca_core::Label,
-) -> Range {
+) -> Option<Range> {
     let start = label.span.start.0;
     let end = label.span.end.0;
     if end <= start || end > source.len() {
-        panic!(
-            "diagnostic label span is invalid: code={:?} message={} start={} end={} source_len={}",
+        eprintln!(
+            "[rumoca-lsp] dropping invalid label span: code={:?} message={} start={} end={} source_len={}",
             diag.code,
             diag.message,
             start,
             end,
             source.len()
         );
+        return None;
     }
-    span_to_range(source, start, end)
+    Some(span_to_range(source, start, end))
+}
+
+fn top_left_range(source: &str) -> Range {
+    let end_char = source.chars().next().map_or(0, |ch| ch.len_utf16() as u32);
+    Range {
+        start: Position::new(0, 0),
+        end: Position::new(0, end_char),
+    }
 }
 
 fn is_placeholder_parse_span(start_byte: usize, end_byte: usize) -> bool {
@@ -696,7 +728,7 @@ fn lint_to_diagnostic(msg: &LintMessage) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::compile::core::{Label, Span};
+    use rumoca_session::compile::core::{PrimaryLabel, Span};
 
     #[test]
     fn parse_diagnostics_include_precise_range_and_compact_message() {
@@ -837,6 +869,22 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_target_names_include_within_prefix() {
+        let source = "within Modelica.Blocks;\npackage Continuous\n  block PID\n  end PID;\nend Continuous;\n";
+        let ast = parse_source_to_ast_with_errors(source, "input.mo")
+            .expect("expected valid AST for within-qualified package");
+        let targets = collect_diagnostic_target_names(&ast);
+        assert!(
+            targets.contains(&"Modelica.Blocks.Continuous".to_string()),
+            "expected top-level target with within prefix, got: {targets:?}"
+        );
+        assert!(
+            targets.contains(&"Modelica.Blocks.Continuous.PID".to_string()),
+            "expected nested target with within prefix, got: {targets:?}"
+        );
+    }
+
+    #[test]
     fn common_diagnostics_map_spans_to_editor_ranges() {
         let source = "model M\n  Real x;\n  Real y;\nequation\n  x = y;\nend M;\n";
         let mut source_map = SourceMap::new();
@@ -844,9 +892,8 @@ mod tests {
 
         // Span points to the `y` token in `x = y;`.
         let span = Span::from_offsets(source_id, 45, 46);
-        let diag = CommonDiagnostic::error("undefined variable `y`")
-            .with_code("ET001")
-            .with_label(Label::primary(span));
+        let diag =
+            CommonDiagnostic::error("ET001", "undefined variable `y`", PrimaryLabel::new(span));
 
         let converted = common_diagnostic_to_lsp(&diag, source, "input.mo", Some(&source_map))
             .expect("expected span-based diagnostic conversion");
@@ -863,11 +910,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "diagnostic must include at least one label")]
-    fn diagnostics_without_labels_panic() {
+    fn diagnostics_without_labels_use_top_left_range() {
         let source = "model M\n  Real x;\nend M;\n";
-        let diag = CommonDiagnostic::error("model-level failure without source labels");
-        let _ = common_diagnostic_to_lsp(&diag, source, "input.mo", None);
+        let diag =
+            CommonDiagnostic::global_error("EI000", "model-level failure without source labels");
+        let converted = common_diagnostic_to_lsp(&diag, source, "input.mo", None);
+        assert!(
+            converted.is_some(),
+            "expected unlabeled diagnostic to use top-left fallback range"
+        );
     }
 
     #[test]

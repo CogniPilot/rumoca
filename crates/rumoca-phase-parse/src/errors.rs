@@ -3,7 +3,7 @@
 //! Error codes: EP0xx for parse phase (per SPEC_0008).
 
 use parol_runtime::errors::{ParolError, ParserError, SyntaxError};
-use rumoca_core::{BytePos, Diagnostic, Label, PhaseError, SourceId, Span};
+use rumoca_core::{BytePos, Diagnostic, PhaseError, PrimaryLabel, SourceId, Span};
 use rumoca_ir_ast as ast;
 
 /// Parse-phase semantic error carrying a concrete source span.
@@ -148,6 +148,40 @@ pub enum ParseError {
     IoError { path: String, message: String },
 }
 
+const EP001_SYNTAX_ERROR: &str = "EP001";
+const EP002_NO_AST_PRODUCED: &str = "EP002";
+const EP003_IO_ERROR: &str = "EP003";
+
+fn default_parse_span() -> Span {
+    Span::from_offsets(SourceId(0), 0, 1)
+}
+
+fn normalize_span(span: Span) -> Span {
+    let span = if span == Span::DUMMY {
+        default_parse_span()
+    } else {
+        span
+    };
+    if span.end.0 <= span.start.0 {
+        Span::from_offsets(span.source, span.start.0, span.start.0.saturating_add(1))
+    } else {
+        span
+    }
+}
+
+fn fallback_span_from_source(source: &str) -> Span {
+    if source.is_empty() {
+        return default_parse_span();
+    }
+
+    if let Some((start, ch)) = source.char_indices().find(|(_, ch)| !ch.is_whitespace()) {
+        return Span::from_offsets(SourceId(0), start, start + ch.len_utf8());
+    }
+
+    let end = source.chars().next().map_or(1, |ch| ch.len_utf8());
+    Span::from_offsets(SourceId(0), 0, end)
+}
+
 impl PhaseError for ParseError {
     fn to_diagnostic(&self) -> Diagnostic {
         match self {
@@ -157,14 +191,16 @@ impl PhaseError for ParseError {
                 unexpected,
                 span,
             } => {
-                let mut diag = Diagnostic::error(message).with_code("EP001");
-
-                // Add primary label at error location
                 let label_msg = unexpected
                     .as_ref()
                     .map(|u| format!("unexpected `{}`", u))
                     .unwrap_or_else(|| "error here".to_string());
-                diag = diag.with_label(Label::primary(*span).with_message(label_msg));
+
+                let mut diag = Diagnostic::error(
+                    EP001_SYNTAX_ERROR,
+                    message,
+                    PrimaryLabel::new(normalize_span(*span)).with_message(label_msg),
+                );
 
                 // Add expected tokens as a note
                 if let Some(expected_str) = format_expected(expected) {
@@ -173,13 +209,16 @@ impl PhaseError for ParseError {
 
                 diag
             }
-            Self::NoAstProduced => {
-                Diagnostic::error("parsing succeeded but no AST was produced").with_code("EP002")
-            }
-            Self::IoError { path, message } => {
-                Diagnostic::error(format!("failed to read `{}`: {}", path, message))
-                    .with_code("EP003")
-            }
+            Self::NoAstProduced => Diagnostic::error(
+                EP002_NO_AST_PRODUCED,
+                "parsing succeeded but no AST was produced",
+                PrimaryLabel::new(default_parse_span()).with_message("at start of input"),
+            ),
+            Self::IoError { path, message } => Diagnostic::error(
+                EP003_IO_ERROR,
+                format!("failed to read `{}`: {}", path, message),
+                PrimaryLabel::new(default_parse_span()).with_message("while reading source input"),
+            ),
         }
     }
 }
@@ -193,7 +232,7 @@ pub fn convert_parol_error(err: ParolError, source: &str) -> Vec<ParseError> {
                 message: format!("lexer error: {}", lexer_err),
                 expected: vec![],
                 unexpected: None,
-                span: Span::DUMMY,
+                span: fallback_span_from_source(source),
             }]
         }
         ParolError::UserError(user_err) => {
@@ -209,7 +248,7 @@ pub fn convert_parol_error(err: ParolError, source: &str) -> Vec<ParseError> {
                 message: format!("parse error: {}", user_err),
                 expected: vec![],
                 unexpected: None,
-                span: Span::DUMMY,
+                span: fallback_span_from_source(source),
             }]
         }
     }
@@ -235,7 +274,7 @@ fn convert_parser_error(err: ParserError, source: &str) -> Vec<ParseError> {
                 message: format!("syntax error: {}", cause),
                 expected: vec![],
                 unexpected: None,
-                span: Span::DUMMY,
+                span: fallback_span_from_source(source),
             }]
         }
         other => {
@@ -243,7 +282,7 @@ fn convert_parser_error(err: ParserError, source: &str) -> Vec<ParseError> {
                 message: format!("parse error: {}", other),
                 expected: vec![],
                 unexpected: None,
-                span: Span::DUMMY,
+                span: fallback_span_from_source(source),
             }]
         }
     }
@@ -396,7 +435,7 @@ fn span_from_cause_location(cause: &str, source: &str) -> Option<Span> {
     if end <= start {
         end = start.saturating_add(1).min(source.len());
     }
-    Some(Span::from_offsets(SourceId(0), start, end))
+    Some(normalize_span(Span::from_offsets(SourceId(0), start, end)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,7 +630,7 @@ fn location_to_span(loc: &parol_runtime::lexer::Location) -> Span {
     let start = BytePos(loc.start as usize);
     let end = BytePos(loc.end as usize);
     // Use SourceId(0) as a placeholder - the actual source is tracked separately
-    Span::new(SourceId(0), start, end)
+    normalize_span(Span::new(SourceId(0), start, end))
 }
 
 fn ast_location_to_span(location: &rumoca_ir_core::Location) -> Span {

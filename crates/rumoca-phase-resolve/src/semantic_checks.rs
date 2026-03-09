@@ -4,9 +4,16 @@
 //! that can be validated purely from the AST without needing type information
 //! or instance data.
 
-use rumoca_core::{Diagnostic, Label, SourceMap};
+use rumoca_core::{Diagnostic, PrimaryLabel, SourceId, SourceMap, Span};
 use rumoca_ir_ast as ast;
-use std::collections::HashSet;
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
+
+#[path = "semantic_checks_expr.rs"]
+mod semantic_checks_expr;
+use semantic_checks_expr::*;
 
 type Causality = rumoca_ir_core::Causality;
 type ClassDef = ast::ClassDef;
@@ -16,11 +23,13 @@ type Connection = ast::Connection;
 type Equation = ast::Equation;
 type Expression = ast::Expression;
 type Import = ast::Import;
+type Location = rumoca_ir_core::Location;
 type OpBinary = rumoca_ir_core::OpBinary;
 type Statement = ast::Statement;
 type Subscript = ast::Subscript;
 type StoredDefinition = ast::StoredDefinition;
 type TerminalType = ast::TerminalType;
+type Token = rumoca_ir_core::Token;
 type Variability = rumoca_ir_core::Variability;
 
 // Resolve-phase semantic diagnostic codes (ER005+ reserved for semantic checks).
@@ -51,6 +60,14 @@ const ER028_UNBALANCED_CONNECTOR: &str = "ER028";
 const ER029_REAL_EQUALITY_COMPARISON: &str = "ER029";
 const ER030_DER_IN_FUNCTION: &str = "ER030";
 const ER031_END_OUTSIDE_SUBSCRIPT: &str = "ER031";
+const ER032_DUPLICATE_COMPONENT_NAME: &str = "ER032";
+const ER033_COMPONENT_CLASS_NAME_CONFLICT: &str = "ER033";
+const ER034_CONNECTOR_PROTECTED_ELEMENT: &str = "ER034";
+const ER035_INPUT_PARAMETER_COMBINATION: &str = "ER035";
+const ER036_COMPONENT_NAME_EQUALS_CLASS_NAME: &str = "ER036";
+const ER037_PACKAGE_NON_CONSTANT_COMPONENT: &str = "ER037";
+const ER038_FUNCTION_EQUATION_SECTION: &str = "ER038";
+const ER039_CHAINED_RELATIONAL_OPERATOR: &str = "ER039";
 
 /// Context tracking for nested traversal (function vs model, when depth, etc.)
 struct CheckContext {
@@ -71,12 +88,127 @@ impl CheckContext {
     }
 }
 
+thread_local! {
+    static ACTIVE_SEMANTIC_SOURCE_IDS: RefCell<Option<HashMap<String, SourceId>>> = const { RefCell::new(None) };
+}
+
+fn set_active_source_map(source_map: &SourceMap) {
+    ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
+        *slot.borrow_mut() = Some(source_map.source_ids());
+    })
+}
+
+fn source_id_for(file_name: &str) -> SourceId {
+    ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
+        let ids_ref = slot.borrow();
+        let ids = ids_ref
+            .as_ref()
+            .unwrap_or_else(|| panic!("semantic source ids are not initialized"));
+        *ids.get(file_name)
+            .unwrap_or_else(|| panic!("missing semantic source id for file '{file_name}'"))
+    })
+}
+
+fn span_from_location(location: &Location) -> Option<Span> {
+    if location.file_name.is_empty() {
+        return None;
+    }
+    let start = location.start as usize;
+    let end = (location.end as usize).max(start.saturating_add(1));
+    Some(Span::from_offsets(
+        source_id_for(&location.file_name),
+        start,
+        end,
+    ))
+}
+
+fn label_from_location(
+    location: &Location,
+    context: &str,
+    message: impl Into<String>,
+) -> Option<PrimaryLabel> {
+    let _ = context;
+    span_from_location(location).map(|span| PrimaryLabel::new(span).with_message(message))
+}
+
+fn label_from_token(token: &Token, context: &str, message: impl Into<String>) -> PrimaryLabel {
+    let _ = context;
+    let start = token.location.start as usize;
+    let end = (token.location.end as usize).max(start.saturating_add(1));
+    PrimaryLabel::new(Span::from_offsets(
+        source_id_for(&token.location.file_name),
+        start,
+        end,
+    ))
+    .with_message(message)
+}
+
+fn label_from_expression(
+    expr: &Expression,
+    context: &str,
+    message: impl Into<String>,
+) -> Option<PrimaryLabel> {
+    expr.get_location()
+        .and_then(|location| label_from_location(location, context, message))
+}
+
+fn label_from_equation(
+    eq: &Equation,
+    context: &str,
+    message: impl Into<String>,
+) -> Option<PrimaryLabel> {
+    eq.get_location()
+        .and_then(|location| label_from_location(location, context, message))
+}
+
+fn label_from_statement(
+    stmt: &Statement,
+    context: &str,
+    message: impl Into<String>,
+) -> Option<PrimaryLabel> {
+    stmt.get_location()
+        .and_then(|location| label_from_location(location, context, message))
+}
+
+fn label_from_expression_or_token(
+    expr: &Expression,
+    expr_context: &str,
+    token: &Token,
+    token_context: &str,
+    message: String,
+) -> PrimaryLabel {
+    label_from_expression(expr, expr_context, message.clone())
+        .unwrap_or_else(|| label_from_token(token, token_context, message))
+}
+
+fn semantic_error(
+    code: &str,
+    message: impl Into<String>,
+    primary_label: PrimaryLabel,
+) -> Diagnostic {
+    Diagnostic::error(code, message, primary_label)
+}
+
 /// Run all semantic checks on a StoredDefinition and collect diagnostics.
 pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
+    set_active_source_map(source_map);
+    run_semantic_checks(def)
+}
+
+/// Run all semantic check batches with a single active source-map setup.
+pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
+    set_active_source_map(source_map);
+    let mut diags = run_semantic_checks(def);
+    diags.extend(run_chained_relational_checks(def));
+    diags.extend(run_der_in_function_checks(def));
+    diags
+}
+
+fn run_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let mut ctx = CheckContext::new();
     for class in def.classes.values() {
-        check_class(class, def, source_map, &mut ctx, &mut diags);
+        check_class(class, def, &mut ctx, &mut diags);
     }
     diags
 }
@@ -84,11 +216,10 @@ pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Di
 fn check_class(
     class: &ClassDef,
     def: &StoredDefinition,
-    source_map: &SourceMap,
     ctx: &mut CheckContext,
     diags: &mut Vec<Diagnostic>,
 ) {
-    check_class_structural(class, def, source_map, diags);
+    check_class_structural(class, def, diags);
 
     let was_function = ctx.in_function;
     if class.class_type == ClassType::Function {
@@ -149,7 +280,7 @@ fn check_class(
 
     // Recurse into nested classes
     for nested in class.classes.values() {
-        check_class(nested, def, source_map, ctx, diags);
+        check_class(nested, def, ctx, diags);
     }
 
     ctx.in_function = was_function;
@@ -159,19 +290,14 @@ fn check_class(
 // Batch 1: Structural ClassDef checks
 // ============================================================================
 
-fn check_class_structural(
-    class: &ClassDef,
-    def: &StoredDefinition,
-    source_map: &SourceMap,
-    diags: &mut Vec<Diagnostic>,
-) {
+fn check_class_structural(class: &ClassDef, def: &StoredDefinition, diags: &mut Vec<Diagnostic>) {
     check_duplicate_names(class, diags);
     check_record_restrictions(class, diags);
     check_connector_restrictions(class, diags);
     check_input_parameter_combination(class, diags);
     check_component_name_vs_class_name(class, diags);
     check_package_restrictions(class, diags);
-    check_duplicate_imports(class, source_map, diags);
+    check_duplicate_imports(class, diags);
     check_function_restrictions(class, diags);
     check_cross_class_restrictions(class, def, diags);
     check_cyclic_parameter_bindings(class, diags);
@@ -181,21 +307,37 @@ fn check_class_structural(
 /// DECL-001: Duplicate variable names within the same class scope.
 fn check_duplicate_names(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     let mut seen = std::collections::HashSet::new();
-    for name in class.components.keys() {
+    for (name, comp) in &class.components {
         if !seen.insert(name.as_str()) {
-            diags.push(Diagnostic::error(format!(
-                "duplicate component name '{}' in {} '{}'",
-                name,
-                class.class_type.as_str(),
-                class.name.text
-            )));
+            diags.push(semantic_error(
+                ER032_DUPLICATE_COMPONENT_NAME,
+                format!(
+                    "duplicate component name '{}' in {} '{}'",
+                    name,
+                    class.class_type.as_str(),
+                    class.name.text
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_duplicate_names/duplicate_component",
+                    format!("duplicate component '{}'", name),
+                ),
+            ));
         } else if class.classes.contains_key(name) {
-            diags.push(Diagnostic::error(format!(
-                "component '{}' conflicts with nested class name in {} '{}'",
-                name,
-                class.class_type.as_str(),
-                class.name.text
-            )));
+            diags.push(semantic_error(
+                ER033_COMPONENT_CLASS_NAME_CONFLICT,
+                format!(
+                    "component '{}' conflicts with nested class name in {} '{}'",
+                    name,
+                    class.class_type.as_str(),
+                    class.name.text
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_duplicate_names/component_class_conflict",
+                    format!("component '{}' conflicts with nested class", name),
+                ),
+            ));
         }
     }
 }
@@ -210,57 +352,82 @@ fn check_record_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     for (name, comp) in &class.components {
         // DECL-003
         if comp.is_protected {
-            diags.push(
-                Diagnostic::error(format!(
+            diags.push(semantic_error(
+                ER021_RECORD_PROTECTED_ELEMENT,
+                format!(
                     "record '{}' cannot have protected element '{}' (MLS §4.7)",
                     class.name.text, name
-                ))
-                .with_code(ER021_RECORD_PROTECTED_ELEMENT),
-            );
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_record_restrictions/protected_component",
+                    format!("protected record element '{}'", name),
+                ),
+            ));
         }
 
         // DECL-004: flow/stream
         match &comp.connection {
-            Connection::Flow(_) => {
-                diags.push(
-                    Diagnostic::error(format!(
+            Connection::Flow(token) => {
+                diags.push(semantic_error(
+                    ER022_RECORD_INVALID_PREFIX,
+                    format!(
                         "record element '{}' cannot have 'flow' prefix (MLS §4.7)",
                         name
-                    ))
-                    .with_code(ER022_RECORD_INVALID_PREFIX),
-                );
+                    ),
+                    label_from_token(
+                        token,
+                        "check_record_restrictions/flow_prefix",
+                        "invalid 'flow' prefix on record element",
+                    ),
+                ));
             }
-            Connection::Stream(_) => {
-                diags.push(
-                    Diagnostic::error(format!(
+            Connection::Stream(token) => {
+                diags.push(semantic_error(
+                    ER022_RECORD_INVALID_PREFIX,
+                    format!(
                         "record element '{}' cannot have 'stream' prefix (MLS §4.7)",
                         name
-                    ))
-                    .with_code(ER022_RECORD_INVALID_PREFIX),
-                );
+                    ),
+                    label_from_token(
+                        token,
+                        "check_record_restrictions/stream_prefix",
+                        "invalid 'stream' prefix on record element",
+                    ),
+                ));
             }
             Connection::Empty => {}
         }
 
         // DECL-004: input/output
         match &comp.causality {
-            Causality::Input(_) => {
-                diags.push(
-                    Diagnostic::error(format!(
+            Causality::Input(token) => {
+                diags.push(semantic_error(
+                    ER022_RECORD_INVALID_PREFIX,
+                    format!(
                         "record element '{}' cannot have 'input' prefix (MLS §4.7)",
                         name
-                    ))
-                    .with_code(ER022_RECORD_INVALID_PREFIX),
-                );
+                    ),
+                    label_from_token(
+                        token,
+                        "check_record_restrictions/input_prefix",
+                        "invalid 'input' prefix on record element",
+                    ),
+                ));
             }
-            Causality::Output(_) => {
-                diags.push(
-                    Diagnostic::error(format!(
+            Causality::Output(token) => {
+                diags.push(semantic_error(
+                    ER022_RECORD_INVALID_PREFIX,
+                    format!(
                         "record element '{}' cannot have 'output' prefix (MLS §4.7)",
                         name
-                    ))
-                    .with_code(ER022_RECORD_INVALID_PREFIX),
-                );
+                    ),
+                    label_from_token(
+                        token,
+                        "check_record_restrictions/output_prefix",
+                        "invalid 'output' prefix on record element",
+                    ),
+                ));
             }
             Causality::Empty => {}
         }
@@ -268,13 +435,18 @@ fn check_record_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
 
     for (name, nested) in &class.classes {
         if nested.is_protected {
-            diags.push(
-                Diagnostic::error(format!(
+            diags.push(semantic_error(
+                ER021_RECORD_PROTECTED_ELEMENT,
+                format!(
                     "record '{}' cannot have protected element '{}' (MLS §4.7)",
                     class.name.text, name
-                ))
-                .with_code(ER021_RECORD_PROTECTED_ELEMENT),
-            );
+                ),
+                label_from_token(
+                    &nested.name,
+                    "check_record_restrictions/protected_nested_class",
+                    format!("protected nested element '{}'", name),
+                ),
+            ));
         }
     }
 }
@@ -288,37 +460,63 @@ fn check_connector_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
 
     for (name, comp) in &class.components {
         if comp.is_protected {
-            diags.push(Diagnostic::error(format!(
-                "connector '{}' cannot have protected element '{}' (MLS §9.1)",
-                class.name.text, name
-            )));
+            diags.push(semantic_error(
+                ER034_CONNECTOR_PROTECTED_ELEMENT,
+                format!(
+                    "connector '{}' cannot have protected element '{}' (MLS §9.1)",
+                    class.name.text, name
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_connector_restrictions/protected_component",
+                    format!("protected connector element '{}'", name),
+                ),
+            ));
         }
         if comp.inner {
-            diags.push(
-                Diagnostic::error(format!(
+            diags.push(semantic_error(
+                ER024_CONNECTOR_INNER_OUTER_PREFIX,
+                format!(
                     "connector element '{}' cannot have 'inner' prefix (MLS §9.1)",
                     name
-                ))
-                .with_code(ER024_CONNECTOR_INNER_OUTER_PREFIX),
-            );
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_connector_restrictions/inner_prefix",
+                    "invalid 'inner' prefix on connector element",
+                ),
+            ));
         }
         if comp.outer {
-            diags.push(
-                Diagnostic::error(format!(
+            diags.push(semantic_error(
+                ER024_CONNECTOR_INNER_OUTER_PREFIX,
+                format!(
                     "connector element '{}' cannot have 'outer' prefix (MLS §9.1)",
                     name
-                ))
-                .with_code(ER024_CONNECTOR_INNER_OUTER_PREFIX),
-            );
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_connector_restrictions/outer_prefix",
+                    "invalid 'outer' prefix on connector element",
+                ),
+            ));
         }
     }
 
     for (name, nested) in &class.classes {
         if nested.is_protected {
-            diags.push(Diagnostic::error(format!(
-                "connector '{}' cannot have protected element '{}' (MLS §9.1)",
-                class.name.text, name
-            )));
+            diags.push(semantic_error(
+                ER034_CONNECTOR_PROTECTED_ELEMENT,
+                format!(
+                    "connector '{}' cannot have protected element '{}' (MLS §9.1)",
+                    class.name.text, name
+                ),
+                label_from_token(
+                    &nested.name,
+                    "check_connector_restrictions/protected_nested_class",
+                    format!("protected nested connector element '{}'", name),
+                ),
+            ));
         }
     }
 }
@@ -326,18 +524,26 @@ fn check_connector_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
 /// DECL-012: Input prefix combined with parameter/constant is forbidden.
 fn check_input_parameter_combination(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     for (name, comp) in &class.components {
-        if !matches!(comp.causality, Causality::Input(_)) {
+        let Causality::Input(input_token) = &comp.causality else {
             continue;
-        }
+        };
         let var_str = match &comp.variability {
             Variability::Parameter(_) => "parameter",
             Variability::Constant(_) => "constant",
             _ => continue,
         };
-        diags.push(Diagnostic::error(format!(
-            "variable '{}' cannot combine 'input' with '{}' prefix (MLS §4.4.2.2)",
-            name, var_str
-        )));
+        diags.push(semantic_error(
+            ER035_INPUT_PARAMETER_COMBINATION,
+            format!(
+                "variable '{}' cannot combine 'input' with '{}' prefix (MLS §4.4.2.2)",
+                name, var_str
+            ),
+            label_from_token(
+                input_token,
+                "check_input_parameter_combination/input_prefix",
+                format!("'input' combined with '{}'", var_str),
+            ),
+        ));
     }
 }
 
@@ -354,10 +560,18 @@ fn check_component_name_vs_class_name(class: &ClassDef, diags: &mut Vec<Diagnost
         if name.as_str() == &*class.name.text
             && comp.type_name.to_string().as_str() == &*class.name.text
         {
-            diags.push(Diagnostic::error(format!(
-                "component '{}' has the same name as its enclosing class (MLS §5.3)",
-                name
-            )));
+            diags.push(semantic_error(
+                ER036_COMPONENT_NAME_EQUALS_CLASS_NAME,
+                format!(
+                    "component '{}' has the same name as its enclosing class (MLS §5.3)",
+                    name
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_component_name_vs_class_name/component_name",
+                    "component name conflicts with enclosing class name",
+                ),
+            ));
         }
     }
 }
@@ -369,17 +583,25 @@ fn check_package_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     }
     for (name, comp) in &class.components {
         if !matches!(comp.variability, Variability::Constant(_)) {
-            diags.push(Diagnostic::error(format!(
-                "package '{}' can only contain classes and constants, \
-                 but '{}' is not constant (MLS §4.7)",
-                class.name.text, name
-            )));
+            diags.push(semantic_error(
+                ER037_PACKAGE_NON_CONSTANT_COMPONENT,
+                format!(
+                    "package '{}' can only contain classes and constants, \
+                     but '{}' is not constant (MLS §4.7)",
+                    class.name.text, name
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_package_restrictions/non_constant_component",
+                    format!("'{}' is not constant", name),
+                ),
+            ));
         }
     }
 }
 
 /// PKG-001: Duplicate import names.
-fn check_duplicate_imports(class: &ClassDef, source_map: &SourceMap, diags: &mut Vec<Diagnostic>) {
+fn check_duplicate_imports(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     let mut import_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for imp in &class.imports {
         let imported_name_and_token = match imp {
@@ -389,27 +611,27 @@ fn check_duplicate_imports(class: &ClassDef, source_map: &SourceMap, diags: &mut
             Import::Renamed { alias, .. } => Some((alias.text.to_string(), alias.clone())),
             Import::Unqualified { .. } => None,
             Import::Selective { names, .. } => {
-                check_selective_import_dupes(class, names, source_map, &mut import_names, diags);
+                check_selective_import_dupes(class, names, &mut import_names, diags);
                 None
             }
         };
         if let Some((name, token)) = imported_name_and_token
             && !import_names.insert(name.clone())
         {
-            diags.push(
-                Diagnostic::error(format!(
+            diags.push(semantic_error(
+                ER012_DUPLICATE_IMPORT_NAME,
+                format!(
                     "duplicate import name '{}' in {} '{}' (MLS §13.2.1)",
                     name,
                     class.class_type.as_str(),
                     class.name.text
-                ))
-                .with_code(ER012_DUPLICATE_IMPORT_NAME)
-                .with_label(label_for_token(
+                ),
+                label_from_token(
                     &token,
-                    source_map,
+                    "check_duplicate_imports/duplicate_import",
                     format!("duplicate import alias '{}'", name),
-                )),
-            );
+                ),
+            ));
         }
     }
 }
@@ -417,43 +639,28 @@ fn check_duplicate_imports(class: &ClassDef, source_map: &SourceMap, diags: &mut
 fn check_selective_import_dupes(
     class: &ClassDef,
     names: &[rumoca_ir_core::Token],
-    source_map: &SourceMap,
     import_names: &mut HashSet<String>,
     diags: &mut Vec<Diagnostic>,
 ) {
     for name_tok in names {
         let n = name_tok.text.to_string();
         if !import_names.insert(n.clone()) {
-            diags.push(
-                Diagnostic::error(format!(
+            diags.push(semantic_error(
+                ER012_DUPLICATE_IMPORT_NAME,
+                format!(
                     "duplicate import name '{}' in {} '{}' (MLS §13.2.1)",
                     n,
                     class.class_type.as_str(),
                     class.name.text
-                ))
-                .with_code(ER012_DUPLICATE_IMPORT_NAME)
-                .with_label(label_for_token(
+                ),
+                label_from_token(
                     name_tok,
-                    source_map,
+                    "check_selective_import_dupes/duplicate_import",
                     format!("duplicate import alias '{}'", n),
-                )),
-            );
+                ),
+            ));
         }
     }
-}
-
-fn label_for_token(
-    token: &rumoca_ir_core::Token,
-    source_map: &SourceMap,
-    message: String,
-) -> Label {
-    let start = token.location.start as usize;
-    let mut end = token.location.end as usize;
-    if end <= start {
-        end = start.saturating_add(token.text.len().max(1));
-    }
-    Label::primary(source_map.location_to_span(&token.location.file_name, start, end))
-        .with_message(message)
 }
 
 /// FUNC-001: Public function components must have input or output prefix.
@@ -467,23 +674,65 @@ fn check_function_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     // FUNC-001
     for (name, comp) in &class.components {
         if !comp.is_protected && matches!(comp.causality, Causality::Empty) {
-            diags.push(
-                Diagnostic::error(format!(
+            diags.push(semantic_error(
+                ER013_FUNCTION_PUBLIC_MISSING_IO_PREFIX,
+                format!(
                     "public component '{}' in function '{}' must have \
                      input or output prefix (MLS §12.2)",
                     name, class.name.text
-                ))
-                .with_code(ER013_FUNCTION_PUBLIC_MISSING_IO_PREFIX),
-            );
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_function_restrictions/missing_io_prefix",
+                    format!("component '{}' is missing input/output prefix", name),
+                ),
+            ));
         }
     }
 
     // FUNC-006
     if !class.equations.is_empty() || !class.initial_equations.is_empty() {
-        diags.push(Diagnostic::error(format!(
-            "function '{}' cannot have equation sections (MLS §12.2)",
-            class.name.text
-        )));
+        let label = if let Some(eq) = class.equations.first() {
+            label_from_equation(
+                eq,
+                "check_function_restrictions/function_equations",
+                "equation section is not allowed in functions",
+            )
+            .unwrap_or_else(|| {
+                label_from_token(
+                    &class.name,
+                    "check_function_restrictions/function_equations_fallback",
+                    "equation section is not allowed in functions",
+                )
+            })
+        } else if let Some(eq) = class.initial_equations.first() {
+            label_from_equation(
+                eq,
+                "check_function_restrictions/function_initial_equations",
+                "initial equation section is not allowed in functions",
+            )
+            .unwrap_or_else(|| {
+                label_from_token(
+                    &class.name,
+                    "check_function_restrictions/function_initial_equations_fallback",
+                    "initial equation section is not allowed in functions",
+                )
+            })
+        } else {
+            label_from_token(
+                &class.name,
+                "check_function_restrictions/function_equation_section",
+                "equation section is not allowed in functions",
+            )
+        };
+        diags.push(semantic_error(
+            ER038_FUNCTION_EQUATION_SECTION,
+            format!(
+                "function '{}' cannot have equation sections (MLS §12.2)",
+                class.name.text
+            ),
+            label,
+        ));
     }
 
     // FUNC-002
@@ -510,13 +759,18 @@ fn check_input_assignment(
                 if let Some(first) = comp.parts.first()
                     && input_names.contains(&*first.ident.text)
                 {
-                    diags.push(
-                        Diagnostic::error(format!(
+                    diags.push(semantic_error(
+                        ER014_FUNCTION_INPUT_ASSIGNED,
+                        format!(
                             "cannot assign to input parameter '{}' (MLS §12.2)",
                             first.ident.text
-                        ))
-                        .with_code(ER014_FUNCTION_INPUT_ASSIGNED),
-                    );
+                        ),
+                        label_from_token(
+                            &first.ident,
+                            "check_input_assignment/input_assignment",
+                            format!("assignment to input '{}'", first.ident.text),
+                        ),
+                    ));
                 }
             }
             Statement::For { equations, .. } => {
@@ -575,63 +829,11 @@ fn check_cross_class_restrictions(
         let type_name = comp.type_name.to_string();
         let type_class = find_class_by_name(def, &type_name);
 
-        // DECL-005: Record components restricted to record/type
-        if class.class_type == ClassType::Record
-            && let Some(tc) = type_class
-            && !matches!(tc.class_type, ClassType::Record | ClassType::Type)
-        {
-            diags.push(
-                Diagnostic::error(format!(
-                    "record component '{}' has type '{}' which is a {}, \
-                             but only record or type components are allowed (MLS §4.7)",
-                    name,
-                    type_name,
-                    tc.class_type.as_str()
-                ))
-                .with_code(ER023_RECORD_INVALID_COMPONENT_TYPE),
-            );
-        }
-
-        // DECL-014: Partial class instantiation in simulation models
-        if matches!(class.class_type, ClassType::Model | ClassType::Block)
-            && let Some(tc) = type_class
-            && tc.partial
-        {
-            diags.push(
-                Diagnostic::error(format!(
-                    "component '{}' instantiates partial {} '{}' (MLS §4.7)",
-                    name,
-                    tc.class_type.as_str(),
-                    type_name
-                ))
-                .with_code(ER005_PARTIAL_CLASS_INSTANTIATION),
-            );
-        }
-
-        // CONN-007: Connector component cannot be parameter/constant
-        if let Some(tc) = type_class
-            && tc.class_type == ClassType::Connector
-            && matches!(
-                comp.variability,
-                Variability::Parameter(_) | Variability::Constant(_)
-            )
-        {
-            let var_str = match &comp.variability {
-                Variability::Parameter(_) => "parameter",
-                Variability::Constant(_) => "constant",
-                _ => unreachable!(),
-            };
-            diags.push(
-                Diagnostic::error(format!(
-                    "connector component '{}' cannot have '{}' prefix (MLS §9.1)",
-                    name, var_str
-                ))
-                .with_code(ER027_CONNECTOR_PARAMETER_OR_CONSTANT),
-            );
-        }
-
-        // CONN-017: Unbalanced connector (flow count != potential count)
-        // Check when a connector class is defined, not when used
+        check_record_component_type_restriction(class, name, comp, &type_name, type_class, diags);
+        check_partial_class_instantiation_restriction(
+            class, name, comp, &type_name, type_class, diags,
+        );
+        check_connector_variability_restriction(name, comp, type_class, diags);
     }
 
     // CONN-017: Check connector balance when defining the connector itself
@@ -640,25 +842,159 @@ fn check_cross_class_restrictions(
     }
 
     // DECL-002: Block connector components need input/output prefix
-    if class.class_type == ClassType::Block {
-        for (name, comp) in &class.components {
-            let type_name = comp.type_name.to_string();
-            if let Some(tc) = find_class_by_name(def, &type_name)
-                && tc.class_type == ClassType::Connector
-                    && !comp.is_protected
-                    && matches!(comp.causality, Causality::Empty)
-                    // Also check if the type alias itself provides causality
-                    && matches!(tc.causality, Causality::Empty)
-            {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "public connector component '{}' in block '{}' must \
-                             have input or output prefix (MLS §4.7)",
-                        name, class.name.text
-                    ))
-                    .with_code(ER020_BLOCK_CONNECTOR_MISSING_IO_PREFIX),
-                );
-            }
+    check_block_connector_causality_restrictions(class, def, diags);
+}
+
+fn check_record_component_type_restriction(
+    class: &ClassDef,
+    component_name: &str,
+    comp: &ast::Component,
+    type_name: &str,
+    type_class: Option<&ClassDef>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if class.class_type != ClassType::Record {
+        return;
+    }
+    let Some(tc) = type_class else {
+        return;
+    };
+    if matches!(tc.class_type, ClassType::Record | ClassType::Type) {
+        return;
+    }
+
+    diags.push(semantic_error(
+        ER023_RECORD_INVALID_COMPONENT_TYPE,
+        format!(
+            "record component '{}' has type '{}' which is a {}, \
+                     but only record or type components are allowed (MLS §4.7)",
+            component_name,
+            type_name,
+            tc.class_type.as_str()
+        ),
+        label_from_token(
+            &comp.name_token,
+            "check_cross_class_restrictions/record_component_type",
+            format!(
+                "record component '{}' has invalid type '{}'",
+                component_name, type_name
+            ),
+        ),
+    ));
+}
+
+fn check_partial_class_instantiation_restriction(
+    class: &ClassDef,
+    component_name: &str,
+    comp: &ast::Component,
+    type_name: &str,
+    type_class: Option<&ClassDef>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if !matches!(class.class_type, ClassType::Model | ClassType::Block) {
+        return;
+    }
+    let Some(tc) = type_class else {
+        return;
+    };
+    if !tc.partial {
+        return;
+    }
+
+    diags.push(semantic_error(
+        ER005_PARTIAL_CLASS_INSTANTIATION,
+        format!(
+            "component '{}' instantiates partial {} '{}' (MLS §4.7)",
+            component_name,
+            tc.class_type.as_str(),
+            type_name
+        ),
+        label_from_token(
+            &comp.name_token,
+            "check_cross_class_restrictions/partial_instantiation",
+            format!("instantiation of partial class '{}'", type_name),
+        ),
+    ));
+}
+
+fn check_connector_variability_restriction(
+    component_name: &str,
+    comp: &ast::Component,
+    type_class: Option<&ClassDef>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some(tc) = type_class else {
+        return;
+    };
+    if tc.class_type != ClassType::Connector {
+        return;
+    }
+    if !matches!(
+        comp.variability,
+        Variability::Parameter(_) | Variability::Constant(_)
+    ) {
+        return;
+    }
+
+    let var_str = match &comp.variability {
+        Variability::Parameter(_) => "parameter",
+        Variability::Constant(_) => "constant",
+        _ => unreachable!(),
+    };
+    let prefix_label = match &comp.variability {
+        Variability::Parameter(token) => label_from_token(
+            token,
+            "check_cross_class_restrictions/connector_parameter",
+            "invalid 'parameter' prefix on connector component",
+        ),
+        Variability::Constant(token) => label_from_token(
+            token,
+            "check_cross_class_restrictions/connector_constant",
+            "invalid 'constant' prefix on connector component",
+        ),
+        _ => unreachable!(),
+    };
+    diags.push(semantic_error(
+        ER027_CONNECTOR_PARAMETER_OR_CONSTANT,
+        format!(
+            "connector component '{}' cannot have '{}' prefix (MLS §9.1)",
+            component_name, var_str
+        ),
+        prefix_label,
+    ));
+}
+
+fn check_block_connector_causality_restrictions(
+    class: &ClassDef,
+    def: &StoredDefinition,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if class.class_type != ClassType::Block {
+        return;
+    }
+
+    for (name, comp) in &class.components {
+        let type_name = comp.type_name.to_string();
+        if let Some(tc) = find_class_by_name(def, &type_name)
+            && tc.class_type == ClassType::Connector
+                && !comp.is_protected
+                && matches!(comp.causality, Causality::Empty)
+                // Also check if the type alias itself provides causality
+                && matches!(tc.causality, Causality::Empty)
+        {
+            diags.push(semantic_error(
+                ER020_BLOCK_CONNECTOR_MISSING_IO_PREFIX,
+                format!(
+                    "public connector component '{}' in block '{}' must \
+                         have input or output prefix (MLS §4.7)",
+                    name, class.name.text
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_cross_class_restrictions/block_connector_causality",
+                    format!("connector component '{}' is missing input/output", name),
+                ),
+            ));
         }
     }
 }
@@ -688,14 +1024,19 @@ fn check_connector_balance(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     }
 
     if flow_count > 0 && flow_count != potential_count {
-        diags.push(
-            Diagnostic::error(format!(
+        diags.push(semantic_error(
+            ER028_UNBALANCED_CONNECTOR,
+            format!(
                 "connector '{}' is unbalanced: {} flow variable(s) vs {} \
                  potential variable(s) (MLS §9.3.1)",
                 class.name.text, flow_count, potential_count
-            ))
-            .with_code(ER028_UNBALANCED_CONNECTOR),
-        );
+            ),
+            label_from_token(
+                &class.name,
+                "check_connector_balance/unbalanced_connector",
+                "connector is structurally unbalanced",
+            ),
+        ));
     }
 }
 
@@ -731,25 +1072,34 @@ fn check_parameter_variability(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
         ) {
             continue;
         }
-        if let Some(binding) = &comp.binding {
-            let mut refs = HashSet::new();
-            collect_component_refs(binding, &continuous_vars, &mut refs, false);
-            if !refs.is_empty() {
-                let var_str = match &comp.variability {
-                    Variability::Parameter(_) => "parameter",
-                    Variability::Constant(_) => "constant",
-                    _ => unreachable!(),
-                };
-                let dep = refs.into_iter().next().unwrap();
-                diags.push(
-                    Diagnostic::error(format!(
-                        "{} '{}' cannot depend on continuous variable '{}' (MLS §3.8.4)",
-                        var_str, name, dep
-                    ))
-                    .with_code(ER006_PARAMETER_VARIABILITY),
-                );
-            }
-        }
+        let Some(binding) = &comp.binding else {
+            continue;
+        };
+        let mut refs = HashSet::new();
+        collect_component_refs(binding, &continuous_vars, &mut refs, false);
+        let Some(dep) = refs.into_iter().next() else {
+            continue;
+        };
+        let var_str = match &comp.variability {
+            Variability::Parameter(_) => "parameter",
+            Variability::Constant(_) => "constant",
+            _ => unreachable!(),
+        };
+        let label = label_from_expression_or_token(
+            binding,
+            "check_parameter_variability/binding_dependency",
+            &comp.name_token,
+            "check_parameter_variability/binding_dependency_fallback",
+            format!("binding references continuous variable '{}'", dep),
+        );
+        diags.push(semantic_error(
+            ER006_PARAMETER_VARIABILITY,
+            format!(
+                "{} '{}' cannot depend on continuous variable '{}' (MLS §3.8.4)",
+                var_str, name, dep
+            ),
+            label,
+        ));
     }
 }
 
@@ -793,13 +1143,32 @@ fn check_cyclic_parameter_bindings(class: &ClassDef, diags: &mut Vec<Diagnostic>
 
     for name in param_names {
         if !visited.contains(&name) && has_cycle(&name, &deps, &mut visited, &mut on_stack) {
-            diags.push(
-                Diagnostic::error(format!(
+            let Some(comp) = class.components.get(&name) else {
+                continue;
+            };
+            let label = if let Some(binding) = &comp.binding {
+                label_from_expression_or_token(
+                    binding,
+                    "check_cyclic_parameter_bindings/binding_cycle",
+                    &comp.name_token,
+                    "check_cyclic_parameter_bindings/binding_cycle_fallback",
+                    format!("cyclic dependency for '{}'", name),
+                )
+            } else {
+                label_from_token(
+                    &comp.name_token,
+                    "check_cyclic_parameter_bindings/component_cycle",
+                    format!("cyclic dependency for '{}'", name),
+                )
+            };
+            diags.push(semantic_error(
+                ER007_CYCLIC_PARAMETER_BINDING,
+                format!(
                     "cyclic dependency in parameter binding for '{}' (MLS §7.2.3)",
                     name
-                ))
-                .with_code(ER007_CYCLIC_PARAMETER_BINDING),
-            );
+                ),
+                label,
+            ));
         }
     }
 }
@@ -899,11 +1268,18 @@ fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnos
     match eq {
         Equation::When(blocks) => {
             // EQN-005: Nested when-equations
-            if ctx.in_when_equation {
-                diags.push(
-                    Diagnostic::error("when-equations cannot be nested (MLS §8.3.5)".to_string())
-                        .with_code(ER017_NESTED_WHEN_EQUATION),
-                );
+            if ctx.in_when_equation
+                && let Some(label) = label_from_equation(
+                    eq,
+                    "check_equation/nested_when_equation",
+                    "nested when-equation is not allowed",
+                )
+            {
+                diags.push(semantic_error(
+                    ER017_NESTED_WHEN_EQUATION,
+                    "when-equations cannot be nested (MLS §8.3.5)",
+                    label,
+                ));
             }
 
             let was = ctx.in_when_equation;
@@ -953,12 +1329,15 @@ fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnos
                 && &*first.ident.text == "reinit"
                 && !ctx.in_when_equation
             {
-                diags.push(
-                    Diagnostic::error(
-                        "reinit() can only be used inside when-equations (MLS §8.3.6)".to_string(),
-                    )
-                    .with_code(ER008_REINIT_OUTSIDE_WHEN),
-                );
+                diags.push(semantic_error(
+                    ER008_REINIT_OUTSIDE_WHEN,
+                    "reinit() can only be used inside when-equations (MLS §8.3.6)",
+                    label_from_token(
+                        &first.ident,
+                        "check_equation/reinit_outside_when_equation",
+                        "reinit() used outside when-equation",
+                    ),
+                ));
             }
         }
         _ => {}
@@ -969,13 +1348,17 @@ fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnos
 fn check_initial_equation(eq: &Equation, diags: &mut Vec<Diagnostic>) {
     match eq {
         Equation::When(_) => {
-            diags.push(
-                Diagnostic::error(
-                    "when-equations are not allowed in initial equation sections (MLS §8.6)"
-                        .to_string(),
-                )
-                .with_code(ER018_WHEN_IN_INITIAL_SECTION),
-            );
+            if let Some(label) = label_from_equation(
+                eq,
+                "check_initial_equation/when_in_initial_equation",
+                "when-equation in initial equation section",
+            ) {
+                diags.push(semantic_error(
+                    ER018_WHEN_IN_INITIAL_SECTION,
+                    "when-equations are not allowed in initial equation sections (MLS §8.6)",
+                    label,
+                ));
+            }
         }
         Equation::For { equations, .. } => {
             for inner in equations {
@@ -1006,13 +1389,17 @@ fn check_initial_equation(eq: &Equation, diags: &mut Vec<Diagnostic>) {
 fn check_initial_statement(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
     match stmt {
         Statement::When(_) => {
-            diags.push(
-                Diagnostic::error(
-                    "when-statements are not allowed in initial algorithm sections (MLS §8.6)"
-                        .to_string(),
-                )
-                .with_code(ER018_WHEN_IN_INITIAL_SECTION),
-            );
+            if let Some(label) = label_from_statement(
+                stmt,
+                "check_initial_statement/when_in_initial_algorithm",
+                "when-statement in initial algorithm section",
+            ) {
+                diags.push(semantic_error(
+                    ER018_WHEN_IN_INITIAL_SECTION,
+                    "when-statements are not allowed in initial algorithm sections (MLS §8.6)",
+                    label,
+                ));
+            }
         }
         Statement::For { equations, .. } => {
             for inner in equations {
@@ -1044,21 +1431,33 @@ fn check_statement(stmt: &Statement, ctx: &mut CheckContext, diags: &mut Vec<Dia
     match stmt {
         Statement::When(blocks) => {
             // ALG-007/FUNC-007: When-statement in function
-            if ctx.in_function {
-                diags.push(
-                    Diagnostic::error(
-                        "when-statements are not allowed in functions (MLS §12.2)".to_string(),
-                    )
-                    .with_code(ER015_WHEN_IN_FUNCTION),
-                );
+            if ctx.in_function
+                && let Some(label) = label_from_statement(
+                    stmt,
+                    "check_statement/when_in_function",
+                    "when-statement is not allowed in function",
+                )
+            {
+                diags.push(semantic_error(
+                    ER015_WHEN_IN_FUNCTION,
+                    "when-statements are not allowed in functions (MLS §12.2)",
+                    label,
+                ));
             }
 
             // ALG-009: Nested when-statements
-            if ctx.in_when_statement {
-                diags.push(
-                    Diagnostic::error("when-statements cannot be nested (MLS §11.2.7)".to_string())
-                        .with_code(ER016_NESTED_WHEN_STATEMENT),
-                );
+            if ctx.in_when_statement
+                && let Some(label) = label_from_statement(
+                    stmt,
+                    "check_statement/nested_when_statement",
+                    "nested when-statement is not allowed",
+                )
+            {
+                diags.push(semantic_error(
+                    ER016_NESTED_WHEN_STATEMENT,
+                    "when-statements cannot be nested (MLS §11.2.7)",
+                    label,
+                ));
             }
 
             let was = ctx.in_when_statement;
@@ -1097,12 +1496,17 @@ fn check_statement(stmt: &Statement, ctx: &mut CheckContext, diags: &mut Vec<Dia
             }
         }
         Statement::Reinit { .. } if !ctx.in_when_statement => {
-            diags.push(
-                Diagnostic::error(
-                    "reinit() can only be used inside when-statements (MLS §8.3.6)".to_string(),
-                )
-                .with_code(ER008_REINIT_OUTSIDE_WHEN),
-            );
+            if let Some(label) = label_from_statement(
+                stmt,
+                "check_statement/reinit_outside_when_statement",
+                "reinit() used outside when-statement",
+            ) {
+                diags.push(semantic_error(
+                    ER008_REINIT_OUTSIDE_WHEN,
+                    "reinit() can only be used inside when-statements (MLS §8.3.6)",
+                    label,
+                ));
+            }
         }
         _ => {}
     }
@@ -1119,13 +1523,18 @@ fn check_for_variable_assignment_eq(
         && let Some(first) = comp.parts.first()
         && for_vars.iter().any(|v| v.as_str() == &*first.ident.text)
     {
-        diags.push(
-            Diagnostic::error(format!(
+        diags.push(semantic_error(
+            ER019_FOR_LOOP_VARIABLE_ASSIGNED,
+            format!(
                 "cannot assign to for-loop variable '{}' (MLS §8.3.3)",
                 first.ident.text
-            ))
-            .with_code(ER019_FOR_LOOP_VARIABLE_ASSIGNED),
-        );
+            ),
+            label_from_token(
+                &first.ident,
+                "check_for_variable_assignment_eq/for_loop_assignment",
+                format!("assignment to loop variable '{}'", first.ident.text),
+            ),
+        ));
     }
 }
 
@@ -1134,856 +1543,16 @@ fn check_for_variable_assignment_eq(
 // ============================================================================
 
 /// EXPR-014: Check for chained relational operators (e.g., 1 < 2 < 3).
-pub fn check_chained_relationals(def: &StoredDefinition) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    for class in def.classes.values() {
-        check_chained_in_class(class, &mut diags);
-    }
-    diags
-}
-
-fn check_chained_in_class(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    for eq in &class.equations {
-        check_chained_in_eq(eq, diags);
-    }
-    for eq in &class.initial_equations {
-        check_chained_in_eq(eq, diags);
-    }
-    for alg in &class.algorithms {
-        for stmt in alg {
-            check_chained_in_stmt(stmt, diags);
-        }
-    }
-    for nested in class.classes.values() {
-        check_chained_in_class(nested, diags);
-    }
-}
-
-fn check_chained_in_eq(eq: &Equation, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_chained_in_expr(lhs, diags);
-            check_chained_in_expr(rhs, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_chained_in_eq(inner, diags);
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.eqs {
-                    check_chained_in_eq(inner, diags);
-                }
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.eqs {
-                    check_chained_in_eq(inner, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_chained_in_eq(inner, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_chained_in_stmt(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::Assignment { value, .. } => check_chained_in_expr(value, diags),
-        Statement::For { equations, .. } => {
-            for inner in equations {
-                check_chained_in_stmt(inner, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_chained_in_stmt(inner, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    check_chained_in_stmt(inner, diags);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                check_chained_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_chained_in_stmt(inner, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn is_relational(op: &OpBinary) -> bool {
-    matches!(
-        op,
-        OpBinary::Lt(_)
-            | OpBinary::Le(_)
-            | OpBinary::Gt(_)
-            | OpBinary::Ge(_)
-            | OpBinary::Eq(_)
-            | OpBinary::Neq(_)
-    )
-}
-
-fn expr_is_relational(expr: &Expression) -> bool {
-    matches!(expr, Expression::Binary { op, .. } if is_relational(op))
-}
-
-fn check_chained_in_expr(expr: &Expression, diags: &mut Vec<Diagnostic>) {
-    match expr {
-        Expression::Binary { op, lhs, rhs, .. } => {
-            if is_relational(op) && (expr_is_relational(lhs) || expr_is_relational(rhs)) {
-                diags.push(Diagnostic::error(
-                    "chained relational operators are not allowed (MLS §3.2)".to_string(),
-                ));
-            }
-            check_chained_in_expr(lhs, diags);
-            check_chained_in_expr(rhs, diags);
-        }
-        Expression::Unary { rhs, .. } => check_chained_in_expr(rhs, diags),
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_chained_in_expr(arg, diags);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_chained_in_expr(cond, diags);
-                check_chained_in_expr(then_expr, diags);
-            }
-            check_chained_in_expr(else_branch, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_chained_in_expr(elem, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => check_chained_in_expr(inner, diags),
-        _ => {}
-    }
+pub fn check_chained_relationals(
+    def: &StoredDefinition,
+    source_map: &SourceMap,
+) -> Vec<Diagnostic> {
+    set_active_source_map(source_map);
+    run_chained_relational_checks(def)
 }
 
 /// EXPR-004: Check for der() in function algorithm sections.
-pub fn check_der_in_functions(def: &StoredDefinition) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    for class in def.classes.values() {
-        check_der_in_func_class(class, &mut diags);
-    }
-    diags
-}
-
-fn check_der_in_func_class(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    if class.class_type == ClassType::Function {
-        for alg in &class.algorithms {
-            for stmt in alg {
-                check_der_in_stmt(stmt, diags);
-            }
-        }
-    }
-    for nested in class.classes.values() {
-        check_der_in_func_class(nested, diags);
-    }
-}
-
-fn check_der_in_stmt(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::Assignment { value, .. } => check_der_in_expr(value, diags),
-        Statement::For { equations, .. } => {
-            for inner in equations {
-                check_der_in_stmt(inner, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                check_der_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_der_in_stmt(inner, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    check_der_in_stmt(inner, diags);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                check_der_in_expr(&block.cond, diags);
-                for inner in &block.stmts {
-                    check_der_in_stmt(inner, diags);
-                }
-            }
-        }
-        Statement::FunctionCall { args, .. } => {
-            for arg in args {
-                check_der_in_expr(arg, diags);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_der_in_expr(expr: &Expression, diags: &mut Vec<Diagnostic>) {
-    match expr {
-        Expression::FunctionCall { comp, args, .. } => {
-            if let Some(first) = comp.parts.first()
-                && &*first.ident.text == "der"
-            {
-                diags.push(
-                    Diagnostic::error("der() is not allowed in functions (MLS §12.2)".to_string())
-                        .with_code(ER030_DER_IN_FUNCTION),
-                );
-            }
-            for arg in args {
-                check_der_in_expr(arg, diags);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_der_in_expr(lhs, diags);
-            check_der_in_expr(rhs, diags);
-        }
-        Expression::Unary { rhs, .. } => check_der_in_expr(rhs, diags),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_der_in_expr(cond, diags);
-                check_der_in_expr(then_expr, diags);
-            }
-            check_der_in_expr(else_branch, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_der_in_expr(elem, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => check_der_in_expr(inner, diags),
-        _ => {}
-    }
-}
-
-// ============================================================================
-// DECL-020: der() on discrete variables
-// ============================================================================
-
-/// Check equations for der() applied to discrete variables.
-fn check_der_on_discrete_eq(
-    eq: &Equation,
-    discrete_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_der_on_discrete_expr(lhs, discrete_vars, diags);
-            check_der_on_discrete_expr(rhs, discrete_vars, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_der_on_discrete_eq(inner, discrete_vars, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_der_on_discrete_eq(inner, discrete_vars, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_der_on_discrete_eq(inner, discrete_vars, diags);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_der_on_discrete_eq(inner, discrete_vars, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_der_on_discrete_expr(
-    expr: &Expression,
-    discrete_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expression::FunctionCall { comp, args, .. } => {
-            if let Some(first) = comp.parts.first()
-                && &*first.ident.text == "der"
-            {
-                // Check if the argument is a discrete variable
-                if let Some(arg) = args.first()
-                    && let Expression::ComponentReference(cref) = arg
-                    && let Some(part) = cref.parts.first()
-                    && discrete_vars.contains(&*part.ident.text)
-                {
-                    diags.push(
-                        Diagnostic::error(format!(
-                            "der() cannot be applied to discrete variable '{}' (MLS §3.8.5)",
-                            part.ident.text
-                        ))
-                        .with_code(ER026_DER_ON_DISCRETE),
-                    );
-                }
-            }
-            for arg in args {
-                check_der_on_discrete_expr(arg, discrete_vars, diags);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_der_on_discrete_expr(lhs, discrete_vars, diags);
-            check_der_on_discrete_expr(rhs, discrete_vars, diags);
-        }
-        Expression::Unary { rhs, .. } => check_der_on_discrete_expr(rhs, discrete_vars, diags),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_der_on_discrete_expr(cond, discrete_vars, diags);
-                check_der_on_discrete_expr(then_expr, discrete_vars, diags);
-            }
-            check_der_on_discrete_expr(else_branch, discrete_vars, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_der_on_discrete_expr(elem, discrete_vars, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            check_der_on_discrete_expr(inner, discrete_vars, diags);
-        }
-        _ => {}
-    }
-}
-
-// ============================================================================
-// DECL-009: Protected dot access
-// ============================================================================
-
-/// Check equations for protected component access (e.g., `a.x` where x is protected).
-fn check_protected_access_eq(
-    eq: &Equation,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_protected_access_expr(lhs, class, def, diags);
-            check_protected_access_expr(rhs, class, def, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_protected_access_eq(inner, class, def, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_protected_access_eq(inner, class, def, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_protected_access_eq(inner, class, def, diags);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_protected_access_eq(inner, class, def, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_protected_access_expr(
-    expr: &Expression,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expression::ComponentReference(cref) => {
-            check_cref_protected_access(cref, class, def, diags);
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_protected_access_expr(lhs, class, def, diags);
-            check_protected_access_expr(rhs, class, def, diags);
-        }
-        Expression::Unary { rhs, .. } => {
-            check_protected_access_expr(rhs, class, def, diags);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_protected_access_expr(arg, class, def, diags);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_protected_access_expr(cond, class, def, diags);
-                check_protected_access_expr(then_expr, class, def, diags);
-            }
-            check_protected_access_expr(else_branch, class, def, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_protected_access_expr(elem, class, def, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            check_protected_access_expr(inner, class, def, diags);
-        }
-        _ => {}
-    }
-}
-
-// ============================================================================
-// CONN-029: Connect requires connectors
-// ============================================================================
-
-/// Check that connect() arguments refer to connector types.
-/// Check if a component reference accesses a protected member.
-fn check_cref_protected_access(
-    cref: &ComponentReference,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    if cref.parts.len() < 2 {
-        return;
-    }
-    let first_name = &*cref.parts[0].ident.text;
-    let second_name = &*cref.parts[1].ident.text;
-
-    let Some(comp) = class.components.get(first_name) else {
-        return;
-    };
-    let type_name = comp.type_name.to_string();
-    let Some(type_class) = find_class_by_name(def, &type_name) else {
-        return;
-    };
-    if let Some(target) = type_class.components.get(second_name)
-        && target.is_protected
-    {
-        diags.push(
-            Diagnostic::error(format!(
-                "cannot access protected component '{}.{}' (MLS §5.3)",
-                first_name, second_name
-            ))
-            .with_code(ER025_PROTECTED_DOT_ACCESS),
-        );
-    }
-}
-
-fn check_connect_requires_connectors_eq(
-    eq: &Equation,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Connect { lhs, rhs, .. } => {
-            check_connect_arg_is_connector(lhs, class, def, diags);
-            check_connect_arg_is_connector(rhs, class, def, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_connect_requires_connectors_eq(inner, class, def, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_connect_requires_connectors_eq(inner, class, def, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_connect_requires_connectors_eq(inner, class, def, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_connect_arg_is_connector(
-    cref: &ComponentReference,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    // Only check single-part references (e.g., connect(x, y)).
-    // Multi-part references like connect(r1.p, r2.n) access sub-components
-    // which may be connectors even if the parent is a model.
-    if cref.parts.len() != 1 {
-        return;
-    }
-    if let Some(first) = cref.parts.first() {
-        let comp_name = &*first.ident.text;
-        if let Some(comp) = class.components.get(comp_name) {
-            let type_name = comp.type_name.to_string();
-            // Built-in types (Real, Integer, Boolean, String) are not connectors
-            if matches!(
-                type_name.as_str(),
-                "Real" | "Integer" | "Boolean" | "String"
-            ) {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "connect argument '{}' must be a connector, but has type '{}' (MLS §9.1)",
-                        comp_name, type_name
-                    ))
-                    .with_code(ER009_CONNECT_ARG_NOT_CONNECTOR),
-                );
-                return;
-            }
-            // Look up the type class
-            if let Some(type_class) = find_class_by_name(def, &type_name)
-                && type_class.class_type != ClassType::Connector
-            {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "connect argument '{}' must be a connector, but '{}' is a {} (MLS §9.1)",
-                        comp_name,
-                        type_name,
-                        type_class.class_type.as_str()
-                    ))
-                    .with_code(ER009_CONNECT_ARG_NOT_CONNECTOR),
-                );
-            }
-        }
-    }
-}
-
-// ============================================================================
-// EXPR-013: 'end' outside subscript context
-// ============================================================================
-
-/// Check equations for 'end' used outside of array subscripts.
-fn check_end_outside_subscript_eq(eq: &Equation, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_end_outside_subscript_expr(lhs, false, diags);
-            check_end_outside_subscript_expr(rhs, false, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_end_outside_subscript_eq(inner, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_end_outside_subscript_eq(inner, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_end_outside_subscript_eq(inner, diags);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_end_outside_subscript_eq(inner, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Check an expression for 'end' used outside subscript context.
-/// `in_subscript` tracks whether we're inside a subscript.
-fn check_end_outside_subscript_expr(
-    expr: &Expression,
-    in_subscript: bool,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::End,
-            ..
-        } if !in_subscript => {
-            diags.push(
-                Diagnostic::error(
-                    "'end' can only be used within array subscripts (MLS §10.5.1)".to_string(),
-                )
-                .with_code(ER031_END_OUTSIDE_SUBSCRIPT),
-            );
-        }
-        Expression::ComponentReference(cref) => {
-            // Subscripts inside component references count as subscript context
-            let subs = cref.parts.iter().filter_map(|p| p.subs.as_ref()).flatten();
-            for sub in subs {
-                check_end_outside_subscript_subscript(sub, diags);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            check_end_outside_subscript_expr(lhs, in_subscript, diags);
-            check_end_outside_subscript_expr(rhs, in_subscript, diags);
-        }
-        Expression::Unary { rhs, .. } => {
-            check_end_outside_subscript_expr(rhs, in_subscript, diags);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_end_outside_subscript_expr(arg, in_subscript, diags);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                check_end_outside_subscript_expr(cond, in_subscript, diags);
-                check_end_outside_subscript_expr(then_expr, in_subscript, diags);
-            }
-            check_end_outside_subscript_expr(else_branch, in_subscript, diags);
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_end_outside_subscript_expr(elem, in_subscript, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            check_end_outside_subscript_expr(inner, in_subscript, diags);
-        }
-        _ => {}
-    }
-}
-
-fn check_end_outside_subscript_subscript(sub: &Subscript, diags: &mut Vec<Diagnostic>) {
-    match sub {
-        Subscript::Expression(expr) => {
-            // Inside a subscript, 'end' is valid
-            check_end_outside_subscript_expr(expr, true, diags);
-        }
-        Subscript::Empty | Subscript::Range { .. } => {}
-    }
-}
-
-// ============================================================================
-// EXPR-002: Real equality, EXPR-016: non-Boolean if, TYPE-005: class as value
-// ============================================================================
-
-/// Check equations for expression-level type issues that can be detected without
-/// full type inference.
-fn check_expr_type_issues_eq(
-    eq: &Equation,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    real_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match eq {
-        Equation::Simple { lhs, rhs, .. } => {
-            check_expr_type_issues(lhs, class, def, real_vars, diags);
-            check_expr_type_issues(rhs, class, def, real_vars, diags);
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-                }
-            }
-        }
-        Equation::When(blocks) => {
-            for block in blocks {
-                for inner in &block.eqs {
-                    check_expr_type_issues_eq(inner, class, def, real_vars, diags);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn check_expr_type_issues(
-    expr: &Expression,
-    class: &ClassDef,
-    def: &StoredDefinition,
-    real_vars: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        // EXPR-002: Real equality/inequality comparison
-        Expression::Binary { op, lhs, rhs, .. } => {
-            if matches!(op, OpBinary::Eq(_) | OpBinary::Neq(_))
-                && (expr_is_real(lhs, real_vars) || expr_is_real(rhs, real_vars))
-            {
-                diags.push(
-                    Diagnostic::error(
-                        "equality comparison on Real values is not allowed \
-                             outside functions (MLS §3.5)"
-                            .to_string(),
-                    )
-                    .with_code(ER029_REAL_EQUALITY_COMPARISON),
-                );
-            }
-            check_expr_type_issues(lhs, class, def, real_vars, diags);
-            check_expr_type_issues(rhs, class, def, real_vars, diags);
-        }
-        // EXPR-016: non-Boolean if-expression condition
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                if expr_is_numeric_literal(cond) {
-                    diags.push(
-                        Diagnostic::error(
-                            "if-expression condition must be Boolean, \
-                             not a numeric value (MLS §3.6.5)"
-                                .to_string(),
-                        )
-                        .with_code(ER010_IF_CONDITION_NOT_BOOLEAN),
-                    );
-                }
-                check_expr_type_issues(cond, class, def, real_vars, diags);
-                check_expr_type_issues(then_expr, class, def, real_vars, diags);
-            }
-            check_expr_type_issues(else_branch, class, def, real_vars, diags);
-        }
-        // TYPE-005: Class name used as value in equation
-        Expression::ComponentReference(cref) if cref.parts.len() == 1 => {
-            let name = &*cref.parts[0].ident.text;
-            // Check if this refers to a class rather than a component
-            if !class.components.contains_key(name) && find_class_by_name(def, name).is_some() {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "'{}' is a class, not a variable; cannot be used as a value (MLS §4.4)",
-                        name
-                    ))
-                    .with_code(ER011_CLASS_USED_AS_VALUE),
-                );
-            }
-        }
-        Expression::Unary { rhs, .. } => {
-            check_expr_type_issues(rhs, class, def, real_vars, diags);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                check_expr_type_issues(arg, class, def, real_vars, diags);
-            }
-        }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                check_expr_type_issues(elem, class, def, real_vars, diags);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            check_expr_type_issues(inner, class, def, real_vars, diags);
-        }
-        _ => {}
-    }
-}
-
-/// Check if an expression is clearly a Real-typed component reference.
-fn expr_is_real(expr: &Expression, real_vars: &HashSet<String>) -> bool {
-    if let Expression::ComponentReference(cref) = expr
-        && let Some(first) = cref.parts.first()
-    {
-        return real_vars.contains(&*first.ident.text);
-    }
-    // Real literals
-    if let Expression::Terminal {
-        terminal_type: TerminalType::UnsignedReal,
-        ..
-    } = expr
-    {
-        return true;
-    }
-    false
-}
-
-/// Check if an expression is a numeric literal (not Boolean).
-fn expr_is_numeric_literal(expr: &Expression) -> bool {
-    matches!(
-        expr,
-        Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger | TerminalType::UnsignedReal,
-            ..
-        }
-    )
+pub fn check_der_in_functions(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
+    set_active_source_map(source_map);
+    run_der_in_function_checks(def)
 }

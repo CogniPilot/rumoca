@@ -7,8 +7,8 @@ use anyhow::Result;
 use indexmap::{IndexMap, IndexSet};
 use rayon::prelude::*;
 use rumoca_core::{
-    DefId, Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, SourceId,
-    SourceMap, Span,
+    DefId, Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, PrimaryLabel,
+    SourceId, SourceMap, Span,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
@@ -28,7 +28,8 @@ use crate::library_cache::{
     LibraryCacheStatus, parse_library_with_cache_in, resolve_library_cache_dir,
 };
 use crate::merge::{
-    MergeSemanticError, collect_class_type_counts, collect_model_names, merge_stored_definitions,
+    MergeSemanticError, MergeSemanticLabel, collect_class_type_counts, collect_model_names,
+    merge_stored_definitions,
 };
 
 mod dependency_fingerprint;
@@ -901,8 +902,10 @@ impl Session {
         &mut self,
         mode: ResolveBuildMode,
     ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
+        let session_source_map = self.session_source_map();
         if mode.include_parse_error_diags() {
-            let parse_error_diags = collect_parse_error_diagnostics(&self.documents);
+            let parse_error_diags =
+                collect_parse_error_diagnostics(&self.documents, &session_source_map);
             if !parse_error_diags.is_empty() {
                 return Err(diagnostics_from_vec(parse_error_diags));
             }
@@ -917,7 +920,6 @@ impl Session {
             .values()
             .filter_map(|doc| doc.parsed.clone().map(|p| (doc.uri.clone(), p)))
             .collect();
-        let session_source_map = self.session_source_map();
         let multi_document_session = definitions.len() > 1;
         let merged = merge_stored_definitions(definitions).map_err(|e| {
             let mut diags = CommonDiagnostics::new();
@@ -1166,13 +1168,9 @@ impl Session {
     }
 
     fn strict_compile_targets(&mut self, tree: &ast::ClassTree, model_name: &str) -> Vec<String> {
-        if self.dependency_fingerprints.is_none() {
-            self.dependency_fingerprints = Some(DependencyFingerprintCache::from_tree(tree));
-        }
         let dep_cache = self
             .dependency_fingerprints
-            .as_ref()
-            .expect("dependency cache initialized above");
+            .get_or_insert_with(|| DependencyFingerprintCache::from_tree(tree));
         let planner = ReachabilityPlanner::new(dep_cache.class_dependencies(), &self.model_names);
         planner.compile_targets(model_name)
     }
@@ -1205,6 +1203,8 @@ impl Session {
         };
 
         let tree = &resolved.0;
+        let model_span = class_primary_span(tree, model_name)
+            .unwrap_or_else(|| default_tree_span(&tree.source_map));
         let class_type = tree
             .get_class_by_qualified_name(model_name)
             .map(|class| class.class_type.clone());
@@ -1216,24 +1216,31 @@ impl Session {
                 missing_spans,
                 ..
             } => {
-                let mut diag = CommonDiagnostic::error(format!(
-                    "model needs inner declarations: {}",
-                    missing_inners.join(", ")
-                ))
-                .with_code("EI008");
-                for (idx, span) in missing_spans.iter().enumerate() {
+                let primary_span = missing_spans.first().copied().unwrap_or(model_span);
+                let mut diag = CommonDiagnostic::error(
+                    "EI008",
+                    format!(
+                        "model needs inner declarations: {}",
+                        missing_inners.join(", ")
+                    ),
+                    PrimaryLabel::new(primary_span).with_message("missing matching `inner`"),
+                );
+                for (idx, span) in missing_spans.iter().enumerate().skip(1) {
                     diag = diag.with_label(missing_inner_label(idx, *span));
                 }
                 collected.push(diag);
                 return model_diagnostics_for_tree(tree, collected);
             }
             InstantiationOutcome::Error(e) => {
-                collected.push(miette_error_to_common(&*e));
+                collected.push(miette_error_to_common(&*e, model_span, &tree.source_map));
                 return model_diagnostics_for_tree(tree, collected);
             }
         };
 
-        if let Some(diag) = synthesized_inner_warning(&overlay.synthesized_inners) {
+        if let Some(diag) = synthesized_inner_warning(
+            &overlay.synthesized_inners,
+            PrimaryLabel::new(model_span).with_message("synthesized inner declaration"),
+        ) {
             collected.push(diag);
         }
 
@@ -1259,13 +1266,13 @@ impl Session {
         ) {
             Ok(f) => f,
             Err(e) => {
-                collected.push(miette_error_to_common(&e));
+                collected.push(miette_error_to_common(&e, model_span, &tree.source_map));
                 return model_diagnostics_for_tree(tree, collected);
             }
         };
 
         if let Err(e) = to_dae_with_options(&flat, todae_options_for_tree(tree)) {
-            collected.push(miette_error_to_common(&e));
+            collected.push(miette_error_to_common(&e, model_span, &tree.source_map));
         }
 
         model_diagnostics_for_tree(tree, collected)
@@ -1284,12 +1291,8 @@ impl Session {
         tree: &ast::ClassTree,
         model_name: &str,
     ) -> Fingerprint {
-        if self.dependency_fingerprints.is_none() {
-            self.dependency_fingerprints = Some(DependencyFingerprintCache::from_tree(tree));
-        }
         self.dependency_fingerprints
-            .as_mut()
-            .expect("dependency cache initialized above")
+            .get_or_insert_with(|| DependencyFingerprintCache::from_tree(tree))
             .model_fingerprint(model_name)
     }
 
@@ -1298,13 +1301,9 @@ impl Session {
         tree: &ast::ClassTree,
         model_names: &[String],
     ) -> Vec<(String, PhaseResult)> {
-        if self.dependency_fingerprints.is_none() {
-            self.dependency_fingerprints = Some(DependencyFingerprintCache::from_tree(tree));
-        }
         let dep_cache = self
             .dependency_fingerprints
-            .as_mut()
-            .expect("dependency cache initialized above");
+            .get_or_insert_with(|| DependencyFingerprintCache::from_tree(tree));
 
         let models_with_fingerprints: Vec<(String, Fingerprint)> = model_names
             .iter()
@@ -1371,53 +1370,114 @@ impl Session {
     }
 }
 
-fn miette_error_to_common(err: &dyn miette::Diagnostic) -> CommonDiagnostic {
-    let mut diag = CommonDiagnostic::error(err.to_string());
-    if let Some(code) = err.code() {
-        diag = diag.with_code(code.to_string());
-    }
+fn miette_error_to_common(
+    err: &dyn miette::Diagnostic,
+    fallback_span: Span,
+    source_map: &SourceMap,
+) -> CommonDiagnostic {
+    let code = err
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "EI000".to_string());
+
+    let mut converted_labels = Vec::new();
     if let Some(labels) = err.labels() {
-        for (idx, labeled) in labels.enumerate() {
+        for labeled in labels {
             let start = labeled.offset();
-            let end = start.saturating_add(labeled.len());
-            let span = Span::from_offsets(SourceId(0), start, end);
-            let mut label = if idx == 0 {
-                Label::primary(span)
-            } else {
-                Label::secondary(span)
-            };
+            let len = labeled.len().max(1);
+            let end = start.saturating_add(len);
+            let source_id =
+                miette_label_source_id(err, source_map, start, len, fallback_span.source);
+            let mut label = Label::secondary(Span::from_offsets(source_id, start, end));
             if let Some(message) = labeled.label() {
                 label = label.with_message(message.to_string());
             }
-            diag = diag.with_label(label);
+            converted_labels.push(label);
         }
     }
+
+    let (primary_label, secondary_labels) = if let Some(first) = converted_labels.first() {
+        let mut primary = PrimaryLabel::new(first.span);
+        if let Some(message) = first.message.clone() {
+            primary = primary.with_message(message);
+        }
+        (
+            primary,
+            converted_labels.into_iter().skip(1).collect::<Vec<_>>(),
+        )
+    } else {
+        (
+            PrimaryLabel::new(fallback_span).with_message("model compilation failed here"),
+            Vec::new(),
+        )
+    };
+
+    let mut diag = CommonDiagnostic::error(code, err.to_string(), primary_label);
+    for label in secondary_labels {
+        diag = diag.with_label(label);
+    }
+
     diag
 }
 
+fn miette_label_source_id(
+    err: &dyn miette::Diagnostic,
+    source_map: &SourceMap,
+    offset: usize,
+    len: usize,
+    fallback_source_id: SourceId,
+) -> SourceId {
+    let Some(source_code) = err.source_code() else {
+        return fallback_source_id;
+    };
+    let span = miette::SourceSpan::from((offset, len));
+    let Ok(contents) = source_code.read_span(&span, 0, 0) else {
+        return fallback_source_id;
+    };
+    let Some(name) = contents.name() else {
+        return fallback_source_id;
+    };
+    source_map.get_id(name).unwrap_or(fallback_source_id)
+}
+
 fn merge_error_to_common(err: &anyhow::Error, source_map: &SourceMap) -> CommonDiagnostic {
-    let mut diag = CommonDiagnostic::error(err.to_string());
-    if let Some(merge_error) = err.downcast_ref::<MergeSemanticError>() {
-        for merge_label in &merge_error.labels {
-            let source_id = source_map
-                .get_id(&merge_label.file_name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "merge diagnostic file missing from source map: file='{}' message='{}'",
-                        merge_label.file_name, merge_error.message
-                    )
-                });
-            let span = Span::from_offsets(source_id, merge_label.start, merge_label.end);
-            let label = if merge_label.primary {
-                Label::primary(span)
-            } else {
-                Label::secondary(span)
-            }
-            .with_message(merge_label.message);
-            diag = diag.with_label(label);
+    let fallback_span = default_tree_span(source_map);
+    let Some(merge_error) = err.downcast_ref::<MergeSemanticError>() else {
+        return CommonDiagnostic::error(
+            "EM001",
+            err.to_string(),
+            PrimaryLabel::new(fallback_span).with_message("merge failed"),
+        );
+    };
+    let primary_label = merge_error
+        .labels
+        .first()
+        .and_then(|label| merge_label_to_span(source_map, label).map(|span| (span, label)))
+        .map(|(span, label)| PrimaryLabel::new(span).with_message(label.message))
+        .unwrap_or_else(|| PrimaryLabel::new(fallback_span).with_message("merge failed"));
+
+    let mut diag = CommonDiagnostic::error("EM001", err.to_string(), primary_label);
+
+    for merge_label in merge_error.labels.iter().skip(1) {
+        let Some(span) = merge_label_to_span(source_map, merge_label) else {
+            continue;
+        };
+        let label = if merge_label.primary {
+            Label::primary(span)
+        } else {
+            Label::secondary(span)
         }
+        .with_message(merge_label.message);
+        diag = diag.with_label(label);
     }
+
     diag
+}
+
+fn merge_label_to_span(source_map: &SourceMap, merge_label: &MergeSemanticLabel) -> Option<Span> {
+    let source_id = source_map.get_id(&merge_label.file_name)?;
+    let end = merge_label.end.max(merge_label.start.saturating_add(1));
+    Some(Span::from_offsets(source_id, merge_label.start, end))
 }
 
 fn resolve_class_for_completion<'a>(
@@ -1537,11 +1597,21 @@ fn phase_result_to_failure(
 }
 
 fn class_primary_label(tree: &ast::ClassTree, model_name: &str, message: &str) -> Option<Label> {
+    let span = class_primary_span(tree, model_name)?;
+    Some(Label::primary(span).with_message(message))
+}
+
+fn class_primary_span(tree: &ast::ClassTree, model_name: &str) -> Option<Span> {
     let class = tree.get_class_by_qualified_name(model_name)?;
-    let source_id = tree.source_map.get_id(&class.location.file_name)?;
-    let start = class.location.start as usize;
-    let end = (class.location.end as usize).max(start.saturating_add(1));
-    Some(Label::primary(Span::from_offsets(source_id, start, end)).with_message(message))
+    let name_location = &class.name.location;
+    let start = name_location.start as usize;
+    let end = (name_location.end as usize).max(start.saturating_add(1));
+    let span = if let Some(source_id) = tree.source_map.get_id(&name_location.file_name) {
+        Span::from_offsets(source_id, start, end)
+    } else {
+        default_tree_span(&tree.source_map)
+    };
+    Some(span)
 }
 
 fn collect_parse_failures_for_files(
@@ -1571,19 +1641,46 @@ fn collect_parse_failures_for_files(
 
 fn collect_parse_error_diagnostics(
     documents: &IndexMap<String, Document>,
+    source_map: &SourceMap,
 ) -> Vec<CommonDiagnostic> {
     let mut out = Vec::new();
     for doc in documents.values() {
         let Some(err) = doc.parse_error.as_ref() else {
             continue;
         };
+        let span = source_map
+            .get_id(&doc.uri)
+            .map(|source_id| leading_non_whitespace_span(source_id, &doc.content))
+            .unwrap_or_else(|| Span::from_offsets(SourceId(0), 0, 1));
         out.push(
-            CommonDiagnostic::error(err.clone())
-                .with_code("syntax-error")
-                .with_note(format!("document: {}", doc.uri)),
+            CommonDiagnostic::error(
+                "syntax-error",
+                err.clone(),
+                PrimaryLabel::new(span).with_message("parse error in this document"),
+            )
+            .with_note(format!("document: {}", doc.uri)),
         );
     }
     out
+}
+
+fn leading_non_whitespace_span(source_id: SourceId, content: &str) -> Span {
+    if content.is_empty() {
+        return Span::from_offsets(source_id, 0, 1);
+    }
+    if let Some((start, ch)) = content.char_indices().find(|(_, ch)| !ch.is_whitespace()) {
+        return Span::from_offsets(source_id, start, start + ch.len_utf8());
+    }
+    let end = content.chars().next().map_or(1, |ch| ch.len_utf8());
+    Span::from_offsets(source_id, 0, end)
+}
+
+fn default_tree_span(source_map: &SourceMap) -> Span {
+    let source_id = SourceId(0);
+    if let Some((_, content)) = source_map.get_source(source_id) {
+        return leading_non_whitespace_span(source_id, content);
+    }
+    Span::from_offsets(source_id, 0, 1)
 }
 
 fn collect_target_source_files(tree: &ast::ClassTree, targets: &[String]) -> IndexSet<String> {
@@ -1754,6 +1851,7 @@ impl Default for Session {
 /// For new code, consider using [`Session`] directly with [`Session::add_parsed_batch`].
 pub struct CompiledLibrary {
     session: Session,
+    resolved: Arc<ast::ResolvedTree>,
 }
 
 impl CompiledLibrary {
@@ -1765,7 +1863,8 @@ impl CompiledLibrary {
         session.add_parsed("library", def);
         // Build resolved tree to catch resolution errors early
         session.build_resolved()?;
-        Ok(Self { session })
+        let resolved = session.ensure_resolved()?.clone();
+        Ok(Self { session, resolved })
     }
 
     /// Create a compiled library from an already-resolved tree.
@@ -1780,9 +1879,9 @@ impl CompiledLibrary {
             .set(ResolveBuildMode::Standard, resolved.clone());
         session
             .resolved_cache
-            .set(ResolveBuildMode::StrictCompileRecovery, resolved);
+            .set(ResolveBuildMode::StrictCompileRecovery, resolved.clone());
         session.model_names = model_names;
-        Self { session }
+        Self { session, resolved }
     }
 
     /// Get all model names in the library.
@@ -1802,12 +1901,7 @@ impl CompiledLibrary {
 
     /// Get the resolved tree reference (guaranteed present after construction).
     fn resolved_tree(&self) -> &Arc<ast::ResolvedTree> {
-        // SAFETY: SessionView::new/from_stored_definition call build_resolved()
-        // which sets self.session resolved cache before returning Ok(Self { session }).
-        self.session
-            .resolved_cache
-            .any()
-            .expect("SessionView invariant: resolved tree must be set during construction")
+        &self.resolved
     }
 
     /// Compile a specific model.
