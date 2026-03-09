@@ -47,6 +47,7 @@ mod parse;
 mod project_config;
 mod runtime_api;
 mod session;
+mod traversal_adapter;
 
 /// Analysis helpers.
 pub mod analysis {

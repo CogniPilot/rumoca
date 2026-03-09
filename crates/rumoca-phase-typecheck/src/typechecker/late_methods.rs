@@ -1,3 +1,6 @@
+use super::traversal_adapter::{
+    TypeCheckTraversalCallbacks, walk_equations, walk_expression, walk_statements,
+};
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -11,6 +14,12 @@ enum ModifierPathAdvance {
     Next(TypeId),
     Complete,
     Invalid,
+}
+
+impl TypeCheckTraversalCallbacks for TypeChecker {
+    fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable) {
+        self.check_equation_type_compatibility(lhs, rhs, type_table);
+    }
 }
 
 impl TypeChecker {
@@ -480,23 +489,15 @@ impl TypeChecker {
         self.mark_structural_parameters(class);
 
         // Type check equations
-        for equation in &class.equations {
-            self.check_equation(equation, type_table);
-        }
-        for equation in &class.initial_equations {
-            self.check_equation(equation, type_table);
-        }
+        walk_equations(self, &class.equations, type_table);
+        walk_equations(self, &class.initial_equations, type_table);
 
         // Type check algorithms
         for statements in &class.algorithms {
-            for statement in statements {
-                self.check_statement(statement, type_table);
-            }
+            walk_statements(self, statements, type_table);
         }
         for statements in &class.initial_algorithms {
-            for statement in statements {
-                self.check_statement(statement, type_table);
-            }
+            walk_statements(self, statements, type_table);
         }
 
         // Recursively check nested classes
@@ -539,12 +540,12 @@ impl TypeChecker {
 
         // Type check the start expression if not empty
         if !matches!(comp.start, Expression::Empty) {
-            self.check_expression(&comp.start, type_table);
+            walk_expression(self, &comp.start, type_table);
         }
 
         // Type check modification expressions
         for (_name, mod_expr) in &comp.modifications {
-            self.check_expression(mod_expr, type_table);
+            walk_expression(self, mod_expr, type_table);
         }
     }
 
@@ -1300,258 +1301,6 @@ impl TypeChecker {
                         rumoca_core::PrimaryLabel::new(span).with_message("input with binding"),
                     ),
                 );
-            }
-        }
-    }
-
-    /// Type check an equation.
-    pub(crate) fn check_equation(&mut self, equation: &Equation, type_table: &TypeTable) {
-        match equation {
-            Equation::Empty => {}
-            Equation::Simple { lhs, rhs } => {
-                self.check_expression(lhs, type_table);
-                self.check_expression(rhs, type_table);
-                self.check_equation_type_compatibility(lhs, rhs, type_table);
-            }
-            Equation::Connect { lhs: _, rhs: _ } => {
-                // Connector compatibility is validated during connection processing
-            }
-            Equation::For {
-                indices: _,
-                equations,
-            } => {
-                self.check_equations(equations, type_table);
-            }
-            Equation::When(blocks) => {
-                for block in blocks {
-                    self.check_equation_block(block, type_table);
-                }
-            }
-            Equation::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for block in cond_blocks {
-                    self.check_equation_block(block, type_table);
-                }
-                if let Some(equations) = else_block {
-                    self.check_equations(equations, type_table);
-                }
-            }
-            Equation::FunctionCall { comp: _, args } => {
-                self.check_expressions(args, type_table);
-            }
-            Equation::Assert {
-                condition,
-                message,
-                level,
-            } => {
-                self.check_expression(condition, type_table);
-                self.check_expression(message, type_table);
-                if let Some(lvl) = level {
-                    self.check_expression(lvl, type_table);
-                }
-            }
-        }
-    }
-
-    /// Type check a list of equations.
-    pub(crate) fn check_equations(&mut self, equations: &[Equation], type_table: &TypeTable) {
-        for eq in equations {
-            self.check_equation(eq, type_table);
-        }
-    }
-
-    /// Type check an equation block (condition + equations).
-    pub(crate) fn check_equation_block(
-        &mut self,
-        block: &rumoca_ir_ast::EquationBlock,
-        type_table: &TypeTable,
-    ) {
-        self.check_expression(&block.cond, type_table);
-        self.check_equations(&block.eqs, type_table);
-    }
-
-    /// Type check a list of expressions.
-    pub(crate) fn check_expressions(&mut self, exprs: &[Expression], type_table: &TypeTable) {
-        for expr in exprs {
-            self.check_expression(expr, type_table);
-        }
-    }
-
-    /// Type check a statement.
-    pub(crate) fn check_statement(&mut self, statement: &Statement, type_table: &TypeTable) {
-        match statement {
-            Statement::Empty => {}
-            Statement::Assignment { comp: _, value } => {
-                self.check_expression(value, type_table);
-            }
-            Statement::FunctionCall {
-                comp: _,
-                args,
-                outputs,
-            } => {
-                self.check_expressions(args, type_table);
-                self.check_expressions(outputs, type_table);
-            }
-            Statement::Return { .. } => {}
-            Statement::Break { .. } => {}
-            Statement::For {
-                indices: _,
-                equations,
-            } => {
-                self.check_statements(equations, type_table);
-            }
-            Statement::While(block) => {
-                self.check_statement_block(block, type_table);
-            }
-            Statement::When(blocks) => {
-                for block in blocks {
-                    self.check_statement_block(block, type_table);
-                }
-            }
-            Statement::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for block in cond_blocks {
-                    self.check_statement_block(block, type_table);
-                }
-                if let Some(statements) = else_block {
-                    self.check_statements(statements, type_table);
-                }
-            }
-            Statement::Reinit { variable: _, value } => {
-                self.check_expression(value, type_table);
-                // reinit variable must be a continuous-time Real state (MLS §8.3.6)
-                // Validated during flatten/todae where der() usage is known
-            }
-            Statement::Assert {
-                condition,
-                message,
-                level,
-            } => {
-                self.check_expression(condition, type_table);
-                self.check_expression(message, type_table);
-                if let Some(lvl) = level {
-                    self.check_expression(lvl, type_table);
-                }
-            }
-        }
-    }
-
-    /// Type check a list of statements.
-    pub(crate) fn check_statements(&mut self, statements: &[Statement], type_table: &TypeTable) {
-        for stmt in statements {
-            self.check_statement(stmt, type_table);
-        }
-    }
-
-    /// Type check a statement block (condition + statements).
-    pub(crate) fn check_statement_block(
-        &mut self,
-        block: &rumoca_ir_ast::StatementBlock,
-        type_table: &TypeTable,
-    ) {
-        self.check_expression(&block.cond, type_table);
-        self.check_statements(&block.stmts, type_table);
-    }
-
-    /// Type check an expression.
-    pub(crate) fn check_expression(&mut self, expr: &Expression, _type_table: &TypeTable) {
-        match expr {
-            Expression::Empty => {}
-            Expression::Range { start, step, end } => {
-                self.check_expression(start, _type_table);
-                if let Some(s) = step {
-                    self.check_expression(s, _type_table);
-                }
-                self.check_expression(end, _type_table);
-            }
-            Expression::Unary { op: _, rhs } => {
-                self.check_expression(rhs, _type_table);
-            }
-            Expression::Binary { op: _, lhs, rhs } => {
-                self.check_expression(lhs, _type_table);
-                self.check_expression(rhs, _type_table);
-            }
-            Expression::Terminal { .. } => {
-                // Terminals have inherent types (literals)
-            }
-            Expression::ComponentReference(_) => {
-                // Type comes from the referenced component
-            }
-            Expression::FunctionCall { comp: _, args } => {
-                for arg in args {
-                    self.check_expression(arg, _type_table);
-                }
-            }
-            Expression::ClassModification {
-                target: _,
-                modifications,
-            } => {
-                for mod_expr in modifications {
-                    self.check_expression(mod_expr, _type_table);
-                }
-            }
-            Expression::NamedArgument { name: _, value } => {
-                self.check_expression(value, _type_table);
-            }
-            Expression::Modification { target: _, value } => {
-                self.check_expression(value, _type_table);
-            }
-            Expression::Array { elements, .. } => {
-                for elem in elements {
-                    self.check_expression(elem, _type_table);
-                }
-            }
-            Expression::Tuple { elements } => {
-                for elem in elements {
-                    self.check_expression(elem, _type_table);
-                }
-            }
-            Expression::If {
-                branches,
-                else_branch,
-            } => {
-                for (cond, then_expr) in branches {
-                    self.check_expression(cond, _type_table);
-                    self.check_expression(then_expr, _type_table);
-                }
-                self.check_expression(else_branch, _type_table);
-            }
-            Expression::Parenthesized { inner } => {
-                self.check_expression(inner, _type_table);
-            }
-            Expression::ArrayComprehension {
-                expr,
-                indices: _,
-                filter,
-            } => {
-                self.check_expression(expr, _type_table);
-                if let Some(f) = filter {
-                    self.check_expression(f, _type_table);
-                }
-            }
-            Expression::ArrayIndex { base, subscripts } => {
-                self.check_expression(base, _type_table);
-                self.check_subscripts(subscripts, _type_table);
-            }
-            Expression::FieldAccess { base, .. } => {
-                self.check_expression(base, _type_table);
-            }
-        }
-    }
-
-    /// Type check subscript expressions.
-    pub(crate) fn check_subscripts(
-        &mut self,
-        subscripts: &[rumoca_ir_ast::Subscript],
-        type_table: &TypeTable,
-    ) {
-        for sub in subscripts {
-            if let rumoca_ir_ast::Subscript::Expression(e) = sub {
-                self.check_expression(e, type_table);
             }
         }
     }

@@ -4,18 +4,40 @@
 //! component start/modification expressions.
 
 use crate::Resolver;
+use crate::traversal_adapter::{
+    ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
+    walk_subscripts,
+};
 use rumoca_core::{DefId, ScopeId};
 use rumoca_ir_ast as ast;
-use std::sync::Arc;
 
 type ClassDef = ast::ClassDef;
 type ComponentRefPart = ast::ComponentRefPart;
 type ComponentReference = ast::ComponentReference;
-type Equation = ast::Equation;
 type Expression = ast::Expression;
 type ScopeKind = ast::ScopeKind;
-type Statement = ast::Statement;
 type StoredDefinition = ast::StoredDefinition;
+
+impl ResolveTraversalCallbacks for Resolver {
+    fn create_loop_scope(&mut self, parent_scope: ScopeId) -> ScopeId {
+        self.scope_tree
+            .create_scope(parent_scope, ScopeKind::ForLoop)
+    }
+
+    fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str) {
+        let def_id = self.alloc_def_id(index_name.to_string());
+        self.scope_tree
+            .add_member(loop_scope, index_name.to_string(), def_id);
+    }
+
+    fn on_component_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
+        self.resolve_component_reference(comp, scope);
+    }
+
+    fn on_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
+        self.resolve_function_reference(comp, scope);
+    }
+}
 
 impl Resolver {
     /// Resolve equations, statements, expressions in a StoredDefinition (Phase 2b).
@@ -46,24 +68,37 @@ impl Resolver {
             .scope_id
             .expect("Class scope should be set in registration phase");
 
+        if let Some(constrainedby) = class.constrainedby.as_mut()
+            && let Some(def_id) = self.resolve_qualified_name(constrainedby, class_scope)
+        {
+            constrainedby.def_id = Some(def_id);
+        }
+
+        for ext in class.extends.iter_mut() {
+            for modification in ext.modifications.iter_mut() {
+                self.resolve_expression(&mut modification.expr, class_scope);
+            }
+        }
+
+        self.resolve_subscripts(&mut class.array_subscripts, class_scope);
+
         // Resolve component references in equations and algorithms
         // MLS §5.3: Full name lookup happens during instantiation/flattening,
         // but we can do partial resolution here for the Class Tree.
-        for eq in class.equations.iter_mut() {
-            self.resolve_equation(eq, class_scope);
+        walk_equations(self, &mut class.equations, class_scope);
+        walk_equations(self, &mut class.initial_equations, class_scope);
+        for algorithm_section in class.algorithms.iter_mut() {
+            walk_statements(self, algorithm_section, class_scope);
         }
-        for eq in class.initial_equations.iter_mut() {
-            self.resolve_equation(eq, class_scope);
+        for algorithm_section in class.initial_algorithms.iter_mut() {
+            walk_statements(self, algorithm_section, class_scope);
         }
-        for alg in class.algorithms.iter_mut() {
-            for stmt in alg.iter_mut() {
-                self.resolve_statement(stmt, class_scope);
+
+        if let Some(external) = class.external.as_mut() {
+            if let Some(output) = external.output.as_mut() {
+                self.resolve_component_reference(output, class_scope);
             }
-        }
-        for alg in class.initial_algorithms.iter_mut() {
-            for stmt in alg.iter_mut() {
-                self.resolve_statement(stmt, class_scope);
-            }
+            self.resolve_expressions(&mut external.args, class_scope);
         }
 
         // Resolve component start/modification expressions and type names
@@ -75,8 +110,14 @@ impl Resolver {
             for mod_expr in comp.modifications.values_mut() {
                 self.resolve_expression(mod_expr, class_scope);
             }
+            self.resolve_subscripts(&mut comp.shape_expr, class_scope);
             if let Some(ref mut cond) = comp.condition {
                 self.resolve_expression(cond, class_scope);
+            }
+            if let Some(constrainedby) = comp.constrainedby.as_mut()
+                && let Some(def_id) = self.resolve_qualified_name(constrainedby, class_scope)
+            {
+                constrainedby.def_id = Some(def_id);
             }
 
             // Resolve the component's type name to its DefId (MLS §5.3).
@@ -84,6 +125,13 @@ impl Resolver {
             // Builtins are registered in global scope, so normal lookup finds them.
             if let Some(type_def_id) = self.resolve_qualified_name(&comp.type_name, class_scope) {
                 // Full resolution succeeded
+                comp.type_name.def_id = Some(type_def_id);
+                comp.type_def_id = Some(type_def_id);
+                self.stats.types_fully_resolved += 1;
+            } else if let Some(type_def_id) =
+                self.resolve_type_name_with_inheritance(&comp.type_name, class_scope)
+            {
+                // Full resolution via inherited members succeeded.
                 comp.type_name.def_id = Some(type_def_id);
                 comp.type_def_id = Some(type_def_id);
                 self.stats.types_fully_resolved += 1;
@@ -115,7 +163,9 @@ impl Resolver {
         let first_part = &comp.type_name.name[0].text;
 
         // First check direct scope lookup
-        if let Some(first_def_id) = self.scope_tree.lookup(class_scope, first_part) {
+        if let Some(first_def_id) = self.scope_tree.lookup(class_scope, first_part)
+            && self.partial_type_root_ids.contains(&first_def_id)
+        {
             comp.type_name.def_id = Some(first_def_id);
             self.stats.types_partial_direct += 1;
             return;
@@ -123,7 +173,9 @@ impl Resolver {
 
         // If not in direct scope, check inherited members from base classes.
         // We need to search the entire enclosing class hierarchy.
-        if let Some(def_id) = self.find_inherited_type(qualified_name, first_part) {
+        if let Some(def_id) = self.find_inherited_type(qualified_name, first_part)
+            && self.partial_type_root_ids.contains(&def_id)
+        {
             comp.type_name.def_id = Some(def_id);
             self.stats.types_partial_inherited += 1;
             return;
@@ -159,260 +211,14 @@ impl Resolver {
         None
     }
 
-    /// Resolve references in an equation.
-    pub(crate) fn resolve_equation(&mut self, eq: &mut Equation, scope: ScopeId) {
-        match eq {
-            Equation::Simple { lhs, rhs } => {
-                self.resolve_expression(lhs, scope);
-                self.resolve_expression(rhs, scope);
-            }
-            Equation::Connect { lhs, rhs } => {
-                self.resolve_component_reference(lhs, scope);
-                self.resolve_component_reference(rhs, scope);
-            }
-            Equation::For { indices, equations } => {
-                // Create a for-loop scope for the index variables
-                let for_scope = self.scope_tree.create_scope(scope, ScopeKind::ForLoop);
-                for idx in indices {
-                    let name = idx.ident.text.to_string();
-                    let def_id = self.alloc_def_id(name.clone());
-                    self.scope_tree.add_member(for_scope, name, def_id);
-                    self.resolve_expression(&mut idx.range, for_scope);
-                }
-                self.resolve_equations(equations, for_scope);
-            }
-            Equation::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for block in cond_blocks.iter_mut() {
-                    self.resolve_equation_block(block, scope);
-                }
-                if let Some(else_body) = else_block {
-                    self.resolve_equations(else_body, scope);
-                }
-            }
-            Equation::When(blocks) => {
-                for block in blocks.iter_mut() {
-                    self.resolve_equation_block(block, scope);
-                }
-            }
-            Equation::FunctionCall { comp, args } => {
-                self.resolve_function_reference(comp, scope);
-                self.resolve_expressions(args, scope);
-            }
-            Equation::Assert {
-                condition,
-                message,
-                level,
-            } => {
-                self.resolve_expression(condition, scope);
-                self.resolve_expression(message, scope);
-                if let Some(lvl) = level {
-                    self.resolve_expression(lvl, scope);
-                }
-            }
-            Equation::Empty => {}
-        }
-    }
-
-    /// Resolve references in a list of equations.
-    fn resolve_equations(&mut self, equations: &mut [Equation], scope: ScopeId) {
-        for eq in equations.iter_mut() {
-            self.resolve_equation(eq, scope);
-        }
-    }
-
-    /// Resolve references in an equation block (condition + equations).
-    fn resolve_equation_block(&mut self, block: &mut rumoca_ir_ast::EquationBlock, scope: ScopeId) {
-        self.resolve_expression(&mut block.cond, scope);
-        self.resolve_equations(&mut block.eqs, scope);
-    }
-
     /// Resolve references in a list of expressions.
     fn resolve_expressions(&mut self, exprs: &mut [Expression], scope: ScopeId) {
-        for expr in exprs.iter_mut() {
-            self.resolve_expression(expr, scope);
-        }
-    }
-
-    /// Resolve references in a statement.
-    pub(crate) fn resolve_statement(&mut self, stmt: &mut Statement, scope: ScopeId) {
-        match stmt {
-            Statement::Assignment { comp, value } => {
-                self.resolve_component_reference(comp, scope);
-                self.resolve_expression(value, scope);
-            }
-            Statement::FunctionCall {
-                comp,
-                args,
-                outputs,
-            } => {
-                self.resolve_function_reference(comp, scope);
-                self.resolve_expressions(args, scope);
-                self.resolve_expressions(outputs, scope);
-            }
-            Statement::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for block in cond_blocks.iter_mut() {
-                    self.resolve_statement_block(block, scope);
-                }
-                if let Some(else_body) = else_block {
-                    self.resolve_statements(else_body, scope);
-                }
-            }
-            Statement::For { indices, equations } => {
-                let for_scope = self.scope_tree.create_scope(scope, ScopeKind::ForLoop);
-                for idx in indices {
-                    let name = idx.ident.text.to_string();
-                    let def_id = self.alloc_def_id(name.clone());
-                    self.scope_tree.add_member(for_scope, name, def_id);
-                    self.resolve_expression(&mut idx.range, for_scope);
-                }
-                self.resolve_statements(equations, for_scope);
-            }
-            Statement::While(block) => {
-                self.resolve_expression(&mut block.cond, scope);
-                self.resolve_statements(&mut block.stmts, scope);
-            }
-            Statement::When(blocks) => {
-                for block in blocks.iter_mut() {
-                    self.resolve_statement_block(block, scope);
-                }
-            }
-            Statement::Reinit { variable, value } => {
-                self.resolve_component_reference(variable, scope);
-                self.resolve_expression(value, scope);
-            }
-            Statement::Assert {
-                condition,
-                message,
-                level,
-            } => {
-                self.resolve_expression(condition, scope);
-                self.resolve_expression(message, scope);
-                if let Some(lvl) = level {
-                    self.resolve_expression(lvl, scope);
-                }
-            }
-            Statement::Return { .. } | Statement::Break { .. } | Statement::Empty => {}
-        }
-    }
-
-    /// Resolve references in a list of statements.
-    fn resolve_statements(&mut self, statements: &mut [Statement], scope: ScopeId) {
-        for stmt in statements.iter_mut() {
-            self.resolve_statement(stmt, scope);
-        }
-    }
-
-    /// Resolve references in a statement block (condition + statements).
-    fn resolve_statement_block(
-        &mut self,
-        block: &mut rumoca_ir_ast::StatementBlock,
-        scope: ScopeId,
-    ) {
-        self.resolve_expression(&mut block.cond, scope);
-        self.resolve_statements(&mut block.stmts, scope);
+        walk_expressions(self, exprs, scope);
     }
 
     /// Resolve references in an expression.
     pub(crate) fn resolve_expression(&mut self, expr: &mut Expression, scope: ScopeId) {
-        match expr {
-            Expression::ComponentReference(comp) => {
-                self.resolve_component_reference(comp, scope);
-            }
-            Expression::FunctionCall { comp, args } => {
-                self.resolve_function_reference(comp, scope);
-                for arg in args.iter_mut() {
-                    self.resolve_expression(arg, scope);
-                }
-            }
-            Expression::Binary { lhs, rhs, .. } => {
-                // Arc::make_mut clones if shared, returns &mut
-                self.resolve_expression(Arc::make_mut(lhs), scope);
-                self.resolve_expression(Arc::make_mut(rhs), scope);
-            }
-            Expression::Unary { rhs, .. } => {
-                self.resolve_expression(Arc::make_mut(rhs), scope);
-            }
-            Expression::Range { start, step, end } => {
-                self.resolve_expression(Arc::make_mut(start), scope);
-                if let Some(s) = step {
-                    self.resolve_expression(Arc::make_mut(s), scope);
-                }
-                self.resolve_expression(Arc::make_mut(end), scope);
-            }
-            Expression::Array { elements, .. } => {
-                for elem in elements.iter_mut() {
-                    self.resolve_expression(elem, scope);
-                }
-            }
-            Expression::If {
-                branches,
-                else_branch,
-            } => {
-                for (cond, then_expr) in branches.iter_mut() {
-                    self.resolve_expression(cond, scope);
-                    self.resolve_expression(then_expr, scope);
-                }
-                self.resolve_expression(Arc::make_mut(else_branch), scope);
-            }
-            Expression::ClassModification {
-                target,
-                modifications,
-            } => {
-                self.resolve_function_reference(target, scope);
-                for m in modifications.iter_mut() {
-                    self.resolve_expression(m, scope);
-                }
-            }
-            Expression::Modification { target, value } => {
-                self.resolve_component_reference(target, scope);
-                self.resolve_expression(Arc::make_mut(value), scope);
-            }
-            Expression::NamedArgument { value, .. } => {
-                self.resolve_expression(Arc::make_mut(value), scope);
-            }
-            Expression::Tuple { elements } => {
-                for elem in elements.iter_mut() {
-                    self.resolve_expression(elem, scope);
-                }
-            }
-            Expression::Parenthesized { inner } => {
-                self.resolve_expression(Arc::make_mut(inner), scope);
-            }
-            Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-            } => {
-                // Array comprehension loop indices introduce a local scope,
-                // similar to for-equation/for-statement indices.
-                let comp_scope = self.scope_tree.create_scope(scope, ScopeKind::ForLoop);
-                for idx in indices {
-                    let name = idx.ident.text.to_string();
-                    let def_id = self.alloc_def_id(name.clone());
-                    self.scope_tree.add_member(comp_scope, name, def_id);
-                    self.resolve_expression(&mut idx.range, comp_scope);
-                }
-                self.resolve_expression(Arc::make_mut(expr), comp_scope);
-                if let Some(filt) = filter {
-                    self.resolve_expression(Arc::make_mut(filt), comp_scope);
-                }
-            }
-            Expression::ArrayIndex { base, subscripts } => {
-                self.resolve_expression(Arc::make_mut(base), scope);
-                self.resolve_subscripts(subscripts, scope);
-            }
-            Expression::FieldAccess { base, .. } => {
-                self.resolve_expression(Arc::make_mut(base), scope);
-            }
-            // Terminal expressions don't contain references.
-            Expression::Terminal { .. } | Expression::Empty => {}
-        }
+        walk_expression(self, expr, scope);
     }
 
     /// Resolve a component reference.
@@ -528,16 +334,38 @@ impl Resolver {
         Some((current_def_id, current_qualified))
     }
 
+    fn resolve_type_name_with_inheritance(
+        &self,
+        name: &rumoca_ir_ast::Name,
+        scope: ScopeId,
+    ) -> Option<rumoca_core::DefId> {
+        let first_part = name.name.first()?.text.as_ref();
+        let mut current_def_id = self
+            .scope_tree
+            .lookup(scope, first_part)
+            .or_else(|| self.resolve_function_first_part(first_part, scope))?;
+        let mut current_qualified = self.def_names.get(&current_def_id)?.clone();
+
+        for part in name.name.iter().skip(1) {
+            let member = part.text.as_ref();
+            let direct_name = format!("{current_qualified}.{member}");
+            if let Some(&next_def_id) = self.name_to_def.get(&direct_name) {
+                current_def_id = next_def_id;
+                current_qualified = self.def_names.get(&next_def_id)?.clone();
+                continue;
+            }
+
+            let inherited_def_id = self.lookup_inherited_member(&current_qualified, member)?;
+            current_def_id = inherited_def_id;
+            current_qualified = self.def_names.get(&inherited_def_id)?.clone();
+        }
+
+        Some(current_def_id)
+    }
+
     /// Resolve references in a list of subscripts.
     fn resolve_subscripts(&mut self, subs: &mut [rumoca_ir_ast::Subscript], scope: ScopeId) {
-        for sub in subs.iter_mut() {
-            match sub {
-                rumoca_ir_ast::Subscript::Expression(expr) => {
-                    self.resolve_expression(expr, scope);
-                }
-                rumoca_ir_ast::Subscript::Range { .. } | rumoca_ir_ast::Subscript::Empty => {}
-            }
-        }
+        walk_subscripts(self, subs, scope);
     }
 }
 

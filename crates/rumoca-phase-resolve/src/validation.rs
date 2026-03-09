@@ -10,11 +10,8 @@ type ClassDef = ast::ClassDef;
 type ClassTree = ast::ClassTree;
 type Component = ast::Component;
 type ComponentReference = ast::ComponentReference;
-type Equation = ast::Equation;
 type Expression = ast::Expression;
 type Extend = ast::Extend;
-type Statement = ast::Statement;
-type StoredDefinition = ast::StoredDefinition;
 
 /// An unresolved symbol found during validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,9 +60,9 @@ impl ValidationResult {
 /// Validate that a ClassTree has all symbols resolved.
 pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
     let mut v = Validator::default();
-    v.visit_stored_def(&tree.definitions);
+    let _ = ast::Visitor::visit_stored_definition(&mut v, &tree.definitions);
     ValidationResult {
-        unresolved: v.unresolved.into_iter().collect(),
+        unresolved: v.unresolved,
     }
 }
 
@@ -73,48 +70,6 @@ pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
 struct Validator {
     path: Vec<String>,
     unresolved: Vec<UnresolvedSymbol>,
-}
-
-/// Expression visitor adapter for validation.
-struct ExprVisitor<'a>(&'a mut Validator);
-
-impl ast::Visitor for ExprVisitor<'_> {
-    fn visit_component_reference(&mut self, cr: &ComponentReference) -> ControlFlow<()> {
-        self.0.visit_comp_ref(cr);
-        self.visit_each(&cr.parts, |this, part| {
-            if let Some(subs) = &part.subs {
-                this.visit_each(subs, Self::visit_subscript)
-            } else {
-                ControlFlow::Continue(())
-            }
-        })
-    }
-
-    fn visit_expr_function_call(
-        &mut self,
-        comp: &ComponentReference,
-        args: &[Expression],
-    ) -> ControlFlow<()> {
-        // Function calls should have def_id set (builtins are registered)
-        if comp.def_id.is_none() && !comp.parts.is_empty() {
-            let source_location = comp.parts[0].ident.location.clone();
-            self.0.add(
-                comp.to_string(),
-                UnresolvedKind::FunctionCall,
-                source_location,
-            );
-        }
-        // Visit subscript expressions inside the component path, but avoid
-        // re-reporting the function as an unresolved component reference.
-        self.visit_each(&comp.parts, |this, part| {
-            if let Some(subs) = &part.subs {
-                this.visit_each(subs, Self::visit_subscript)
-            } else {
-                ControlFlow::Continue(())
-            }
-        })?;
-        self.visit_each(args, Self::visit_expression)
-    }
 }
 
 impl Validator {
@@ -148,50 +103,85 @@ impl Validator {
         });
     }
 
-    fn with_scope<F: FnOnce(&mut Self)>(&mut self, name: &str, f: F) {
-        self.path.push(name.to_string());
-        f(self);
-        self.path.pop();
+    fn add_unresolved_name(&mut self, name: &ast::Name, kind: UnresolvedKind, _context: &str) {
+        if name.def_id.is_some() || name.name.is_empty() {
+            return;
+        }
+        let Some(source_location) = name.name.first().map(|token| token.location.clone()) else {
+            return;
+        };
+        self.add(name.to_string(), kind, source_location);
     }
 
-    fn visit_stored_def(&mut self, def: &StoredDefinition) {
-        for (name, class) in &def.classes {
-            self.with_scope(name, |v| v.visit_class(class));
+    fn add_unresolved_component_reference(&mut self, cr: &ComponentReference) {
+        if cr.def_id.is_some() || cr.parts.is_empty() {
+            return;
+        }
+        let source_location = cr.parts[0].ident.location.clone();
+        self.add(
+            cr.parts[0].ident.text.to_string(),
+            UnresolvedKind::ComponentReference,
+            source_location,
+        );
+    }
+
+    fn add_unresolved_function_call(&mut self, cr: &ComponentReference) {
+        if cr.def_id.is_none() && !cr.parts.is_empty() {
+            let source_location = cr.parts[0].ident.location.clone();
+            self.add(
+                cr.parts[0].ident.text.to_string(),
+                UnresolvedKind::FunctionCall,
+                source_location,
+            );
         }
     }
+}
 
-    fn visit_class(&mut self, class: &ClassDef) {
+impl ast::Visitor for Validator {
+    fn visit_class_def(&mut self, class: &ClassDef) -> ControlFlow<()> {
+        self.path.push(class.name.text.to_string());
+
+        if let Some(constrainedby) = &class.constrainedby {
+            self.visit_type_name(constrainedby, ast::TypeNameContext::ClassConstrainedBy)?;
+        }
+
         for ext in &class.extends {
-            self.visit_extend(ext);
+            self.visit_extend(ext)?;
         }
-        for (name, comp) in &class.components {
-            self.with_scope(name, |v| v.visit_component(comp));
+
+        self.visit_each(&class.array_subscripts, Self::visit_subscript)?;
+
+        for component in class.components.values() {
+            self.visit_component(component)?;
         }
-        class
-            .equations
-            .iter()
-            .for_each(|eq| self.visit_equation(eq));
-        class
-            .initial_equations
-            .iter()
-            .for_each(|eq| self.visit_equation(eq));
-        class
-            .algorithms
-            .iter()
-            .flatten()
-            .for_each(|s| self.visit_statement(s));
-        class
-            .initial_algorithms
-            .iter()
-            .flatten()
-            .for_each(|s| self.visit_statement(s));
-        for (name, nested) in &class.classes {
-            self.with_scope(name, |v| v.visit_class(nested));
+        self.visit_each(&class.equations, Self::visit_equation)?;
+        self.visit_each(&class.initial_equations, Self::visit_equation)?;
+        for algorithm_section in &class.algorithms {
+            self.visit_each(algorithm_section, Self::visit_statement)?;
         }
+        for algorithm_section in &class.initial_algorithms {
+            self.visit_each(algorithm_section, Self::visit_statement)?;
+        }
+
+        if let Some(external) = &class.external {
+            if let Some(output) = &external.output {
+                self.visit_component_reference_ctx(
+                    output,
+                    ast::ComponentReferenceContext::Expression,
+                )?;
+            }
+            self.visit_each(&external.args, Self::visit_expression)?;
+        }
+
+        for nested in class.classes.values() {
+            self.visit_class_def(nested)?;
+        }
+
+        self.path.pop();
+        ControlFlow::Continue(())
     }
 
-    fn visit_extend(&mut self, ext: &Extend) {
-        // Extends should have base_def_id set (builtins are now registered with DefIds)
+    fn visit_extend(&mut self, ext: &Extend) -> ControlFlow<()> {
         if ext.base_def_id.is_none() {
             self.add(
                 ext.base_name.to_string(),
@@ -199,142 +189,105 @@ impl Validator {
                 ext.location.clone(),
             );
         }
+        for modification in &ext.modifications {
+            self.visit_expression(&modification.expr)?;
+        }
+        ControlFlow::Continue(())
     }
 
-    fn visit_component(&mut self, comp: &Component) {
-        // Component type should have def_id set (builtins are now registered with DefIds)
-        if comp.type_def_id.is_none() && comp.type_name.def_id.is_none() {
-            let source_location = comp
-                .type_name
-                .name
-                .first()
-                .map(|token| token.location.clone())
-                .expect("component type name must include at least one token");
-            self.add(
-                comp.type_name.to_string(),
-                UnresolvedKind::TypeReference,
-                source_location,
-            );
+    fn visit_component(&mut self, comp: &Component) -> ControlFlow<()> {
+        self.path.push(comp.name.clone());
+
+        self.visit_type_name(&comp.type_name, ast::TypeNameContext::ComponentType)?;
+        if let Some(constrainedby) = &comp.constrainedby {
+            self.visit_type_name(constrainedby, ast::TypeNameContext::ComponentConstrainedBy)?;
         }
+
         if !matches!(comp.start, Expression::Empty) {
-            self.visit_expr(&comp.start);
+            self.visit_expression(&comp.start)?;
         }
-        if let Some(cond) = &comp.condition {
-            self.visit_expr(cond);
+        if let Some(binding) = &comp.binding {
+            self.visit_expression(binding)?;
         }
+        for modification in comp.modifications.values() {
+            self.visit_expression(modification)?;
+        }
+        self.visit_each(&comp.shape_expr, Self::visit_subscript)?;
+        if let Some(condition) = &comp.condition {
+            self.visit_expression(condition)?;
+        }
+
+        self.path.pop();
+        ControlFlow::Continue(())
     }
 
-    fn visit_equation(&mut self, eq: &Equation) {
-        match eq {
-            Equation::Empty => {}
-            Equation::Simple { lhs, rhs } => {
-                self.visit_expr(lhs);
-                self.visit_expr(rhs);
+    fn visit_type_name(&mut self, name: &ast::Name, ctx: ast::TypeNameContext) -> ControlFlow<()> {
+        match ctx {
+            ast::TypeNameContext::ExtendsBase => {}
+            ast::TypeNameContext::ComponentType => {
+                self.add_unresolved_name(
+                    name,
+                    UnresolvedKind::TypeReference,
+                    "component type name",
+                );
             }
-            Equation::Connect { lhs, rhs, .. } => {
-                self.visit_comp_ref(lhs);
-                self.visit_comp_ref(rhs);
+            ast::TypeNameContext::ClassConstrainedBy => {
+                self.add_unresolved_name(
+                    name,
+                    UnresolvedKind::TypeReference,
+                    "class constrainedby",
+                );
             }
-            Equation::For { indices, equations } => {
-                indices.iter().for_each(|i| self.visit_expr(&i.range));
-                equations.iter().for_each(|e| self.visit_equation(e));
-            }
-            Equation::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for b in cond_blocks {
-                    self.visit_expr(&b.cond);
-                    b.eqs.iter().for_each(|e| self.visit_equation(e));
-                }
-                if let Some(eqs) = else_block {
-                    eqs.iter().for_each(|e| self.visit_equation(e));
-                }
-            }
-            Equation::When(blocks) => {
-                for b in blocks {
-                    self.visit_expr(&b.cond);
-                    b.eqs.iter().for_each(|e| self.visit_equation(e));
-                }
-            }
-            Equation::FunctionCall { comp, args } => {
-                self.visit_comp_ref(comp);
-                args.iter().for_each(|a| self.visit_expr(a));
-            }
-            Equation::Assert {
-                condition, message, ..
-            } => {
-                self.visit_expr(condition);
-                self.visit_expr(message);
+            ast::TypeNameContext::ComponentConstrainedBy => {
+                self.add_unresolved_name(
+                    name,
+                    UnresolvedKind::TypeReference,
+                    "component constrainedby",
+                );
             }
         }
+        ControlFlow::Continue(())
     }
 
-    fn visit_statement(&mut self, stmt: &Statement) {
-        match stmt {
-            Statement::Empty | Statement::Return { .. } | Statement::Break { .. } => {}
-            Statement::Assignment { comp, value } => {
-                self.visit_comp_ref(comp);
-                self.visit_expr(value);
-            }
-            Statement::FunctionCall { comp, args, .. } => {
-                self.visit_comp_ref(comp);
-                args.iter().for_each(|a| self.visit_expr(a));
-            }
-            Statement::For { indices, equations } => {
-                indices.iter().for_each(|i| self.visit_expr(&i.range));
-                equations.iter().for_each(|s| self.visit_statement(s));
-            }
-            Statement::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for b in cond_blocks {
-                    self.visit_expr(&b.cond);
-                    b.stmts.iter().for_each(|s| self.visit_statement(s));
-                }
-                if let Some(stmts) = else_block {
-                    stmts.iter().for_each(|s| self.visit_statement(s));
-                }
-            }
-            Statement::While(b) => {
-                self.visit_expr(&b.cond);
-                b.stmts.iter().for_each(|s| self.visit_statement(s));
-            }
-            Statement::When(blocks) => {
-                for b in blocks {
-                    self.visit_expr(&b.cond);
-                    b.stmts.iter().for_each(|s| self.visit_statement(s));
-                }
-            }
-            Statement::Reinit { variable, value } => {
-                self.visit_comp_ref(variable);
-                self.visit_expr(value);
-            }
-            Statement::Assert {
-                condition, message, ..
-            } => {
-                self.visit_expr(condition);
-                self.visit_expr(message);
-            }
+    fn visit_component_reference_ctx(
+        &mut self,
+        cr: &ComponentReference,
+        ctx: ast::ComponentReferenceContext,
+    ) -> ControlFlow<()> {
+        match ctx {
+            ast::ComponentReferenceContext::EquationFunctionCallTarget
+            | ast::ComponentReferenceContext::StatementFunctionCallTarget
+            | ast::ComponentReferenceContext::ClassModificationTarget
+            | ast::ComponentReferenceContext::ModificationTarget => {}
+            _ => self.add_unresolved_component_reference(cr),
         }
+        ast::Visitor::visit_component_reference(self, cr)
     }
 
-    fn visit_expr(&mut self, expr: &Expression) {
-        let mut visitor = ExprVisitor(self);
-        let _ = ast::Visitor::visit_expression(&mut visitor, expr);
-    }
+    fn visit_expr_function_call_ctx(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        ctx: ast::FunctionCallContext,
+    ) -> ControlFlow<()> {
+        self.add_unresolved_function_call(comp);
 
-    fn visit_comp_ref(&mut self, cr: &ComponentReference) {
-        // Component references should have def_id set (builtins are registered)
-        if cr.def_id.is_none() && !cr.parts.is_empty() {
-            let source_location = cr.parts[0].ident.location.clone();
-            self.add(
-                cr.parts[0].ident.text.to_string(),
-                UnresolvedKind::ComponentReference,
-                source_location,
-            );
+        if matches!(ctx, ast::FunctionCallContext::Expression) {
+            ast::Visitor::visit_component_reference(self, comp)?;
         }
+
+        self.visit_expr_function_call(comp, args)
+    }
+
+    fn visit_expression_ctx(
+        &mut self,
+        expr: &Expression,
+        ctx: ast::ExpressionContext,
+    ) -> ControlFlow<()> {
+        if ctx == ast::ExpressionContext::ComponentAnnotation {
+            return ControlFlow::Continue(());
+        }
+        self.visit_expression(expr)
     }
 }
 
@@ -421,6 +374,246 @@ mod tests {
             result.is_fully_resolved(),
             "Builtin functions should be resolved: {:?}",
             result.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_external_call_argument_in_nested_function() {
+        let r = resolve_for_validation(
+            r#"
+class EOTest
+  extends ExternalObject;
+  function constructor
+    input Boolean verbdose = true;
+    output EOTest env;
+    external "C" env = init(verbose);
+  end constructor;
+end EOTest;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "verbose"),
+            "expected unresolved external-call argument in nested function, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_external_call_output_in_nested_function() {
+        let r = resolve_for_validation(
+            r#"
+class EOTest
+  extends ExternalObject;
+  function constructor
+    input Boolean verbose = true;
+    output EOTest env;
+    external "C" wrong = init(verbose);
+  end constructor;
+end EOTest;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "wrong"),
+            "expected unresolved external-call output reference, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_component_in_assert_level_expression() {
+        let r = resolve_for_validation(
+            r#"
+model T
+equation
+  assert(true, "ok", lvl);
+end T;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "lvl"),
+            "expected unresolved assert-level reference, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_component_in_statement_function_outputs() {
+        let r = resolve_for_validation(
+            r#"
+model T
+  Real x;
+algorithm
+  (x, y) := sin(1.0);
+end T;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "y"),
+            "expected unresolved output reference in statement function call, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_extends_modifier_expression_reference() {
+        let r = resolve_for_validation(
+            r#"
+model Base
+  parameter Real k = 0;
+end Base;
+
+model Derived
+  extends Base(k = missing);
+end Derived;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "missing"),
+            "expected unresolved extends-modifier reference, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_class_constrainedby_type_reference() {
+        let r = resolve_for_validation(
+            r#"
+package RealMedium
+end RealMedium;
+
+model UsesMedium
+  replaceable package Medium = RealMedium constrainedby MissingMedium;
+end UsesMedium;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::TypeReference && s.name == "MissingMedium"),
+            "expected unresolved constrainedby type on class, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_component_constrainedby_type_reference() {
+        let r = resolve_for_validation(
+            r#"
+model M
+  replaceable Real x constrainedby Missing;
+equation
+  x = 0;
+end M;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::TypeReference && s.name == "Missing"),
+            "expected unresolved constrainedby type on component, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_subscript_index_in_assignment_target() {
+        let r = resolve_for_validation(
+            r#"
+model M
+  Real a[2];
+algorithm
+  a[i] := 1;
+end M;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "i"),
+            "expected unresolved subscript index in assignment target, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_equation_function_call_is_classified_as_function_call() {
+        let r = resolve_for_validation(
+            r#"
+model M
+equation
+  unknown(1.0);
+end M;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::FunctionCall && s.name == "unknown"),
+            "expected unresolved equation function call classification, got: {:?}",
+            r.unresolved
+        );
+        assert!(
+            !r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "unknown"),
+            "function call should not also be reported as component reference, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_unresolved_statement_function_call_is_classified_as_function_call() {
+        let r = resolve_for_validation(
+            r#"
+model M
+algorithm
+  unknown(1.0);
+end M;
+"#,
+        );
+        assert!(
+            r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::FunctionCall && s.name == "unknown"),
+            "expected unresolved statement function call classification, got: {:?}",
+            r.unresolved
+        );
+        assert!(
+            !r.unresolved
+                .iter()
+                .any(|s| s.kind == UnresolvedKind::ComponentReference && s.name == "unknown"),
+            "function call should not also be reported as component reference, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn test_component_annotation_reference_is_excluded_from_resolution_validation() {
+        let r = resolve_for_validation(
+            r#"
+model M
+  Real x annotation(Dialog(group = missingAnnotationRef));
+equation
+  x = 1;
+end M;
+"#,
+        );
+        assert!(
+            !r.unresolved
+                .iter()
+                .any(|s| s.name == "missingAnnotationRef"),
+            "annotation references should be excluded from resolution validation, got: {:?}",
+            r.unresolved
         );
     }
 }

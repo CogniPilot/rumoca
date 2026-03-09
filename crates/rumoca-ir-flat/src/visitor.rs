@@ -25,7 +25,8 @@
 //! ```
 
 use crate::{
-    BuiltinFunction, ComprehensionIndex, Expression, Literal, OpBinary, Subscript, VarName,
+    BuiltinFunction, ComponentReference, ComprehensionIndex, Expression, ForIndex, Literal,
+    OpBinary, Statement, StatementBlock, Subscript, VarName,
 };
 
 /// Trait for visiting Expression trees without modification.
@@ -265,6 +266,121 @@ pub trait ExpressionVisitor {
     }
 }
 
+/// Visitor for flat algorithm statements.
+pub trait StatementVisitor: ExpressionVisitor {
+    fn visit_statement(&mut self, stmt: &Statement) {
+        self.walk_statement(stmt);
+    }
+
+    fn walk_statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Empty | Statement::Return | Statement::Break => {}
+            Statement::Assignment { comp, value } => self.visit_assignment(comp, value),
+            Statement::For { indices, equations } => self.visit_for_statement(indices, equations),
+            Statement::While(block) => self.visit_statement_block(block),
+            Statement::If {
+                cond_blocks,
+                else_block,
+            } => self.visit_if_statement(cond_blocks, else_block.as_deref()),
+            Statement::When(blocks) => self.visit_when_statement(blocks),
+            Statement::FunctionCall {
+                comp,
+                args,
+                outputs,
+            } => self.visit_statement_function_call(comp, args, outputs),
+            Statement::Reinit { variable, value } => self.visit_reinit(variable, value),
+            Statement::Assert {
+                condition,
+                message,
+                level,
+            } => self.visit_assert(condition, message, level.as_ref()),
+        }
+    }
+
+    fn visit_assignment(&mut self, comp: &ComponentReference, value: &Expression) {
+        self.visit_component_reference(comp);
+        self.visit_expression(value);
+    }
+
+    fn visit_for_statement(&mut self, indices: &[ForIndex], statements: &[Statement]) {
+        for index in indices {
+            self.visit_expression(&index.range);
+        }
+        for stmt in statements {
+            self.visit_statement(stmt);
+        }
+    }
+
+    fn visit_if_statement(
+        &mut self,
+        cond_blocks: &[StatementBlock],
+        else_block: Option<&[Statement]>,
+    ) {
+        for block in cond_blocks {
+            self.visit_statement_block(block);
+        }
+        if let Some(else_statements) = else_block {
+            for stmt in else_statements {
+                self.visit_statement(stmt);
+            }
+        }
+    }
+
+    fn visit_when_statement(&mut self, blocks: &[StatementBlock]) {
+        for block in blocks {
+            self.visit_statement_block(block);
+        }
+    }
+
+    fn visit_statement_function_call(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        outputs: &[Expression],
+    ) {
+        self.visit_component_reference(comp);
+        for arg in args {
+            self.visit_expression(arg);
+        }
+        for output in outputs {
+            self.visit_expression(output);
+        }
+    }
+
+    fn visit_reinit(&mut self, variable: &ComponentReference, value: &Expression) {
+        self.visit_component_reference(variable);
+        self.visit_expression(value);
+    }
+
+    fn visit_assert(
+        &mut self,
+        condition: &Expression,
+        message: &Expression,
+        level: Option<&Expression>,
+    ) {
+        self.visit_expression(condition);
+        self.visit_expression(message);
+        if let Some(level_expr) = level {
+            self.visit_expression(level_expr);
+        }
+    }
+
+    fn visit_component_reference(&mut self, comp: &ComponentReference) {
+        for part in &comp.parts {
+            for subscript in &part.subs {
+                self.visit_subscript(subscript);
+            }
+        }
+    }
+
+    fn visit_statement_block(&mut self, block: &StatementBlock) {
+        self.visit_expression(&block.cond);
+        for stmt in &block.stmts {
+            self.visit_statement(stmt);
+        }
+    }
+}
+
 // =============================================================================
 // Common visitor implementations
 // =============================================================================
@@ -310,6 +426,70 @@ impl ExpressionVisitor for FunctionCallCollector {
     fn visit_function_call(&mut self, name: &VarName, args: &[Expression]) {
         self.names.insert(name.to_string());
         self.walk_function_call(name, args);
+    }
+}
+
+/// Collector for algorithm output variables from statement trees.
+pub struct AlgorithmOutputCollector {
+    outputs: indexmap::IndexSet<VarName>,
+}
+
+impl AlgorithmOutputCollector {
+    /// Create a new algorithm output collector.
+    pub fn new() -> Self {
+        Self {
+            outputs: indexmap::IndexSet::new(),
+        }
+    }
+
+    /// Consume the collector and return collected outputs in first-seen order.
+    pub fn into_outputs(self) -> Vec<VarName> {
+        self.outputs.into_iter().collect()
+    }
+
+    /// Get a reference to collected outputs.
+    pub fn outputs(&self) -> &indexmap::IndexSet<VarName> {
+        &self.outputs
+    }
+}
+
+impl Default for AlgorithmOutputCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExpressionVisitor for AlgorithmOutputCollector {}
+
+impl StatementVisitor for AlgorithmOutputCollector {
+    fn visit_assignment(&mut self, comp: &ComponentReference, value: &Expression) {
+        self.outputs
+            .insert(crate::component_ref_to_base_var_name(comp));
+        self.visit_expression(value);
+    }
+
+    fn visit_statement_function_call(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        outputs: &[Expression],
+    ) {
+        self.visit_component_reference(comp);
+        for arg in args {
+            self.visit_expression(arg);
+        }
+        for output in outputs {
+            if let Expression::VarRef { name, .. } = output {
+                self.outputs.insert(name.clone());
+            }
+            self.visit_expression(output);
+        }
+    }
+
+    fn visit_reinit(&mut self, variable: &ComponentReference, value: &Expression) {
+        self.outputs
+            .insert(crate::component_ref_to_base_var_name(variable));
+        self.visit_expression(value);
     }
 }
 
@@ -631,5 +811,48 @@ mod tests {
         assert!(vars.contains(&VarName::new("x")));
         assert!(vars.contains(&VarName::new("y")));
         assert!(vars.contains(&VarName::new("z")));
+    }
+
+    #[test]
+    fn test_algorithm_output_collector() {
+        let stmts = vec![Statement::For {
+            indices: vec![ForIndex {
+                ident: "i".to_string(),
+                range: Expression::Literal(Literal::Integer(1)),
+            }],
+            equations: vec![
+                Statement::Assignment {
+                    comp: ComponentReference {
+                        local: false,
+                        parts: vec![crate::ComponentRefPart {
+                            ident: "x".to_string(),
+                            subs: vec![Subscript::Index(1)],
+                        }],
+                        def_id: None,
+                    },
+                    value: make_var("u"),
+                },
+                Statement::Reinit {
+                    variable: ComponentReference {
+                        local: false,
+                        parts: vec![crate::ComponentRefPart {
+                            ident: "y".to_string(),
+                            subs: vec![],
+                        }],
+                        def_id: None,
+                    },
+                    value: make_var("v"),
+                },
+            ],
+        }];
+
+        let mut collector = AlgorithmOutputCollector::new();
+        for stmt in &stmts {
+            collector.visit_statement(stmt);
+        }
+        let outputs = collector.into_outputs();
+
+        assert!(outputs.contains(&VarName::new("x")));
+        assert!(outputs.contains(&VarName::new("y")));
     }
 }

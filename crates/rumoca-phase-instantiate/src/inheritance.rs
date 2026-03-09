@@ -29,6 +29,10 @@ use rumoca_ir_ast as ast;
 use std::sync::Arc;
 
 use crate::errors::{InstantiateError, InstantiateResult};
+use crate::traversal_adapter::{
+    nested_target_modifications, redeclare_target_value, walk_extend_modifications,
+    walk_nested_classes,
+};
 
 const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
 
@@ -939,17 +943,17 @@ pub fn process_extends_with_cache(
 /// This post-merge pass ensures modifications like `extends Mid(c(k=2))` also
 /// apply when `c` is declared in a grandparent class.
 fn apply_extends_modifications(target: &mut InheritedContent, extend: &ast::Extend) {
-    for modification in &extend.modifications {
+    walk_extend_modifications(extend, |modification| {
         let Some((name, value)) = try_extract_value_modification_any(modification) else {
-            continue;
+            return;
         };
         let Some(comp) = target.components.get_mut(&name) else {
-            continue;
+            return;
         };
         comp.start = value.clone();
         comp.binding = Some(value);
         comp.has_explicit_binding = true;
-    }
+    });
 
     merge_nested_extends_modifications(target, extend);
 }
@@ -1149,31 +1153,41 @@ fn collect_redeclarations(
     extend_span: Span,
 ) -> InstantiateResult<IndexMap<String, String>> {
     let mut redeclare_types = IndexMap::new();
+    let mut validation_error: Option<Box<InstantiateError>> = None;
 
-    for modification in &extend.modifications {
-        if !modification.redeclare {
-            continue;
+    walk_extend_modifications(extend, |modification| {
+        let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
+            return;
+        };
+        if validation_error.is_some() {
+            return;
         }
-        let Some(target_name) = extract_modification_target(&modification.expr) else {
-            continue;
-        };
+        let target_name_owned = target_name.to_string();
         let new_type = extract_redeclare_type_qualified(&modification.expr, tree);
-        let Some(component) = class.components.get(&target_name) else {
-            continue;
+        let Some(component) = class.components.get(&target_name_owned) else {
+            return;
         };
 
-        validate_redeclaration(
+        if let Err(err) = validate_redeclaration(
             tree,
             component,
-            &target_name,
+            &target_name_owned,
             new_type.as_deref(),
             extend_span,
-        )?;
+        ) {
+            validation_error = Some(err);
+            return;
+        }
 
         if let Some(new_type_name) = new_type {
-            redeclare_types.insert(target_name, new_type_name);
+            redeclare_types.insert(target_name_owned, new_type_name);
         }
+    });
+
+    if let Some(err) = validation_error {
+        return Err(err);
     }
+
     Ok(redeclare_types)
 }
 
@@ -1215,11 +1229,12 @@ fn merge_class_content(
 
     // MLS §7.2: Collect value modifications (non-redeclare) from extends clause
     // These override default bindings in inherited components, e.g., extends Foo(n=2)
-    let value_modifications: IndexMap<String, ast::Expression> = extend
-        .modifications
-        .iter()
-        .filter_map(|m| try_extract_value_modification(m, class))
-        .collect();
+    let mut value_modifications: IndexMap<String, ast::Expression> = IndexMap::new();
+    walk_extend_modifications(extend, |modification| {
+        if let Some((name, value)) = try_extract_value_modification(modification, class) {
+            value_modifications.insert(name, value);
+        }
+    });
 
     // MLS §7.3: Validate redeclarations and collect type changes
     let redeclare_types = collect_redeclarations(tree, class, extend, extend_span)?;
@@ -1311,13 +1326,13 @@ fn merge_class_content(
         .extend(class.initial_algorithms.clone());
 
     // Merge nested classes
-    for (name, nested) in &class.classes {
+    walk_nested_classes(class, |name, nested| {
         if !target.classes.contains_key(name) {
             let mut inherited_class = nested.clone();
             apply_protected_class_visibility(&mut inherited_class, extend.is_protected);
-            target.classes.insert(name.clone(), inherited_class);
+            target.classes.insert(name.to_string(), inherited_class);
         }
-    }
+    });
 
     Ok(())
 }
@@ -1363,7 +1378,7 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
 /// that when `friction` is later instantiated, the modification `useHeatPort=true`
 /// is visible via `shift_modifications_down` and `populate_modification_environment`.
 fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &ast::Extend) {
-    for modification in &extend.modifications {
+    walk_extend_modifications(extend, |modification| {
         // Extract target name and nested modifications from the expression.
         // Two formats exist:
         //   1. ClassModification { target: comp_name, modifications: [...] }
@@ -1371,38 +1386,16 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         //   2. Modification { target: comp_name, value: ClassModification { target: TypeName, modifications: [...] } }
         //      For: extends Foo(redeclare final NewType comp(nested=val))
         //      Type changes are handled by collect_redeclarations(); here we merge nested mods.
-        let (target_name, modifications) = match &modification.expr {
-            ast::Expression::ClassModification {
-                target: mod_target,
-                modifications,
-            } => {
-                let Some(name) = mod_target.parts.first().map(|p| p.ident.text.to_string()) else {
-                    continue;
-                };
-                (name, modifications.as_slice())
-            }
-            ast::Expression::Modification {
-                target: mod_target,
-                value,
-            } => {
-                let Some(name) = mod_target.parts.first().map(|p| p.ident.text.to_string()) else {
-                    continue;
-                };
-                if let ast::Expression::ClassModification { modifications, .. } = value.as_ref() {
-                    (name, modifications.as_slice())
-                } else {
-                    continue;
-                }
-            }
-            _ => continue,
+        let Some((target_name, modifications)) = nested_target_modifications(modification) else {
+            return;
         };
-        let Some(comp) = target.components.get_mut(&target_name) else {
-            continue;
+        let Some(comp) = target.components.get_mut(target_name) else {
+            return;
         };
         for nested_mod in modifications {
             insert_nested_modification(comp, nested_mod);
         }
-    }
+    });
 }
 
 /// Insert a single nested modification into a component's modifications map.

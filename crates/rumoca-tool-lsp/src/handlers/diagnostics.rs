@@ -885,6 +885,378 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_target_names_include_nested_functions() {
+        let source = r#"
+class EOTest
+  extends ExternalObject;
+  function constructor
+    input Boolean verbose = true;
+    output EOTest env;
+    external "C" env = init(verbose);
+  end constructor;
+  function destructor
+    input EOTest env;
+    external "C" destroy(env);
+  end destructor;
+end EOTest;
+"#;
+        let ast = parse_source_to_ast_with_errors(source, "input.mo")
+            .expect("expected valid AST for external object with nested functions");
+        let targets = collect_diagnostic_target_names(&ast);
+        assert!(
+            targets.contains(&"EOTest".to_string()),
+            "expected parent class target, got: {targets:?}"
+        );
+        assert!(
+            targets.contains(&"EOTest.constructor".to_string()),
+            "expected nested constructor target, got: {targets:?}"
+        );
+        assert!(
+            targets.contains(&"EOTest.destructor".to_string()),
+            "expected nested destructor target, got: {targets:?}"
+        );
+    }
+
+    #[test]
+    fn parse_diagnostics_include_syntax_errors_in_nested_functions() {
+        let source = r#"
+class EOTest
+  extends ExternalObject;
+  function constructor
+    input Boolean verbose = true
+    output EOTest env;
+    external "C" env = init(verbose);
+  end constructor;
+end EOTest;
+"#;
+        let diagnostics = compute_diagnostics(source, "input.mo", None);
+        let parse_diag = diagnostics
+            .iter()
+            .find(|d| d.code == Some(NumberOrString::String("EP001".to_string())))
+            .unwrap_or_else(|| {
+                panic!("expected parse diagnostic in nested function: {diagnostics:?}")
+            });
+        assert!(
+            parse_diag.range.start.line >= 4,
+            "expected nested-function parse range, got: {:?}",
+            parse_diag.range
+        );
+    }
+
+    #[test]
+    fn unresolved_component_in_nested_external_function_call_is_reported() {
+        let source = r#"
+class EOTest
+  extends ExternalObject;
+  function constructor
+    input Boolean verbdose = true;
+    output EOTest env;
+    external "C" env = init(verbose);
+  end constructor;
+  function destructor
+    input EOTest env;
+    external "C" destroy(env);
+  end destructor;
+end EOTest;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved component reference")
+                    && d.message.contains("verbose")
+            }),
+            "expected unresolved component reference in nested function external call, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_component_in_function_output_binding_is_reported() {
+        let source = r#"
+function F
+  input Real x;
+  output Real y = missing;
+algorithm
+  y := x;
+end F;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved component reference")
+                    && d.message.contains("missing")
+            }),
+            "expected unresolved component reference in function binding, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_component_in_extends_modification_is_reported() {
+        let source = r#"
+model Base
+  parameter Real k = 1;
+end Base;
+
+model Child
+  extends Base(k = missing);
+end Child;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved component reference")
+                    && d.message.contains("missing")
+            }),
+            "expected unresolved component reference in extends modification, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_component_in_assert_level_is_reported() {
+        let source = r#"
+model M
+equation
+  assert(true, "ok", lvl);
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved component reference")
+                    && d.message.contains("lvl")
+            }),
+            "expected unresolved component reference in assert-level argument, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_component_in_statement_function_outputs_is_reported() {
+        let source = r#"
+model M
+  Real x;
+algorithm
+  (x, y) := sin(1.0);
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved component reference")
+                    && d.message.contains("y")
+            }),
+            "expected unresolved component reference in statement function outputs, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_class_constrainedby_type_reference_is_reported() {
+        let source = r#"
+package RealMedium
+end RealMedium;
+
+model UsesMedium
+  replaceable package Medium = RealMedium constrainedby MissingMedium;
+end UsesMedium;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved type reference")
+                    && d.message.contains("MissingMedium")
+            }),
+            "expected unresolved type reference for class constrainedby, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_component_constrainedby_type_reference_is_reported() {
+        let source = r#"
+model M
+  replaceable Real x constrainedby Missing;
+equation
+  x = 0;
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved type reference")
+                    && d.message.contains("Missing")
+            }),
+            "expected unresolved type reference for component constrainedby, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_subscript_index_in_assignment_target_is_reported() {
+        let source = r#"
+model M
+  Real a[2];
+algorithm
+  a[i] := 1;
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved component reference")
+                    && d.message.contains("i")
+            }),
+            "expected unresolved subscript index diagnostic, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_selective_import_member_is_reported() {
+        let source = r#"
+package P
+  model A
+  end A;
+end P;
+
+model M
+  import P.{A, B};
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        let unresolved = diagnostics
+            .iter()
+            .find(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved import member")
+                    && d.message.contains("B")
+            })
+            .unwrap_or_else(|| {
+                panic!("expected unresolved selective import member, got: {diagnostics:?}")
+            });
+        assert!(
+            unresolved.range.start.line >= 6,
+            "expected unresolved selective import diagnostic near import line, got: {:?}",
+            unresolved.range
+        );
+    }
+
+    #[test]
+    fn unresolved_equation_function_call_is_reported_as_function_call() {
+        let source = r#"
+model M
+equation
+  unknown(1.0);
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved function call")
+                    && d.message.contains("unknown")
+            }),
+            "expected unresolved function-call diagnostic for equation call, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_statement_function_call_is_reported_as_function_call() {
+        let source = r#"
+model M
+algorithm
+  unknown(1.0);
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved function call")
+                    && d.message.contains("unknown")
+            }),
+            "expected unresolved function-call diagnostic for statement call, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_non_replaceable_partial_type_path_is_reported() {
+        let source = r#"
+model M
+  package P
+  end P;
+  P.Missing x;
+equation
+  x = 0;
+end M;
+"#;
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && d.message.contains("unresolved type reference")
+                    && d.message.contains("P.Missing")
+            }),
+            "expected unresolved type reference for non-replaceable partial type path, got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn nested_external_function_args_are_present_in_ast() {
+        let source = r#"
+class EOTest
+  extends ExternalObject;
+  function constructor
+    input Boolean verbdose = true;
+    output EOTest env;
+    external "C" env = init(verbose);
+  end constructor;
+end EOTest;
+"#;
+        let ast = parse_source_to_ast_with_errors(source, "input.mo")
+            .expect("source should parse for nested external function AST test");
+        let eo = ast
+            .classes
+            .get("EOTest")
+            .expect("EOTest class should exist");
+        let ctor = eo
+            .classes
+            .get("constructor")
+            .expect("constructor should be a nested class");
+        let external = ctor
+            .external
+            .as_ref()
+            .expect("constructor external declaration should be present");
+        assert_eq!(
+            external.args.len(),
+            1,
+            "expected exactly one external call argument in AST"
+        );
+        match &external.args[0] {
+            ast::Expression::ComponentReference(comp) => {
+                assert_eq!(comp.to_string(), "verbose");
+            }
+            other => {
+                panic!("expected external arg to parse as component reference, got: {other:?}")
+            }
+        }
+    }
+
+    #[test]
     fn common_diagnostics_map_spans_to_editor_ranges() {
         let source = "model M\n  Real x;\n  Real y;\nequation\n  x = y;\nend M;\n";
         let mut source_map = SourceMap::new();

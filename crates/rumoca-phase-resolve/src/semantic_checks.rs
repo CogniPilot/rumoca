@@ -6,6 +6,7 @@
 
 use rumoca_core::{Diagnostic, PrimaryLabel, SourceId, SourceMap, Span};
 use rumoca_ir_ast as ast;
+use rumoca_ir_ast::Visitor;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -31,6 +32,138 @@ type StoredDefinition = ast::StoredDefinition;
 type TerminalType = ast::TerminalType;
 type Token = rumoca_ir_core::Token;
 type Variability = rumoca_ir_core::Variability;
+
+fn walk_expression_default<V: Visitor + ?Sized>(
+    visitor: &mut V,
+    expr: &Expression,
+) -> std::ops::ControlFlow<()> {
+    match expr {
+        Expression::Empty | Expression::Terminal { .. } => std::ops::ControlFlow::Continue(()),
+        Expression::Range { start, step, end } => {
+            visitor.visit_expression(start)?;
+            if let Some(s) = step {
+                visitor.visit_expression(s)?;
+            }
+            visitor.visit_expression(end)
+        }
+        Expression::Unary { rhs, .. } => visitor.visit_expression(rhs),
+        Expression::Binary { lhs, rhs, .. } => {
+            visitor.visit_expression(lhs)?;
+            visitor.visit_expression(rhs)
+        }
+        Expression::ComponentReference(cr) => {
+            visitor.visit_component_reference_ctx(cr, ast::ComponentReferenceContext::Expression)
+        }
+        Expression::FunctionCall { comp, args } => {
+            visitor.visit_expr_function_call_ctx(comp, args, ast::FunctionCallContext::Expression)
+        }
+        Expression::ClassModification {
+            target,
+            modifications,
+        } => {
+            visitor.visit_component_reference_ctx(
+                target,
+                ast::ComponentReferenceContext::ClassModificationTarget,
+            )?;
+            visitor.visit_each(modifications, V::visit_expression)
+        }
+        Expression::NamedArgument { value, .. } => visitor.visit_expression(value),
+        Expression::Modification { target, value } => {
+            visitor.visit_component_reference_ctx(
+                target,
+                ast::ComponentReferenceContext::ModificationTarget,
+            )?;
+            visitor.visit_expression(value)
+        }
+        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
+            visitor.visit_each(elements, V::visit_expression)
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, then_expr) in branches {
+                visitor.visit_expression(cond)?;
+                visitor.visit_expression(then_expr)?;
+            }
+            visitor.visit_expression(else_branch)
+        }
+        Expression::Parenthesized { inner } => visitor.visit_expression(inner),
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            visitor.visit_expression(expr)?;
+            visitor.visit_each(indices, V::visit_for_index)?;
+            if let Some(f) = filter {
+                visitor.visit_expression(f)?;
+            }
+            std::ops::ControlFlow::Continue(())
+        }
+        Expression::ArrayIndex { base, subscripts } => {
+            visitor.visit_expression(base)?;
+            for subscript in subscripts {
+                visitor.visit_subscript_ctx(subscript, ast::SubscriptContext::ArrayIndex)?;
+            }
+            std::ops::ControlFlow::Continue(())
+        }
+        Expression::FieldAccess { base, .. } => visitor.visit_expression(base),
+    }
+}
+
+fn walk_equation_default<V: Visitor + ?Sized>(
+    visitor: &mut V,
+    eq: &Equation,
+) -> std::ops::ControlFlow<()> {
+    match eq {
+        Equation::Empty => std::ops::ControlFlow::Continue(()),
+        Equation::Simple { lhs, rhs } => visitor.visit_simple_equation(lhs, rhs),
+        Equation::Connect { lhs, rhs } => visitor.visit_connect(lhs, rhs),
+        Equation::For { indices, equations } => visitor.visit_for_equation(indices, equations),
+        Equation::When(blocks) => visitor.visit_when_equation(blocks),
+        Equation::If {
+            cond_blocks,
+            else_block,
+        } => visitor.visit_if_equation(cond_blocks, else_block.as_deref()),
+        Equation::FunctionCall { comp, args } => visitor.visit_equation_function_call(comp, args),
+        Equation::Assert {
+            condition,
+            message,
+            level,
+        } => visitor.visit_equation_assert(condition, message, level.as_ref()),
+    }
+}
+
+fn walk_statement_default<V: Visitor + ?Sized>(
+    visitor: &mut V,
+    stmt: &Statement,
+) -> std::ops::ControlFlow<()> {
+    match stmt {
+        Statement::Empty | Statement::Return { .. } | Statement::Break { .. } => {
+            std::ops::ControlFlow::Continue(())
+        }
+        Statement::Assignment { comp, value } => visitor.visit_assignment(comp, value),
+        Statement::For { indices, equations } => visitor.visit_for_statement(indices, equations),
+        Statement::While(block) => visitor.visit_statement_block(block),
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => visitor.visit_if_statement(cond_blocks, else_block.as_deref()),
+        Statement::When(blocks) => visitor.visit_when_statement(blocks),
+        Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+        } => visitor.visit_statement_function_call(comp, args, outputs),
+        Statement::Reinit { variable, value } => visitor.visit_reinit(variable, value),
+        Statement::Assert {
+            condition,
+            message,
+            level,
+        } => visitor.visit_statement_assert(condition, message, level.as_ref()),
+    }
+}
 
 // Resolve-phase semantic diagnostic codes (ER005+ reserved for semantic checks).
 const ER005_PARTIAL_CLASS_INSTANTIATION: &str = "ER005";
@@ -207,83 +340,77 @@ pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Ve
 fn run_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let mut ctx = CheckContext::new();
-    for class in def.classes.values() {
-        check_class(class, def, &mut ctx, &mut diags);
-    }
+    let mut visitor = SemanticClassCheckVisitor {
+        def,
+        ctx: &mut ctx,
+        diags: &mut diags,
+    };
+    let _ = visitor.visit_stored_definition(def);
     diags
 }
 
-fn check_class(
-    class: &ClassDef,
-    def: &StoredDefinition,
-    ctx: &mut CheckContext,
-    diags: &mut Vec<Diagnostic>,
-) {
-    check_class_structural(class, def, diags);
+struct SemanticClassCheckVisitor<'a> {
+    def: &'a StoredDefinition,
+    ctx: &'a mut CheckContext,
+    diags: &'a mut Vec<Diagnostic>,
+}
 
-    let was_function = ctx.in_function;
-    if class.class_type == ClassType::Function {
-        ctx.in_function = true;
-    }
+impl ast::Visitor for SemanticClassCheckVisitor<'_> {
+    fn visit_class_def(&mut self, class: &ClassDef) -> std::ops::ControlFlow<()> {
+        check_class_structural(class, self.def, self.diags);
 
-    // DECL-020: Check for der() on discrete variables
-    let discrete_vars: HashSet<String> = class
-        .components
-        .iter()
-        .filter(|(_, c)| matches!(c.variability, Variability::Discrete(_)))
-        .map(|(n, _)| n.clone())
-        .collect();
-
-    // Collect Real-typed variables for EXPR-002 check
-    let real_vars: HashSet<String> = class
-        .components
-        .iter()
-        .filter(|(_, c)| {
-            let tn = c.type_name.to_string();
-            tn == "Real"
-        })
-        .map(|(n, _)| n.clone())
-        .collect();
-
-    // Check equations
-    for eq in &class.equations {
-        check_equation(eq, ctx, diags);
-        check_der_on_discrete_eq(eq, &discrete_vars, diags);
-        check_protected_access_eq(eq, class, def, diags);
-        check_connect_requires_connectors_eq(eq, class, def, diags);
-        check_end_outside_subscript_eq(eq, diags);
-        check_expr_type_issues_eq(eq, class, def, &real_vars, diags);
-    }
-
-    // Check initial equations
-    for eq in &class.initial_equations {
-        check_initial_equation(eq, diags);
-        check_equation(eq, ctx, diags);
-        check_der_on_discrete_eq(eq, &discrete_vars, diags);
-        check_end_outside_subscript_eq(eq, diags);
-    }
-
-    // Check initial algorithms
-    for alg in &class.initial_algorithms {
-        for stmt in alg {
-            check_initial_statement(stmt, diags);
-            check_statement(stmt, ctx, diags);
+        let was_function = self.ctx.in_function;
+        if class.class_type == ClassType::Function {
+            self.ctx.in_function = true;
         }
-    }
 
-    // Check algorithm sections
-    for alg in &class.algorithms {
-        for stmt in alg {
-            check_statement(stmt, ctx, diags);
+        let discrete_vars: HashSet<String> = class
+            .components
+            .iter()
+            .filter(|(_, c)| matches!(c.variability, Variability::Discrete(_)))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let real_vars: HashSet<String> = class
+            .components
+            .iter()
+            .filter(|(_, c)| c.type_name.to_string() == "Real")
+            .map(|(n, _)| n.clone())
+            .collect();
+
+        for eq in &class.equations {
+            check_equation(eq, self.ctx, self.diags);
+            check_der_on_discrete_eq(eq, &discrete_vars, self.diags);
+            check_protected_access_eq(eq, class, self.def, self.diags);
+            check_connect_requires_connectors_eq(eq, class, self.def, self.diags);
+            check_end_outside_subscript_eq(eq, self.diags);
+            check_expr_type_issues_eq(eq, class, self.def, &real_vars, self.diags);
         }
-    }
 
-    // Recurse into nested classes
-    for nested in class.classes.values() {
-        check_class(nested, def, ctx, diags);
-    }
+        for eq in &class.initial_equations {
+            check_initial_equation(eq, self.diags);
+            check_equation(eq, self.ctx, self.diags);
+            check_der_on_discrete_eq(eq, &discrete_vars, self.diags);
+            check_end_outside_subscript_eq(eq, self.diags);
+        }
 
-    ctx.in_function = was_function;
+        for alg in &class.initial_algorithms {
+            for stmt in alg {
+                check_initial_statement(stmt, self.diags);
+                check_statement(stmt, self.ctx, self.diags);
+            }
+        }
+        for alg in &class.algorithms {
+            for stmt in alg {
+                check_statement(stmt, self.ctx, self.diags);
+            }
+        }
+        for nested in class.classes.values() {
+            self.visit_class_def(nested)?;
+        }
+
+        self.ctx.in_function = was_function;
+        std::ops::ControlFlow::Continue(())
+    }
 }
 
 // ============================================================================
@@ -753,50 +880,40 @@ fn check_input_assignment(
     input_names: &std::collections::HashSet<String>,
     diags: &mut Vec<Diagnostic>,
 ) {
-    for stmt in stmts {
-        match stmt {
-            Statement::Assignment { comp, .. } => {
-                if let Some(first) = comp.parts.first()
-                    && input_names.contains(&*first.ident.text)
-                {
-                    diags.push(semantic_error(
-                        ER014_FUNCTION_INPUT_ASSIGNED,
-                        format!(
-                            "cannot assign to input parameter '{}' (MLS §12.2)",
-                            first.ident.text
-                        ),
-                        label_from_token(
-                            &first.ident,
-                            "check_input_assignment/input_assignment",
-                            format!("assignment to input '{}'", first.ident.text),
-                        ),
-                    ));
-                }
+    struct InputAssignmentVisitor<'a> {
+        input_names: &'a std::collections::HashSet<String>,
+        diags: &'a mut Vec<Diagnostic>,
+    }
+
+    impl ast::Visitor for InputAssignmentVisitor<'_> {
+        fn visit_assignment(
+            &mut self,
+            comp: &ComponentReference,
+            _value: &Expression,
+        ) -> std::ops::ControlFlow<()> {
+            if let Some(first) = comp.parts.first()
+                && self.input_names.contains(&*first.ident.text)
+            {
+                self.diags.push(semantic_error(
+                    ER014_FUNCTION_INPUT_ASSIGNED,
+                    format!(
+                        "cannot assign to input parameter '{}' (MLS §12.2)",
+                        first.ident.text
+                    ),
+                    label_from_token(
+                        &first.ident,
+                        "check_input_assignment/input_assignment",
+                        format!("assignment to input '{}'", first.ident.text),
+                    ),
+                ));
             }
-            Statement::For { equations, .. } => {
-                check_input_assignment(equations, input_names, diags);
-            }
-            Statement::If {
-                cond_blocks,
-                else_block,
-            } => {
-                for block in cond_blocks {
-                    check_input_assignment(&block.stmts, input_names, diags);
-                }
-                if let Some(else_stmts) = else_block {
-                    check_input_assignment(else_stmts, input_names, diags);
-                }
-            }
-            Statement::When(blocks) => {
-                for block in blocks {
-                    check_input_assignment(&block.stmts, input_names, diags);
-                }
-            }
-            Statement::While(block) => {
-                check_input_assignment(&block.stmts, input_names, diags);
-            }
-            _ => {}
+            std::ops::ControlFlow::Continue(())
         }
+    }
+
+    let mut visitor = InputAssignmentVisitor { input_names, diags };
+    for stmt in stmts {
+        let _ = visitor.visit_statement(stmt);
     }
 }
 
@@ -1209,54 +1326,53 @@ fn collect_component_refs(
     refs: &mut HashSet<String>,
     skip_if_branches: bool,
 ) {
-    match expr {
-        Expression::ComponentReference(cref) => {
+    struct ComponentRefCollector<'a> {
+        known_params: &'a HashSet<String>,
+        refs: &'a mut HashSet<String>,
+        skip_if_branches: bool,
+    }
+
+    impl ast::Visitor for ComponentRefCollector<'_> {
+        fn visit_component_reference_ctx(
+            &mut self,
+            cref: &ComponentReference,
+            ctx: ast::ComponentReferenceContext,
+        ) -> std::ops::ControlFlow<()> {
+            if !matches!(ctx, ast::ComponentReferenceContext::Expression) {
+                return ast::Visitor::visit_component_reference(self, cref);
+            }
             // Only match single-part references for direct dependencies.
             // Multi-part refs like `system.x` access sub-components, not the param itself.
-            if let [part] = cref.parts.as_slice() {
-                let name = part.ident.text.to_string();
-                if known_params.contains(&name) {
-                    refs.insert(name);
-                }
+            let [part] = cref.parts.as_slice() else {
+                return ast::Visitor::visit_component_reference(self, cref);
+            };
+            let name = part.ident.text.to_string();
+            if self.known_params.contains(&name) {
+                self.refs.insert(name);
             }
+            ast::Visitor::visit_component_reference(self, cref)
         }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_component_refs(lhs, known_params, refs, skip_if_branches);
-            collect_component_refs(rhs, known_params, refs, skip_if_branches);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_component_refs(rhs, known_params, refs, skip_if_branches);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_component_refs(arg, known_params, refs, skip_if_branches);
+
+        fn visit_expression(&mut self, expr: &Expression) -> std::ops::ControlFlow<()> {
+            if !self.skip_if_branches {
+                return walk_expression_default(self, expr);
             }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                collect_component_refs(cond, known_params, refs, skip_if_branches);
-                if !skip_if_branches {
-                    collect_component_refs(then_expr, known_params, refs, skip_if_branches);
-                }
+            let Expression::If { branches, .. } = expr else {
+                return walk_expression_default(self, expr);
+            };
+            for (cond, _) in branches {
+                self.visit_expression(cond)?;
             }
-            if !skip_if_branches {
-                collect_component_refs(else_branch, known_params, refs, skip_if_branches);
-            }
+            std::ops::ControlFlow::Continue(())
         }
-        Expression::Array { elements, .. } => {
-            for elem in elements {
-                collect_component_refs(elem, known_params, refs, skip_if_branches);
-            }
-        }
-        Expression::Parenthesized { inner, .. } => {
-            collect_component_refs(inner, known_params, refs, skip_if_branches);
-        }
-        _ => {}
     }
+
+    let mut collector = ComponentRefCollector {
+        known_params,
+        refs,
+        skip_if_branches,
+    };
+    let _ = collector.visit_expression(expr);
 }
 
 // ============================================================================
@@ -1265,250 +1381,197 @@ fn collect_component_refs(
 
 /// Check equations for context-sensitive issues.
 fn check_equation(eq: &Equation, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::When(blocks) => {
-            // EQN-005: Nested when-equations
-            if ctx.in_when_equation
-                && let Some(label) = label_from_equation(
-                    eq,
-                    "check_equation/nested_when_equation",
-                    "nested when-equation is not allowed",
-                )
-            {
-                diags.push(semantic_error(
-                    ER017_NESTED_WHEN_EQUATION,
-                    "when-equations cannot be nested (MLS §8.3.5)",
-                    label,
-                ));
-            }
+    let mut visitor = ContextSensitiveVisitor { ctx, diags };
+    let _ = visitor.visit_equation(eq);
+}
 
-            let was = ctx.in_when_equation;
-            ctx.in_when_equation = true;
-            for block in blocks {
-                for inner_eq in &block.eqs {
-                    check_equation(inner_eq, ctx, diags);
-                }
-            }
-            ctx.in_when_equation = was;
-        }
-        Equation::For {
-            indices, equations, ..
-        } => {
-            // EQN-010: Track for-loop variables
-            let new_vars: Vec<String> = indices.iter().map(|i| i.ident.text.to_string()).collect();
-            ctx.for_loop_vars.extend(new_vars.clone());
+/// Check statements for context-sensitive issues.
+fn check_statement(stmt: &Statement, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
+    let mut visitor = ContextSensitiveVisitor { ctx, diags };
+    let _ = visitor.visit_statement(stmt);
+}
 
-            for inner_eq in equations {
-                check_for_variable_assignment_eq(inner_eq, &ctx.for_loop_vars, diags);
-                check_equation(inner_eq, ctx, diags);
-            }
+struct ContextSensitiveVisitor<'a> {
+    ctx: &'a mut CheckContext,
+    diags: &'a mut Vec<Diagnostic>,
+}
 
-            for var in &new_vars {
-                ctx.for_loop_vars.retain(|v| v != var);
-            }
+impl ast::Visitor for ContextSensitiveVisitor<'_> {
+    fn visit_equation(&mut self, eq: &Equation) -> std::ops::ControlFlow<()> {
+        if let Equation::When(_) = eq
+            && self.ctx.in_when_equation
+            && let Some(label) = label_from_equation(
+                eq,
+                "check_equation/nested_when_equation",
+                "nested when-equation is not allowed",
+            )
+        {
+            self.diags.push(semantic_error(
+                ER017_NESTED_WHEN_EQUATION,
+                "when-equations cannot be nested (MLS §8.3.5)",
+                label,
+            ));
         }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner_eq in &block.eqs {
-                    check_equation(inner_eq, ctx, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner_eq in else_eqs {
-                    check_equation(inner_eq, ctx, diags);
-                }
-            }
+        if let Equation::FunctionCall { comp, .. } = eq
+            && let Some(first) = comp.parts.first()
+            && &*first.ident.text == "reinit"
+            && !self.ctx.in_when_equation
+        {
+            self.diags.push(semantic_error(
+                ER008_REINIT_OUTSIDE_WHEN,
+                "reinit() can only be used inside when-equations (MLS §8.3.6)",
+                label_from_token(
+                    &first.ident,
+                    "check_equation/reinit_outside_when_equation",
+                    "reinit() used outside when-equation",
+                ),
+            ));
         }
-        Equation::FunctionCall { comp, .. } => {
-            // EQN-015: reinit outside when-equation
-            if let Some(first) = comp.parts.first()
-                && &*first.ident.text == "reinit"
-                && !ctx.in_when_equation
-            {
-                diags.push(semantic_error(
-                    ER008_REINIT_OUTSIDE_WHEN,
-                    "reinit() can only be used inside when-equations (MLS §8.3.6)",
-                    label_from_token(
-                        &first.ident,
-                        "check_equation/reinit_outside_when_equation",
-                        "reinit() used outside when-equation",
-                    ),
-                ));
-            }
+        walk_equation_default(self, eq)
+    }
+
+    fn visit_when_equation(&mut self, blocks: &[ast::EquationBlock]) -> std::ops::ControlFlow<()> {
+        let was = self.ctx.in_when_equation;
+        self.ctx.in_when_equation = true;
+        self.visit_each(blocks, Self::visit_equation_block)?;
+        self.ctx.in_when_equation = was;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn visit_for_equation(
+        &mut self,
+        indices: &[ast::ForIndex],
+        equations: &[Equation],
+    ) -> std::ops::ControlFlow<()> {
+        let new_vars: Vec<String> = indices.iter().map(|i| i.ident.text.to_string()).collect();
+        self.ctx.for_loop_vars.extend(new_vars.clone());
+
+        for inner_eq in equations {
+            check_for_variable_assignment_eq(inner_eq, &self.ctx.for_loop_vars, self.diags);
+            self.visit_equation(inner_eq)?;
         }
-        _ => {}
+
+        for var in &new_vars {
+            self.ctx.for_loop_vars.retain(|v| v != var);
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn visit_statement(&mut self, stmt: &Statement) -> std::ops::ControlFlow<()> {
+        if let Statement::When(_) = stmt
+            && self.ctx.in_function
+            && let Some(label) = label_from_statement(
+                stmt,
+                "check_statement/when_in_function",
+                "when-statement is not allowed in function",
+            )
+        {
+            self.diags.push(semantic_error(
+                ER015_WHEN_IN_FUNCTION,
+                "when-statements are not allowed in functions (MLS §12.2)",
+                label,
+            ));
+        }
+        if let Statement::When(_) = stmt
+            && self.ctx.in_when_statement
+            && let Some(label) = label_from_statement(
+                stmt,
+                "check_statement/nested_when_statement",
+                "nested when-statement is not allowed",
+            )
+        {
+            self.diags.push(semantic_error(
+                ER016_NESTED_WHEN_STATEMENT,
+                "when-statements cannot be nested (MLS §11.2.7)",
+                label,
+            ));
+        }
+        if matches!(stmt, Statement::Reinit { .. })
+            && !self.ctx.in_when_statement
+            && let Some(label) = label_from_statement(
+                stmt,
+                "check_statement/reinit_outside_when_statement",
+                "reinit() used outside when-statement",
+            )
+        {
+            self.diags.push(semantic_error(
+                ER008_REINIT_OUTSIDE_WHEN,
+                "reinit() can only be used inside when-statements (MLS §8.3.6)",
+                label,
+            ));
+        }
+        walk_statement_default(self, stmt)
+    }
+
+    fn visit_when_statement(
+        &mut self,
+        blocks: &[ast::StatementBlock],
+    ) -> std::ops::ControlFlow<()> {
+        let was = self.ctx.in_when_statement;
+        self.ctx.in_when_statement = true;
+        self.visit_each(blocks, Self::visit_statement_block)?;
+        self.ctx.in_when_statement = was;
+        std::ops::ControlFlow::Continue(())
     }
 }
 
 /// Check initial equations for when-clause presence (EQN-006, EQN-037).
 fn check_initial_equation(eq: &Equation, diags: &mut Vec<Diagnostic>) {
-    match eq {
-        Equation::When(_) => {
-            if let Some(label) = label_from_equation(
-                eq,
-                "check_initial_equation/when_in_initial_equation",
-                "when-equation in initial equation section",
-            ) {
-                diags.push(semantic_error(
-                    ER018_WHEN_IN_INITIAL_SECTION,
-                    "when-equations are not allowed in initial equation sections (MLS §8.6)",
-                    label,
-                ));
-            }
-        }
-        Equation::For { equations, .. } => {
-            for inner in equations {
-                check_initial_equation(inner, diags);
-            }
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.eqs {
-                    check_initial_equation(inner, diags);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    check_initial_equation(inner, diags);
-                }
-            }
-        }
-        _ => {}
-    }
+    let mut visitor = InitialEquationVisitor { diags };
+    let _ = visitor.visit_equation(eq);
 }
 
 /// Check initial algorithm statements for when-clause presence (EQN-037).
 fn check_initial_statement(stmt: &Statement, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::When(_) => {
-            if let Some(label) = label_from_statement(
-                stmt,
-                "check_initial_statement/when_in_initial_algorithm",
-                "when-statement in initial algorithm section",
-            ) {
-                diags.push(semantic_error(
-                    ER018_WHEN_IN_INITIAL_SECTION,
-                    "when-statements are not allowed in initial algorithm sections (MLS §8.6)",
-                    label,
-                ));
-            }
+    let mut visitor = InitialStatementVisitor { diags };
+    let _ = visitor.visit_statement(stmt);
+}
+
+struct InitialEquationVisitor<'a> {
+    diags: &'a mut Vec<Diagnostic>,
+}
+
+impl ast::Visitor for InitialEquationVisitor<'_> {
+    fn visit_equation(&mut self, eq: &Equation) -> std::ops::ControlFlow<()> {
+        if let Equation::When(_) = eq
+            && let Some(label) = label_from_equation(
+                eq,
+                "check_initial_equation/when_in_initial_equation",
+                "when-equation in initial equation section",
+            )
+        {
+            self.diags.push(semantic_error(
+                ER018_WHEN_IN_INITIAL_SECTION,
+                "when-equations are not allowed in initial equation sections (MLS §8.6)",
+                label,
+            ));
+            return std::ops::ControlFlow::Continue(());
         }
-        Statement::For { equations, .. } => {
-            for inner in equations {
-                check_initial_statement(inner, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner in &block.stmts {
-                    check_initial_statement(inner, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    check_initial_statement(inner, diags);
-                }
-            }
-        }
-        _ => {}
+        walk_equation_default(self, eq)
     }
 }
 
-/// Check statements for context-sensitive issues.
-fn check_statement(stmt: &Statement, ctx: &mut CheckContext, diags: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::When(blocks) => {
-            // ALG-007/FUNC-007: When-statement in function
-            if ctx.in_function
-                && let Some(label) = label_from_statement(
-                    stmt,
-                    "check_statement/when_in_function",
-                    "when-statement is not allowed in function",
-                )
-            {
-                diags.push(semantic_error(
-                    ER015_WHEN_IN_FUNCTION,
-                    "when-statements are not allowed in functions (MLS §12.2)",
-                    label,
-                ));
-            }
+struct InitialStatementVisitor<'a> {
+    diags: &'a mut Vec<Diagnostic>,
+}
 
-            // ALG-009: Nested when-statements
-            if ctx.in_when_statement
-                && let Some(label) = label_from_statement(
-                    stmt,
-                    "check_statement/nested_when_statement",
-                    "nested when-statement is not allowed",
-                )
-            {
-                diags.push(semantic_error(
-                    ER016_NESTED_WHEN_STATEMENT,
-                    "when-statements cannot be nested (MLS §11.2.7)",
-                    label,
-                ));
-            }
-
-            let was = ctx.in_when_statement;
-            ctx.in_when_statement = true;
-            for block in blocks {
-                for inner_stmt in &block.stmts {
-                    check_statement(inner_stmt, ctx, diags);
-                }
-            }
-            ctx.in_when_statement = was;
-        }
-        Statement::For { equations, .. } => {
-            for inner_stmt in equations {
-                check_statement(inner_stmt, ctx, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            for block in cond_blocks {
-                for inner_stmt in &block.stmts {
-                    check_statement(inner_stmt, ctx, diags);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner_stmt in else_stmts {
-                    check_statement(inner_stmt, ctx, diags);
-                }
-            }
-        }
-        Statement::While(block) => {
-            for inner_stmt in &block.stmts {
-                check_statement(inner_stmt, ctx, diags);
-            }
-        }
-        Statement::Reinit { .. } if !ctx.in_when_statement => {
-            if let Some(label) = label_from_statement(
+impl ast::Visitor for InitialStatementVisitor<'_> {
+    fn visit_statement(&mut self, stmt: &Statement) -> std::ops::ControlFlow<()> {
+        if let Statement::When(_) = stmt
+            && let Some(label) = label_from_statement(
                 stmt,
-                "check_statement/reinit_outside_when_statement",
-                "reinit() used outside when-statement",
-            ) {
-                diags.push(semantic_error(
-                    ER008_REINIT_OUTSIDE_WHEN,
-                    "reinit() can only be used inside when-statements (MLS §8.3.6)",
-                    label,
-                ));
-            }
+                "check_initial_statement/when_in_initial_algorithm",
+                "when-statement in initial algorithm section",
+            )
+        {
+            self.diags.push(semantic_error(
+                ER018_WHEN_IN_INITIAL_SECTION,
+                "when-statements are not allowed in initial algorithm sections (MLS §8.6)",
+                label,
+            ));
+            return std::ops::ControlFlow::Continue(());
         }
-        _ => {}
+        walk_statement_default(self, stmt)
     }
 }
 

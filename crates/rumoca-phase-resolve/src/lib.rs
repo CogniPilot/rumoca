@@ -27,6 +27,7 @@ mod extends;
 mod lookup;
 mod registration;
 pub mod semantic_checks;
+mod traversal_adapter;
 pub mod validation;
 
 pub use errors::{ResolveError, ResolveResult};
@@ -191,6 +192,8 @@ pub struct Resolver {
     pub(crate) class_to_bases: IndexMap<DefId, Vec<DefId>>,
     /// Map class scope id -> class DefId for inherited lookups from nested scopes.
     pub(crate) scope_to_class_def: std::collections::HashMap<ScopeId, DefId>,
+    /// DefIds that can legitimately anchor partial type resolution (replaceable roots).
+    pub(crate) partial_type_root_ids: std::collections::HashSet<DefId>,
     /// Number of builtin DefIds (0..builtin_count are builtins).
     builtin_count: u32,
     /// Statistics collected during resolution.
@@ -212,6 +215,7 @@ impl Resolver {
             inheritance_edges: Vec::new(),
             class_to_bases: IndexMap::new(),
             scope_to_class_def: std::collections::HashMap::new(),
+            partial_type_root_ids: std::collections::HashSet::new(),
             builtin_count: 0,
             stats: ResolutionStats::default(),
         };
@@ -706,6 +710,61 @@ end Ball;
             !unresolved_type.labels.is_empty(),
             "unresolved type reference should include a source label"
         );
+    }
+
+    #[test]
+    fn test_unresolved_selective_import_member_is_error() {
+        let source = r#"
+package P
+  model A
+  end A;
+end P;
+
+model M
+  import P.{A, B};
+end M;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(result.is_err(), "resolution should fail");
+
+        let diags = result.expect_err("expected resolve diagnostics");
+        let import = diags
+            .iter()
+            .find(|d| d.message.contains("unresolved import member") && d.message.contains("B"))
+            .expect("missing unresolved selective import member diagnostic");
+
+        assert_eq!(import.code.as_deref(), Some("ER002"));
+        assert!(
+            !import.labels.is_empty(),
+            "unresolved selective import member should include source label"
+        );
+    }
+
+    #[test]
+    fn test_non_replaceable_partial_type_path_is_unresolved() {
+        let source = r#"
+model M
+  package P
+  end P;
+  P.Missing x;
+equation
+  x = 0;
+end M;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(
+            result.is_err(),
+            "resolution should fail for non-replaceable partial type path"
+        );
+
+        let diags = result.expect_err("expected resolve diagnostics");
+        assert!(diags.iter().any(|d| {
+            d.code.as_deref() == Some("ER002")
+                && d.message.contains("unresolved type reference")
+                && d.message.contains("P.Missing")
+        }));
     }
 
     #[test]

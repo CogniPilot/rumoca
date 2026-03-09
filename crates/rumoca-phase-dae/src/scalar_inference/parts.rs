@@ -115,92 +115,53 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
     }
 }
 
+struct VarRefCollectionVisitor<'a> {
+    vars: &'a mut Vec<CollectedVarRef>,
+    skip_function_args: bool,
+}
+
+impl<'a> VarRefCollectionVisitor<'a> {
+    fn new(vars: &'a mut Vec<CollectedVarRef>, skip_function_args: bool) -> Self {
+        Self {
+            vars,
+            skip_function_args,
+        }
+    }
+}
+
+impl flat::ExpressionVisitor for VarRefCollectionVisitor<'_> {
+    fn visit_var_ref(&mut self, name: &VarName, subscripts: &[Subscript]) {
+        self.vars.push(CollectedVarRef {
+            name: name.clone(),
+            subscripts: subscripts.to_vec(),
+        });
+        self.walk_var_ref(name, subscripts);
+    }
+
+    fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+        if is_reduction_builtin(function) {
+            // Reduction output is scalar regardless of input size.
+            return;
+        }
+        self.walk_builtin_call(function, args);
+    }
+
+    fn visit_function_call(&mut self, name: &VarName, args: &[Expression]) {
+        if self.skip_function_args {
+            // Function arguments are not shaped like function output.
+            return;
+        }
+        self.walk_function_call(name, args);
+    }
+}
+
 /// Collect VarRefs from an expression, skipping arguments to reduction builtins.
 ///
 /// Reduction builtins like sum(), product() reduce arrays to scalars (MLS §10.3.4),
 /// so their array arguments should not inflate the equation's scalar count.
 pub(crate) fn collect_var_refs_skip_reductions(expr: &Expression, vars: &mut Vec<CollectedVarRef>) {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            vars.push(CollectedVarRef {
-                name: name.clone(),
-                subscripts: subscripts.clone(),
-            });
-            for sub in subscripts {
-                if let Subscript::Expr(e) = sub {
-                    collect_var_refs_skip_reductions(e, vars);
-                }
-            }
-        }
-        Expression::BuiltinCall { function, args } => {
-            if is_reduction_builtin(function) {
-                // Skip args — reduction output is scalar regardless of input size
-                return;
-            }
-            for arg in args {
-                collect_var_refs_skip_reductions(arg, vars);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_var_refs_skip_reductions(lhs, vars);
-            collect_var_refs_skip_reductions(rhs, vars);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_var_refs_skip_reductions(rhs, vars);
-        }
-        Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_var_refs_skip_reductions(arg, vars);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_var_refs_skip_reductions(cond, vars);
-                collect_var_refs_skip_reductions(then_expr, vars);
-            }
-            collect_var_refs_skip_reductions(else_branch, vars);
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            for e in elements {
-                collect_var_refs_skip_reductions(e, vars);
-            }
-        }
-        Expression::Range { start, step, end } => {
-            collect_var_refs_skip_reductions(start, vars);
-            if let Some(s) = step {
-                collect_var_refs_skip_reductions(s, vars);
-            }
-            collect_var_refs_skip_reductions(end, vars);
-        }
-        Expression::Index { base, subscripts } => {
-            collect_var_refs_skip_reductions(base, vars);
-            for sub in subscripts {
-                if let Subscript::Expr(e) = sub {
-                    collect_var_refs_skip_reductions(e, vars);
-                }
-            }
-        }
-        Expression::FieldAccess { base, .. } => {
-            collect_var_refs_skip_reductions(base, vars);
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            for index in indices {
-                collect_var_refs_skip_reductions(&index.range, vars);
-            }
-            collect_var_refs_skip_reductions(expr, vars);
-            if let Some(filter_expr) = filter.as_ref() {
-                collect_var_refs_skip_reductions(filter_expr, vars);
-            }
-        }
-        Expression::Literal(_) | Expression::Empty => {}
-    }
+    let mut collector = VarRefCollectionVisitor::new(vars, false);
+    flat::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
 /// Collect VarRefs from an expression while skipping function-call arguments.
@@ -212,84 +173,8 @@ pub(crate) fn collect_var_refs_skip_reductions_and_function_args(
     expr: &Expression,
     vars: &mut Vec<CollectedVarRef>,
 ) {
-    match expr {
-        Expression::VarRef { name, subscripts } => {
-            vars.push(CollectedVarRef {
-                name: name.clone(),
-                subscripts: subscripts.clone(),
-            });
-            for sub in subscripts {
-                if let Subscript::Expr(e) = sub {
-                    collect_var_refs_skip_reductions_and_function_args(e, vars);
-                }
-            }
-        }
-        Expression::BuiltinCall { function, args } => {
-            if is_reduction_builtin(function) {
-                return;
-            }
-            for arg in args {
-                collect_var_refs_skip_reductions_and_function_args(arg, vars);
-            }
-        }
-        Expression::FunctionCall { .. } => {
-            // Intentionally skip function arguments.
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            collect_var_refs_skip_reductions_and_function_args(lhs, vars);
-            collect_var_refs_skip_reductions_and_function_args(rhs, vars);
-        }
-        Expression::Unary { rhs, .. } => {
-            collect_var_refs_skip_reductions_and_function_args(rhs, vars);
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                collect_var_refs_skip_reductions_and_function_args(cond, vars);
-                collect_var_refs_skip_reductions_and_function_args(then_expr, vars);
-            }
-            collect_var_refs_skip_reductions_and_function_args(else_branch, vars);
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            for e in elements {
-                collect_var_refs_skip_reductions_and_function_args(e, vars);
-            }
-        }
-        Expression::Range { start, step, end } => {
-            collect_var_refs_skip_reductions_and_function_args(start, vars);
-            if let Some(s) = step {
-                collect_var_refs_skip_reductions_and_function_args(s, vars);
-            }
-            collect_var_refs_skip_reductions_and_function_args(end, vars);
-        }
-        Expression::Index { base, subscripts } => {
-            collect_var_refs_skip_reductions_and_function_args(base, vars);
-            for sub in subscripts {
-                if let Subscript::Expr(e) = sub {
-                    collect_var_refs_skip_reductions_and_function_args(e, vars);
-                }
-            }
-        }
-        Expression::FieldAccess { base, .. } => {
-            collect_var_refs_skip_reductions_and_function_args(base, vars);
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            for index in indices {
-                collect_var_refs_skip_reductions_and_function_args(&index.range, vars);
-            }
-            collect_var_refs_skip_reductions_and_function_args(expr, vars);
-            if let Some(filter_expr) = filter.as_ref() {
-                collect_var_refs_skip_reductions_and_function_args(filter_expr, vars);
-            }
-        }
-        Expression::Literal(_) | Expression::Empty => {}
-    }
+    let mut collector = VarRefCollectionVisitor::new(vars, true);
+    flat::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
 /// Check if a builtin function is an array reduction (MLS §10.3.4).
