@@ -111,6 +111,57 @@ pub enum IndexingMode {
     Tolerant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolveBuildMode {
+    Standard,
+    StrictCompileRecovery,
+}
+
+impl ResolveBuildMode {
+    fn include_parse_error_diags(self) -> bool {
+        matches!(self, Self::Standard)
+    }
+
+    fn unresolved_refs_are_errors_in_single_document(self) -> bool {
+        matches!(self, Self::Standard)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ResolvedBuildCache {
+    standard: Option<Arc<ast::ResolvedTree>>,
+    strict_compile_recovery: Option<Arc<ast::ResolvedTree>>,
+}
+
+impl ResolvedBuildCache {
+    fn get(&self, mode: ResolveBuildMode) -> Option<&Arc<ast::ResolvedTree>> {
+        match mode {
+            ResolveBuildMode::Standard => self.standard.as_ref(),
+            ResolveBuildMode::StrictCompileRecovery => self.strict_compile_recovery.as_ref(),
+        }
+    }
+
+    fn set(&mut self, mode: ResolveBuildMode, resolved: Arc<ast::ResolvedTree>) {
+        match mode {
+            ResolveBuildMode::Standard => self.standard = Some(resolved),
+            ResolveBuildMode::StrictCompileRecovery => {
+                self.strict_compile_recovery = Some(resolved)
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.standard = None;
+        self.strict_compile_recovery = None;
+    }
+
+    fn any(&self) -> Option<&Arc<ast::ResolvedTree>> {
+        self.standard
+            .as_ref()
+            .or(self.strict_compile_recovery.as_ref())
+    }
+}
+
 /// A document in the session.
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -464,8 +515,8 @@ pub struct Session {
     documents: IndexMap<String, Document>,
     /// Non-workspace parsed document groups (e.g., loaded libraries) keyed by source-set id.
     source_sets: IndexMap<String, IndexSet<String>>,
-    /// Cached resolved tree (invalidated on document changes).
-    pub(crate) resolved: Option<Arc<ast::ResolvedTree>>,
+    /// Cached resolved trees by resolve build mode (invalidated on document changes).
+    resolved_cache: ResolvedBuildCache,
     /// Cached model names.
     pub(crate) model_names: Vec<String>,
     /// Cached model dependency fingerprints for the current resolved snapshot.
@@ -484,7 +535,7 @@ impl Session {
         Self {
             documents: IndexMap::new(),
             source_sets: IndexMap::new(),
-            resolved: None,
+            resolved_cache: ResolvedBuildCache::default(),
             model_names: Vec::new(),
             dependency_fingerprints: None,
             compile_cache: IndexMap::new(),
@@ -492,7 +543,7 @@ impl Session {
     }
 
     fn invalidate_resolved_state(&mut self) {
-        self.resolved = None;
+        self.resolved_cache.clear();
         self.model_names.clear();
         self.dependency_fingerprints = None;
     }
@@ -749,7 +800,7 @@ impl Session {
     fn build_resolved_with_diagnostics(
         &mut self,
     ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
-        self.build_resolved_with_diagnostics_inner(true, true)
+        self.build_resolved_with_diagnostics_inner(ResolveBuildMode::Standard)
     }
 
     /// Build the resolved tree for strict target compilation.
@@ -761,22 +812,21 @@ impl Session {
     fn build_resolved_for_strict_compile_with_diagnostics(
         &mut self,
     ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
-        self.build_resolved_with_diagnostics_inner(false, false)
+        self.build_resolved_with_diagnostics_inner(ResolveBuildMode::StrictCompileRecovery)
     }
 
     fn build_resolved_with_diagnostics_inner(
         &mut self,
-        include_parse_error_diags: bool,
-        strict_unresolved_in_single_document: bool,
+        mode: ResolveBuildMode,
     ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
-        if include_parse_error_diags {
+        if mode.include_parse_error_diags() {
             let parse_error_diags = collect_parse_error_diagnostics(&self.documents);
             if !parse_error_diags.is_empty() {
                 return Err(diagnostics_from_vec(parse_error_diags));
             }
         }
 
-        if let Some(resolved) = &self.resolved {
+        if let Some(resolved) = self.resolved_cache.get(mode) {
             return Ok(resolved.clone());
         }
 
@@ -798,7 +848,8 @@ impl Session {
         }
 
         let parsed = ast::ParsedTree::new(tree);
-        let unresolved_are_errors = strict_unresolved_in_single_document && !multi_document_session;
+        let unresolved_are_errors =
+            mode.unresolved_refs_are_errors_in_single_document() && !multi_document_session;
         let resolve_options = ResolveOptions {
             unresolved_component_refs_are_errors: unresolved_are_errors,
             unresolved_function_calls_are_errors: unresolved_are_errors,
@@ -807,16 +858,18 @@ impl Session {
 
         self.model_names = collect_model_names(&resolved.0.definitions);
         let resolved = Arc::new(resolved);
-        self.resolved = Some(resolved.clone());
+        self.resolved_cache.set(mode, resolved.clone());
 
         Ok(resolved)
     }
 
     /// Get the resolved tree, returning an error if resolution hasn't been performed.
     fn ensure_resolved(&self) -> Result<&Arc<ast::ResolvedTree>> {
-        self.resolved.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Session has no resolved tree — call build_resolved() first")
-        })
+        self.resolved_cache
+            .get(ResolveBuildMode::Standard)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Session has no resolved tree — call build_resolved() first")
+            })
     }
 
     /// Get all model names in the session.
@@ -849,8 +902,8 @@ impl Session {
     /// vector if resolution hasn't been performed yet. This is safe to call
     /// from read-only contexts (e.g., LSP completion with `&self`).
     pub fn all_class_names_cached(&self) -> Vec<String> {
-        self.resolved
-            .as_ref()
+        self.resolved_cache
+            .any()
             .map(|r| r.0.name_map.keys().cloned().collect())
             .unwrap_or_default()
     }
@@ -860,7 +913,7 @@ impl Session {
     /// This is useful for latency-sensitive paths (like editor completion)
     /// to avoid rebuilding resolution unless it is actually needed.
     pub fn has_resolved_cached(&self) -> bool {
-        self.resolved.is_some()
+        self.resolved_cache.any().is_some()
     }
 
     /// Get component members for a class name from cached resolved state.
@@ -871,7 +924,7 @@ impl Session {
     ///
     /// This does not trigger resolution and is safe for read-only contexts.
     pub fn class_component_members_cached(&self, class_name: &str) -> Vec<(String, String)> {
-        let Some(resolved) = &self.resolved else {
+        let Some(resolved) = self.resolved_cache.any() else {
             return Vec::new();
         };
         let tree = &resolved.0;
@@ -1646,7 +1699,13 @@ impl CompiledLibrary {
     /// hold a validated resolved tree (e.g., MSL regression harness).
     pub fn from_resolved_tree(resolved: ast::ResolvedTree, model_names: Vec<String>) -> Self {
         let mut session = Session::new(SessionConfig::default());
-        session.resolved = Some(Arc::new(resolved));
+        let resolved = Arc::new(resolved);
+        session
+            .resolved_cache
+            .set(ResolveBuildMode::Standard, resolved.clone());
+        session
+            .resolved_cache
+            .set(ResolveBuildMode::StrictCompileRecovery, resolved);
         session.model_names = model_names;
         Self { session }
     }
@@ -1669,10 +1728,10 @@ impl CompiledLibrary {
     /// Get the resolved tree reference (guaranteed present after construction).
     fn resolved_tree(&self) -> &Arc<ast::ResolvedTree> {
         // SAFETY: SessionView::new/from_stored_definition call build_resolved()
-        // which sets self.session.resolved = Some(...) before returning Ok(Self { session }).
+        // which sets self.session resolved cache before returning Ok(Self { session }).
         self.session
-            .resolved
-            .as_ref()
+            .resolved_cache
+            .any()
             .expect("SessionView invariant: resolved tree must be set during construction")
     }
 

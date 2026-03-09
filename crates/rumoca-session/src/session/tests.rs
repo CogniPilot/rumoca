@@ -680,6 +680,33 @@ fn test_strict_reachable_reports_parse_errors_in_target_closure() {
     );
 }
 
+#[test]
+fn test_resolve_cache_isolated_between_strict_and_standard_modes() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "root.mo",
+            r#"
+            model Root
+              PID pid(k=1, Ti=1.0, Td=0.1);
+            end Root;
+            "#,
+        )
+        .expect("root should parse");
+
+    let report = session.compile_model_strict_reachable_with_recovery("Root");
+    assert!(
+        !report.requested_succeeded(),
+        "strict compile must report failure for unresolved type"
+    );
+
+    let names = session.model_names();
+    assert!(
+        names.is_err(),
+        "standard resolve must not reuse strict compile recovery cache"
+    );
+}
+
 fn planned_reachability(
     session: &mut Session,
     requested_model: &str,
