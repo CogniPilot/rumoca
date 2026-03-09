@@ -200,6 +200,16 @@ pub enum SimError {
     #[error("compiled evaluator build failed: {0}")]
     CompiledEval(String),
 
+    #[error(
+        "mass matrix form could not be derived for DiffSol at row {row} (state '{state_name}', origin '{origin}'): {reason}"
+    )]
+    MassMatrixForm {
+        row: usize,
+        state_name: String,
+        origin: String,
+        reason: String,
+    },
+
     #[error("timeout after {seconds:.3}s")]
     Timeout { seconds: f64 },
 }
@@ -208,6 +218,27 @@ impl From<TimeoutExceeded> for SimError {
     fn from(value: TimeoutExceeded) -> Self {
         Self::Timeout {
             seconds: value.seconds,
+        }
+    }
+}
+
+impl From<crate::simulation::runtime_prep::MassMatrixBuildError> for SimError {
+    fn from(value: crate::simulation::runtime_prep::MassMatrixBuildError) -> Self {
+        match value {
+            crate::simulation::runtime_prep::MassMatrixBuildError::Timeout { seconds } => {
+                Self::Timeout { seconds }
+            }
+            crate::simulation::runtime_prep::MassMatrixBuildError::NonDerivable {
+                row,
+                state_name,
+                origin,
+                reason,
+            } => Self::MassMatrixForm {
+                row,
+                state_name,
+                origin,
+                reason,
+            },
         }
     }
 }
