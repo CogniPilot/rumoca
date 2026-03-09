@@ -459,11 +459,12 @@ impl ModelicaLanguageServer {
     }
 
     async fn open_document_source_for_uri(&self, uri: &Url) -> std::result::Result<String, String> {
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
         session
-            .get_document(uri.path())
+            .get_document(&uri_path)
             .map(|doc| doc.content.clone())
-            .ok_or_else(|| format!("document not open in LSP session: {}", uri.path()))
+            .ok_or_else(|| format!("document not open in LSP session: {}", uri_path))
     }
 
     async fn compile_model_for_simulation(
@@ -617,14 +618,15 @@ impl ModelicaLanguageServer {
             Ok(source) => source,
             Err(error) => return Some(Self::simulation_error_value(error)),
         };
+        let uri_path = session_document_uri_key(&uri);
 
         if settings.library_paths.is_empty() {
-            self.ensure_source_libraries_loaded(&source, uri.path())
+            self.ensure_source_libraries_loaded(&source, &uri_path)
                 .await;
         } else {
             self.ensure_source_libraries_loaded_with_paths(
                 &source,
-                uri.path(),
+                &uri_path,
                 &settings.library_paths,
             )
             .await;
@@ -782,10 +784,10 @@ impl ModelicaLanguageServer {
 
     /// Publish diagnostics for a document.
     async fn publish_diagnostics(&self, uri: Url, text: &str) {
-        let file_name = uri.path();
-        self.ensure_source_libraries_loaded(text, file_name).await;
+        let file_name = session_document_uri_key(&uri);
+        self.ensure_source_libraries_loaded(text, &file_name).await;
         let mut session = self.session.write().await;
-        let diagnostics = handlers::compute_diagnostics(text, file_name, Some(&mut session));
+        let diagnostics = handlers::compute_diagnostics(text, &file_name, Some(&mut session));
         drop(session);
         self.client
             .publish_diagnostics(uri, diagnostics, None)
@@ -1161,7 +1163,19 @@ fn claim_roots(
 }
 
 fn is_project_config_uri(uri: &Url) -> bool {
+    if let Ok(path) = uri.to_file_path() {
+        return path
+            .components()
+            .any(|component| component.as_os_str() == ".rumoca");
+    }
     uri.path().contains("/.rumoca/")
+}
+
+fn session_document_uri_key(uri: &Url) -> String {
+    if let Ok(path) = uri.to_file_path() {
+        return path.to_string_lossy().to_string();
+    }
+    uri.path().to_string()
 }
 
 fn parse_file_move_hints(value: Option<&Value>) -> Vec<ProjectFileMoveHint> {
@@ -1353,26 +1367,28 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
+        let uri_path = session_document_uri_key(&uri);
         if is_project_config_uri(&uri) {
             self.reload_project_config().await;
         }
         let text = params.text_document.text;
         {
             let mut session = self.session.write().await;
-            session.update_document(uri.path(), &text);
+            session.update_document(&uri_path, &text);
         }
         self.publish_diagnostics(uri, &text).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
+        let uri_path = session_document_uri_key(&uri);
         if is_project_config_uri(&uri) {
             self.reload_project_config().await;
         }
         if let Some(change) = params.content_changes.into_iter().last() {
             {
                 let mut session = self.session.write().await;
-                session.update_document(uri.path(), &change.text);
+                session.update_document(&uri_path, &change.text);
             }
             self.publish_diagnostics(uri, &change.text).await;
         }
@@ -1380,7 +1396,8 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let mut session = self.session.write().await;
-        session.remove_document(params.text_document.uri.path());
+        let uri_path = session_document_uri_key(&params.text_document.uri);
+        session.remove_document(&uri_path);
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -1391,8 +1408,9 @@ impl LanguageServer for ModelicaLanguageServer {
         if let Some(text) = params.text {
             self.publish_diagnostics(uri, &text).await;
         } else {
+            let uri_path = session_document_uri_key(&uri);
             let session = self.session.read().await;
-            if let Some(doc) = session.get_document(uri.path()) {
+            if let Some(doc) = session.get_document(&uri_path) {
                 let text = doc.content.clone();
                 drop(session);
                 self.publish_diagnostics(uri, &text).await;
@@ -1402,9 +1420,10 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position_params.position;
         let mut session = self.session.write().await;
-        let Some(doc) = session.get_document(uri.path()).cloned() else {
+        let Some(doc) = session.get_document(&uri_path).cloned() else {
             return Ok(None);
         };
         let source = doc.content.as_str();
@@ -1424,19 +1443,20 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position.position;
         let source = {
             let session = self.session.read().await;
             session
-                .get_document(uri.path())
+                .get_document(&uri_path)
                 .map(|d| d.content.clone())
                 .unwrap_or_default()
         };
         // Ensure normal source-triggered library loading has happened before member completion.
         // This keeps `pid.`/`limiter.` completions reliable even if diagnostics hasn't run yet.
-        self.ensure_source_libraries_loaded(&source, uri.path())
+        self.ensure_source_libraries_loaded(&source, &uri_path)
             .await;
-        self.ensure_completion_libraries(&source, pos, uri.path())
+        self.ensure_completion_libraries(&source, pos, &uri_path)
             .await;
         let import_prefix = extract_import_completion_prefix(&source, pos);
 
@@ -1454,7 +1474,7 @@ impl LanguageServer for ModelicaLanguageServer {
         }
 
         let session = self.session.read().await;
-        let doc = session.get_document(uri.path());
+        let doc = session.get_document(&uri_path);
         let doc_source = doc.map(|d| d.content.as_str()).unwrap_or("");
         let ast = doc.and_then(|d| d.parsed.as_ref());
         let items =
@@ -1467,8 +1487,9 @@ impl LanguageServer for ModelicaLanguageServer {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path())
+        if let Some(doc) = session.get_document(&uri_path)
             && let Some(ast) = &doc.parsed
         {
             return Ok(handlers::handle_document_symbols(ast));
@@ -1481,8 +1502,9 @@ impl LanguageServer for ModelicaLanguageServer {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path())
+        if let Some(doc) = session.get_document(&uri_path)
             && let Some(ast) = &doc.parsed
         {
             return Ok(handlers::handle_semantic_tokens(ast));
@@ -1495,9 +1517,10 @@ impl LanguageServer for ModelicaLanguageServer {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position_params.position;
         let mut session = self.session.write().await;
-        let Some(doc) = session.get_document(uri.path()).cloned() else {
+        let Some(doc) = session.get_document(&uri_path).cloned() else {
             return Ok(None);
         };
         let Some(ast) = doc.parsed.as_ref() else {
@@ -1518,10 +1541,11 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position.position;
         let include_decl = params.context.include_declaration;
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path())
+        if let Some(doc) = session.get_document(&uri_path)
             && let Some(ast) = &doc.parsed
         {
             let source = &doc.content;
@@ -1542,9 +1566,10 @@ impl LanguageServer for ModelicaLanguageServer {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let pos = params.position;
         let session = self.session.read().await;
-        let doc = session.get_document(uri.path());
+        let doc = session.get_document(&uri_path);
         let source = doc.map(|d| d.content.as_str()).unwrap_or("");
         Ok(handlers::handle_prepare_rename(
             source,
@@ -1555,10 +1580,11 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position.position;
         let new_name = &params.new_name;
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path())
+        if let Some(doc) = session.get_document(&uri_path)
             && let Some(ast) = &doc.parsed
         {
             let source = &doc.content;
@@ -1594,9 +1620,10 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position_params.position;
         let session = self.session.read().await;
-        let doc = session.get_document(uri.path());
+        let doc = session.get_document(&uri_path);
         let source = doc.map(|d| d.content.as_str()).unwrap_or("");
         Ok(handlers::handle_signature_help(
             source,
@@ -1607,8 +1634,9 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path())
+        if let Some(doc) = session.get_document(&uri_path)
             && let Some(ast) = &doc.parsed
         {
             let ranges = handlers::handle_folding_ranges(ast, &doc.content);
@@ -1619,8 +1647,9 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path()) {
+        if let Some(doc) = session.get_document(&uri_path) {
             return Ok(handlers::handle_formatting(&doc.content));
         }
         Ok(None)
@@ -1628,18 +1657,19 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let source = {
             let session = self.session.read().await;
-            match session.get_document(uri.path()) {
+            match session.get_document(&uri_path) {
                 Some(doc) => doc.content.clone(),
                 None => return Ok(None),
             }
         };
-        self.ensure_source_libraries_loaded(&source, uri.path())
+        self.ensure_source_libraries_loaded(&source, &uri_path)
             .await;
 
         let mut session = self.session.write().await;
-        let Some(doc) = session.get_document(uri.path()).cloned() else {
+        let Some(doc) = session.get_document(&uri_path).cloned() else {
             return Ok(None);
         };
         let Some(ast) = doc.parsed.as_ref() else {
@@ -1685,8 +1715,9 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path()) {
+        if let Some(doc) = session.get_document(&uri_path) {
             let actions = handlers::handle_code_actions(
                 &params.context.diagnostics,
                 &doc.content,
@@ -1732,8 +1763,9 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path())
+        if let Some(doc) = session.get_document(&uri_path)
             && let Some(ast) = &doc.parsed
         {
             let hints = handlers::handle_inlay_hints(ast, &doc.content, &params.range);
@@ -1744,8 +1776,9 @@ impl LanguageServer for ModelicaLanguageServer {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
+        let uri_path = session_document_uri_key(uri);
         let session = self.session.read().await;
-        if let Some(doc) = session.get_document(uri.path()) {
+        if let Some(doc) = session.get_document(&uri_path) {
             let links = handlers::handle_document_links(&doc.content, uri);
             return Ok(Some(links));
         }
