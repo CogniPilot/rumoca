@@ -20,6 +20,9 @@ impl Resolver {
             let def_id = self.alloc_def_id(format!("{}{}", prefix, name));
             class.def_id = Some(def_id);
             self.scope_tree.add_member(scope, name.clone(), def_id);
+            if class.is_replaceable {
+                self.partial_type_root_ids.insert(def_id);
+            }
         }
 
         // Recursively register nested classes
@@ -58,6 +61,9 @@ impl Resolver {
             comp.def_id = Some(def_id);
             self.scope_tree
                 .add_member(class_scope, name.clone(), def_id);
+            if comp.is_replaceable {
+                self.partial_type_root_ids.insert(def_id);
+            }
         }
 
         // Register nested class names
@@ -66,6 +72,9 @@ impl Resolver {
             nested.def_id = Some(def_id);
             self.scope_tree
                 .add_member(class_scope, name.clone(), def_id);
+            if nested.is_replaceable {
+                self.partial_type_root_ids.insert(def_id);
+            }
         }
 
         // Recursively register nested classes

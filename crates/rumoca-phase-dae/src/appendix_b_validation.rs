@@ -378,79 +378,47 @@ fn resolve_assignment_target(
         .find(|candidate| targets.contains(candidate))
 }
 
-fn collect_current_var_refs(expr: &dae::Expression, out: &mut HashSet<dae::VarName>) {
-    match expr {
-        dae::Expression::VarRef { name, .. } => {
-            out.insert(name.clone());
+struct CurrentVarRefCollector<'a> {
+    out: &'a mut HashSet<dae::VarName>,
+}
+
+impl dae::ExpressionVisitor for CurrentVarRefCollector<'_> {
+    fn visit_var_ref(&mut self, name: &dae::VarName, subscripts: &[dae::Subscript]) {
+        self.out.insert(name.clone());
+        for subscript in subscripts {
+            self.visit_subscript(subscript);
         }
-        dae::Expression::BuiltinCall { function, args } => {
-            if matches!(function, dae::BuiltinFunction::Pre) {
-                return;
-            }
-            for arg in args {
-                collect_current_var_refs(arg, out);
-            }
-        }
-        dae::Expression::FunctionCall { name, args, .. } => {
-            let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-            if short_name == "previous" {
-                return;
-            }
-            for arg in args {
-                collect_current_var_refs(arg, out);
-            }
-        }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            collect_current_var_refs(lhs, out);
-            collect_current_var_refs(rhs, out);
-        }
-        dae::Expression::Unary { rhs, .. } => collect_current_var_refs(rhs, out),
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                collect_current_var_refs(cond, out);
-                collect_current_var_refs(value, out);
-            }
-            collect_current_var_refs(else_branch, out);
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            for element in elements {
-                collect_current_var_refs(element, out);
-            }
-        }
-        dae::Expression::Range { start, step, end } => {
-            collect_current_var_refs(start, out);
-            if let Some(step_expr) = step {
-                collect_current_var_refs(step_expr, out);
-            }
-            collect_current_var_refs(end, out);
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_current_var_refs(expr, out);
-            for index in indices {
-                collect_current_var_refs(&index.range, out);
-            }
-            if let Some(filter_expr) = filter {
-                collect_current_var_refs(filter_expr, out);
-            }
-        }
-        dae::Expression::Index { base, subscripts } => {
-            collect_current_var_refs(base, out);
-            for subscript in subscripts {
-                if let dae::Subscript::Expr(expr) = subscript {
-                    collect_current_var_refs(expr, out);
-                }
-            }
-        }
-        dae::Expression::FieldAccess { base, .. } => collect_current_var_refs(base, out),
-        dae::Expression::Literal(_) | dae::Expression::Empty => {}
     }
+
+    fn visit_builtin_call(&mut self, function: &dae::BuiltinFunction, args: &[dae::Expression]) {
+        if matches!(function, dae::BuiltinFunction::Pre) {
+            return;
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_function_call(
+        &mut self,
+        name: &dae::VarName,
+        args: &[dae::Expression],
+        is_constructor: bool,
+    ) {
+        let short_name = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+        if short_name == "previous" {
+            return;
+        }
+        let _ = is_constructor;
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+}
+
+fn collect_current_var_refs(expr: &dae::Expression, out: &mut HashSet<dae::VarName>) {
+    let mut collector = CurrentVarRefCollector { out };
+    dae::ExpressionVisitor::visit_expression(&mut collector, expr);
 }
 
 fn find_cycle(deps: &HashMap<dae::VarName, Vec<dae::VarName>>) -> Option<Vec<dae::VarName>> {

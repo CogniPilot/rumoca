@@ -64,7 +64,8 @@ pub type Token = rumoca_ir_core::Token;
 pub type Variability = rumoca_ir_core::Variability;
 
 pub use visitor::{
-    ExpressionTransformer, Visitor, collect_component_refs, contains_component_ref,
+    ComponentReferenceContext, ExpressionContext, ExpressionTransformer, FunctionCallContext,
+    SubscriptContext, TypeNameContext, Visitor, collect_component_refs, contains_component_ref,
     contains_function_call,
 };
 

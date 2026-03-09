@@ -4,6 +4,7 @@ use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
+use rumoca_ir_dae::{ExpressionVisitor, ImplicitSampleChecker, VarRefWithSubscriptsCollector};
 
 type SourceMap<'a> = HashMap<String, Vec<&'a dae::Expression>>;
 type ClockRuntimeMetadata = (
@@ -202,8 +203,9 @@ fn collect_unique_clock_var_refs(
     expr: &dae::Expression,
     constants: &HashMap<String, f64>,
 ) -> Vec<(dae::VarName, Vec<dae::Subscript>, String)> {
-    let mut refs = Vec::new();
-    collect_clock_var_refs(expr, &mut refs);
+    let mut collector = VarRefWithSubscriptsCollector::new();
+    collector.visit_expression(expr);
+    let refs = collector.into_refs();
     let mut seen = HashSet::new();
     refs.into_iter()
         .filter_map(|(name, subscripts)| {
@@ -216,77 +218,6 @@ fn collect_unique_clock_var_refs(
             }
         })
         .collect()
-}
-
-fn collect_clock_var_refs(
-    expr: &dae::Expression,
-    out: &mut Vec<(dae::VarName, Vec<dae::Subscript>)>,
-) {
-    match expr {
-        dae::Expression::VarRef { name, subscripts } => {
-            out.push((name.clone(), subscripts.clone()));
-            for subscript in subscripts {
-                if let dae::Subscript::Expr(index_expr) = subscript {
-                    collect_clock_var_refs(index_expr, out);
-                }
-            }
-        }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            collect_clock_var_refs(lhs, out);
-            collect_clock_var_refs(rhs, out);
-        }
-        dae::Expression::Unary { rhs, .. } => collect_clock_var_refs(rhs, out),
-        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_clock_var_refs(arg, out);
-            }
-        }
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                collect_clock_var_refs(cond, out);
-                collect_clock_var_refs(value, out);
-            }
-            collect_clock_var_refs(else_branch, out);
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            for element in elements {
-                collect_clock_var_refs(element, out);
-            }
-        }
-        dae::Expression::Range { start, step, end } => {
-            collect_clock_var_refs(start, out);
-            if let Some(step_expr) = step {
-                collect_clock_var_refs(step_expr, out);
-            }
-            collect_clock_var_refs(end, out);
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_clock_var_refs(expr, out);
-            for idx in indices {
-                collect_clock_var_refs(&idx.range, out);
-            }
-            if let Some(filter_expr) = filter {
-                collect_clock_var_refs(filter_expr, out);
-            }
-        }
-        dae::Expression::Index { base, subscripts } => {
-            collect_clock_var_refs(base, out);
-            for subscript in subscripts {
-                if let dae::Subscript::Expr(expr) = subscript {
-                    collect_clock_var_refs(expr, out);
-                }
-            }
-        }
-        dae::Expression::FieldAccess { base, .. } => collect_clock_var_refs(base, out),
-        dae::Expression::Literal(_) | dae::Expression::Empty => {}
-    }
 }
 
 pub(super) fn dedupe_expressions_in_place(expressions: &mut Vec<dae::Expression>) {
@@ -852,76 +783,7 @@ fn variable_has_implicit_clock_source(
 }
 
 fn expression_uses_implicit_clock_sample(expr: &dae::Expression) -> bool {
-    match expr {
-        dae::Expression::BuiltinCall { function, args } => {
-            if matches!(function, dae::BuiltinFunction::Sample) && args.len() == 1 {
-                return true;
-            }
-            args.iter().any(expression_uses_implicit_clock_sample)
-        }
-        dae::Expression::FunctionCall { name, args, .. } => {
-            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-            if short == "sample" && args.len() == 1 {
-                return true;
-            }
-            args.iter().any(expression_uses_implicit_clock_sample)
-        }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            expression_uses_implicit_clock_sample(lhs) || expression_uses_implicit_clock_sample(rhs)
-        }
-        dae::Expression::Unary { rhs, .. } => expression_uses_implicit_clock_sample(rhs),
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().any(|(cond, value)| {
-                expression_uses_implicit_clock_sample(cond)
-                    || expression_uses_implicit_clock_sample(value)
-            }) || expression_uses_implicit_clock_sample(else_branch)
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            elements.iter().any(expression_uses_implicit_clock_sample)
-        }
-        dae::Expression::Range { start, step, end } => {
-            expression_uses_implicit_clock_sample(start)
-                || step
-                    .as_ref()
-                    .is_some_and(|value| expression_uses_implicit_clock_sample(value))
-                || expression_uses_implicit_clock_sample(end)
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            expression_uses_implicit_clock_sample(expr)
-                || indices
-                    .iter()
-                    .any(|idx| expression_uses_implicit_clock_sample(&idx.range))
-                || filter
-                    .as_ref()
-                    .is_some_and(|value| expression_uses_implicit_clock_sample(value))
-        }
-        dae::Expression::Index { base, subscripts } => {
-            expression_uses_implicit_clock_sample(base)
-                || subscripts.iter().any(|subscript| match subscript {
-                    dae::Subscript::Colon => false,
-                    dae::Subscript::Index(_) => false,
-                    dae::Subscript::Expr(value) => expression_uses_implicit_clock_sample(value),
-                })
-        }
-        dae::Expression::FieldAccess { base, field: _ } => {
-            expression_uses_implicit_clock_sample(base)
-        }
-        dae::Expression::VarRef { subscripts, .. } => subscripts.iter().any(|subscript| {
-            if let dae::Subscript::Expr(value) = subscript {
-                expression_uses_implicit_clock_sample(value)
-            } else {
-                false
-            }
-        }),
-        dae::Expression::Literal(_) | dae::Expression::Empty => false,
-    }
+    ImplicitSampleChecker::check(expr)
 }
 
 fn infer_clock_timing_next(
@@ -1479,86 +1341,57 @@ fn infer_clock_timing_from_expr_inner(
     }
 }
 
+struct ClockConstructorExprCollector<'a> {
+    constants: &'a HashMap<String, f64>,
+    out: &'a mut Vec<dae::Expression>,
+}
+
+impl ExpressionVisitor for ClockConstructorExprCollector<'_> {
+    fn visit_function_call(
+        &mut self,
+        name: &dae::VarName,
+        args: &[dae::Expression],
+        is_constructor: bool,
+    ) {
+        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+        if is_clock_constructor_function_name(short) {
+            self.out.push(dae::Expression::FunctionCall {
+                name: name.clone(),
+                args: args.to_vec(),
+                is_constructor,
+            });
+        }
+        for arg in args {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_if(
+        &mut self,
+        branches: &[(dae::Expression, dae::Expression)],
+        else_branch: &dae::Expression,
+    ) {
+        for (cond, value) in branches {
+            let cond_value = eval_scalar_const_expr(cond, self.constants);
+            if cond_value == Some(0.0) {
+                continue;
+            }
+            if cond_value.is_some() {
+                self.visit_expression(value);
+                return;
+            }
+            self.visit_expression(cond);
+            self.visit_expression(value);
+        }
+        self.visit_expression(else_branch);
+    }
+}
+
 fn collect_clock_constructor_exprs(
     expr: &dae::Expression,
     constants: &HashMap<String, f64>,
     out: &mut Vec<dae::Expression>,
 ) {
-    match expr {
-        dae::Expression::FunctionCall { name, args, .. } => {
-            let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
-            if is_clock_constructor_function_name(short) {
-                out.push(expr.clone());
-            }
-            for arg in args {
-                collect_clock_constructor_exprs(arg, constants, out);
-            }
-        }
-        dae::Expression::BuiltinCall { args, .. } => {
-            for arg in args {
-                collect_clock_constructor_exprs(arg, constants, out);
-            }
-        }
-        dae::Expression::Binary { lhs, rhs, .. } => {
-            collect_clock_constructor_exprs(lhs, constants, out);
-            collect_clock_constructor_exprs(rhs, constants, out);
-        }
-        dae::Expression::Unary { rhs, .. } => collect_clock_constructor_exprs(rhs, constants, out),
-        dae::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                match eval_scalar_const_expr(cond, constants) {
-                    Some(flag) if flag != 0.0 => {
-                        collect_clock_constructor_exprs(value, constants, out);
-                        return;
-                    }
-                    Some(_) => continue,
-                    None => {
-                        collect_clock_constructor_exprs(cond, constants, out);
-                        collect_clock_constructor_exprs(value, constants, out);
-                    }
-                }
-            }
-            collect_clock_constructor_exprs(else_branch, constants, out);
-        }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            for element in elements {
-                collect_clock_constructor_exprs(element, constants, out);
-            }
-        }
-        dae::Expression::Range { start, step, end } => {
-            collect_clock_constructor_exprs(start, constants, out);
-            if let Some(step_expr) = step {
-                collect_clock_constructor_exprs(step_expr, constants, out);
-            }
-            collect_clock_constructor_exprs(end, constants, out);
-        }
-        dae::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_clock_constructor_exprs(expr, constants, out);
-            for idx in indices {
-                collect_clock_constructor_exprs(&idx.range, constants, out);
-            }
-            if let Some(filter_expr) = filter {
-                collect_clock_constructor_exprs(filter_expr, constants, out);
-            }
-        }
-        dae::Expression::Index { base, subscripts } => {
-            collect_clock_constructor_exprs(base, constants, out);
-            for subscript in subscripts {
-                if let dae::Subscript::Expr(expr) = subscript {
-                    collect_clock_constructor_exprs(expr, constants, out);
-                }
-            }
-        }
-        dae::Expression::FieldAccess { base, .. } => {
-            collect_clock_constructor_exprs(base, constants, out);
-        }
-        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {}
-    }
+    let mut collector = ClockConstructorExprCollector { constants, out };
+    collector.visit_expression(expr);
 }

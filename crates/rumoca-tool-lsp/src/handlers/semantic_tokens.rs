@@ -11,6 +11,8 @@ use lsp_types::{
     SemanticTokensResult,
 };
 
+use crate::traversal_adapter;
+
 type ClassDef = ast::ClassDef;
 type ClassType = ast::ClassType;
 type Component = ast::Component;
@@ -68,7 +70,7 @@ pub fn get_semantic_token_legend() -> SemanticTokensLegend {
 /// Takes a parsed AST from `rumoca-session`.
 pub fn handle_semantic_tokens(ast: &StoredDefinition) -> Option<SemanticTokensResult> {
     let mut collector = SemanticTokenCollector::new();
-    let _ = ast::visitor::Visitor::visit_stored_definition(&mut collector, ast);
+    let _ = traversal_adapter::walk_stored_definition(&mut collector, ast);
 
     // Sort by line then column
     collector
@@ -243,42 +245,12 @@ fn is_modelica_operator_keyword(name: &str) -> bool {
 impl ast::visitor::Visitor for SemanticTokenCollector {
     fn visit_class_def(&mut self, class: &ClassDef) -> ControlFlow<()> {
         self.add_class_tokens(class);
-
-        // Visit children (default behavior)
-        for ext in &class.extends {
-            self.visit_extend(ext)?;
-        }
-        for (_, nested) in &class.classes {
-            self.visit_class_def(nested)?;
-        }
-        for (_, comp) in &class.components {
-            self.visit_component(comp)?;
-        }
-        self.visit_each(&class.equations, Self::visit_equation)?;
-        self.visit_each(&class.initial_equations, Self::visit_equation)?;
-        for section in &class.algorithms {
-            self.visit_each(section, Self::visit_statement)?;
-        }
-        for section in &class.initial_algorithms {
-            self.visit_each(section, Self::visit_statement)?;
-        }
-        Continue(())
+        traversal_adapter::walk_class_sections(self, class, true)
     }
 
     fn visit_component(&mut self, comp: &Component) -> ControlFlow<()> {
         self.add_component_tokens(comp);
-
-        // Visit children (default behavior)
-        if !matches!(comp.start, Expression::Empty) {
-            self.visit_expression(&comp.start)?;
-        }
-        for (_, mod_expr) in &comp.modifications {
-            self.visit_expression(mod_expr)?;
-        }
-        if let Some(cond) = &comp.condition {
-            self.visit_expression(cond)?;
-        }
-        self.visit_each(&comp.annotation, Self::visit_expression)
+        traversal_adapter::walk_component_fields(self, comp)
     }
 
     fn visit_expression(&mut self, expr: &Expression) -> ControlFlow<()> {
@@ -304,8 +276,7 @@ impl ast::visitor::Visitor for SemanticTokenCollector {
             return Continue(());
         }
 
-        // Default recursive behavior for all other expression types
-        default_visit_expression(self, expr)
+        traversal_adapter::walk_expression_default(self, expr)
     }
 
     fn visit_expr_function_call(
@@ -348,80 +319,6 @@ impl ast::visitor::Visitor for SemanticTokenCollector {
         self.add_call_head_tokens(comp);
         self.visit_each(args, Self::visit_expression)?;
         self.visit_each(outputs, Self::visit_expression)
-    }
-}
-
-/// Default expression visitor behavior (copied from trait to allow override).
-fn default_visit_expression(v: &mut SemanticTokenCollector, expr: &Expression) -> ControlFlow<()> {
-    match expr {
-        Expression::Empty | Expression::Terminal { .. } => Continue(()),
-        Expression::Range { start, step, end } => {
-            ast::visitor::Visitor::visit_expression(v, start)?;
-            if let Some(s) = step {
-                ast::visitor::Visitor::visit_expression(v, s)?;
-            }
-            ast::visitor::Visitor::visit_expression(v, end)
-        }
-        Expression::Unary { rhs, .. } => ast::visitor::Visitor::visit_expression(v, rhs),
-        Expression::Binary { lhs, rhs, .. } => {
-            ast::visitor::Visitor::visit_expression(v, lhs)?;
-            ast::visitor::Visitor::visit_expression(v, rhs)
-        }
-        Expression::ComponentReference(cr) => {
-            ast::visitor::Visitor::visit_component_reference(v, cr)
-        }
-        Expression::FunctionCall { comp, args } => {
-            ast::visitor::Visitor::visit_expr_function_call(v, comp, args)
-        }
-        Expression::ClassModification {
-            target,
-            modifications,
-        } => {
-            ast::visitor::Visitor::visit_component_reference(v, target)?;
-            ast::visitor::Visitor::visit_each(
-                v,
-                modifications,
-                ast::visitor::Visitor::visit_expression,
-            )
-        }
-        Expression::NamedArgument { value, .. } => {
-            ast::visitor::Visitor::visit_expression(v, value)
-        }
-        Expression::Modification { target, value } => {
-            ast::visitor::Visitor::visit_component_reference(v, target)?;
-            ast::visitor::Visitor::visit_expression(v, value)
-        }
-        Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-            ast::visitor::Visitor::visit_each(v, elements, ast::visitor::Visitor::visit_expression)
-        }
-        Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, then_expr) in branches {
-                ast::visitor::Visitor::visit_expression(v, cond)?;
-                ast::visitor::Visitor::visit_expression(v, then_expr)?;
-            }
-            ast::visitor::Visitor::visit_expression(v, else_branch)
-        }
-        Expression::Parenthesized { inner } => ast::visitor::Visitor::visit_expression(v, inner),
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            ast::visitor::Visitor::visit_expression(v, expr)?;
-            ast::visitor::Visitor::visit_each(v, indices, ast::visitor::Visitor::visit_for_index)?;
-            if let Some(f) = filter {
-                ast::visitor::Visitor::visit_expression(v, f)?;
-            }
-            Continue(())
-        }
-        Expression::ArrayIndex { base, subscripts } => {
-            ast::visitor::Visitor::visit_expression(v, base)?;
-            ast::visitor::Visitor::visit_each(v, subscripts, ast::visitor::Visitor::visit_subscript)
-        }
-        Expression::FieldAccess { base, .. } => ast::visitor::Visitor::visit_expression(v, base),
     }
 }
 

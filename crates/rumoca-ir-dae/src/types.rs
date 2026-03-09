@@ -1,4 +1,3 @@
-use indexmap::IndexSet;
 use rumoca_core::{DefId, Span};
 use rumoca_ir_core::{OpBinary, OpUnary};
 use serde::{Deserialize, Serialize};
@@ -439,67 +438,18 @@ pub enum Statement {
 }
 
 pub fn extract_algorithm_outputs(statements: &[Statement]) -> Vec<VarName> {
-    let mut outputs = IndexSet::new();
-    for stmt in statements {
-        collect_algorithm_outputs_from_statement(stmt, &mut outputs);
+    use crate::visitor::{AlgorithmOutputCollector, StatementVisitor};
+
+    let mut collector = AlgorithmOutputCollector::new();
+    for statement in statements {
+        collector.visit_statement(statement);
     }
-    outputs.into_iter().collect()
+    collector.into_outputs()
 }
 
 pub(crate) fn component_ref_to_base_var_name(comp: &ComponentReference) -> VarName {
     let parts: Vec<String> = comp.parts.iter().map(|p| p.ident.to_string()).collect();
     VarName::new(parts.join("."))
-}
-
-fn collect_algorithm_outputs_from_statement(stmt: &Statement, outputs: &mut IndexSet<VarName>) {
-    match stmt {
-        Statement::Assignment { comp, .. } => {
-            outputs.insert(component_ref_to_base_var_name(comp));
-        }
-        Statement::For { equations, .. } => {
-            for s in equations {
-                collect_algorithm_outputs_from_statement(s, outputs);
-            }
-        }
-        Statement::While(block) => {
-            for s in &block.stmts {
-                collect_algorithm_outputs_from_statement(s, outputs);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                for s in &block.stmts {
-                    collect_algorithm_outputs_from_statement(s, outputs);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for s in stmts {
-                    collect_algorithm_outputs_from_statement(s, outputs);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                for s in &block.stmts {
-                    collect_algorithm_outputs_from_statement(s, outputs);
-                }
-            }
-        }
-        Statement::FunctionCall { outputs: outs, .. } => {
-            for out in outs {
-                if let Expression::VarRef { name, .. } = out {
-                    outputs.insert(name.clone());
-                }
-            }
-        }
-        Statement::Reinit { variable, .. } => {
-            outputs.insert(component_ref_to_base_var_name(variable));
-        }
-        Statement::Empty | Statement::Return | Statement::Break | Statement::Assert { .. } => {}
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -592,28 +542,11 @@ impl FunctionParam {
 
 impl Expression {
     pub fn contains_der(&self) -> bool {
-        match self {
-            Expression::BuiltinCall { function, .. } if *function == BuiltinFunction::Der => true,
-            _ => self.walk().any(|expr| {
-                matches!(
-                    expr,
-                    Expression::BuiltinCall { function, .. } if *function == BuiltinFunction::Der
-                )
-            }),
-        }
+        crate::visitor::ContainsDerChecker::check(self)
     }
 
     pub fn contains_der_of_state(&self, state_vars: &std::collections::HashSet<VarName>) -> bool {
-        self.walk().any(|expr| {
-            if let Expression::BuiltinCall { function, args } = expr
-                && *function == BuiltinFunction::Der
-                && let Some(Expression::VarRef { name, .. }) = args.first()
-            {
-                state_vars.contains(name)
-            } else {
-                false
-            }
-        })
+        crate::visitor::ContainsDerOfStateChecker::check(self, state_vars)
     }
 
     pub fn get_der_variable(&self) -> Option<&VarName> {
@@ -629,100 +562,18 @@ impl Expression {
     }
 
     pub fn collect_state_variables(&self, states: &mut std::collections::HashSet<VarName>) {
-        for expr in self.walk() {
-            if let Expression::BuiltinCall { function, args } = expr
-                && *function == BuiltinFunction::Der
-                && let Some(Expression::VarRef { name, .. }) = args.first()
-            {
-                states.insert(name.clone());
-            }
-        }
+        use crate::visitor::{ExpressionVisitor, StateVariableCollector};
+
+        let mut collector = StateVariableCollector::new();
+        collector.visit_expression(self);
+        states.extend(collector.into_states());
     }
 
     pub fn collect_var_refs(&self, vars: &mut std::collections::HashSet<VarName>) {
-        for expr in self.walk() {
-            if let Expression::VarRef { name, .. } = expr {
-                vars.insert(name.clone());
-            }
-        }
-    }
+        use crate::visitor::{ExpressionVisitor, VarRefCollector};
 
-    fn walk(&self) -> ExpressionWalker<'_> {
-        ExpressionWalker { stack: vec![self] }
-    }
-}
-
-struct ExpressionWalker<'a> {
-    stack: Vec<&'a Expression>,
-}
-
-impl<'a> Iterator for ExpressionWalker<'a> {
-    type Item = &'a Expression;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let expr = self.stack.pop()?;
-        match expr {
-            Expression::Binary { lhs, rhs, .. } => {
-                self.stack.push(rhs);
-                self.stack.push(lhs);
-            }
-            Expression::Unary { rhs, .. } => {
-                self.stack.push(rhs);
-            }
-            Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-                for arg in args.iter().rev() {
-                    self.stack.push(arg);
-                }
-            }
-            Expression::If {
-                branches,
-                else_branch,
-            } => {
-                self.stack.push(else_branch);
-                for (cond, value) in branches.iter().rev() {
-                    self.stack.push(value);
-                    self.stack.push(cond);
-                }
-            }
-            Expression::Array { elements, .. } | Expression::Tuple { elements } => {
-                for element in elements.iter().rev() {
-                    self.stack.push(element);
-                }
-            }
-            Expression::Range { start, step, end } => {
-                self.stack.push(end);
-                if let Some(step) = step {
-                    self.stack.push(step);
-                }
-                self.stack.push(start);
-            }
-            Expression::ArrayComprehension {
-                expr,
-                indices,
-                filter,
-            } => {
-                if let Some(filter) = filter {
-                    self.stack.push(filter);
-                }
-                for index in indices.iter().rev() {
-                    self.stack.push(&index.range);
-                }
-                self.stack.push(expr);
-            }
-            Expression::Index { base, subscripts } => {
-                for expr in subscripts.iter().rev().filter_map(|sub| match sub {
-                    Subscript::Expr(expr) => Some(expr.as_ref()),
-                    Subscript::Index(_) | Subscript::Colon => None,
-                }) {
-                    self.stack.push(expr);
-                }
-                self.stack.push(base);
-            }
-            Expression::FieldAccess { base, .. } => {
-                self.stack.push(base);
-            }
-            Expression::VarRef { .. } | Expression::Literal(_) | Expression::Empty => {}
-        }
-        Some(expr)
+        let mut collector = VarRefCollector::new();
+        collector.visit_expression(self);
+        vars.extend(collector.into_vars());
     }
 }

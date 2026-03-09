@@ -49,10 +49,66 @@
 
 use crate::{
     ClassDef, Component, ComponentReference, Equation, EquationBlock, Expression, Extend, ForIndex,
-    Statement, StatementBlock, StoredDefinition, Subscript,
+    Name, Statement, StatementBlock, StoredDefinition, Subscript,
 };
 use std::ops::ControlFlow::{self, Break, Continue};
 use std::sync::Arc;
+
+/// Context for traversed function call targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionCallContext {
+    Expression,
+    Equation,
+    Statement,
+}
+
+/// Context for traversed component references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentReferenceContext {
+    Expression,
+    EquationConnectLhs,
+    EquationConnectRhs,
+    EquationFunctionCallTarget,
+    StatementFunctionCallTarget,
+    AssignmentTarget,
+    ReinitTarget,
+    ClassModificationTarget,
+    ModificationTarget,
+}
+
+/// Context for traversed type names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeNameContext {
+    ExtendsBase,
+    ComponentType,
+    ClassConstrainedBy,
+    ComponentConstrainedBy,
+}
+
+/// Context for traversed subscript expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriptContext {
+    ComponentReferencePart,
+    ArrayIndex,
+}
+
+/// Context for traversed expressions from declaration/equation/statement fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpressionContext {
+    Generic,
+    ComponentStart,
+    ComponentModification,
+    ComponentCondition,
+    ComponentAnnotation,
+    EquationAssertCondition,
+    EquationAssertMessage,
+    EquationAssertLevel,
+    StatementAssertCondition,
+    StatementAssertMessage,
+    StatementAssertLevel,
+    StatementFunctionOutput,
+    ExtendModification,
+}
 
 /// Trait for visiting AST nodes without modification.
 ///
@@ -77,6 +133,54 @@ pub trait Visitor {
         Continue(())
     }
 
+    /// Visit an expression with contextual metadata.
+    ///
+    /// Default behavior defers to [`Visitor::visit_expression`].
+    fn visit_expression_ctx(
+        &mut self,
+        expr: &Expression,
+        _ctx: ExpressionContext,
+    ) -> ControlFlow<()> {
+        self.visit_expression(expr)
+    }
+
+    /// Visit a component reference with contextual metadata.
+    ///
+    /// Default behavior defers to [`Visitor::visit_component_reference`].
+    fn visit_component_reference_ctx(
+        &mut self,
+        cr: &ComponentReference,
+        _ctx: ComponentReferenceContext,
+    ) -> ControlFlow<()> {
+        self.visit_component_reference(cr)
+    }
+
+    /// Visit a function-call target with contextual metadata.
+    ///
+    /// Default behavior defers to [`Visitor::visit_expr_function_call`].
+    fn visit_expr_function_call_ctx(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        _ctx: FunctionCallContext,
+    ) -> ControlFlow<()> {
+        self.visit_expr_function_call(comp, args)
+    }
+
+    /// Visit a type name in declaration context.
+    ///
+    /// Default behavior is no-op to preserve existing traversal behavior.
+    fn visit_type_name(&mut self, _name: &Name, _ctx: TypeNameContext) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    /// Visit a subscript with contextual metadata.
+    ///
+    /// Default behavior defers to [`Visitor::visit_subscript`].
+    fn visit_subscript_ctx(&mut self, sub: &Subscript, _ctx: SubscriptContext) -> ControlFlow<()> {
+        self.visit_subscript(sub)
+    }
+
     // =========================================================================
     // Expression methods
     // =========================================================================
@@ -97,18 +201,28 @@ pub trait Visitor {
                 self.visit_expression(lhs)?;
                 self.visit_expression(rhs)
             }
-            Expression::ComponentReference(cr) => self.visit_component_reference(cr),
-            Expression::FunctionCall { comp, args } => self.visit_expr_function_call(comp, args),
+            Expression::ComponentReference(cr) => {
+                self.visit_component_reference_ctx(cr, ComponentReferenceContext::Expression)
+            }
+            Expression::FunctionCall { comp, args } => {
+                self.visit_expr_function_call_ctx(comp, args, FunctionCallContext::Expression)
+            }
             Expression::ClassModification {
                 target,
                 modifications,
             } => {
-                self.visit_component_reference(target)?;
+                self.visit_component_reference_ctx(
+                    target,
+                    ComponentReferenceContext::ClassModificationTarget,
+                )?;
                 self.visit_each(modifications, Self::visit_expression)
             }
             Expression::NamedArgument { value, .. } => self.visit_expression(value),
             Expression::Modification { target, value } => {
-                self.visit_component_reference(target)?;
+                self.visit_component_reference_ctx(
+                    target,
+                    ComponentReferenceContext::ModificationTarget,
+                )?;
                 self.visit_expression(value)
             }
             Expression::Array { elements, .. } | Expression::Tuple { elements } => {
@@ -139,7 +253,10 @@ pub trait Visitor {
             }
             Expression::ArrayIndex { base, subscripts } => {
                 self.visit_expression(base)?;
-                self.visit_each(subscripts, Self::visit_subscript)
+                for subscript in subscripts {
+                    self.visit_subscript_ctx(subscript, SubscriptContext::ArrayIndex)?;
+                }
+                Continue(())
             }
             Expression::FieldAccess { base, .. } => self.visit_expression(base),
         }
@@ -148,8 +265,11 @@ pub trait Visitor {
     /// Visit a component reference.
     fn visit_component_reference(&mut self, cr: &ComponentReference) -> ControlFlow<()> {
         for part in &cr.parts {
-            if let Some(subs) = &part.subs {
-                self.visit_each(subs, Self::visit_subscript)?;
+            let Some(subs) = &part.subs else {
+                continue;
+            };
+            for subscript in subs {
+                self.visit_subscript_ctx(subscript, SubscriptContext::ComponentReferencePart)?;
             }
         }
         Continue(())
@@ -214,8 +334,8 @@ pub trait Visitor {
         lhs: &ComponentReference,
         rhs: &ComponentReference,
     ) -> ControlFlow<()> {
-        self.visit_component_reference(lhs)?;
-        self.visit_component_reference(rhs)
+        self.visit_component_reference_ctx(lhs, ComponentReferenceContext::EquationConnectLhs)?;
+        self.visit_component_reference_ctx(rhs, ComponentReferenceContext::EquationConnectRhs)
     }
 
     /// Visit a for-equation.
@@ -252,8 +372,11 @@ pub trait Visitor {
         comp: &ComponentReference,
         args: &[Expression],
     ) -> ControlFlow<()> {
-        self.visit_component_reference(comp)?;
-        self.visit_each(args, Self::visit_expression)
+        self.visit_component_reference_ctx(
+            comp,
+            ComponentReferenceContext::EquationFunctionCallTarget,
+        )?;
+        self.visit_expr_function_call_ctx(comp, args, FunctionCallContext::Equation)
     }
 
     /// Visit an assert equation.
@@ -263,10 +386,10 @@ pub trait Visitor {
         message: &Expression,
         level: Option<&Expression>,
     ) -> ControlFlow<()> {
-        self.visit_expression(condition)?;
-        self.visit_expression(message)?;
+        self.visit_expression_ctx(condition, ExpressionContext::EquationAssertCondition)?;
+        self.visit_expression_ctx(message, ExpressionContext::EquationAssertMessage)?;
         if let Some(lvl) = level {
-            self.visit_expression(lvl)?;
+            self.visit_expression_ctx(lvl, ExpressionContext::EquationAssertLevel)?;
         }
         Continue(())
     }
@@ -313,7 +436,7 @@ pub trait Visitor {
         comp: &ComponentReference,
         value: &Expression,
     ) -> ControlFlow<()> {
-        self.visit_component_reference(comp)?;
+        self.visit_component_reference_ctx(comp, ComponentReferenceContext::AssignmentTarget)?;
         self.visit_expression(value)
     }
 
@@ -352,9 +475,15 @@ pub trait Visitor {
         args: &[Expression],
         outputs: &[Expression],
     ) -> ControlFlow<()> {
-        self.visit_component_reference(comp)?;
-        self.visit_each(args, Self::visit_expression)?;
-        self.visit_each(outputs, Self::visit_expression)
+        self.visit_component_reference_ctx(
+            comp,
+            ComponentReferenceContext::StatementFunctionCallTarget,
+        )?;
+        self.visit_expr_function_call_ctx(comp, args, FunctionCallContext::Statement)?;
+        for output in outputs {
+            self.visit_expression_ctx(output, ExpressionContext::StatementFunctionOutput)?;
+        }
+        Continue(())
     }
 
     /// Visit a reinit statement.
@@ -363,7 +492,7 @@ pub trait Visitor {
         variable: &ComponentReference,
         value: &Expression,
     ) -> ControlFlow<()> {
-        self.visit_component_reference(variable)?;
+        self.visit_component_reference_ctx(variable, ComponentReferenceContext::ReinitTarget)?;
         self.visit_expression(value)
     }
 
@@ -374,10 +503,10 @@ pub trait Visitor {
         message: &Expression,
         level: Option<&Expression>,
     ) -> ControlFlow<()> {
-        self.visit_expression(condition)?;
-        self.visit_expression(message)?;
+        self.visit_expression_ctx(condition, ExpressionContext::StatementAssertCondition)?;
+        self.visit_expression_ctx(message, ExpressionContext::StatementAssertMessage)?;
         if let Some(lvl) = level {
-            self.visit_expression(lvl)?;
+            self.visit_expression_ctx(lvl, ExpressionContext::StatementAssertLevel)?;
         }
         Continue(())
     }
@@ -402,6 +531,9 @@ pub trait Visitor {
 
     /// Visit a class definition.
     fn visit_class_def(&mut self, class: &ClassDef) -> ControlFlow<()> {
+        if let Some(constrainedby) = &class.constrainedby {
+            self.visit_type_name(constrainedby, TypeNameContext::ClassConstrainedBy)?;
+        }
         for ext in &class.extends {
             self.visit_extend(ext)?;
         }
@@ -424,24 +556,32 @@ pub trait Visitor {
 
     /// Visit an extends clause.
     fn visit_extend(&mut self, ext: &Extend) -> ControlFlow<()> {
+        self.visit_type_name(&ext.base_name, TypeNameContext::ExtendsBase)?;
         for modification in &ext.modifications {
-            self.visit_expression(&modification.expr)?;
+            self.visit_expression_ctx(&modification.expr, ExpressionContext::ExtendModification)?;
         }
         Continue(())
     }
 
     /// Visit a component declaration.
     fn visit_component(&mut self, comp: &Component) -> ControlFlow<()> {
+        self.visit_type_name(&comp.type_name, TypeNameContext::ComponentType)?;
+        if let Some(constrainedby) = &comp.constrainedby {
+            self.visit_type_name(constrainedby, TypeNameContext::ComponentConstrainedBy)?;
+        }
         if !matches!(comp.start, Expression::Empty) {
-            self.visit_expression(&comp.start)?;
+            self.visit_expression_ctx(&comp.start, ExpressionContext::ComponentStart)?;
         }
         for (_, mod_expr) in &comp.modifications {
-            self.visit_expression(mod_expr)?;
+            self.visit_expression_ctx(mod_expr, ExpressionContext::ComponentModification)?;
         }
         if let Some(cond) = &comp.condition {
-            self.visit_expression(cond)?;
+            self.visit_expression_ctx(cond, ExpressionContext::ComponentCondition)?;
         }
-        self.visit_each(&comp.annotation, Self::visit_expression)
+        for annotation in &comp.annotation {
+            self.visit_expression_ctx(annotation, ExpressionContext::ComponentAnnotation)?;
+        }
+        Continue(())
     }
 }
 
@@ -727,6 +867,20 @@ mod tests {
         }
     }
 
+    fn make_comp_ref_with_subscript(name: &str, sub: Expression) -> ComponentReference {
+        ComponentReference {
+            local: false,
+            parts: vec![ComponentRefPart {
+                ident: Token {
+                    text: std::sync::Arc::from(name),
+                    ..Default::default()
+                },
+                subs: Some(vec![Subscript::Expression(sub)]),
+            }],
+            def_id: None,
+        }
+    }
+
     #[test]
     fn test_collect_component_refs() {
         let expr = Expression::Binary {
@@ -849,6 +1003,263 @@ mod tests {
         let mut finder = FirstConnect(None);
         let _ = finder.visit_equation(&eq);
         assert_eq!(finder.0, Some("first".into()));
+    }
+
+    #[test]
+    fn test_function_call_context_dispatch() {
+        #[derive(Default)]
+        struct ContextRecorder {
+            function_contexts: Vec<FunctionCallContext>,
+            component_contexts: Vec<ComponentReferenceContext>,
+            statement_output_expression_contexts: usize,
+        }
+
+        impl Visitor for ContextRecorder {
+            fn visit_expr_function_call_ctx(
+                &mut self,
+                comp: &ComponentReference,
+                args: &[Expression],
+                ctx: FunctionCallContext,
+            ) -> ControlFlow<()> {
+                self.function_contexts.push(ctx);
+                self.visit_expr_function_call(comp, args)
+            }
+
+            fn visit_component_reference_ctx(
+                &mut self,
+                cr: &ComponentReference,
+                ctx: ComponentReferenceContext,
+            ) -> ControlFlow<()> {
+                self.component_contexts.push(ctx);
+                self.visit_component_reference(cr)
+            }
+
+            fn visit_expression_ctx(
+                &mut self,
+                expr: &Expression,
+                ctx: ExpressionContext,
+            ) -> ControlFlow<()> {
+                self.statement_output_expression_contexts +=
+                    usize::from(ctx == ExpressionContext::StatementFunctionOutput);
+                self.visit_expression(expr)
+            }
+        }
+
+        let expr_call = Expression::FunctionCall {
+            comp: make_comp_ref("f_expr"),
+            args: vec![make_int(1)],
+        };
+        let equation_call = Equation::FunctionCall {
+            comp: make_comp_ref("f_eq"),
+            args: vec![make_int(2)],
+        };
+        let statement_call = Statement::FunctionCall {
+            comp: make_comp_ref("f_stmt"),
+            args: vec![make_int(3)],
+            outputs: vec![make_var("out")],
+        };
+
+        let mut recorder = ContextRecorder::default();
+        let _ = recorder.visit_expression(&expr_call);
+        let _ = recorder.visit_equation(&equation_call);
+        let _ = recorder.visit_statement(&statement_call);
+
+        assert_eq!(
+            recorder.function_contexts,
+            vec![
+                FunctionCallContext::Expression,
+                FunctionCallContext::Equation,
+                FunctionCallContext::Statement,
+            ]
+        );
+        assert!(
+            recorder
+                .component_contexts
+                .contains(&ComponentReferenceContext::EquationFunctionCallTarget)
+        );
+        assert!(
+            recorder
+                .component_contexts
+                .contains(&ComponentReferenceContext::StatementFunctionCallTarget)
+        );
+        assert_eq!(recorder.statement_output_expression_contexts, 1);
+    }
+
+    #[test]
+    fn test_type_name_context_dispatch() {
+        #[derive(Default)]
+        struct TypeNameRecorder {
+            seen: Vec<(String, TypeNameContext)>,
+        }
+
+        impl Visitor for TypeNameRecorder {
+            fn visit_type_name(&mut self, name: &Name, ctx: TypeNameContext) -> ControlFlow<()> {
+                self.seen.push((name.to_string(), ctx));
+                Continue(())
+            }
+        }
+
+        let mut components = IndexMap::new();
+        components.insert(
+            "comp".to_string(),
+            Component {
+                type_name: Name::from_string("MyComponentType"),
+                constrainedby: Some(Name::from_string("MyComponentConstraint")),
+                ..Default::default()
+            },
+        );
+
+        let class = ClassDef {
+            constrainedby: Some(Name::from_string("MyClassConstraint")),
+            extends: vec![Extend {
+                base_name: Name::from_string("MyBaseClass"),
+                ..Default::default()
+            }],
+            components,
+            ..Default::default()
+        };
+
+        let mut recorder = TypeNameRecorder::default();
+        let _ = recorder.visit_class_def(&class);
+
+        assert!(recorder.seen.contains(&(
+            "MyClassConstraint".to_string(),
+            TypeNameContext::ClassConstrainedBy
+        )));
+        assert!(
+            recorder
+                .seen
+                .contains(&("MyBaseClass".to_string(), TypeNameContext::ExtendsBase))
+        );
+        assert!(recorder.seen.contains(&(
+            "MyComponentType".to_string(),
+            TypeNameContext::ComponentType
+        )));
+        assert!(recorder.seen.contains(&(
+            "MyComponentConstraint".to_string(),
+            TypeNameContext::ComponentConstrainedBy
+        )));
+    }
+
+    #[test]
+    fn test_subscript_context_dispatch() {
+        #[derive(Default)]
+        struct SubscriptRecorder {
+            seen: Vec<SubscriptContext>,
+        }
+
+        impl Visitor for SubscriptRecorder {
+            fn visit_subscript_ctx(
+                &mut self,
+                sub: &Subscript,
+                ctx: SubscriptContext,
+            ) -> ControlFlow<()> {
+                self.seen.push(ctx);
+                self.visit_subscript(sub)
+            }
+        }
+
+        let expr = Expression::ArrayIndex {
+            base: Arc::new(Expression::ComponentReference(
+                make_comp_ref_with_subscript("a", make_int(1)),
+            )),
+            subscripts: vec![Subscript::Expression(make_int(2))],
+        };
+
+        let mut recorder = SubscriptRecorder::default();
+        let _ = recorder.visit_expression(&expr);
+
+        assert!(
+            recorder
+                .seen
+                .contains(&SubscriptContext::ComponentReferencePart)
+        );
+        assert!(recorder.seen.contains(&SubscriptContext::ArrayIndex));
+    }
+
+    fn make_expression_context_dispatch_class() -> ClassDef {
+        let mut component = Component {
+            type_name: Name::from_string("Real"),
+            start: make_int(1),
+            condition: Some(make_var("cond")),
+            ..Default::default()
+        };
+        component.modifications.insert("k".to_string(), make_int(2));
+        component.annotation.push(make_int(3));
+
+        ClassDef {
+            extends: vec![Extend {
+                base_name: Name::from_string("Base"),
+                modifications: vec![crate::ExtendModification {
+                    expr: make_int(4),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            components: {
+                let mut comps = IndexMap::new();
+                comps.insert("x".to_string(), component);
+                comps
+            },
+            equations: vec![Equation::Assert {
+                condition: make_var("eq_cond"),
+                message: make_int(5),
+                level: Some(make_int(6)),
+            }],
+            algorithms: vec![vec![
+                Statement::Assert {
+                    condition: make_var("stmt_cond"),
+                    message: make_int(7),
+                    level: Some(make_int(8)),
+                },
+                Statement::FunctionCall {
+                    comp: make_comp_ref("f"),
+                    args: vec![make_int(9)],
+                    outputs: vec![make_var("y")],
+                },
+            ]],
+            ..Default::default()
+        }
+    }
+
+    fn assert_expression_contexts_seen(seen: &[ExpressionContext]) {
+        assert!(seen.contains(&ExpressionContext::ComponentStart));
+        assert!(seen.contains(&ExpressionContext::ComponentModification));
+        assert!(seen.contains(&ExpressionContext::ComponentCondition));
+        assert!(seen.contains(&ExpressionContext::ComponentAnnotation));
+        assert!(seen.contains(&ExpressionContext::ExtendModification));
+        assert!(seen.contains(&ExpressionContext::EquationAssertCondition));
+        assert!(seen.contains(&ExpressionContext::EquationAssertMessage));
+        assert!(seen.contains(&ExpressionContext::EquationAssertLevel));
+        assert!(seen.contains(&ExpressionContext::StatementAssertCondition));
+        assert!(seen.contains(&ExpressionContext::StatementAssertMessage));
+        assert!(seen.contains(&ExpressionContext::StatementAssertLevel));
+        assert!(seen.contains(&ExpressionContext::StatementFunctionOutput));
+    }
+
+    #[test]
+    fn test_expression_context_dispatch() {
+        #[derive(Default)]
+        struct ExpressionContextRecorder {
+            seen: Vec<ExpressionContext>,
+        }
+
+        impl Visitor for ExpressionContextRecorder {
+            fn visit_expression_ctx(
+                &mut self,
+                expr: &Expression,
+                ctx: ExpressionContext,
+            ) -> ControlFlow<()> {
+                self.seen.push(ctx);
+                self.visit_expression(expr)
+            }
+        }
+
+        let class = make_expression_context_dispatch_class();
+
+        let mut recorder = ExpressionContextRecorder::default();
+        let _ = recorder.visit_class_def(&class);
+        assert_expression_contexts_seen(&recorder.seen);
     }
 
     struct ClassNames(Vec<String>);

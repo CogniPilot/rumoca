@@ -2,6 +2,9 @@
 
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position, Range};
 use rumoca_session::parsing::ast;
+use std::ops::ControlFlow;
+
+use crate::traversal_adapter;
 
 /// Handle inlay hints request.
 ///
@@ -13,49 +16,12 @@ pub fn handle_inlay_hints(
     source: &str,
     range: &Range,
 ) -> Vec<InlayHint> {
-    let mut hints = Vec::new();
-    for class in ast.classes.values() {
-        collect_class_hints(class, source, range, &mut hints);
-    }
-    hints
-}
-
-fn collect_class_hints(
-    class: &ast::ClassDef,
-    source: &str,
-    range: &Range,
-    hints: &mut Vec<InlayHint>,
-) {
-    for comp in class.components.values() {
-        if let Some(hint) = component_dimension_hint(comp, range) {
-            hints.push(hint);
-        }
-    }
-
-    for eq in &class.equations {
-        collect_equation_hints(eq, range, hints);
-    }
-    for eq in &class.initial_equations {
-        collect_equation_hints(eq, range, hints);
-    }
-    for section in &class.algorithms {
-        for stmt in section {
-            collect_statement_hints(stmt, range, hints);
-        }
-    }
-    for section in &class.initial_algorithms {
-        for stmt in section {
-            collect_statement_hints(stmt, range, hints);
-        }
-    }
-
-    // Also scan raw source line for direct builtin calls not represented in AST sections.
+    let mut collector = InlayHintCollector::new(range);
+    // Also scan raw source lines for direct builtin calls not represented in AST sections.
     // This keeps hints useful even for partially parsed files during editing.
-    collect_loose_builtin_call_hints(source, range, hints);
-
-    for nested in class.classes.values() {
-        collect_class_hints(nested, source, range, hints);
-    }
+    collect_loose_builtin_call_hints(source, range, &mut collector.hints);
+    let _ = traversal_adapter::walk_stored_definition(&mut collector, ast);
+    collector.hints
 }
 
 fn component_dimension_hint(comp: &ast::Component, range: &Range) -> Option<InlayHint> {
@@ -99,222 +65,44 @@ fn component_dimension_hint(comp: &ast::Component, range: &Range) -> Option<Inla
     })
 }
 
-fn collect_equation_hints(eq: &ast::Equation, range: &Range, hints: &mut Vec<InlayHint>) {
-    match eq {
-        ast::Equation::Simple { lhs, rhs } => {
-            collect_expression_hints(lhs, range, hints);
-            collect_expression_hints(rhs, range, hints);
+struct InlayHintCollector<'a> {
+    range: &'a Range,
+    hints: Vec<InlayHint>,
+}
+
+impl<'a> InlayHintCollector<'a> {
+    fn new(range: &'a Range) -> Self {
+        Self {
+            range,
+            hints: Vec::new(),
         }
-        ast::Equation::Connect { .. } => {}
-        ast::Equation::For {
-            indices: _,
-            equations,
-        } => {
-            for inner in equations {
-                collect_equation_hints(inner, range, hints);
-            }
-        }
-        ast::Equation::When(blocks) => {
-            for block in blocks {
-                collect_expression_hints(&block.cond, range, hints);
-                for inner in &block.eqs {
-                    collect_equation_hints(inner, range, hints);
-                }
-            }
-        }
-        ast::Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_expression_hints(&block.cond, range, hints);
-                for inner in &block.eqs {
-                    collect_equation_hints(inner, range, hints);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for inner in else_eqs {
-                    collect_equation_hints(inner, range, hints);
-                }
-            }
-        }
-        ast::Equation::FunctionCall { comp, args } => {
-            collect_function_call_hints(comp, args, range, hints);
-            for arg in args {
-                collect_expression_hints(arg, range, hints);
-            }
-        }
-        ast::Equation::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            collect_expression_hints(condition, range, hints);
-            collect_expression_hints(message, range, hints);
-            if let Some(level) = level {
-                collect_expression_hints(level, range, hints);
-            }
-        }
-        ast::Equation::Empty => {}
     }
 }
 
-fn collect_statement_hints(stmt: &ast::Statement, range: &Range, hints: &mut Vec<InlayHint>) {
-    match stmt {
-        ast::Statement::Assignment { comp: _, value } => {
-            collect_expression_hints(value, range, hints);
-        }
-        ast::Statement::For {
-            indices: _,
-            equations,
-        } => {
-            for inner in equations {
-                collect_statement_hints(inner, range, hints);
-            }
-        }
-        ast::Statement::While(block) => {
-            collect_expression_hints(&block.cond, range, hints);
-            for inner in &block.stmts {
-                collect_statement_hints(inner, range, hints);
-            }
-        }
-        ast::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_expression_hints(&block.cond, range, hints);
-                for inner in &block.stmts {
-                    collect_statement_hints(inner, range, hints);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for inner in else_stmts {
-                    collect_statement_hints(inner, range, hints);
-                }
-            }
-        }
-        ast::Statement::When(blocks) => {
-            for block in blocks {
-                collect_expression_hints(&block.cond, range, hints);
-                for inner in &block.stmts {
-                    collect_statement_hints(inner, range, hints);
-                }
-            }
-        }
-        ast::Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-        } => {
-            collect_function_call_hints(comp, args, range, hints);
-            for arg in args {
-                collect_expression_hints(arg, range, hints);
-            }
-            for out in outputs {
-                collect_expression_hints(out, range, hints);
-            }
-        }
-        ast::Statement::Reinit { variable: _, value } => {
-            collect_expression_hints(value, range, hints);
-        }
-        ast::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            collect_expression_hints(condition, range, hints);
-            collect_expression_hints(message, range, hints);
-            if let Some(level) = level {
-                collect_expression_hints(level, range, hints);
-            }
-        }
-        ast::Statement::Return { .. } | ast::Statement::Break { .. } | ast::Statement::Empty => {}
+impl ast::visitor::Visitor for InlayHintCollector<'_> {
+    fn visit_class_def(&mut self, class: &ast::ClassDef) -> ControlFlow<()> {
+        traversal_adapter::walk_class_sections(self, class, false)
     }
-}
 
-fn collect_expression_hints(expr: &ast::Expression, range: &Range, hints: &mut Vec<InlayHint>) {
-    match expr {
-        ast::Expression::Unary { rhs, .. } => collect_expression_hints(rhs, range, hints),
-        ast::Expression::Binary { lhs, rhs, .. } => {
-            collect_expression_hints(lhs, range, hints);
-            collect_expression_hints(rhs, range, hints);
+    fn visit_component(&mut self, component: &ast::Component) -> ControlFlow<()> {
+        if let Some(hint) = component_dimension_hint(component, self.range) {
+            self.hints.push(hint);
         }
-        ast::Expression::FunctionCall { comp, args } => {
-            collect_function_call_hints(comp, args, range, hints);
-            for arg in args {
-                collect_expression_hints(arg, range, hints);
-            }
-        }
-        ast::Expression::ClassModification {
-            target: _,
-            modifications,
-        } => {
-            for m in modifications {
-                collect_expression_hints(m, range, hints);
-            }
-        }
-        ast::Expression::NamedArgument { value, .. } => {
-            collect_expression_hints(value, range, hints)
-        }
-        ast::Expression::Modification { value, .. } => {
-            collect_expression_hints(value, range, hints)
-        }
-        ast::Expression::Array { elements, .. } => {
-            for el in elements {
-                collect_expression_hints(el, range, hints);
-            }
-        }
-        ast::Expression::Tuple { elements } => {
-            for el in elements {
-                collect_expression_hints(el, range, hints);
-            }
-        }
-        ast::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, value) in branches {
-                collect_expression_hints(cond, range, hints);
-                collect_expression_hints(value, range, hints);
-            }
-            collect_expression_hints(else_branch, range, hints);
-        }
-        ast::Expression::Parenthesized { inner } => collect_expression_hints(inner, range, hints),
-        ast::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_expression_hints(expr, range, hints);
-            for idx in indices {
-                collect_expression_hints(&idx.range, range, hints);
-            }
-            if let Some(filter) = filter {
-                collect_expression_hints(filter, range, hints);
-            }
-        }
-        ast::Expression::ArrayIndex { base, subscripts } => {
-            collect_expression_hints(base, range, hints);
-            for s in subscripts {
-                if let ast::Subscript::Expression(e) = s {
-                    collect_expression_hints(e, range, hints);
-                }
-            }
-        }
-        ast::Expression::FieldAccess { base, field: _ } => {
-            collect_expression_hints(base, range, hints);
-        }
-        ast::Expression::Range { start, step, end } => {
-            collect_expression_hints(start, range, hints);
-            if let Some(step) = step {
-                collect_expression_hints(step, range, hints);
-            }
-            collect_expression_hints(end, range, hints);
-        }
-        ast::Expression::Terminal { .. }
-        | ast::Expression::ComponentReference(_)
-        | ast::Expression::Empty => {}
+        traversal_adapter::walk_component_fields(self, component)
+    }
+
+    fn visit_expr_function_call_ctx(
+        &mut self,
+        comp: &ast::ComponentReference,
+        args: &[ast::Expression],
+        _ctx: ast::visitor::FunctionCallContext,
+    ) -> ControlFlow<()> {
+        collect_function_call_hints(comp, args, self.range, &mut self.hints);
+        self.visit_each(args, Self::visit_expression)
+    }
+
+    fn visit_expression(&mut self, expression: &ast::Expression) -> ControlFlow<()> {
+        traversal_adapter::walk_expression_default(self, expression)
     }
 }
 
