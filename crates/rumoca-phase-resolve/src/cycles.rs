@@ -4,7 +4,7 @@
 //! to find cycles that weren't caught during resolution (e.g., A extends B, B extends A).
 
 use crate::Resolver;
-use rumoca_core::{DefId, Diagnostic, Label};
+use rumoca_core::{DefId, Diagnostic, PrimaryLabel};
 use rumoca_ir_ast as ast;
 use std::collections::{HashMap, HashSet};
 
@@ -107,15 +107,15 @@ impl Resolver {
             .unwrap_or_else(|| "unknown".to_string());
 
         let span = crate::location_to_span(location, &self.source_map);
-        self.diagnostics.emit(
-            Diagnostic::error(format!(
+        self.diagnostics.emit(Diagnostic::error(
+            "ER004",
+            format!(
                 "circular inheritance: `{}` extends `{}` creating cycle: {}",
                 class_name,
                 base_name,
                 cycle_path.join(" -> ")
-            ))
-            .with_code("ER004")
-            .with_label(Label::primary(span).with_message("extends clause creates cycle")),
-        );
+            ),
+            PrimaryLabel::new(span).with_message("extends clause creates cycle"),
+        ));
     }
 }

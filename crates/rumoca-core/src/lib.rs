@@ -409,6 +409,11 @@ impl SourceMap {
             self.name_to_id.insert(name.clone(), SourceId(i as u32));
         }
     }
+
+    /// Snapshot file-name to source-id mappings.
+    pub fn source_ids(&self) -> HashMap<String, SourceId> {
+        self.name_to_id.clone()
+    }
 }
 
 /// Severity level for diagnostics.
@@ -453,6 +458,39 @@ impl Label {
     }
 }
 
+/// A required primary label for source-backed diagnostics.
+#[derive(Debug, Clone)]
+pub struct PrimaryLabel {
+    span: Span,
+    message: Option<String>,
+}
+
+impl PrimaryLabel {
+    /// Create a new primary label from a source span.
+    pub fn new(span: Span) -> Self {
+        Self {
+            span,
+            message: None,
+        }
+    }
+
+    /// Attach a human-readable message to the label.
+    pub fn with_message(mut self, msg: impl Into<String>) -> Self {
+        self.message = Some(msg.into());
+        self
+    }
+}
+
+impl From<PrimaryLabel> for Label {
+    fn from(value: PrimaryLabel) -> Self {
+        Self {
+            span: value.span,
+            message: value.message,
+            primary: true,
+        }
+    }
+}
+
 /// A diagnostic message (error, warning, or note).
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
@@ -465,31 +503,66 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     /// Create an error diagnostic.
-    pub fn error(message: impl Into<String>) -> Self {
+    pub fn error(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        primary_label: PrimaryLabel,
+    ) -> Self {
         Self {
             severity: DiagnosticSeverity::Error,
-            code: None,
+            code: Some(code.into()),
             message: message.into(),
-            labels: Vec::new(),
+            labels: vec![primary_label.into()],
             notes: Vec::new(),
         }
     }
 
     /// Create a warning diagnostic.
-    pub fn warning(message: impl Into<String>) -> Self {
+    pub fn warning(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        primary_label: PrimaryLabel,
+    ) -> Self {
         Self {
             severity: DiagnosticSeverity::Warning,
-            code: None,
+            code: Some(code.into()),
+            message: message.into(),
+            labels: vec![primary_label.into()],
+            notes: Vec::new(),
+        }
+    }
+
+    /// Create a global (non-source) error diagnostic.
+    pub fn global_error(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: DiagnosticSeverity::Error,
+            code: Some(code.into()),
             message: message.into(),
             labels: Vec::new(),
             notes: Vec::new(),
         }
     }
 
-    /// Set the error code.
-    pub fn with_code(mut self, code: impl Into<String>) -> Self {
-        self.code = Some(code.into());
-        self
+    /// Create a global (non-source) warning diagnostic.
+    pub fn global_warning(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: DiagnosticSeverity::Warning,
+            code: Some(code.into()),
+            message: message.into(),
+            labels: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// Create an informational diagnostic.
+    pub fn note(message: impl Into<String>) -> Self {
+        Self {
+            severity: DiagnosticSeverity::Note,
+            code: None,
+            message: message.into(),
+            labels: Vec::new(),
+            notes: Vec::new(),
+        }
     }
 
     /// Add a label.
