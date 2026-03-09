@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 use tower_lsp::LspService;
 
 fn run_async_test<F>(future: F)
@@ -216,4 +217,29 @@ fn reserve_library_load_blocks_duplicate_inflight_work() {
             "path should become reservable after matching-owner cancel"
         );
     });
+}
+
+#[test]
+fn session_document_uri_key_uses_decoded_file_path() {
+    let path = std::env::temp_dir()
+        .join("Modelica Standard Library")
+        .join("Blocks")
+        .join("Continuous.mo");
+    let uri = Url::from_file_path(&path).expect("file uri");
+    let key = session_document_uri_key(&uri);
+    assert_eq!(PathBuf::from(&key), path);
+    assert!(
+        !key.contains("%20"),
+        "session key should be filesystem path, not URL-encoded: {key}"
+    );
+}
+
+#[test]
+fn project_config_uri_detection_handles_file_paths_with_spaces() {
+    let path = std::env::temp_dir()
+        .join("workspace with spaces")
+        .join(".rumoca")
+        .join("project.toml");
+    let uri = Url::from_file_path(path).expect("file uri");
+    assert!(is_project_config_uri(&uri));
 }
