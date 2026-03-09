@@ -39,7 +39,7 @@ pub struct ModelicaLanguageServer {
     initial_library_paths: Arc<RwLock<Vec<String>>>,
     library_paths: Arc<RwLock<Vec<String>>>,
     loaded_libraries: Arc<RwLock<HashSet<String>>>,
-    loading_libraries: Arc<RwLock<HashSet<String>>>,
+    loading_libraries: Arc<RwLock<HashMap<String, u64>>>,
     library_state_epoch: Arc<AtomicU64>,
     indexing_notified_libraries: Arc<RwLock<HashSet<String>>>,
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
@@ -76,7 +76,7 @@ impl ModelicaLanguageServer {
             initial_library_paths: Arc::new(RwLock::new(Vec::new())),
             library_paths: Arc::new(RwLock::new(Vec::new())),
             loaded_libraries: Arc::new(RwLock::new(HashSet::new())),
-            loading_libraries: Arc::new(RwLock::new(HashSet::new())),
+            loading_libraries: Arc::new(RwLock::new(HashMap::new())),
             library_state_epoch: Arc::new(AtomicU64::new(0)),
             indexing_notified_libraries: Arc::new(RwLock::new(HashSet::new())),
             workspace_root: Arc::new(RwLock::new(None)),
@@ -160,12 +160,15 @@ impl ModelicaLanguageServer {
         {
             return false;
         }
-        loading.insert(path_key.to_string());
+        loading.insert(path_key.to_string(), expected_epoch);
         true
     }
 
-    async fn cancel_library_load(&self, path_key: &str) {
-        self.loading_libraries.write().await.remove(path_key);
+    async fn cancel_library_load(&self, path_key: &str, reservation_epoch: u64) {
+        let mut loading = self.loading_libraries.write().await;
+        if should_clear_library_load(&loading, path_key, reservation_epoch) {
+            loading.remove(path_key);
+        }
     }
 
     async fn apply_parsed_library_if_current(
@@ -181,7 +184,9 @@ impl ModelicaLanguageServer {
         let mut loading = self.loading_libraries.write().await;
         let current_epoch = self.current_library_state_epoch();
         if !should_apply_library_load(&loaded, path_key, expected_epoch, current_epoch) {
-            loading.remove(path_key);
+            if should_clear_library_load(&loading, path_key, expected_epoch) {
+                loading.remove(path_key);
+            }
             return None;
         }
         let inserted = session.replace_parsed_source_set(
@@ -190,7 +195,9 @@ impl ModelicaLanguageServer {
             Some(current_document_path),
         );
         loaded.insert(path_key.to_string());
-        loading.remove(path_key);
+        if should_clear_library_load(&loading, path_key, expected_epoch) {
+            loading.remove(path_key);
+        }
         Some(inserted)
     }
 
@@ -209,7 +216,7 @@ impl ModelicaLanguageServer {
         let parsed = match parse_library_with_cache(Path::new(lib_path)) {
             Ok(parsed) => parsed,
             Err(err) => {
-                self.cancel_library_load(path_key).await;
+                self.cancel_library_load(path_key, expected_epoch).await;
                 return Err(format!("Failed to load library '{}': {}", lib_path, err));
             }
         };
@@ -890,12 +897,12 @@ impl ModelicaLanguageServer {
 
 fn should_reserve_library_load(
     loaded: &HashSet<String>,
-    loading: &HashSet<String>,
+    loading: &HashMap<String, u64>,
     path_key: &str,
     expected_epoch: u64,
     current_epoch: u64,
 ) -> bool {
-    expected_epoch == current_epoch && !loaded.contains(path_key) && !loading.contains(path_key)
+    expected_epoch == current_epoch && !loaded.contains(path_key) && !loading.contains_key(path_key)
 }
 
 fn should_apply_library_load(
@@ -905,6 +912,16 @@ fn should_apply_library_load(
     current_epoch: u64,
 ) -> bool {
     expected_epoch == current_epoch && !loaded.contains(path_key)
+}
+
+fn should_clear_library_load(
+    loading: &HashMap<String, u64>,
+    path_key: &str,
+    reservation_epoch: u64,
+) -> bool {
+    loading
+        .get(path_key)
+        .is_some_and(|owner_epoch| *owner_epoch == reservation_epoch)
 }
 
 fn extract_import_completion_prefix(source: &str, position: Position) -> Option<String> {
