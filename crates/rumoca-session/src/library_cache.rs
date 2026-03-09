@@ -252,18 +252,34 @@ fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<String
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+fn workspace_root_dir() -> PathBuf {
+    let session_crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    session_crate_dir
+        .parent()
+        .and_then(|parent| parent.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or(session_crate_dir)
+}
+
+fn absolutize_cache_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    workspace_root_dir().join(path)
+}
+
 pub fn resolve_library_cache_dir() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("RUMOCA_LIBRARY_CACHE_DIR") {
         let path = PathBuf::from(path);
         if path.as_os_str().is_empty() {
             return None;
         }
-        return Some(path);
+        return Some(absolutize_cache_path(path));
     }
     let target_root = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target"));
-    Some(target_root.join("rumoca-library-cache"))
+        .unwrap_or_else(|| workspace_root_dir().join("target"));
+    Some(absolutize_cache_path(target_root).join("rumoca-library-cache"))
 }
 
 fn cache_file_path(cache_dir: &Path, cache_key: &str) -> PathBuf {
@@ -399,5 +415,15 @@ mod tests {
         let second = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("second parse");
         assert_eq!(second.cache_status, LibraryCacheStatus::Hit);
         assert_eq!(second.file_count, 1);
+    }
+
+    #[test]
+    fn resolve_library_cache_dir_is_absolute_and_stable() {
+        let path = resolve_library_cache_dir().expect("cache dir should resolve by default");
+        assert!(path.is_absolute(), "cache dir must be absolute: {path:?}");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("rumoca-library-cache")
+        );
     }
 }

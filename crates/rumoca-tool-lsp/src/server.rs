@@ -8,8 +8,7 @@ use rumoca_session::compile::{
     FailedPhase, PhaseResult, Session, SessionConfig, compile_phase_timing_stats,
 };
 use rumoca_session::libraries::{
-    LibraryCacheStatus, infer_library_roots, parse_library_with_cache,
-    should_load_library_for_source,
+    LibraryCacheStatus, infer_library_roots, should_load_library_for_source,
 };
 use rumoca_session::parsing::{ast, collect_model_names, merge_stored_definitions};
 use rumoca_session::project::{
@@ -582,9 +581,12 @@ impl ModelicaLanguageServer {
             }
         }
 
-        let mut parsed_libraries = Vec::new();
         let mut progress_messages = Vec::new();
         let mut load_errors = Vec::new();
+        let mut cache_miss_notices = Vec::new();
+
+        let mut session = self.session.write().await;
+        let mut loaded = self.loaded_libraries.write().await;
         for lib_path in library_paths {
             let path_key = canonical_path_key(lib_path);
             if !seen_library_paths.insert(path_key.clone()) {
@@ -608,44 +610,54 @@ impl ModelicaLanguageServer {
                 continue;
             }
             progress_messages.push(format!("[rumoca] Loading library: {lib_path}"));
-            let parsed = match parse_library_with_cache(Path::new(lib_path)) {
-                Ok(parsed) => parsed,
-                Err(err) => {
-                    load_errors.push(format!("Failed to load library '{}': {}", lib_path, err));
-                    continue;
-                }
-            };
-            if matches!(parsed.cache_status, LibraryCacheStatus::Miss) {
-                self.show_library_indexing_notice_once(lib_path).await;
+            let source_set_id = library_source_set_id(lib_path);
+            let report = session.index_library_tolerant(
+                &source_set_id,
+                Path::new(lib_path),
+                Some(current_document_path),
+            );
+            if !report.diagnostics.is_empty() {
+                load_errors.extend(report.diagnostics);
+                continue;
             }
-            let status = match parsed.cache_status {
+            let Some(cache_status) = report.cache_status else {
+                load_errors.push(format!(
+                    "Failed to load library '{}': missing cache status in indexing report",
+                    lib_path
+                ));
+                continue;
+            };
+            if cache_status == LibraryCacheStatus::Miss {
+                cache_miss_notices.push(lib_path.clone());
+            }
+            let status = match cache_status {
                 LibraryCacheStatus::Hit => "cache hit",
                 LibraryCacheStatus::Miss => "cache miss",
                 LibraryCacheStatus::Disabled => "cache disabled",
             };
-            let cache_path = parsed
+            let cache_path = report
                 .cache_file
-                .as_ref()
+                .as_deref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "<none>".to_string());
             progress_messages.push(format!(
-                "[rumoca] Library {} ({}) — {} files [key={}, cache={}]",
-                lib_path, status, parsed.file_count, parsed.cache_key, cache_path
+                "[rumoca] Library {} ({}) — {} files, {} inserted [key={}, cache={}]",
+                lib_path,
+                status,
+                report.indexed_file_count,
+                report.inserted_file_count,
+                report.cache_key.unwrap_or_else(|| "<none>".to_string()),
+                cache_path
             ));
             claim_roots(&mut claimed_roots, inferred_roots, lib_path);
-            parsed_libraries.push((lib_path.clone(), parsed.documents));
-        }
-
-        let mut session = self.session.write().await;
-        let mut loaded = self.loaded_libraries.write().await;
-        for (lib_path, docs) in parsed_libraries {
-            let source_set_id = library_source_set_id(&lib_path);
-            session.replace_parsed_source_set(&source_set_id, docs, Some(current_document_path));
-            loaded.insert(canonical_path_key(&lib_path));
+            loaded.insert(path_key);
         }
         drop(session);
         drop(loaded);
 
+        for lib_path in cache_miss_notices {
+            self.show_library_indexing_notice_once(&lib_path).await;
+        }
         for message in progress_messages {
             self.client.log_message(MessageType::INFO, message).await;
         }
@@ -690,9 +702,12 @@ impl ModelicaLanguageServer {
             }
         }
 
-        let mut parsed_libraries = Vec::new();
         let mut progress_messages = Vec::new();
         let mut load_errors = Vec::new();
+        let mut cache_miss_notices = Vec::new();
+
+        let mut session = self.session.write().await;
+        let mut loaded = self.loaded_libraries.write().await;
 
         for lib_path in &library_paths {
             let path_key = canonical_path_key(lib_path);
@@ -718,48 +733,54 @@ impl ModelicaLanguageServer {
             progress_messages.push(format!(
                 "[rumoca] Loading library for import completion: {lib_path}"
             ));
-            let parsed = match parse_library_with_cache(Path::new(lib_path)) {
-                Ok(parsed) => parsed,
-                Err(err) => {
-                    load_errors.push(format!("Failed to load library '{}': {}", lib_path, err));
-                    continue;
-                }
-            };
-            if matches!(parsed.cache_status, LibraryCacheStatus::Miss) {
-                self.show_library_indexing_notice_once(lib_path).await;
+            let source_set_id = library_source_set_id(lib_path);
+            let report = session.index_library_tolerant(
+                &source_set_id,
+                Path::new(lib_path),
+                Some(current_document_path),
+            );
+            if !report.diagnostics.is_empty() {
+                load_errors.extend(report.diagnostics);
+                continue;
             }
-            let status = match parsed.cache_status {
+            let Some(cache_status) = report.cache_status else {
+                load_errors.push(format!(
+                    "Failed to load library '{}': missing cache status in indexing report",
+                    lib_path
+                ));
+                continue;
+            };
+            if cache_status == LibraryCacheStatus::Miss {
+                cache_miss_notices.push(lib_path.clone());
+            }
+            let status = match cache_status {
                 LibraryCacheStatus::Hit => "cache hit",
                 LibraryCacheStatus::Miss => "cache miss",
                 LibraryCacheStatus::Disabled => "cache disabled",
             };
-            let cache_path = parsed
+            let cache_path = report
                 .cache_file
-                .as_ref()
+                .as_deref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "<none>".to_string());
             progress_messages.push(format!(
-                "[rumoca] Library {} ({}) — {} files [key={}, cache={}]",
-                lib_path, status, parsed.file_count, parsed.cache_key, cache_path
+                "[rumoca] Library {} ({}) — {} files, {} inserted [key={}, cache={}]",
+                lib_path,
+                status,
+                report.indexed_file_count,
+                report.inserted_file_count,
+                report.cache_key.unwrap_or_else(|| "<none>".to_string()),
+                cache_path
             ));
             claim_roots(&mut claimed_roots, inferred_roots, lib_path);
-            parsed_libraries.push((lib_path.clone(), parsed.documents));
-        }
-
-        if parsed_libraries.is_empty() {
-            return;
-        }
-
-        let mut session = self.session.write().await;
-        let mut loaded = self.loaded_libraries.write().await;
-        for (lib_path, docs) in parsed_libraries {
-            let source_set_id = library_source_set_id(&lib_path);
-            session.replace_parsed_source_set(&source_set_id, docs, Some(current_document_path));
-            loaded.insert(canonical_path_key(&lib_path));
+            loaded.insert(path_key);
         }
         drop(session);
         drop(loaded);
 
+        for lib_path in cache_miss_notices {
+            self.show_library_indexing_notice_once(&lib_path).await;
+        }
         for message in progress_messages {
             self.client.log_message(MessageType::INFO, message).await;
         }
