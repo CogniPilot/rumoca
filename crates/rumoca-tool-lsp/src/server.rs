@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rumoca_session::compile::{
     FailedPhase, PhaseResult, Session, SessionConfig, compile_phase_timing_stats,
@@ -38,6 +39,8 @@ pub struct ModelicaLanguageServer {
     initial_library_paths: Arc<RwLock<Vec<String>>>,
     library_paths: Arc<RwLock<Vec<String>>>,
     loaded_libraries: Arc<RwLock<HashSet<String>>>,
+    loading_libraries: Arc<RwLock<HashSet<String>>>,
+    library_state_epoch: Arc<AtomicU64>,
     indexing_notified_libraries: Arc<RwLock<HashSet<String>>>,
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
     project_config: Arc<RwLock<Option<ProjectConfig>>>,
@@ -55,6 +58,15 @@ struct SimulationMetrics {
     todae_seconds: f64,
 }
 
+#[derive(Debug, Clone)]
+struct LibraryLoadOutcome {
+    cache_status: LibraryCacheStatus,
+    indexed_file_count: usize,
+    inserted_file_count: usize,
+    cache_key: String,
+    cache_path: String,
+}
+
 impl ModelicaLanguageServer {
     /// Create a new language server instance.
     pub fn new(client: Client) -> Self {
@@ -64,6 +76,8 @@ impl ModelicaLanguageServer {
             initial_library_paths: Arc::new(RwLock::new(Vec::new())),
             library_paths: Arc::new(RwLock::new(Vec::new())),
             loaded_libraries: Arc::new(RwLock::new(HashSet::new())),
+            loading_libraries: Arc::new(RwLock::new(HashSet::new())),
+            library_state_epoch: Arc::new(AtomicU64::new(0)),
             indexing_notified_libraries: Arc::new(RwLock::new(HashSet::new())),
             workspace_root: Arc::new(RwLock::new(None)),
             project_config: Arc::new(RwLock::new(None)),
@@ -111,6 +125,7 @@ impl ModelicaLanguageServer {
     }
 
     async fn reset_session_and_loaded_libraries(&self) {
+        self.library_state_epoch.fetch_add(1, Ordering::AcqRel);
         let docs = {
             let session = self.session.read().await;
             session
@@ -127,7 +142,106 @@ impl ModelicaLanguageServer {
             rebuilt.update_document(&uri, &content);
         }
         *self.session.write().await = rebuilt;
-        self.loaded_libraries.write().await.clear();
+        let mut loaded = self.loaded_libraries.write().await;
+        let mut loading = self.loading_libraries.write().await;
+        loaded.clear();
+        loading.clear();
+    }
+
+    fn current_library_state_epoch(&self) -> u64 {
+        self.library_state_epoch.load(Ordering::Acquire)
+    }
+
+    async fn reserve_library_load(&self, path_key: &str, expected_epoch: u64) -> bool {
+        let loaded = self.loaded_libraries.write().await;
+        let mut loading = self.loading_libraries.write().await;
+        let current_epoch = self.current_library_state_epoch();
+        if !should_reserve_library_load(&loaded, &loading, path_key, expected_epoch, current_epoch)
+        {
+            return false;
+        }
+        loading.insert(path_key.to_string());
+        true
+    }
+
+    async fn cancel_library_load(&self, path_key: &str) {
+        self.loading_libraries.write().await.remove(path_key);
+    }
+
+    async fn apply_parsed_library_if_current(
+        &self,
+        source_set_id: &str,
+        path_key: &str,
+        current_document_path: &str,
+        documents: Vec<(String, ast::StoredDefinition)>,
+        expected_epoch: u64,
+    ) -> Option<usize> {
+        let mut session = self.session.write().await;
+        let mut loaded = self.loaded_libraries.write().await;
+        let mut loading = self.loading_libraries.write().await;
+        let current_epoch = self.current_library_state_epoch();
+        if !should_apply_library_load(&loaded, path_key, expected_epoch, current_epoch) {
+            loading.remove(path_key);
+            return None;
+        }
+        let inserted = session.replace_parsed_source_set(
+            source_set_id,
+            documents,
+            Some(current_document_path),
+        );
+        loaded.insert(path_key.to_string());
+        loading.remove(path_key);
+        Some(inserted)
+    }
+
+    async fn load_library_source_set_if_current(
+        &self,
+        lib_path: &str,
+        path_key: &str,
+        source_set_id: &str,
+        current_document_path: &str,
+        expected_epoch: u64,
+    ) -> std::result::Result<Option<LibraryLoadOutcome>, String> {
+        if !self.reserve_library_load(path_key, expected_epoch).await {
+            return Ok(None);
+        }
+
+        let parsed = match parse_library_with_cache(Path::new(lib_path)) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                self.cancel_library_load(path_key).await;
+                return Err(format!("Failed to load library '{}': {}", lib_path, err));
+            }
+        };
+
+        let cache_status = parsed.cache_status;
+        let cache_key = parsed.cache_key.clone();
+        let cache_path = parsed
+            .cache_file
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string());
+        let indexed_file_count = parsed.file_count;
+        let Some(inserted_file_count) = self
+            .apply_parsed_library_if_current(
+                source_set_id,
+                path_key,
+                current_document_path,
+                parsed.documents,
+                expected_epoch,
+            )
+            .await
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(LibraryLoadOutcome {
+            cache_status,
+            indexed_file_count,
+            inserted_file_count,
+            cache_key,
+            cache_path,
+        }))
     }
 
     async fn reload_project_config(&self) {
@@ -570,6 +684,7 @@ impl ModelicaLanguageServer {
         current_document_path: &str,
         library_paths: &[String],
     ) {
+        let library_state_epoch = self.current_library_state_epoch();
         let already_loaded = self.loaded_libraries.read().await.clone();
         let mut seen_library_paths = HashSet::new();
         let mut claimed_roots = HashMap::new();
@@ -610,43 +725,39 @@ impl ModelicaLanguageServer {
             }
             progress_messages.push(format!("[rumoca] Loading library: {lib_path}"));
             let source_set_id = library_source_set_id(lib_path);
-            let parsed = match parse_library_with_cache(Path::new(lib_path)) {
-                Ok(parsed) => parsed,
+            let loaded = match self
+                .load_library_source_set_if_current(
+                    lib_path,
+                    &path_key,
+                    &source_set_id,
+                    current_document_path,
+                    library_state_epoch,
+                )
+                .await
+            {
+                Ok(Some(loaded)) => loaded,
+                Ok(None) => continue,
                 Err(err) => {
-                    load_errors.push(format!("Failed to load library '{}': {}", lib_path, err));
+                    load_errors.push(err);
                     continue;
                 }
             };
-            let cache_status = parsed.cache_status;
-            if cache_status == LibraryCacheStatus::Miss {
-                cache_miss_notices.push(lib_path.clone());
-            }
-            let status = match cache_status {
+            let status = match loaded.cache_status {
                 LibraryCacheStatus::Hit => "cache hit",
                 LibraryCacheStatus::Miss => "cache miss",
                 LibraryCacheStatus::Disabled => "cache disabled",
             };
-            let cache_key = parsed.cache_key.clone();
-            let cache_path = parsed
-                .cache_file
-                .as_deref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string());
-            let indexed_file_count = parsed.file_count;
-            let inserted_file_count = {
-                let mut session = self.session.write().await;
-                let mut loaded = self.loaded_libraries.write().await;
-                let inserted = session.replace_parsed_source_set(
-                    &source_set_id,
-                    parsed.documents,
-                    Some(current_document_path),
-                );
-                loaded.insert(path_key);
-                inserted
-            };
+            if loaded.cache_status == LibraryCacheStatus::Miss {
+                cache_miss_notices.push(lib_path.clone());
+            }
             progress_messages.push(format!(
                 "[rumoca] Library {} ({}) — {} files, {} inserted [key={}, cache={}]",
-                lib_path, status, indexed_file_count, inserted_file_count, cache_key, cache_path
+                lib_path,
+                status,
+                loaded.indexed_file_count,
+                loaded.inserted_file_count,
+                loaded.cache_key,
+                loaded.cache_path
             ));
             claim_roots(&mut claimed_roots, inferred_roots, lib_path);
         }
@@ -685,6 +796,7 @@ impl ModelicaLanguageServer {
             return;
         };
 
+        let library_state_epoch = self.current_library_state_epoch();
         let library_paths = self.library_paths.read().await.clone();
         let already_loaded = self.loaded_libraries.read().await.clone();
         let mut seen_library_paths = HashSet::new();
@@ -727,43 +839,39 @@ impl ModelicaLanguageServer {
                 "[rumoca] Loading library for import completion: {lib_path}"
             ));
             let source_set_id = library_source_set_id(lib_path);
-            let parsed = match parse_library_with_cache(Path::new(lib_path)) {
-                Ok(parsed) => parsed,
+            let loaded = match self
+                .load_library_source_set_if_current(
+                    lib_path,
+                    &path_key,
+                    &source_set_id,
+                    current_document_path,
+                    library_state_epoch,
+                )
+                .await
+            {
+                Ok(Some(loaded)) => loaded,
+                Ok(None) => continue,
                 Err(err) => {
-                    load_errors.push(format!("Failed to load library '{}': {}", lib_path, err));
+                    load_errors.push(err);
                     continue;
                 }
             };
-            let cache_status = parsed.cache_status;
-            if cache_status == LibraryCacheStatus::Miss {
-                cache_miss_notices.push(lib_path.clone());
-            }
-            let status = match cache_status {
+            let status = match loaded.cache_status {
                 LibraryCacheStatus::Hit => "cache hit",
                 LibraryCacheStatus::Miss => "cache miss",
                 LibraryCacheStatus::Disabled => "cache disabled",
             };
-            let cache_key = parsed.cache_key.clone();
-            let cache_path = parsed
-                .cache_file
-                .as_deref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string());
-            let indexed_file_count = parsed.file_count;
-            let inserted_file_count = {
-                let mut session = self.session.write().await;
-                let mut loaded = self.loaded_libraries.write().await;
-                let inserted = session.replace_parsed_source_set(
-                    &source_set_id,
-                    parsed.documents,
-                    Some(current_document_path),
-                );
-                loaded.insert(path_key);
-                inserted
-            };
+            if loaded.cache_status == LibraryCacheStatus::Miss {
+                cache_miss_notices.push(lib_path.clone());
+            }
             progress_messages.push(format!(
                 "[rumoca] Library {} ({}) — {} files, {} inserted [key={}, cache={}]",
-                lib_path, status, indexed_file_count, inserted_file_count, cache_key, cache_path
+                lib_path,
+                status,
+                loaded.indexed_file_count,
+                loaded.inserted_file_count,
+                loaded.cache_key,
+                loaded.cache_path
             ));
             claim_roots(&mut claimed_roots, inferred_roots, lib_path);
         }
@@ -778,6 +886,25 @@ impl ModelicaLanguageServer {
             self.client.log_message(MessageType::WARNING, err).await;
         }
     }
+}
+
+fn should_reserve_library_load(
+    loaded: &HashSet<String>,
+    loading: &HashSet<String>,
+    path_key: &str,
+    expected_epoch: u64,
+    current_epoch: u64,
+) -> bool {
+    expected_epoch == current_epoch && !loaded.contains(path_key) && !loading.contains(path_key)
+}
+
+fn should_apply_library_load(
+    loaded: &HashSet<String>,
+    path_key: &str,
+    expected_epoch: u64,
+    current_epoch: u64,
+) -> bool {
+    expected_epoch == current_epoch && !loaded.contains(path_key)
 }
 
 fn extract_import_completion_prefix(source: &str, position: Position) -> Option<String> {
@@ -1762,69 +1889,4 @@ pub async fn run_server() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn import_prefix_detection_handles_partial_qualified_name() {
-        let source = "model M\n  import Mo\nend M;\n";
-        let pos = Position {
-            line: 1,
-            character: "  import Mo".len() as u32,
-        };
-        assert_eq!(
-            extract_import_completion_prefix(source, pos),
-            Some("Mo".to_string())
-        );
-
-        let source = "model M\n  import Modelica.Blocks.Co\nend M;\n";
-        let pos = Position {
-            line: 1,
-            character: "  import Modelica.Blocks.Co".len() as u32,
-        };
-        assert_eq!(
-            extract_import_completion_prefix(source, pos),
-            Some("Modelica.Blocks.Co".to_string())
-        );
-    }
-
-    #[test]
-    fn import_prefix_detection_ignores_non_import_lines() {
-        let source = "model M\n  Real x;\nend M;\n";
-        let pos = Position {
-            line: 1,
-            character: "  Real x".len() as u32,
-        };
-        assert_eq!(extract_import_completion_prefix(source, pos), None);
-    }
-
-    #[test]
-    fn completion_context_requires_resolved_session_for_import_root_prefix() {
-        let source = "model M\n  import Mo\nend M;\n";
-        let pos = Position {
-            line: 1,
-            character: "  import Mo".len() as u32,
-        };
-        let import_prefix = extract_import_completion_prefix(source, pos);
-        assert!(completion_context_needs_resolved_session(
-            source,
-            pos,
-            import_prefix.as_deref()
-        ));
-    }
-
-    #[test]
-    fn completion_context_does_not_require_resolved_session_for_plain_identifier() {
-        let source = "model M\n  Re\nend M;\n";
-        let pos = Position {
-            line: 1,
-            character: "  Re".len() as u32,
-        };
-        let import_prefix = extract_import_completion_prefix(source, pos);
-        assert!(!completion_context_needs_resolved_session(
-            source,
-            pos,
-            import_prefix.as_deref()
-        ));
-    }
-}
+mod tests;
