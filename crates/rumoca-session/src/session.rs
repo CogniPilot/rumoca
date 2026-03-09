@@ -33,6 +33,10 @@ use crate::merge::{
 
 mod dependency_fingerprint;
 use dependency_fingerprint::{CompileCacheEntry, DependencyFingerprintCache, Fingerprint};
+mod model_diagnostics;
+use model_diagnostics::{
+    global_resolution_failure_diagnostics, model_diagnostics_for_tree, synthesized_inner_warning,
+};
 mod reachability;
 use reachability::ReachabilityPlanner;
 
@@ -217,6 +221,7 @@ pub struct CompilationResult {
 pub struct ModelDiagnostics {
     pub diagnostics: Vec<CommonDiagnostic>,
     pub source_map: Option<SourceMap>,
+    pub global_resolution_failure: bool,
 }
 
 /// Failure diagnostic for a single model in a strict-reachable-with-recovery pass.
@@ -912,10 +917,11 @@ impl Session {
             .values()
             .filter_map(|doc| doc.parsed.clone().map(|p| (doc.uri.clone(), p)))
             .collect();
+        let session_source_map = self.session_source_map();
         let multi_document_session = definitions.len() > 1;
         let merged = merge_stored_definitions(definitions).map_err(|e| {
             let mut diags = CommonDiagnostics::new();
-            diags.emit(merge_error_to_common(&e));
+            diags.emit(merge_error_to_common(&e, &session_source_map));
             diags
         })?;
         let mut tree = ast::ClassTree::from_parsed(merged);
@@ -1123,16 +1129,12 @@ impl Session {
                     error: diag.message.clone(),
                     primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
                 }));
-                let mut source_map = SourceMap::new();
-                for doc in self.documents.values() {
-                    source_map.add(&doc.uri, &doc.content);
-                }
                 return StrictCompileReport {
                     requested_model: model_name.to_string(),
                     requested_result: None,
                     summary: CompilationSummary::default(),
                     failures,
-                    source_map: Some(source_map),
+                    source_map: Some(self.session_source_map()),
                 };
             }
         };
@@ -1198,12 +1200,10 @@ impl Session {
             Ok(tree) => tree,
             Err(diags) => {
                 collected.extend(diags.iter().cloned());
-                return ModelDiagnostics {
-                    diagnostics: collected,
-                    source_map: None,
-                };
+                return global_resolution_failure_diagnostics(self.session_source_map(), collected);
             }
         };
+
         let tree = &resolved.0;
         let class_type = tree
             .get_class_by_qualified_name(model_name)
@@ -1225,39 +1225,21 @@ impl Session {
                     diag = diag.with_label(missing_inner_label(idx, *span));
                 }
                 collected.push(diag);
-                return ModelDiagnostics {
-                    diagnostics: collected,
-                    source_map: Some(tree.source_map.clone()),
-                };
+                return model_diagnostics_for_tree(tree, collected);
             }
             InstantiationOutcome::Error(e) => {
                 collected.push(miette_error_to_common(&*e));
-                return ModelDiagnostics {
-                    diagnostics: collected,
-                    source_map: Some(tree.source_map.clone()),
-                };
+                return model_diagnostics_for_tree(tree, collected);
             }
         };
 
-        if overlay.used_synthesized_inners() {
-            collected.push(
-                CommonDiagnostic::warning(format!(
-                    "outer without matching inner detected ({}); synthesizing root-level inner declaration(s)",
-                    overlay.synthesized_inners.join(", ")
-                ))
-                .with_code("EI013")
-                .with_note(
-                    "MLS §5.4 permits default inner synthesis when no matching inner is present.",
-                ),
-            );
+        if let Some(diag) = synthesized_inner_warning(&overlay.synthesized_inners) {
+            collected.push(diag);
         }
 
         if let Err(diags) = typecheck_instanced(tree, &mut overlay, model_name) {
             collected.extend(diags.iter().cloned());
-            return ModelDiagnostics {
-                diagnostics: collected,
-                source_map: Some(tree.source_map.clone()),
-            };
+            return model_diagnostics_for_tree(tree, collected);
         }
 
         // LSP diagnostics should validate all class kinds (including functions),
@@ -1266,10 +1248,7 @@ impl Session {
             .as_ref()
             .is_some_and(|ct| !is_simulatable_class_type(ct))
         {
-            return ModelDiagnostics {
-                diagnostics: collected,
-                source_map: Some(tree.source_map.clone()),
-            };
+            return model_diagnostics_for_tree(tree, collected);
         }
 
         let flat = match flatten_ref_with_options(
@@ -1281,10 +1260,7 @@ impl Session {
             Ok(f) => f,
             Err(e) => {
                 collected.push(miette_error_to_common(&e));
-                return ModelDiagnostics {
-                    diagnostics: collected,
-                    source_map: Some(tree.source_map.clone()),
-                };
+                return model_diagnostics_for_tree(tree, collected);
             }
         };
 
@@ -1292,10 +1268,15 @@ impl Session {
             collected.push(miette_error_to_common(&e));
         }
 
-        ModelDiagnostics {
-            diagnostics: collected,
-            source_map: Some(tree.source_map.clone()),
+        model_diagnostics_for_tree(tree, collected)
+    }
+
+    fn session_source_map(&self) -> SourceMap {
+        let mut source_map = SourceMap::new();
+        for doc in self.documents.values() {
+            source_map.add(&doc.uri, &doc.content);
         }
+        source_map
     }
 
     fn model_dependency_fingerprint(
@@ -1414,10 +1395,27 @@ fn miette_error_to_common(err: &dyn miette::Diagnostic) -> CommonDiagnostic {
     diag
 }
 
-fn merge_error_to_common(err: &anyhow::Error) -> CommonDiagnostic {
+fn merge_error_to_common(err: &anyhow::Error, source_map: &SourceMap) -> CommonDiagnostic {
     let mut diag = CommonDiagnostic::error(err.to_string());
     if let Some(merge_error) = err.downcast_ref::<MergeSemanticError>() {
-        diag = diag.with_label(Label::primary(merge_error.span).with_message("error here"));
+        for merge_label in &merge_error.labels {
+            let source_id = source_map
+                .get_id(&merge_label.file_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "merge diagnostic file missing from source map: file='{}' message='{}'",
+                        merge_label.file_name, merge_error.message
+                    )
+                });
+            let span = Span::from_offsets(source_id, merge_label.start, merge_label.end);
+            let label = if merge_label.primary {
+                Label::primary(span)
+            } else {
+                Label::secondary(span)
+            }
+            .with_message(merge_label.message);
+            diag = diag.with_label(label);
+        }
     }
     diag
 }

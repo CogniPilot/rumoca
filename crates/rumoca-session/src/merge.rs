@@ -5,7 +5,6 @@
 
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
-use rumoca_core::{BytePos, SourceId, Span};
 use rumoca_ir_ast as ast;
 use serde::Serialize;
 use serde_json::Value;
@@ -14,19 +13,49 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub(crate) struct MergeSemanticError {
     pub message: String,
-    pub span: Span,
+    pub labels: Vec<MergeSemanticLabel>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MergeSemanticLabel {
+    pub file_name: String,
+    pub start: usize,
+    pub end: usize,
+    pub primary: bool,
+    pub message: &'static str,
 }
 
 impl MergeSemanticError {
-    fn from_token(message: impl Into<String>, token: &rumoca_ir_core::Token) -> Self {
-        let start = BytePos(token.location.start as usize);
-        let mut end = BytePos(token.location.end as usize);
-        if end.0 <= start.0 {
-            end = BytePos(start.0.saturating_add(1));
+    fn label_from_token(
+        token: &rumoca_ir_core::Token,
+        primary: bool,
+        message: &'static str,
+    ) -> MergeSemanticLabel {
+        let start = token.location.start as usize;
+        let mut end = token.location.end as usize;
+        if end <= start {
+            end = start.saturating_add(1);
         }
+        MergeSemanticLabel {
+            file_name: token.location.file_name.clone(),
+            start,
+            end,
+            primary,
+            message,
+        }
+    }
+
+    fn from_primary_with_related(
+        message: impl Into<String>,
+        primary: &rumoca_ir_core::Token,
+        related: &rumoca_ir_core::Token,
+    ) -> Self {
         Self {
             message: message.into(),
-            span: Span::new(SourceId(0), start, end),
+            labels: vec![
+                Self::label_from_token(primary, true, "duplicate declaration"),
+                Self::label_from_token(related, false, "previous declaration"),
+            ],
         }
     }
 }
@@ -39,11 +68,14 @@ impl std::fmt::Display for MergeSemanticError {
 
 impl std::error::Error for MergeSemanticError {}
 
-fn merge_error_from_token(
+fn merge_error_from_primary_with_related(
     message: impl Into<String>,
-    token: &rumoca_ir_core::Token,
+    primary: &rumoca_ir_core::Token,
+    related: &rumoca_ir_core::Token,
 ) -> anyhow::Error {
-    anyhow::Error::new(MergeSemanticError::from_token(message, token))
+    anyhow::Error::new(MergeSemanticError::from_primary_with_related(
+        message, primary, related,
+    ))
 }
 
 /// Merge multiple StoredDefinitions into a single one.
@@ -120,12 +152,13 @@ fn merge_class_at_top_level(
     } else if classes_semantically_identical(existing, &class_def) {
         // Identical duplicate definition; keep first definition.
     } else {
-        return Err(merge_error_from_token(
+        return Err(merge_error_from_primary_with_related(
             format!(
                 "Duplicate class '{}' found in '{}' with non-identical definition",
                 class_name, file_path
             ),
             &class_def.name,
+            &existing.name,
         ));
     }
     Ok(())
@@ -210,12 +243,13 @@ fn place_class_in_hierarchy(
         } else if classes_semantically_identical(existing, &class_def) {
             // Identical duplicate definition; keep first definition.
         } else {
-            return Err(merge_error_from_token(
+            return Err(merge_error_from_primary_with_related(
                 format!(
                     "Duplicate class '{}.{}' found in '{}' with non-identical definition",
                     prefix, class_name, file_path
                 ),
                 &class_def.name,
+                &existing.name,
             ));
         }
     } else {
@@ -242,12 +276,13 @@ fn merge_package_contents(
                 let nested_name = format!("{}.{}", package_name, name);
                 merge_package_contents(existing_class, class, &nested_name, file_path)?;
             } else if !classes_semantically_identical(existing_class, &class) {
-                return Err(merge_error_from_token(
+                return Err(merge_error_from_primary_with_related(
                     format!(
                         "Duplicate class '{}.{}' found in '{}' with non-identical definition",
                         package_name, name, file_path
                     ),
                     &class.name,
+                    &existing_class.name,
                 ));
             }
         } else {
@@ -259,12 +294,13 @@ fn merge_package_contents(
     for (name, comp) in new.components {
         if let Some(existing_comp) = existing.components.get(&name) {
             if !components_semantically_identical(existing_comp, &comp) {
-                return Err(merge_error_from_token(
+                return Err(merge_error_from_primary_with_related(
                     format!(
                         "Duplicate component '{}.{}' found in '{}' with non-identical definition",
                         package_name, name, file_path
                     ),
                     &comp.name_token,
+                    &existing_comp.name_token,
                 ));
             }
         } else {
