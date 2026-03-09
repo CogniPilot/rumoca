@@ -55,7 +55,7 @@ pub fn compute_diagnostics(
     for model_name in collect_diagnostic_target_names(&ast) {
         let model_diags = session.compile_model_diagnostics(&model_name);
         let source_map = model_diags.source_map.as_ref();
-        let is_global_resolution_failure = source_map.is_none();
+        let is_global_resolution_failure = model_diags.global_resolution_failure;
         for diag in model_diags.diagnostics {
             let Some(lsp_diag) = common_diagnostic_to_lsp(&diag, source, file_name, source_map)
             else {
@@ -1269,6 +1269,31 @@ end A;
         assert_eq!(
             dup_class_diags, 1,
             "expected one global merge diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn unresolved_library_diagnostics_do_not_panic_or_leak_into_active_file() {
+        let source = "model M\n  Real x;\nequation\n  der(x) = -x;\nend M;\n";
+        let mut session = Session::default();
+
+        let mut broken_library = String::from("model BrokenLib\n  Real x;\nequation\n");
+        for _ in 0..256 {
+            broken_library.push_str("  // filler\n");
+        }
+        broken_library.push_str("  x = unknownLibFn(1.0);\nend BrokenLib;\n");
+
+        session
+            .add_document("lib_with_error.mo", &broken_library)
+            .expect("library preload should parse");
+
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("unknownLibFn")),
+            "library-only unresolved diagnostics should be filtered out for active file: {:?}",
             diagnostics
         );
     }
