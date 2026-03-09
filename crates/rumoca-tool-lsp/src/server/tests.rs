@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use tower_lsp::LspService;
 
@@ -242,4 +243,204 @@ fn project_config_uri_detection_handles_file_paths_with_spaces() {
         .join("project.toml");
     let uri = Url::from_file_path(path).expect("file uri");
     assert!(is_project_config_uri(&uri));
+}
+
+#[test]
+fn simulation_doc_for_compile_filters_workspace_documents() {
+    let focus_uri = "/tmp/focus.mo";
+    let focus_key = canonical_path_key(focus_uri);
+    let parsed = ast::StoredDefinition::default();
+    let loaded_libraries = HashSet::from([canonical_path_key("/opt/msl")]);
+
+    let focus_doc = Document {
+        uri: focus_uri.to_string(),
+        content: "model Focus end Focus;".to_string(),
+        parsed: Some(parsed.clone()),
+        parse_error: None,
+    };
+    let other_workspace_doc = Document {
+        uri: "/tmp/other.mo".to_string(),
+        content: "model Other end Other;".to_string(),
+        parsed: Some(parsed.clone()),
+        parse_error: None,
+    };
+    let library_doc = Document {
+        uri: "/opt/msl/Modelica/Blocks/Continuous.mo".to_string(),
+        content: String::new(),
+        parsed: Some(parsed),
+        parse_error: None,
+    };
+
+    let focus = simulation_doc_for_compile(focus_uri, &focus_doc, &focus_key, &loaded_libraries)
+        .expect("focus doc should be accepted")
+        .expect("focus doc should be included");
+    assert!(focus.0, "focus document marker should be true");
+
+    let other = simulation_doc_for_compile(
+        &other_workspace_doc.uri,
+        &other_workspace_doc,
+        &focus_key,
+        &loaded_libraries,
+    )
+    .expect("other workspace doc should be evaluated");
+    assert!(
+        other.is_none(),
+        "non-focus workspace docs should be excluded"
+    );
+
+    let library = simulation_doc_for_compile(
+        &library_doc.uri,
+        &library_doc,
+        &focus_key,
+        &loaded_libraries,
+    )
+    .expect("library doc should be accepted")
+    .expect("library doc should be included");
+    assert!(
+        !library.0,
+        "library docs should be included without marking as focus"
+    );
+}
+
+#[test]
+fn collect_simulation_parsed_docs_keeps_focus_and_libraries_only() {
+    let focus_uri = "focus.mo";
+    let other_uri = "other.mo";
+    let library_uri = "/opt/msl/Modelica/package.mo";
+    let source = "model M end M;";
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document(focus_uri, source)
+        .expect("focus should parse");
+    session
+        .add_document(other_uri, source)
+        .expect("other should parse");
+    session.add_parsed(library_uri, ast::StoredDefinition::default());
+
+    let focus_key = canonical_path_key(focus_uri);
+    let loaded_libraries = HashSet::from([canonical_path_key("/opt/msl")]);
+    let docs = collect_simulation_parsed_docs(&session, focus_uri, &focus_key, &loaded_libraries)
+        .expect("docs should build");
+    let uris: HashSet<String> = docs.into_iter().map(|(uri, _)| uri).collect();
+
+    assert!(uris.contains(focus_uri), "focus doc must be included");
+    assert!(uris.contains(library_uri), "library docs must be included");
+    assert!(
+        !uris.contains(other_uri),
+        "non-focus workspace docs must be excluded"
+    );
+}
+
+#[test]
+fn library_root_for_document_prefers_longest_root() {
+    let loaded_libraries = HashSet::from([
+        canonical_path_key("/opt"),
+        canonical_path_key("/opt/msl"),
+        canonical_path_key("/opt/msl/Modelica"),
+    ]);
+    let root =
+        library_root_for_document("/opt/msl/Modelica/Blocks/Continuous.mo", &loaded_libraries)
+            .expect("library root should be detected");
+    assert_eq!(root, canonical_path_key("/opt/msl/Modelica"));
+}
+
+#[test]
+fn did_open_library_document_keeps_cached_session_document() {
+    run_async_test(async {
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        let library_root = canonical_path_key("/opt/msl");
+        let library_uri = canonical_path_key("/opt/msl/Modelica/Blocks/Continuous.mo");
+        let text = "within Modelica.Blocks;\npackage Continuous\nend Continuous;\n";
+
+        {
+            let mut session = server.session.write().await;
+            session.add_parsed(&library_uri, ast::StoredDefinition::default());
+        }
+        {
+            let mut loaded = server.loaded_libraries.write().await;
+            loaded.insert(library_root);
+        }
+
+        let uri = Url::from_file_path(&library_uri).expect("file uri");
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri,
+                    language_id: "modelica".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            })
+            .await;
+
+        let session_doc = server
+            .session
+            .read()
+            .await
+            .get_document(&library_uri)
+            .cloned()
+            .expect("cached library document must remain in session");
+        assert!(
+            session_doc.content.is_empty(),
+            "shared session should keep cached library snapshot content empty"
+        );
+        let overlay = server
+            .library_document_overlays
+            .read()
+            .await
+            .get(&library_uri)
+            .cloned()
+            .expect("library overlay should be tracked");
+        assert_eq!(overlay.content, text);
+    });
+}
+
+#[test]
+fn did_close_library_document_preserves_cached_session_document() {
+    run_async_test(async {
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        let library_root = canonical_path_key("/opt/msl");
+        let library_uri = canonical_path_key("/opt/msl/Modelica/Blocks/Continuous.mo");
+
+        {
+            let mut session = server.session.write().await;
+            session.add_parsed(&library_uri, ast::StoredDefinition::default());
+        }
+        {
+            let mut loaded = server.loaded_libraries.write().await;
+            loaded.insert(library_root);
+        }
+        server
+            .update_library_document_overlay(&library_uri, "within Modelica.Blocks;")
+            .await;
+
+        let uri = Url::from_file_path(&library_uri).expect("file uri");
+        server
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri },
+            })
+            .await;
+
+        let session_doc = server
+            .session
+            .read()
+            .await
+            .get_document(&library_uri)
+            .cloned();
+        assert!(
+            session_doc.is_some(),
+            "closing overlay should not drop cached library document from session"
+        );
+        assert!(
+            !server
+                .library_document_overlays
+                .read()
+                .await
+                .contains_key(&library_uri),
+            "overlay must be removed on close"
+        );
+    });
 }

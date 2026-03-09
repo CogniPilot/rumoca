@@ -1,10 +1,38 @@
 //! Structural diagnostics: singularity checks and algebraic loop reporting.
 
-use rumoca_core::{Diagnostic, Label, Span};
+use rumoca_core::{Diagnostic, Label, PrimaryLabel, Span};
 use rumoca_ir_dae as dae;
 
 use crate::incidence::Incidence;
 use crate::types::UnknownId;
+
+const ES001_STRUCTURAL_SINGULARITY: &str = "ES001";
+const ES002_ALGEBRAIC_LOOP: &str = "ES002";
+
+fn default_solve_span() -> Span {
+    Span::from_offsets(Span::DUMMY.source, 0, 1)
+}
+
+fn normalize_span(span: Span) -> Span {
+    if span == Span::DUMMY {
+        return default_solve_span();
+    }
+    if span.end.0 <= span.start.0 {
+        Span::from_offsets(span.source, span.start.0, span.start.0.saturating_add(1))
+    } else {
+        span
+    }
+}
+
+fn pick_primary_span(spans: &[Span]) -> Span {
+    spans
+        .iter()
+        .copied()
+        .find(|span| *span != Span::DUMMY && span.end.0 > span.start.0)
+        .or_else(|| spans.first().copied())
+        .map(normalize_span)
+        .unwrap_or_else(default_solve_span)
+}
 
 /// Result of structural analysis on a DAE system.
 #[derive(Debug, Default)]
@@ -79,20 +107,29 @@ impl MatchingContext<'_> {
             .map(|&i| self.unknown_names[i].to_string())
             .collect();
 
-        let mut diag = Diagnostic::warning(format!(
-            "structurally singular system: matching size {} < {} (equations={}, unknowns={})",
-            matching_size,
-            n_eq.min(n_var),
-            n_eq,
-            n_var,
-        ));
+        let primary_candidates: Vec<Span> = unmatched_eq_indices
+            .iter()
+            .map(|&i| self.equations[i].span)
+            .chain(self.equations.iter().map(|eq| eq.span))
+            .collect();
+        let mut diag = Diagnostic::warning(
+            ES001_STRUCTURAL_SINGULARITY,
+            format!(
+                "structurally singular system: matching size {} < {} (equations={}, unknowns={})",
+                matching_size,
+                n_eq.min(n_var),
+                n_eq,
+                n_var,
+            ),
+            PrimaryLabel::new(pick_primary_span(&primary_candidates))
+                .with_message("structural issue detected here"),
+        );
 
         for &eq_idx in &unmatched_eq_indices {
-            diag.labels.push(Label {
-                span: self.equations[eq_idx].span,
-                message: Some("unmatched equation".to_string()),
-                primary: true,
-            });
+            diag = diag.with_label(
+                Label::secondary(normalize_span(self.equations[eq_idx].span))
+                    .with_message("unmatched equation"),
+            );
         }
 
         if !result.unmatched_unknowns.is_empty() {
@@ -129,22 +166,27 @@ impl MatchingContext<'_> {
                 .iter()
                 .map(|&i| self.equations[i].origin.clone())
                 .collect();
-            let eq_spans: Vec<Span> = scc.iter().map(|&i| self.equations[i].span).collect();
+            let eq_spans: Vec<Span> = scc
+                .iter()
+                .map(|&i| normalize_span(self.equations[i].span))
+                .collect();
             let loop_unknowns: Vec<String> = scc
                 .iter()
                 .filter_map(|&i| self.match_eq[i].map(|v| self.unknown_names[v].to_string()))
                 .collect();
 
-            let mut diag = Diagnostic::warning(format!(
-                "algebraic loop detected: {} equations must be solved simultaneously",
-                scc.len(),
-            ));
+            let mut diag = Diagnostic::warning(
+                ES002_ALGEBRAIC_LOOP,
+                format!(
+                    "algebraic loop detected: {} equations must be solved simultaneously",
+                    scc.len(),
+                ),
+                PrimaryLabel::new(pick_primary_span(&eq_spans))
+                    .with_message("part of algebraic loop"),
+            );
             for span in &eq_spans {
-                diag.labels.push(Label {
-                    span: *span,
-                    message: Some("part of algebraic loop".to_string()),
-                    primary: false,
-                });
+                diag =
+                    diag.with_label(Label::secondary(*span).with_message("part of algebraic loop"));
             }
             diag.notes
                 .push(format!("unknowns: {}", loop_unknowns.join(", ")));
@@ -181,22 +223,25 @@ pub(crate) fn collect_warnings(
         }
 
         let eq_origins: Vec<String> = scc.iter().map(|&i| equations[i].origin.clone()).collect();
-        let eq_spans: Vec<Span> = scc.iter().map(|&i| equations[i].span).collect();
+        let eq_spans: Vec<Span> = scc
+            .iter()
+            .map(|&i| normalize_span(equations[i].span))
+            .collect();
         let loop_unknowns: Vec<String> = scc
             .iter()
             .filter_map(|&i| match_eq[i].map(|v| incidence.unknown_names[v].to_string()))
             .collect();
 
-        let mut diag = Diagnostic::warning(format!(
-            "algebraic loop detected: {} equations must be solved simultaneously",
-            scc.len(),
-        ));
+        let mut diag = Diagnostic::warning(
+            ES002_ALGEBRAIC_LOOP,
+            format!(
+                "algebraic loop detected: {} equations must be solved simultaneously",
+                scc.len(),
+            ),
+            PrimaryLabel::new(pick_primary_span(&eq_spans)).with_message("part of algebraic loop"),
+        );
         for span in &eq_spans {
-            diag.labels.push(Label {
-                span: *span,
-                message: Some("part of algebraic loop".to_string()),
-                primary: false,
-            });
+            diag = diag.with_label(Label::secondary(*span).with_message("part of algebraic loop"));
         }
         diag.notes
             .push(format!("unknowns: {}", loop_unknowns.join(", ")));

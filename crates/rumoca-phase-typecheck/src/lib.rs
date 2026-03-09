@@ -26,7 +26,8 @@ mod typechecker;
 
 use miette::{Diagnostic, SourceSpan};
 use rumoca_core::{
-    DefId, Diagnostic as CommonDiagnostic, Diagnostics, Label, ScopeId, SourceMap, Span, TypeId,
+    DefId, Diagnostic as CommonDiagnostic, Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span,
+    TypeId,
 };
 use rumoca_ir_ast::{
     ClassDef, ClassKind, ClassTree, Component, EnumerationType, Equation, Expression,
@@ -864,13 +865,19 @@ impl TypeChecker {
             let resolved = self.resolve_type_name(&data.type_name, data.type_def_id, type_table);
             if resolved.is_unknown() {
                 let instance_name = data.qualified_name.to_flat_string();
-                self.diagnostics.emit(
-                    CommonDiagnostic::error(format!(
+                let span = self.source_map.location_to_span(
+                    &data.source_location.file_name,
+                    data.source_location.start as usize,
+                    data.source_location.end as usize,
+                );
+                self.diagnostics.emit(CommonDiagnostic::error(
+                    "ET001",
+                    format!(
                         "undefined type '{}' for instance '{}'",
                         data.type_name, instance_name
-                    ))
-                    .with_code("ET001"),
-                );
+                    ),
+                    PrimaryLabel::new(span).with_message("type declaration here"),
+                ));
             }
             data.type_id = resolved;
         }

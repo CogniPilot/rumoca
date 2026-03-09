@@ -414,13 +414,19 @@ impl TypeChecker {
             };
 
             // Emit as error per MLS §10.1
-            self.diagnostics.emit(
-                CommonDiagnostic::error(format!(
+            let span = self.source_map.location_to_span(
+                &instance_data.source_location.file_name,
+                instance_data.source_location.start as usize,
+                instance_data.source_location.end as usize,
+            );
+            self.diagnostics.emit(CommonDiagnostic::error(
+                "ET004",
+                format!(
                     "unevaluable array dimensions for '{}': {}",
                     var_name, reason
-                ))
-                .with_code("ET004"),
-            );
+                ),
+                rumoca_core::PrimaryLabel::new(span).with_message("array dimension declaration"),
+            ));
         }
     }
 
@@ -517,14 +523,11 @@ impl TypeChecker {
                 comp.location.start as usize,
                 comp.location.end as usize,
             );
-            self.diagnostics.emit(
-                CommonDiagnostic::error(format!(
-                    "undefined type '{}' for component '{}'",
-                    type_name, name
-                ))
-                .with_code("ET001")
-                .with_label(Label::primary(span).with_message("type declaration here")),
-            );
+            self.diagnostics.emit(CommonDiagnostic::error(
+                "ET001",
+                format!("undefined type '{}' for component '{}'", type_name, name),
+                rumoca_core::PrimaryLabel::new(span).with_message("type declaration here"),
+            ));
         }
         comp.type_id = Some(type_id);
 
@@ -688,14 +691,14 @@ impl TypeChecker {
                     location.end as usize,
                 )
             });
-        self.diagnostics.emit(
-            CommonDiagnostic::error(format!(
+        self.diagnostics.emit(CommonDiagnostic::error(
+            "ET001",
+            format!(
                 "unknown modifier `{}` for component `{}` of type `{}`",
                 modifier_name, comp_name, comp.type_name
-            ))
-            .with_code("ET001")
-            .with_label(Label::primary(span).with_message("unknown modifier")),
-        );
+            ),
+            rumoca_core::PrimaryLabel::new(span).with_message("unknown modifier"),
+        ));
     }
 
     pub(crate) fn validate_builtin_component_modifiers(
@@ -727,14 +730,14 @@ impl TypeChecker {
                         location.end as usize,
                     )
                 });
-            self.diagnostics.emit(
-                CommonDiagnostic::error(format!(
+            self.diagnostics.emit(CommonDiagnostic::error(
+                "ET001",
+                format!(
                     "unknown modifier `{}` for builtin component `{}` of type `{}`",
                     modifier_name, comp_name, comp.type_name
-                ))
-                .with_code("ET001")
-                .with_label(Label::primary(span).with_message("unknown modifier")),
-            );
+                ),
+                rumoca_core::PrimaryLabel::new(span).with_message("unknown modifier"),
+            ));
         }
     }
 
@@ -788,7 +791,7 @@ impl TypeChecker {
             };
             self.validate_single_builtin_modifier_type(
                 comp_name,
-                &comp.type_name.to_string(),
+                comp,
                 expected_desc,
                 "start",
                 &comp.start,
@@ -807,7 +810,7 @@ impl TypeChecker {
             };
             self.validate_single_builtin_modifier_type(
                 comp_name,
-                &comp.type_name.to_string(),
+                comp,
                 expected_desc,
                 modifier_name,
                 modifier_expr,
@@ -819,7 +822,7 @@ impl TypeChecker {
     pub(crate) fn validate_single_builtin_modifier_type(
         &mut self,
         comp_name: &str,
-        comp_type_name: &str,
+        comp: &Component,
         expected_desc: BuiltinModifierExpectedType,
         modifier_name: &str,
         modifier_expr: &Expression,
@@ -839,26 +842,22 @@ impl TypeChecker {
             return;
         }
 
-        let span = modifier_expr
-            .get_location()
-            .map(|location| {
-                self.source_map.location_to_span(
-                    &location.file_name,
-                    location.start as usize,
-                    location.end as usize,
-                )
-            })
-            .unwrap_or_else(|| Span::DUMMY);
+        let location = modifier_expr.get_location().unwrap_or(&comp.location);
+        let span = self.source_map.location_to_span(
+            &location.file_name,
+            location.start as usize,
+            location.end as usize,
+        );
         let expected = Self::modifier_expected_type_name(expected_desc);
         let found = Self::format_type_name(type_table, found_type);
-        self.diagnostics.emit(
-            CommonDiagnostic::error(format!(
+        self.diagnostics.emit(CommonDiagnostic::error(
+            "ET002",
+            format!(
                 "modifier `{}` for builtin component `{}` of type `{}` expects `{}`, found `{}`",
-                modifier_name, comp_name, comp_type_name, expected, found
-            ))
-            .with_code("ET002")
-            .with_label(Label::primary(span).with_message("modifier value here")),
-        );
+                modifier_name, comp_name, comp.type_name, expected, found
+            ),
+            rumoca_core::PrimaryLabel::new(span).with_message("modifier value here"),
+        ));
     }
 
     pub(crate) fn builtin_modifier_expected_type(
@@ -1259,14 +1258,16 @@ impl TypeChecker {
             );
 
             self.diagnostics.emit(
-                CommonDiagnostic::warning(format!(
+                CommonDiagnostic::warning(
+                    "ET004",
+                    format!(
                     "variability violation: {} has {} variability but binding references {} variables (MLS §4.5)",
                     comp_name,
                     comp_level.name(),
                     expr_level.name()
-                ))
-                .with_code("ET004")
-                .with_label(Label::primary(span).with_message("binding here")),
+                ),
+                    rumoca_core::PrimaryLabel::new(span).with_message("binding here"),
+                ),
             );
         }
     }
@@ -1290,12 +1291,14 @@ impl TypeChecker {
                 );
 
                 self.diagnostics.emit(
-                    CommonDiagnostic::warning(format!(
+                    CommonDiagnostic::warning(
+                        "ET005",
+                        format!(
                         "input '{}' has explicit binding which may be overwritten by connection (MLS §4.6)",
                         name
-                    ))
-                    .with_code("ET005")
-                    .with_label(Label::primary(span).with_message("input with binding")),
+                    ),
+                        rumoca_core::PrimaryLabel::new(span).with_message("input with binding"),
+                    ),
                 );
             }
         }
@@ -1588,25 +1591,19 @@ impl TypeChecker {
             return;
         }
 
-        let span = lhs
-            .get_location()
-            .map(|loc| {
-                self.source_map.location_to_span(
-                    &loc.file_name,
-                    loc.start as usize,
-                    loc.end as usize,
-                )
-            })
-            .unwrap_or(Span::DUMMY);
+        let Some(loc) = lhs.get_location().or_else(|| rhs.get_location()) else {
+            return;
+        };
+        let span =
+            self.source_map
+                .location_to_span(&loc.file_name, loc.start as usize, loc.end as usize);
         let expected = Self::format_type_name(type_table, lhs_ty);
         let found = Self::format_type_name(type_table, rhs_ty);
-        self.diagnostics.emit(
-            CommonDiagnostic::error(format!(
-                "type mismatch: expected `{expected}`, found `{found}`"
-            ))
-            .with_code("ET002")
-            .with_label(Label::primary(span).with_message("equation assignment here")),
-        );
+        self.diagnostics.emit(CommonDiagnostic::error(
+            "ET002",
+            format!("type mismatch: expected `{expected}`, found `{found}`"),
+            rumoca_core::PrimaryLabel::new(span).with_message("equation assignment here"),
+        ));
     }
 
     pub(crate) fn infer_expression_type(

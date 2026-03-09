@@ -351,6 +351,8 @@ pub struct InstanceData {
     pub instance_id: InstanceId,
     /// Fully qualified name in the instance tree.
     pub qualified_name: QualifiedName,
+    /// Source location of the component declaration that created this instance.
+    pub source_location: rumoca_ir_core::Location,
     /// Resolved array dimensions.
     pub dims: Vec<i64>,
     /// Unevaluated dimension expressions for parameter-dependent sizes.
