@@ -55,6 +55,22 @@ with full modification context (MLS behavior for evaluated dimensions).
 - `error_code` is preserved when available.
 - `CompilationSummary` must be computable from `PhaseResult` values without re-running phases.
 
+## AST Traversal Contract
+
+- `rumoca_ir_ast::Visitor` is the canonical AST traversal contract for analysis and diagnostics.
+- Context-aware callbacks are required for traversal-sensitive semantics:
+  - `visit_type_name(..., TypeNameContext)`
+  - `visit_expr_function_call_ctx(..., FunctionCallContext)`
+  - `visit_component_reference_ctx(..., ComponentReferenceContext)`
+  - `visit_subscript_ctx(..., SubscriptContext)`
+  - `visit_expression_ctx(..., ExpressionContext)`
+- Default visitor behavior must preserve pre-contract traversal semantics:
+  - Expression function-call targets are not traversed as component references by default.
+  - Equation/statement function-call targets are traversed as component references with explicit
+    function-target contexts.
+- Annotation payloads are not part of semantic name resolution, even when traversed for
+  syntax/diagnostic purposes.
+
 ## Experiment Annotation Contract
 
 `CompilationResult` carries normalized simulation metadata extracted from root

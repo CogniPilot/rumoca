@@ -17,6 +17,9 @@ fi
 echo "pre-push: checking Rust file line counts across workspace..."
 cargo run --quiet --bin rum -- check-rust-file-lines --all-files
 
+echo "pre-push: enforcing traversal policy..."
+cargo run --quiet --bin rumoca-traversal-policy-check
+
 echo "pre-push: running ci-parity command..."
 cargo run --bin rum -- ci-parity
 

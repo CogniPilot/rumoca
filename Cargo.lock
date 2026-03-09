@@ -3103,6 +3103,7 @@ dependencies = [
  "rumoca-session",
  "serde",
  "serde_json",
+ "syn 2.0.114",
  "tar",
  "tempfile",
  "toml",

@@ -75,6 +75,9 @@ jobs:
       - name: Check Rust file line count (SPEC_0021)
         run: cargo run --quiet --bin rum -- check-rust-file-lines --all-files
 
+      - name: Enforce traversal policy
+        run: cargo run --quiet --bin rumoca-traversal-policy-check
+
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 

@@ -24,10 +24,16 @@ use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
 mod types;
+pub mod visitor;
 pub use types::{
     BuiltinFunction, ComponentRefPart, ComponentReference, ComprehensionIndex,
     DerivativeAnnotation, Expression, ExternalFunction, ForIndex, Function, FunctionParam, Literal,
     Statement, StatementBlock, Subscript, VarName, component_base_name, extract_algorithm_outputs,
+};
+pub use visitor::{
+    AlgorithmOutputCollector, ContainsDerChecker, ContainsDerOfStateChecker, ExpressionVisitor,
+    ImplicitSampleChecker, StateVariableCollector, StatementVisitor, VarRefCollector,
+    VarRefWithSubscriptsCollector,
 };
 
 /// Detailed breakdown of balance calculation components.

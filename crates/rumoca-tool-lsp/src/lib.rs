@@ -23,6 +23,7 @@
 
 pub mod handlers;
 pub mod helpers;
+mod traversal_adapter;
 
 #[cfg(feature = "server")]
 mod server;
