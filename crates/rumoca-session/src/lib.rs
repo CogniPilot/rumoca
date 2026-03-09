@@ -119,8 +119,9 @@ pub mod compile {
     pub use crate::session::{
         CompilationMode, CompilationResult, CompilationSummary, CompilePhaseTimingSnapshot,
         CompilePhaseTimingStat, CompiledLibrary, Document, FailedPhase, IndexingMode,
-        ModelDiagnostics, ModelFailureDiagnostic, PhaseResult, Session, SessionConfig,
-        StrictCompileReport, compile_phase_timing_stats, reset_compile_phase_timing_stats,
+        IndexingReport, ModelDiagnostics, ModelFailureDiagnostic, PhaseResult, Session,
+        SessionConfig, StrictCompileReport, compile_phase_timing_stats,
+        reset_compile_phase_timing_stats,
     };
 }
 
