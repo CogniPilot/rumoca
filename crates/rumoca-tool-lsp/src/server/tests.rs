@@ -350,8 +350,13 @@ fn did_open_library_document_keeps_cached_session_document() {
     run_async_test(async {
         let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
         let server = service.inner();
-        let library_root = canonical_path_key("/opt/msl");
-        let library_uri = canonical_path_key("/opt/msl/Modelica/Blocks/Continuous.mo");
+        let library_root_path = std::env::temp_dir().join("rumoca-lsp-test-open");
+        let library_path = library_root_path
+            .join("Modelica")
+            .join("Blocks")
+            .join("Continuous.mo");
+        let library_root = canonical_path_key(library_root_path.to_string_lossy().as_ref());
+        let library_uri = canonical_path_key(library_path.to_string_lossy().as_ref());
         let text = "within Modelica.Blocks;\npackage Continuous\nend Continuous;\n";
 
         {
@@ -363,7 +368,7 @@ fn did_open_library_document_keeps_cached_session_document() {
             loaded.insert(library_root);
         }
 
-        let uri = Url::from_file_path(&library_uri).expect("file uri");
+        let uri = Url::from_file_path(&library_path).expect("file uri");
         server
             .did_open(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
@@ -402,8 +407,13 @@ fn did_close_library_document_preserves_cached_session_document() {
     run_async_test(async {
         let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
         let server = service.inner();
-        let library_root = canonical_path_key("/opt/msl");
-        let library_uri = canonical_path_key("/opt/msl/Modelica/Blocks/Continuous.mo");
+        let library_root_path = std::env::temp_dir().join("rumoca-lsp-test-close");
+        let library_path = library_root_path
+            .join("Modelica")
+            .join("Blocks")
+            .join("Continuous.mo");
+        let library_root = canonical_path_key(library_root_path.to_string_lossy().as_ref());
+        let library_uri = canonical_path_key(library_path.to_string_lossy().as_ref());
 
         {
             let mut session = server.session.write().await;
@@ -417,7 +427,7 @@ fn did_close_library_document_preserves_cached_session_document() {
             .update_library_document_overlay(&library_uri, "within Modelica.Blocks;")
             .await;
 
-        let uri = Url::from_file_path(&library_uri).expect("file uri");
+        let uri = Url::from_file_path(&library_path).expect("file uri");
         server
             .did_close(DidCloseTextDocumentParams {
                 text_document: TextDocumentIdentifier { uri },
