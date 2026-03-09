@@ -9,8 +9,10 @@ use std::sync::Arc;
 
 /// Helper to parse source code into a ParsedTree.
 fn parse(source: &str) -> ParsedTree {
-    let stored_def = parse_to_ast(source, "<test>").expect("parse should succeed");
-    let tree = ClassTree::from_parsed(stored_def);
+    let file_name = "<test>";
+    let stored_def = parse_to_ast(source, file_name).expect("parse should succeed");
+    let mut tree = ClassTree::from_parsed(stored_def);
+    tree.source_map.add(file_name, source);
     ParsedTree::new(tree)
 }
 

@@ -6,13 +6,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rumoca_session::compile::{
-    FailedPhase, PhaseResult, Session, SessionConfig, compile_phase_timing_stats,
+    Document, FailedPhase, PhaseResult, Session, SessionConfig, compile_phase_timing_stats,
 };
 use rumoca_session::libraries::{
     LibraryCacheStatus, infer_library_roots, parse_library_with_cache,
     should_load_library_for_source,
 };
-use rumoca_session::parsing::{ast, collect_model_names, merge_stored_definitions};
+use rumoca_session::parsing::{
+    ast, collect_model_names, merge_stored_definitions, parse_source_to_ast,
+};
 use rumoca_session::project::{
     EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
     ProjectFileMoveHint, SimulationModelOverride, clear_model_simulation_preset,
@@ -31,6 +33,9 @@ use tower_lsp::{Client, LanguageServer};
 
 use crate::handlers;
 use crate::helpers::{get_text_before_cursor, get_word_at_position};
+#[path = "server_support.rs"]
+mod server_support;
+use server_support::*;
 
 /// Modelica Language Server.
 pub struct ModelicaLanguageServer {
@@ -39,6 +44,8 @@ pub struct ModelicaLanguageServer {
     initial_library_paths: Arc<RwLock<Vec<String>>>,
     library_paths: Arc<RwLock<Vec<String>>>,
     loaded_libraries: Arc<RwLock<HashSet<String>>>,
+    dirty_libraries: Arc<RwLock<HashSet<String>>>,
+    library_document_overlays: Arc<RwLock<HashMap<String, Document>>>,
     loading_libraries: Arc<RwLock<HashMap<String, u64>>>,
     library_state_epoch: Arc<AtomicU64>,
     indexing_notified_libraries: Arc<RwLock<HashSet<String>>>,
@@ -76,6 +83,8 @@ impl ModelicaLanguageServer {
             initial_library_paths: Arc::new(RwLock::new(Vec::new())),
             library_paths: Arc::new(RwLock::new(Vec::new())),
             loaded_libraries: Arc::new(RwLock::new(HashSet::new())),
+            dirty_libraries: Arc::new(RwLock::new(HashSet::new())),
+            library_document_overlays: Arc::new(RwLock::new(HashMap::new())),
             loading_libraries: Arc::new(RwLock::new(HashMap::new())),
             library_state_epoch: Arc::new(AtomicU64::new(0)),
             indexing_notified_libraries: Arc::new(RwLock::new(HashSet::new())),
@@ -143,9 +152,122 @@ impl ModelicaLanguageServer {
         }
         *self.session.write().await = rebuilt;
         let mut loaded = self.loaded_libraries.write().await;
+        let mut dirty = self.dirty_libraries.write().await;
         let mut loading = self.loading_libraries.write().await;
         loaded.clear();
+        dirty.clear();
         loading.clear();
+    }
+
+    async fn mark_library_dirty_for_document(&self, document_path: &str) {
+        let loaded = self.loaded_libraries.read().await.clone();
+        let Some(library_root) = library_root_for_document(document_path, &loaded) else {
+            return;
+        };
+        let inserted = {
+            let mut dirty = self.dirty_libraries.write().await;
+            dirty.insert(library_root.clone())
+        };
+        if inserted {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!(
+                        "[rumoca] Library file changed: {} (library {} will be rebuilt on next compile)",
+                        document_path, library_root
+                    ),
+                )
+                .await;
+        }
+    }
+
+    async fn is_library_document_path(&self, document_path: &str) -> bool {
+        let loaded = self.loaded_libraries.read().await.clone();
+        if library_root_for_document(document_path, &loaded).is_some() {
+            return true;
+        }
+        let document_key = canonical_path_key(document_path);
+        let document_path = Path::new(&document_key);
+        let configured_paths = self.library_paths.read().await.clone();
+        configured_paths.into_iter().any(|path| {
+            let root_key = canonical_path_key(&path);
+            document_path.starts_with(Path::new(&root_key))
+        })
+    }
+
+    async fn update_library_document_overlay(&self, uri_path: &str, content: &str) {
+        let previous_parsed = self
+            .library_document_overlays
+            .read()
+            .await
+            .get(uri_path)
+            .and_then(|doc| doc.parsed.clone());
+        let (parsed, parse_error) = match parse_source_to_ast(content, uri_path) {
+            Ok(parsed) => (Some(parsed), None),
+            Err(err) => (previous_parsed, Some(err.to_string())),
+        };
+        let document = Document {
+            uri: uri_path.to_string(),
+            content: content.to_string(),
+            parsed,
+            parse_error,
+        };
+        self.library_document_overlays
+            .write()
+            .await
+            .insert(uri_path.to_string(), document);
+    }
+
+    async fn document_snapshot(&self, uri_path: &str) -> Option<Document> {
+        if let Some(doc) = self
+            .library_document_overlays
+            .read()
+            .await
+            .get(uri_path)
+            .cloned()
+        {
+            return Some(doc);
+        }
+        self.session.read().await.get_document(uri_path).cloned()
+    }
+
+    async fn rebuild_dirty_libraries_before_compile(
+        &self,
+        current_document_path: &str,
+    ) -> std::result::Result<(), String> {
+        let dirty_roots: Vec<String> = self.dirty_libraries.read().await.iter().cloned().collect();
+        if dirty_roots.is_empty() {
+            return Ok(());
+        }
+
+        for library_root in &dirty_roots {
+            let parsed = parse_library_with_cache(Path::new(library_root))
+                .map_err(|err| format!("failed to rebuild library '{}': {}", library_root, err))?;
+            let source_set_id = library_source_set_id(library_root);
+            let inserted_count = {
+                let mut session = self.session.write().await;
+                session.replace_parsed_source_set(
+                    &source_set_id,
+                    parsed.documents,
+                    Some(current_document_path),
+                )
+            };
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!(
+                        "[rumoca] Rebuilt dirty library {} ({:?}) — {} files inserted",
+                        library_root, parsed.cache_status, inserted_count
+                    ),
+                )
+                .await;
+        }
+
+        let mut dirty = self.dirty_libraries.write().await;
+        for root in dirty_roots {
+            dirty.remove(&root);
+        }
+        Ok(())
     }
 
     fn current_library_state_epoch(&self) -> u64 {
@@ -460,6 +582,9 @@ impl ModelicaLanguageServer {
 
     async fn open_document_source_for_uri(&self, uri: &Url) -> std::result::Result<String, String> {
         let uri_path = session_document_uri_key(uri);
+        if let Some(doc) = self.document_snapshot(&uri_path).await {
+            return Ok(doc.content);
+        }
         let session = self.session.read().await;
         session
             .get_document(&uri_path)
@@ -470,9 +595,38 @@ impl ModelicaLanguageServer {
     async fn compile_model_for_simulation(
         &self,
         model: &str,
+        focus_document_path: &str,
     ) -> std::result::Result<Box<rumoca_session::compile::CompilationResult>, String> {
-        let mut session = self.session.write().await;
-        let mut report = session.compile_model_strict_reachable_with_recovery(model);
+        self.rebuild_dirty_libraries_before_compile(focus_document_path)
+            .await?;
+        let focus_key = canonical_path_key(focus_document_path);
+        let loaded_libraries = self.loaded_libraries.read().await.clone();
+        let mut isolated_session = Session::new(SessionConfig::default());
+        let mut parsed_docs = {
+            let session = self.session.read().await;
+            collect_simulation_parsed_docs(
+                &session,
+                focus_document_path,
+                &focus_key,
+                &loaded_libraries,
+            )?
+        };
+        if let Some(overlay_doc) = self.document_snapshot(focus_document_path).await {
+            if let Some(parse_error) = &overlay_doc.parse_error {
+                return Err(format!("parse error in active document: {parse_error}"));
+            }
+            let Some(parsed) = overlay_doc.parsed else {
+                return Err(format!(
+                    "active document has no parsed AST: {}",
+                    overlay_doc.uri
+                ));
+            };
+            parsed_docs.retain(|(uri, _)| canonical_path_key(uri) != focus_key);
+            parsed_docs.push((overlay_doc.uri, parsed));
+        }
+        isolated_session.add_parsed_batch(parsed_docs);
+
+        let mut report = isolated_session.compile_model_strict_reachable_with_recovery(model);
         if !report.failures.is_empty() {
             return Err(report.failure_summary(8));
         }
@@ -634,7 +788,7 @@ impl ModelicaLanguageServer {
 
         let compile_start = std::time::Instant::now();
         let compile_before = compile_phase_timing_stats();
-        let compiled = match self.compile_model_for_simulation(&model).await {
+        let compiled = match self.compile_model_for_simulation(&model, &uri_path).await {
             Ok(result) => result,
             Err(error) => {
                 return Some(Self::simulation_error_value(format!(
@@ -785,6 +939,18 @@ impl ModelicaLanguageServer {
     /// Publish diagnostics for a document.
     async fn publish_diagnostics(&self, uri: Url, text: &str) {
         let file_name = session_document_uri_key(&uri);
+        let is_library_overlay = self
+            .library_document_overlays
+            .read()
+            .await
+            .contains_key(&file_name);
+        if is_library_overlay {
+            let diagnostics = handlers::compute_diagnostics(text, &file_name, None);
+            self.client
+                .publish_diagnostics(uri, diagnostics, None)
+                .await;
+            return;
+        }
         self.ensure_source_libraries_loaded(text, &file_name).await;
         let mut session = self.session.write().await;
         let diagnostics = handlers::compute_diagnostics(text, &file_name, Some(&mut session));
@@ -894,365 +1060,6 @@ impl ModelicaLanguageServer {
         for err in load_errors {
             self.client.log_message(MessageType::WARNING, err).await;
         }
-    }
-}
-
-fn should_reserve_library_load(
-    loaded: &HashSet<String>,
-    loading: &HashMap<String, u64>,
-    path_key: &str,
-    expected_epoch: u64,
-    current_epoch: u64,
-) -> bool {
-    expected_epoch == current_epoch && !loaded.contains(path_key) && !loading.contains_key(path_key)
-}
-
-fn should_apply_library_load(
-    loaded: &HashSet<String>,
-    path_key: &str,
-    expected_epoch: u64,
-    current_epoch: u64,
-) -> bool {
-    expected_epoch == current_epoch && !loaded.contains(path_key)
-}
-
-fn should_clear_library_load(
-    loading: &HashMap<String, u64>,
-    path_key: &str,
-    reservation_epoch: u64,
-) -> bool {
-    loading
-        .get(path_key)
-        .is_some_and(|owner_epoch| *owner_epoch == reservation_epoch)
-}
-
-fn extract_import_completion_prefix(source: &str, position: Position) -> Option<String> {
-    let line = source.lines().nth(position.line as usize)?;
-    let col = (position.character as usize).min(line.len());
-    let line_prefix = line[..col].trim_start();
-    if !line_prefix.starts_with("import") {
-        return None;
-    }
-    let after_import = line_prefix["import".len()..].trim_start();
-    let token: String = after_import
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
-        .collect();
-    Some(token)
-}
-
-fn completion_context_needs_resolved_session(
-    source: &str,
-    position: Position,
-    import_prefix: Option<&str>,
-) -> bool {
-    let prefix = get_text_before_cursor(source, position).unwrap_or_default();
-    let trimmed = prefix.trim();
-    let requires_import_resolution = import_prefix.is_some();
-    trimmed.contains('.')
-        || (trimmed.contains('(') && !trimmed.contains(')'))
-        || requires_import_resolution
-}
-
-#[derive(Debug, Clone)]
-struct SimulationRequestSettings {
-    solver: String,
-    t_end: f64,
-    dt: Option<f64>,
-    library_paths: Vec<String>,
-}
-
-fn parse_simulation_request_settings(value: Option<&Value>) -> Option<SimulationRequestSettings> {
-    let obj = value?.as_object()?;
-    let solver = normalize_solver_opt(
-        obj.get("solver")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    )
-    .unwrap_or_else(|| "auto".to_string());
-    let t_end = obj
-        .get("tEnd")
-        .and_then(Value::as_f64)
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(10.0);
-    let dt = normalize_dt_opt(obj.get("dt").and_then(Value::as_f64));
-    let library_paths = obj
-        .get("modelicaPath")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Some(SimulationRequestSettings {
-        solver,
-        t_end,
-        dt,
-        library_paths,
-    })
-}
-
-fn parse_fallback_simulation(value: Option<&Value>) -> Option<EffectiveSimulationConfig> {
-    let value = value?;
-    let obj = value.as_object()?;
-    let solver = normalize_solver_opt(
-        obj.get("solver")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    )
-    .unwrap_or_else(|| "auto".to_string());
-    let t_end = obj
-        .get("tEnd")
-        .and_then(Value::as_f64)
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(10.0);
-    let dt = normalize_dt_opt(obj.get("dt").and_then(Value::as_f64));
-    let output_dir = obj
-        .get("outputDir")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let library_paths = obj
-        .get("modelicaPath")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Some(EffectiveSimulationConfig {
-        solver,
-        t_end,
-        dt,
-        output_dir,
-        library_paths,
-    })
-}
-
-fn simulation_settings_to_json(settings: &EffectiveSimulationConfig) -> Value {
-    json!({
-        "solver": settings.solver,
-        "tEnd": settings.t_end,
-        "dt": settings.dt,
-        "outputDir": settings.output_dir,
-        "modelicaPath": settings.library_paths,
-    })
-}
-
-fn simulation_preset_to_json(preset: &EffectiveSimulationPreset) -> Value {
-    json!({
-        "solver": preset.solver,
-        "tEnd": preset.t_end,
-        "dt": preset.dt,
-        "outputDir": preset.output_dir,
-        "libraryOverrides": preset.library_overrides,
-    })
-}
-
-fn simulation_override_from_json(value: &Value) -> Option<SimulationModelOverride> {
-    let obj = value.as_object()?;
-    let solver = obj
-        .get("solver")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let t_end = obj.get("tEnd").and_then(Value::as_f64);
-    let dt = obj.get("dt").and_then(Value::as_f64);
-    let output_dir = obj
-        .get("outputDir")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let library_overrides = obj
-        .get("libraryOverrides")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Some(SimulationModelOverride {
-        solver,
-        t_end,
-        dt,
-        output_dir,
-        library_overrides,
-    })
-}
-
-fn parse_views_payload(value: &Value) -> Option<Vec<PlotViewConfig>> {
-    serde_json::from_value(value.clone()).ok()
-}
-
-fn normalize_solver_opt(value: Option<String>) -> Option<String> {
-    match value
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("auto") => Some("auto".to_string()),
-        Some("bdf") => Some("bdf".to_string()),
-        Some("rk-like") => Some("rk-like".to_string()),
-        _ => None,
-    }
-}
-
-fn normalize_dt_opt(value: Option<f64>) -> Option<f64> {
-    value.filter(|v| v.is_finite() && *v > 0.0)
-}
-
-fn should_eager_load_library_for_import_prefix(lib_path: &str, import_prefix: &str) -> bool {
-    if import_prefix.is_empty() {
-        return true;
-    }
-    let head = import_prefix.split('.').next().unwrap_or(import_prefix);
-    match infer_library_roots(Path::new(lib_path)) {
-        Ok(roots) if !roots.is_empty() => roots
-            .iter()
-            .any(|root| root.starts_with(head) || import_prefix.starts_with(root)),
-        Ok(_) => true,
-        Err(_) => true,
-    }
-}
-
-fn canonical_path_key(path: &str) -> String {
-    std::fs::canonicalize(path)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string())
-}
-
-fn library_source_set_id(library_path: &str) -> String {
-    format!("library::{}", canonical_path_key(library_path))
-}
-
-fn duplicate_root_provider(
-    inferred_roots: &[String],
-    claimed_roots: &HashMap<String, String>,
-) -> Option<(String, String)> {
-    inferred_roots.iter().find_map(|root| {
-        claimed_roots
-            .get(root)
-            .map(|provider| (root.clone(), provider.clone()))
-    })
-}
-
-fn claim_roots(
-    claimed_roots: &mut HashMap<String, String>,
-    inferred_roots: Vec<String>,
-    provider: &str,
-) {
-    for root in inferred_roots {
-        claimed_roots
-            .entry(root)
-            .or_insert_with(|| provider.to_string());
-    }
-}
-
-fn is_project_config_uri(uri: &Url) -> bool {
-    if let Ok(path) = uri.to_file_path() {
-        return path
-            .components()
-            .any(|component| component.as_os_str() == ".rumoca");
-    }
-    uri.path().contains("/.rumoca/")
-}
-
-fn session_document_uri_key(uri: &Url) -> String {
-    if let Ok(path) = uri.to_file_path() {
-        return path.to_string_lossy().to_string();
-    }
-    uri.path().to_string()
-}
-
-fn parse_file_move_hints(value: Option<&Value>) -> Vec<ProjectFileMoveHint> {
-    let Some(Value::Array(items)) = value else {
-        return Vec::new();
-    };
-    let mut hints = Vec::new();
-    for item in items {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let old_path = obj
-            .get("oldPath")
-            .or_else(|| obj.get("old_path"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let new_path = obj
-            .get("newPath")
-            .or_else(|| obj.get("new_path"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if old_path.is_empty() || new_path.is_empty() {
-            continue;
-        }
-        hints.push(ProjectFileMoveHint { old_path, new_path });
-    }
-    hints
-}
-
-fn session_uri_path_to_pathbuf(uri_path: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(rest) = uri_path.strip_prefix('/') {
-            let bytes = rest.as_bytes();
-            if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-                return PathBuf::from(rest);
-            }
-        }
-    }
-    PathBuf::from(uri_path)
-}
-
-fn collect_workspace_known_models_from_session(
-    session: &Session,
-    workspace_root: &Path,
-) -> Vec<String> {
-    let mut parsed_docs: Vec<(String, ast::StoredDefinition)> = Vec::new();
-    for uri in session.document_uris() {
-        let Some(document) = session.get_document(uri) else {
-            continue;
-        };
-        let Some(parsed) = &document.parsed else {
-            continue;
-        };
-        let path = session_uri_path_to_pathbuf(uri);
-        if !path.starts_with(workspace_root) || !path.is_file() {
-            continue;
-        }
-        parsed_docs.push((uri.to_string(), parsed.clone()));
-    }
-
-    if parsed_docs.is_empty() {
-        return Vec::new();
-    }
-
-    match merge_stored_definitions(parsed_docs) {
-        Ok(merged) => {
-            let mut names = collect_model_names(&merged);
-            names.sort();
-            names.dedup();
-            names
-        }
-        Err(_) => Vec::new(),
     }
 }
 
@@ -1372,6 +1179,11 @@ impl LanguageServer for ModelicaLanguageServer {
             self.reload_project_config().await;
         }
         let text = params.text_document.text;
+        if self.is_library_document_path(&uri_path).await {
+            self.update_library_document_overlay(&uri_path, &text).await;
+            self.publish_diagnostics(uri, &text).await;
+            return;
+        }
         {
             let mut session = self.session.write().await;
             session.update_document(&uri_path, &text);
@@ -1386,17 +1198,34 @@ impl LanguageServer for ModelicaLanguageServer {
             self.reload_project_config().await;
         }
         if let Some(change) = params.content_changes.into_iter().last() {
+            if self.is_library_document_path(&uri_path).await {
+                self.update_library_document_overlay(&uri_path, &change.text)
+                    .await;
+                self.mark_library_dirty_for_document(&uri_path).await;
+                self.publish_diagnostics(uri, &change.text).await;
+                return;
+            }
             {
                 let mut session = self.session.write().await;
                 session.update_document(&uri_path, &change.text);
             }
+            self.mark_library_dirty_for_document(&uri_path).await;
             self.publish_diagnostics(uri, &change.text).await;
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let mut session = self.session.write().await;
         let uri_path = session_document_uri_key(&params.text_document.uri);
+        if self
+            .library_document_overlays
+            .write()
+            .await
+            .remove(&uri_path)
+            .is_some()
+        {
+            return;
+        }
+        let mut session = self.session.write().await;
         session.remove_document(&uri_path);
     }
 
@@ -1409,10 +1238,8 @@ impl LanguageServer for ModelicaLanguageServer {
             self.publish_diagnostics(uri, &text).await;
         } else {
             let uri_path = session_document_uri_key(&uri);
-            let session = self.session.read().await;
-            if let Some(doc) = session.get_document(&uri_path) {
+            if let Some(doc) = self.document_snapshot(&uri_path).await {
                 let text = doc.content.clone();
-                drop(session);
                 self.publish_diagnostics(uri, &text).await;
             }
         }
@@ -1422,10 +1249,10 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri = &params.text_document_position_params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position_params.position;
-        let mut session = self.session.write().await;
-        let Some(doc) = session.get_document(&uri_path).cloned() else {
+        let Some(doc) = self.document_snapshot(&uri_path).await else {
             return Ok(None);
         };
+        let mut session = self.session.write().await;
         let source = doc.content.as_str();
         let ast = doc.parsed.as_ref();
         let mut hover = handlers::handle_hover(source, ast, pos.line, pos.character);
@@ -1445,13 +1272,11 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri = &params.text_document_position.text_document.uri;
         let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position.position;
-        let source = {
-            let session = self.session.read().await;
-            session
-                .get_document(&uri_path)
-                .map(|d| d.content.clone())
-                .unwrap_or_default()
-        };
+        let doc_snapshot = self.document_snapshot(&uri_path).await;
+        let source = doc_snapshot
+            .as_ref()
+            .map(|doc| doc.content.clone())
+            .unwrap_or_default();
         // Ensure normal source-triggered library loading has happened before member completion.
         // This keeps `pid.`/`limiter.` completions reliable even if diagnostics hasn't run yet.
         self.ensure_source_libraries_loaded(&source, &uri_path)
@@ -1474,9 +1299,11 @@ impl LanguageServer for ModelicaLanguageServer {
         }
 
         let session = self.session.read().await;
-        let doc = session.get_document(&uri_path);
-        let doc_source = doc.map(|d| d.content.as_str()).unwrap_or("");
-        let ast = doc.and_then(|d| d.parsed.as_ref());
+        let doc_source = doc_snapshot
+            .as_ref()
+            .map(|doc| doc.content.as_str())
+            .unwrap_or("");
+        let ast = doc_snapshot.as_ref().and_then(|doc| doc.parsed.as_ref());
         let items =
             handlers::handle_completion(doc_source, ast, Some(&*session), pos.line, pos.character);
         Ok(Some(CompletionResponse::Array(items)))
@@ -1488,8 +1315,7 @@ impl LanguageServer for ModelicaLanguageServer {
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path)
+        if let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = &doc.parsed
         {
             return Ok(handlers::handle_document_symbols(ast));
@@ -1503,8 +1329,7 @@ impl LanguageServer for ModelicaLanguageServer {
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path)
+        if let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = &doc.parsed
         {
             return Ok(handlers::handle_semantic_tokens(ast));
@@ -1519,10 +1344,10 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri = &params.text_document_position_params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position_params.position;
-        let mut session = self.session.write().await;
-        let Some(doc) = session.get_document(&uri_path).cloned() else {
+        let Some(doc) = self.document_snapshot(&uri_path).await else {
             return Ok(None);
         };
+        let mut session = self.session.write().await;
         let Some(ast) = doc.parsed.as_ref() else {
             return Ok(None);
         };
@@ -1544,8 +1369,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position.position;
         let include_decl = params.context.include_declaration;
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path)
+        if let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = &doc.parsed
         {
             let source = &doc.content;
@@ -1568,9 +1392,8 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
         let pos = params.position;
-        let session = self.session.read().await;
-        let doc = session.get_document(&uri_path);
-        let source = doc.map(|d| d.content.as_str()).unwrap_or("");
+        let doc = self.document_snapshot(&uri_path).await;
+        let source = doc.as_ref().map(|d| d.content.as_str()).unwrap_or("");
         Ok(handlers::handle_prepare_rename(
             source,
             pos.line,
@@ -1583,8 +1406,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position.position;
         let new_name = &params.new_name;
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path)
+        if let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = &doc.parsed
         {
             let source = &doc.content;
@@ -1622,9 +1444,8 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri = &params.text_document_position_params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
         let pos = params.text_document_position_params.position;
-        let session = self.session.read().await;
-        let doc = session.get_document(&uri_path);
-        let source = doc.map(|d| d.content.as_str()).unwrap_or("");
+        let doc = self.document_snapshot(&uri_path).await;
+        let source = doc.as_ref().map(|d| d.content.as_str()).unwrap_or("");
         Ok(handlers::handle_signature_help(
             source,
             pos.line,
@@ -1635,8 +1456,7 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path)
+        if let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = &doc.parsed
         {
             let ranges = handlers::handle_folding_ranges(ast, &doc.content);
@@ -1648,8 +1468,7 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path) {
+        if let Some(doc) = self.document_snapshot(&uri_path).await {
             return Ok(handlers::handle_formatting(&doc.content));
         }
         Ok(None)
@@ -1658,20 +1477,15 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let source = {
-            let session = self.session.read().await;
-            match session.get_document(&uri_path) {
-                Some(doc) => doc.content.clone(),
-                None => return Ok(None),
-            }
+        let Some(doc_snapshot) = self.document_snapshot(&uri_path).await else {
+            return Ok(None);
         };
+        let source = doc_snapshot.content.clone();
         self.ensure_source_libraries_loaded(&source, &uri_path)
             .await;
 
         let mut session = self.session.write().await;
-        let Some(doc) = session.get_document(&uri_path).cloned() else {
-            return Ok(None);
-        };
+        let doc = doc_snapshot;
         let Some(ast) = doc.parsed.as_ref() else {
             return Ok(None);
         };
@@ -1716,8 +1530,7 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path) {
+        if let Some(doc) = self.document_snapshot(&uri_path).await {
             let actions = handlers::handle_code_actions(
                 &params.context.diagnostics,
                 &doc.content,
@@ -1764,8 +1577,7 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path)
+        if let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = &doc.parsed
         {
             let hints = handlers::handle_inlay_hints(ast, &doc.content, &params.range);
@@ -1777,8 +1589,7 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
-        let session = self.session.read().await;
-        if let Some(doc) = session.get_document(&uri_path) {
+        if let Some(doc) = self.document_snapshot(&uri_path).await {
             let links = handlers::handle_document_links(&doc.content, uri);
             return Ok(Some(links));
         }

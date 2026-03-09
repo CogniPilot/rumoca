@@ -5,7 +5,7 @@
 
 use crate::Resolver;
 use indexmap::IndexMap;
-use rumoca_core::{DefId, Diagnostic, Label, ScopeId};
+use rumoca_core::{DefId, Diagnostic, PrimaryLabel, ScopeId};
 use rumoca_ir_ast as ast;
 
 impl Resolver {
@@ -164,16 +164,14 @@ impl Resolver {
                 // This catches indirect cycles like: model A extends B; model B extends A;
                 if self.resolving_extends.contains(&base_def_id) {
                     let span = crate::location_to_span(&extend.location, &self.source_map);
-                    self.diagnostics.emit(
-                        Diagnostic::error(format!(
+                    self.diagnostics.emit(Diagnostic::error(
+                        "ER004",
+                        format!(
                             "circular inheritance: `{}` extends `{}` which creates a cycle",
                             class_name, base_name
-                        ))
-                        .with_code("ER004")
-                        .with_label(
-                            Label::primary(span).with_message("circular extends chain detected"),
                         ),
-                    );
+                        PrimaryLabel::new(span).with_message("circular extends chain detected"),
+                    ));
                     self.stats.extends_unresolved += 1;
                 } else {
                     extend.base_def_id = Some(base_def_id);
@@ -203,14 +201,11 @@ impl Resolver {
 
                 // Base class not found - emit diagnostic
                 let span = crate::location_to_span(&extend.location, &self.source_map);
-                self.diagnostics.emit(
-                    Diagnostic::error(format!(
-                        "base class not found: `{}` does not exist",
-                        base_name
-                    ))
-                    .with_code("ER003")
-                    .with_label(Label::primary(span).with_message("base class not found")),
-                );
+                self.diagnostics.emit(Diagnostic::error(
+                    "ER003",
+                    format!("base class not found: `{}` does not exist", base_name),
+                    PrimaryLabel::new(span).with_message("base class not found"),
+                ));
                 self.stats.extends_unresolved += 1;
             }
         }
@@ -257,14 +252,14 @@ impl Resolver {
     ) {
         if self.resolving_extends.contains(&base_def_id) {
             let span = crate::location_to_span(&extend.location, &self.source_map);
-            self.diagnostics.emit(
-                Diagnostic::error(format!(
+            self.diagnostics.emit(Diagnostic::error(
+                "ER004",
+                format!(
                     "circular inheritance: `{}` extends `{}` which creates a cycle",
                     class_name, extend.base_name
-                ))
-                .with_code("ER004")
-                .with_label(Label::primary(span).with_message("circular extends chain detected")),
-            );
+                ),
+                PrimaryLabel::new(span).with_message("circular extends chain detected"),
+            ));
         } else {
             extend.base_def_id = Some(base_def_id);
             self.add_inheritance_edge(current_class_def_id, base_def_id, extend.location.clone());
@@ -354,14 +349,14 @@ impl Resolver {
 
     fn emit_unresolved_import(&mut self, import: &ast::Import) {
         let span = self.import_span(import);
-        self.diagnostics.emit(
-            Diagnostic::error(format!(
+        self.diagnostics.emit(Diagnostic::error(
+            "ER002",
+            format!(
                 "unresolved import: '{}'",
                 Self::format_import_clause(import)
-            ))
-            .with_code("ER002")
-            .with_label(Label::primary(span).with_message("import could not be resolved")),
-        );
+            ),
+            PrimaryLabel::new(span).with_message("import could not be resolved"),
+        ));
     }
 
     fn import_span(&self, import: &ast::Import) -> rumoca_core::Span {

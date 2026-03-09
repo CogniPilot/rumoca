@@ -16,7 +16,6 @@ type Expression = ast::Expression;
 type ScopeKind = ast::ScopeKind;
 type Statement = ast::Statement;
 type StoredDefinition = ast::StoredDefinition;
-type Token = rumoca_ir_core::Token;
 
 impl Resolver {
     /// Resolve equations, statements, expressions in a StoredDefinition (Phase 2b).
@@ -543,14 +542,35 @@ impl Resolver {
 }
 
 fn rewrite_component_reference(comp: &mut ComponentReference, qualified_name: &str) {
-    comp.parts = qualified_name
-        .split('.')
-        .map(|part| ComponentRefPart {
-            ident: Token {
-                text: std::sync::Arc::from(part),
-                ..Token::default()
-            },
-            subs: None,
+    if comp.parts.is_empty() {
+        return;
+    }
+
+    let original_parts = std::mem::take(&mut comp.parts);
+    let old_len = original_parts.len();
+    let new_parts: Vec<&str> = qualified_name.split('.').collect();
+    let new_len = new_parts.len();
+
+    comp.parts = new_parts
+        .into_iter()
+        .enumerate()
+        .map(|(idx, part_name)| {
+            // Right-align canonical segments against original segments so the
+            // final identifier keeps the original source span.
+            let aligned = idx + old_len >= new_len;
+            let source_idx = if aligned {
+                idx + old_len - new_len
+            } else {
+                old_len - 1
+            };
+            let source = &original_parts[source_idx];
+            let mut ident = source.ident.clone();
+            ident.text = std::sync::Arc::from(part_name);
+
+            ComponentRefPart {
+                ident,
+                subs: if aligned { source.subs.clone() } else { None },
+            }
         })
         .collect();
 }

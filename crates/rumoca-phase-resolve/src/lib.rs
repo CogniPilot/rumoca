@@ -34,7 +34,7 @@ pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validat
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, Label, ScopeId,
+    BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, PrimaryLabel, ScopeId,
     SourceMap, Span,
 };
 use rumoca_ir_ast as ast;
@@ -384,17 +384,8 @@ pub fn resolve_with_options(
     let mut resolver = Resolver::new();
     resolver.resolve(&mut tree);
 
-    // Run semantic checks on the AST
-    let semantic_diags = semantic_checks::check_semantics(&tree.definitions, &tree.source_map);
-    for diag in semantic_diags {
-        resolver.diagnostics.emit(diag);
-    }
-    let chained_diags = semantic_checks::check_chained_relationals(&tree.definitions);
-    for diag in chained_diags {
-        resolver.diagnostics.emit(diag);
-    }
-    let der_diags = semantic_checks::check_der_in_functions(&tree.definitions);
-    for diag in der_diags {
+    // Run semantic checks on the AST.
+    for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
         resolver.diagnostics.emit(diag);
     }
 
@@ -426,14 +417,8 @@ pub fn resolve_with_stats(parsed: ParsedTree) -> ResolveWithStatsResult {
     let mut resolver = Resolver::new();
     resolver.resolve(&mut tree);
 
-    // Run semantic checks
-    for diag in semantic_checks::check_semantics(&tree.definitions, &tree.source_map) {
-        resolver.diagnostics.emit(diag);
-    }
-    for diag in semantic_checks::check_chained_relationals(&tree.definitions) {
-        resolver.diagnostics.emit(diag);
-    }
-    for diag in semantic_checks::check_der_in_functions(&tree.definitions) {
+    // Run semantic checks.
+    for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
         resolver.diagnostics.emit(diag);
     }
 
@@ -494,15 +479,21 @@ fn emit_unresolved_symbol_diagnostics(
             ),
         };
 
-        let mut diag = if is_error {
-            rumoca_core::Diagnostic::error(format!("unresolved {kind}: '{}'", unresolved.name))
-        } else {
-            rumoca_core::Diagnostic::warning(format!("unresolved {kind}: '{}'", unresolved.name))
-        }
-        .with_code(code);
-
         let span = location_to_span(&unresolved.source_location, &resolver.source_map);
-        diag = diag.with_label(Label::primary(span).with_message(format!("unresolved {kind}")));
+        let primary_label = PrimaryLabel::new(span).with_message(format!("unresolved {kind}"));
+        let diag = if is_error {
+            rumoca_core::Diagnostic::error(
+                code,
+                format!("unresolved {kind}: '{}'", unresolved.name),
+                primary_label,
+            )
+        } else {
+            rumoca_core::Diagnostic::warning(
+                code,
+                format!("unresolved {kind}: '{}'", unresolved.name),
+                primary_label,
+            )
+        };
         resolver.diagnostics.emit(diag);
     }
 }
