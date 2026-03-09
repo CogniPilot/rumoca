@@ -1033,6 +1033,54 @@ fn test_replace_parsed_source_set_excludes_active_document() {
 }
 
 #[test]
+fn test_index_library_tolerant_loads_valid_library_source_set() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let lib_dir = temp.path().join("lib");
+    std::fs::create_dir_all(&lib_dir).expect("mkdir");
+    std::fs::write(
+        lib_dir.join("package.mo"),
+        "package Lib model M Real x; equation der(x)=1; end M; end Lib;",
+    )
+    .expect("write package");
+
+    let mut session = Session::default();
+    let report = session.index_library_tolerant("library::lib", &lib_dir, None);
+    assert!(
+        report.diagnostics.is_empty(),
+        "valid library indexing should not emit diagnostics: {:?}",
+        report.diagnostics
+    );
+    assert_eq!(report.source_set_id, "library::lib");
+    assert_eq!(report.indexed_file_count, 1);
+    assert_eq!(report.inserted_file_count, 1);
+    assert!(
+        report.cache_status.is_some(),
+        "cache status should be reported on successful indexing"
+    );
+    assert_eq!(session.document_uris().len(), 1);
+}
+
+#[test]
+fn test_index_library_tolerant_reports_parse_failure_without_inserting_docs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let lib_dir = temp.path().join("lib");
+    std::fs::create_dir_all(&lib_dir).expect("mkdir");
+    std::fs::write(lib_dir.join("Broken.mo"), "model Broken Real x end Broken;")
+        .expect("write broken file");
+
+    let mut session = Session::default();
+    let report = session.index_library_tolerant("library::broken", &lib_dir, None);
+    assert_eq!(report.source_set_id, "library::broken");
+    assert_eq!(report.indexed_file_count, 0);
+    assert_eq!(report.inserted_file_count, 0);
+    assert!(
+        !report.diagnostics.is_empty(),
+        "parse failure should be surfaced in tolerant indexing report"
+    );
+    assert!(session.document_uris().is_empty());
+}
+
+#[test]
 fn test_compile_model_phases_uses_cache_until_session_invalidated() {
     reset_compile_phase_timing_stats();
     let mut session = Session::default();

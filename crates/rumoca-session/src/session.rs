@@ -18,12 +18,15 @@ use rumoca_phase_flatten::{FlattenOptions, flatten_ref_with_options};
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_resolve::{ResolveOptions, resolve_with_options};
 use rumoca_phase_typecheck::typecheck_instanced;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use crate::experiment::experiment_settings_for_model;
+use crate::library_cache::{
+    LibraryCacheStatus, parse_library_with_cache_in, resolve_library_cache_dir,
+};
 use crate::merge::{
     MergeSemanticError, collect_class_type_counts, collect_model_names, merge_stored_definitions,
 };
@@ -109,6 +112,19 @@ pub enum IndexingMode {
     /// Continue indexing with partial results when some files fail.
     #[default]
     Tolerant,
+}
+
+/// Report for tolerant library indexing.
+#[derive(Debug, Clone)]
+pub struct IndexingReport {
+    pub source_set_id: String,
+    pub library_path: String,
+    pub indexed_file_count: usize,
+    pub inserted_file_count: usize,
+    pub cache_status: Option<LibraryCacheStatus>,
+    pub cache_key: Option<String>,
+    pub cache_file: Option<PathBuf>,
+    pub diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -747,6 +763,67 @@ impl Session {
             .insert(source_set_id.to_string(), inserted_uris);
         self.invalidate_resolved_state();
         inserted_count
+    }
+
+    /// Tolerantly index one library path into a parsed source-set.
+    ///
+    /// Parsing/index/cache failures are reported in `diagnostics` and do not
+    /// panic or abort the session.
+    pub fn index_library_tolerant(
+        &mut self,
+        source_set_id: &str,
+        library_path: &Path,
+        exclude_uri: Option<&str>,
+    ) -> IndexingReport {
+        let cache_dir = resolve_library_cache_dir();
+        self.index_library_tolerant_with_cache_dir(
+            source_set_id,
+            library_path,
+            exclude_uri,
+            cache_dir.as_deref(),
+        )
+    }
+
+    fn index_library_tolerant_with_cache_dir(
+        &mut self,
+        source_set_id: &str,
+        library_path: &Path,
+        exclude_uri: Option<&str>,
+        cache_dir: Option<&Path>,
+    ) -> IndexingReport {
+        let library_path_str = library_path.display().to_string();
+        let parsed = match parse_library_with_cache_in(library_path, cache_dir) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                return IndexingReport {
+                    source_set_id: source_set_id.to_string(),
+                    library_path: library_path_str,
+                    indexed_file_count: 0,
+                    inserted_file_count: 0,
+                    cache_status: None,
+                    cache_key: None,
+                    cache_file: None,
+                    diagnostics: vec![format!(
+                        "Failed to load library '{}': {}",
+                        library_path.display(),
+                        err
+                    )],
+                };
+            }
+        };
+
+        let inserted_file_count =
+            self.replace_parsed_source_set(source_set_id, parsed.documents, exclude_uri);
+        IndexingReport {
+            source_set_id: source_set_id.to_string(),
+            library_path: library_path_str,
+            indexed_file_count: parsed.file_count,
+            inserted_file_count,
+            cache_status: Some(parsed.cache_status),
+            cache_key: Some(parsed.cache_key),
+            cache_file: parsed.cache_file,
+            diagnostics: Vec::new(),
+        }
     }
 
     /// Remove all parsed documents previously loaded for a source-set id.
