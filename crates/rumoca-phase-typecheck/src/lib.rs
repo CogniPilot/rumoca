@@ -30,12 +30,13 @@ use rumoca_core::{
     TypeId,
 };
 use rumoca_ir_ast::{
-    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Equation, Expression,
-    InstanceOverlay, ResolvedTree, ScopeImport, Statement, StoredDefinition, Type, TypeAlias,
-    TypeClassType, TypeTable, TypedTree,
+    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
+    ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
+    TypedTree,
 };
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
+use typechecker::traversal_adapter::walk_equations;
 
 pub use typechecker::api::{typecheck, typecheck_instanced};
 
@@ -435,12 +436,8 @@ impl TypeChecker {
         // Validate builtin modifier value types with instanced component scope.
         self.check_component_modifier_types_in_class(model_class, type_table);
 
-        for eq in &model_class.equations {
-            self.check_equation(eq, type_table);
-        }
-        for eq in &model_class.initial_equations {
-            self.check_equation(eq, type_table);
-        }
+        walk_equations(self, &model_class.equations, type_table);
+        walk_equations(self, &model_class.initial_equations, type_table);
 
         self.current_component_types = prev_scope_types;
     }

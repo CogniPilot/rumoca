@@ -1,9 +1,9 @@
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use std::collections::HashMap;
 
 use super::PhaseResult;
+use crate::traversal_adapter::collect_class_dependencies;
 
 pub(crate) type Fingerprint = [u8; 32];
 
@@ -101,380 +101,6 @@ impl DependencyFingerprintCache {
     }
 }
 
-fn collect_class_dependencies(
-    tree: &ast::ClassTree,
-    class: &ast::ClassDef,
-    class_name: &str,
-) -> IndexSet<String> {
-    let mut deps = IndexSet::new();
-
-    for ext in &class.extends {
-        if let Some(base_def_id) = ext.base_def_id {
-            add_class_dep_by_def_id(tree, &mut deps, base_def_id);
-        }
-        add_class_dep_from_name(tree, &mut deps, &ext.base_name);
-        for modification in &ext.modifications {
-            collect_expression_class_deps(tree, &mut deps, &modification.expr);
-        }
-        for annotation in &ext.annotation {
-            collect_expression_class_deps(tree, &mut deps, annotation);
-        }
-    }
-
-    if let Some(constrainedby) = &class.constrainedby {
-        add_class_dep_from_name(tree, &mut deps, constrainedby);
-    }
-    for import in &class.imports {
-        add_class_dep_from_name(tree, &mut deps, import.base_path());
-    }
-    for subscript in &class.array_subscripts {
-        collect_subscript_class_deps(tree, &mut deps, subscript);
-    }
-    for annotation in &class.annotation {
-        collect_expression_class_deps(tree, &mut deps, annotation);
-    }
-
-    for component in class.components.values() {
-        if let Some(type_def_id) = component.type_def_id {
-            add_class_dep_by_def_id(tree, &mut deps, type_def_id);
-        }
-        add_class_dep_from_name(tree, &mut deps, &component.type_name);
-        if let Some(constrainedby) = &component.constrainedby {
-            add_class_dep_from_name(tree, &mut deps, constrainedby);
-        }
-        collect_expression_class_deps(tree, &mut deps, &component.start);
-        if let Some(binding) = &component.binding {
-            collect_expression_class_deps(tree, &mut deps, binding);
-        }
-        for shape in &component.shape_expr {
-            collect_subscript_class_deps(tree, &mut deps, shape);
-        }
-        for annotation in &component.annotation {
-            collect_expression_class_deps(tree, &mut deps, annotation);
-        }
-        for modification in component.modifications.values() {
-            collect_expression_class_deps(tree, &mut deps, modification);
-        }
-        if let Some(condition) = &component.condition {
-            collect_expression_class_deps(tree, &mut deps, condition);
-        }
-    }
-
-    for equation in &class.equations {
-        collect_equation_class_deps(tree, &mut deps, equation);
-    }
-    for equation in &class.initial_equations {
-        collect_equation_class_deps(tree, &mut deps, equation);
-    }
-    for algorithm in &class.algorithms {
-        for statement in algorithm {
-            collect_statement_class_deps(tree, &mut deps, statement);
-        }
-    }
-    for algorithm in &class.initial_algorithms {
-        for statement in algorithm {
-            collect_statement_class_deps(tree, &mut deps, statement);
-        }
-    }
-
-    if let Some(external) = &class.external {
-        if let Some(output) = &external.output {
-            collect_component_ref_class_deps(tree, &mut deps, output);
-        }
-        for arg in &external.args {
-            collect_expression_class_deps(tree, &mut deps, arg);
-        }
-    }
-
-    deps.shift_remove(class_name);
-    deps
-}
-
-fn collect_equation_class_deps(
-    tree: &ast::ClassTree,
-    deps: &mut IndexSet<String>,
-    equation: &ast::Equation,
-) {
-    match equation {
-        ast::Equation::Empty => {}
-        ast::Equation::Simple { lhs, rhs } => {
-            collect_expression_class_deps(tree, deps, lhs);
-            collect_expression_class_deps(tree, deps, rhs);
-        }
-        ast::Equation::Connect { lhs, rhs } => {
-            collect_component_ref_class_deps(tree, deps, lhs);
-            collect_component_ref_class_deps(tree, deps, rhs);
-        }
-        ast::Equation::For { indices, equations } => {
-            for index in indices {
-                collect_expression_class_deps(tree, deps, &index.range);
-            }
-            for nested in equations {
-                collect_equation_class_deps(tree, deps, nested);
-            }
-        }
-        ast::Equation::When(blocks) => {
-            for block in blocks {
-                collect_expression_class_deps(tree, deps, &block.cond);
-                for nested in &block.eqs {
-                    collect_equation_class_deps(tree, deps, nested);
-                }
-            }
-        }
-        ast::Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_expression_class_deps(tree, deps, &block.cond);
-                for nested in &block.eqs {
-                    collect_equation_class_deps(tree, deps, nested);
-                }
-            }
-            if let Some(else_eqs) = else_block {
-                for nested in else_eqs {
-                    collect_equation_class_deps(tree, deps, nested);
-                }
-            }
-        }
-        ast::Equation::FunctionCall { comp, args } => {
-            collect_component_ref_class_deps(tree, deps, comp);
-            for arg in args {
-                collect_expression_class_deps(tree, deps, arg);
-            }
-        }
-        ast::Equation::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            collect_expression_class_deps(tree, deps, condition);
-            collect_expression_class_deps(tree, deps, message);
-            if let Some(level) = level {
-                collect_expression_class_deps(tree, deps, level);
-            }
-        }
-    }
-}
-
-fn collect_statement_class_deps(
-    tree: &ast::ClassTree,
-    deps: &mut IndexSet<String>,
-    statement: &ast::Statement,
-) {
-    match statement {
-        ast::Statement::Empty | ast::Statement::Return { .. } | ast::Statement::Break { .. } => {}
-        ast::Statement::Assignment { comp, value } => {
-            collect_component_ref_class_deps(tree, deps, comp);
-            collect_expression_class_deps(tree, deps, value);
-        }
-        ast::Statement::For { indices, equations } => {
-            for index in indices {
-                collect_expression_class_deps(tree, deps, &index.range);
-            }
-            for nested in equations {
-                collect_statement_class_deps(tree, deps, nested);
-            }
-        }
-        ast::Statement::While(block) => {
-            collect_expression_class_deps(tree, deps, &block.cond);
-            for nested in &block.stmts {
-                collect_statement_class_deps(tree, deps, nested);
-            }
-        }
-        ast::Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                collect_expression_class_deps(tree, deps, &block.cond);
-                for nested in &block.stmts {
-                    collect_statement_class_deps(tree, deps, nested);
-                }
-            }
-            if let Some(else_stmts) = else_block {
-                for nested in else_stmts {
-                    collect_statement_class_deps(tree, deps, nested);
-                }
-            }
-        }
-        ast::Statement::When(blocks) => {
-            for block in blocks {
-                collect_expression_class_deps(tree, deps, &block.cond);
-                for nested in &block.stmts {
-                    collect_statement_class_deps(tree, deps, nested);
-                }
-            }
-        }
-        ast::Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-        } => {
-            collect_component_ref_class_deps(tree, deps, comp);
-            for arg in args {
-                collect_expression_class_deps(tree, deps, arg);
-            }
-            for output in outputs {
-                collect_expression_class_deps(tree, deps, output);
-            }
-        }
-        ast::Statement::Reinit { variable, value } => {
-            collect_component_ref_class_deps(tree, deps, variable);
-            collect_expression_class_deps(tree, deps, value);
-        }
-        ast::Statement::Assert {
-            condition,
-            message,
-            level,
-        } => {
-            collect_expression_class_deps(tree, deps, condition);
-            collect_expression_class_deps(tree, deps, message);
-            if let Some(level) = level {
-                collect_expression_class_deps(tree, deps, level);
-            }
-        }
-    }
-}
-
-fn collect_expression_class_deps(
-    tree: &ast::ClassTree,
-    deps: &mut IndexSet<String>,
-    expr: &ast::Expression,
-) {
-    match expr {
-        ast::Expression::Empty | ast::Expression::Terminal { .. } => {}
-        ast::Expression::Range { start, step, end } => {
-            collect_expression_class_deps(tree, deps, start);
-            if let Some(step) = step {
-                collect_expression_class_deps(tree, deps, step);
-            }
-            collect_expression_class_deps(tree, deps, end);
-        }
-        ast::Expression::Unary { rhs, .. } => {
-            collect_expression_class_deps(tree, deps, rhs);
-        }
-        ast::Expression::Binary { lhs, rhs, .. } => {
-            collect_expression_class_deps(tree, deps, lhs);
-            collect_expression_class_deps(tree, deps, rhs);
-        }
-        ast::Expression::ComponentReference(comp) => {
-            collect_component_ref_class_deps(tree, deps, comp);
-        }
-        ast::Expression::FunctionCall { comp, args } => {
-            collect_component_ref_class_deps(tree, deps, comp);
-            for arg in args {
-                collect_expression_class_deps(tree, deps, arg);
-            }
-        }
-        ast::Expression::ClassModification {
-            target,
-            modifications,
-        } => {
-            collect_component_ref_class_deps(tree, deps, target);
-            for modification in modifications {
-                collect_expression_class_deps(tree, deps, modification);
-            }
-        }
-        ast::Expression::NamedArgument { value, .. } => {
-            collect_expression_class_deps(tree, deps, value);
-        }
-        ast::Expression::Modification { target, value } => {
-            collect_component_ref_class_deps(tree, deps, target);
-            collect_expression_class_deps(tree, deps, value);
-        }
-        ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements } => {
-            for element in elements {
-                collect_expression_class_deps(tree, deps, element);
-            }
-        }
-        ast::Expression::If {
-            branches,
-            else_branch,
-        } => {
-            for (condition, value) in branches {
-                collect_expression_class_deps(tree, deps, condition);
-                collect_expression_class_deps(tree, deps, value);
-            }
-            collect_expression_class_deps(tree, deps, else_branch);
-        }
-        ast::Expression::Parenthesized { inner } => {
-            collect_expression_class_deps(tree, deps, inner);
-        }
-        ast::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-        } => {
-            collect_expression_class_deps(tree, deps, expr);
-            for index in indices {
-                collect_expression_class_deps(tree, deps, &index.range);
-            }
-            if let Some(filter) = filter {
-                collect_expression_class_deps(tree, deps, filter);
-            }
-        }
-        ast::Expression::ArrayIndex { base, subscripts } => {
-            collect_expression_class_deps(tree, deps, base);
-            for subscript in subscripts {
-                collect_subscript_class_deps(tree, deps, subscript);
-            }
-        }
-        ast::Expression::FieldAccess { base, .. } => {
-            collect_expression_class_deps(tree, deps, base);
-        }
-    }
-}
-
-fn collect_component_ref_class_deps(
-    tree: &ast::ClassTree,
-    deps: &mut IndexSet<String>,
-    comp: &ast::ComponentReference,
-) {
-    if let Some(def_id) = comp.def_id {
-        add_class_dep_by_def_id(tree, deps, def_id);
-    }
-    for part in &comp.parts {
-        if let Some(subscripts) = &part.subs {
-            for subscript in subscripts {
-                collect_subscript_class_deps(tree, deps, subscript);
-            }
-        }
-    }
-}
-
-fn collect_subscript_class_deps(
-    tree: &ast::ClassTree,
-    deps: &mut IndexSet<String>,
-    subscript: &ast::Subscript,
-) {
-    if let ast::Subscript::Expression(expr) = subscript {
-        collect_expression_class_deps(tree, deps, expr);
-    }
-}
-
-fn add_class_dep_from_name(tree: &ast::ClassTree, deps: &mut IndexSet<String>, name: &ast::Name) {
-    if let Some(def_id) = name.def_id {
-        add_class_dep_by_def_id(tree, deps, def_id);
-        return;
-    }
-
-    let qualified = name.to_string();
-    let Some(&def_id) = tree.name_map.get(&qualified) else {
-        return;
-    };
-    add_class_dep_by_def_id(tree, deps, def_id);
-}
-
-fn add_class_dep_by_def_id(tree: &ast::ClassTree, deps: &mut IndexSet<String>, def_id: DefId) {
-    let Some(qualified_name) = tree.def_map.get(&def_id) else {
-        return;
-    };
-    if tree.get_class_by_def_id(def_id).is_some() {
-        deps.insert(qualified_name.clone());
-    }
-}
-
 fn class_source_fingerprint(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
@@ -525,7 +151,7 @@ mod tests {
     use crate::Session;
 
     #[test]
-    fn add_class_dep_from_name_uses_qualified_fallback_lookup() {
+    fn from_tree_collects_import_dependencies() {
         let source = r#"
             package P
               model Dep
@@ -554,14 +180,139 @@ mod tests {
             .ensure_resolved()
             .expect("resolved tree should be cached")
             .0;
-        let import_name = ast::Name::from_string("P.Dep");
-
-        let mut deps = IndexSet::new();
-        add_class_dep_from_name(tree, &mut deps, &import_name);
+        let cache = DependencyFingerprintCache::from_tree(tree);
+        let deps = cache
+            .class_dependencies()
+            .get("P.Root")
+            .cloned()
+            .unwrap_or_default();
 
         assert!(
             deps.iter().any(|dep| dep == "P.Dep"),
-            "qualified fallback lookup should resolve import dependency"
+            "import dependency should be included in class dependency graph"
+        );
+    }
+
+    #[test]
+    fn model_fingerprint_ignores_unreachable_classes() {
+        let source_v1 = r#"
+            package P
+              model Dep
+                Real y;
+              equation
+                y = 1;
+              end Dep;
+
+              model Root
+                Dep d;
+              equation
+                d.y = 2;
+              end Root;
+
+              model Unused
+                Real z;
+              equation
+                z = 3;
+              end Unused;
+            end P;
+        "#;
+
+        let source_v2 = r#"
+            package P
+              model Dep
+                Real y;
+              equation
+                y = 1;
+              end Dep;
+
+              model Root
+                Dep d;
+              equation
+                d.y = 2;
+              end Root;
+
+              model Unused
+                Real z;
+              equation
+                z = 30;
+              end Unused;
+            end P;
+        "#;
+
+        let mut session_v1 = Session::default();
+        session_v1
+            .add_document("test.mo", source_v1)
+            .expect("first document should parse");
+        session_v1
+            .build_resolved()
+            .expect("first tree should resolve");
+        let tree_v1 = &session_v1
+            .ensure_resolved()
+            .expect("first resolved tree should be cached")
+            .0;
+        let mut cache_v1 = DependencyFingerprintCache::from_tree(tree_v1);
+        let fingerprint_v1 = cache_v1.model_fingerprint("P.Root");
+
+        let mut session_v2 = Session::default();
+        session_v2
+            .add_document("test.mo", source_v2)
+            .expect("second document should parse");
+        session_v2
+            .build_resolved()
+            .expect("second tree should resolve");
+        let tree_v2 = &session_v2
+            .ensure_resolved()
+            .expect("second resolved tree should be cached")
+            .0;
+        let mut cache_v2 = DependencyFingerprintCache::from_tree(tree_v2);
+        let fingerprint_v2 = cache_v2.model_fingerprint("P.Root");
+
+        assert_eq!(
+            fingerprint_v1, fingerprint_v2,
+            "reachable model fingerprint should not change when an unreachable class changes"
+        );
+    }
+
+    #[test]
+    fn from_tree_collects_external_function_argument_dependencies() {
+        let source = r#"
+            package P
+              function Helper
+                input Real u;
+                output Real y;
+              algorithm
+                y := u;
+              end Helper;
+
+              function ExternalUser
+                input Real u;
+                output Real y;
+              external "C" y = native_call(Helper(u));
+              end ExternalUser;
+            end P;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("test.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let tree = &session
+            .ensure_resolved()
+            .expect("resolved tree should be cached")
+            .0;
+        let cache = DependencyFingerprintCache::from_tree(tree);
+        let deps = cache
+            .class_dependencies()
+            .get("P.ExternalUser")
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(
+            deps.iter().any(|dep| dep == "P.Helper"),
+            "external declaration arguments should participate in dependency collection"
         );
     }
 }

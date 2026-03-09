@@ -331,7 +331,9 @@ impl Resolver {
                     self.emit_unresolved_import(import);
                     return None;
                 };
-                let resolved_names = self.resolve_selective_names(pkg_qualified, names);
+                let pkg_qualified = pkg_qualified.clone();
+                let resolved_names =
+                    self.resolve_selective_import_entries(import, &pkg_qualified, names)?;
                 ast::scope::Import::Unqualified {
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
                     names: resolved_names,
@@ -357,6 +359,47 @@ impl Resolver {
             ),
             PrimaryLabel::new(span).with_message("import could not be resolved"),
         ));
+    }
+
+    fn emit_unresolved_selective_import_member(
+        &mut self,
+        import: &ast::Import,
+        name_token: &rumoca_ir_core::Token,
+    ) {
+        let span = crate::location_to_span(&name_token.location, &self.source_map);
+        self.diagnostics.emit(Diagnostic::error(
+            "ER002",
+            format!(
+                "unresolved import member: '{}' in '{}'",
+                name_token.text,
+                Self::format_import_clause(import)
+            ),
+            PrimaryLabel::new(span).with_message("import member could not be resolved"),
+        ));
+    }
+
+    fn resolve_selective_import_entries(
+        &mut self,
+        import: &ast::Import,
+        pkg_qualified: &str,
+        names: &[rumoca_ir_core::Token],
+    ) -> Option<IndexMap<String, DefId>> {
+        let mut resolved_names = IndexMap::new();
+        let mut has_missing_name = false;
+        for name_token in names {
+            let full_name = format!("{pkg_qualified}.{}", name_token.text);
+            if let Some(&def_id) = self.name_to_def.get(&full_name) {
+                resolved_names.insert(name_token.text.to_string(), def_id);
+            } else {
+                has_missing_name = true;
+                self.emit_unresolved_selective_import_member(import, name_token);
+            }
+        }
+        if has_missing_name {
+            None
+        } else {
+            Some(resolved_names)
+        }
     }
 
     fn import_span(&self, import: &ast::Import) -> rumoca_core::Span {
@@ -409,21 +452,5 @@ impl Resolver {
             .get(pkg_qualified)
             .cloned()
             .unwrap_or_default()
-    }
-
-    /// Resolve specific names from a package for selective imports.
-    fn resolve_selective_names(
-        &self,
-        pkg_qualified: &str,
-        names: &[rumoca_ir_core::Token],
-    ) -> IndexMap<String, DefId> {
-        let mut resolved_names = IndexMap::new();
-        for name_token in names {
-            let full_name = format!("{}.{}", pkg_qualified, name_token.text);
-            if let Some(&def_id) = self.name_to_def.get(&full_name) {
-                resolved_names.insert(name_token.text.to_string(), def_id);
-            }
-        }
-        resolved_names
     }
 }

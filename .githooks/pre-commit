@@ -17,6 +17,9 @@ fi
 echo "pre-commit: checking staged Rust file line counts (SPEC_0021)..."
 cargo run --quiet --bin rum -- check-rust-file-lines
 
+echo "pre-commit: enforcing traversal policy..."
+cargo run --quiet --bin rumoca-traversal-policy-check
+
 echo "pre-commit: running cargo fmt --check..."
 cargo fmt --all -- --check
 

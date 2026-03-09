@@ -44,6 +44,7 @@ mod inheritance;
 mod mod_env;
 mod nested_scope;
 mod templates;
+mod traversal_adapter;
 mod type_lookup;
 mod type_overrides;
 

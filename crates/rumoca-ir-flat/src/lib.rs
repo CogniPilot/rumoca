@@ -28,7 +28,7 @@ use convert_from_ast::{
     convert_function_call, convert_function_call_with_def_map, convert_if_with_def_map,
     convert_terminal, function_component_ref_from_ast,
 };
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use rumoca_core::{DefId, Span, TypeId};
 #[cfg(test)]
 use rumoca_ir_ast as ast;
@@ -124,8 +124,8 @@ pub use name_utils::component_base_name;
 
 // Re-export visitor types
 pub use visitor::{
-    ContainsDerChecker, ExpressionVisitor, FunctionCallCollector, StateVariableCollector,
-    VarRefCollector,
+    AlgorithmOutputCollector, ContainsDerChecker, ExpressionVisitor, FunctionCallCollector,
+    StateVariableCollector, StatementVisitor, VarRefCollector,
 };
 
 /// A globally unique variable name in the flat model.
@@ -1017,11 +1017,13 @@ pub enum Statement {
 ///
 /// For array element assignments like `x[i] := ...`, the base variable `x` is returned.
 pub fn extract_algorithm_outputs(statements: &[Statement]) -> Vec<VarName> {
-    let mut outputs = IndexSet::new();
-    for stmt in statements {
-        collect_algorithm_outputs_from_statement(stmt, &mut outputs);
+    use crate::visitor::{AlgorithmOutputCollector, StatementVisitor};
+
+    let mut collector = AlgorithmOutputCollector::new();
+    for statement in statements {
+        collector.visit_statement(statement);
     }
-    outputs.into_iter().collect()
+    collector.into_outputs()
 }
 
 /// Convert a component reference to its base variable name.
@@ -1030,57 +1032,6 @@ pub fn extract_algorithm_outputs(statements: &[Statement]) -> Vec<VarName> {
 pub fn component_ref_to_base_var_name(comp: &ComponentReference) -> VarName {
     let parts: Vec<String> = comp.parts.iter().map(|p| p.ident.to_string()).collect();
     VarName::new(parts.join("."))
-}
-
-fn collect_algorithm_outputs_from_statement(stmt: &Statement, outputs: &mut IndexSet<VarName>) {
-    match stmt {
-        Statement::Assignment { comp, .. } => {
-            outputs.insert(component_ref_to_base_var_name(comp));
-        }
-        Statement::For { equations, .. } => {
-            for s in equations {
-                collect_algorithm_outputs_from_statement(s, outputs);
-            }
-        }
-        Statement::While(block) => {
-            for s in &block.stmts {
-                collect_algorithm_outputs_from_statement(s, outputs);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                for s in &block.stmts {
-                    collect_algorithm_outputs_from_statement(s, outputs);
-                }
-            }
-            if let Some(stmts) = else_block {
-                for s in stmts {
-                    collect_algorithm_outputs_from_statement(s, outputs);
-                }
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                for s in &block.stmts {
-                    collect_algorithm_outputs_from_statement(s, outputs);
-                }
-            }
-        }
-        Statement::FunctionCall { outputs: outs, .. } => {
-            for out in outs {
-                if let Expression::VarRef { name, .. } = out {
-                    outputs.insert(name.clone());
-                }
-            }
-        }
-        Statement::Reinit { variable, .. } => {
-            outputs.insert(component_ref_to_base_var_name(variable));
-        }
-        Statement::Empty | Statement::Return | Statement::Break | Statement::Assert { .. } => {}
-    }
 }
 
 /// Strip surrounding quotes from a string if present.
