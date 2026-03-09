@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use rumoca_core::Span;
-use rumoca_eval_dae::runtime::{build_env, eval_expr};
+use rumoca_eval_dae::runtime::{VarEnv, build_env, eval_expr};
+use rumoca_ir_core::{OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
 
 use crate::runtime::timeout::{TimeoutBudget, TimeoutExceeded};
@@ -9,23 +10,241 @@ use crate::simulation::dae_prepare::expr_contains_der_of;
 use crate::simulation::diagnostics::sim_trace_enabled;
 use crate::simulation::pipeline::MassMatrix;
 
-pub fn compute_mass_matrix(
+#[derive(Debug, thiserror::Error)]
+pub enum MassMatrixBuildError {
+    #[error("timeout after {seconds:.3}s")]
+    Timeout { seconds: f64 },
+    #[error(
+        "cannot derive DiffSol mass-matrix row {row} for state '{state_name}' from equation '{origin}': {reason}"
+    )]
+    NonDerivable {
+        row: usize,
+        state_name: String,
+        origin: String,
+        reason: String,
+    },
+}
+
+impl From<TimeoutExceeded> for MassMatrixBuildError {
+    fn from(value: TimeoutExceeded) -> Self {
+        Self::Timeout {
+            seconds: value.seconds,
+        }
+    }
+}
+
+const MASS_MATRIX_EPS: f64 = 1.0e-15;
+
+fn real_expr(value: f64) -> dae::Expression {
+    dae::Expression::Literal(dae::Literal::Real(value))
+}
+
+fn unary_minus_expr(rhs: dae::Expression) -> dae::Expression {
+    dae::Expression::Unary {
+        op: OpUnary::Minus(Default::default()),
+        rhs: Box::new(rhs),
+    }
+}
+
+fn binary_expr(op: OpBinary, lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+    dae::Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    }
+}
+
+fn add_expr(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+    binary_expr(OpBinary::Add(Default::default()), lhs, rhs)
+}
+
+fn sub_expr(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+    binary_expr(OpBinary::Sub(Default::default()), lhs, rhs)
+}
+
+fn mul_expr(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+    binary_expr(OpBinary::Mul(Default::default()), lhs, rhs)
+}
+
+fn div_expr(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+    binary_expr(OpBinary::Div(Default::default()), lhs, rhs)
+}
+
+fn combine_add_sub_coeffs(
+    lhs: Option<dae::Expression>,
+    rhs: Option<dae::Expression>,
+    subtract_rhs: bool,
+) -> Option<dae::Expression> {
+    match (lhs, rhs) {
+        (None, None) => None,
+        (Some(l), None) => Some(l),
+        (None, Some(r)) => {
+            if subtract_rhs {
+                Some(unary_minus_expr(r))
+            } else {
+                Some(r)
+            }
+        }
+        (Some(l), Some(r)) => {
+            if subtract_rhs {
+                Some(sub_expr(l, r))
+            } else {
+                Some(add_expr(l, r))
+            }
+        }
+    }
+}
+
+fn coeff_expr_for_derivative(
+    expr: &dae::Expression,
+    state_name: &dae::VarName,
+) -> Result<Option<dae::Expression>, String> {
+    match expr {
+        dae::Expression::BuiltinCall { function, args }
+            if *function == dae::BuiltinFunction::Der =>
+        {
+            if args.len() != 1 {
+                return Err("der() must have exactly one argument".to_string());
+            }
+            if let dae::Expression::VarRef { name, subscripts } = &args[0]
+                && name == state_name
+                && subscripts.is_empty()
+            {
+                return Ok(Some(real_expr(1.0)));
+            }
+            Ok(None)
+        }
+        dae::Expression::Unary {
+            op: OpUnary::Minus(_),
+            rhs,
+        } => {
+            let inner = coeff_expr_for_derivative(rhs, state_name)?;
+            Ok(inner.map(unary_minus_expr))
+        }
+        dae::Expression::Binary { op, lhs, rhs } => match op {
+            OpBinary::Add(_) => {
+                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                Ok(combine_add_sub_coeffs(lhs_coeff, rhs_coeff, false))
+            }
+            OpBinary::Sub(_) => {
+                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                Ok(combine_add_sub_coeffs(lhs_coeff, rhs_coeff, true))
+            }
+            OpBinary::Mul(_) => {
+                let lhs_has_der = expr_contains_der_of(lhs, state_name);
+                let rhs_has_der = expr_contains_der_of(rhs, state_name);
+                if lhs_has_der && rhs_has_der {
+                    return Err("nonlinear derivative term in multiplication".to_string());
+                }
+                if lhs_has_der {
+                    let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                    let Some(coeff) = lhs_coeff else {
+                        return Err("unable to extract derivative coefficient from lhs".to_string());
+                    };
+                    return Ok(Some(mul_expr(coeff, rhs.as_ref().clone())));
+                }
+                if rhs_has_der {
+                    let rhs_coeff = coeff_expr_for_derivative(rhs, state_name)?;
+                    let Some(coeff) = rhs_coeff else {
+                        return Err("unable to extract derivative coefficient from rhs".to_string());
+                    };
+                    return Ok(Some(mul_expr(lhs.as_ref().clone(), coeff)));
+                }
+                Ok(None)
+            }
+            OpBinary::Div(_) => {
+                let rhs_has_der = expr_contains_der_of(rhs, state_name);
+                if rhs_has_der {
+                    return Err("nonlinear derivative term in denominator".to_string());
+                }
+                if !expr_contains_der_of(lhs, state_name) {
+                    return Ok(None);
+                }
+                let lhs_coeff = coeff_expr_for_derivative(lhs, state_name)?;
+                let Some(coeff) = lhs_coeff else {
+                    return Err(
+                        "unable to extract derivative coefficient from numerator".to_string()
+                    );
+                };
+                Ok(Some(div_expr(coeff, rhs.as_ref().clone())))
+            }
+            _ => {
+                if expr_contains_der_of(expr, state_name) {
+                    Err("unsupported derivative-dependent operator".to_string())
+                } else {
+                    Ok(None)
+                }
+            }
+        },
+        _ => {
+            if expr_contains_der_of(expr, state_name) {
+                Err("unsupported derivative-dependent expression shape".to_string())
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn state_name_for_row(state_names: &[dae::VarName], row: usize) -> String {
+    state_names
+        .get(row)
+        .map_or_else(|| format!("<state-{row}>"), ToString::to_string)
+}
+
+fn row_origin_for_error(dae_model: &dae::Dae, row: usize) -> String {
+    dae_model.f_x.get(row).map_or_else(
+        || "<missing equation row>".to_string(),
+        |eq| eq.origin.clone(),
+    )
+}
+
+fn non_derivable_error(
+    row: usize,
+    state_name: String,
+    origin: String,
+    reason: impl Into<String>,
+) -> MassMatrixBuildError {
+    MassMatrixBuildError::NonDerivable {
+        row,
+        state_name,
+        origin,
+        reason: reason.into(),
+    }
+}
+
+fn row_non_derivable_error(
     dae_model: &dae::Dae,
-    n_x: usize,
+    state_names: &[dae::VarName],
+    row: usize,
+    reason: impl Into<String>,
+) -> MassMatrixBuildError {
+    non_derivable_error(
+        row,
+        state_name_for_row(state_names, row),
+        row_origin_for_error(dae_model, row),
+        reason,
+    )
+}
+
+fn state_non_derivable_error(
+    eq: &dae::Equation,
+    row: usize,
+    state_name: &dae::VarName,
+    reason: impl Into<String>,
+) -> MassMatrixBuildError {
+    non_derivable_error(row, state_name.to_string(), eq.origin.clone(), reason)
+}
+
+fn build_mass_matrix_env(
+    dae_model: &dae::Dae,
+    state_names: &[dae::VarName],
     param_values: &[f64],
     budget: &TimeoutBudget,
-) -> Result<MassMatrix, TimeoutExceeded> {
-    let trace = sim_trace_enabled();
-    if trace {
-        eprintln!(
-            "[sim-trace] mass_matrix compute start: n_x={} n_eq={}",
-            n_x,
-            dae_model.f_x.len()
-        );
-    }
-    let state_names: Vec<dae::VarName> = dae_model.states.keys().cloned().collect();
-    let mut mass_matrix = vec![vec![0.0; n_x]; n_x];
-
+    trace: bool,
+) -> Result<VarEnv<f64>, MassMatrixBuildError> {
     let env_t0 = trace_timer_start_if(trace);
     if trace {
         eprintln!("[sim-trace] mass_matrix compute start: build_env");
@@ -36,12 +255,9 @@ pub fn compute_mass_matrix(
         param_values,
         0.0,
     );
-    let state_der_keys: Vec<String> = state_names
-        .iter()
-        .map(|name| format!("der({})", name.as_str()))
-        .collect();
-    for key in &state_der_keys {
-        env_zero.set(key, 0.0);
+    for state_name in state_names {
+        let key = format!("der({})", state_name.as_str());
+        env_zero.set(&key, 0.0);
     }
     budget.check()?;
     if trace {
@@ -50,37 +266,101 @@ pub fn compute_mass_matrix(
             trace_timer_elapsed_seconds(env_t0)
         );
     }
+    Ok(env_zero)
+}
 
-    for (i, row_coeffs) in mass_matrix.iter_mut().enumerate().take(n_x) {
-        if i.is_multiple_of(16) {
+fn fill_mass_matrix_row(
+    dae_model: &dae::Dae,
+    row: usize,
+    row_coeffs: &mut [f64],
+    state_names: &[dae::VarName],
+    env_zero: &VarEnv<f64>,
+) -> Result<(), MassMatrixBuildError> {
+    let Some(eq) = dae_model.f_x.get(row) else {
+        return Err(row_non_derivable_error(
+            dae_model,
+            state_names,
+            row,
+            "state row is missing from f_x",
+        ));
+    };
+
+    let mut row_has_der = false;
+    for (col, state_name) in state_names.iter().enumerate().take(row_coeffs.len()) {
+        if !expr_contains_der_of(&eq.rhs, state_name) {
+            continue;
+        }
+        row_has_der = true;
+        let coeff_expr = coeff_expr_for_derivative(&eq.rhs, state_name)
+            .map_err(|reason| state_non_derivable_error(eq, row, state_name, reason))?;
+        let Some(coeff_expr) = coeff_expr else {
+            return Err(state_non_derivable_error(
+                eq,
+                row,
+                state_name,
+                "unable to isolate derivative coefficient",
+            ));
+        };
+        let coeff_val = eval_expr::<f64>(&coeff_expr, env_zero);
+        if !coeff_val.is_finite() {
+            return Err(state_non_derivable_error(
+                eq,
+                row,
+                state_name,
+                "derivative coefficient evaluates to a non-finite value",
+            ));
+        }
+        if coeff_val.abs() > MASS_MATRIX_EPS {
+            row_coeffs[col] = coeff_val;
+        }
+    }
+
+    if !row_has_der {
+        return Err(row_non_derivable_error(
+            dae_model,
+            state_names,
+            row,
+            "equation row does not contain any der(state) term",
+        ));
+    }
+    if row_coeffs.iter().all(|c| c.abs() <= MASS_MATRIX_EPS) {
+        return Err(row_non_derivable_error(
+            dae_model,
+            state_names,
+            row,
+            "all derivative coefficients evaluate to approximately zero",
+        ));
+    }
+
+    Ok(())
+}
+
+pub fn compute_mass_matrix(
+    dae_model: &dae::Dae,
+    n_x: usize,
+    param_values: &[f64],
+    budget: &TimeoutBudget,
+) -> Result<MassMatrix, MassMatrixBuildError> {
+    let trace = sim_trace_enabled();
+    if trace {
+        eprintln!(
+            "[sim-trace] mass_matrix compute start: n_x={} n_eq={}",
+            n_x,
+            dae_model.f_x.len()
+        );
+    }
+    let state_names: Vec<dae::VarName> = dae_model.states.keys().cloned().collect();
+    let mut mass_matrix = vec![vec![0.0; n_x]; n_x];
+    let env_zero = build_mass_matrix_env(dae_model, &state_names, param_values, budget, trace)?;
+
+    for (row, row_coeffs) in mass_matrix.iter_mut().enumerate().take(n_x) {
+        if row.is_multiple_of(16) {
             budget.check()?;
         }
-        if i >= dae_model.f_x.len() {
-            break;
+        if trace && row > 0 && row.is_multiple_of(50) {
+            eprintln!("[sim-trace] mass_matrix compute progress: row={row}/{n_x}");
         }
-        if trace && i > 0 && i.is_multiple_of(50) {
-            eprintln!("[sim-trace] mass_matrix compute progress: row={i}/{n_x}");
-        }
-        let mut row_has_der = false;
-        let base_residual = eval_expr::<f64>(&dae_model.f_x[i].rhs, &env_zero);
-        for (j, state_name) in state_names.iter().enumerate().take(n_x) {
-            if !expr_contains_der_of(&dae_model.f_x[i].rhs, state_name) {
-                continue;
-            }
-            row_has_der = true;
-            let mut env_one = env_zero.clone();
-            if let Some(key) = state_der_keys.get(j) {
-                env_one.set(key, 1.0);
-            }
-            let residual_with_unit_der = eval_expr::<f64>(&dae_model.f_x[i].rhs, &env_one);
-            let coeff_val = residual_with_unit_der - base_residual;
-            if coeff_val.is_finite() && coeff_val.abs() > 1.0e-15 {
-                row_coeffs[j] = coeff_val;
-            }
-        }
-        if !row_has_der || row_coeffs.iter().all(|c| c.abs() <= 1.0e-15) {
-            row_coeffs[i] = 1.0;
-        }
+        fill_mass_matrix_row(dae_model, row, row_coeffs, &state_names, &env_zero)?;
     }
 
     if trace {
