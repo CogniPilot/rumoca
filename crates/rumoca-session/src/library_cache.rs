@@ -252,34 +252,95 @@ fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<String
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn workspace_root_dir() -> PathBuf {
-    let session_crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    session_crate_dir
-        .parent()
-        .and_then(|parent| parent.parent())
-        .map(Path::to_path_buf)
-        .unwrap_or(session_crate_dir)
-}
-
 fn absolutize_cache_path(path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         return path;
     }
-    workspace_root_dir().join(path)
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path,
+    }
 }
 
-pub fn resolve_library_cache_dir() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("RUMOCA_LIBRARY_CACHE_DIR") {
-        let path = PathBuf::from(path);
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            let profile = PathBuf::from(profile);
+            if !profile.as_os_str().is_empty() {
+                return Some(profile);
+            }
+        }
+
+        let drive = std::env::var_os("HOMEDRIVE");
+        let path = std::env::var_os("HOMEPATH");
+        if let (Some(drive), Some(path)) = (drive, path) {
+            let mut root = PathBuf::from(drive);
+            root.push(path);
+            if !root.as_os_str().is_empty() {
+                return Some(root);
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+}
+
+fn default_cache_root_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let base = PathBuf::from(local_app_data);
+            if !base.as_os_str().is_empty() {
+                return base.join("Rumoca");
+            }
+        }
+        if let Some(home) = home_dir() {
+            return home.join("AppData").join("Local").join("Rumoca");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = home_dir() {
+            return home.join("Library").join("Caches").join("rumoca");
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg_cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+            let base = PathBuf::from(xdg_cache_home);
+            if !base.as_os_str().is_empty() {
+                return absolutize_cache_path(base).join("rumoca");
+            }
+        }
+        if let Some(home) = home_dir() {
+            return home.join(".cache").join("rumoca");
+        }
+    }
+
+    std::env::temp_dir().join("rumoca")
+}
+
+fn resolve_library_cache_dir_from_override(override_dir: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = override_dir {
         if path.as_os_str().is_empty() {
             return None;
         }
-        return Some(absolutize_cache_path(path));
+        return Some(absolutize_cache_path(path).join("library"));
     }
-    let target_root = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace_root_dir().join("target"));
-    Some(absolutize_cache_path(target_root).join("rumoca-library-cache"))
+    Some(default_cache_root_dir().join("library"))
+}
+
+pub fn resolve_library_cache_dir() -> Option<PathBuf> {
+    let override_dir = std::env::var_os("RUMOCA_CACHE_DIR").map(PathBuf::from);
+    resolve_library_cache_dir_from_override(override_dir)
 }
 
 fn cache_file_path(cache_dir: &Path, cache_key: &str) -> PathBuf {
@@ -350,9 +411,9 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
     let cache_key = hash_library_inputs(path, &files)
         .with_context(|| format!("fingerprint {}", path.display()))?;
 
-    if let Some(cache_dir) = cache_dir {
-        fs::create_dir_all(cache_dir)
-            .with_context(|| format!("create library cache dir {}", cache_dir.display()))?;
+    if let Some(cache_dir) = cache_dir
+        && fs::create_dir_all(cache_dir).is_ok()
+    {
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(docs) = try_read_cache(&cache_file, &cache_key) {
             return Ok(ParsedLibrary {
@@ -366,14 +427,21 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
 
         let docs = parse_files_parallel(&files)
             .with_context(|| format!("parse library files under {}", path.display()))?;
-        write_cache(&cache_file, path, &cache_key, &docs)
-            .with_context(|| format!("write cache {}", cache_file.display()))?;
+        if write_cache(&cache_file, path, &cache_key, &docs).is_ok() {
+            return Ok(ParsedLibrary {
+                documents: docs,
+                file_count: files.len(),
+                cache_status: LibraryCacheStatus::Miss,
+                cache_key,
+                cache_file: Some(cache_file),
+            });
+        }
         return Ok(ParsedLibrary {
             documents: docs,
             file_count: files.len(),
-            cache_status: LibraryCacheStatus::Miss,
+            cache_status: LibraryCacheStatus::Disabled,
             cache_key,
-            cache_file: Some(cache_file),
+            cache_file: None,
         });
     }
 
@@ -423,7 +491,55 @@ mod tests {
         assert!(path.is_absolute(), "cache dir must be absolute: {path:?}");
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("rumoca-library-cache")
+            Some("library")
         );
+    }
+
+    #[test]
+    fn resolve_library_cache_dir_uses_override_and_appends_library_dir() {
+        let path =
+            resolve_library_cache_dir_from_override(Some(PathBuf::from("custom-cache-root")))
+                .expect("override should resolve");
+        assert!(
+            path.is_absolute(),
+            "override should resolve to absolute path"
+        );
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("library")
+        );
+        assert_eq!(
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str()),
+            Some("custom-cache-root")
+        );
+    }
+
+    #[test]
+    fn resolve_library_cache_dir_empty_override_disables_cache() {
+        let path = resolve_library_cache_dir_from_override(Some(PathBuf::new()));
+        assert!(path.is_none(), "empty override should disable cache");
+    }
+
+    #[test]
+    fn parse_library_with_cache_falls_back_when_cache_path_is_unusable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lib_dir = temp.path().join("lib");
+        std::fs::create_dir_all(&lib_dir).expect("mkdir");
+        std::fs::write(
+            lib_dir.join("package.mo"),
+            "package Lib model M Real x; equation der(x)=1; end M; end Lib;",
+        )
+        .expect("write package");
+
+        let blocked_path = temp.path().join("blocked-cache-path");
+        std::fs::write(&blocked_path, "this is a file, not a directory").expect("write file");
+
+        let parsed = parse_library_with_cache_in(&lib_dir, Some(&blocked_path))
+            .expect("cache failure should not fail parsing");
+        assert_eq!(parsed.cache_status, LibraryCacheStatus::Disabled);
+        assert_eq!(parsed.file_count, 1);
+        assert!(parsed.cache_file.is_none());
     }
 }
