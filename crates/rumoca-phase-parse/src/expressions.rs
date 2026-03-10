@@ -16,6 +16,7 @@ fn make_expr_list(args: Vec<rumoca_ir_ast::Expression>) -> ExpressionList {
         each_flags: vec![false; len],
         final_flags: vec![false; len],
         redeclare_flags: vec![false; len],
+        replaceable_flags: vec![false; len],
     }
 }
 
@@ -164,7 +165,8 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for rumoca_ir_ast::Subscript {
 }
 
 //-----------------------------------------------------------------------------
-/// Represents a modification argument with optional `each`, `final`, and `redeclare` prefixes
+/// Represents a modification argument with optional `each`, `final`, `redeclare`,
+/// and `replaceable` prefixes.
 #[derive(Debug, Default, Clone)]
 pub struct ModificationArg {
     pub expression: rumoca_ir_ast::Expression,
@@ -174,6 +176,8 @@ pub struct ModificationArg {
     pub r#final: bool,
     /// True if this argument is a redeclaration (MLS §7.3)
     pub redeclare: bool,
+    /// True if this argument is an element replaceable declaration (MLS §7.3)
+    pub replaceable: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -186,6 +190,8 @@ pub struct ExpressionList {
     pub final_flags: Vec<bool>,
     /// Parallel to args - true if the corresponding arg is a redeclaration
     pub redeclare_flags: Vec<bool>,
+    /// Parallel to args - true if the corresponding arg is an element replaceable declaration
+    pub replaceable_flags: Vec<bool>,
 }
 
 /// Convert a NamedArgument to a NamedArgument expression
@@ -313,14 +319,28 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                 let each_flags = vec![false; args.len()];
                 let final_flags = vec![false; args.len()];
                 let redeclare_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags, final_flags, redeclare_flags })
+                let replaceable_flags = vec![false; args.len()];
+                Ok(ExpressionList {
+                    args,
+                    each_flags,
+                    final_flags,
+                    redeclare_flags,
+                    replaceable_flags,
+                })
             }
             modelica_grammar_trait::FunctionArguments::NamedArguments(named) => {
                 let args = collect_named_arguments(&named.named_arguments);
                 let each_flags = vec![false; args.len()];
                 let final_flags = vec![false; args.len()];
                 let redeclare_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags, final_flags, redeclare_flags })
+                let replaceable_flags = vec![false; args.len()];
+                Ok(ExpressionList {
+                    args,
+                    each_flags,
+                    final_flags,
+                    redeclare_flags,
+                    replaceable_flags,
+                })
             }
         }
     }
@@ -341,14 +361,28 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionL
                 let each_flags = vec![false; args.len()];
                 let final_flags = vec![false; args.len()];
                 let redeclare_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags, final_flags, redeclare_flags })
+                let replaceable_flags = vec![false; args.len()];
+                Ok(ExpressionList {
+                    args,
+                    each_flags,
+                    final_flags,
+                    redeclare_flags,
+                    replaceable_flags,
+                })
             }
             modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(named) => {
                 let args = collect_named_arguments(&named.named_arguments);
                 let each_flags = vec![false; args.len()];
                 let final_flags = vec![false; args.len()];
                 let redeclare_flags = vec![false; args.len()];
-                Ok(ExpressionList { args, each_flags, final_flags, redeclare_flags })
+                let replaceable_flags = vec![false; args.len()];
+                Ok(ExpressionList {
+                    args,
+                    each_flags,
+                    final_flags,
+                    redeclare_flags,
+                    replaceable_flags,
+                })
             }
         }
     }
@@ -738,22 +772,25 @@ impl TryFrom<&modelica_grammar_trait::ArgumentList> for ExpressionList {
         ast: &modelica_grammar_trait::ArgumentList,
     ) -> std::result::Result<Self, Self::Error> {
         // After grammar change, ast.argument is ModificationArg
-        // Extract expressions, each_flags, final_flags, and redeclare_flags from ModificationArgs
+        // Extract expressions, modifier flags, and redeclaration metadata from ModificationArgs.
         let mut args = vec![ast.argument.expression.clone()];
         let mut each_flags = vec![ast.argument.each];
         let mut final_flags = vec![ast.argument.r#final];
         let mut redeclare_flags = vec![ast.argument.redeclare];
+        let mut replaceable_flags = vec![ast.argument.replaceable];
         for arg in &ast.argument_list_list {
             args.push(arg.argument.expression.clone());
             each_flags.push(arg.argument.each);
             final_flags.push(arg.argument.r#final);
             redeclare_flags.push(arg.argument.redeclare);
+            replaceable_flags.push(arg.argument.replaceable);
         }
         Ok(ExpressionList {
             args,
             each_flags,
             final_flags,
             redeclare_flags,
+            replaceable_flags,
         })
     }
 }
@@ -779,13 +816,17 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Argument) -> std::result::Result<Self, Self::Error> {
-        // Extract the `each`, `final`, and `redeclare` flags from the argument structure
-        let (each, r#final, redeclare) = match ast {
+        // Extract the modifier flags from the argument structure.
+        let (each, r#final, redeclare, replaceable) = match ast {
             modelica_grammar_trait::Argument::ElementModificationOrReplaceable(modif) => {
                 let emor = &modif.element_modification_or_replaceable;
                 let each = emor.element_modification_or_replaceable_opt.is_some();
                 let r#final = emor.element_modification_or_replaceable_opt0.is_some();
-                (each, r#final, false)
+                let replaceable = matches!(
+                    emor.element_modification_or_replaceable_group,
+                    modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementReplaceable(_)
+                );
+                (each, r#final, false, replaceable)
             }
             modelica_grammar_trait::Argument::ElementRedeclaration(redecl) => {
                 // Redeclarations have their own each/final flags inside element_redeclaration
@@ -797,7 +838,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
                     .element_redeclaration
                     .element_redeclaration_opt0
                     .is_some();
-                (each, r#final, true)
+                (each, r#final, true, false)
             }
         };
 
@@ -809,6 +850,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
             each,
             r#final,
             redeclare,
+            replaceable,
         })
     }
 }
@@ -832,11 +874,13 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
         let each_flags = vec![false; v.len()];
         let final_flags = vec![false; v.len()];
         let redeclare_flags = vec![false; v.len()];
+        let replaceable_flags = vec![false; v.len()];
         Ok(ExpressionList {
             args: v,
             each_flags,
             final_flags,
             redeclare_flags,
+            replaceable_flags,
         })
     }
 }
@@ -852,11 +896,13 @@ impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
             let each_flags = opt.function_arguments.each_flags.clone();
             let final_flags = opt.function_arguments.final_flags.clone();
             let redeclare_flags = opt.function_arguments.redeclare_flags.clone();
+            let replaceable_flags = opt.function_arguments.replaceable_flags.clone();
             Ok(ExpressionList {
                 args,
                 each_flags,
                 final_flags,
                 redeclare_flags,
+                replaceable_flags,
             })
         } else {
             Ok(ExpressionList {
@@ -864,6 +910,7 @@ impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
                 each_flags: vec![],
                 final_flags: vec![],
                 redeclare_flags: vec![],
+                replaceable_flags: vec![],
             })
         }
     }

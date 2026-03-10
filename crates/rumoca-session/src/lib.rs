@@ -43,6 +43,7 @@ mod experiment;
 mod library;
 mod library_cache;
 mod merge;
+mod package_layout;
 mod parse;
 mod project_config;
 mod runtime_api;

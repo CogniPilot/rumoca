@@ -177,6 +177,8 @@ pub struct Resolver {
     pub(crate) def_names: IndexMap<DefId, String>,
     /// Inverse map from qualified name to DefId for O(1) lookup during resolution.
     pub(crate) name_to_def: IndexMap<String, DefId>,
+    /// Map from class DefId to declared class type.
+    pub(crate) class_types: IndexMap<DefId, ast::ClassType>,
     /// Map from package qualified name to its direct children.
     /// Used for O(1) unqualified import resolution instead of O(n) scan.
     pub(crate) package_children: IndexMap<String, IndexMap<String, DefId>>,
@@ -209,6 +211,7 @@ impl Resolver {
             source_map: SourceMap::default(),
             def_names: IndexMap::new(),
             name_to_def: IndexMap::new(),
+            class_types: IndexMap::new(),
             package_children: IndexMap::new(),
             diagnostics: Diagnostics::new(),
             resolving_extends: std::collections::HashSet::new(),
@@ -739,6 +742,59 @@ end M;
             !import.labels.is_empty(),
             "unresolved selective import member should include source label"
         );
+    }
+
+    #[test]
+    fn test_import_from_non_package_is_rejected() {
+        let source = r#"
+model Outer
+  model Inner
+  end Inner;
+end Outer;
+
+model Test
+  import Outer.Inner;
+  Inner x;
+end Test;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(result.is_err(), "resolution should fail");
+
+        let diags = result.expect_err("expected resolve diagnostics");
+        assert!(diags.iter().any(|d| {
+            d.code.as_deref() == Some("ER002")
+                && d.message.contains("invalid import target")
+                && d.message.contains("Outer.Inner")
+        }));
+    }
+
+    #[test]
+    fn test_import_cannot_traverse_non_package_member() {
+        let source = r#"
+package P
+  model A
+    constant Real x = 1;
+  end A;
+end P;
+
+model Test
+  import P.A.x;
+  Real y;
+equation
+  y = x;
+end Test;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(result.is_err(), "resolution should fail");
+
+        let diags = result.expect_err("expected resolve diagnostics");
+        assert!(diags.iter().any(|d| {
+            d.code.as_deref() == Some("ER002")
+                && d.message.contains("invalid import target")
+                && d.message.contains("P.A.x")
+        }));
     }
 
     #[test]

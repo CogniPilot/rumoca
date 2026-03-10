@@ -33,6 +33,7 @@ use crate::traversal_adapter::{
     nested_target_modifications, redeclare_target_value, walk_extend_modifications,
     walk_nested_classes,
 };
+use crate::type_overrides::find_nested_class_in_hierarchy;
 
 const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
 
@@ -318,6 +319,18 @@ fn validate_redeclaration(
     new_type: Option<&str>,
     span: Span,
 ) -> InstantiateResult<()> {
+    // MLS §7.3.3: constants cannot be redeclared.
+    if matches!(
+        component.variability,
+        rumoca_ir_core::Variability::Constant(_)
+    ) {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            target_name,
+            "constant elements cannot be redeclared",
+            span,
+        )));
+    }
+
     // MLS §7.2.6: Check if component is final
     if component.is_final {
         return Err(Box::new(InstantiateError::redeclare_final(
@@ -375,6 +388,70 @@ fn validate_redeclaration(
     Ok(())
 }
 
+/// Validate a redeclared nested class/package target.
+///
+/// MLS §7.3: only replaceable classes may be redeclared.
+/// MLS §7.2.6: final classes may not be redeclared.
+/// MLS §7.3.2: class redeclarations must satisfy constrainedby.
+fn validate_class_redeclaration(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    target_name: &str,
+    new_type: Option<&str>,
+    span: Span,
+) -> InstantiateResult<()> {
+    if class.is_final {
+        return Err(Box::new(InstantiateError::redeclare_final(
+            target_name,
+            span,
+        )));
+    }
+
+    if !class.is_replaceable {
+        return Err(Box::new(InstantiateError::redeclare_non_replaceable(
+            target_name,
+            span,
+        )));
+    }
+
+    if let Some(new_type_name) = new_type {
+        let constraint_type_raw = class
+            .constrainedby
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                class
+                    .def_id
+                    .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+                    .unwrap_or_else(|| class.name.text.to_string())
+            });
+
+        let constraint_type = class
+            .constrainedby
+            .as_ref()
+            .and_then(|name| name.def_id)
+            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+            .or_else(|| {
+                class
+                    .def_id
+                    .and_then(|def_id| tree.def_map.get(&def_id).cloned())
+            })
+            .unwrap_or(constraint_type_raw.clone());
+
+        let resolved_new_type = resolve_type_in_context(tree, new_type_name, &constraint_type);
+        if !is_type_subtype(tree, &resolved_new_type, &constraint_type) {
+            return Err(Box::new(InstantiateError::redeclare_constraint_violation(
+                target_name,
+                &resolved_new_type,
+                &constraint_type,
+                span,
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Try to resolve a type name using the context of another type's package.
 ///
 /// For example, if context_type is "Package.SubPackage.TypeB" and type_name is "TypeA",
@@ -403,6 +480,35 @@ fn resolve_type_in_context(tree: &ast::ClassTree, type_name: &str, context_type:
 
     // Fall back to the original name
     type_name.to_string()
+}
+
+fn redeclare_target_span(
+    tree: &ast::ClassTree,
+    target_name: &str,
+    modification: &ast::ExtendModification,
+    extend_span: Span,
+) -> InstantiateResult<Span> {
+    let target = match &modification.expr {
+        ast::Expression::Modification { target, .. }
+        | ast::Expression::ClassModification { target, .. } => target,
+        _ => {
+            return Err(Box::new(InstantiateError::redeclare_error(
+                target_name,
+                "redeclare target is missing source span",
+                extend_span,
+            )));
+        }
+    };
+
+    let Some(part) = target.parts.first() else {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            target_name,
+            "redeclare target is missing source span",
+            extend_span,
+        )));
+    };
+
+    Ok(location_to_span(&part.ident.location, &tree.source_map))
 }
 
 /// Check if `subtype` is a subtype of `supertype`.
@@ -1090,6 +1196,21 @@ fn components_are_compatible(existing: &ast::Component, incoming: &ast::Componen
         && causality_eq(&existing.causality, &incoming.causality)
 }
 
+/// Check if two inherited child classes are semantically identical.
+///
+/// MLS §5.6.1.4: duplicate inherited children are valid only when they denote the
+/// same declaration. Compare canonical AST rendering rather than token/source
+/// locations so equivalent declarations from different bases remain compatible.
+fn classes_are_compatible(existing: &ast::ClassDef, incoming: &ast::ClassDef) -> bool {
+    if let (Some(existing_def_id), Some(incoming_def_id)) = (existing.def_id, incoming.def_id)
+        && existing_def_id == incoming_def_id
+    {
+        return true;
+    }
+
+    existing.to_modelica("") == incoming.to_modelica("")
+}
+
 /// Merge inherited content from a base class.
 fn merge_inherited(
     target: &mut InheritedContent,
@@ -1132,7 +1253,16 @@ fn merge_inherited(
 
     // Merge nested classes
     for (name, class) in base.classes {
-        if !target.classes.contains_key(&name) {
+        if let Some(existing) = target.classes.get(&name) {
+            if !classes_are_compatible(existing, &class) {
+                return Err(Box::new(InstantiateError::conflicting_inheritance(
+                    name.clone(),
+                    "previous base",
+                    extend.base_name.to_string(),
+                    location_to_span(&extend.location, source_map),
+                )));
+            }
+        } else {
             let mut inherited_class = class;
             apply_protected_class_visibility(&mut inherited_class, extend.is_protected);
             target.classes.insert(name, inherited_class);
@@ -1164,7 +1294,29 @@ fn collect_redeclarations(
         }
         let target_name_owned = target_name.to_string();
         let new_type = extract_redeclare_type_qualified(&modification.expr, tree);
+        let span = match redeclare_target_span(tree, &target_name_owned, modification, extend_span)
+        {
+            Ok(span) => span,
+            Err(err) => {
+                validation_error = Some(err);
+                return;
+            }
+        };
         let Some(component) = class.components.get(&target_name_owned) else {
+            let Some(redeclared_class) =
+                find_nested_class_in_hierarchy(tree, class, &target_name_owned)
+            else {
+                return;
+            };
+            if let Err(err) = validate_class_redeclaration(
+                tree,
+                redeclared_class,
+                &target_name_owned,
+                new_type.as_deref(),
+                span,
+            ) {
+                validation_error = Some(err);
+            }
             return;
         };
 
@@ -1173,7 +1325,7 @@ fn collect_redeclarations(
             component,
             &target_name_owned,
             new_type.as_deref(),
-            extend_span,
+            span,
         ) {
             validation_error = Some(err);
             return;
@@ -1211,6 +1363,7 @@ fn merge_class_content(
     extend: &ast::Extend,
 ) -> InstantiateResult<()> {
     let extend_span = location_to_span(&extend.location, &tree.source_map);
+    let mut validation_error: Option<Box<InstantiateError>> = None;
 
     // MLS §7.4: Validate break names exist in base class
     let base_class_name = extend.base_name.to_string();
@@ -1327,12 +1480,26 @@ fn merge_class_content(
 
     // Merge nested classes
     walk_nested_classes(class, |name, nested| {
-        if !target.classes.contains_key(name) {
+        if let Some(existing) = target.classes.get(name) {
+            if classes_are_compatible(existing, nested) {
+                return;
+            }
+            validation_error = Some(Box::new(InstantiateError::conflicting_inheritance(
+                name.to_string(),
+                "previous base",
+                extend.base_name.to_string(),
+                location_to_span(&extend.location, &tree.source_map),
+            )));
+        } else {
             let mut inherited_class = nested.clone();
             apply_protected_class_visibility(&mut inherited_class, extend.is_protected);
             target.classes.insert(name.to_string(), inherited_class);
         }
     });
+
+    if let Some(err) = validation_error {
+        return Err(err);
+    }
 
     Ok(())
 }
@@ -1543,448 +1710,4 @@ pub fn get_effective_equations_with_cache(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    /// Create a minimal component for testing.
-    fn make_component(name: &str, is_replaceable: bool, is_final: bool) -> ast::Component {
-        ast::Component {
-            name: name.to_string(),
-            is_replaceable,
-            is_final,
-            ..Default::default()
-        }
-    }
-
-    /// Create a component reference for testing.
-    fn make_component_ref(name: &str) -> ast::ComponentReference {
-        ast::ComponentReference {
-            local: false,
-            parts: vec![ast::ComponentRefPart {
-                ident: rumoca_ir_core::Token {
-                    text: std::sync::Arc::from(name),
-                    location: rumoca_ir_core::Location::default(),
-                    token_number: 0,
-                    token_type: 0,
-                },
-                subs: None,
-            }],
-            def_id: None,
-        }
-    }
-
-    /// Create a token for testing.
-    fn make_token(text: &str) -> rumoca_ir_core::Token {
-        rumoca_ir_core::Token {
-            text: std::sync::Arc::from(text),
-            location: rumoca_ir_core::Location::default(),
-            token_number: 0,
-            token_type: 0,
-        }
-    }
-
-    /// Create a Name for testing.
-    fn make_name(text: &str) -> rumoca_ir_ast::Name {
-        rumoca_ir_ast::Name {
-            name: vec![make_token(text)],
-            def_id: None,
-        }
-    }
-
-    #[test]
-    fn test_validate_redeclaration_non_replaceable() {
-        // A non-replaceable component should fail redeclaration
-        let tree = ast::ClassTree::default();
-        let comp = make_component("x", false, false);
-        let result = validate_redeclaration(&tree, &comp, "x", None, Span::DUMMY);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("not replaceable"));
-    }
-
-    #[test]
-    fn test_validate_redeclaration_final() {
-        // A final component should fail redeclaration (even if replaceable)
-        let tree = ast::ClassTree::default();
-        let comp = make_component("x", true, true);
-        let result = validate_redeclaration(&tree, &comp, "x", None, Span::DUMMY);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("final"));
-    }
-
-    #[test]
-    fn test_validate_redeclaration_replaceable() {
-        // A replaceable, non-final component should succeed
-        let tree = ast::ClassTree::default();
-        let comp = make_component("x", true, false);
-        let result = validate_redeclaration(&tree, &comp, "x", None, Span::DUMMY);
-        assert!(result.is_ok());
-    }
-
-    // -------------------------------------------------------------------------
-    // Constrainedby validation tests (MLS §7.3.2)
-    // -------------------------------------------------------------------------
-
-    /// Create a component with constrainedby for testing.
-    fn make_constrained_component(
-        name: &str,
-        type_name: &str,
-        constrainedby: Option<&str>,
-    ) -> ast::Component {
-        ast::Component {
-            name: name.to_string(),
-            type_name: make_name(type_name),
-            is_replaceable: true,
-            is_final: false,
-            constrainedby: constrainedby.map(make_name),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_constrainedby_exact_match() {
-        // Redeclaring with exact same type as constraint should succeed
-        let tree = ast::ClassTree::default();
-        let comp = make_constrained_component("x", "Real", Some("Real"));
-        let result = validate_redeclaration(&tree, &comp, "x", Some("Real"), Span::DUMMY);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_constrainedby_violation_builtin() {
-        // Redeclaring Real constrained component to Integer should fail
-        let tree = ast::ClassTree::default();
-        let comp = make_constrained_component("x", "Real", Some("Real"));
-        let result = validate_redeclaration(&tree, &comp, "x", Some("Integer"), Span::DUMMY);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("violates constrainedby"));
-    }
-
-    #[test]
-    fn test_constrainedby_default_uses_original_type() {
-        // When no constrainedby is specified, the original type is the constraint
-        let tree = ast::ClassTree::default();
-        let comp = make_constrained_component("x", "Real", None);
-        // Redeclaring to Integer should fail (Real is implicit constraint)
-        let result = validate_redeclaration(&tree, &comp, "x", Some("Integer"), Span::DUMMY);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_constrainedby_subtype_allowed() {
-        // Redeclaring to a subtype of the constraint should succeed
-
-        let mut tree = ast::ClassTree::default();
-
-        // Create base class
-        let base = ast::ClassDef {
-            name: make_token("BaseConnector"),
-            ..Default::default()
-        };
-
-        // Create derived class that extends base
-        let derived = ast::ClassDef {
-            name: make_token("DerivedConnector"),
-            extends: vec![ast::Extend {
-                base_name: make_name("BaseConnector"),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        tree.definitions
-            .classes
-            .insert("BaseConnector".to_string(), base);
-        tree.definitions
-            .classes
-            .insert("DerivedConnector".to_string(), derived);
-
-        // ast::Component constrained to BaseConnector
-        let comp = make_constrained_component("c", "BaseConnector", Some("BaseConnector"));
-
-        // Redeclaring to DerivedConnector (a subtype) should succeed
-        let result =
-            validate_redeclaration(&tree, &comp, "c", Some("DerivedConnector"), Span::DUMMY);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_constrainedby_non_subtype_rejected() {
-        // Redeclaring to a non-subtype should fail
-        let mut tree = ast::ClassTree::default();
-
-        // Create two unrelated classes
-        let class_a = ast::ClassDef {
-            name: make_token("ClassA"),
-            ..Default::default()
-        };
-        let class_b = ast::ClassDef {
-            name: make_token("ClassB"),
-            ..Default::default()
-        };
-
-        tree.definitions
-            .classes
-            .insert("ClassA".to_string(), class_a);
-        tree.definitions
-            .classes
-            .insert("ClassB".to_string(), class_b);
-
-        // ast::Component constrained to ClassA
-        let comp = make_constrained_component("c", "ClassA", Some("ClassA"));
-
-        // Redeclaring to ClassB (not a subtype) should fail
-        let result = validate_redeclaration(&tree, &comp, "c", Some("ClassB"), Span::DUMMY);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("violates constrainedby"));
-    }
-
-    // -------------------------------------------------------------------------
-    // is_type_subtype tests
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_is_type_subtype_exact_match() {
-        let tree = ast::ClassTree::default();
-        assert!(is_type_subtype(&tree, "Real", "Real"));
-        assert!(is_type_subtype(&tree, "MyClass", "MyClass"));
-    }
-
-    #[test]
-    fn test_is_type_subtype_builtin_mismatch() {
-        let tree = ast::ClassTree::default();
-        assert!(!is_type_subtype(&tree, "Real", "Integer"));
-        assert!(!is_type_subtype(&tree, "Boolean", "String"));
-    }
-
-    #[test]
-    fn test_is_type_subtype_via_extends() {
-        let mut tree = ast::ClassTree::default();
-
-        // A extends nothing
-        let class_a = ast::ClassDef {
-            name: make_token("A"),
-            ..Default::default()
-        };
-
-        // B extends A
-        let class_b = ast::ClassDef {
-            name: make_token("B"),
-            extends: vec![ast::Extend {
-                base_name: make_name("A"),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        // C extends B (transitive: C -> B -> A)
-        let class_c = ast::ClassDef {
-            name: make_token("C"),
-            extends: vec![ast::Extend {
-                base_name: make_name("B"),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        tree.definitions.classes.insert("A".to_string(), class_a);
-        tree.definitions.classes.insert("B".to_string(), class_b);
-        tree.definitions.classes.insert("C".to_string(), class_c);
-
-        // B is subtype of A
-        assert!(is_type_subtype(&tree, "B", "A"));
-        // C is subtype of B
-        assert!(is_type_subtype(&tree, "C", "B"));
-        // C is subtype of A (transitive)
-        assert!(is_type_subtype(&tree, "C", "A"));
-        // A is NOT subtype of B
-        assert!(!is_type_subtype(&tree, "A", "B"));
-    }
-
-    #[test]
-    fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
-        use rumoca_core::DefId;
-
-        let mut tree = ast::ClassTree::default();
-
-        let c_id = DefId::new(1);
-        let interfaces_id = DefId::new(2);
-        let d_id = DefId::new(3);
-        let pkg_id = DefId::new(4);
-        let root_id = DefId::new(5);
-
-        let class_c = ast::ClassDef {
-            def_id: Some(c_id),
-            name: make_token("C"),
-            ..Default::default()
-        };
-
-        let mut class_interfaces = ast::ClassDef {
-            def_id: Some(interfaces_id),
-            name: make_token("Interfaces"),
-            class_type: ast::ClassType::Package,
-            ..Default::default()
-        };
-        class_interfaces
-            .classes
-            .insert("C".to_string(), class_c.clone());
-
-        let class_d = ast::ClassDef {
-            def_id: Some(d_id),
-            name: make_token("D"),
-            extends: vec![ast::Extend {
-                // Relative name intentionally omits top-level prefix.
-                base_name: make_name("Pkg.Interfaces.C"),
-                base_def_id: Some(c_id),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let mut class_pkg = ast::ClassDef {
-            def_id: Some(pkg_id),
-            name: make_token("Pkg"),
-            class_type: ast::ClassType::Package,
-            ..Default::default()
-        };
-        class_pkg
-            .classes
-            .insert("Interfaces".to_string(), class_interfaces);
-        class_pkg.classes.insert("D".to_string(), class_d);
-
-        let mut class_root = ast::ClassDef {
-            def_id: Some(root_id),
-            name: make_token("Root"),
-            class_type: ast::ClassType::Package,
-            ..Default::default()
-        };
-        class_root.classes.insert("Pkg".to_string(), class_pkg);
-        tree.definitions
-            .classes
-            .insert("Root".to_string(), class_root);
-
-        tree.def_map
-            .insert(c_id, "Root.Pkg.Interfaces.C".to_string());
-        tree.def_map
-            .insert(interfaces_id, "Root.Pkg.Interfaces".to_string());
-        tree.def_map.insert(d_id, "Root.Pkg.D".to_string());
-        tree.def_map.insert(pkg_id, "Root.Pkg".to_string());
-        tree.def_map.insert(root_id, "Root".to_string());
-
-        tree.name_map
-            .insert("Root.Pkg.Interfaces.C".to_string(), c_id);
-        tree.name_map
-            .insert("Root.Pkg.Interfaces".to_string(), interfaces_id);
-        tree.name_map.insert("Root.Pkg.D".to_string(), d_id);
-        tree.name_map.insert("Root.Pkg".to_string(), pkg_id);
-        tree.name_map.insert("Root".to_string(), root_id);
-
-        let d_class = tree
-            .get_class_by_qualified_name("Root.Pkg.D")
-            .expect("Root.Pkg.D class should exist");
-        let mut cache = SubtypeCache::new();
-        assert!(
-            class_extends_cached(&tree, d_class, "Interfaces.C", &mut cache),
-            "relative extends with base_def_id should match short queried supertype"
-        );
-    }
-
-    #[test]
-    fn test_extract_modification_target_modification() {
-        // Test extracting target from ast::Expression::Modification
-        let expr = ast::Expression::Modification {
-            target: make_component_ref("myVar"),
-            value: Arc::new(ast::Expression::Empty),
-        };
-        assert_eq!(
-            extract_modification_target(&expr),
-            Some("myVar".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_modification_target_class_modification() {
-        // Test extracting target from ast::Expression::ClassModification
-        let expr = ast::Expression::ClassModification {
-            target: make_component_ref("myClass"),
-            modifications: vec![],
-        };
-        assert_eq!(
-            extract_modification_target(&expr),
-            Some("myClass".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_modification_target_named_argument() {
-        // Test extracting target from ast::Expression::NamedArgument
-        let expr = ast::Expression::NamedArgument {
-            name: make_token("param"),
-            value: Arc::new(ast::Expression::Empty),
-        };
-        assert_eq!(
-            extract_modification_target(&expr),
-            Some("param".to_string())
-        );
-    }
-
-    #[test]
-    fn test_is_effectively_primitive_transitive_enumeration_chain() {
-        // Test that type alias chains leading to enumerations are detected as primitive
-        // type Logic = enumeration(...)
-        // connector DigitalSignal = Logic
-        // connector DigitalInput = input DigitalSignal
-
-        // Create a tree with these classes
-        let mut tree = ast::ClassTree::new();
-
-        // Logic enumeration
-        let mut logic = ast::ClassDef {
-            name: make_token("Logic"),
-            ..Default::default()
-        };
-        logic.enum_literals.push(ast::EnumLiteral {
-            ident: make_token("U"),
-            description: vec![],
-        });
-        logic.enum_literals.push(ast::EnumLiteral {
-            ident: make_token("X"),
-            description: vec![],
-        });
-
-        // DigitalSignal = Logic
-        let digital_signal = ast::ClassDef {
-            name: make_token("DigitalSignal"),
-            extends: vec![ast::Extend {
-                base_name: make_name("Logic"),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        // DigitalInput = input DigitalSignal
-        let digital_input = ast::ClassDef {
-            name: make_token("DigitalInput"),
-            extends: vec![ast::Extend {
-                base_name: make_name("DigitalSignal"),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        tree.definitions.classes.insert("Logic".to_string(), logic);
-        tree.definitions
-            .classes
-            .insert("DigitalSignal".to_string(), digital_signal);
-        tree.definitions
-            .classes
-            .insert("DigitalInput".to_string(), digital_input.clone());
-
-        // DigitalInput should be effectively primitive because it chains to Logic (enumeration)
-        assert!(is_effectively_primitive_transitive(&tree, &digital_input));
-    }
-}
+mod tests;

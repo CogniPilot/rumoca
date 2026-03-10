@@ -3,8 +3,10 @@
 //! Tests for the 40 expression contracts defined in SPEC_0022.
 
 use rumoca_contracts::test_support::{
-    expect_balanced, expect_parse_err_with_code, expect_resolve_failure_with_code, expect_success,
+    expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
+    expect_resolve_failure_with_code, expect_success,
 };
+use rumoca_session::compile::FailedPhase;
 
 // =============================================================================
 // EXPR-001: Relational scalar only
@@ -312,6 +314,286 @@ fn expr_025_ceil_real() {
         end Test;
     "#,
         "Test",
+    );
+}
+
+// =============================================================================
+// EXPR-006 / EXPR-029: delay parameter expressions
+// =============================================================================
+
+#[test]
+fn expr_006_delaymax_parameter_expression_ok() {
+    expect_success(
+        r#"
+        model Test
+            parameter Real delayMax = 1.0;
+            Real x(start = 0);
+            Real y;
+        equation
+            der(x) = 1.0;
+            y = delay(x, 0.1, delayMax);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn expr_006_delaymax_parameter_expression_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real x(start = 0);
+            Real y;
+        equation
+            der(x) = 1.0;
+            y = delay(x, 0.1, x);
+        end Test;
+    "#,
+        "Test",
+        "ER055",
+    );
+}
+
+#[test]
+fn expr_029_delaytime_parameter_expression_ok() {
+    expect_success(
+        r#"
+        model Test
+            parameter Real dt = 0.1;
+            Real x(start = 0);
+            Real y;
+        equation
+            der(x) = 1.0;
+            y = delay(x, dt);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn expr_029_delaytime_non_parameter_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real x(start = 0);
+            Real y;
+        equation
+            der(x) = 1.0;
+            y = delay(x, x);
+        end Test;
+    "#,
+        "Test",
+        "ER055",
+    );
+}
+
+// =============================================================================
+// EXPR-008 / EXPR-033 / EXPR-035 / EXPR-036 / EXPR-037: function bans
+// =============================================================================
+
+#[test]
+fn expr_008_delay_not_in_function() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            input Real x;
+            output Real y;
+        algorithm
+            y := delay(x, 0.1);
+        end F;
+    "#,
+        "F",
+        "ER056",
+    );
+}
+
+#[test]
+fn expr_033_cardinality_not_in_function() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            input Real x;
+            output Integer y;
+        algorithm
+            y := cardinality(x);
+        end F;
+    "#,
+        "F",
+        "ER056",
+    );
+}
+
+#[test]
+fn expr_035_instream_not_in_function() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            input Real x;
+            output Real y;
+        algorithm
+            y := inStream(x);
+        end F;
+    "#,
+        "F",
+        "ER056",
+    );
+}
+
+#[test]
+fn expr_036_actualstream_not_in_function() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            input Real x;
+            output Real y;
+        algorithm
+            y := actualStream(x);
+        end F;
+    "#,
+        "F",
+        "ER056",
+    );
+}
+
+#[test]
+fn expr_037_pre_not_in_function() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            input Real x;
+            output Real y;
+        algorithm
+            y := pre(x);
+        end F;
+    "#,
+        "F",
+        "ER056",
+    );
+}
+
+// =============================================================================
+// EXPR-009: cardinality restrictions
+// =============================================================================
+
+#[test]
+fn expr_009_cardinality_rejects_connector_arrays() {
+    expect_resolve_failure_with_code(
+        r#"
+        connector Pin
+            Real v;
+            flow Real i;
+        end Pin;
+
+        model Test
+            Pin p[2];
+            Integer n;
+        equation
+            n = cardinality(p);
+            p[1].v = 0.0;
+            p[1].i = 0.0;
+            p[2].v = 0.0;
+            p[2].i = 0.0;
+        end Test;
+    "#,
+        "Test",
+        "ER057",
+    );
+}
+
+#[test]
+fn expr_009_cardinality_rejects_expandable_connectors() {
+    expect_resolve_failure_with_code(
+        r#"
+        expandable connector Bus
+            Real v;
+        end Bus;
+
+        model Test
+            Bus bus;
+            Integer n;
+        equation
+            n = cardinality(bus);
+        end Test;
+    "#,
+        "Test",
+        "ER057",
+    );
+}
+
+// =============================================================================
+// EXPR-026 / EXPR-027 / EXPR-028: builtin argument types
+// =============================================================================
+
+#[test]
+fn expr_026_integer_accepts_real_argument() {
+    expect_success(
+        r#"
+        model Test
+            Real x;
+            Integer n;
+        equation
+            x = 1.25;
+            n = integer(x);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn expr_026_integer_rejects_boolean_argument() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Boolean b;
+            Integer n;
+        equation
+            b = true;
+            n = integer(b);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET002",
+    );
+}
+
+#[test]
+fn expr_027_delay_rejects_string_value_argument() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            String s;
+            String y;
+        equation
+            s = "hello";
+            y = delay(s, 1.0);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET002",
+    );
+}
+
+#[test]
+fn expr_028_delay_rejects_non_real_time_argument() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Real x(start = 0);
+            parameter Boolean b = true;
+            Real y;
+        equation
+            der(x) = 1.0;
+            y = delay(x, b);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET002",
     );
 }
 

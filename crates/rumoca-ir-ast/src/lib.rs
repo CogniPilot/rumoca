@@ -65,8 +65,8 @@ pub type Variability = rumoca_ir_core::Variability;
 
 pub use visitor::{
     ComponentReferenceContext, ExpressionContext, ExpressionTransformer, FunctionCallContext,
-    SubscriptContext, TypeNameContext, Visitor, collect_component_refs, contains_component_ref,
-    contains_function_call,
+    NameContext, SubscriptContext, TypeNameContext, Visitor, collect_component_refs,
+    contains_component_ref, contains_function_call,
 };
 
 #[derive(Debug, Clone, Default)]

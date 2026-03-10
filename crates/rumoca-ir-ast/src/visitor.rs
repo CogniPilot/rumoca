@@ -48,8 +48,9 @@
 //! ```
 
 use crate::{
-    ClassDef, Component, ComponentReference, Equation, EquationBlock, Expression, Extend, ForIndex,
-    Name, Statement, StatementBlock, StoredDefinition, Subscript,
+    ClassDef, Component, ComponentReference, Equation, EquationBlock, Expression, Extend,
+    ExternalFunction, ForIndex, Import, Name, Statement, StatementBlock, StoredDefinition,
+    Subscript,
 };
 use std::ops::ControlFlow::{self, Break, Continue};
 use std::sync::Arc;
@@ -66,6 +67,7 @@ pub enum FunctionCallContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComponentReferenceContext {
     Expression,
+    ExpressionFunctionCallTarget,
     EquationConnectLhs,
     EquationConnectRhs,
     EquationFunctionCallTarget,
@@ -74,6 +76,7 @@ pub enum ComponentReferenceContext {
     ReinitTarget,
     ClassModificationTarget,
     ModificationTarget,
+    ExternalOutput,
 }
 
 /// Context for traversed type names.
@@ -85,11 +88,20 @@ pub enum TypeNameContext {
     ComponentConstrainedBy,
 }
 
+/// Context for traversed names that are not type names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameContext {
+    WithinClause,
+    ImportPath,
+}
+
 /// Context for traversed subscript expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubscriptContext {
     ComponentReferencePart,
     ArrayIndex,
+    ClassArraySubscript,
+    ComponentShape,
 }
 
 /// Context for traversed expressions from declaration/equation/statement fields.
@@ -97,9 +109,12 @@ pub enum SubscriptContext {
 pub enum ExpressionContext {
     Generic,
     ComponentStart,
+    ComponentBinding,
     ComponentModification,
     ComponentCondition,
     ComponentAnnotation,
+    ClassAnnotation,
+    ExtendAnnotation,
     EquationAssertCondition,
     EquationAssertMessage,
     EquationAssertLevel,
@@ -108,6 +123,23 @@ pub enum ExpressionContext {
     StatementAssertLevel,
     StatementFunctionOutput,
     ExtendModification,
+    ExternalArgument,
+}
+
+/// Default recursion for function calls with context-aware call-target traversal.
+pub fn walk_expr_function_call_ctx_default<V: Visitor + ?Sized>(
+    visitor: &mut V,
+    comp: &ComponentReference,
+    args: &[Expression],
+    ctx: FunctionCallContext,
+) -> ControlFlow<()> {
+    if matches!(ctx, FunctionCallContext::Expression) {
+        visitor.visit_component_reference_ctx(
+            comp,
+            ComponentReferenceContext::ExpressionFunctionCallTarget,
+        )?;
+    }
+    visitor.visit_expr_function_call(comp, args)
 }
 
 /// Trait for visiting AST nodes without modification.
@@ -162,15 +194,22 @@ pub trait Visitor {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        _ctx: FunctionCallContext,
+        ctx: FunctionCallContext,
     ) -> ControlFlow<()> {
-        self.visit_expr_function_call(comp, args)
+        walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 
     /// Visit a type name in declaration context.
     ///
     /// Default behavior is no-op to preserve existing traversal behavior.
     fn visit_type_name(&mut self, _name: &Name, _ctx: TypeNameContext) -> ControlFlow<()> {
+        Continue(())
+    }
+
+    /// Visit a non-type name with contextual metadata.
+    ///
+    /// Default behavior is no-op.
+    fn visit_name_ctx(&mut self, _name: &Name, _ctx: NameContext) -> ControlFlow<()> {
         Continue(())
     }
 
@@ -523,6 +562,9 @@ pub trait Visitor {
 
     /// Visit a stored definition (root of class tree).
     fn visit_stored_definition(&mut self, def: &StoredDefinition) -> ControlFlow<()> {
+        if let Some(within) = &def.within {
+            self.visit_name_ctx(within, NameContext::WithinClause)?;
+        }
         for (_, class) in &def.classes {
             self.visit_class_def(class)?;
         }
@@ -536,6 +578,10 @@ pub trait Visitor {
         }
         for ext in &class.extends {
             self.visit_extend(ext)?;
+        }
+        self.visit_each(&class.imports, Self::visit_import)?;
+        for subscript in &class.array_subscripts {
+            self.visit_subscript_ctx(subscript, SubscriptContext::ClassArraySubscript)?;
         }
         for (_, nested) in &class.classes {
             self.visit_class_def(nested)?;
@@ -551,7 +597,18 @@ pub trait Visitor {
         for section in &class.initial_algorithms {
             self.visit_each(section, Self::visit_statement)?;
         }
+        for annotation in &class.annotation {
+            self.visit_expression_ctx(annotation, ExpressionContext::ClassAnnotation)?;
+        }
+        if let Some(external) = &class.external {
+            self.visit_external_function(external)?;
+        }
         Continue(())
+    }
+
+    /// Visit an import clause.
+    fn visit_import(&mut self, import: &Import) -> ControlFlow<()> {
+        self.visit_name_ctx(import.base_path(), NameContext::ImportPath)
     }
 
     /// Visit an extends clause.
@@ -559,6 +616,9 @@ pub trait Visitor {
         self.visit_type_name(&ext.base_name, TypeNameContext::ExtendsBase)?;
         for modification in &ext.modifications {
             self.visit_expression_ctx(&modification.expr, ExpressionContext::ExtendModification)?;
+        }
+        for annotation in &ext.annotation {
+            self.visit_expression_ctx(annotation, ExpressionContext::ExtendAnnotation)?;
         }
         Continue(())
     }
@@ -569,8 +629,14 @@ pub trait Visitor {
         if let Some(constrainedby) = &comp.constrainedby {
             self.visit_type_name(constrainedby, TypeNameContext::ComponentConstrainedBy)?;
         }
+        for subscript in &comp.shape_expr {
+            self.visit_subscript_ctx(subscript, SubscriptContext::ComponentShape)?;
+        }
         if !matches!(comp.start, Expression::Empty) {
             self.visit_expression_ctx(&comp.start, ExpressionContext::ComponentStart)?;
+        }
+        if let Some(binding) = &comp.binding {
+            self.visit_expression_ctx(binding, ExpressionContext::ComponentBinding)?;
         }
         for (_, mod_expr) in &comp.modifications {
             self.visit_expression_ctx(mod_expr, ExpressionContext::ComponentModification)?;
@@ -580,6 +646,17 @@ pub trait Visitor {
         }
         for annotation in &comp.annotation {
             self.visit_expression_ctx(annotation, ExpressionContext::ComponentAnnotation)?;
+        }
+        Continue(())
+    }
+
+    /// Visit an external function declaration.
+    fn visit_external_function(&mut self, external: &ExternalFunction) -> ControlFlow<()> {
+        if let Some(output) = &external.output {
+            self.visit_component_reference_ctx(output, ComponentReferenceContext::ExternalOutput)?;
+        }
+        for arg in &external.args {
+            self.visit_expression_ctx(arg, ExpressionContext::ExternalArgument)?;
         }
         Continue(())
     }
@@ -700,7 +777,15 @@ pub trait ExpressionTransformer {
     }
 
     /// Transform a ComponentReference struct (internal helper).
-    fn transform_component_ref_inner(&mut self, cr: ComponentReference) -> ComponentReference {
+    fn transform_component_ref_inner(&mut self, mut cr: ComponentReference) -> ComponentReference {
+        for part in &mut cr.parts {
+            if let Some(subscripts) = &mut part.subs {
+                *subscripts = subscripts
+                    .drain(..)
+                    .map(|subscript| self.transform_subscript(subscript))
+                    .collect();
+            }
+        }
         cr
     }
 
@@ -711,7 +796,7 @@ pub trait ExpressionTransformer {
         args: Vec<Expression>,
     ) -> Expression {
         Expression::FunctionCall {
-            comp,
+            comp: self.transform_component_ref_inner(comp),
             args: args
                 .into_iter()
                 .map(|a| self.transform_expression(a))
@@ -836,7 +921,9 @@ pub fn collect_component_refs(expr: &Expression) -> Vec<ComponentReference> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ComponentRefPart, OpBinary, TerminalType, Token};
+    use crate::{
+        ComponentRefPart, ExternalFunction, Import, Location, OpBinary, TerminalType, Token,
+    };
     use indexmap::IndexMap;
 
     fn make_var(name: &str) -> Expression {
@@ -1022,7 +1109,7 @@ mod tests {
                 ctx: FunctionCallContext,
             ) -> ControlFlow<()> {
                 self.function_contexts.push(ctx);
-                self.visit_expr_function_call(comp, args)
+                walk_expr_function_call_ctx_default(self, comp, args, ctx)
             }
 
             fn visit_component_reference_ctx(
@@ -1071,6 +1158,11 @@ mod tests {
                 FunctionCallContext::Equation,
                 FunctionCallContext::Statement,
             ]
+        );
+        assert!(
+            recorder
+                .component_contexts
+                .contains(&ComponentReferenceContext::ExpressionFunctionCallTarget)
         );
         assert!(
             recorder
@@ -1142,6 +1234,50 @@ mod tests {
     }
 
     #[test]
+    fn test_name_context_dispatch() {
+        #[derive(Default)]
+        struct NameRecorder {
+            seen: Vec<(String, NameContext)>,
+        }
+
+        impl Visitor for NameRecorder {
+            fn visit_name_ctx(&mut self, name: &Name, ctx: NameContext) -> ControlFlow<()> {
+                self.seen.push((name.to_string(), ctx));
+                Continue(())
+            }
+        }
+
+        let class = ClassDef {
+            imports: vec![Import::Qualified {
+                path: Name::from_string("Modelica.Blocks"),
+                location: Location::default(),
+                global_scope: false,
+            }],
+            ..Default::default()
+        };
+
+        let mut classes = IndexMap::new();
+        classes.insert("Outer".to_string(), class);
+
+        let mut recorder = NameRecorder::default();
+        let _ = recorder.visit_stored_definition(&StoredDefinition {
+            classes,
+            within: Some(Name::from_string("Top.Level")),
+        });
+
+        assert!(
+            recorder
+                .seen
+                .contains(&("Top.Level".to_string(), NameContext::WithinClause))
+        );
+        assert!(
+            recorder
+                .seen
+                .contains(&("Modelica.Blocks".to_string(), NameContext::ImportPath))
+        );
+    }
+
+    #[test]
     fn test_subscript_context_dispatch() {
         #[derive(Default)]
         struct SubscriptRecorder {
@@ -1166,8 +1302,25 @@ mod tests {
             subscripts: vec![Subscript::Expression(make_int(2))],
         };
 
+        let class = ClassDef {
+            array_subscripts: vec![Subscript::Expression(make_int(3))],
+            components: {
+                let mut components = IndexMap::new();
+                components.insert(
+                    "x".to_string(),
+                    Component {
+                        shape_expr: vec![Subscript::Expression(make_int(4))],
+                        ..Default::default()
+                    },
+                );
+                components
+            },
+            ..Default::default()
+        };
+
         let mut recorder = SubscriptRecorder::default();
         let _ = recorder.visit_expression(&expr);
+        let _ = recorder.visit_class_def(&class);
 
         assert!(
             recorder
@@ -1175,12 +1328,19 @@ mod tests {
                 .contains(&SubscriptContext::ComponentReferencePart)
         );
         assert!(recorder.seen.contains(&SubscriptContext::ArrayIndex));
+        assert!(
+            recorder
+                .seen
+                .contains(&SubscriptContext::ClassArraySubscript)
+        );
+        assert!(recorder.seen.contains(&SubscriptContext::ComponentShape));
     }
 
     fn make_expression_context_dispatch_class() -> ClassDef {
         let mut component = Component {
             type_name: Name::from_string("Real"),
             start: make_int(1),
+            binding: Some(make_int(10)),
             condition: Some(make_var("cond")),
             ..Default::default()
         };
@@ -1194,8 +1354,10 @@ mod tests {
                     expr: make_int(4),
                     ..Default::default()
                 }],
+                annotation: vec![make_int(11)],
                 ..Default::default()
             }],
+            annotation: vec![make_int(12)],
             components: {
                 let mut comps = IndexMap::new();
                 comps.insert("x".to_string(), component);
@@ -1218,15 +1380,22 @@ mod tests {
                     outputs: vec![make_var("y")],
                 },
             ]],
+            external: Some(ExternalFunction {
+                args: vec![make_int(13)],
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
 
     fn assert_expression_contexts_seen(seen: &[ExpressionContext]) {
         assert!(seen.contains(&ExpressionContext::ComponentStart));
+        assert!(seen.contains(&ExpressionContext::ComponentBinding));
         assert!(seen.contains(&ExpressionContext::ComponentModification));
         assert!(seen.contains(&ExpressionContext::ComponentCondition));
         assert!(seen.contains(&ExpressionContext::ComponentAnnotation));
+        assert!(seen.contains(&ExpressionContext::ClassAnnotation));
+        assert!(seen.contains(&ExpressionContext::ExtendAnnotation));
         assert!(seen.contains(&ExpressionContext::ExtendModification));
         assert!(seen.contains(&ExpressionContext::EquationAssertCondition));
         assert!(seen.contains(&ExpressionContext::EquationAssertMessage));
@@ -1235,6 +1404,7 @@ mod tests {
         assert!(seen.contains(&ExpressionContext::StatementAssertMessage));
         assert!(seen.contains(&ExpressionContext::StatementAssertLevel));
         assert!(seen.contains(&ExpressionContext::StatementFunctionOutput));
+        assert!(seen.contains(&ExpressionContext::ExternalArgument));
     }
 
     #[test]
@@ -1260,6 +1430,41 @@ mod tests {
         let mut recorder = ExpressionContextRecorder::default();
         let _ = recorder.visit_class_def(&class);
         assert_expression_contexts_seen(&recorder.seen);
+    }
+
+    #[test]
+    fn test_external_output_context_dispatch() {
+        #[derive(Default)]
+        struct ComponentContextRecorder {
+            seen: Vec<ComponentReferenceContext>,
+        }
+
+        impl Visitor for ComponentContextRecorder {
+            fn visit_component_reference_ctx(
+                &mut self,
+                cr: &ComponentReference,
+                ctx: ComponentReferenceContext,
+            ) -> ControlFlow<()> {
+                self.seen.push(ctx);
+                self.visit_component_reference(cr)
+            }
+        }
+
+        let class = ClassDef {
+            external: Some(ExternalFunction {
+                output: Some(make_comp_ref("result")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut recorder = ComponentContextRecorder::default();
+        let _ = recorder.visit_class_def(&class);
+        assert!(
+            recorder
+                .seen
+                .contains(&ComponentReferenceContext::ExternalOutput)
+        );
     }
 
     struct ClassNames(Vec<String>);
@@ -1305,5 +1510,52 @@ mod tests {
             within: None,
         });
         assert_eq!(visitor.0, vec!["Outer", "Inner"]);
+    }
+
+    #[test]
+    fn test_transformer_recurses_into_function_call_target_subscripts() {
+        fn rewrite_one_subscript(mut cr: ComponentReference) -> ComponentReference {
+            let Some(subscripts) = cr.parts.first_mut().and_then(|part| part.subs.as_mut()) else {
+                return cr;
+            };
+            if matches!(
+                subscripts.first(),
+                Some(Subscript::Expression(Expression::Terminal {
+                    terminal_type: TerminalType::UnsignedInteger,
+                    token,
+                })) if token.text.as_ref() == "1"
+            ) {
+                subscripts[0] = Subscript::Expression(make_int(2));
+            }
+            cr
+        }
+
+        struct IncrementSubscript;
+
+        impl ExpressionTransformer for IncrementSubscript {
+            fn transform_component_ref_inner(
+                &mut self,
+                cr: ComponentReference,
+            ) -> ComponentReference {
+                rewrite_one_subscript(cr)
+            }
+        }
+
+        let expr = Expression::FunctionCall {
+            comp: make_comp_ref_with_subscript("f", make_int(1)),
+            args: vec![],
+        };
+        let transformed = IncrementSubscript.transform_expression(expr);
+
+        let Expression::FunctionCall { comp, .. } = transformed else {
+            panic!("expected transformed function call");
+        };
+        let Some(subscripts) = &comp.parts[0].subs else {
+            panic!("expected transformed function-call target subscripts");
+        };
+        let Subscript::Expression(Expression::Terminal { token, .. }) = &subscripts[0] else {
+            panic!("expected integer subscript");
+        };
+        assert_eq!(token.text.as_ref(), "2");
     }
 }

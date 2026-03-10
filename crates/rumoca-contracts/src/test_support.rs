@@ -25,6 +25,21 @@ pub fn expect_success(source: &str, model: &str) -> CompilationResult {
         .unwrap_or_else(|e| panic!("Compilation failed for {model}: {e}"))
 }
 
+/// Compile a model from source, expecting compilation failure.
+///
+/// # Panics
+/// Panics if parsing fails, compilation succeeds, or compile diagnostics cannot be retrieved.
+pub fn expect_compile_failure(source: &str, model: &str) {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .unwrap_or_else(|e| panic!("Parse failed for {model}: {e}"));
+
+    if session.compile_model(model).is_ok() {
+        panic!("Expected compilation failure for {model}, but compilation succeeded");
+    }
+}
+
 /// Compile a model from source, expecting resolve failure with a specific code
 /// (e.g. `ER005`, `rumoca::resolve::ER005`).
 ///

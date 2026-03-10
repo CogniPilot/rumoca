@@ -3,7 +3,7 @@
 //! This module contains the TryFrom implementation for ElementList,
 //! which handles conversion from parser AST to rumoca_ir::ast.
 
-use super::definitions::ElementList;
+use super::definitions::{ElementList, validate_annotation_modifiers};
 use super::helpers::{loc_info, span_location};
 use crate::errors::{semantic_error_from_component_reference, semantic_error_from_token};
 use crate::generated::modelica_grammar_trait;
@@ -141,18 +141,42 @@ fn default_start_value(type_name: &str) -> rumoca_ir_ast::Expression {
 /// Extract annotation arguments from a component description.
 fn extract_annotation(
     desc: &modelica_grammar_trait::Description,
-) -> Vec<rumoca_ir_ast::Expression> {
+) -> anyhow::Result<Vec<rumoca_ir_ast::Expression>> {
     let Some(desc_opt) = &desc.description_opt else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(class_mod_opt) = &desc_opt
         .annotation_clause
         .class_modification
         .class_modification_opt
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    class_mod_opt.argument_list.args.clone()
+    validate_annotation_modifiers(
+        &class_mod_opt.argument_list,
+        &desc_opt.annotation_clause.annotation.annotation,
+    )?;
+    Ok(class_mod_opt.argument_list.args.clone())
+}
+
+fn extract_extends_annotation(
+    clause: &modelica_grammar_trait::ExtendsClause,
+) -> anyhow::Result<Vec<rumoca_ir_ast::Expression>> {
+    let Some(annotation_opt) = &clause.extends_clause_opt0 else {
+        return Ok(Vec::new());
+    };
+    let Some(class_mod_opt) = &annotation_opt
+        .annotation_clause
+        .class_modification
+        .class_modification_opt
+    else {
+        return Ok(Vec::new());
+    };
+    validate_annotation_modifiers(
+        &class_mod_opt.argument_list,
+        &annotation_opt.annotation_clause.annotation.annotation,
+    )?;
+    Ok(class_mod_opt.argument_list.args.clone())
 }
 
 /// Check if an outer component has illegal bindings or modifications.
@@ -160,16 +184,7 @@ fn check_outer_component_restrictions(
     value: &rumoca_ir_ast::Component,
     ident: &rumoca_ir_core::Token,
 ) -> anyhow::Result<()> {
-    // Check for binding equation (= expr)
-    let has_real_binding = if matches!(value.start, rumoca_ir_ast::Expression::Empty) {
-        false
-    } else if let Some(loc) = value.start.get_location() {
-        !(loc.start_line == 0 && loc.start_column == 0 && loc.file_name.is_empty())
-    } else {
-        false
-    };
-
-    if has_real_binding {
+    if value.has_explicit_binding || value.binding.is_some() {
         return Err(semantic_error_from_token(
             format!(
                 "Outer component '{}' shall not have a binding equation at line {}",
@@ -480,7 +495,7 @@ fn process_single_component(
     ctx: &ComponentContext,
     type_spec: &modelica_grammar_trait::TypeSpecifier,
 ) -> anyhow::Result<()> {
-    let annotation = extract_annotation(&c.description);
+    let annotation = extract_annotation(&c.description)?;
     let comp_location = type_spec
         .name
         .name
@@ -758,7 +773,7 @@ fn normalized_constraining_arg_value(
 fn process_extends_clause(
     def: &mut ElementList,
     clause: &modelica_grammar_trait::ElementExtendsClause,
-) {
+) -> anyhow::Result<()> {
     let extend_location = clause
         .extends_clause
         .type_specifier
@@ -770,6 +785,7 @@ fn process_extends_clause(
 
     let (modifications, break_names) =
         extract_extends_mods(&clause.extends_clause.extends_clause_opt);
+    let annotation = extract_extends_annotation(&clause.extends_clause)?;
 
     def.extends.push(rumoca_ir_ast::Extend {
         base_name: clause.extends_clause.type_specifier.name.clone(),
@@ -778,8 +794,9 @@ fn process_extends_clause(
         modifications,
         break_names,
         is_protected: false,
-        annotation: vec![],
+        annotation,
     });
+    Ok(())
 }
 
 impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
@@ -813,7 +830,7 @@ fn process_element(
                 .push(process_import_clause(&import_elem.import_clause));
         }
         modelica_grammar_trait::Element::ExtendsClause(clause) => {
-            process_extends_clause(def, clause);
+            process_extends_clause(def, clause)?;
         }
     }
     Ok(())

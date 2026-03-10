@@ -198,6 +198,20 @@ fn merge_classes(
     }
 }
 
+/// Merge extends clauses into composition, optionally marking them as protected.
+fn merge_extends(
+    target: &mut Vec<rumoca_ir_ast::Extend>,
+    mut source: Vec<rumoca_ir_ast::Extend>,
+    set_protected: bool,
+) {
+    if set_protected {
+        for extend in &mut source {
+            extend.is_protected = true;
+        }
+    }
+    target.extend(source);
+}
+
 /// Process equation section, adding equations to appropriate list.
 fn process_equation_section(comp: &mut Composition, sec: &EquationSection) {
     for eq in &sec.equations {
@@ -239,15 +253,15 @@ fn process_algorithm_section(comp: &mut Composition, sec: &AlgorithmSection) {
     }
 }
 
-/// Validate annotation modifiers - 'each' and 'final' are forbidden in annotations (MLS §18.1).
-fn validate_annotation_modifiers(
+/// Validate annotation modifiers per MLS §18.2.
+pub(crate) fn validate_annotation_modifiers(
     arg_list: &ExpressionList,
     annotation_token: &rumoca_ir_core::Token,
 ) -> Result<(), anyhow::Error> {
     for each in &arg_list.each_flags {
         if *each {
             return Err(semantic_error_from_token(
-                "MLS §18.1: 'each' modifier is not allowed in annotations",
+                "MLS §18.2: 'each' modifier is not allowed in annotations",
                 annotation_token,
             ));
         }
@@ -255,7 +269,23 @@ fn validate_annotation_modifiers(
     for is_final in &arg_list.final_flags {
         if *is_final {
             return Err(semantic_error_from_token(
-                "MLS §18.1: 'final' modifier is not allowed in annotations",
+                "MLS §18.2: 'final' modifier is not allowed in annotations",
+                annotation_token,
+            ));
+        }
+    }
+    for redeclare in &arg_list.redeclare_flags {
+        if *redeclare {
+            return Err(semantic_error_from_token(
+                "MLS §18.2: redeclare is not allowed in annotations",
+                annotation_token,
+            ));
+        }
+    }
+    for replaceable in &arg_list.replaceable_flags {
+        if *replaceable {
+            return Err(semantic_error_from_token(
+                "MLS §18.2: replaceable is not allowed in annotations",
                 annotation_token,
             ));
         }
@@ -998,7 +1028,11 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                         false,
                     )?;
                     comp.classes.extend(elem_list.element_list.classes.clone());
-                    comp.extends.extend(elem_list.element_list.extends.clone());
+                    merge_extends(
+                        &mut comp.extends,
+                        elem_list.element_list.extends.clone(),
+                        false,
+                    );
                     comp.imports.extend(elem_list.element_list.imports.clone());
                 }
                 modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
@@ -1013,7 +1047,11 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
                         elem_list.element_list.classes.clone(),
                         true,
                     );
-                    comp.extends.extend(elem_list.element_list.extends.clone());
+                    merge_extends(
+                        &mut comp.extends,
+                        elem_list.element_list.extends.clone(),
+                        true,
+                    );
                     comp.imports.extend(elem_list.element_list.imports.clone());
                 }
                 modelica_grammar_trait::CompositionListGroup::EquationSection(eq_sec) => {

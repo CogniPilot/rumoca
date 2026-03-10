@@ -3,7 +3,8 @@
 //! Tests for the 17 algorithm contracts defined in SPEC_0022.
 
 use rumoca_contracts::test_support::{
-    expect_parse_err_with_code, expect_resolve_failure_with_code, expect_success,
+    expect_compile_failure, expect_parse_err_with_code, expect_resolve_failure_with_code,
+    expect_success,
 };
 
 // =============================================================================
@@ -78,6 +79,25 @@ fn alg_005_while_boolean() {
     );
 }
 
+#[test]
+fn alg_005_while_boolean_rejected_for_non_boolean_expr() {
+    expect_compile_failure(
+        r#"
+        model Test
+            Real x;
+            Real y;
+        algorithm
+            while 1 loop
+                y := y + 1;
+            end while;
+        equation
+            y = x;
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
 // =============================================================================
 // ALG-007: When not in function
 // "When-statement shall not be used inside a function class"
@@ -98,6 +118,46 @@ fn alg_007_no_when_in_function() {
     "#,
         "F",
         "ER015",
+    );
+}
+
+// =============================================================================
+// ALG-008: When not in initial
+// "When-statement shall not occur inside an initial algorithm"
+// =============================================================================
+
+#[test]
+fn alg_008_when_in_initial_algorithm_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real y;
+        initial algorithm
+            when y > 0 then
+                y := 1;
+            end when;
+        end Test;
+    "#,
+        "Test",
+        "ER018",
+    );
+}
+
+#[test]
+fn alg_007_when_in_model_algorithm() {
+    expect_success(
+        r#"
+        model Test
+            Real x;
+            Real y;
+            algorithm
+                y := 0;
+                when x > 1 then
+                    y := 1;
+                end when;
+            end Test;
+        "#,
+        "Test",
     );
 }
 
@@ -124,6 +184,53 @@ fn alg_009_no_nested_when_statements() {
     "#,
         "Test",
         "ER016",
+    );
+}
+
+// =============================================================================
+// ALG-010: When not in control
+// "When-statements shall not occur inside while/for/if in algorithms"
+// =============================================================================
+
+#[test]
+fn alg_010_when_in_for_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real y;
+            Integer i;
+        algorithm
+            for i in 1:3 loop
+                when y > 0 then
+                    y := 1;
+                end when;
+            end for;
+        equation
+            y = 1;
+        end Test;
+    "#,
+        "Test",
+        "ER042",
+    );
+}
+
+#[test]
+fn alg_009_when_not_nested() {
+    expect_success(
+        r#"
+        model Test
+            discrete Real x(start = 0);
+            discrete Real y(start = 0);
+            algorithm
+                when time > 1 then
+                    x := 1;
+                end when;
+                when time > 2 then
+                    y := 1;
+                end when;
+            end Test;
+        "#,
+        "Test",
     );
 }
 
@@ -158,6 +265,22 @@ fn alg_012_break_in_for() {
     );
 }
 
+#[test]
+fn alg_012_break_outside_loop_fails() {
+    expect_compile_failure(
+        r#"
+        function F
+            input Integer n;
+            output Integer result;
+        algorithm
+            break;
+            result := 0;
+        end F;
+        "#,
+        "F",
+    );
+}
+
 // =============================================================================
 // ALG-013: return scope
 // "return can only be used inside functions"
@@ -183,6 +306,21 @@ fn alg_013_return_in_function() {
             y = F(2.0);
         end Test;
     "#,
+        "Test",
+    );
+}
+
+#[test]
+fn alg_013_return_outside_function_fails() {
+    expect_compile_failure(
+        r#"
+        model Test
+            Real x;
+        algorithm
+            return;
+            x := 1;
+        end Test;
+        "#,
         "Test",
     );
 }

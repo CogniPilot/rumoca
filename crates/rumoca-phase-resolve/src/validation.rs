@@ -255,7 +255,8 @@ impl ast::Visitor for Validator {
         ctx: ast::ComponentReferenceContext,
     ) -> ControlFlow<()> {
         match ctx {
-            ast::ComponentReferenceContext::EquationFunctionCallTarget
+            ast::ComponentReferenceContext::ExpressionFunctionCallTarget
+            | ast::ComponentReferenceContext::EquationFunctionCallTarget
             | ast::ComponentReferenceContext::StatementFunctionCallTarget
             | ast::ComponentReferenceContext::ClassModificationTarget
             | ast::ComponentReferenceContext::ModificationTarget => {}
@@ -271,12 +272,7 @@ impl ast::Visitor for Validator {
         ctx: ast::FunctionCallContext,
     ) -> ControlFlow<()> {
         self.add_unresolved_function_call(comp);
-
-        if matches!(ctx, ast::FunctionCallContext::Expression) {
-            ast::Visitor::visit_component_reference(self, comp)?;
-        }
-
-        self.visit_expr_function_call(comp, args)
+        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 
     fn visit_expression_ctx(
