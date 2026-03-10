@@ -61,6 +61,7 @@ pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
         "oc_break_edge_scalar_count": dae.oc_break_edge_scalar_count,
         "is_partial": dae.is_partial,
         "class_type": &dae.class_type,
+        "model_description": dae.model_description,
     })
 }
 

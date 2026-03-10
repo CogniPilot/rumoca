@@ -294,6 +294,18 @@ fn test_render_dae_equation_via_template() {
 }
 
 #[test]
+fn test_dae_template_includes_model_description() {
+    // Test that DAE template includes model description when present
+    let mut dae = dae::Dae::new();
+    dae.model_description = Some("Test model description".to_string());
+
+    // Render template
+    let tmpl = crate::templates::DAE_MODELICA;
+    let result = render_template_with_name(&dae, tmpl, "TestModel").unwrap();
+    assert!(result.contains(r#"class TestModel "Test model description""#));
+}
+
+#[test]
 fn test_render_flat_equation_via_template() {
     // Test render_flat_equation function via template with an empty Model
     let flat = flat::Model::new();
