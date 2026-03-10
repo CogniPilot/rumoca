@@ -47,7 +47,7 @@
 {%- macro desc(var) -%}
 {%- if var.description %} "{{ var.description }}"{% endif -%}
 {%- endmacro -%}
-class {{ model_name }}
+class {{ model_name }}{% if dae.model_description %} "{{ dae.model_description }}"{% endif %}
 {%- for name, var in dae.parameters | items %}
   parameter Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{% if var.start is not none %} = {{ render_expr(var.start, cfg) }}{% endif %}{{ desc(var) }};
 {%- endfor -%}

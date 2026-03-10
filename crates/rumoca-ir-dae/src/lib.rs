@@ -254,6 +254,10 @@ pub struct Dae {
     /// tracks the number of excess equation scalars.
     #[serde(default)]
     pub oc_break_edge_scalar_count: usize,
+
+    /// Optional description string from the root class declaration.
+    #[serde(default)]
+    pub model_description: Option<String>,
 }
 
 impl Dae {
