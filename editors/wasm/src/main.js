@@ -150,114 +150,6 @@ window.switchBottomTab = function(tabName) {
     }
 };
 
-window.switchSidebarView = function(viewName) {
-    const viewMap = {
-        explorer: 'sidebarExplorerView',
-        libraries: 'sidebarLibrariesView',
-        documentation: 'sidebarDocumentationView',
-    };
-    const activeViewId = viewMap[viewName] || viewMap.explorer;
-    Object.values(viewMap).forEach(id => {
-        const view = document.getElementById(id);
-        if (view) view.classList.toggle('active', id === activeViewId);
-    });
-    document.querySelectorAll('.activity-button[data-sidebar]').forEach(button => {
-        button.classList.toggle('active', button.dataset.sidebar === viewName);
-    });
-    if (viewName === 'explorer') {
-        updateSidebarExplorer();
-    } else if (viewName === 'libraries') {
-        updateSidebarLibrariesSummary();
-    } else if (viewName === 'documentation') {
-        updateSidebarDocumentationSummary();
-    }
-};
-
-function detectDeclarationsWithLine(source) {
-    const regex = /(?:model|class|block|connector|record|package|function)\s+(\w+)/g;
-    const declarations = [];
-    let match;
-    while ((match = regex.exec(source)) !== null) {
-        const name = match[1];
-        const upToMatch = source.slice(0, match.index);
-        const lineNumber = upToMatch.split('\n').length;
-        declarations.push({ name, lineNumber });
-    }
-    return declarations;
-}
-
-function updateSidebarExplorer() {
-    const tree = document.getElementById('sidebarExplorerTree');
-    if (!tree) return;
-    if (!editor) {
-        tree.innerHTML = '<div class="class-tree-empty">Editor not ready.</div>';
-        return;
-    }
-
-    const declarations = detectDeclarationsWithLine(editor.getValue());
-    if (declarations.length === 0) {
-        tree.innerHTML = '<div class="class-tree-empty">No declarations.</div>';
-        return;
-    }
-
-    tree.innerHTML = declarations
-        .map(
-            declaration => `<button class="sidebar-tree-item" data-line="${declaration.lineNumber}" title="Jump to line ${declaration.lineNumber}">
-                ${declaration.name}
-                <span class="sidebar-tree-line">L${declaration.lineNumber}</span>
-            </button>`,
-        )
-        .join('');
-
-    tree.querySelectorAll('.sidebar-tree-item[data-line]').forEach(button => {
-        button.addEventListener('click', () => {
-            const lineNumber = Number(button.dataset.line || 1);
-            jumpToModelicaLocation(lineNumber, 1);
-        });
-    });
-}
-
-function updateSidebarLibrariesSummary() {
-    const summary = document.getElementById('sidebarLibrariesSummary');
-    const libraryBadge = document.getElementById('libCount');
-    if (!summary || !libraryBadge) return;
-    summary.textContent = `Libraries loaded: ${parseBadgeNumber(libraryBadge.textContent)}`;
-}
-
-function updateSidebarDocumentationSummary() {
-    const summary = document.getElementById('sidebarDocumentationSummary');
-    if (!summary) return;
-    const selectedTitle = document.querySelector('#classDocPanel .class-doc-title');
-    if (selectedTitle) {
-        summary.textContent = `Selected: ${selectedTitle.textContent}`;
-    } else {
-        summary.textContent = 'Select a class in Documentation to inspect details.';
-    }
-}
-
-function bindSidebarObservers() {
-    const libraryBadge = document.getElementById('libCount');
-    const classDocPanel = document.getElementById('classDocPanel');
-    const sidebarObserver = new MutationObserver(() => {
-        updateSidebarLibrariesSummary();
-        updateSidebarDocumentationSummary();
-    });
-    if (libraryBadge) {
-        sidebarObserver.observe(libraryBadge, {
-            childList: true,
-            subtree: true,
-            characterData: true,
-        });
-    }
-    if (classDocPanel) {
-        sidebarObserver.observe(classDocPanel, {
-            childList: true,
-            subtree: true,
-            characterData: true,
-        });
-    }
-}
-
 function parseBadgeNumber(text) {
     const match = String(text || '').match(/\d+/);
     return match ? Number(match[0]) : 0;
@@ -307,13 +199,8 @@ function bindStatusBarObservers() {
 }
 
 bindStatusBarObservers();
-bindSidebarObservers();
 window.updateGlobalStatusBar = updateGlobalStatusBar;
 setTimeout(() => updateGlobalStatusBar(), 0);
-setTimeout(() => {
-    updateSidebarLibrariesSummary();
-    updateSidebarDocumentationSummary();
-}, 0);
 
 // DAE format state (Pretty vs JSON in DAE tab)
 window.daeFormat = 'pretty';
@@ -337,6 +224,13 @@ const simPalette = [
     '#6a9955','#c8c8c8','#e8c87a','#7fdbca','#f07178'
 ];
 
+function formatNum(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return String(v);
+    if (Math.abs(n) >= 1000 || (Math.abs(n) > 0 && Math.abs(n) < 0.001)) return n.toExponential(3);
+    return n.toFixed(4).replace(/\.?0+$/, '');
+}
+
 window.runSimulation = async function() {
     const modelName = document.getElementById('modelSelect').value;
     if (!modelName) { document.getElementById('simStatus').textContent = 'No model selected'; return; }
@@ -345,10 +239,12 @@ window.runSimulation = async function() {
     const source = window.editor ? window.editor.getValue() : '';
     const btn = document.getElementById('simRunBtn');
     const status = document.getElementById('simStatus');
+    const hover = document.getElementById('simHover');
 
     btn.disabled = true;
     status.textContent = 'Simulating...';
     status.style.color = '#9a6700';
+    if (hover) hover.textContent = '';
 
     try {
         const t0 = performance.now();
@@ -358,11 +254,13 @@ window.runSimulation = async function() {
         window.simData = result;
         status.textContent = `${result.times.length} pts, ${result.names.length} vars (${elapsed}ms)`;
         status.style.color = '#2d6a4f';
+        if (hover) hover.textContent = 'Hover plot for values';
         buildSimCheckboxes(result);
         rebuildSimPlot();
     } catch (e) {
         status.textContent = e.message || 'Simulation failed';
         status.style.color = '#c9184a';
+        if (hover) hover.textContent = '';
     } finally {
         btn.disabled = false;
     }
@@ -423,30 +321,57 @@ function rebuildSimPlot() {
     if (!result) return;
     const el = document.getElementById('simPlot');
     const treeEl = document.getElementById('simVarTree');
+    const hoverEl = document.getElementById('simHover');
 
     const active = [];
-    treeEl.querySelectorAll('input:checked').forEach(cb => active.push(parseInt(cb.dataset.idx)));
+    treeEl.querySelectorAll('input:checked').forEach(cb => active.push(parseInt(cb.dataset.idx, 10)));
 
     if (window.simPlot) { window.simPlot.destroy(); window.simPlot = null; }
-    if (active.length === 0) { el.innerHTML = '<p style="padding:20px;color:#888">Select variables to plot</p>'; return; }
+    if (active.length === 0) {
+        if (hoverEl) hoverEl.textContent = '';
+        el.innerHTML = '<p style="padding:20px;color:#888">Select variables to plot</p>';
+        return;
+    }
 
     const data = [result.times];
     const series = [{}];
-    active.forEach(idx => {
+    const activeSeriesIdx = [...active];
+    activeSeriesIdx.forEach(idx => {
         data.push(result.data[idx]);
         series.push({ label: result.names[idx], stroke: simPalette[idx % simPalette.length], width: 1.5 });
     });
 
     window.simPlot = new uPlot({
-        width: el.clientWidth, height: Math.max((el.clientHeight || 400) - 30, 200),
+        width: el.clientWidth,
+        height: Math.max((el.clientHeight || 400) - 30, 200),
+        padding: [8, 8, 28, 8],
         scales: { x: { time: false } },
         axes: [
-            { stroke: '#888', grid: { stroke: '#333' }, label: 'time', font: '11px monospace', labelFont: '12px monospace' },
+            { stroke: '#888', grid: { stroke: '#333' }, label: 'time', labelGap: 2, size: 36, font: '11px monospace', labelFont: '12px monospace' },
             { stroke: '#888', grid: { stroke: '#333' }, font: '11px monospace' }
         ],
-        series: series,
+        series,
         cursor: { drag: { x: true, y: true } },
-        legend: { show: true }
+        hooks: {
+            setCursor: [function(u) {
+                if (!hoverEl) return;
+                const idx = u.cursor.idx;
+                if (idx == null || idx < 0 || idx >= result.times.length) {
+                    hoverEl.textContent = 'Hover plot for values';
+                    return;
+                }
+                const parts = [`t=${formatNum(Number(result.times[idx]))}`];
+                for (let i = 0; i < activeSeriesIdx.length; i++) {
+                    const sIdx = activeSeriesIdx[i];
+                    const col = result.data[sIdx] || [];
+                    if (idx < col.length) {
+                        parts.push(`${result.names[sIdx]}=${formatNum(Number(col[idx]))}`);
+                    }
+                }
+                hoverEl.textContent = parts.join(' | ');
+            }]
+        },
+        legend: { show: false }
     }, data, el);
 }
 
@@ -1409,7 +1334,6 @@ require(['vs/editor/editor.main'], function() {
     editor.onDidChangeModelContent(() => {
         if (window.refreshModelicaSemanticTokens) window.refreshModelicaSemanticTokens();
         updateSourceBreadcrumbs();
-        updateSidebarExplorer();
         runLiveChecks();
     });
     editor.onDidChangeCursorPosition(() => {
@@ -1437,7 +1361,6 @@ require(['vs/editor/editor.main'], function() {
 
     setTimeout(() => {
         updateSourceBreadcrumbs();
-        updateSidebarExplorer();
         runLiveChecks();
     }, 1000);
 
@@ -1445,8 +1368,6 @@ require(['vs/editor/editor.main'], function() {
     let templateDebounceTimer = null;
     templateEditor.onDidChangeModelContent(() => {
         if (window.activeRightTab !== 'codegen') return;
-        // When user edits template, switch preset to Custom
-        document.getElementById('templatePresetSelect').value = 'custom';
         if (templateDebounceTimer) clearTimeout(templateDebounceTimer);
         templateDebounceTimer = setTimeout(() => {
             const modelName = document.getElementById('modelSelect').value;

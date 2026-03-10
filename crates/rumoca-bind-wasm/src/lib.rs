@@ -15,8 +15,8 @@ use rumoca_session::parsing::{
     TerminalType, Token, Variability, parse_source_to_ast, validate_source_syntax,
 };
 use rumoca_session::runtime::{
-    SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_for_target,
-    render_dae_template_with_json, simulate_dae,
+    SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
+    simulate_dae,
 };
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use serde::{Deserialize, Serialize};
@@ -981,15 +981,6 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, JsValue> {
 // ==========================================================================
 // Code Generation
 // ==========================================================================
-
-/// Load a DAE from JSON and generate code for a target.
-#[wasm_bindgen]
-pub fn generate_code(dae_json: &str, target: &str) -> Result<String, JsValue> {
-    let dae_value: serde_json::Value = serde_json::from_str(dae_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {}", e)))?;
-    render_dae_template_for_target(&dae_value, target)
-        .map_err(|e| JsValue::from_str(&format!("Code generation error: {}", e)))
-}
 
 /// Render a Jinja template with DAE data.
 #[wasm_bindgen]

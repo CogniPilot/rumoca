@@ -676,11 +676,8 @@ jobs:
   publish:
     name: Publish Release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, build-rust-binaries, build-python-wheels, build-python-sdist, build-vscode-extension, build-wasm, docs]
+    needs: [detect-release-tag, build-rust-binaries]
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/rumoca
     steps:
       - uses: actions/checkout@v4
         with:
@@ -709,7 +706,7 @@ jobs:
 
       - name: Organize artifacts
         run: |
-          mkdir -p rust-binaries python-dist vscode-ext wasm-dist
+          mkdir -p rust-binaries
 
           echo "=== Downloaded structure ==="
           find artifacts -type f | head -50
@@ -728,38 +725,8 @@ jobs:
             fi
           done
 
-          # Move Python wheels
-          for dir in artifacts/wheels-*; do
-            if [ -d "$dir" ]; then
-              echo "Processing Python artifact: $dir"
-              find "$dir" -type f \( -name "*.whl" -o -name "*.tar.gz" \) -exec cp {} python-dist/ \;
-            fi
-          done
-
-          # Move VS Code extensions
-          for dir in artifacts/vscode-extension-*; do
-            if [ -d "$dir" ]; then
-              echo "Processing VS Code artifact: $dir"
-              find "$dir" -type f -name "*.vsix" -exec cp {} vscode-ext/ \;
-            fi
-          done
-
-          # Package WASM for release
-          if [ -d "artifacts/wasm-package" ]; then
-            echo "Processing WASM artifact"
-            cd artifacts/wasm-package
-            zip -r ../../wasm-dist/rumoca-wasm.zip .
-            cd ../..
-          fi
-
           echo "=== Rust binaries ==="
           ls -la rust-binaries/
-          echo "=== Python wheels ==="
-          ls -la python-dist/
-          echo "=== VS Code extension ==="
-          ls -la vscode-ext/
-          echo "=== WASM package ==="
-          ls -la wasm-dist/
 
       # Create GitHub Release
       - name: Create GitHub Release
@@ -782,79 +749,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Python wheels to release
-        run: |
-          cd python-dist
-          for file in *.whl *.tar.gz; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file"
-              gh release upload ${{ steps.tag.outputs.name }} "$file" --clobber
-            fi
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload VS Code extension to release
-        run: |
-          cd vscode-ext
-          for file in *.vsix; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file"
-              gh release upload ${{ steps.tag.outputs.name }} "$file" --clobber
-            fi
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload WASM package to release
-        run: |
-          cd wasm-dist
-          for file in *.zip; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file"
-              gh release upload ${{ steps.tag.outputs.name }} "$file" --clobber
-            fi
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Publish to PyPI
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Publish to PyPI
-        run: |
-          pip install twine
-          twine upload python-dist/*.whl python-dist/*.tar.gz --skip-existing
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-
-      # Publish VS Code extension
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Publish to VS Code Marketplace
-        run: |
-          cd vscode-ext
-          echo "Publishing platform-specific extensions:"
-          ls -la *.vsix
-          for vsix in *.vsix; do
-            echo "Publishing $vsix to VS Code Marketplace..."
-            npx @vscode/vsce publish --packagePath "$vsix"
-          done
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
-      - name: Publish to Open VSX Registry
-        run: |
-          cd vscode-ext
-          echo "Publishing platform-specific extensions:"
-          ls -la *.vsix
-          for vsix in *.vsix; do
-            echo "Publishing $vsix to Open VSX..."
-            npx ovsx publish "$vsix" -p ${{ secrets.OVSX_TOKEN }}
-          done
+      # Rust binary artifacts are distributed via GitHub Releases only.

@@ -15,6 +15,8 @@ Rumoca’s goal is not only to compile and simulate Modelica models, but to turn
 
 > **Rumoca turns Modelica libraries into modern symbolic systems.**
 
+> **Project status:** Rumoca is in active development. You should expect bugs and rough edges; please file issues at https://github.com/cognipilot/rumoca/issues.
+
 ## Why Rumoca Exists
 
 There is a large ecosystem of useful engineering models already written in Modelica, but many modern workflows live elsewhere:
@@ -98,7 +100,7 @@ Rumoca focuses on five things:
 - Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-session`)
 - DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim`)
 - Structural preparation and IC planning for robust initialization (`rumoca-phase-solve`, `rumoca-sim`)
-- Template-based code generation to CasADi, C, JAX, Julia MTK, ONNX, and Modelica render targets
+- Explicit template rendering support for custom code generation
 - MLS contract test framework (`rumoca-contracts`)
 - Spec-driven quality gates (including SPEC_0021 and SPEC_0025)
 
@@ -182,19 +184,19 @@ This keeps the compiler’s multi-crate architecture intact (similar to rustc’
 #### Binary installer (GitHub Releases)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install.sh | bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash
 ```
 
 Install a specific version (and optionally `rumoca-lsp`):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install.sh | bash -s -- --version v0.8.0 --with-lsp
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash -s -- --version v0.8.0 --with-lsp
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/cognipilot/rumoca/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.ps1 | iex
 ```
 
 The installer defaults to:
@@ -224,19 +226,8 @@ pip install rumoca
 
 ## Code Generation Targets
 
-Built-in templates in `rumoca-phase-codegen` include:
-
-- `CASADI_SX`
-- `CASADI_MX`
-- `CYECCA`
-- `JULIA_MTK`
-- `JAX`
-- `C_CODE`
-- `ONNX`
-- `DAE_MODELICA`
-- `FLAT_MODELICA`
-
-You can use built-in template constants or provide custom template files.
+Use explicit template files you own and version with your project.
+Template files in `examples/templates` are works in progress and need cleanup. Treat them as editable starting points, not stable production artifacts.
 
 ## VS Code Extension
 

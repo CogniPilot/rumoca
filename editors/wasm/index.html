@@ -46,132 +46,9 @@
             min-height: 0;
             overflow: hidden;
         }
-        .activity-shell {
-            display: flex;
-            min-width: 260px;
-            max-width: 260px;
-            border-right: 1px solid #3c3c3c;
-            background: #1b1b1b;
-            overflow: hidden;
-        }
-        .activity-bar {
-            width: 44px;
-            border-right: 1px solid #2f2f2f;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 8px 0;
-            gap: 6px;
-            background: #202020;
-        }
-        .activity-button {
-            width: 32px;
-            height: 32px;
-            border-radius: 4px;
-            border: none;
-            background: transparent;
-            color: #9aa0a6;
-            font-size: 14px;
-            cursor: pointer;
-        }
-        .activity-button:hover {
-            background: #2b2b2b;
-            color: #d4d4d4;
-        }
-        .activity-button.active {
-            background: #2d2d2d;
-            color: #ffffff;
-            outline: 1px solid #569cd6;
-        }
-        .sidebar-panel {
-            flex: 1;
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .sidebar-view {
-            display: none;
-            flex: 1;
-            flex-direction: column;
-            min-height: 0;
-            overflow: hidden;
-            padding: 10px;
-            gap: 8px;
-        }
-        .sidebar-view.active {
-            display: flex;
-        }
-        .sidebar-title {
-            font-size: 11px;
-            text-transform: uppercase;
-            color: #9aa0a6;
-            letter-spacing: 0.04em;
-        }
-        .sidebar-summary {
-            font-size: 12px;
-            color: #d4d4d4;
-            background: #202020;
-            border: 1px solid #303030;
-            border-radius: 4px;
-            padding: 8px;
-        }
-        .sidebar-tree {
-            flex: 1;
-            overflow: auto;
-            border: 1px solid #2f2f2f;
-            border-radius: 4px;
-            background: #1a1a1a;
-            padding: 4px;
-        }
-        .sidebar-tree-item {
-            width: 100%;
-            border: none;
-            background: transparent;
-            color: #d4d4d4;
-            text-align: left;
-            padding: 4px 6px;
-            border-radius: 3px;
-            font-size: 12px;
-            cursor: pointer;
-        }
-        .sidebar-tree-item:hover {
-            background: #2a2d2e;
-        }
-        .sidebar-tree-item .sidebar-tree-line {
-            color: #7f848e;
-            margin-left: 8px;
-            font-size: 11px;
-        }
-        @media (max-width: 1100px) {
-            .activity-shell {
-                min-width: 44px;
-                max-width: 44px;
-            }
-            .sidebar-panel {
-                display: none;
-            }
-        }
         @media (max-width: 980px) {
             .main-container {
                 flex-direction: column;
-            }
-            .activity-shell {
-                min-width: 100%;
-                max-width: 100%;
-                height: 44px;
-                border-right: none;
-                border-bottom: 1px solid #3c3c3c;
-            }
-            .activity-bar {
-                width: 100%;
-                flex-direction: row;
-                justify-content: flex-start;
-                padding: 6px 8px;
-                border-right: none;
-            }
-            .sidebar-panel {
-                display: none !important;
             }
             .left-area {
                 min-width: 0;
@@ -951,32 +828,6 @@
     </div>
 
     <div class="main-container">
-        <div class="activity-shell">
-            <div class="activity-bar">
-                <button class="activity-button active" data-sidebar="explorer" onclick="switchSidebarView('explorer')" title="Explorer">E</button>
-                <button class="activity-button" data-sidebar="libraries" onclick="switchSidebarView('libraries')" title="Libraries">L</button>
-                <button class="activity-button" data-sidebar="documentation" onclick="switchSidebarView('documentation')" title="Documentation">D</button>
-            </div>
-            <div class="sidebar-panel" id="sidebarPanel">
-                <div class="sidebar-view active" id="sidebarExplorerView">
-                    <div class="sidebar-title">Explorer</div>
-                    <div class="sidebar-summary">Current source outline (models/classes in this file).</div>
-                    <div class="sidebar-tree" id="sidebarExplorerTree">
-                        <div class="class-tree-empty">No declarations.</div>
-                    </div>
-                </div>
-                <div class="sidebar-view" id="sidebarLibrariesView">
-                    <div class="sidebar-title">Libraries</div>
-                    <div class="sidebar-summary" id="sidebarLibrariesSummary">Libraries loaded: 0</div>
-                    <button class="small" onclick="switchBottomTab('libraries')" title="Open full libraries manager">Open Libraries Manager</button>
-                </div>
-                <div class="sidebar-view" id="sidebarDocumentationView">
-                    <div class="sidebar-title">Documentation</div>
-                    <div class="sidebar-summary" id="sidebarDocumentationSummary">Select a class in Documentation to inspect details.</div>
-                    <button class="small" onclick="switchBottomTab('packages')" title="Open documentation browser">Open Documentation Browser</button>
-                </div>
-            </div>
-        </div>
         <div class="left-area">
             <div class="editor-panel">
                 <div class="editor-toolbar">
@@ -1083,6 +934,7 @@
                         <input type="text" id="simDt" value="0" style="width: 60px;" title="Output time step (0 = auto)">
                         <button class="small" onclick="runSimulation()" id="simRunBtn" title="Run simulation">Simulate</button>
                         <span id="simStatus" style="font-size: 11px; color: #888;"></span>
+                        <span id="simHover" style="font-size: 11px; color: #888;"></span>
                     </div>
                     <div style="display: flex; flex: 1; min-height: 0; overflow: hidden;">
                         <div id="simPlot" style="flex: 1; min-height: 200px; overflow: visible;"></div>
@@ -1105,14 +957,6 @@
                 <!-- Codegen Tab -->
                 <div class="right-tab-content" id="codegenTab">
                     <div style="flex-shrink: 0; display: flex; align-items: center; margin-bottom: 8px; gap: 8px;">
-                        <label style="font-size: 11px; color: #888;">Preset:</label>
-                        <select id="templatePresetSelect" onchange="loadTemplatePreset()" style="padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="Load a preset template">
-                            <option value="custom">Custom</option>
-                            <option value="casadi_sx" selected>CasADi SX</option>
-                            <option value="julia_mtk">Julia MTK</option>
-                            <option value="c_code">C Code</option>
-                            <option value="jax">JAX</option>
-                        </select>
                         <button class="small" onclick="saveCodegenOutput()" title="Save rendered codegen output to a file">Save</button>
                     </div>
                     <div id="templateEditor" style="flex: 1; min-height: 100px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
