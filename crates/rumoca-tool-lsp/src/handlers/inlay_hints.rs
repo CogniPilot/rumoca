@@ -95,10 +95,10 @@ impl ast::visitor::Visitor for InlayHintCollector<'_> {
         &mut self,
         comp: &ast::ComponentReference,
         args: &[ast::Expression],
-        _ctx: ast::visitor::FunctionCallContext,
+        ctx: ast::visitor::FunctionCallContext,
     ) -> ControlFlow<()> {
         collect_function_call_hints(comp, args, self.range, &mut self.hints);
-        self.visit_each(args, Self::visit_expression)
+        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 
     fn visit_expression(&mut self, expression: &ast::Expression) -> ControlFlow<()> {

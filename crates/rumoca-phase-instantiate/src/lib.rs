@@ -1519,7 +1519,7 @@ fn instantiate_component(
             class_def,
             ctx.mod_env(),
             type_overrides,
-        );
+        )?;
 
     let (instance_data, binding_for_record_expansion) = build_instance_data(InstanceDataBuild {
         instance_id,

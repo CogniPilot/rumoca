@@ -1,6 +1,7 @@
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::ast::{
-    ComponentReferenceContext, ExpressionContext, FunctionCallContext, SubscriptContext,
+    ComponentReferenceContext, ExpressionContext, FunctionCallContext, NameContext,
+    SubscriptContext,
 };
 use std::ops::ControlFlow::{self, Continue};
 
@@ -8,6 +9,9 @@ pub(crate) fn walk_stored_definition<V: ast::visitor::Visitor>(
     visitor: &mut V,
     def: &ast::StoredDefinition,
 ) -> ControlFlow<()> {
+    if let Some(within) = &def.within {
+        visitor.visit_name_ctx(within, NameContext::WithinClause)?;
+    }
     for (_, class) in &def.classes {
         visitor.visit_class_def(class)?;
     }
@@ -24,6 +28,12 @@ pub(crate) fn walk_class_sections<V: ast::visitor::Visitor>(
             visitor.visit_extend(ext)?;
         }
     }
+    for import in &class.imports {
+        visitor.visit_import(import)?;
+    }
+    for subscript in &class.array_subscripts {
+        visitor.visit_subscript_ctx(subscript, SubscriptContext::ClassArraySubscript)?;
+    }
     for (_, comp) in &class.components {
         visitor.visit_component(comp)?;
     }
@@ -35,6 +45,12 @@ pub(crate) fn walk_class_sections<V: ast::visitor::Visitor>(
     for section in &class.initial_algorithms {
         visitor.visit_each(section, V::visit_statement)?;
     }
+    for annotation in &class.annotation {
+        visitor.visit_expression_ctx(annotation, ExpressionContext::ClassAnnotation)?;
+    }
+    if let Some(external) = &class.external {
+        visitor.visit_external_function(external)?;
+    }
     for (_, nested) in &class.classes {
         visitor.visit_class_def(nested)?;
     }
@@ -45,8 +61,14 @@ pub(crate) fn walk_component_fields<V: ast::visitor::Visitor>(
     visitor: &mut V,
     component: &ast::Component,
 ) -> ControlFlow<()> {
+    for subscript in &component.shape_expr {
+        visitor.visit_subscript_ctx(subscript, SubscriptContext::ComponentShape)?;
+    }
     if !matches!(component.start, ast::Expression::Empty) {
         visitor.visit_expression_ctx(&component.start, ExpressionContext::ComponentStart)?;
+    }
+    if let Some(binding) = &component.binding {
+        visitor.visit_expression_ctx(binding, ExpressionContext::ComponentBinding)?;
     }
     for (_, mod_expr) in &component.modifications {
         visitor.visit_expression_ctx(mod_expr, ExpressionContext::ComponentModification)?;

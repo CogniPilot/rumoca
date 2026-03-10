@@ -2807,6 +2807,7 @@ dependencies = [
  "rumoca-session",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

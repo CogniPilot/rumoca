@@ -283,10 +283,14 @@ impl Resolver {
         let scope_import = match import {
             ast::Import::Qualified { path, .. } => {
                 // import A.B.C; -> makes C available as C
-                let Some(def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                let Some((path_ids, def_id)) = self.resolve_import_path(path, resolve_scope) else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
+                if !self.qualified_import_target_is_valid(&path_ids) {
+                    self.emit_invalid_import_target(import);
+                    return None;
+                }
                 let path_strs: Vec<String> = path.name.iter().map(|t| t.text.to_string()).collect();
                 ast::scope::Import::Qualified {
                     path: path_strs,
@@ -295,10 +299,14 @@ impl Resolver {
             }
             ast::Import::Renamed { alias, path, .. } => {
                 // import D = A.B.C; -> makes C available as D
-                let Some(def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                let Some((path_ids, def_id)) = self.resolve_import_path(path, resolve_scope) else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
+                if !self.qualified_import_target_is_valid(&path_ids) {
+                    self.emit_invalid_import_target(import);
+                    return None;
+                }
                 ast::scope::Import::Renamed {
                     alias: alias.text.to_string(),
                     path: path.name.iter().map(|t| t.text.to_string()).collect(),
@@ -307,10 +315,15 @@ impl Resolver {
             }
             ast::Import::Unqualified { path, .. } => {
                 // import A.B.*; -> imports all public names from A.B
-                let Some(pkg_def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path, resolve_scope)
+                else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
+                if !self.package_import_target_is_valid(&path_ids) {
+                    self.emit_invalid_import_target(import);
+                    return None;
+                }
                 let Some(pkg_qualified) = self.def_names.get(&pkg_def_id) else {
                     self.emit_unresolved_import(import);
                     return None;
@@ -323,10 +336,15 @@ impl Resolver {
             }
             ast::Import::Selective { path, names, .. } => {
                 // import A.B.{C, D}; -> imports specific names from A.B
-                let Some(pkg_def_id) = self.resolve_qualified_name(path, resolve_scope) else {
+                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path, resolve_scope)
+                else {
                     self.emit_unresolved_import(import);
                     return None;
                 };
+                if !self.package_import_target_is_valid(&path_ids) {
+                    self.emit_invalid_import_target(import);
+                    return None;
+                }
                 let Some(pkg_qualified) = self.def_names.get(&pkg_def_id) else {
                     self.emit_unresolved_import(import);
                     return None;
@@ -349,6 +367,50 @@ impl Resolver {
         Some(())
     }
 
+    fn resolve_import_path(&self, path: &ast::Name, scope: ScopeId) -> Option<(Vec<DefId>, DefId)> {
+        if path.name.is_empty() {
+            return None;
+        }
+
+        let first_part = &path.name[0].text;
+        let mut current_def_id = self.scope_tree.lookup_excluding(scope, first_part, None)?;
+        let mut path_ids = vec![current_def_id];
+
+        for part in path.name.iter().skip(1) {
+            let current_qualified = self.def_names.get(&current_def_id)?;
+            let next_qualified = format!("{}.{}", current_qualified, part.text);
+            current_def_id = *self.name_to_def.get(&next_qualified)?;
+            path_ids.push(current_def_id);
+        }
+
+        Some((path_ids, current_def_id))
+    }
+
+    fn qualified_import_target_is_valid(&self, path_ids: &[DefId]) -> bool {
+        if path_ids.is_empty() {
+            return false;
+        }
+        if path_ids.len() == 1 {
+            return self.is_package_def(path_ids[0]);
+        }
+        path_ids[..path_ids.len() - 1]
+            .iter()
+            .copied()
+            .all(|def_id| self.is_package_def(def_id))
+    }
+
+    fn package_import_target_is_valid(&self, path_ids: &[DefId]) -> bool {
+        self.qualified_import_target_is_valid(path_ids)
+            && path_ids
+                .last()
+                .copied()
+                .is_some_and(|def_id| self.is_package_def(def_id))
+    }
+
+    fn is_package_def(&self, def_id: DefId) -> bool {
+        self.class_types.get(&def_id) == Some(&ast::ClassType::Package)
+    }
+
     fn emit_unresolved_import(&mut self, import: &ast::Import) {
         let span = self.import_span(import);
         self.diagnostics.emit(Diagnostic::error(
@@ -358,6 +420,18 @@ impl Resolver {
                 Self::format_import_clause(import)
             ),
             PrimaryLabel::new(span).with_message("import could not be resolved"),
+        ));
+    }
+
+    fn emit_invalid_import_target(&mut self, import: &ast::Import) {
+        let span = self.import_span(import);
+        self.diagnostics.emit(Diagnostic::error(
+            "ER002",
+            format!(
+                "invalid import target: '{}' (imports must traverse packages only)",
+                Self::format_import_clause(import)
+            ),
+            PrimaryLabel::new(span).with_message("import target is not a package path"),
         ));
     }
 

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::package_layout::validate_library_package_layout;
 use crate::parse::parse_files_parallel;
 
 const LIBRARY_CACHE_SCHEMA_VERSION: u32 = 1;
@@ -204,6 +205,19 @@ fn recursive_collect_modelica_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::
     Ok(())
 }
 
+fn recursive_collect_dirs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    out.push(dir.to_path_buf());
+    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            recursive_collect_dirs(&path, out)?;
+        }
+    }
+    Ok(())
+}
+
 fn collect_modelica_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
@@ -221,6 +235,11 @@ fn collect_modelica_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<String> {
     let canonical_root = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut dirs = Vec::new();
+    if path.is_dir() {
+        recursive_collect_dirs(path, &mut dirs)?;
+        dirs.sort();
+    }
     let mut entries: Vec<(String, u64, [u8; 32])> = files
         .par_iter()
         .map(|file| -> std::io::Result<(String, u64, [u8; 32])> {
@@ -242,6 +261,17 @@ fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<String
     hasher.update(format!("compiler={}\n", cache_compiler_version()).as_bytes());
     hasher.update(canonical_root.to_string_lossy().as_bytes());
     hasher.update(b"\n");
+    for dir in dirs {
+        let canonical_dir = fs::canonicalize(&dir).unwrap_or(dir);
+        let rel = canonical_dir
+            .strip_prefix(&canonical_root)
+            .unwrap_or(&canonical_dir)
+            .to_string_lossy()
+            .to_string();
+        hasher.update(b"dir:");
+        hasher.update(rel.as_bytes());
+        hasher.update(b"\n");
+    }
     for (rel, size, digest) in entries {
         hasher.update(rel.as_bytes());
         hasher.update(b"\n");
@@ -416,6 +446,12 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
     {
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(docs) = try_read_cache(&cache_file, &cache_key) {
+            validate_library_package_layout(path, &docs).map_err(|err| {
+                anyhow::anyhow!(
+                    "validate Modelica package layout under {}: {err}",
+                    path.display()
+                )
+            })?;
             return Ok(ParsedLibrary {
                 documents: docs,
                 file_count: files.len(),
@@ -427,6 +463,12 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
 
         let docs = parse_files_parallel(&files)
             .with_context(|| format!("parse library files under {}", path.display()))?;
+        validate_library_package_layout(path, &docs).map_err(|err| {
+            anyhow::anyhow!(
+                "validate Modelica package layout under {}: {err}",
+                path.display()
+            )
+        })?;
         if write_cache(&cache_file, path, &cache_key, &docs).is_ok() {
             return Ok(ParsedLibrary {
                 documents: docs,
@@ -447,6 +489,12 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
 
     let docs = parse_files_parallel(&files)
         .with_context(|| format!("parse library files under {}", path.display()))?;
+    validate_library_package_layout(path, &docs).map_err(|err| {
+        anyhow::anyhow!(
+            "validate Modelica package layout under {}: {err}",
+            path.display()
+        )
+    })?;
     Ok(ParsedLibrary {
         documents: docs,
         file_count: files.len(),

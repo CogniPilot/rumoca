@@ -20,6 +20,15 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
     fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable) {
         self.check_equation_type_compatibility(lhs, rhs, type_table);
     }
+
+    fn on_expression_function_call(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        args: &[Expression],
+        type_table: &TypeTable,
+    ) {
+        self.check_builtin_function_call(comp, args, type_table);
+    }
 }
 
 impl TypeChecker {

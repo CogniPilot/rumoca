@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use support::contract_cases_manifest::{
-    ContractCaseKind, ContractCaseOutcome, IMPLEMENTED_CONTRACT_CASES,
+    ContractCaseKind, ContractCaseOutcome, implemented_contract_cases,
 };
 
 /// Contracts currently required to keep dual-case coverage (at least one accept and one reject).
@@ -16,20 +16,22 @@ use support::contract_cases_manifest::{
 /// tests are hardened.
 const STRICT_DUAL_CASE_CONTRACT_IDS: &[&str] = &[
     "ALG-001", "CONN-017", "DECL-001", "DECL-003", "DECL-024", "DECL-032", "EQN-001", "EQN-015",
-    "EQN-013", "EQN-016", "EQN-025", "EXPR-012", "EXPR-013", "EXPR-016", "FUNC-001", "FUNC-017",
-    "LEX-001", "PKG-002", "SIM-005", "SIM-009", "TYPE-013",
+    "EQN-013", "EQN-016", "EQN-025", "EXPR-012", "EXPR-013", "EXPR-016", "FUNC-001", "FUNC-010",
+    "FUNC-011", "FUNC-012", "FUNC-015", "FUNC-017", "LEX-001", "PKG-002", "SIM-005", "SIM-009",
+    "TYPE-013",
 ];
 
 /// Contracts that must keep semantic coverage (compile or balance), not parse-only checks.
 const STRICT_NON_PARSE_CONTRACT_IDS: &[&str] = &[
     "ALG-005", "ALG-012", "ALG-013", "CONN-017", "DECL-003", "DECL-022", "DECL-036", "EQN-013",
-    "EQN-016", "EQN-021", "EXPR-013", "FUNC-001", "SIM-005", "SIM-009", "TYPE-013",
+    "EQN-016", "EQN-021", "EXPR-013", "FUNC-001", "FUNC-010", "FUNC-011", "FUNC-012", "FUNC-015",
+    "SIM-005", "SIM-009", "TYPE-013",
 ];
 
 /// Parse-enforced non-LEX contracts where grammar-level rejection is the intended guard.
 const PARSE_ENFORCED_NON_LEX_CONTRACT_IDS: &[&str] = &[
-    "ALG-001", "DECL-001", "DECL-006", "DECL-012", "DECL-015", "DECL-024", "EQN-024", "EXPR-014",
-    "FUNC-006", "FUNC-017", "INST-003",
+    "ALG-001", "ANN-001", "DECL-001", "DECL-006", "DECL-012", "DECL-015", "DECL-024", "EQN-024",
+    "EXPR-014", "FUNC-006", "FUNC-017", "INST-003", "INST-012", "PKG-012",
 ];
 
 /// Public helper API in `rumoca_contracts::test_support` that must stay in use.
@@ -60,8 +62,7 @@ fn implemented_contract_ids_match_registry_and_manifest() {
         .iter()
         .map(|id| id.to_string())
         .collect();
-    let manifest_implemented_ids: BTreeSet<String> = IMPLEMENTED_CONTRACT_CASES
-        .iter()
+    let manifest_implemented_ids: BTreeSet<String> = implemented_contract_cases()
         .map(|case| case.contract_id.to_string())
         .collect();
 
@@ -87,7 +88,7 @@ fn implemented_contract_ids_match_registry_and_manifest() {
 #[test]
 fn contract_case_manifest_is_well_formed() {
     assert!(
-        !IMPLEMENTED_CONTRACT_CASES.is_empty(),
+        implemented_contract_cases().next().is_some(),
         "Contract-case manifest must not be empty"
     );
 
@@ -95,7 +96,7 @@ fn contract_case_manifest_is_well_formed() {
     let tests_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut file_cache: BTreeMap<String, String> = BTreeMap::new();
 
-    for case in IMPLEMENTED_CONTRACT_CASES {
+    for case in implemented_contract_cases() {
         assert!(
             is_contract_id(case.contract_id),
             "Invalid contract_id format in manifest: {}",
@@ -145,7 +146,7 @@ fn every_implemented_contract_has_explicit_cases() {
         IMPLEMENTED_CONTRACT_IDS.iter().copied().collect();
     let mut counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new(); // (accept, reject)
 
-    for case in IMPLEMENTED_CONTRACT_CASES {
+    for case in implemented_contract_cases() {
         let entry = counts.entry(case.contract_id).or_insert((0, 0));
         match case.outcome {
             ContractCaseOutcome::Accept => entry.0 += 1,
@@ -168,7 +169,7 @@ fn every_implemented_contract_has_explicit_cases() {
 #[test]
 fn strict_dual_case_contracts_keep_accept_and_reject_coverage() {
     let mut counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new(); // (accept, reject)
-    for case in IMPLEMENTED_CONTRACT_CASES {
+    for case in implemented_contract_cases() {
         let entry = counts.entry(case.contract_id).or_insert((0, 0));
         match case.outcome {
             ContractCaseOutcome::Accept => entry.0 += 1,
@@ -192,11 +193,7 @@ fn strict_dual_case_contracts_keep_accept_and_reject_coverage() {
 fn strict_non_parse_contracts_keep_semantic_coverage() {
     for id in STRICT_NON_PARSE_CONTRACT_IDS {
         let mut has_case = false;
-        for case in IMPLEMENTED_CONTRACT_CASES
-            .iter()
-            .copied()
-            .filter(|case| case.contract_id == *id)
-        {
+        for case in implemented_contract_cases().filter(|case| case.contract_id == *id) {
             has_case = true;
             assert!(
                 matches!(
@@ -216,7 +213,7 @@ fn strict_non_parse_contracts_keep_semantic_coverage() {
 
 #[test]
 fn parse_only_coverage_is_limited_to_lex_contracts() {
-    for case in IMPLEMENTED_CONTRACT_CASES {
+    for case in implemented_contract_cases() {
         if matches!(case.kind, ContractCaseKind::Parse) {
             let is_lex = case.contract_id.starts_with("LEX-");
             let is_parse_enforced_non_lex =
