@@ -110,35 +110,6 @@ export function compile_with_libraries(source, model_name, _libraries_json) {
 }
 
 /**
- * Load a DAE from JSON and generate code for a target.
- * @param {string} dae_json
- * @param {string} target
- * @returns {string}
- */
-export function generate_code(dae_json, target) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(dae_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(target, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.generate_code(ptr0, len0, ptr1, len1);
-        var ptr3 = ret[0];
-        var len3 = ret[1];
-        if (ret[3]) {
-            ptr3 = 0; len3 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
  * Get the number of cached library documents.
  * @returns {number}
  */

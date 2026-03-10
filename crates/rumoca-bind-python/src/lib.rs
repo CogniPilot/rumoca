@@ -22,15 +22,16 @@
 //! for msg in messages:
 //!     print(f"{msg.level}: {msg.message}")
 //!
-//! # Generate code from DAE JSON
-//! code = rumoca.generate_code(dae_json, "casadi")
+//! # Render code from DAE JSON with an explicit template
+//! template = "model {{ model_name }} end {{ model_name }};"
+//! code = rumoca.render_template(dae_json, template)
 //! ```
 
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
 
 use rumoca_session::parsing::validate_source_syntax;
-use rumoca_session::runtime::render_dae_template_for_target;
+use rumoca_session::runtime::render_dae_template_with_json;
 use rumoca_tool_fmt::FormatOptions;
 use rumoca_tool_lint::{LintLevel, LintOptions, lint as lint_source};
 
@@ -234,24 +235,23 @@ fn check(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
     lint(source, Some(filename))
 }
 
-/// Generate code from a DAE JSON representation.
+/// Render code from DAE JSON using an explicit template string.
 ///
 /// Args:
 ///     dae_json: DAE as a JSON string
-///     target: Target name (e.g., "casadi", "cyecca", "julia", "c", "jax", "onnx")
+///     template: Template source text (minijinja/Jinja-compatible)
 ///
 /// Returns:
-///     Generated code as a string
+///     Rendered output as a string
 ///
 /// Raises:
-///     RuntimeError: If JSON parsing or code generation fails
+///     RuntimeError: If JSON parsing or template rendering fails
 #[pyfunction]
-fn generate_code(dae_json: &str, target: &str) -> Result<String, PyRuntimeStringError> {
+fn render_template(dae_json: &str, template: &str) -> Result<String, PyRuntimeStringError> {
     let dae_json: serde_json::Value = serde_json::from_str(dae_json)
         .map_err(|e| PyRuntimeStringError(format!("Invalid DAE JSON: {e}")))?;
-
-    render_dae_template_for_target(&dae_json, target)
-        .map_err(|e| PyRuntimeStringError(format!("Code generation error: {e}")))
+    render_dae_template_with_json(&dae_json, template)
+        .map_err(|e| PyRuntimeStringError(format!("Template rendering error: {e}")))
 }
 
 /// Compile Modelica source code to DAE JSON.
@@ -306,7 +306,7 @@ fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lint, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(compile, m)?)?;
-    m.add_function(wrap_pyfunction!(generate_code, m)?)?;
+    m.add_function(wrap_pyfunction!(render_template, m)?)?;
     m.add_class::<ParseResult>()?;
     m.add_class::<LintMessage>()?;
     Ok(())

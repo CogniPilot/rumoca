@@ -985,6 +985,40 @@ end Outer;
     }
 
     #[test]
+    fn test_alias_component_start_is_parsed_as_start_value() {
+        let source = r#"
+type Voltage = Real;
+
+model Test
+    Voltage v(start = 1.25);
+end Test;
+"#;
+
+        let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = ast.classes.get("Test").expect("Test should exist");
+        let v = model.components.get("v").expect("v should exist");
+
+        match &v.start {
+            ast::Expression::Terminal {
+                terminal_type,
+                token,
+            } => {
+                assert_eq!(*terminal_type, ast::TerminalType::UnsignedReal);
+                assert_eq!(&*token.text, "1.25");
+            }
+            other => panic!(
+                "expected start expression for alias component, got: {:?}",
+                other
+            ),
+        }
+
+        assert!(
+            v.modifications.contains_key("start"),
+            "Alias start modifier should still be preserved for non-builtins"
+        );
+    }
+
+    #[test]
     fn test_inner_keyword_vs_identifier() {
         // "inner" (lowercase) is a keyword, but "Inner" (capital) should be a valid identifier
         let source = r#"

@@ -469,6 +469,35 @@ fn test_unknown_class_component_modifier_reports_error() {
 }
 
 #[test]
+fn test_unknown_class_component_start_modifier_reports_error() {
+    let source = r#"
+        model Main
+            Test t1(start=1), t2(start=2);
+        end Main;
+
+        model Test
+            Real x;
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let result = typecheck(resolved);
+    assert!(
+        result.is_err(),
+        "typecheck should reject unknown class modifiers"
+    );
+
+    let diags = result.expect_err("expected diagnostics");
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("ET001")
+            && d.message.contains("unknown modifier `start`")),
+        "expected unknown class start modifier diagnostic, got: {:?}",
+        diags
+    );
+}
+
+#[test]
 fn test_unknown_nested_builtin_modifier_reports_error() {
     let source = r#"
         model Plane
@@ -972,6 +1001,33 @@ fn test_typecheck_instanced_reports_unknown_class_component_modifier() {
             .any(|d| d.code.as_deref() == Some("ET001")
                 && d.message.contains("unknown modifier `kps`")),
         "expected unknown class modifier diagnostic in instanced pipeline, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_typecheck_instanced_reports_unknown_class_component_start_modifier() {
+    let source = r#"
+        model Main
+            Test t1(start=1), t2(start=2);
+        end Main;
+
+        model Test
+            Real x;
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    let tree = resolved.into_inner();
+    let mut overlay = rumoca_ir_ast::InstanceOverlay::new();
+
+    let err = typecheck_instanced(&tree, &mut overlay, "Main")
+        .expect_err("instanced typecheck should reject unknown class start modifiers");
+    assert!(
+        err.iter().any(|d| d.code.as_deref() == Some("ET001")
+            && d.message.contains("unknown modifier `start`")),
+        "expected unknown class start modifier diagnostic in instanced pipeline, got: {:?}",
         err
     );
 }

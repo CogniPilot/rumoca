@@ -24,19 +24,39 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
     --version)
-        shift
-        VERSION="${1:-}"
+        if [[ $# -lt 2 ]]; then
+            echo "missing value for --version" >&2
+            usage
+            exit 1
+        fi
+        VERSION="$2"
+        shift 2
+        continue
         ;;
     --repo)
-        shift
-        REPO="${1:-}"
+        if [[ $# -lt 2 ]]; then
+            echo "missing value for --repo" >&2
+            usage
+            exit 1
+        fi
+        REPO="$2"
+        shift 2
+        continue
         ;;
     --bin-dir)
-        shift
-        BIN_DIR="${1:-}"
+        if [[ $# -lt 2 ]]; then
+            echo "missing value for --bin-dir" >&2
+            usage
+            exit 1
+        fi
+        BIN_DIR="$2"
+        shift 2
+        continue
         ;;
     --with-lsp)
         WITH_LSP=1
+        shift
+        continue
         ;;
     -h | --help)
         usage
@@ -48,7 +68,6 @@ while [[ $# -gt 0 ]]; do
         exit 1
         ;;
     esac
-    shift
 done
 
 if [[ -z "$VERSION" || -z "$REPO" || -z "$BIN_DIR" ]]; then
