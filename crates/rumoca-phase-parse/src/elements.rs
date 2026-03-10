@@ -891,6 +891,29 @@ fn duplicate_modification_error(
     semantic_error_from_component_reference(message, target)
 }
 
+fn store_component_modification(
+    value: &mut rumoca_ir_ast::Component,
+    param_name: &str,
+    rhs: &rumoca_ir_ast::Expression,
+    has_each: bool,
+    has_final: bool,
+    target: &rumoca_ir_ast::ComponentReference,
+) -> anyhow::Result<()> {
+    if value.modifications.contains_key(param_name) {
+        return Err(duplicate_modification_error(param_name, target));
+    }
+    value
+        .modifications
+        .insert(param_name.to_string(), rhs.clone());
+    if has_each {
+        value.each_modifications.insert(param_name.to_string());
+    }
+    if has_final {
+        value.final_attributes.insert(param_name.to_string());
+    }
+    Ok(())
+}
+
 /// Get valid attributes for a builtin type.
 fn get_valid_attrs(type_name: &str) -> &'static [&'static str] {
     match type_name {
@@ -997,12 +1020,19 @@ fn process_named_arg(
     comp: &rumoca_ir_ast::ComponentReference,
 ) -> anyhow::Result<()> {
     let type_name = value.type_name.to_string();
+    let is_builtin = is_builtin_type(&type_name);
     match param_name {
         "start" => {
+            // MLS §7.2: `start` is a builtin-style component attribute
+            // even when declared through an alias type.
             value.start = rhs.clone();
-            value.start_is_modification = true;
-            value.start_has_each = has_each;
-            if has_final {
+            if is_builtin {
+                value.start_is_modification = true;
+                value.start_has_each = has_each;
+            }
+            if !is_builtin {
+                store_component_modification(value, param_name, rhs, has_each, has_final, comp)?;
+            } else if has_final {
                 value.final_attributes.insert("start".to_string());
             }
         }
@@ -1011,18 +1041,7 @@ fn process_named_arg(
         }
         _ => {
             validate_builtin_mod(param_name, &type_name, comp)?;
-            if value.modifications.contains_key(param_name) {
-                return Err(duplicate_modification_error(param_name, comp));
-            }
-            value
-                .modifications
-                .insert(param_name.to_string(), rhs.clone());
-            if has_each {
-                value.each_modifications.insert(param_name.to_string());
-            }
-            if has_final {
-                value.final_attributes.insert(param_name.to_string());
-            }
+            store_component_modification(value, param_name, rhs, has_each, has_final, comp)?;
         }
     }
     Ok(())
@@ -1058,26 +1077,36 @@ fn process_mod_arg(
     } = arg
     {
         let param_name = target.to_string();
+        let is_builtin = is_builtin_type(&type_name);
         if param_name == "start" {
+            // MLS §7.2: alias-backed component declarations still carry
+            // `start` as a component-style modifier.
             value.start = (**mod_value).clone();
-            value.start_is_modification = true;
-            value.start_has_each = has_each;
+            if is_builtin {
+                value.start_is_modification = true;
+                value.start_has_each = has_each;
+            } else {
+                store_component_modification(
+                    value,
+                    &param_name,
+                    mod_value,
+                    has_each,
+                    false,
+                    target,
+                )?;
+            }
             if has_final {
                 value.final_attributes.insert("start".to_string());
             }
         } else {
-            if value.modifications.contains_key(&param_name) {
-                return Err(duplicate_modification_error(&param_name, target));
-            }
-            value
-                .modifications
-                .insert(param_name.clone(), (**mod_value).clone());
-            if has_each {
-                value.each_modifications.insert(param_name.clone());
-            }
-            if has_final {
-                value.final_attributes.insert(param_name);
-            }
+            store_component_modification(
+                value,
+                &param_name,
+                mod_value,
+                has_each,
+                has_final,
+                target,
+            )?;
         }
     }
 

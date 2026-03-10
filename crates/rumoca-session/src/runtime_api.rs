@@ -22,21 +22,3 @@ pub fn render_dae_template_with_json(dae_json: &Value, template: &str) -> Result
     rumoca_phase_codegen::render_template_with_dae_json(dae_json, template)
         .map_err(|error| error.to_string())
 }
-
-pub fn builtin_template_for_target(target: &str) -> Option<&'static str> {
-    match target {
-        "casadi" => Some(rumoca_phase_codegen::templates::CASADI_SX),
-        "cyecca" => Some(rumoca_phase_codegen::templates::CYECCA),
-        "julia" => Some(rumoca_phase_codegen::templates::JULIA_MTK),
-        "c" => Some(rumoca_phase_codegen::templates::C_CODE),
-        "jax" => Some(rumoca_phase_codegen::templates::JAX),
-        "onnx" => Some(rumoca_phase_codegen::templates::ONNX),
-        _ => None,
-    }
-}
-
-pub fn render_dae_template_for_target(dae_json: &Value, target: &str) -> Result<String, String> {
-    let template =
-        builtin_template_for_target(target).ok_or_else(|| format!("Unknown target: {target}"))?;
-    render_dae_template_with_json(dae_json, template)
-}

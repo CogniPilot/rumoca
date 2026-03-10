@@ -345,6 +345,47 @@ fn test_unknown_builtin_modifier_is_not_ignored_with_multiple_classes() {
 }
 
 #[test]
+fn test_unknown_class_start_modifier_is_not_ignored_with_multiple_components() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+                model Main
+                  Test t1(start=1), t2(start=2);
+                end Main;
+
+                model Test
+                  Real x;
+                end Test;
+                "#,
+        )
+        .unwrap();
+
+    let phase_result = session.compile_model_phases("Main").unwrap();
+    match phase_result {
+        PhaseResult::Failed {
+            phase, error_code, ..
+        } => {
+            assert_eq!(phase, FailedPhase::Typecheck);
+            assert_eq!(error_code.as_deref(), Some("ET001"));
+        }
+        other => panic!("expected typecheck failure, got {:?}", other),
+    }
+
+    let diagnostics = session.compile_model_diagnostics("Main");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("ET001")
+                && d.message.contains("unknown modifier `start`")),
+        "expected ET001 unknown class start modifier diagnostics, got: {:?}",
+        diagnostics.diagnostics
+    );
+}
+
+#[test]
 fn test_compile_model_diagnostics_for_valid_function_has_no_phase_errors() {
     let mut session = Session::default();
     session
