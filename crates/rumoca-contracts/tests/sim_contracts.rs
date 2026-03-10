@@ -105,6 +105,46 @@ fn sim_003_parameter_with_binding_is_standalone_simulatable() {
 }
 
 // =============================================================================
+// SIM-004: Variable fixed default
+// "For other variables: fixed defaults to false"
+// =============================================================================
+
+#[test]
+fn sim_004_non_parameter_variable_defaults_fixed_false() {
+    let result = expect_success(
+        r#"
+        model Test
+            Real x(start = 1.0);
+        equation
+            der(x) = -x;
+        end Test;
+    "#,
+        "Test",
+    );
+
+    let state = result
+        .dae
+        .states
+        .iter()
+        .find(|(name, _)| name.as_str() == "x")
+        .map(|(_, state)| state)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected state x, got states={:?}",
+                result.dae.states.keys()
+            )
+        });
+    assert_eq!(
+        state.fixed, None,
+        "non-parameter variables should not default to fixed=true"
+    );
+    assert!(
+        result.dae.initial_equations.is_empty(),
+        "start value without fixed=true must not add an initialization equation"
+    );
+}
+
+// =============================================================================
 // SIM-009: DAE structure
 // "System shall consist of differential equations, discrete equations, etc."
 // =============================================================================

@@ -3,6 +3,7 @@ use super::traversal_adapter::{
     redeclare_target_value, walk_class_extends_modifications, walk_nested_classes,
 };
 use super::type_lookup::{find_member_type_in_class, find_member_type_path_in_class};
+use crate::{InstantiateError, InstantiateResult, location_to_span};
 use indexmap::IndexMap;
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
@@ -382,6 +383,44 @@ pub(super) fn find_nested_class_in_hierarchy<'a>(
 
 /// Extract active class/package redeclare overrides from a component's modifiers.
 ///
+fn validate_component_class_redeclare_target(
+    tree: &ast::ClassTree,
+    target_name: &str,
+    nested_class: &ast::ClassDef,
+    mod_expr: &ast::Expression,
+) -> InstantiateResult<()> {
+    let ast::Expression::ClassModification { target, .. } = mod_expr else {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            target_name,
+            "redeclare target is missing source span",
+            location_to_span(&nested_class.location, &tree.source_map),
+        )));
+    };
+    let Some(part) = target.parts.first() else {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            target_name,
+            "redeclare target is missing source span",
+            location_to_span(&nested_class.location, &tree.source_map),
+        )));
+    };
+    let span = location_to_span(&part.ident.location, &tree.source_map);
+
+    if nested_class.is_final {
+        return Err(Box::new(InstantiateError::redeclare_final(
+            target_name,
+            span,
+        )));
+    }
+    if !nested_class.is_replaceable {
+        return Err(Box::new(InstantiateError::redeclare_non_replaceable(
+            target_name,
+            span,
+        )));
+    }
+
+    Ok(())
+}
+
 /// MLS §7.3: component-level redeclare modifiers can target replaceable nested
 /// classes declared in base classes (via extends). Persisting these resolved
 /// overrides enables downstream phases to evaluate instance-scoped constants.
@@ -390,10 +429,10 @@ pub(super) fn extract_component_class_overrides(
     comp: &ast::Component,
     target_class: Option<&ast::ClassDef>,
     mod_env: Option<&ast::ModificationEnvironment>,
-) -> IndexMap<String, DefId> {
+) -> InstantiateResult<IndexMap<String, DefId>> {
     let mut overrides = IndexMap::new();
     let Some(target_class) = target_class else {
-        return overrides;
+        return Ok(overrides);
     };
 
     for (target_name, mod_expr) in &comp.modifications {
@@ -405,16 +444,15 @@ pub(super) fn extract_component_class_overrides(
         else {
             continue;
         };
-        if !nested_class.is_replaceable {
-            continue;
-        }
+        validate_component_class_redeclare_target(tree, target_name, nested_class, mod_expr)?;
+        let resolved_def_id = resolve_redeclare_value_def_id(tree, mod_expr, mod_env);
 
-        if let Some(def_id) = resolve_redeclare_value_def_id(tree, mod_expr, mod_env) {
+        if let Some(def_id) = resolved_def_id {
             overrides.insert(target_name.clone(), def_id);
         }
     }
 
-    overrides
+    Ok(overrides)
 }
 
 #[cfg(test)]

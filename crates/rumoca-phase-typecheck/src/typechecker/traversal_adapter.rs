@@ -1,5 +1,6 @@
 use rumoca_ir_ast as ast;
 
+type ComponentReference = ast::ComponentReference;
 type Equation = ast::Equation;
 type Expression = ast::Expression;
 type Statement = ast::Statement;
@@ -12,6 +13,15 @@ type TypeTable = ast::TypeTable;
 pub(crate) trait TypeCheckTraversalCallbacks {
     /// Called after both sides of a simple equation are traversed.
     fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable);
+
+    /// Called after an expression-form function call and all arguments are traversed.
+    fn on_expression_function_call(
+        &mut self,
+        _comp: &ComponentReference,
+        _args: &[Expression],
+        _type_table: &TypeTable,
+    ) {
+    }
 }
 
 pub(crate) fn walk_equations<C: TypeCheckTraversalCallbacks>(
@@ -177,7 +187,10 @@ pub(crate) fn walk_expression<C: TypeCheckTraversalCallbacks>(
             walk_expression(callbacks, lhs, type_table);
             walk_expression(callbacks, rhs, type_table);
         }
-        Expression::FunctionCall { comp: _, args } => walk_expressions(callbacks, args, type_table),
+        Expression::FunctionCall { comp, args } => {
+            walk_expressions(callbacks, args, type_table);
+            callbacks.on_expression_function_call(comp, args, type_table);
+        }
         Expression::ClassModification {
             target: _,
             modifications,

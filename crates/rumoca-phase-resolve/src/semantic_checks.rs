@@ -4,7 +4,7 @@
 //! that can be validated purely from the AST without needing type information
 //! or instance data.
 
-use rumoca_core::{Diagnostic, PrimaryLabel, SourceId, SourceMap, Span};
+use rumoca_core::{DefId, Diagnostic, PrimaryLabel, SourceId, SourceMap, Span};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::Visitor;
 use std::{
@@ -12,9 +12,30 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
+#[path = "semantic_checks_annotations.rs"]
+mod semantic_checks_annotations;
+#[path = "semantic_checks_builtin_calls.rs"]
+mod semantic_checks_builtin_calls;
+#[path = "semantic_checks_clocks.rs"]
+mod semantic_checks_clocks;
 #[path = "semantic_checks_expr.rs"]
 mod semantic_checks_expr;
+#[path = "semantic_checks_functions.rs"]
+mod semantic_checks_functions;
+#[path = "semantic_checks_operators.rs"]
+mod semantic_checks_operators;
+#[path = "semantic_checks_streams.rs"]
+mod semantic_checks_streams;
+#[path = "semantic_checks_type_roots.rs"]
+mod semantic_checks_type_roots;
+use semantic_checks_annotations::*;
+use semantic_checks_builtin_calls::*;
+use semantic_checks_clocks::*;
 use semantic_checks_expr::*;
+use semantic_checks_functions::*;
+use semantic_checks_operators::*;
+use semantic_checks_streams::*;
+use semantic_checks_type_roots::*;
 
 type Causality = rumoca_ir_core::Causality;
 type ClassDef = ast::ClassDef;
@@ -201,13 +222,32 @@ const ER036_COMPONENT_NAME_EQUALS_CLASS_NAME: &str = "ER036";
 const ER037_PACKAGE_NON_CONSTANT_COMPONENT: &str = "ER037";
 const ER038_FUNCTION_EQUATION_SECTION: &str = "ER038";
 const ER039_CHAINED_RELATIONAL_OPERATOR: &str = "ER039";
+const ER040_RETURN_NOT_IN_FUNCTION: &str = "ER040";
+const ER041_BREAK_NOT_IN_LOOP: &str = "ER041";
+const ER042_WHEN_IN_CONTROL: &str = "ER042";
+const ER043_ARRAY_CONSTRUCTOR_EMPTY: &str = "ER043";
+const ER044_ZEROS_ONES_NONEMPTY: &str = "ER044";
+const ER045_FILL_NEEDS_DIMENSIONS: &str = "ER045";
+const ER046_CAT_REQUIRES_ARGUMENTS: &str = "ER046";
 
 /// Context tracking for nested traversal (function vs model, when depth, etc.)
 struct CheckContext {
     in_function: bool,
     in_when_equation: bool,
     in_when_statement: bool,
+    in_operator_record: bool,
+    in_operator_class: bool,
+    current_operator_record: Option<OperatorRecordContext>,
+    current_operator_name: Option<String>,
+    in_control_depth: u8,
+    loop_depth: u8,
     for_loop_vars: Vec<String>,
+}
+
+#[derive(Clone)]
+struct OperatorRecordContext {
+    name: String,
+    def_id: Option<DefId>,
 }
 
 impl CheckContext {
@@ -216,6 +256,12 @@ impl CheckContext {
             in_function: false,
             in_when_equation: false,
             in_when_statement: false,
+            in_operator_record: false,
+            in_operator_class: false,
+            current_operator_record: None,
+            current_operator_name: None,
+            in_control_depth: 0,
+            loop_depth: 0,
             for_loop_vars: Vec::new(),
         }
     }
@@ -333,7 +379,10 @@ pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Ve
     set_active_source_map(source_map);
     let mut diags = run_semantic_checks(def);
     diags.extend(run_chained_relational_checks(def));
+    diags.extend(run_clock_expression_semantic_checks(def));
     diags.extend(run_der_in_function_checks(def));
+    diags.extend(run_builtin_call_semantic_checks(def));
+    diags.extend(run_stream_builtin_semantic_checks(def));
     diags
 }
 
@@ -357,7 +406,30 @@ struct SemanticClassCheckVisitor<'a> {
 
 impl ast::Visitor for SemanticClassCheckVisitor<'_> {
     fn visit_class_def(&mut self, class: &ClassDef) -> std::ops::ControlFlow<()> {
-        check_class_structural(class, self.def, self.diags);
+        check_class_structural(
+            class,
+            self.def,
+            self.ctx.in_operator_record,
+            self.ctx.in_operator_class,
+            self.ctx.current_operator_record.as_ref(),
+            self.ctx.current_operator_name.as_deref(),
+            self.diags,
+        );
+        let was_parent_operator_record = self.ctx.in_operator_record;
+        let was_parent_operator_class = self.ctx.in_operator_class;
+        let previous_operator_record = self.ctx.current_operator_record.clone();
+        let previous_operator_name = self.ctx.current_operator_name.clone();
+        self.ctx.in_operator_record = class.operator_record;
+        self.ctx.in_operator_class = class.class_type == ClassType::Operator;
+        if class.operator_record {
+            self.ctx.current_operator_record = Some(OperatorRecordContext {
+                name: class.name.text.to_string(),
+                def_id: class.def_id,
+            });
+        }
+        if class.class_type == ClassType::Operator {
+            self.ctx.current_operator_name = Some(class.name.text.to_string());
+        }
 
         let was_function = self.ctx.in_function;
         if class.class_type == ClassType::Function {
@@ -404,11 +476,16 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
                 check_statement(stmt, self.ctx, self.diags);
             }
         }
+        check_when_reinit_contracts(class, self.diags);
         for nested in class.classes.values() {
             self.visit_class_def(nested)?;
         }
 
         self.ctx.in_function = was_function;
+        self.ctx.in_operator_record = was_parent_operator_record;
+        self.ctx.in_operator_class = was_parent_operator_class;
+        self.ctx.current_operator_record = previous_operator_record;
+        self.ctx.current_operator_name = previous_operator_name;
         std::ops::ControlFlow::Continue(())
     }
 }
@@ -417,15 +494,36 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
 // Batch 1: Structural ClassDef checks
 // ============================================================================
 
-fn check_class_structural(class: &ClassDef, def: &StoredDefinition, diags: &mut Vec<Diagnostic>) {
+fn check_class_structural(
+    class: &ClassDef,
+    def: &StoredDefinition,
+    parent_is_operator_record: bool,
+    parent_is_operator_class: bool,
+    operator_record: Option<&OperatorRecordContext>,
+    operator_name: Option<&str>,
+    diags: &mut Vec<Diagnostic>,
+) {
     check_duplicate_names(class, diags);
+    check_operator_restrictions(
+        class,
+        parent_is_operator_record,
+        parent_is_operator_class,
+        operator_record,
+        operator_name,
+        diags,
+    );
     check_record_restrictions(class, diags);
-    check_connector_restrictions(class, diags);
+    check_connector_restrictions(class, def, diags);
+    check_operator_record_base_restrictions(class, def, diags);
+    check_constant_fixed_false(class, diags);
     check_input_parameter_combination(class, diags);
     check_component_name_vs_class_name(class, diags);
     check_package_restrictions(class, diags);
     check_duplicate_imports(class, diags);
-    check_function_restrictions(class, diags);
+    check_function_restrictions(class, def, diags);
+    check_clock_restrictions(class, def, diags);
+    check_stream_restrictions(class, def, diags);
+    check_annotation_restrictions(class, diags);
     check_cross_class_restrictions(class, def, diags);
     check_cyclic_parameter_bindings(class, diags);
     check_parameter_variability(class, diags);
@@ -580,12 +678,39 @@ fn check_record_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
 
 /// DECL-006: Connectors cannot have protected sections.
 /// DECL-007: Connector elements cannot have inner/outer prefixes.
-fn check_connector_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
+fn check_connector_restrictions(
+    class: &ClassDef,
+    def: &StoredDefinition,
+    diags: &mut Vec<Diagnostic>,
+) {
     if class.class_type != ClassType::Connector {
         return;
     }
 
     for (name, comp) in &class.components {
+        if let Some(type_class) = find_class_by_name(def, &comp.type_name.to_string())
+            && !matches!(
+                type_class.class_type,
+                ClassType::Connector | ClassType::Record | ClassType::Type
+            )
+        {
+            diags.push(semantic_error(
+                ER049_CONNECTOR_COMPONENT_TYPES,
+                format!(
+                    "connector '{}' cannot contain component '{}' of type '{}' (MLS §9.1)",
+                    class.name.text, name, type_class.name.text
+                ),
+                label_from_token(
+                    &comp.name_token,
+                    "check_connector_restrictions/unsupported_component_type",
+                    format!(
+                        "connector component '{}' cannot be declared as '{}'",
+                        name, type_class.name.text
+                    ),
+                ),
+            ));
+        }
+
         if comp.is_protected {
             diags.push(semantic_error(
                 ER034_CONNECTOR_PROTECTED_ELEMENT,
@@ -628,6 +753,7 @@ fn check_connector_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
                 ),
             ));
         }
+        check_expandable_connector_flow_restriction(class, name, comp, diags);
     }
 
     for (name, nested) in &class.classes {
@@ -646,6 +772,36 @@ fn check_connector_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
             ));
         }
     }
+}
+
+fn check_expandable_connector_flow_restriction(
+    class: &ClassDef,
+    name: &str,
+    comp: &ast::Component,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if !class.expandable {
+        return;
+    }
+    let Connection::Flow(flow_token) = &comp.connection else {
+        return;
+    };
+
+    diags.push(semantic_error(
+        ER058_EXPANDABLE_FLOW_COMPONENT,
+        format!(
+            "expandable connector '{}' cannot contain flow component '{}' (MLS §9.1.3)",
+            class.name.text, name
+        ),
+        label_from_token(
+            flow_token,
+            "check_connector_restrictions/expandable_flow_component",
+            format!(
+                "flow component '{}' is not allowed in expandable connectors",
+                name
+            ),
+        ),
+    ));
 }
 
 /// DECL-012: Input prefix combined with parameter/constant is forbidden.
@@ -790,150 +946,101 @@ fn check_selective_import_dupes(
     }
 }
 
-/// FUNC-001: Public function components must have input or output prefix.
-/// FUNC-002: Assignment to function input is forbidden.
-/// FUNC-006: Functions cannot have equation sections.
-fn check_function_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    if class.class_type != ClassType::Function {
-        return;
-    }
-
-    // FUNC-001
-    for (name, comp) in &class.components {
-        if !comp.is_protected && matches!(comp.causality, Causality::Empty) {
-            diags.push(semantic_error(
-                ER013_FUNCTION_PUBLIC_MISSING_IO_PREFIX,
-                format!(
-                    "public component '{}' in function '{}' must have \
-                     input or output prefix (MLS §12.2)",
-                    name, class.name.text
-                ),
-                label_from_token(
-                    &comp.name_token,
-                    "check_function_restrictions/missing_io_prefix",
-                    format!("component '{}' is missing input/output prefix", name),
-                ),
-            ));
-        }
-    }
-
-    // FUNC-006
-    if !class.equations.is_empty() || !class.initial_equations.is_empty() {
-        let label = if let Some(eq) = class.equations.first() {
-            label_from_equation(
-                eq,
-                "check_function_restrictions/function_equations",
-                "equation section is not allowed in functions",
-            )
-            .unwrap_or_else(|| {
-                label_from_token(
-                    &class.name,
-                    "check_function_restrictions/function_equations_fallback",
-                    "equation section is not allowed in functions",
-                )
-            })
-        } else if let Some(eq) = class.initial_equations.first() {
-            label_from_equation(
-                eq,
-                "check_function_restrictions/function_initial_equations",
-                "initial equation section is not allowed in functions",
-            )
-            .unwrap_or_else(|| {
-                label_from_token(
-                    &class.name,
-                    "check_function_restrictions/function_initial_equations_fallback",
-                    "initial equation section is not allowed in functions",
-                )
-            })
-        } else {
-            label_from_token(
-                &class.name,
-                "check_function_restrictions/function_equation_section",
-                "equation section is not allowed in functions",
-            )
-        };
-        diags.push(semantic_error(
-            ER038_FUNCTION_EQUATION_SECTION,
-            format!(
-                "function '{}' cannot have equation sections (MLS §12.2)",
-                class.name.text
-            ),
-            label,
-        ));
-    }
-
-    // FUNC-002
-    let input_names: std::collections::HashSet<String> = class
-        .components
-        .iter()
-        .filter(|(_, c)| matches!(c.causality, Causality::Input(_)))
-        .map(|(n, _)| n.clone())
-        .collect();
-
-    for alg in &class.algorithms {
-        check_input_assignment(alg, &input_names, diags);
-    }
-}
-
-fn check_input_assignment(
-    stmts: &[Statement],
-    input_names: &std::collections::HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    struct InputAssignmentVisitor<'a> {
-        input_names: &'a std::collections::HashSet<String>,
-        diags: &'a mut Vec<Diagnostic>,
-    }
-
-    impl ast::Visitor for InputAssignmentVisitor<'_> {
-        fn visit_assignment(
-            &mut self,
-            comp: &ComponentReference,
-            _value: &Expression,
-        ) -> std::ops::ControlFlow<()> {
-            if let Some(first) = comp.parts.first()
-                && self.input_names.contains(&*first.ident.text)
-            {
-                self.diags.push(semantic_error(
-                    ER014_FUNCTION_INPUT_ASSIGNED,
-                    format!(
-                        "cannot assign to input parameter '{}' (MLS §12.2)",
-                        first.ident.text
-                    ),
-                    label_from_token(
-                        &first.ident,
-                        "check_input_assignment/input_assignment",
-                        format!("assignment to input '{}'", first.ident.text),
-                    ),
-                ));
-            }
-            std::ops::ControlFlow::Continue(())
-        }
-    }
-
-    let mut visitor = InputAssignmentVisitor { input_names, diags };
-    for stmt in stmts {
-        let _ = visitor.visit_statement(stmt);
-    }
-}
-
 // ============================================================================
 // Cross-class checks (need access to full StoredDefinition)
 // ============================================================================
 
 /// Look up a class by type name in the StoredDefinition.
 fn find_class_by_name<'a>(def: &'a StoredDefinition, type_name: &str) -> Option<&'a ClassDef> {
-    // Try direct lookup
+    if type_name.contains('.') {
+        return find_class_by_qualified_name(def, type_name);
+    }
+
     if let Some(cls) = def.classes.get(type_name) {
         return Some(cls);
     }
-    // Try nested lookup (one level)
-    for parent in def.classes.values() {
-        if let Some(cls) = parent.classes.get(type_name) {
-            return Some(cls);
+
+    let mut stack: Vec<&ClassDef> = def
+        .classes
+        .values()
+        .flat_map(|class| class.classes.values())
+        .collect();
+    while let Some(class) = stack.pop() {
+        if class.name.text.as_ref() == type_name {
+            return Some(class);
         }
+        stack.extend(class.classes.values());
     }
+
     None
+}
+
+fn find_class_by_def_id(def: &StoredDefinition, target_def_id: DefId) -> Option<&ClassDef> {
+    let mut stack: Vec<&ClassDef> = def.classes.values().collect();
+    while let Some(class) = stack.pop() {
+        if class.def_id == Some(target_def_id) {
+            return Some(class);
+        }
+        stack.extend(class.classes.values());
+    }
+
+    None
+}
+
+struct ResolvedComponentTarget<'a> {
+    component: &'a ast::Component,
+    type_class: Option<&'a ClassDef>,
+    token: &'a Token,
+}
+
+fn component_type_class<'a>(
+    comp: &'a ast::Component,
+    def: &'a StoredDefinition,
+) -> Option<&'a ClassDef> {
+    if let Some(type_def_id) = comp.type_def_id
+        && let Some(type_class) = find_class_by_def_id(def, type_def_id)
+    {
+        return Some(type_class);
+    }
+
+    find_class_by_name(def, &comp.type_name.to_string())
+}
+
+fn resolve_component_reference_target<'a>(
+    class: &'a ClassDef,
+    cref: &'a ComponentReference,
+    def: &'a StoredDefinition,
+) -> Option<ResolvedComponentTarget<'a>> {
+    let first = cref.parts.first()?;
+    let mut component = class.components.get(first.ident.text.as_ref())?;
+    let mut type_class = component_type_class(component, def);
+    let mut token = &first.ident;
+
+    for part in cref.parts.iter().skip(1) {
+        let current_type_class = type_class?;
+        component = current_type_class
+            .components
+            .get(part.ident.text.as_ref())?;
+        type_class = component_type_class(component, def);
+        token = &part.ident;
+    }
+
+    Some(ResolvedComponentTarget {
+        component,
+        type_class,
+        token,
+    })
+}
+
+fn find_class_by_qualified_name<'a>(
+    def: &'a StoredDefinition,
+    type_name: &str,
+) -> Option<&'a ClassDef> {
+    let mut current = def.classes.get(type_name.split('.').next()?)?;
+    for part in type_name.split('.').skip(1) {
+        current = current.classes.get(part)?;
+    }
+    Some(current)
 }
 
 /// Cross-class checks that need to look up type classes.
@@ -1458,48 +1565,10 @@ impl ast::Visitor for ContextSensitiveVisitor<'_> {
     }
 
     fn visit_statement(&mut self, stmt: &Statement) -> std::ops::ControlFlow<()> {
-        if let Statement::When(_) = stmt
-            && self.ctx.in_function
-            && let Some(label) = label_from_statement(
-                stmt,
-                "check_statement/when_in_function",
-                "when-statement is not allowed in function",
-            )
-        {
-            self.diags.push(semantic_error(
-                ER015_WHEN_IN_FUNCTION,
-                "when-statements are not allowed in functions (MLS §12.2)",
-                label,
-            ));
+        if let Some(result) = visit_control_statement(self, stmt) {
+            return result;
         }
-        if let Statement::When(_) = stmt
-            && self.ctx.in_when_statement
-            && let Some(label) = label_from_statement(
-                stmt,
-                "check_statement/nested_when_statement",
-                "nested when-statement is not allowed",
-            )
-        {
-            self.diags.push(semantic_error(
-                ER016_NESTED_WHEN_STATEMENT,
-                "when-statements cannot be nested (MLS §11.2.7)",
-                label,
-            ));
-        }
-        if matches!(stmt, Statement::Reinit { .. })
-            && !self.ctx.in_when_statement
-            && let Some(label) = label_from_statement(
-                stmt,
-                "check_statement/reinit_outside_when_statement",
-                "reinit() used outside when-statement",
-            )
-        {
-            self.diags.push(semantic_error(
-                ER008_REINIT_OUTSIDE_WHEN,
-                "reinit() can only be used inside when-statements (MLS §8.3.6)",
-                label,
-            ));
-        }
+        check_statement_semantics(self, stmt);
         walk_statement_default(self, stmt)
     }
 
@@ -1512,6 +1581,234 @@ impl ast::Visitor for ContextSensitiveVisitor<'_> {
         self.visit_each(blocks, Self::visit_statement_block)?;
         self.ctx.in_when_statement = was;
         std::ops::ControlFlow::Continue(())
+    }
+
+    fn visit_expression(&mut self, expr: &Expression) -> std::ops::ControlFlow<()> {
+        if let Expression::Array { elements, .. } = expr
+            && elements.is_empty()
+            && let Some(label) = label_from_expression(
+                expr,
+                "check_expression/empty_array_constructor",
+                "array() or {} requires at least one argument",
+            )
+        {
+            self.diags.push(semantic_error(
+                ER043_ARRAY_CONSTRUCTOR_EMPTY,
+                "array() or {} is not defined; at least one argument is required (MLS §10.4)",
+                label,
+            ));
+        }
+        walk_expression_default(self, expr)
+    }
+
+    fn visit_expr_function_call_ctx(
+        &mut self,
+        comp: &ComponentReference,
+        args: &[Expression],
+        ctx: ast::FunctionCallContext,
+    ) -> std::ops::ControlFlow<()> {
+        if matches!(ctx, ast::FunctionCallContext::Expression) {
+            check_array_constructor_function_calls(comp, args, self.diags);
+        }
+        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
+    }
+}
+
+fn visit_control_statement(
+    visitor: &mut ContextSensitiveVisitor<'_>,
+    stmt: &Statement,
+) -> Option<std::ops::ControlFlow<()>> {
+    match stmt {
+        Statement::For {
+            indices, equations, ..
+        } => {
+            let prev_loop_depth = visitor.ctx.loop_depth;
+            let prev_control_depth = visitor.ctx.in_control_depth;
+            visitor.ctx.loop_depth = prev_loop_depth.saturating_add(1);
+            visitor.ctx.in_control_depth = prev_control_depth.saturating_add(1);
+            if visitor
+                .visit_each(indices, ContextSensitiveVisitor::visit_for_index)
+                .is_break()
+            {
+                visitor.ctx.loop_depth = prev_loop_depth;
+                visitor.ctx.in_control_depth = prev_control_depth;
+                return Some(std::ops::ControlFlow::Break(()));
+            }
+            let result = visitor.visit_each(equations, ContextSensitiveVisitor::visit_statement);
+            visitor.ctx.loop_depth = prev_loop_depth;
+            visitor.ctx.in_control_depth = prev_control_depth;
+            Some(result)
+        }
+        Statement::While(block) => {
+            let prev_loop_depth = visitor.ctx.loop_depth;
+            let prev_control_depth = visitor.ctx.in_control_depth;
+            visitor.ctx.loop_depth = prev_loop_depth.saturating_add(1);
+            visitor.ctx.in_control_depth = prev_control_depth.saturating_add(1);
+            let result = visitor.visit_statement_block(block);
+            visitor.ctx.loop_depth = prev_loop_depth;
+            visitor.ctx.in_control_depth = prev_control_depth;
+            Some(result)
+        }
+        Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            let prev_control_depth = visitor.ctx.in_control_depth;
+            visitor.ctx.in_control_depth = prev_control_depth.saturating_add(1);
+            let result = visitor.visit_if_statement(cond_blocks, else_block.as_deref());
+            visitor.ctx.in_control_depth = prev_control_depth;
+            Some(result)
+        }
+        _ => None,
+    }
+}
+
+fn check_array_constructor_function_calls(
+    comp: &ComponentReference,
+    args: &[Expression],
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some(first) = comp.parts.first() else {
+        return;
+    };
+    if comp.parts.len() != 1 {
+        return;
+    }
+
+    match first.ident.text.as_ref() {
+        "array" if args.is_empty() => {
+            diags.push(semantic_error(
+                ER043_ARRAY_CONSTRUCTOR_EMPTY,
+                "array() is not defined; at least one argument is required (MLS §10.4)",
+                label_from_token(
+                    &first.ident,
+                    "check_array_constructor_function_calls/array_no_args",
+                    "array() requires at least one argument",
+                ),
+            ));
+        }
+        "zeros" | "ones" if args.is_empty() => {
+            diags.push(semantic_error(
+                ER044_ZEROS_ONES_NONEMPTY,
+                "zeros()/ones() requires one or more arguments (MLS §10.3.3)",
+                label_from_token(
+                    &first.ident,
+                    "check_array_constructor_function_calls/zeros_ones_no_args",
+                    "zeros()/ones() requires at least one argument",
+                ),
+            ));
+        }
+        "fill" if args.len() < 2 => {
+            diags.push(semantic_error(
+                ER045_FILL_NEEDS_DIMENSIONS,
+                "fill(value, n1, ...) requires at least one value and one dimension (MLS §10.3.3)",
+                label_from_token(
+                    &first.ident,
+                    "check_array_constructor_function_calls/fill_too_few_args",
+                    "fill() requires at least one value and one dimension",
+                ),
+            ));
+        }
+        "cat" if args.len() < 2 => {
+            diags.push(semantic_error(
+                ER046_CAT_REQUIRES_ARGUMENTS,
+                "cat() requires a dimension selector and at least one array argument (MLS §10.4.2)",
+                label_from_token(
+                    &first.ident,
+                    "check_array_constructor_function_calls/cat_no_args",
+                    "cat() requires at least one dimension and one array argument",
+                ),
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn check_statement_semantics(visitor: &mut ContextSensitiveVisitor<'_>, stmt: &Statement) {
+    if let Statement::Return { .. } = stmt
+        && !visitor.ctx.in_function
+        && let Some(label) = label_from_statement(
+            stmt,
+            "check_statement/return_outside_function",
+            "return is only allowed in a function",
+        )
+    {
+        visitor.diags.push(semantic_error(
+            ER040_RETURN_NOT_IN_FUNCTION,
+            "return statements are only allowed in functions (MLS §11)",
+            label,
+        ));
+    }
+    if let Statement::Break { .. } = stmt
+        && visitor.ctx.loop_depth == 0
+        && let Some(label) = label_from_statement(
+            stmt,
+            "check_statement/break_outside_loop",
+            "break is only allowed inside for/while",
+        )
+    {
+        visitor.diags.push(semantic_error(
+            ER041_BREAK_NOT_IN_LOOP,
+            "break statements are only allowed inside loops (MLS §11)",
+            label,
+        ));
+    }
+    if let Statement::When(_) = stmt
+        && !visitor.ctx.in_function
+        && visitor.ctx.in_control_depth > 0
+        && let Some(label) = label_from_statement(
+            stmt,
+            "check_statement/when_in_control_statement",
+            "when-statement inside a control flow statement",
+        )
+    {
+        visitor.diags.push(semantic_error(
+            ER042_WHEN_IN_CONTROL,
+            "when-statements cannot appear inside while/for/if in algorithms (MLS §11.2)",
+            label,
+        ));
+    }
+    if let Statement::When(_) = stmt
+        && visitor.ctx.in_function
+        && let Some(label) = label_from_statement(
+            stmt,
+            "check_statement/when_in_function",
+            "when-statement is not allowed in function",
+        )
+    {
+        visitor.diags.push(semantic_error(
+            ER015_WHEN_IN_FUNCTION,
+            "when-statements are not allowed in functions (MLS §12.2)",
+            label,
+        ));
+    }
+    if let Statement::When(_) = stmt
+        && visitor.ctx.in_when_statement
+        && let Some(label) = label_from_statement(
+            stmt,
+            "check_statement/nested_when_statement",
+            "nested when-statement is not allowed",
+        )
+    {
+        visitor.diags.push(semantic_error(
+            ER016_NESTED_WHEN_STATEMENT,
+            "when-statements cannot be nested (MLS §11.2.7)",
+            label,
+        ));
+    }
+    if matches!(stmt, Statement::Reinit { .. })
+        && !visitor.ctx.in_when_statement
+        && let Some(label) = label_from_statement(
+            stmt,
+            "check_statement/reinit_outside_when_statement",
+            "reinit() used outside when-statement",
+        )
+    {
+        visitor.diags.push(semantic_error(
+            ER008_REINIT_OUTSIDE_WHEN,
+            "reinit() can only be used inside when-statements (MLS §8.3.6)",
+            label,
+        ));
     }
 }
 

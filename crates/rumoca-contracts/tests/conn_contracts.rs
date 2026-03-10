@@ -85,6 +85,38 @@ fn conn_002_type_mismatch_rejected() {
 }
 
 // =============================================================================
+// CONN-003: Flow-to-flow
+// "Flow variables may only connect to other flow variables"
+// =============================================================================
+
+#[test]
+fn conn_003_flow_to_flow_mismatch_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector FlowOnly
+            Real v;
+            flow Real i;
+        end FlowOnly;
+
+        connector PotentialOnly
+            Real v;
+            Real i;
+        end PotentialOnly;
+
+        model Test
+            FlowOnly a;
+            PotentialOnly b;
+        equation
+            connect(a, b);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF002",
+    );
+}
+
+// =============================================================================
 // CONN-007: Connector not parameter
 // "Connector component shall not be declared with parameter or constant"
 // =============================================================================
@@ -104,6 +136,52 @@ fn conn_007_no_parameter_connector() {
     "#,
         "Test",
         "ER027",
+    );
+}
+
+// =============================================================================
+// CONN-009 / CONN-010: Expandable connector restrictions
+// =============================================================================
+
+#[test]
+fn conn_009_expandable_connector_rejects_flow_member() {
+    expect_resolve_failure_with_code(
+        r#"
+        expandable connector Bus
+            flow Real i;
+        end Bus;
+
+        model Test
+            Bus bus;
+        equation
+        end Test;
+    "#,
+        "Test",
+        "ER058",
+    );
+}
+
+#[test]
+fn conn_010_expandable_connector_requires_expandable_peer() {
+    expect_resolve_failure_with_code(
+        r#"
+        expandable connector Bus
+            Real v;
+        end Bus;
+
+        connector Pin
+            Real v;
+        end Pin;
+
+        model Test
+            Bus bus;
+            Pin pin;
+        equation
+            connect(bus, pin);
+        end Test;
+    "#,
+        "Test",
+        "ER059",
     );
 }
 

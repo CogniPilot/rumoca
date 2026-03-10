@@ -1,9 +1,11 @@
-use super::InstantiateContext;
 use super::type_overrides::{extract_component_class_overrides, find_nested_class_in_hierarchy};
+use super::{InstantiateContext, InstantiateResult};
 use indexmap::IndexMap;
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use std::collections::BTreeSet;
+
+pub(super) type NestedTypeOverrides = (IndexMap<String, DefId>, bool, IndexMap<String, DefId>);
 
 pub(super) fn collect_referenced_mod_roots(comp: &ast::Component) -> BTreeSet<String> {
     let mut roots = BTreeSet::new();
@@ -293,9 +295,9 @@ pub(super) fn resolve_component_nested_type_overrides(
     class_def: Option<&ast::ClassDef>,
     mod_env: &ast::ModificationEnvironment,
     type_overrides: &IndexMap<String, DefId>,
-) -> (IndexMap<String, DefId>, bool, IndexMap<String, DefId>) {
+) -> InstantiateResult<NestedTypeOverrides> {
     let mut class_overrides =
-        extract_component_class_overrides(tree, comp, class_def, Some(mod_env));
+        extract_component_class_overrides(tree, comp, class_def, Some(mod_env))?;
     let mut has_forwarding_class_redeclare = false;
 
     if let Some(target_class) = class_def {
@@ -322,11 +324,11 @@ pub(super) fn resolve_component_nested_type_overrides(
         nested_type_overrides.insert(name.clone(), *def_id);
     }
 
-    (
+    Ok((
         class_overrides,
         has_forwarding_class_redeclare,
         nested_type_overrides,
-    )
+    ))
 }
 
 #[cfg(test)]

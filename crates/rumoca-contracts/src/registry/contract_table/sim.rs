@@ -39,7 +39,7 @@ pub(super) static CONTRACTS_SIM: &[StaticContract] = &[
         name: "Variable fixed default",
         mls_ref: "§8.6",
         requirement: "For other variables: fixed defaults to false",
-        status: ContractStatus::NotImplemented,
+        status: ContractStatus::Implemented,
         notes: None,
         tier: 1,
     },

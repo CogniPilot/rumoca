@@ -299,7 +299,7 @@ pub(super) static CONTRACTS_TYPE: &[StaticContract] = &[
         name: "Modifier element exists",
         mls_ref: "§6.4",
         requirement: "Modified element should exist in element being modified",
-        status: ContractStatus::NotImplemented,
+        status: ContractStatus::Implemented,
         notes: None,
         tier: 1,
     },
