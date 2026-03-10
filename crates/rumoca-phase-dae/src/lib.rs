@@ -1247,6 +1247,7 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
     // MLS §4.7: Propagate partial status and class type for balance checking
     dae.is_partial = flat.is_partial;
     dae.class_type = flat.class_type.clone();
+    dae.model_description = flat.model_description.clone();
 
     // Build prefix-to-children index once for O(1) record field lookups
     let prefix_children = build_prefix_children(flat);

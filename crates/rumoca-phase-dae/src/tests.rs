@@ -1931,6 +1931,26 @@ fn test_classify_equations_skips_unconnected_flow_for_top_level_overconstrained_
     );
 }
 
+#[test]
+fn test_model_description_propagation() {
+    let mut flat = flat::Model::new();
+    flat.model_description = Some("Test model description".to_string());
+
+    // Add a simple variable to make it valid
+    let var = rumoca_ir_flat::Variable {
+        name: "x".into(),
+        variability: rumoca_ir_core::Variability::Parameter(Default::default()),
+        ..Default::default()
+    };
+    flat.add_variable("x".into(), var);
+
+    let dae = to_dae(&flat).unwrap();
+    assert_eq!(
+        dae.model_description,
+        Some("Test model description".to_string())
+    );
+}
+
 mod tests_embedded_range;
 mod tests_flow_sum;
 mod tests_regressions;
