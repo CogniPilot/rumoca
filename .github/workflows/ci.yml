@@ -441,20 +441,25 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            asset_name: rumoca-linux-x86_64
+            rumoca_asset: rumoca-linux-x86_64
+            lsp_asset: rumoca-lsp-linux-x86_64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            asset_name: rumoca-linux-aarch64
+            rumoca_asset: rumoca-linux-aarch64
+            lsp_asset: rumoca-lsp-linux-aarch64
             cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
-            asset_name: rumoca-macos-x86_64
+            rumoca_asset: rumoca-macos-x86_64
+            lsp_asset: rumoca-lsp-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            asset_name: rumoca-macos-aarch64
+            rumoca_asset: rumoca-macos-aarch64
+            lsp_asset: rumoca-lsp-macos-aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            asset_name: rumoca-windows-x86_64.exe
+            rumoca_asset: rumoca-windows-x86_64.exe
+            lsp_asset: rumoca-lsp-windows-x86_64.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -504,13 +509,13 @@ jobs:
       - name: Upload rumoca binary
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
+          name: ${{ matrix.rumoca_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca${{ matrix.os == 'windows-latest' && '.exe' || '' }}
 
       - name: Upload LSP binary
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}-lsp
+          name: ${{ matrix.lsp_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ matrix.os == 'windows-latest' && '.exe' || '' }}
 
   build-python-wheels:
@@ -609,19 +614,19 @@ jobs:
       matrix:
         include:
           - target: win32-x64
-            rust_artifact: rumoca-windows-x86_64.exe-lsp
+            rust_artifact: rumoca-lsp-windows-x86_64.exe
             binary_name: rumoca-lsp.exe
           - target: darwin-x64
-            rust_artifact: rumoca-macos-x86_64-lsp
+            rust_artifact: rumoca-lsp-macos-x86_64
             binary_name: rumoca-lsp
           - target: darwin-arm64
-            rust_artifact: rumoca-macos-aarch64-lsp
+            rust_artifact: rumoca-lsp-macos-aarch64
             binary_name: rumoca-lsp
           - target: linux-x64
-            rust_artifact: rumoca-linux-x86_64-lsp
+            rust_artifact: rumoca-lsp-linux-x86_64
             binary_name: rumoca-lsp
           - target: linux-arm64
-            rust_artifact: rumoca-linux-aarch64-lsp
+            rust_artifact: rumoca-lsp-linux-aarch64
             binary_name: rumoca-lsp
     steps:
       - uses: actions/checkout@v4
@@ -693,43 +698,9 @@ jobs:
         id: tag
         run: echo "name=${{ needs.detect-release-tag.outputs.tag }}" >> $GITHUB_OUTPUT
 
-      # Publish workspace crates to crates.io
-      - name: Install Rust
+      - name: Distribution policy note
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Publish to crates.io
-        run: |
-          # Publish in dependency order
-          for crate in \
-            rumoca-core \
-            rumoca-contracts \
-            rumoca-ir-core \
-            rumoca-ir-ast \
-            rumoca-ir-flat \
-            rumoca-ir-dae \
-            rumoca-eval-ast \
-            rumoca-eval-flat \
-            rumoca-eval-dae \
-            rumoca-phase-parse \
-            rumoca-phase-resolve \
-            rumoca-phase-typecheck \
-            rumoca-phase-instantiate \
-            rumoca-phase-flatten \
-            rumoca-phase-solve \
-            rumoca-phase-dae \
-            rumoca-phase-codegen \
-            rumoca-sim \
-            rumoca-session \
-            rumoca-tool-lint \
-            rumoca-tool-fmt \
-            rumoca-tool-lsp \
-            rumoca; do
-            echo "Publishing $crate..."
-            cargo publish -p "$crate" --token ${{ secrets.CARGO_REGISTRY_TOKEN }} || true
-            sleep 5  # Allow crates.io to index
-          done
+          echo "As of v0.8.0, Rust distribution is via GitHub Releases binaries (not crates.io)."
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -744,10 +715,16 @@ jobs:
           find artifacts -type f | head -50
 
           # Move Rust binaries
-          for dir in artifacts/rumoca-*; do
+          for dir in artifacts/rumoca*; do
             if [ -d "$dir" ]; then
               echo "Processing Rust artifact: $dir"
-              find "$dir" -type f -exec cp {} rust-binaries/ \;
+              artifact_name="$(basename "$dir")"
+              source_file="$(find "$dir" -maxdepth 1 -type f | head -n 1)"
+              if [ -z "$source_file" ]; then
+                echo "No binary file found under $dir; skipping"
+                continue
+              fi
+              cp "$source_file" "rust-binaries/$artifact_name"
             fi
           done
 

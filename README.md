@@ -4,10 +4,8 @@
 
 [![CI](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml/badge.svg)](https://github.com/cognipilot/rumoca/actions/workflows/ci.yml)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-live-2ea44f?logo=github)](https://cognipilot.github.io/rumoca/)
-[![Crates.io](https://img.shields.io/crates/v/rumoca)](https://crates.io/crates/rumoca)
 [![PyPI](https://img.shields.io/pypi/v/rumoca)](https://pypi.org/project/rumoca/)
-[![Documentation](https://docs.rs/rumoca/badge.svg)](https://docs.rs/rumoca)
-[![License](https://img.shields.io/crates/l/rumoca)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **[Try Rumoca in your browser](https://cognipilot.github.io/rumoca/)** (no installation required).
 
@@ -177,11 +175,32 @@ cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExa
 
 ### Installation
 
-#### Rust CLI
+As of **v0.8.0**, Rumoca is distributed from **GitHub Releases** (binaries, Python wheels, VS Code extension, and WASM assets), not crates.io.
+
+This keeps the compiler’s multi-crate architecture intact (similar to rustc’s internal structure), preserving strict phase boundaries and an explicit dependency graph for compiler integrity.
+
+#### Binary installer (GitHub Releases)
 
 ```bash
-cargo install rumoca
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install.sh | bash
 ```
+
+Install a specific version (and optionally `rumoca-lsp`):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install.sh | bash -s -- --version v0.8.0 --with-lsp
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/cognipilot/rumoca/main/install.ps1 | iex
+```
+
+The installer defaults to:
+
+- Linux/macOS: `~/.local/bin`
+- Windows: `~/.rumoca/bin`
 
 #### Python package
 
