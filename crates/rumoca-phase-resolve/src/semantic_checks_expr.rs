@@ -127,7 +127,7 @@ impl ast::Visitor for DerInFunctionVisitor<'_> {
                 ),
             ));
         }
-        self.visit_each(args, Self::visit_expression)
+        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 }
 
@@ -210,7 +210,7 @@ impl ast::Visitor for DerOnDiscreteVisitor<'_> {
                 ),
             ));
         }
-        self.visit_each(args, Self::visit_expression)
+        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 }
 
@@ -270,7 +270,11 @@ impl ast::Visitor for ProtectedAccessVisitor<'_> {
         cref: &ComponentReference,
         ctx: ast::ComponentReferenceContext,
     ) -> std::ops::ControlFlow<()> {
-        if matches!(ctx, ast::ComponentReferenceContext::Expression) {
+        if matches!(
+            ctx,
+            ast::ComponentReferenceContext::Expression
+                | ast::ComponentReferenceContext::ExpressionFunctionCallTarget
+        ) {
             check_cref_protected_access(cref, self.class, self.def, self.diags);
         }
         ast::Visitor::visit_component_reference(self, cref)
@@ -364,6 +368,7 @@ impl ast::Visitor for ConnectRequiresConnectorsVisitor<'_> {
     ) -> std::ops::ControlFlow<()> {
         check_connect_arg_is_connector(lhs, self.class, self.def, self.diags);
         check_connect_arg_is_connector(rhs, self.class, self.def, self.diags);
+        check_connect_expandable_compatibility(lhs, rhs, self.class, self.def, self.diags);
         Continue(())
     }
 }
@@ -374,56 +379,92 @@ fn check_connect_arg_is_connector(
     def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
-    // Only check single-part references (e.g., connect(x, y)).
-    // Multi-part references like connect(r1.p, r2.n) access sub-components
-    // which may be connectors even if the parent is a model.
     if cref.parts.len() != 1 {
         return;
     }
-    if let Some(first) = cref.parts.first() {
-        let comp_name = &*first.ident.text;
-        if let Some(comp) = class.components.get(comp_name) {
-            let type_name = comp.type_name.to_string();
-            // Built-in types (Real, Integer, Boolean, String) are not connectors
-            if matches!(
-                type_name.as_str(),
-                "Real" | "Integer" | "Boolean" | "String"
-            ) {
-                diags.push(semantic_error(
-                    ER009_CONNECT_ARG_NOT_CONNECTOR,
-                    format!(
-                        "connect argument '{}' must be a connector, but has type '{}' (MLS §9.1)",
-                        comp_name, type_name
-                    ),
-                    label_from_token(
-                        &first.ident,
-                        "check_connect_arg_is_connector/builtin_non_connector",
-                        format!("'{}' is not a connector type", comp_name),
-                    ),
-                ));
-                return;
-            }
-            // Look up the type class
-            if let Some(type_class) = find_class_by_name(def, &type_name)
-                && type_class.class_type != ClassType::Connector
-            {
-                diags.push(semantic_error(
-                    ER009_CONNECT_ARG_NOT_CONNECTOR,
-                    format!(
-                        "connect argument '{}' must be a connector, but '{}' is a {} (MLS §9.1)",
-                        comp_name,
-                        type_name,
-                        type_class.class_type.as_str()
-                    ),
-                    label_from_token(
-                        &first.ident,
-                        "check_connect_arg_is_connector/non_connector_type",
-                        format!("'{}' does not resolve to a connector", comp_name),
-                    ),
-                ));
-            }
-        }
+
+    let Some(target) = resolve_component_reference_target(class, cref, def) else {
+        return;
+    };
+
+    let Some(type_class) = target.type_class else {
+        diags.push(semantic_error(
+            ER009_CONNECT_ARG_NOT_CONNECTOR,
+            format!(
+                "connect argument '{}' must be a connector, but has builtin type '{}' (MLS §9.1)",
+                cref, target.component.type_name
+            ),
+            label_from_token(
+                target.token,
+                "check_connect_arg_is_connector/builtin_non_connector",
+                format!("'{}' is not a connector type", cref),
+            ),
+        ));
+        return;
+    };
+
+    if type_class.class_type != ClassType::Connector {
+        diags.push(semantic_error(
+            ER009_CONNECT_ARG_NOT_CONNECTOR,
+            format!(
+                "connect argument '{}' must be a connector, but '{}' is a {} (MLS §9.1)",
+                cref,
+                target.component.type_name,
+                type_class.class_type.as_str()
+            ),
+            label_from_token(
+                target.token,
+                "check_connect_arg_is_connector/non_connector_type",
+                format!("'{}' does not resolve to a connector", cref),
+            ),
+        ));
     }
+}
+
+fn check_connect_expandable_compatibility(
+    lhs: &ComponentReference,
+    rhs: &ComponentReference,
+    class: &ClassDef,
+    def: &StoredDefinition,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some(lhs_target) = resolve_component_reference_target(class, lhs, def) else {
+        return;
+    };
+    let Some(rhs_target) = resolve_component_reference_target(class, rhs, def) else {
+        return;
+    };
+    let Some(lhs_type) = lhs_target.type_class else {
+        return;
+    };
+    let Some(rhs_type) = rhs_target.type_class else {
+        return;
+    };
+    if lhs_type.class_type != ClassType::Connector || rhs_type.class_type != ClassType::Connector {
+        return;
+    }
+    if lhs_type.expandable == rhs_type.expandable {
+        return;
+    }
+
+    let (bad_cref, bad_token) = if lhs_type.expandable {
+        (rhs, rhs_target.token)
+    } else {
+        (lhs, lhs_target.token)
+    };
+
+    diags.push(semantic_error(
+        ER059_EXPANDABLE_CONNECTOR_MISMATCH,
+        format!(
+            "expandable connectors may only connect to other expandable connectors: '{}' is incompatible with '{}' (MLS §9.1.3)",
+            lhs, rhs
+        ),
+        label_from_token(
+            bad_token,
+            "check_connect_expandable_compatibility/non_expandable_target",
+            format!("'{}' is not an expandable connector", bad_cref),
+        ),
+    ));
 }
 
 // ============================================================================

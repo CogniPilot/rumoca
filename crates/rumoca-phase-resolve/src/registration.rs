@@ -19,6 +19,7 @@ impl Resolver {
         for (name, class) in def.classes.iter_mut() {
             let def_id = self.alloc_def_id(format!("{}{}", prefix, name));
             class.def_id = Some(def_id);
+            self.class_types.insert(def_id, class.class_type.clone());
             self.scope_tree.add_member(scope, name.clone(), def_id);
             if class.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
@@ -70,6 +71,7 @@ impl Resolver {
         for (name, nested) in class.classes.iter_mut() {
             let def_id = self.alloc_def_id(format!("{}.{}", qualified_name, name));
             nested.def_id = Some(def_id);
+            self.class_types.insert(def_id, nested.class_type.clone());
             self.scope_tree
                 .add_member(class_scope, name.clone(), def_id);
             if nested.is_replaceable {

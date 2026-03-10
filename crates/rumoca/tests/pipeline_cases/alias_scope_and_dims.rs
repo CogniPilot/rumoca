@@ -1037,6 +1037,8 @@ package P
 
   connector Port
     replaceable package Medium = MediumBase;
+    Real p;
+    flow Real m_flow;
     stream Real C_outflow[Medium.nC];
   end Port;
 
@@ -1044,6 +1046,7 @@ package P
     replaceable package Medium = MediumBase;
     Port port(redeclare package Medium = Medium);
   equation
+    port.p = 0;
     port.C_outflow = fill(0.0, Medium.nC);
   end Source;
 

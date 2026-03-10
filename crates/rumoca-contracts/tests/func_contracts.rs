@@ -113,6 +113,168 @@ fn func_007_no_when_in_function() {
 }
 
 // =============================================================================
+// FUNC-010: Forbidden operators
+// "der, initial, terminal, sample, pre, edge, change, reinit, delay,
+//  cardinality, inStream, actualStream"
+// =============================================================================
+
+#[test]
+fn func_010_builtin_math_call_ok() {
+    expect_success(
+        r#"
+        function F
+            input Real x;
+            output Real y;
+        algorithm
+            y := sin(x);
+        end F;
+        model Test
+            Real z;
+        equation
+            z = F(2.0);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn func_010_initial_forbidden_in_function() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            output Boolean y;
+        algorithm
+            y := initial();
+        end F;
+    "#,
+        "F",
+        "ER056",
+    );
+}
+
+#[test]
+fn func_010_sample_forbidden_in_function() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            output Boolean y;
+        algorithm
+            y := sample(0, 1);
+        end F;
+    "#,
+        "F",
+        "ER056",
+    );
+}
+
+// =============================================================================
+// FUNC-011: No Clock components
+// "Function may not contain components of type Clock"
+// =============================================================================
+
+#[test]
+fn func_011_non_clock_component_ok() {
+    expect_success(
+        r#"
+        function F
+            output Real y;
+        protected
+            Boolean tick;
+        algorithm
+            tick := true;
+            y := if tick then 1.0 else 0.0;
+        end F;
+        model Test
+            Real z;
+        equation
+            z = F();
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn func_011_clock_component_fails() {
+    expect_resolve_failure_with_code(
+        r#"
+        type MyClock = Clock;
+        function F
+            output Real y;
+        protected
+            MyClock clk;
+        algorithm
+            y := 0.0;
+        end F;
+    "#,
+        "F",
+        "ER061",
+    );
+}
+
+// =============================================================================
+// FUNC-012: No inner/outer
+// "Function elements shall not have prefixes inner or outer"
+// =============================================================================
+
+#[test]
+fn func_012_local_component_without_inner_outer_ok() {
+    expect_success(
+        r#"
+        function F
+            output Real y;
+        protected
+            Real local;
+        algorithm
+            local := 1.0;
+            y := local;
+        end F;
+        model Test
+            Real z;
+        equation
+            z = F();
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn func_012_inner_prefix_in_function_fails() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            output Real y;
+        protected
+            inner Real local;
+        algorithm
+            y := 0.0;
+        end F;
+    "#,
+        "F",
+        "ER060",
+    );
+}
+
+#[test]
+fn func_012_outer_prefix_in_function_fails() {
+    expect_resolve_failure_with_code(
+        r#"
+        function F
+            output Real y;
+        protected
+            outer Real local;
+        algorithm
+            y := 0.0;
+        end F;
+    "#,
+        "F",
+        "ER060",
+    );
+}
+
+// =============================================================================
 // FUNC-014: Single algorithm/external
 // "Function can have at most one algorithm section or one external function interface"
 // =============================================================================
@@ -178,6 +340,57 @@ fn func_017_return_outside_function_algorithm_fails() {
         end Test;
     "#,
         "EP001",
+    );
+}
+
+// =============================================================================
+// FUNC-015: Component types
+// "Function must not contain model, block, operator, or connector components"
+// =============================================================================
+
+#[test]
+fn func_015_record_component_ok() {
+    expect_success(
+        r#"
+        record R
+            Real x;
+        end R;
+        function F
+            input Real u;
+            output Real y;
+        protected
+            R r;
+        algorithm
+            r.x := u;
+            y := r.x;
+        end F;
+        model Test
+            Real z;
+        equation
+            z = F(2.0);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn func_015_connector_component_fails() {
+    expect_resolve_failure_with_code(
+        r#"
+        connector Pin
+            Real v;
+        end Pin;
+        function F
+            output Real y;
+        protected
+            Pin p;
+        algorithm
+            y := 0.0;
+        end F;
+    "#,
+        "F",
+        "ER062",
     );
 }
 

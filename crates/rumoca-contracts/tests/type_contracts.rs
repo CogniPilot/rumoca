@@ -241,3 +241,46 @@ fn type_028_record_mismatch_fails() {
         "ET002",
     );
 }
+
+// =============================================================================
+// TYPE-030: Modifier element exists
+// "Modified element should exist in element being modified"
+// =============================================================================
+
+#[test]
+fn type_030_existing_modifier_target_is_allowed() {
+    expect_success(
+        r#"
+        model Base
+            parameter Real kp = 1.0;
+        end Base;
+
+        model PID
+            extends Base;
+        end PID;
+
+        model Test
+            PID pid(kp = 10.0);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn type_030_missing_modifier_target_fails() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model PID
+            parameter Real kp = 1.0;
+        end PID;
+
+        model Test
+            PID pid(kps = 10.0);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET001",
+    );
+}

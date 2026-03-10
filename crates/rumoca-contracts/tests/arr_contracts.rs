@@ -2,7 +2,9 @@
 //!
 //! Tests for the 40 array contracts defined in SPEC_0022.
 
-use rumoca_contracts::test_support::{expect_balanced, expect_success};
+use rumoca_contracts::test_support::{
+    expect_balanced, expect_resolve_failure_with_code, expect_success,
+};
 
 // =============================================================================
 // ARR-001: Fixed dimensionality
@@ -62,6 +64,86 @@ fn arr_003_matching_sizes() {
         end Test;
     "#,
         "Test",
+    );
+}
+
+// =============================================================================
+// ARR-006: Constructor non-empty
+// "array() or {} is not defined; there must be at least one argument"
+// =============================================================================
+
+#[test]
+fn arr_006_empty_array_constructor_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real x[1];
+        equation
+            x = array();
+        end Test;
+    "#,
+        "Test",
+        "ER043",
+    );
+}
+
+// =============================================================================
+// ARR-017: zeros/ones non-empty
+// "zeros/ones needs one or more arguments; zeros() is not legal"
+// =============================================================================
+
+#[test]
+fn arr_017_zeros_or_ones_empty_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real x[1];
+        equation
+            x = zeros();
+        end Test;
+    "#,
+        "Test",
+        "ER044",
+    );
+}
+
+// =============================================================================
+// ARR-018: fill needs at least two args
+// "fill(s, n1, n2, ...) needs two or more arguments; fill(s) is not legal"
+// =============================================================================
+
+#[test]
+fn arr_018_fill_too_few_args_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real x[1];
+        equation
+            x = fill(1.0);
+        end Test;
+    "#,
+        "Test",
+        "ER045",
+    );
+}
+
+// =============================================================================
+// ARR-023: Concatenation non-empty
+// "Concatenation syntax: there must be at least one argument ([] is not defined)"
+// =============================================================================
+
+#[test]
+fn arr_023_cat_requires_arguments_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Test
+            Real x[1];
+        equation
+            x = cat();
+        end Test;
+    "#,
+        "Test",
+        "ER046",
     );
 }
 

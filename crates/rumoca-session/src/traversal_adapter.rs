@@ -1,9 +1,7 @@
 use indexmap::IndexSet;
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
-use rumoca_ir_ast::{
-    ComponentReferenceContext, FunctionCallContext, SubscriptContext, TypeNameContext, Visitor,
-};
+use rumoca_ir_ast::{FunctionCallContext, SubscriptContext, TypeNameContext, Visitor};
 use std::ops::ControlFlow::{self, Continue};
 
 pub(crate) fn collect_class_dependencies(
@@ -141,10 +139,7 @@ impl Visitor for ClassDependencyCollector<'_> {
         args: &[ast::Expression],
         ctx: FunctionCallContext,
     ) -> ControlFlow<()> {
-        if matches!(ctx, FunctionCallContext::Expression) {
-            self.visit_component_reference_ctx(comp, ComponentReferenceContext::Expression)?;
-        }
-        self.visit_each(args, Self::visit_expression)
+        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 
     fn visit_type_name(&mut self, name: &ast::Name, _ctx: TypeNameContext) -> ControlFlow<()> {
