@@ -1,0 +1,31 @@
+{
+  "name": "rumoca-dev",
+  "build": {
+    "context": "..",
+    "dockerfile": "../packaging/docker/Dockerfile",
+    "target": "dev"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "overrideCommand": false,
+  "forwardPorts": [
+    8888
+  ],
+  "remoteUser": "root",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "julialang.language-julia"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/rumoca/python/bin/python",
+        "julia.executablePath": "/opt/julia/bin/julia",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

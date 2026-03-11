@@ -1,0 +1,4 @@
+loadFile("ci_omc_smoke.mo");
+getErrorString();
+simulate(DockerSmoke, stopTime = 0.1, numberOfIntervals = 10, tolerance = 1e-6, method = "dassl");
+getErrorString();

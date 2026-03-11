@@ -1,0 +1,4 @@
+# Interactive tooling for the dev image.
+jupyterlab==4.5.6
+notebook==7.5.5
+ipykernel==7.2.0
