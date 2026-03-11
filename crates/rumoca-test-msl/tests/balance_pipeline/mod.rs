@@ -131,8 +131,32 @@ pub(super) fn model_attempt_timeout_secs() -> f64 {
 
 pub(super) struct ModelCompileEntry {
     model_name: String,
-    phase_result: PhaseResult,
+    compile_outcome: ModelCompileOutcome,
     remaining_budget_secs: Option<f64>,
+}
+
+pub(super) enum ModelCompileOutcome {
+    Phase(PhaseResult),
+    StrictReport(StrictCompileReport),
+}
+
+impl ModelCompileOutcome {
+    fn is_success(&self) -> bool {
+        self.success_result().is_some()
+    }
+
+    fn success_result(&self) -> Option<&rumoca_session::compile::CompilationResult> {
+        match self {
+            Self::Phase(PhaseResult::Success(result)) => Some(result.as_ref()),
+            Self::StrictReport(report) if report.requested_succeeded() => {
+                match report.requested_result.as_ref() {
+                    Some(PhaseResult::Success(result)) => Some(result.as_ref()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 pub(super) struct StageAbortWatchdog {
@@ -213,7 +237,11 @@ struct MslSummary {
     msl_version: String,
     total_mo_files: usize,
     parse_errors: usize,
+    /// Global library/session resolve failures that invalidate the whole run.
     resolve_errors: usize,
+    /// Per-model strict-closure resolve failures.
+    #[serde(default)]
+    resolve_failed: usize,
     typecheck_errors: usize,
     total_models: usize,
     /// Models with outer components that need inner declarations from enclosing scope.
@@ -311,6 +339,7 @@ fn current_git_commit() -> String {
 /// Mutable counters for summarizing results.
 #[derive(Default)]
 struct ResultCounters {
+    resolve_failed: usize,
     needs_inner: usize,
     instantiate_failed: usize,
     typecheck_failed: usize,
@@ -383,6 +412,7 @@ fn process_success_result(result: &MslModelResult, counters: &mut ResultCounters
 /// Process a simple phase failure (NeedsInner, Instantiate, ToDae).
 fn process_phase_failure(result: &MslModelResult, phase: &str, counters: &mut ResultCounters) {
     match phase {
+        "Resolve" => counters.resolve_failed += 1,
         "NeedsInner" => counters.needs_inner += 1,
         "Instantiate" => counters.instantiate_failed += 1,
         "Typecheck" => counters.typecheck_failed += 1,
@@ -436,6 +466,7 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         total_mo_files,
         parse_errors,
         resolve_errors: 0,
+        resolve_failed: 0,
         typecheck_errors: 0,
         total_models: 0,
         needs_inner: 0,
@@ -601,6 +632,34 @@ pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> M
                 phase_str = "NonSim";
             }
             phase_error_result(name, phase_str, Some(error), error_code)
+        }
+    }
+}
+
+pub(super) fn convert_compile_outcome(
+    name: String,
+    compile_outcome: ModelCompileOutcome,
+) -> MslModelResult {
+    match compile_outcome {
+        ModelCompileOutcome::Phase(phase_result) => convert_phase_result(name, phase_result),
+        ModelCompileOutcome::StrictReport(report) => {
+            let failure_summary = report.failure_summary(usize::MAX);
+            let error_code = report
+                .failures
+                .iter()
+                .find_map(|failure| failure.error_code.clone());
+            match report.requested_result {
+                Some(PhaseResult::Success(result)) if report.failures.is_empty() => {
+                    convert_phase_result(name, PhaseResult::Success(result))
+                }
+                Some(phase_result @ PhaseResult::NeedsInner { .. })
+                | Some(phase_result @ PhaseResult::Failed { .. }) => {
+                    convert_phase_result(name, phase_result)
+                }
+                Some(PhaseResult::Success(_)) | None => {
+                    phase_error_result(name, "Resolve", Some(failure_summary), error_code)
+                }
+            }
         }
     }
 }

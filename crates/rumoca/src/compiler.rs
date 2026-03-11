@@ -42,9 +42,10 @@ use rumoca_session::compile::{
     Dae, FailedPhase, FlatModel, PhaseResult, ResolvedTree, Session, SessionConfig,
 };
 use rumoca_session::libraries::{
-    LibraryCacheStatus, infer_library_roots, parse_library_with_cache,
+    LibraryCacheStatus, PackageLayoutError, infer_library_roots, parse_library_with_cache,
     should_load_library_for_source,
 };
+use rumoca_session::parsing::collect_compile_unit_source_files;
 use rumoca_session::runtime::{
     dae_balance, dae_is_balanced, dae_to_template_json, prepare_dae_for_template_codegen,
     render_dae_template, render_dae_template_with_json,
@@ -719,8 +720,16 @@ impl Compiler {
                 None
             }
         };
-        let parsed_library = parse_library_with_cache(path_obj)
-            .map_err(|e| CompilerError::ParseError(format!("{}: {}", path, e)))?;
+        let parsed_library = parse_library_with_cache(path_obj).map_err(|e| {
+            if let Some(package_layout_error) = e.downcast_ref::<PackageLayoutError>() {
+                return CompilerError::SourceDiagnosticsError {
+                    summary: package_layout_error.to_string(),
+                    diagnostics: package_layout_error.diagnostics().to_vec(),
+                    source_map: package_layout_error.source_map().clone(),
+                };
+            }
+            CompilerError::ParseError(format!("{}: {}", path, e))
+        })?;
         let elapsed = start
             .map(|started| started.elapsed().as_secs_f64())
             .unwrap_or(0.0);
@@ -813,6 +822,34 @@ impl Compiler {
         Ok(())
     }
 
+    fn load_local_compile_unit(
+        &self,
+        session: &mut Session,
+        source: &str,
+        file_name: &str,
+    ) -> Result<(), CompilerError> {
+        let path = Path::new(file_name);
+        if !path.is_file() {
+            let _ = session.update_document(file_name, source);
+            return Ok(());
+        }
+
+        let files = collect_compile_unit_source_files(path)
+            .map_err(|e| CompilerError::ParseError(format!("{}", e)))?;
+        for sibling in files {
+            if sibling == path {
+                continue;
+            }
+            let sibling_path = sibling.to_string_lossy().to_string();
+            let sibling_source = fs::read_to_string(&sibling)
+                .map_err(|e| CompilerError::io_error(&sibling_path, e.to_string()))?;
+            let _ = session.update_document(&sibling_path, &sibling_source);
+        }
+
+        let _ = session.update_document(file_name, source);
+        Ok(())
+    }
+
     /// Compile a Modelica file.
     pub fn compile_file(&self, path: &str) -> Result<CompilationResult, CompilerError> {
         let source =
@@ -850,9 +887,7 @@ impl Compiler {
         if self.verbose {
             eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
         }
-        session
-            .add_document(file_name, source)
-            .map_err(|e| CompilerError::ParseError(format!("{}", e)))?;
+        self.load_local_compile_unit(&mut session, source, file_name)?;
 
         if self.verbose {
             eprintln!(
@@ -895,10 +930,11 @@ impl Compiler {
         };
 
         // Get the resolved tree for successful compilations.
-        let resolved = session
-            .resolved()
-            .map_err(|e| CompilerError::ResolveError(e.to_string()))?
-            .clone();
+        let resolved = session.resolved_cached().ok_or_else(|| {
+            CompilerError::ResolveError(
+                "strict compile produced no cached resolved tree".to_string(),
+            )
+        })?;
 
         if self.verbose {
             eprintln!("[rumoca] Compilation complete.");
@@ -923,6 +959,7 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_simple_model() {
@@ -939,6 +976,185 @@ mod tests {
         assert!(result.is_ok(), "Compilation failed: {:?}", result.err());
         let result = result.unwrap();
         assert_eq!(result.dae.states.len(), 1);
+    }
+
+    #[test]
+    fn test_compile_file_loads_same_directory_siblings() {
+        let temp = tempdir().expect("tempdir");
+        let helper = temp.path().join("Helper.mo");
+        let root = temp.path().join("Root.mo");
+        fs::write(
+            &helper,
+            r#"
+            model Helper
+                Real x(start=0);
+            equation
+                der(x) = 1;
+            end Helper;
+            "#,
+        )
+        .expect("write helper");
+        fs::write(
+            &root,
+            r#"
+            model Root
+                Helper h;
+            end Root;
+            "#,
+        )
+        .expect("write root");
+
+        let result = Compiler::new()
+            .model("Root")
+            .compile_file(&root.to_string_lossy());
+
+        assert!(
+            result.is_ok(),
+            "sibling files in the same directory must be part of the compile unit: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_compile_file_ignores_unrelated_sibling_parse_error() {
+        let temp = tempdir().expect("tempdir");
+        let helper = temp.path().join("Helper.mo");
+        let broken = temp.path().join("Broken.mo");
+        let root = temp.path().join("Root.mo");
+        fs::write(
+            &helper,
+            r#"
+            model Helper
+                Real x(start=0);
+            equation
+                der(x) = 1;
+            end Helper;
+            "#,
+        )
+        .expect("write helper");
+        fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
+        fs::write(
+            &root,
+            r#"
+            model Root
+                Helper h;
+            end Root;
+            "#,
+        )
+        .expect("write root");
+
+        let result = Compiler::new()
+            .model("Root")
+            .compile_file(&root.to_string_lossy());
+
+        assert!(
+            result.is_ok(),
+            "strict target compile must ignore unrelated sibling parse errors: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_compile_file_reports_required_sibling_parse_error() {
+        let temp = tempdir().expect("tempdir");
+        let helper = temp.path().join("Helper.mo");
+        let root = temp.path().join("Root.mo");
+        fs::write(&helper, "model Helper\n  Real x\nend Helper;\n").expect("write helper");
+        fs::write(
+            &root,
+            r#"
+            model Root
+                Helper h;
+            end Root;
+            "#,
+        )
+        .expect("write root");
+
+        let err = Compiler::new()
+            .model("Root")
+            .compile_file(&root.to_string_lossy())
+            .expect_err("required broken sibling must fail strict compile");
+        let message = err.to_string();
+        assert!(
+            message.contains(&helper.to_string_lossy().to_string()),
+            "original helper parse error should be surfaced: {message}"
+        );
+        assert!(
+            !message.contains("unresolved type reference"),
+            "required broken sibling must not degrade into unresolved type errors: {message}"
+        );
+    }
+
+    #[test]
+    fn test_compile_file_reports_active_parse_error_via_compile_diagnostics() {
+        let temp = tempdir().expect("tempdir");
+        let broken = temp.path().join("Broken.mo");
+        fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
+
+        let err = Compiler::new()
+            .model("Broken")
+            .compile_file(&broken.to_string_lossy())
+            .expect_err("broken active document must fail strict compile");
+        match err {
+            CompilerError::CompileDiagnosticsError { failures, .. } => {
+                assert!(
+                    failures
+                        .iter()
+                        .any(|failure| failure.error_code.as_deref() == Some("EP001")),
+                    "active parse errors must surface as structured parse diagnostics: {failures:?}"
+                );
+            }
+            other => panic!("expected structured compile diagnostics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_file_loads_enclosing_package_tree() {
+        let temp = tempdir().expect("tempdir");
+        let pkg = temp.path().join("Pkg");
+        let sub = pkg.join("Sub");
+        fs::create_dir_all(&sub).expect("mkdir");
+        fs::write(pkg.join("package.mo"), "package Pkg end Pkg;").expect("write package");
+        fs::write(sub.join("package.mo"), "within Pkg; package Sub end Sub;")
+            .expect("write sub package");
+        fs::write(
+            sub.join("Helper.mo"),
+            r#"
+            within Pkg.Sub;
+            model Helper
+                Real x(start=0);
+            equation
+                der(x) = 1;
+            end Helper;
+            "#,
+        )
+        .expect("write helper");
+        let root = sub.join("Root.mo");
+        fs::write(
+            &root,
+            r#"
+            within Pkg.Sub;
+            model Root
+                Helper h;
+            end Root;
+            "#,
+        )
+        .expect("write root");
+        fs::write(
+            temp.path().join("Unrelated.mo"),
+            "model Unrelated end Unrelated;",
+        )
+        .expect("write unrelated");
+
+        let result = Compiler::new()
+            .model("Pkg.Sub.Root")
+            .compile_file(&root.to_string_lossy());
+
+        assert!(
+            result.is_ok(),
+            "compile unit must include the enclosing package tree without unrelated parents: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1174,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn test_strict_reachable_fails_when_reachable_dependency_fails() {
+    fn test_strict_reachable_fails_when_instantiated_dependency_fails() {
         let source = r#"
             package P
               model BadDep
@@ -1184,7 +1400,7 @@ mod tests {
               end BadDep;
 
               model Root
-                import P.BadDep;
+                BadDep dep;
                 Real x(start=0);
               equation
                 der(x) = 1;
@@ -1197,7 +1413,10 @@ mod tests {
             .compile_str(source, "test.mo")
             .expect_err("reachable dependency failure must fail strict compile");
         let msg = err.to_string();
-        assert!(msg.contains("Related failures"), "actual message: {msg}");
-        assert!(msg.contains("P.BadDep"), "actual message: {msg}");
+        assert!(
+            msg.contains("requires inner declarations"),
+            "actual message: {msg}"
+        );
+        assert!(msg.contains("shared"), "actual message: {msg}");
     }
 }

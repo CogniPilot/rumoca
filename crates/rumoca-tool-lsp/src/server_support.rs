@@ -256,17 +256,72 @@ pub(super) fn simulation_doc_for_compile(
     if !is_focus_document && !is_library_document {
         return Ok(None);
     }
-    if is_focus_document && let Some(parse_error) = &doc.parse_error {
-        return Err(format!("parse error in active document: {parse_error}"));
-    }
-    match doc.parsed.clone() {
+    let parsed = if is_focus_document {
+        doc.parsed.clone().or_else(|| doc.partial.clone())
+    } else {
+        doc.parsed.clone()
+    };
+    match parsed {
         Some(parsed) => Ok(Some((is_focus_document, parsed))),
-        None if is_focus_document => Err(format!("active document has no parsed AST: {}", doc.uri)),
+        None if is_focus_document => Err(format!(
+            "active document has no parsed or recovered AST: {}",
+            doc.uri
+        )),
         None if is_library_document => {
             Err(format!("library document has no parsed AST: {}", doc.uri))
         }
         None => Ok(None),
     }
+}
+
+pub(super) fn collect_local_compile_unit_sources(
+    session: &Session,
+    focus_document_path: &str,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    let paths = collect_compile_unit_source_files(Path::new(focus_document_path))
+        .map_err(|err| format!("failed to collect local compile unit: {err}"))?;
+    let mut sources = Vec::new();
+
+    for path in paths {
+        let uri = path.to_string_lossy().to_string();
+        if let Some(doc) = session.get_document(&uri)
+            && !doc.content.is_empty()
+        {
+            sources.push((uri, doc.content.clone()));
+            continue;
+        }
+
+        let source = std::fs::read_to_string(&path).map_err(|err| {
+            format!(
+                "failed to read local compile unit document '{}': {}",
+                uri, err
+            )
+        })?;
+        sources.push((uri, source));
+    }
+
+    Ok(sources)
+}
+
+pub(super) fn collect_isolated_library_parsed_docs(
+    session: &Session,
+    focus_document_path: &str,
+    focus_key: &str,
+    loaded_libraries: &HashSet<String>,
+    local_doc_keys: &std::collections::BTreeSet<String>,
+) -> std::result::Result<std::collections::BTreeMap<String, (String, ast::StoredDefinition)>, String>
+{
+    let mut parsed_docs_by_key = std::collections::BTreeMap::new();
+    for (uri, parsed) in
+        collect_simulation_parsed_docs(session, focus_document_path, focus_key, loaded_libraries)?
+    {
+        let key = canonical_path_key(&uri);
+        if local_doc_keys.contains(&key) {
+            continue;
+        }
+        parsed_docs_by_key.entry(key).or_insert((uri, parsed));
+    }
+    Ok(parsed_docs_by_key)
 }
 
 pub(super) fn collect_simulation_parsed_docs(

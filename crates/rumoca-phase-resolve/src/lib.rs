@@ -387,6 +387,23 @@ pub fn resolve_with_options(
     parsed: ParsedTree,
     options: ResolveOptions,
 ) -> Result<ResolvedTree, Diagnostics> {
+    let (resolved, diagnostics) = resolve_with_options_collect(parsed, options);
+    if diagnostics.has_errors() {
+        Err(diagnostics)
+    } else {
+        Ok(resolved)
+    }
+}
+
+/// Resolve names and retain the resolved tree even when diagnostics were emitted.
+///
+/// This is used by strict target compilation, which needs a best-effort resolved
+/// tree for reachability planning while separately deciding which diagnostics are
+/// relevant to the requested target closure.
+pub fn resolve_with_options_collect(
+    parsed: ParsedTree,
+    options: ResolveOptions,
+) -> (ResolvedTree, Diagnostics) {
     let mut tree = parsed.into_inner();
     let mut resolver = Resolver::new();
     resolver.resolve(&mut tree);
@@ -400,11 +417,7 @@ pub fn resolve_with_options(
     let validation = validation::validate_resolution(&tree);
     emit_unresolved_symbol_diagnostics(&mut resolver, &validation, options);
 
-    if resolver.has_errors() {
-        Err(resolver.take_diagnostics())
-    } else {
-        Ok(ResolvedTree::new(tree))
-    }
+    (ResolvedTree::new(tree), resolver.take_diagnostics())
 }
 
 /// Result of resolution with statistics.
@@ -525,6 +538,13 @@ fn has_inherited_match(resolver: &Resolver, location: &str, name: &str) -> bool 
 mod tests {
     use super::*;
     use rumoca_phase_parse::parse_to_ast;
+
+    fn resolve_test_source(source: &str) -> Result<ResolvedTree, Diagnostics> {
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let mut tree = ClassTree::from_parsed(ast);
+        tree.source_map.add("test.mo", source);
+        resolve(ParsedTree::new(tree))
+    }
 
     fn find_comp_ref_def_id(expr: &rumoca_ir_ast::Expression) -> Option<DefId> {
         match expr {
@@ -770,6 +790,26 @@ end Test;
     }
 
     #[test]
+    fn test_single_segment_class_import_is_allowed() {
+        let source = r#"
+operator record Complex
+  encapsulated operator function '0'
+    import Complex;
+    output Complex result;
+  algorithm
+    result := Complex(0);
+  end '0';
+end Complex;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(
+            result.is_ok(),
+            "single-segment class import must be allowed for operator records"
+        );
+    }
+
+    #[test]
     fn test_import_cannot_traverse_non_package_member() {
         let source = r#"
 package P
@@ -820,6 +860,69 @@ end M;
             d.code.as_deref() == Some("ER002")
                 && d.message.contains("unresolved type reference")
                 && d.message.contains("P.Missing")
+        }));
+    }
+
+    #[test]
+    fn test_partial_model_can_declare_replaceable_partial_component() {
+        let source = r#"
+partial block PartialBooleanMISO
+  input Boolean u;
+  output Boolean y;
+end PartialBooleanMISO;
+
+partial block PartialLogical
+  replaceable PartialBooleanMISO combinator constrainedby PartialBooleanMISO;
+end PartialLogical;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(
+            result.is_ok(),
+            "partial classes may contain replaceable components constrained by partial classes"
+        );
+    }
+
+    #[test]
+    fn test_concrete_model_can_declare_replaceable_partial_component() {
+        let source = r#"
+partial block PartialBooleanMISO
+  input Boolean u;
+  output Boolean y;
+end PartialBooleanMISO;
+
+block Concrete
+  replaceable PartialBooleanMISO combinator constrainedby PartialBooleanMISO;
+end Concrete;
+"#;
+        let ast = parse_to_ast(source, "test.mo").expect("parse should succeed");
+        let result = resolve_parsed(ast);
+        assert!(
+            result.is_ok(),
+            "replaceable partial-typed components must remain legal until instantiation"
+        );
+    }
+
+    #[test]
+    fn test_concrete_model_cannot_instantiate_partial_component() {
+        let source = r#"
+partial block PartialBooleanMISO
+  input Boolean u;
+  output Boolean y;
+end PartialBooleanMISO;
+
+block Concrete
+  PartialBooleanMISO combinator;
+end Concrete;
+"#;
+        let result = resolve_test_source(source);
+        assert!(result.is_err(), "resolution should fail");
+
+        let diags = result.expect_err("expected resolve diagnostics");
+        assert!(diags.iter().any(|d| {
+            d.code.as_deref() == Some("ER005")
+                && d.message
+                    .contains("component 'combinator' instantiates partial block")
         }));
     }
 

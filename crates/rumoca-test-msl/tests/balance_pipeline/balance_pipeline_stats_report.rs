@@ -62,6 +62,7 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
         "  - Core + JSON write subtotal: {:.2}s",
         summary.timings.core_pipeline_seconds + json_write_seconds
     );
+    assert_valid_msl_summary(summary);
     if summary.sim_attempted == 0 {
         enforce_msl_quality_gate(summary).expect("Failed to run MSL quality gate");
     } else {
@@ -110,6 +111,7 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
     }
 
     let attempted_standalone = summary.compiled_models
+        + summary.resolve_failed
         + summary.instantiate_failed
         + summary.typecheck_failed
         + summary.flatten_failed

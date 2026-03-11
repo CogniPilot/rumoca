@@ -47,3 +47,5 @@ pub use code_lens::handle_code_lens;
 pub use document_links::handle_document_links;
 pub use inlay_hints::handle_inlay_hints;
 pub use signature_help::handle_signature_help;
+
+pub(crate) use diagnostics::common_diagnostics_for_file;
