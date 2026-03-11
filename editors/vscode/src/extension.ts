@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as vscode from 'vscode';
-import { execSync, spawn } from 'child_process';
+import { execSync, spawn, spawnSync } from 'child_process';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -451,6 +451,34 @@ function findInPath(command: string): string | undefined {
         // Command not found in PATH
     }
     return undefined;
+}
+
+interface ServerProbeResult {
+    ok: boolean;
+    detail?: string;
+}
+
+function probeServerExecutable(serverPath: string): ServerProbeResult {
+    const result = spawnSync(serverPath, ['--version'], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true
+    });
+    if (result.error) {
+        return { ok: false, detail: result.error.message };
+    }
+
+    if (result.status !== 0) {
+        const detail = [result.stderr, result.stdout]
+            .map(value => value?.trim())
+            .find(value => Boolean(value));
+        return {
+            ok: false,
+            detail: detail || `process exited with status ${result.status ?? 'unknown'}`
+        };
+    }
+
+    return { ok: true };
 }
 
 interface SimulationExecutionSettings {
@@ -5661,6 +5689,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Find the server executable
     let serverPath = config.get<string>('serverPath');
     let usingSystemFallback = false;
+    let usingBundledServer = false;
 
     const elapsed = () => `${Date.now() - startTime}ms`;
 
@@ -5700,6 +5729,7 @@ export async function activate(context: vscode.ExtensionContext) {
         debugLog(`[${elapsed()}] Checking for bundled binary: ${bundledPath}`);
         if (fs.existsSync(bundledPath)) {
             serverPath = bundledPath;
+            usingBundledServer = true;
             log(`Using bundled rumoca-lsp`);
             debugLog(`[${elapsed()}] Found bundled rumoca-lsp: ${serverPath}`);
         } else {
@@ -5749,6 +5779,49 @@ export async function activate(context: vscode.ExtensionContext) {
         const msg = `rumoca-lsp not found at: ${serverPath}`;
         log(`ERROR: ${msg}`);
         vscode.window.showErrorMessage(msg);
+        return;
+    }
+
+    let probeResult = probeServerExecutable(serverPath);
+    if (!probeResult.ok) {
+        const detail = probeResult.detail ?? 'unknown error';
+        log(`ERROR: Failed to execute rumoca-lsp at ${serverPath}: ${detail}`);
+
+        if (usingBundledServer) {
+            const fallbackServerPath = findSystemServer();
+            if (fallbackServerPath && fallbackServerPath !== serverPath) {
+                const fallbackProbeResult = probeServerExecutable(fallbackServerPath);
+                if (fallbackProbeResult.ok) {
+                    serverPath = fallbackServerPath;
+                    probeResult = fallbackProbeResult;
+                    log(`Warning: Bundled rumoca-lsp could not execute; falling back to system server: ${serverPath}`);
+                    vscode.window.showWarningMessage(
+                        'Bundled rumoca-lsp could not execute on this machine. Falling back to the system-installed server.',
+                        'Open Settings'
+                    ).then(selection => {
+                        if (selection === 'Open Settings') {
+                            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.useSystemServer');
+                        }
+                    });
+                } else {
+                    const fallbackDetail = fallbackProbeResult.detail ?? 'unknown error';
+                    log(`ERROR: System rumoca-lsp fallback also failed at ${fallbackServerPath}: ${fallbackDetail}`);
+                }
+            }
+        }
+    }
+
+    if (!serverPath || !probeResult.ok) {
+        const probeDetail = probeResult.detail ?? 'unknown error';
+        const msg = `Failed to execute rumoca-lsp: ${probeDetail}`;
+        log(`ERROR: ${msg}`);
+        outputChannel.show();
+        const selection = await vscode.window.showErrorMessage(msg, 'Open Settings', 'Configure Path');
+        if (selection === 'Open Settings') {
+            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.useSystemServer');
+        } else if (selection === 'Configure Path') {
+            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.serverPath');
+        }
         return;
     }
 
