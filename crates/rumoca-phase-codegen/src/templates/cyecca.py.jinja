@@ -19,18 +19,18 @@ def create_model():
     # Time
     t = model.time
 
-    # States ({{ dae.states | length }})
-{% for name, var in dae.states | items %}
+    # States ({{ dae.x | length }})
+{% for name, var in dae.x | items %}
     {{ name | sanitize }} = model.add_state('{{ name }}'{% if var.start %}, start={{ render_expr(var.start, cfg) }}{% endif %})
 {% endfor %}
 
-    # Inputs ({{ dae.inputs | length }})
-{% for name, var in dae.inputs | items %}
+    # Inputs ({{ dae.u | length }})
+{% for name, var in dae.u | items %}
     {{ name | sanitize }} = model.add_input('{{ name }}')
 {% endfor %}
 
-    # Parameters ({{ dae.parameters | length }})
-{% for name, var in dae.parameters | items %}
+    # Parameters ({{ dae.p | length }})
+{% for name, var in dae.p | items %}
     {{ name | sanitize }} = model.add_parameter('{{ name }}'{% if var.start %}, value={{ render_expr(var.start, cfg) }}{% endif %})
 {% endfor %}
 
@@ -55,6 +55,6 @@ def create_model():
 
 if __name__ == '__main__':
     model = create_model()
-    print(f"States: {{ dae.states | length }}")
-    print(f"Inputs: {{ dae.inputs | length }}")
-    print(f"Parameters: {{ dae.parameters | length }}")
+    print(f"States: {{ dae.x | length }}")
+    print(f"Inputs: {{ dae.u | length }}")
+    print(f"Parameters: {{ dae.p | length }}")

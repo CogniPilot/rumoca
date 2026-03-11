@@ -13,38 +13,38 @@ function create_model()
     # Time variable
     @independent_variables t
 
-    # State variables ({{ dae.states | length }})
-{% if dae.states | length > 0 %}
+    # State variables ({{ dae.x | length }})
+{% if dae.x | length > 0 %}
     @variables begin
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
         {{ name | sanitize }}(t){% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
 
 {% endfor %}
     end
 {% endif %}
 
-    # Algebraic variables ({{ dae.algebraics | length }})
-{% if dae.algebraics | length > 0 %}
+    # Algebraic variables ({{ dae.y | length }})
+{% if dae.y | length > 0 %}
     @variables begin
-{% for name, var in dae.algebraics | items %}
+{% for name, var in dae.y | items %}
         {{ name | sanitize }}(t)
 {% endfor %}
     end
 {% endif %}
 
-    # Input variables ({{ dae.inputs | length }})
-{% if dae.inputs | length > 0 %}
+    # Input variables ({{ dae.u | length }})
+{% if dae.u | length > 0 %}
     @variables begin
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
         {{ name | sanitize }}(t)
 {% endfor %}
     end
 {% endif %}
 
-    # Parameters ({{ dae.parameters | length }})
-{% if dae.parameters | length > 0 %}
+    # Parameters ({{ dae.p | length }})
+{% if dae.p | length > 0 %}
     @parameters begin
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
         {{ name | sanitize }}{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
 
 {% endfor %}
@@ -84,14 +84,14 @@ end
 function get_default_values()
     # Initial conditions for states
     x0 = Dict(
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
         "{{ name }}" => {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}
 {% endfor %}
     )
 
     # Default parameter values
     p0 = Dict(
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
         "{{ name }}" => {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}
 {% endfor %}
     )
@@ -128,8 +128,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     sys = create_model()
     defaults = get_default_values()
 
-    println("States ({{ dae.states | length }}): ", [{% for name, var in dae.states | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
-    println("Parameters ({{ dae.parameters | length }}): ", [{% for name, var in dae.parameters | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
+    println("States ({{ dae.x | length }}): ", [{% for name, var in dae.x | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
+    println("Parameters ({{ dae.p | length }}): ", [{% for name, var in dae.p | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
     println("\nEquations:")
     for eq in equations(sys)
         println("  ", eq)

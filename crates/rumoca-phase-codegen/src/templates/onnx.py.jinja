@@ -21,13 +21,13 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
     """Create ONNX model for the DAE system.
 
     The model takes inputs:
-        - x: state vector [{{ dae.states | length }}]
-        - u: input vector [{{ dae.inputs | length }}]
-        - p: parameter vector [{{ dae.parameters | length }}]
+        - x: state vector [{{ dae.x | length }}]
+        - u: input vector [{{ dae.u | length }}]
+        - p: parameter vector [{{ dae.p | length }}]
         - t: time scalar [1]
 
     And produces outputs:
-        - xdot: state derivatives [{{ dae.states | length }}]
+        - xdot: state derivatives [{{ dae.x | length }}]
 {% if dae.f_x | length > 0 %}
         - f_x: continuous implicit equation residuals [{{ dae.f_x | length }}]
 {% endif %}
@@ -40,21 +40,21 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
     """
     # Input definitions
     inputs = []
-{% if dae.states | length > 0 %}
-    inputs.append(helper.make_tensor_value_info('x', TensorProto.FLOAT, [{{ dae.states | length }}]))
+{% if dae.x | length > 0 %}
+    inputs.append(helper.make_tensor_value_info('x', TensorProto.FLOAT, [{{ dae.x | length }}]))
 {% endif %}
-{% if dae.inputs | length > 0 %}
-    inputs.append(helper.make_tensor_value_info('u', TensorProto.FLOAT, [{{ dae.inputs | length }}]))
+{% if dae.u | length > 0 %}
+    inputs.append(helper.make_tensor_value_info('u', TensorProto.FLOAT, [{{ dae.u | length }}]))
 {% endif %}
-{% if dae.parameters | length > 0 %}
-    inputs.append(helper.make_tensor_value_info('p', TensorProto.FLOAT, [{{ dae.parameters | length }}]))
+{% if dae.p | length > 0 %}
+    inputs.append(helper.make_tensor_value_info('p', TensorProto.FLOAT, [{{ dae.p | length }}]))
 {% endif %}
     inputs.append(helper.make_tensor_value_info('t', TensorProto.FLOAT, [1]))
 
     # Output definitions
     outputs = []
-{% if dae.states | length > 0 %}
-    outputs.append(helper.make_tensor_value_info('xdot', TensorProto.FLOAT, [{{ dae.states | length }}]))
+{% if dae.x | length > 0 %}
+    outputs.append(helper.make_tensor_value_info('xdot', TensorProto.FLOAT, [{{ dae.x | length }}]))
 {% endif %}
 {% if dae.f_x | length > 0 %}
     outputs.append(helper.make_tensor_value_info('f_x', TensorProto.FLOAT, [{{ dae.f_x | length }}]))
@@ -66,7 +66,7 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
 
     # === Extract individual variables from packed vectors ===
 
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
     # State: {{ name }}
     nodes.append(helper.make_node(
         'Slice',
@@ -78,7 +78,7 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
     initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '{{ name | sanitize }}_end'))
 {% endfor %}
 
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
     # Input: {{ name }}
     nodes.append(helper.make_node(
         'Slice',
@@ -90,7 +90,7 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
     initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '{{ name | sanitize }}_end'))
 {% endfor %}
 
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
     # Parameter: {{ name }}
     nodes.append(helper.make_node(
         'Slice',
@@ -169,19 +169,19 @@ def get_default_values() -> dict:
         Dictionary with 'x0' and 'p0' numpy arrays.
     """
     x0 = np.array([
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
         {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
 {% endfor %}
     ], dtype=np.float32)
 
     p0 = np.array([
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
         {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
 {% endfor %}
     ], dtype=np.float32)
 
     u0 = np.array([
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
         0.0{{ "," if not loop.last else "" }}  # {{ name }}
 {% endfor %}
     ], dtype=np.float32)
@@ -200,9 +200,9 @@ def get_variable_names() -> dict:
         Dictionary with state_names, param_names, input_names.
     """
     return {
-        'state_names': [{% for name, var in dae.states | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
-        'param_names': [{% for name, var in dae.parameters | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
-        'input_names': [{% for name, var in dae.inputs | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
+        'state_names': [{% for name, var in dae.x | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
+        'param_names': [{% for name, var in dae.p | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
+        'input_names': [{% for name, var in dae.u | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
     }
 
 

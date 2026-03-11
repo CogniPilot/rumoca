@@ -32,16 +32,16 @@ def create_model():
     t = ca.MX.sym('t')
 
     # =========================================================================
-    # State Variables ({{ dae.states | length }} variables)
+    # State Variables ({{ dae.x | length }} variables)
     # =========================================================================
-{%- if dae.states | length > 0 %}
-    n_x = {{ var_size(dae.states) | trim }}
+{%- if dae.x | length > 0 %}
+    n_x = {{ var_size(dae.x) | trim }}
     _x = ca.MX.sym('x', n_x)
     _xdot = ca.MX.sym('xdot', n_x)
 
     # Named slices into _x (0-indexed)
 {%- set ns_x = namespace(offset=0) %}
-{%- for name, var in dae.states | items %}
+{%- for name, var in dae.x | items %}
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _x[{{ ns_x.offset }}:{{ ns_x.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
@@ -55,7 +55,7 @@ def create_model():
     # der() maps state variables to _xdot slices via CasADi symbolic comparison
     _der_pairs = [
 {%- set ns_d = namespace(offset=0) %}
-{%- for name, var in dae.states | items %}
+{%- for name, var in dae.x | items %}
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
         ({{ name | sanitize }}, _xdot[{{ ns_d.offset }}:{{ ns_d.offset + sz }}]),
@@ -78,15 +78,15 @@ def create_model():
 {%- endif %}
 
     # =========================================================================
-    # Algebraic Variables ({{ dae.algebraics | length }} variables)
+    # Algebraic Variables ({{ dae.y | length }} variables)
     # =========================================================================
-{%- if dae.algebraics | length > 0 %}
-    n_z = {{ var_size(dae.algebraics) | trim }}
+{%- if dae.y | length > 0 %}
+    n_z = {{ var_size(dae.y) | trim }}
     _z = ca.MX.sym('z', n_z)
 
     # Named slices into _z
 {%- set ns_z = namespace(offset=0) %}
-{%- for name, var in dae.algebraics | items %}
+{%- for name, var in dae.y | items %}
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _z[{{ ns_z.offset }}:{{ ns_z.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
@@ -102,15 +102,15 @@ def create_model():
 {%- endif %}
 
     # =========================================================================
-    # Input Variables ({{ dae.inputs | length }} variables)
+    # Input Variables ({{ dae.u | length }} variables)
     # =========================================================================
-{%- if dae.inputs | length > 0 %}
-    n_u = {{ var_size(dae.inputs) | trim }}
+{%- if dae.u | length > 0 %}
+    n_u = {{ var_size(dae.u) | trim }}
     _u = ca.MX.sym('u', n_u)
 
     # Named slices into _u
 {%- set ns_u = namespace(offset=0) %}
-{%- for name, var in dae.inputs | items %}
+{%- for name, var in dae.u | items %}
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _u[{{ ns_u.offset }}:{{ ns_u.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
@@ -126,15 +126,15 @@ def create_model():
 {%- endif %}
 
     # =========================================================================
-    # Parameters ({{ dae.parameters | length }} variables)
+    # Parameters ({{ dae.p | length }} variables)
     # =========================================================================
-{%- if dae.parameters | length > 0 %}
-    n_p = {{ var_size(dae.parameters) | trim }}
+{%- if dae.p | length > 0 %}
+    n_p = {{ var_size(dae.p) | trim }}
     _p = ca.MX.sym('p', n_p)
 
     # Named slices into _p
 {%- set ns_p = namespace(offset=0) %}
-{%- for name, var in dae.parameters | items %}
+{%- for name, var in dae.p | items %}
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _p[{{ ns_p.offset }}:{{ ns_p.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
@@ -258,6 +258,51 @@ def create_model():
 {%- endif %}
 
     # =========================================================================
+    # Integrator Builder
+    # =========================================================================
+    def build_integrator(dt, opts=None):
+        """Build a CasADi integrator from the implicit DAE.
+
+        Extracts explicit ODE from the implicit residual f_x by computing the
+        mass matrix M = df_x/d(xdot), splitting ODE rows (M nonzero) from
+        algebraic rows (M zero), then solving for xdot = M_ode^{-1} * (-f_x|_{xdot=0}).
+
+        Args:
+            dt: Integration step size.
+            opts: Optional dict of integrator options passed to ca.integrator().
+
+        Returns:
+            A CasADi integrator Function.
+        """
+        _M = ca.jacobian(f_x, _xdot)
+        _p_full = ca.vertcat(_p, _u)
+
+        if n_z == 0:
+            _f0 = ca.substitute(f_x, _xdot, ca.MX.zeros(n_x))
+            _ode = ca.solve(_M, -_f0)
+            _dae = {'x': _x, 'ode': _ode, 'p': _p_full}
+            _solver = 'cvodes'
+        else:
+            _n_eq = f_x.shape[0]
+            _M_fn = ca.Function('mass_matrix_eval', [_x, _xdot, _z, _u, _p, t], [_M])
+            _M_num = np.array(_M_fn(
+                np.zeros(n_x), np.zeros(n_x), np.zeros(n_z),
+                np.zeros(n_u), np.zeros(n_p), 0.0,
+            ))
+            _ode_rows = [i for i in range(_n_eq) if np.sum(np.abs(_M_num[i, :])) > 1e-15]
+            _alg_rows = [i for i in range(_n_eq) if np.sum(np.abs(_M_num[i, :])) <= 1e-15]
+            _f_ode = f_x[_ode_rows, :]
+            _f_alg = f_x[_alg_rows, :]
+            _M_ode = ca.jacobian(_f_ode, _xdot)
+            _f_ode0 = ca.substitute(_f_ode, _xdot, ca.MX.zeros(n_x))
+            _ode = ca.solve(_M_ode, -_f_ode0)
+            _alg = ca.substitute(_f_alg, _xdot, ca.MX.zeros(n_x))
+            _dae = {'x': _x, 'z': _z, 'ode': _ode, 'alg': _alg, 'p': _p_full}
+            _solver = 'idas'
+
+        return ca.integrator('integrator', _solver, _dae, 0, dt, opts or {})
+
+    # =========================================================================
     # Default Values
     # =========================================================================
     def _flat_start(value, expected_size, var_name):
@@ -271,7 +316,7 @@ def create_model():
         )
 
     _x0_parts = []
-{%- for name, var in dae.states | items %}
+{%- for name, var in dae.x | items %}
     _x0_parts.append(_flat_start(
         {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %},
         {% if var.dims %}{{ var.dims | product }}{% else %}1{% endif %},
@@ -281,7 +326,7 @@ def create_model():
     x0 = np.concatenate(_x0_parts) if _x0_parts else np.array([])
 
     _p0_parts = []
-{%- for name, var in dae.parameters | items %}
+{%- for name, var in dae.p | items %}
     _p0_parts.append(_flat_start(
         {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %},
         {% if var.dims %}{{ var.dims | product }}{% else %}1{% endif %},
@@ -300,6 +345,7 @@ def create_model():
         'p': _p,
         'f_x': f_x,
         'dae_fn': dae_fn,
+        'build_integrator': build_integrator,
 {%- if dae.initial_equations | length > 0 %}
         'init_fn': init_fn,
 {%- endif %}
@@ -315,10 +361,10 @@ def create_model():
         'n_z': n_z,
         'n_u': n_u,
         'n_p': n_p,
-        'state_names': [{% for name, var in dae.states | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
-        'algebraic_names': [{% for name, var in dae.algebraics | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
-        'input_names': [{% for name, var in dae.inputs | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
-        'param_names': [{% for name, var in dae.parameters | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
+        'state_names': [{% for name, var in dae.x | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
+        'algebraic_names': [{% for name, var in dae.y | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
+        'input_names': [{% for name, var in dae.u | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
+        'param_names': [{% for name, var in dae.p | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
     }
 
 
