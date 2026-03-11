@@ -439,15 +439,16 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          # Use musl for Linux x64 release artifacts so the bundled VS Code
+          # server does not depend on the remote host glibc version.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
             rumoca_asset: rumoca-linux-x86_64
             lsp_asset: rumoca-lsp-linux-x86_64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
             rumoca_asset: rumoca-linux-aarch64
             lsp_asset: rumoca-lsp-linux-aarch64
-            cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
             rumoca_asset: rumoca-macos-x86_64
@@ -472,33 +473,74 @@ jobs:
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.cross
+      - name: Install musl tools (Linux musl)
+        if: contains(matrix.target, 'musl')
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y musl-tools
 
-      - name: Configure cross-compilation (Linux ARM64)
-        if: matrix.cross
+      - name: Configure musl build (Linux musl)
+        if: contains(matrix.target, 'musl')
         run: |
           mkdir -p .cargo
-          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+          target_env_suffix="$(echo '${{ matrix.target }}' | tr '-' '_')"
+          target_env_upper="$(echo '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')"
+          cat >> .cargo/config.toml <<'EOF'
+          [target.${{ matrix.target }}]
+          linker = "musl-gcc"
+          EOF
+          echo "CC_${target_env_suffix}=musl-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_${target_env_upper}_LINKER=musl-gcc" >> $GITHUB_ENV
 
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }} --bin rumoca --bin rumoca-lsp
 
       - name: Strip binaries (Linux native)
-        if: runner.os == 'Linux' && !matrix.cross
+        if: runner.os == 'Linux'
         run: |
           strip target/${{ matrix.target }}/release/rumoca
           strip target/${{ matrix.target }}/release/rumoca-lsp
 
-      - name: Strip binaries (Linux ARM64 cross)
-        if: matrix.cross
+      - name: Verify Linux musl release artifacts
+        if: contains(matrix.target, 'musl')
         run: |
-          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca
-          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/rumoca-lsp
+          set -euo pipefail
+
+          rumoca_bin="target/${{ matrix.target }}/release/rumoca"
+          lsp_bin="target/${{ matrix.target }}/release/rumoca-lsp"
+
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl)
+              expected_machine="Advanced Micro Devices X86-64"
+              ;;
+            aarch64-unknown-linux-musl)
+              expected_machine="AArch64"
+              ;;
+            *)
+              echo "::error::unexpected musl release target: ${{ matrix.target }}"
+              exit 1
+              ;;
+          esac
+
+          echo "Inspecting $rumoca_bin"
+          file "$rumoca_bin"
+          readelf -h "$rumoca_bin" | grep -F "$expected_machine"
+          if readelf -l "$rumoca_bin" | grep -F "Requesting program interpreter" >/dev/null; then
+            echo "::error::$rumoca_bin unexpectedly depends on a dynamic ELF interpreter"
+            exit 1
+          fi
+          ldd "$rumoca_bin" || true
+          "$rumoca_bin" --version
+
+          echo "Inspecting $lsp_bin"
+          file "$lsp_bin"
+          readelf -h "$lsp_bin" | grep -F "$expected_machine"
+          if readelf -l "$lsp_bin" | grep -F "Requesting program interpreter" >/dev/null; then
+            echo "::error::$lsp_bin unexpectedly depends on a dynamic ELF interpreter"
+            exit 1
+          fi
+          ldd "$lsp_bin" || true
+          "$lsp_bin" --version
 
       - name: Strip binaries (macOS)
         if: runner.os == 'macOS'

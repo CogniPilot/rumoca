@@ -27,6 +27,10 @@ Search for "Rumoca Modelica" in the VS Code Extensions view (`Ctrl+Shift+X` / `C
 
 The extension includes a bundled `rumoca-lsp` language server, so **no additional installation is required** for most users.
 
+For Linux release builds, the bundled `rumoca-lsp` is shipped as a `musl`-linked binary for both
+`linux-x64` and `linux-arm64`. This is intentional: it reduces breakage from remote-host `glibc`
+version mismatches.
+
 **From VSIX file:**
 
 1. Download the `.vsix` file for your platform from [GitHub Releases](https://github.com/cognipilot/rumoca/releases)
@@ -63,13 +67,13 @@ Set `rumoca.serverPath` to the full path of your custom `rumoca-lsp` binary:
 If you need to install `rumoca-lsp` manually:
 
 ```bash
-# From crates.io
-cargo install rumoca
+# From GitHub Releases installer
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/cognipilot/rumoca/main/install/install.sh | bash -s -- --with-lsp
 
 # Or from source
 git clone https://github.com/cognipilot/rumoca.git
 cd rumoca
-cargo install --path .
+cargo install --path crates/rumoca-tool-lsp
 ```
 
 ## Configuration
@@ -113,13 +117,22 @@ These paths are added to the `MODELICAPATH` used for import resolution. Paths co
 
 **Extension shows "Using system-installed rumoca-lsp" warning:**
 
-This means the bundled binary wasn't found (possibly a platform mismatch). You can:
+This means the bundled binary wasn't found or could not execute on your machine. You can:
 1. Set `rumoca.useSystemServer` to `true` to suppress the warning
 2. Install `rumoca-lsp` manually (see above)
 
+**Extension shows a `glibc`/loader error for the bundled server:**
+
+The extension now probes the bundled `rumoca-lsp` before startup and will fall back to a
+system-installed server if one is available. If you still hit this case:
+
+1. update to the latest extension release
+2. install `rumoca-lsp` manually and set `rumoca.useSystemServer` to `true`
+3. report the failing platform/host details if the latest bundled Linux build still does not run
+
 **Extension can't find rumoca-lsp:**
 
-1. The extension will prompt you to install via cargo
+1. Install `rumoca-lsp` with the GitHub Releases installer shown above
 2. Or set `rumoca.serverPath` to the full path of your `rumoca-lsp` binary
 
 **Debug logging:**
@@ -138,7 +151,7 @@ Then check the "Rumoca Modelica" output channel in VS Code.
 
 ```bash
 # Build the LSP server
-cargo build --release
+cargo build --release --bin rumoca-lsp
 
 # Build the extension
 cd editors/vscode
