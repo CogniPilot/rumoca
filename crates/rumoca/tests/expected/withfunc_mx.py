@@ -97,6 +97,51 @@ def create_model():
         ['f_x'])
 
     # =========================================================================
+    # Integrator Builder
+    # =========================================================================
+    def build_integrator(dt, opts=None):
+        """Build a CasADi integrator from the implicit DAE.
+
+        Extracts explicit ODE from the implicit residual f_x by computing the
+        mass matrix M = df_x/d(xdot), splitting ODE rows (M nonzero) from
+        algebraic rows (M zero), then solving for xdot = M_ode^{-1} * (-f_x|_{xdot=0}).
+
+        Args:
+            dt: Integration step size.
+            opts: Optional dict of integrator options passed to ca.integrator().
+
+        Returns:
+            A CasADi integrator Function.
+        """
+        _M = ca.jacobian(f_x, _xdot)
+        _p_full = ca.vertcat(_p, _u)
+
+        if n_z == 0:
+            _f0 = ca.substitute(f_x, _xdot, ca.MX.zeros(n_x))
+            _ode = ca.solve(_M, -_f0)
+            _dae = {'x': _x, 'ode': _ode, 'p': _p_full}
+            _solver = 'cvodes'
+        else:
+            _n_eq = f_x.shape[0]
+            _M_fn = ca.Function('mass_matrix_eval', [_x, _xdot, _z, _u, _p, t], [_M])
+            _M_num = np.array(_M_fn(
+                np.zeros(n_x), np.zeros(n_x), np.zeros(n_z),
+                np.zeros(n_u), np.zeros(n_p), 0.0,
+            ))
+            _ode_rows = [i for i in range(_n_eq) if np.sum(np.abs(_M_num[i, :])) > 1e-15]
+            _alg_rows = [i for i in range(_n_eq) if np.sum(np.abs(_M_num[i, :])) <= 1e-15]
+            _f_ode = f_x[_ode_rows, :]
+            _f_alg = f_x[_alg_rows, :]
+            _M_ode = ca.jacobian(_f_ode, _xdot)
+            _f_ode0 = ca.substitute(_f_ode, _xdot, ca.MX.zeros(n_x))
+            _ode = ca.solve(_M_ode, -_f_ode0)
+            _alg = ca.substitute(_f_alg, _xdot, ca.MX.zeros(n_x))
+            _dae = {'x': _x, 'z': _z, 'ode': _ode, 'alg': _alg, 'p': _p_full}
+            _solver = 'idas'
+
+        return ca.integrator('integrator', _solver, _dae, 0, dt, opts or {})
+
+    # =========================================================================
     # Default Values
     # =========================================================================
     def _flat_start(value, expected_size, var_name):
@@ -130,6 +175,7 @@ def create_model():
         'p': _p,
         'f_x': f_x,
         'dae_fn': dae_fn,
+        'build_integrator': build_integrator,
         'functions': {'sq': sq },
         'x0': x0,
         'p0': p0,

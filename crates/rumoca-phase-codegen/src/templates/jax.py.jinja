@@ -17,32 +17,32 @@ from typing import NamedTuple
 
 class ModelParams(NamedTuple):
     """Model parameters."""
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
     {{ name | sanitize }}: float = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}
 
 {% endfor %}
-{% if dae.parameters | length == 0 %}
+{% if dae.p | length == 0 %}
     pass  # No parameters
 {% endif %}
 
 
 class ModelState(NamedTuple):
     """Model state variables."""
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
     {{ name | sanitize }}: float = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}
 
 {% endfor %}
-{% if dae.states | length == 0 %}
+{% if dae.x | length == 0 %}
     pass  # No states
 {% endif %}
 
 
 class ModelInputs(NamedTuple):
     """Model input variables."""
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
     {{ name | sanitize }}: float = 0.0
 {% endfor %}
-{% if dae.inputs | length == 0 %}
+{% if dae.u | length == 0 %}
     pass  # No inputs
 {% endif %}
 
@@ -61,17 +61,17 @@ def ode_fn(t, y, args):
     params, inputs = args
 
     # Unpack state variables
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
     {{ name | sanitize }} = y[{{ loop.index0 }}]
 {% endfor %}
 
     # Unpack parameters
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
     {{ name | sanitize }} = params.{{ name | sanitize }}
 {% endfor %}
 
     # Unpack inputs
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
     {{ name | sanitize }} = inputs.{{ name | sanitize }}
 {% endfor %}
 
@@ -122,7 +122,7 @@ def simulate(x0, t_span, params=None, inputs=None, dt=0.01, save_every=1):
 
     # Convert state to array if needed
     if isinstance(x0, ModelState):
-        y0 = jnp.array([{% for name, var in dae.states | items %}x0.{{ name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %}])
+        y0 = jnp.array([{% for name, var in dae.x | items %}x0.{{ name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %}])
     else:
         y0 = jnp.asarray(x0)
 
@@ -149,25 +149,25 @@ def simulate(x0, t_span, params=None, inputs=None, dt=0.01, save_every=1):
 
 def get_state_names():
     """Get list of state variable names."""
-    return [{% for name, var in dae.states | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
+    return [{% for name, var in dae.x | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
 
 
 def get_param_names():
     """Get list of parameter names."""
-    return [{% for name, var in dae.parameters | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
+    return [{% for name, var in dae.p | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
 
 
 def get_input_names():
     """Get list of input names."""
-    return [{% for name, var in dae.inputs | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
+    return [{% for name, var in dae.u | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
 
 
 if __name__ == '__main__':
-    print(f"States ({{ dae.states | length }}): {get_state_names()}")
-    print(f"Parameters ({{ dae.parameters | length }}): {get_param_names()}")
-    print(f"Inputs ({{ dae.inputs | length }}): {get_input_names()}")
+    print(f"States ({{ dae.x | length }}): {get_state_names()}")
+    print(f"Parameters ({{ dae.p | length }}): {get_param_names()}")
+    print(f"Inputs ({{ dae.u | length }}): {get_input_names()}")
 
-{% if dae.states | length > 0 %}
+{% if dae.x | length > 0 %}
     # Example simulation
     x0 = ModelState()
     ts, ys = simulate(x0, (0.0, 10.0))

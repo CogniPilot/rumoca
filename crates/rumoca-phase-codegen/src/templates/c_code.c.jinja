@@ -15,31 +15,31 @@
 {% set cfg = {"prefix": "", "power": "pow_op", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} %}
 
 /* Model dimensions */
-#define MODEL_N_STATES {{ dae.states | length }}
-#define MODEL_N_ALGEBRAIC {{ dae.algebraics | length }}
-#define MODEL_N_INPUTS {{ dae.inputs | length }}
-#define MODEL_N_PARAMETERS {{ dae.parameters | length }}
+#define MODEL_N_STATES {{ dae.x | length }}
+#define MODEL_N_ALGEBRAIC {{ dae.y | length }}
+#define MODEL_N_INPUTS {{ dae.u | length }}
+#define MODEL_N_PARAMETERS {{ dae.p | length }}
 #define MODEL_N_CONSTANTS {{ dae.constants | length }}
-#define MODEL_N_OUTPUTS {{ dae.outputs | length }}
+#define MODEL_N_OUTPUTS {{ dae.w | length }}
 #define MODEL_N_FUNCTIONS {{ dae.functions | length }}
 
 /* State indices */
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
 #define STATE_{{ name | sanitize | upper }} {{ loop.index0 }}
 {% endfor %}
 
 /* Input indices */
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
 #define INPUT_{{ name | sanitize | upper }} {{ loop.index0 }}
 {% endfor %}
 
 /* Parameter indices */
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
 #define PARAM_{{ name | sanitize | upper }} {{ loop.index0 }}
 {% endfor %}
 
 /* Output indices */
-{% for name, var in dae.outputs | items %}
+{% for name, var in dae.w | items %}
 #define OUTPUT_{{ name | sanitize | upper }} {{ loop.index0 }}
 {% endfor %}
 
@@ -117,27 +117,27 @@ void model_f_x(
 
 void model_init(model_state_t* state) {
     /* Initialize states */
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
     state->x[{{ loop.index0 }}] = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
 {% endfor %}
 
     /* Initialize algebraic variables */
-{% for name, var in dae.algebraics | items %}
+{% for name, var in dae.y | items %}
     state->z[{{ loop.index0 }}] = 0.0;  /* {{ name }} */
 {% endfor %}
 
     /* Initialize inputs */
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
     state->u[{{ loop.index0 }}] = 0.0;  /* {{ name }} */
 {% endfor %}
 
     /* Initialize parameters */
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
     state->p[{{ loop.index0 }}] = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
 {% endfor %}
 
     /* Initialize outputs */
-{% for name, var in dae.outputs | items %}
+{% for name, var in dae.w | items %}
     state->y[{{ loop.index0 }}] = 0.0;  /* {{ name }} */
 {% endfor %}
 }
@@ -150,22 +150,22 @@ void model_f_x(
     (void)t;  /* May be unused */
 
     /* Unpack state variables */
-{% for name, var in dae.states | items %}
+{% for name, var in dae.x | items %}
     const double {{ name | sanitize }} = state->x[{{ loop.index0 }}];
 {% endfor %}
 
     /* Unpack algebraic variables */
-{% for name, var in dae.algebraics | items %}
+{% for name, var in dae.y | items %}
     const double {{ name | sanitize }} = state->z[{{ loop.index0 }}];
 {% endfor %}
 
     /* Unpack inputs */
-{% for name, var in dae.inputs | items %}
+{% for name, var in dae.u | items %}
     const double {{ name | sanitize }} = state->u[{{ loop.index0 }}];
 {% endfor %}
 
     /* Unpack parameters */
-{% for name, var in dae.parameters | items %}
+{% for name, var in dae.p | items %}
     const double {{ name | sanitize }} = state->p[{{ loop.index0 }}];
 {% endfor %}
 

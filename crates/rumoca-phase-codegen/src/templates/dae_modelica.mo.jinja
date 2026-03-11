@@ -48,28 +48,28 @@
 {%- if var.description %} "{{ var.description }}"{% endif -%}
 {%- endmacro -%}
 class {{ model_name }}{% if dae.model_description %} "{{ dae.model_description }}"{% endif %}
-{%- for name, var in dae.parameters | items %}
+{%- for name, var in dae.p | items %}
   parameter Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{% if var.start is not none %} = {{ render_expr(var.start, cfg) }}{% endif %}{{ desc(var) }};
 {%- endfor -%}
 {%- for name, var in dae.constants | items %}
   constant Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{% if var.start is not none %} = {{ render_expr(var.start, cfg) }}{% endif %}{{ desc(var) }};
 {%- endfor -%}
-{%- for name, var in dae.states | items %}
+{%- for name, var in dae.x | items %}
   Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
 {%- endfor -%}
-{%- for name, var in dae.algebraics | items %}
+{%- for name, var in dae.y | items %}
   Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
 {%- endfor -%}
-{%- for name, var in dae.inputs | items %}
+{%- for name, var in dae.u | items %}
   input Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
 {%- endfor -%}
-{%- for name, var in dae.outputs | items %}
+{%- for name, var in dae.w | items %}
   output Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
 {%- endfor -%}
-{%- for name, var in dae.discrete_reals | items %}
+{%- for name, var in dae.z | items %}
   discrete Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
 {%- endfor -%}
-{%- for name, var in dae.derivative_aliases | items %}
+{%- for name, var in dae.x_dot_alias | items %}
   Real{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ desc(var) }};
 {%- endfor %}
 equation
