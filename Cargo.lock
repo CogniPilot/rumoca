@@ -2733,7 +2733,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2773,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-bind-python"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-bind-wasm"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
@@ -2801,7 +2801,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-contracts"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "rumoca-session",
@@ -2812,7 +2812,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "miette",
  "serde",
@@ -2820,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-ast"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "rumoca-core",
  "rumoca-ir-ast",
@@ -2830,7 +2830,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-dae"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -2848,7 +2848,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-flat"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "rumoca-core",
@@ -2859,7 +2859,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-ast"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "rumoca-core",
@@ -2870,14 +2870,14 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "rumoca-ir-dae"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "rumoca-core",
@@ -2888,7 +2888,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-flat"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "rumoca-core",
@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-codegen"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "miette",
  "minijinja",
@@ -2913,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-dae"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "miette",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-flatten"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "miette",
@@ -2944,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-instantiate"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "indexmap",
  "miette",
@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-parse"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "indexmap",
@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-resolve"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "indexmap",
@@ -2986,7 +2986,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-solve"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "rumoca-core",
  "rumoca-eval-dae",
@@ -2997,7 +2997,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-typecheck"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "miette",
  "rumoca-core",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-session"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-sim"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "diffsol",
  "getrandom 0.3.4",
@@ -3061,7 +3061,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-test-msl"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-dev"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -3114,7 +3114,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-fmt"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "rumoca-session",
  "serde",
@@ -3125,7 +3125,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-lint"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "rumoca-session",
  "serde",
@@ -3136,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-lsp"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "clap",
