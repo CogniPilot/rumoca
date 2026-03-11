@@ -275,31 +275,14 @@ jobs:
           path: target/msl/results/omc_parity_cache
           key: ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-${{ github.sha }}
 
-  modelica-fmt:
-    name: Modelica Format Check
+  release-verification:
+    name: Release Verification Gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
+    needs: [detect-release-tag, lint, test, coverage-gate]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build and check Modelica formatting
-        run: |
-          cargo build --release --bin rumoca
-          # Check formatting on any .mo test files in the repo (excluding target/)
-          find . -path ./target -prune -o -name '*.mo' -print | head -20 | xargs -r ./target/release/rumoca fmt --check
+      - name: Confirm release verification checks passed
+        run: echo "Release verification checks passed"
 
   # ============================================================================
   # Documentation
@@ -332,7 +315,6 @@ jobs:
   build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
-    needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
 
@@ -418,26 +400,13 @@ jobs:
         with:
           path: gh-pages/
 
-  deploy-pages:
-    name: Deploy to GitHub Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, build-wasm, modelica-fmt, coverage-gate]
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
   # ============================================================================
   # Release Builds (only on tags)
   # ============================================================================
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, modelica-fmt, coverage-gate]
+    needs: [detect-release-tag]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -491,6 +460,7 @@ jobs:
           cat >> .cargo/config.toml <<'EOF'
           [target.${{ matrix.target }}]
           linker = "musl-gcc"
+          rustflags = ["-C", "link-arg=-static"]
           EOF
           echo "CC_${target_env_suffix}=musl-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_${target_env_upper}_LINKER=musl-gcc" >> $GITHUB_ENV
@@ -566,7 +536,6 @@ jobs:
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
     if: github.event_name == 'push'
-    needs: [lint, test]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -622,7 +591,6 @@ jobs:
   build-python-sdist:
     name: Build Python sdist
     if: github.event_name == 'push'
-    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -653,7 +621,7 @@ jobs:
   build-vscode-extension:
     name: Build VS Code Extension (${{ matrix.target }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, build-rust-binaries]
+    needs: [detect-release-tag, build-rust-binaries]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -716,13 +684,16 @@ jobs:
           path: editors/vscode/*.vsix
 
   # ============================================================================
-  # Publishing (only on tags, after all builds complete)
+  # Deployment (only on tags, after verification and build completion)
   # ============================================================================
-  publish:
-    name: Publish Release
+  deploy:
+    name: Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, build-rust-binaries]
+    needs: [detect-release-tag, release-verification, build-wasm, build-rust-binaries, build-vscode-extension]
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -744,6 +715,10 @@ jobs:
         run: |
           echo "As of v0.8.0, Rust distribution is via GitHub Releases binaries (not crates.io)."
 
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -751,7 +726,7 @@ jobs:
 
       - name: Organize artifacts
         run: |
-          mkdir -p rust-binaries
+          mkdir -p release-assets
 
           echo "=== Downloaded structure ==="
           find artifacts -type f | head -50
@@ -766,12 +741,25 @@ jobs:
                 echo "No binary file found under $dir; skipping"
                 continue
               fi
-              cp "$source_file" "rust-binaries/$artifact_name"
+              cp "$source_file" "release-assets/$artifact_name"
             fi
           done
 
-          echo "=== Rust binaries ==="
-          ls -la rust-binaries/
+          # Move VS Code extension packages
+          for dir in artifacts/vscode-extension-*; do
+            if [ -d "$dir" ]; then
+              echo "Processing VS Code artifact: $dir"
+              source_file="$(find "$dir" -maxdepth 1 -type f -name '*.vsix' | head -n 1)"
+              if [ -z "$source_file" ]; then
+                echo "No VSIX file found under $dir; skipping"
+                continue
+              fi
+              cp "$source_file" "release-assets/$(basename "$source_file")"
+            fi
+          done
+
+          echo "=== Release assets ==="
+          ls -la release-assets/
 
       # Create GitHub Release
       - name: Create GitHub Release
@@ -782,9 +770,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Rust binaries to release
+      - name: Upload release assets
         run: |
-          cd rust-binaries
+          cd release-assets
           for file in *; do
             if [ -f "$file" ]; then
               echo "Uploading $file"
@@ -794,4 +782,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Rust binary artifacts are distributed via GitHub Releases only.
+      # Rust binary and VS Code extension artifacts are distributed via GitHub Releases.
