@@ -12,7 +12,7 @@ use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timin
 use rumoca_session::{
     compile::core::msl_cache_dir_from_manifest,
     compile::{
-        CompiledLibrary, Dae, FailedPhase, PhaseResult, Session, SessionConfig,
+        CompiledLibrary, Dae, FailedPhase, PhaseResult, StrictCompileReport,
         compile_phase_timing_stats, reset_compile_phase_timing_stats,
     },
     parsing::parse_files_parallel_lenient,

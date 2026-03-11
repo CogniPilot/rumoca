@@ -1118,9 +1118,18 @@ fn check_partial_class_instantiation_restriction(
     if !matches!(class.class_type, ClassType::Model | ClassType::Block) {
         return;
     }
+    // MLS §4.7 forbids instantiating partial classes in concrete model/block
+    // instances. Partial classes themselves and replaceable declarations remain
+    // legal because they do not commit to a concrete instantiation yet.
+    if class.partial || comp.is_replaceable {
+        return;
+    }
     let Some(tc) = type_class else {
         return;
     };
+    if matches!(tc.class_type, ClassType::Package | ClassType::Function) {
+        return;
+    }
     if !tc.partial {
         return;
     }

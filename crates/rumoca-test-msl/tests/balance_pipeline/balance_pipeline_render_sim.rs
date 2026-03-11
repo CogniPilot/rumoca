@@ -183,20 +183,19 @@ pub(super) fn convert_compile_result_entry(
 ) -> MslModelResult {
     let ModelCompileEntry {
         model_name: name,
-        phase_result,
+        compile_outcome,
         remaining_budget_secs,
     } = entry;
 
-    let sim_result = match &phase_result {
-        PhaseResult::Success(result) => {
-            maybe_dump_model_introspection(&name, result.as_ref(), ctx);
-            maybe_render_model_outputs(&name, result.as_ref(), ctx);
-            maybe_run_simulation(&name, result.as_ref(), ctx, remaining_budget_secs)
-        }
-        _ => None,
+    let sim_result = if let Some(result) = compile_outcome.success_result() {
+        maybe_dump_model_introspection(&name, result, ctx);
+        maybe_render_model_outputs(&name, result, ctx);
+        maybe_run_simulation(&name, result, ctx, remaining_budget_secs)
+    } else {
+        None
     };
 
-    let mut model_result = convert_phase_result(name, phase_result);
+    let mut model_result = convert_compile_outcome(name, compile_outcome);
     if let Some(sim) = sim_result {
         let done = ctx.sim_completed.fetch_add(1, Ordering::Relaxed) + 1;
         update_live_sim_status(&sim, ctx);

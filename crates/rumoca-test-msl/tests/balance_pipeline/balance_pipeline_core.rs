@@ -4,6 +4,7 @@ use super::*;
 ///
 /// Set `run_simulation=false` for compile+balance-only runs.
 const COMPILE_CHUNK_PROGRESS_INTERVAL_SECS: u64 = 15;
+const COMPILE_CHUNK_PROGRESS_POLL_MILLIS: u64 = 250;
 const MODEL_ATTEMPT_TIMEOUT_ERROR_CODE: &str = "EMSL_TIMEOUT_MODEL_ATTEMPT";
 
 pub(super) fn log_simulation_run_configuration(run_simulation: bool) {
@@ -145,45 +146,50 @@ fn compile_model_with_budget_timeout(
     let model_name_for_worker = model_name.to_string();
     let model_name_for_result = model_name.to_string();
     let _detached_worker = std::thread::spawn(move || {
-        let phase_result = library_ref.compile_model_phases(&model_name_for_worker);
-        let _ = sender.send(phase_result);
+        let report =
+            library_ref.compile_model_strict_reachable_with_recovery(&model_name_for_worker);
+        let _ = sender.send(report);
     });
 
     let timeout = Duration::from_secs_f64(budget_secs);
     let elapsed_secs;
-    let phase_result = match receiver.recv_timeout(timeout) {
+    let compile_outcome = match receiver.recv_timeout(timeout) {
         Ok(result) => {
             elapsed_secs = start.elapsed().as_secs_f64();
-            result
+            ModelCompileOutcome::StrictReport(result)
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             elapsed_secs = start.elapsed().as_secs_f64();
             return ModelCompileEntry {
                 model_name: model_name_for_result,
-                phase_result: compile_timeout_phase_result(model_name, elapsed_secs, budget_secs),
+                compile_outcome: ModelCompileOutcome::Phase(compile_timeout_phase_result(
+                    model_name,
+                    elapsed_secs,
+                    budget_secs,
+                )),
                 remaining_budget_secs: None,
             };
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             elapsed_secs = start.elapsed().as_secs_f64();
-            PhaseResult::Failed {
+            ModelCompileOutcome::Phase(PhaseResult::Failed {
                 phase: FailedPhase::ToDae,
                 error: format!(
                     "model compile worker disconnected after {:.3}s ({model_name})",
                     elapsed_secs
                 ),
                 error_code: Some("EMSL_COMPILE_WORKER_DISCONNECTED".to_string()),
-            }
+            })
         }
     };
-    let remaining_budget_secs = if phase_result.is_success() {
+    let remaining_budget_secs = if compile_outcome.is_success() {
         Some((budget_secs - elapsed_secs).max(0.0))
     } else {
         None
     };
     ModelCompileEntry {
         model_name: model_name_for_result,
-        phase_result,
+        compile_outcome,
         remaining_budget_secs,
     }
 }
@@ -217,20 +223,22 @@ fn run_compile_chunk_progress_loop(
     chunk_models: usize,
 ) {
     let start = Instant::now();
+    let log_interval = Duration::from_secs(COMPILE_CHUNK_PROGRESS_INTERVAL_SECS);
+    let poll_interval = Duration::from_millis(COMPILE_CHUNK_PROGRESS_POLL_MILLIS);
+    let mut next_log_at = log_interval;
     while compile_in_flight_flag.load(Ordering::Relaxed) {
-        std::thread::sleep(std::time::Duration::from_secs(
-            COMPILE_CHUNK_PROGRESS_INTERVAL_SECS,
-        ));
-        if !compile_in_flight_flag.load(Ordering::Relaxed) {
-            return;
+        let elapsed = start.elapsed();
+        if elapsed >= next_log_at {
+            eprintln!(
+                "    chunk {}/{} compile still running after {:.1}s ({} models)",
+                chunk_idx,
+                chunk_count,
+                elapsed.as_secs_f64(),
+                chunk_models
+            );
+            next_log_at += log_interval;
         }
-        eprintln!(
-            "    chunk {}/{} compile still running after {:.1}s ({} models)",
-            chunk_idx,
-            chunk_count,
-            start.elapsed().as_secs_f64(),
-            chunk_models
-        );
+        std::thread::sleep(poll_interval);
     }
 }
 
@@ -280,17 +288,19 @@ fn run_chunked_compile_and_render(
         });
 
         let chunk_compile_start = Instant::now();
-        let _compile_watchdog = StageAbortWatchdog::new(
-            format!("compile chunk {}/{}", chunk_idx + 1, chunk_count),
-            "RUMOCA_MSL_STAGE_TIMEOUT_COMPILE_CHUNK_SECS",
-            300,
-        );
-        let chunk_results = compile_chunk_with_model_budgets(
-            library,
-            names_chunk,
-            worker_threads,
-            model_budget_secs,
-        );
+        let chunk_results = {
+            let _compile_watchdog = StageAbortWatchdog::new(
+                format!("compile chunk {}/{}", chunk_idx + 1, chunk_count),
+                "RUMOCA_MSL_STAGE_TIMEOUT_COMPILE_CHUNK_SECS",
+                300,
+            );
+            compile_chunk_with_model_budgets(
+                library,
+                names_chunk,
+                worker_threads,
+                model_budget_secs,
+            )
+        };
         compile_in_flight.store(false, Ordering::Relaxed);
         let _ = compile_progress_logger.join();
         let chunk_compile_seconds = chunk_compile_start.elapsed().as_secs_f64();
@@ -303,18 +313,20 @@ fn run_chunked_compile_and_render(
         );
 
         let chunk_render_start = Instant::now();
-        let _sim_chunk_watchdog = StageAbortWatchdog::new(
-            format!("simulate/render chunk {}/{}", chunk_idx + 1, chunk_count),
-            "RUMOCA_MSL_STAGE_TIMEOUT_SIM_CHUNK_SECS",
-            300,
-        );
-        let mut chunk_model_results = collect_render_sim_results(
-            chunk_results,
-            run_simulation,
-            context,
-            worker_threads,
-            first_chunk,
-        );
+        let mut chunk_model_results = {
+            let _sim_chunk_watchdog = StageAbortWatchdog::new(
+                format!("simulate/render chunk {}/{}", chunk_idx + 1, chunk_count),
+                "RUMOCA_MSL_STAGE_TIMEOUT_SIM_CHUNK_SECS",
+                300,
+            );
+            collect_render_sim_results(
+                chunk_results,
+                run_simulation,
+                context,
+                worker_threads,
+                first_chunk,
+            )
+        };
         first_chunk = false;
         let chunk_render_seconds = chunk_render_start.elapsed().as_secs_f64();
         render_and_write_seconds += chunk_render_seconds;
@@ -377,20 +389,17 @@ fn prepare_compiled_library(
     frontend_compile_start: Instant,
     core_start: Instant,
 ) -> Result<PreparedLibrary, Box<MslSummary>> {
-    println!("Creating session and building typed tree...");
+    println!("Building tolerant library index...");
     let session_start = Instant::now();
     let _session_watchdog = StageAbortWatchdog::new(
         "session_build",
         "RUMOCA_MSL_STAGE_TIMEOUT_SESSION_BUILD_SECS",
         300,
     );
-    let mut session = Session::new(SessionConfig { parallel: false });
-    session.add_parsed_batch(parsed_successes);
-
-    let model_names = match session.model_names() {
-        Ok(names) => names.to_vec(),
+    let library = match CompiledLibrary::from_parsed_batch_tolerant(parsed_successes) {
+        Ok(library) => std::sync::Arc::new(library),
         Err(error) => {
-            println!("Failed to build typed tree: {error}");
+            println!("Failed to build tolerant library index: {error}");
             let mut summary = empty_summary(total_mo_files, parse_errors);
             summary.resolve_errors = 1;
             timings.session_build_seconds = session_start.elapsed().as_secs_f64();
@@ -402,32 +411,13 @@ fn prepare_compiled_library(
             )));
         }
     };
-    let class_type_counts = session.class_type_counts().unwrap_or_default();
-    let resolved_tree = match session.resolved() {
-        Ok(resolved) => resolved,
-        Err(error) => {
-            println!("Failed to get resolved tree: {error}");
-            let mut summary = empty_summary(total_mo_files, parse_errors);
-            summary.resolve_errors = 1;
-            timings.session_build_seconds = session_start.elapsed().as_secs_f64();
-            return Err(Box::new(finalize_early_summary(
-                summary,
-                timings,
-                frontend_compile_start,
-                core_start,
-            )));
-        }
-    };
-    let library = std::sync::Arc::new(CompiledLibrary::from_resolved_tree(
-        resolved_tree,
-        model_names.clone(),
-    ));
+    let model_names = library.model_names().to_vec();
+    let class_type_counts = library.class_type_counts().clone();
     timings.session_build_seconds = session_start.elapsed().as_secs_f64();
     println!(
-        "Built typed tree + model index in {:.2}s",
+        "Built tolerant library index + model discovery in {:.2}s",
         timings.session_build_seconds
     );
-    drop(session);
     Ok(PreparedLibrary {
         library,
         model_names,
@@ -522,6 +512,30 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         timings,
         core_start,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_chunk_progress_loop_exits_promptly_after_flag_clears() {
+        let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);
+        let start = Instant::now();
+        let worker = std::thread::spawn(move || {
+            run_compile_chunk_progress_loop(compile_in_flight_flag, 1, 1, 1);
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+        compile_in_flight.store(false, Ordering::Relaxed);
+        worker.join().expect("progress logger thread should exit");
+
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "progress logger must not add a full log-interval stall after chunk completion"
+        );
+    }
 }
 
 /// Test compilation, balance, and simulation of the default MSL 180-model target set.

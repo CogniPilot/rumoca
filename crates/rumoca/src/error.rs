@@ -1,11 +1,14 @@
 //! Error types for the rumoca compiler.
 
 use miette::Diagnostic;
-use rumoca_session::compile::{ModelFailureDiagnostic, core::SourceMap};
+use rumoca_session::compile::{
+    ModelFailureDiagnostic,
+    core::{Diagnostic as CommonDiagnostic, SourceMap},
+};
 use thiserror::Error;
 
 /// Errors that can occur during compilation.
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Clone, Error, Diagnostic)]
 pub enum CompilerError {
     /// No model name was specified.
     #[error("no model specified")]
@@ -72,6 +75,15 @@ pub enum CompilerError {
         summary: String,
         failures: Vec<ModelFailureDiagnostic>,
         source_map: Option<SourceMap>,
+    },
+
+    /// Structured source-backed diagnostics that should render directly in the CLI.
+    #[error("{summary}")]
+    #[diagnostic(code(rumoca::compiler::E013))]
+    SourceDiagnosticsError {
+        summary: String,
+        diagnostics: Vec<CommonDiagnostic>,
+        source_map: SourceMap,
     },
 }
 

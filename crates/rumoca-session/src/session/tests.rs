@@ -611,6 +611,141 @@ fn test_strict_reachable_ignores_unreachable_failures_when_requested_succeeds() 
 }
 
 #[test]
+fn test_strict_reachable_ignores_unrelated_library_resolve_errors() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "good_dep.mo",
+            r#"
+            within Lib;
+            model GoodDep
+              Real x(start=0);
+            equation
+              der(x) = 1;
+            end GoodDep;
+            "#,
+        )
+        .expect("good dependency should parse");
+    session
+        .add_document(
+            "broken.mo",
+            r#"
+            within Lib;
+            partial model PartialBase
+            end PartialBase;
+
+            model Broken
+              PartialBase base;
+            end Broken;
+            "#,
+        )
+        .expect("broken sibling should parse");
+    session
+        .add_document(
+            "lib.mo",
+            r#"
+            package Lib
+            end Lib;
+            "#,
+        )
+        .expect("library package should parse");
+    session
+        .add_document(
+            "root.mo",
+            r#"
+            model Root
+              Lib.GoodDep dep;
+            end Root;
+            "#,
+        )
+        .expect("root should parse");
+
+    let report = session.compile_model_strict_reachable_with_recovery("Root");
+    assert!(
+        report.requested_succeeded(),
+        "strict compile must ignore unrelated library resolve errors"
+    );
+    assert!(
+        report.failures.is_empty(),
+        "unrelated library resolve diagnostics must not leak into Root"
+    );
+}
+
+#[test]
+fn test_compiled_library_tolerant_strict_reachable_ignores_unrelated_library_errors() {
+    let parsed = vec![
+        (
+            "good_dep.mo".to_string(),
+            rumoca_phase_parse::parse_to_ast(
+                r#"
+                within Lib;
+                model GoodDep
+                  Real x(start=0);
+                equation
+                  der(x) = 1;
+                end GoodDep;
+                "#,
+                "good_dep.mo",
+            )
+            .expect("good dependency should parse"),
+        ),
+        (
+            "broken.mo".to_string(),
+            rumoca_phase_parse::parse_to_ast(
+                r#"
+                within Lib;
+                model Broken
+                  MissingType x;
+                end Broken;
+                "#,
+                "broken.mo",
+            )
+            .expect("broken sibling should still parse"),
+        ),
+        (
+            "lib.mo".to_string(),
+            rumoca_phase_parse::parse_to_ast(
+                r#"
+                package Lib
+                end Lib;
+                "#,
+                "lib.mo",
+            )
+            .expect("library package should parse"),
+        ),
+        (
+            "root.mo".to_string(),
+            rumoca_phase_parse::parse_to_ast(
+                r#"
+                model Root
+                  Lib.GoodDep dep;
+                end Root;
+                "#,
+                "root.mo",
+            )
+            .expect("root should parse"),
+        ),
+    ];
+
+    let library = CompiledLibrary::from_parsed_batch_tolerant(parsed)
+        .expect("tolerant compiled library should index despite unrelated errors");
+    assert!(
+        library.model_names().iter().any(|name| name == "Root"),
+        "Root must still be discoverable without a whole-library strict resolve"
+    );
+
+    let report = library.compile_model_strict_reachable_with_recovery("Root");
+    assert!(
+        report.requested_succeeded(),
+        "strict closure compile must ignore unrelated library diagnostics"
+    );
+    assert!(
+        report.failures.is_empty(),
+        "unrelated library diagnostics must not leak into Root"
+    );
+}
+
+#[test]
 fn test_strict_reachable_keeps_collecting_when_requested_fails() {
     let mut session = Session::default();
     let source = r#"
@@ -722,6 +857,51 @@ fn test_strict_reachable_reports_parse_errors_in_target_closure() {
 }
 
 #[test]
+fn test_strict_reachable_reports_parse_errors_in_required_dependency() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "root.mo",
+            r#"
+            model Root
+              Helper h;
+            end Root;
+            "#,
+        )
+        .expect("root should parse");
+
+    let parse_err = session.update_document(
+        "Helper.mo",
+        r#"
+        model Helper
+          Real x
+        equation
+          der(x) = 1;
+        end Helper;
+        "#,
+    );
+    assert!(parse_err.is_some(), "Helper.mo should fail to parse");
+
+    let report = session.compile_model_strict_reachable_with_recovery("Root");
+    assert!(!report.requested_succeeded());
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.model_name == "Helper.mo"),
+        "required dependency parse errors should be preserved in strict compile failures"
+    );
+    assert!(
+        !report
+            .failures
+            .iter()
+            .any(|failure| failure.error.contains("unresolved type reference")),
+        "required dependency parse errors should not degrade into unresolved type errors: {:?}",
+        report.failures
+    );
+}
+
+#[test]
 fn test_resolve_cache_isolated_between_strict_and_standard_modes() {
     let mut session = Session::default();
     session
@@ -803,7 +983,7 @@ fn test_reachability_planner_tracks_import_dependencies() {
 
     let (reachable_classes, compile_targets) = planned_reachability(&mut session, "P.Root");
     assert!(reachable_classes.iter().any(|name| name == "P.Dep"));
-    assert!(compile_targets.iter().any(|name| name == "P.Dep"));
+    assert_eq!(compile_targets, vec!["P.Root".to_string()]);
     assert!(!compile_targets.iter().any(|name| name == "P.Unused"));
 }
 
@@ -837,7 +1017,7 @@ fn test_reachability_planner_tracks_extends_dependencies() {
 
     let (reachable_classes, compile_targets) = planned_reachability(&mut session, "P.Child");
     assert!(reachable_classes.iter().any(|name| name == "P.Base"));
-    assert!(compile_targets.iter().any(|name| name == "P.Base"));
+    assert_eq!(compile_targets, vec!["P.Child".to_string()]);
     assert!(!compile_targets.iter().any(|name| name == "P.Unused"));
 }
 
@@ -873,7 +1053,7 @@ fn test_reachability_planner_tracks_component_type_dependencies() {
 
     let (reachable_classes, compile_targets) = planned_reachability(&mut session, "P.Root");
     assert!(reachable_classes.iter().any(|name| name == "P.Helper"));
-    assert!(compile_targets.iter().any(|name| name == "P.Helper"));
+    assert_eq!(compile_targets, vec!["P.Root".to_string()]);
     assert!(!compile_targets.iter().any(|name| name == "P.Unused"));
 }
 

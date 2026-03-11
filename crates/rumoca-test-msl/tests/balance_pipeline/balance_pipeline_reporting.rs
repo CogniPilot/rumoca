@@ -76,6 +76,7 @@ pub(super) fn print_msl_balance_summary(summary: &MslSummary) {
     println!();
 
     println!("Compilation:");
+    println!("  - Resolve failed: {}", summary.resolve_failed);
     println!("  - Needs inner: {} (not failures)", summary.needs_inner);
     println!("  - Instantiate failed: {}", summary.instantiate_failed);
     println!("  - Typecheck failed: {}", summary.typecheck_failed);

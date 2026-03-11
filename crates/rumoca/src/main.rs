@@ -31,7 +31,11 @@ use miette::{
     GraphicalTheme, LabeledSpan, MietteDiagnostic, MietteHandlerOpts, NamedSource, Report, Severity,
 };
 use rumoca::{CompilationResult, Compiler, CompilerError, sim_report};
-use rumoca_session::project::{ProjectFileMoveHint, resync_model_sidecars_with_move_hints};
+use rumoca_session::{
+    compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
+    compile::{Session, SessionConfig},
+    project::{ProjectFileMoveHint, resync_model_sidecars_with_move_hints},
+};
 use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
 use walkdir::WalkDir;
 
@@ -328,7 +332,23 @@ fn print_cli_error(error: &anyhow::Error) {
     {
         return;
     }
-    eprintln!("Error: {error}");
+    if let Some(CompilerError::SourceDiagnosticsError {
+        diagnostics,
+        source_map,
+        ..
+    }) = error.downcast_ref::<CompilerError>()
+        && print_source_diagnostics(diagnostics, source_map)
+    {
+        return;
+    }
+    eprintln!("{:?}", build_cli_error_report(error));
+}
+
+fn build_cli_error_report(error: &anyhow::Error) -> Report {
+    if let Some(compiler_error) = error.downcast_ref::<CompilerError>() {
+        return Report::new(compiler_error.clone());
+    }
+    Report::msg(error.to_string())
 }
 
 fn print_compile_failures(
@@ -349,6 +369,41 @@ fn print_compile_failures(
         printed_any = true;
     }
     printed_any
+}
+
+fn print_source_diagnostics(diagnostics: &[CommonDiagnostic], source_map: &SourceMap) -> bool {
+    if diagnostics.is_empty() {
+        return false;
+    }
+
+    let mut printed_any = false;
+    for diagnostic in diagnostics {
+        if printed_any {
+            eprintln!();
+        }
+        let report = build_source_diagnostic_report(diagnostic, source_map);
+        eprintln!("{report:?}");
+        printed_any = true;
+    }
+    printed_any
+}
+
+fn build_source_diagnostic_report(diagnostic: &CommonDiagnostic, source_map: &SourceMap) -> Report {
+    if !diagnostic.labels.is_empty() {
+        return Report::new(diagnostic.to_miette_with_source_map(source_map));
+    }
+
+    let severity = match diagnostic.severity {
+        DiagnosticSeverity::Error => Severity::Error,
+        DiagnosticSeverity::Warning => Severity::Warning,
+        DiagnosticSeverity::Note => Severity::Advice,
+    };
+    let message = diagnostic
+        .code
+        .as_ref()
+        .map(|code| format!("[{code}] {}", diagnostic.message))
+        .unwrap_or_else(|| diagnostic.message.clone());
+    Report::new(MietteDiagnostic::new(message).with_severity(severity))
 }
 
 fn build_compile_failure_report(
@@ -746,29 +801,41 @@ fn merge_library_path_sources(
 }
 
 fn infer_model_name(model_file: &str) -> Result<String> {
-    let parsed = rumoca_session::parsing::parse_files_parallel(&[model_file])?;
-    let top_level_names = parsed
-        .first()
-        .map(|(_, def)| {
-            def.classes
-                .iter()
-                .filter_map(|(name, class)| {
-                    let class_kind = class.class_type.as_str();
-                    if class_kind == "model" || class_kind == "block" || class_kind == "class" {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let source = std::fs::read_to_string(model_file)?;
+    let mut session = Session::new(SessionConfig::default());
+    let parse_error = session.update_document(model_file, &source);
+    let definition = session
+        .get_document(model_file)
+        .and_then(|doc| doc.parsed.clone().or_else(|| doc.partial.clone()))
+        .ok_or_else(|| anyhow::anyhow!("failed to load document '{}'", model_file))?;
 
-    let merged = rumoca_session::parsing::merge_stored_definitions(parsed)?;
-    let mut candidates = rumoca_session::parsing::collect_model_names(&merged);
+    let top_level_names = definition
+        .classes
+        .iter()
+        .filter_map(|(name, class)| {
+            let class_kind = class.class_type.as_str();
+            if class_kind == "model" || class_kind == "block" || class_kind == "class" {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut candidates = rumoca_session::parsing::collect_model_names(&definition);
     candidates.sort();
     candidates.dedup();
     if candidates.is_empty() {
+        if parse_error.is_some()
+            && let Some((diagnostics, source_map)) =
+                session.document_parse_diagnostics_with_source_map(model_file)
+        {
+            return Err(anyhow::Error::new(CompilerError::SourceDiagnosticsError {
+                summary: format!("failed to infer model from '{}'", model_file),
+                diagnostics,
+                source_map,
+            }));
+        }
         bail!(
             "No compilable model/block/class candidates found in '{}'; pass --model <NAME>.",
             model_file
@@ -793,6 +860,17 @@ fn infer_model_name(model_file: &str) -> Result<String> {
         && let Some(model) = choose_single_candidate_by_suffix(&candidates, file_stem)
     {
         return Ok(model);
+    }
+
+    if parse_error.is_some()
+        && let Some((diagnostics, source_map)) =
+            session.document_parse_diagnostics_with_source_map(model_file)
+    {
+        return Err(anyhow::Error::new(CompilerError::SourceDiagnosticsError {
+            summary: format!("failed to infer model from '{}'", model_file),
+            diagnostics,
+            source_map,
+        }));
     }
 
     let preview = candidates
@@ -1056,6 +1134,7 @@ fn to_ps_tokens(words: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_session::compile::core::PrimaryLabel;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -1101,6 +1180,17 @@ mod tests {
     }
 
     #[test]
+    fn infer_model_from_recovered_parse_broken_file() {
+        let mut file = NamedTempFile::new().expect("temp file");
+        writeln!(file, "model Broken").expect("write");
+        writeln!(file, "  Real x").expect("write");
+        writeln!(file, "end Broken;").expect("write");
+        let model = infer_model_name(file.path().to_str().expect("utf8 path"))
+            .expect("recovery parser should preserve top-level model name");
+        assert_eq!(model, "Broken");
+    }
+
+    #[test]
     fn split_path_list_parses_multiple_entries() {
         let joined = std::env::join_paths([PathBuf::from("libA"), PathBuf::from("libB")])
             .expect("join paths");
@@ -1123,6 +1213,83 @@ mod tests {
                 "/tmp/libA".to_string(),
                 "/tmp/libC".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn cli_error_report_preserves_compiler_diagnostics() {
+        let error = anyhow::Error::new(CompilerError::ParseError("bad package layout".to_string()));
+        let report = build_cli_error_report(&error);
+        let rendered = format!("{report:?}");
+        assert!(
+            rendered.contains("E004"),
+            "compiler errors should render via miette with their diagnostic code: {rendered}"
+        );
+        assert!(
+            rendered.contains("bad package layout"),
+            "compiler error message should be preserved: {rendered}"
+        );
+    }
+
+    #[test]
+    fn cli_error_report_wraps_generic_errors_in_miette() {
+        let error = anyhow::anyhow!("plain failure");
+        let report = build_cli_error_report(&error);
+        let rendered = format!("{report:?}");
+        assert!(
+            rendered.contains("plain failure"),
+            "generic errors should still render through miette: {rendered}"
+        );
+    }
+
+    #[test]
+    fn source_diagnostic_report_preserves_spans() {
+        let mut source_map = SourceMap::new();
+        let source_id = source_map.add("Pkg/A.mo", "model A end A;");
+        let span = rumoca_session::compile::core::Span::from_offsets(source_id, 6, 7);
+        let diagnostic = CommonDiagnostic::error(
+            "PKG-007",
+            "duplicate class name",
+            PrimaryLabel::new(span).with_message("duplicate class here"),
+        );
+
+        let report = build_source_diagnostic_report(&diagnostic, &source_map);
+        let rendered = format!("{report:?}");
+        assert!(
+            rendered.contains("PKG-007"),
+            "code should be preserved: {rendered}"
+        );
+        assert!(
+            rendered.contains("duplicate class name"),
+            "message should be preserved: {rendered}"
+        );
+        assert!(
+            rendered.contains("Pkg/A.mo"),
+            "source file should be shown: {rendered}"
+        );
+    }
+
+    #[test]
+    fn source_diagnostic_report_formats_global_errors_without_source_blocks() {
+        let report = build_source_diagnostic_report(
+            &CommonDiagnostic::global_error(
+                "PKG-006",
+                "directory '/tmp/Pkg' is missing package.mo",
+            ),
+            &SourceMap::new(),
+        );
+        let rendered = format!("{report:?}");
+        assert!(
+            rendered.contains("PKG-006"),
+            "code should be preserved: {rendered}"
+        );
+        assert!(
+            rendered.contains("missing package.mo"),
+            "message should be preserved: {rendered}"
+        );
+        assert!(
+            !rendered.contains("unknown"),
+            "global errors should not invent fake source blocks: {rendered}"
         );
     }
 }

@@ -77,6 +77,42 @@ pub fn compute_diagnostics(
     diagnostics
 }
 
+pub(crate) fn common_diagnostics_for_file(
+    diagnostics: &[CommonDiagnostic],
+    file_name: &str,
+    source_map: &SourceMap,
+) -> Vec<Diagnostic> {
+    let Some(source_id) = source_map.get_id(file_name) else {
+        return Vec::new();
+    };
+    let Some((_, source)) = source_map.get_source(source_id) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut seen_keys = HashSet::new();
+    for diag in diagnostics {
+        if diag.labels.is_empty()
+            || !diag
+                .labels
+                .iter()
+                .any(|label| label_in_file(label, file_name, Some(source_map)))
+        {
+            continue;
+        }
+        let Some(lsp_diag) = common_diagnostic_to_lsp(diag, source, file_name, Some(source_map))
+        else {
+            continue;
+        };
+        let key = diagnostic_key(&lsp_diag);
+        if !seen_keys.insert(key) {
+            continue;
+        }
+        out.push(lsp_diag);
+    }
+    out
+}
+
 fn diagnostic_key(diag: &Diagnostic) -> String {
     let code = diag
         .code

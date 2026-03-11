@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 use serde_json::json;
+use std::any::Any;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -65,6 +66,16 @@ fn dist(sample_count: usize, min: f64, median: f64, mean: f64, max: f64) -> MslD
     }
 }
 
+fn panic_message(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    "<non-string panic payload>".to_string()
+}
+
 fn baseline_quality_template() -> MslQualityBaseline {
     MslQualityBaseline {
         git_commit: "baseline".to_string(),
@@ -86,6 +97,56 @@ fn baseline_quality_template() -> MslQualityBaseline {
         runtime_ratio_stats: None,
         trace_accuracy_stats: None,
     }
+}
+
+fn valid_summary_template() -> MslSummary {
+    let mut summary = super::super::empty_summary(1, 0);
+    summary.total_models = 1;
+    summary
+}
+
+#[test]
+fn valid_msl_summary_rejects_zero_total_models() {
+    let summary = super::super::empty_summary(1, 0);
+    let panic = std::panic::catch_unwind(|| assert_valid_msl_summary(&summary))
+        .expect_err("zero-model summary must panic");
+    let message = panic_message(&panic);
+    assert!(
+        message.contains("total_models == 0"),
+        "unexpected panic message: {message}"
+    );
+}
+
+#[test]
+fn valid_msl_summary_rejects_resolve_errors() {
+    let mut summary = valid_summary_template();
+    summary.resolve_errors = 1;
+    let panic = std::panic::catch_unwind(|| assert_valid_msl_summary(&summary))
+        .expect_err("resolve-error summary must panic");
+    let message = panic_message(&panic);
+    assert!(
+        message.contains("resolve_errors > 0"),
+        "unexpected panic message: {message}"
+    );
+}
+
+#[test]
+fn valid_msl_summary_rejects_baseline_sim_run_below_hard_floor() {
+    let mut summary = valid_summary_template();
+    summary.total_models = SIM_SET_LIMIT_DEFAULT;
+    summary.sim_attempted = SIM_SET_LIMIT_DEFAULT;
+    summary.sim_ok = 0;
+    summary.sim_target_models = (0..SIM_SET_LIMIT_DEFAULT)
+        .map(|idx| format!("Model{idx}"))
+        .collect();
+
+    let panic = std::panic::catch_unwind(|| assert_valid_msl_summary(&summary))
+        .expect_err("baseline simulation collapse must panic");
+    let message = panic_message(&panic);
+    assert!(
+        message.contains("sim_ok below hard floor"),
+        "unexpected panic message: {message}"
+    );
 }
 
 fn trace_accuracy_baseline() -> MslTraceAccuracyStatsBaseline {

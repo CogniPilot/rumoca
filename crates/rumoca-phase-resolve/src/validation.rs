@@ -374,6 +374,55 @@ mod tests {
     }
 
     #[test]
+    fn test_clock_builtin_functions_resolved() {
+        let def = rumoca_phase_parse::parse_to_ast(
+            r#"
+model T
+  Clock c1 = Clock(0.1);
+  Clock c2 = subSample(c1, 2);
+  Clock c3 = superSample(c2, 2);
+  Clock c4 = shiftSample(c3, 1, 2);
+  Clock c5 = backSample(c4, 1, 2);
+  Real x;
+  Real y = hold(x);
+  Real z = previous(x);
+  Boolean first = firstTick(c1);
+  Real dt = interval(c1);
+end T;
+"#,
+            "t.mo",
+        )
+        .unwrap();
+        let tree = resolve_parsed(def).unwrap();
+        let result = validate_resolution(&tree);
+        assert!(
+            result.is_fully_resolved(),
+            "clock builtins should be resolved: {:?}",
+            result.unresolved
+        );
+    }
+
+    #[test]
+    fn test_array_builtin_function_resolved() {
+        let def = rumoca_phase_parse::parse_to_ast(
+            r#"
+model T
+  Real x[2] = array(1.0, 2.0);
+end T;
+"#,
+            "t.mo",
+        )
+        .unwrap();
+        let tree = resolve_parsed(def).unwrap();
+        let result = validate_resolution(&tree);
+        assert!(
+            result.is_fully_resolved(),
+            "array() should be resolved as a builtin function: {:?}",
+            result.unresolved
+        );
+    }
+
+    #[test]
     fn test_unresolved_external_call_argument_in_nested_function() {
         let r = resolve_for_validation(
             r#"
