@@ -19,6 +19,7 @@ lsp-types = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+clap = { workspace = true }
 
 # Server-only dependencies (not needed for WASM)
 tower-lsp = { workspace = true, optional = true }

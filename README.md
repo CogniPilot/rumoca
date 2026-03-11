@@ -233,6 +233,28 @@ Template files in `examples/templates` are works in progress and need cleanup. T
 
 The VS Code extension is available as **Rumoca Modelica** in the marketplace and includes a bundled `rumoca-lsp` server.
 
+Linux VS Code release binaries are built against `musl` for both `linux-x64` and `linux-arm64`.
+This avoids remote-host `glibc` version mismatches for bundled `rumoca-lsp` deployments (for
+example over Remote/SSH).
+
+Maintainer reproduction commands for Linux release artifacts:
+
+```bash
+# Linux x64 musl
+sudo apt-get update && sudo apt-get install -y musl-tools
+rustup target add x86_64-unknown-linux-musl
+CC_x86_64_unknown_linux_musl=musl-gcc \
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+cargo build --release --target x86_64-unknown-linux-musl --bin rumoca --bin rumoca-lsp
+
+# Linux arm64 musl (on a native arm64 Linux host/runner)
+sudo apt-get update && sudo apt-get install -y musl-tools
+rustup target add aarch64-unknown-linux-musl
+CC_aarch64_unknown_linux_musl=musl-gcc \
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+cargo build --release --target aarch64-unknown-linux-musl --bin rumoca --bin rumoca-lsp
+```
+
 - Extension docs: `editors/vscode/README.md`
 - Marketplace: https://marketplace.visualstudio.com/items?itemName=JamesGoppert.rumoca-modelica
 
