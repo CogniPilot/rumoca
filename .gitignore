@@ -26,3 +26,5 @@ msl
 # Vim swap files
 *.swp
 *.swo
+
+*.html
