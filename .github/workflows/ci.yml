@@ -275,15 +275,6 @@ jobs:
           path: target/msl/results/omc_parity_cache
           key: ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-${{ github.sha }}
 
-  release-verification:
-    name: Release Verification Gate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Confirm release verification checks passed
-        run: echo "Release verification checks passed"
-
   # ============================================================================
   # Documentation
   # ============================================================================
@@ -689,7 +680,7 @@ jobs:
   deploy:
     name: Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, release-verification, build-wasm, build-rust-binaries, build-vscode-extension]
+    needs: [detect-release-tag, lint, test, coverage-gate, docs, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist, build-vscode-extension]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
