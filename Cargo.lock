@@ -3139,6 +3139,7 @@ name = "rumoca-tool-lsp"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "clap",
  "lsp-types",
  "rumoca-session",
  "rumoca-tool-fmt",
