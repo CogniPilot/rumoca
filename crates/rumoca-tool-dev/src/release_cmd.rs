@@ -161,6 +161,7 @@ fn run_release_git_commit(root: &Path, version: &str) -> Result<()> {
     let mut commit = Command::new("git");
     commit
         .arg("commit")
+        .arg("-s")
         .arg("-m")
         .arg(format!("Release v{version}"))
         .current_dir(root);
