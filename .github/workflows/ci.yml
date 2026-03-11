@@ -23,7 +23,8 @@ permissions:
 jobs:
   detect-release-tag:
     name: Detect release tag on commit
-    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
     outputs:
       is_release: ${{ steps.detect.outputs.is_release }}
       tag: ${{ steps.detect.outputs.tag }}
@@ -60,7 +61,7 @@ jobs:
   # ============================================================================
   lint:
     name: Lint & Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -87,7 +88,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
       - uses: actions/checkout@v4
 
@@ -131,7 +132,7 @@ jobs:
 
   coverage-gate:
     name: Coverage Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -171,7 +172,7 @@ jobs:
     # Temporary disable: hosted-runner shutdowns are intermittently canceling this
     # long job on main before the harness can complete.
     if: ${{ false }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -280,7 +281,7 @@ jobs:
   # ============================================================================
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -305,7 +306,7 @@ jobs:
   # ============================================================================
   build-wasm:
     name: Build WASM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -392,38 +393,51 @@ jobs:
           path: gh-pages/
 
   # ============================================================================
-  # Release Builds (only on tags)
+  # Cross-platform Rust binary and VS Code extension builds
   # ============================================================================
   build-rust-binaries:
-    name: Build Rust (${{ matrix.target }})
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag]
+    name: Build Rust + VSIX (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           # Use musl for Linux x64 release artifacts so the bundled VS Code
           # server does not depend on the remote host glibc version.
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             rumoca_asset: rumoca-linux-x86_64
             lsp_asset: rumoca-lsp-linux-x86_64
-          - os: ubuntu-22.04-arm
+            vscode_target: linux-x64
+            vscode_asset: vscode-extension-linux-x64
+            vscode_binary_name: rumoca-lsp
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             rumoca_asset: rumoca-linux-aarch64
             lsp_asset: rumoca-lsp-linux-aarch64
-          - os: macos-latest
+            vscode_target: linux-arm64
+            vscode_asset: vscode-extension-linux-arm64
+            vscode_binary_name: rumoca-lsp
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             rumoca_asset: rumoca-macos-x86_64
             lsp_asset: rumoca-lsp-macos-x86_64
-          - os: macos-latest
+            vscode_target: darwin-x64
+            vscode_asset: vscode-extension-darwin-x64
+            vscode_binary_name: rumoca-lsp
+          - os: macos-15
             target: aarch64-apple-darwin
             rumoca_asset: rumoca-macos-aarch64
             lsp_asset: rumoca-lsp-macos-aarch64
-          - os: windows-latest
+            vscode_target: darwin-arm64
+            vscode_asset: vscode-extension-darwin-arm64
+            vscode_binary_name: rumoca-lsp
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
             rumoca_asset: rumoca-windows-x86_64.exe
             lsp_asset: rumoca-lsp-windows-x86_64.exe
+            vscode_target: win32-x64
+            vscode_asset: vscode-extension-win32-x64
+            vscode_binary_name: rumoca-lsp.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -516,13 +530,45 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.rumoca_asset }}
-          path: ./target/${{ matrix.target }}/release/rumoca${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          path: ./target/${{ matrix.target }}/release/rumoca${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
 
       - name: Upload LSP binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.lsp_asset }}
-          path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install VS Code extension dependencies
+        shell: bash
+        run: |
+          cd editors/vscode
+          npm ci
+
+      - name: Prepare bundled LSP binary
+        shell: bash
+        run: |
+          mkdir -p editors/vscode/bin
+          cp "target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}" \
+            "editors/vscode/bin/${{ matrix.vscode_binary_name }}"
+          chmod +x "editors/vscode/bin/${{ matrix.vscode_binary_name }}" 2>/dev/null || true
+          ls -la editors/vscode/bin
+
+      - name: Package VS Code extension
+        shell: bash
+        run: |
+          cd editors/vscode
+          npx @vscode/vsce package --target ${{ matrix.vscode_target }} --no-dependencies --no-yarn
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.vscode_asset }}
+          path: editors/vscode/*.vsix
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
@@ -531,16 +577,16 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
           - os: macos-15-intel
             target: x86_64-apple-darwin
             name: macos-x86_64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             name: macos-aarch64
-          - os: windows-latest
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
             name: windows-x64
     steps:
@@ -582,7 +628,7 @@ jobs:
   build-python-sdist:
     name: Build Python sdist
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -609,79 +655,14 @@ jobs:
           name: wheels-sdist
           path: crates/rumoca-bind-python/dist
 
-  build-vscode-extension:
-    name: Build VS Code Extension (${{ matrix.target }})
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, build-rust-binaries]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: win32-x64
-            rust_artifact: rumoca-lsp-windows-x86_64.exe
-            binary_name: rumoca-lsp.exe
-          - target: darwin-x64
-            rust_artifact: rumoca-lsp-macos-x86_64
-            binary_name: rumoca-lsp
-          - target: darwin-arm64
-            rust_artifact: rumoca-lsp-macos-aarch64
-            binary_name: rumoca-lsp
-          - target: linux-x64
-            rust_artifact: rumoca-lsp-linux-x86_64
-            binary_name: rumoca-lsp
-          - target: linux-arm64
-            rust_artifact: rumoca-lsp-linux-aarch64
-            binary_name: rumoca-lsp
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Download LSP binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.rust_artifact }}
-          path: editors/vscode/bin
-
-      - name: Prepare binary
-        run: |
-          cd editors/vscode/bin
-          ls -la
-          if [ -f "rumoca-lsp" ] && [ "${{ matrix.binary_name }}" != "rumoca-lsp" ]; then
-            mv rumoca-lsp ${{ matrix.binary_name }}
-          elif [ -f "rumoca-lsp.exe" ] && [ "${{ matrix.binary_name }}" != "rumoca-lsp.exe" ]; then
-            mv rumoca-lsp.exe ${{ matrix.binary_name }}
-          fi
-          chmod +x ${{ matrix.binary_name }} 2>/dev/null || true
-          ls -la
-
-      - name: Install dependencies
-        run: |
-          cd editors/vscode
-          npm ci
-
-      - name: Package extension
-        run: |
-          cd editors/vscode
-          npx @vscode/vsce package --target ${{ matrix.target }} --no-dependencies --no-yarn
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vscode-extension-${{ matrix.target }}
-          path: editors/vscode/*.vsix
-
   # ============================================================================
   # Deployment (only on tags, after verification and build completion)
   # ============================================================================
   deploy:
     name: Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate, docs, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist, build-vscode-extension]
-    runs-on: ubuntu-latest
+    needs: [detect-release-tag, lint, test, coverage-gate, docs, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
+    runs-on: ubuntu-24.04
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
