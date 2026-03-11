@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tower_lsp::LspService;
 
 fn run_async_test<F>(future: F)
@@ -12,6 +13,16 @@ where
         .build()
         .expect("runtime")
         .block_on(future);
+}
+
+fn new_temp_dir(name: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("rumoca-{name}-{unique}"));
+    std::fs::create_dir_all(&dir).expect("mkdir temp dir");
+    dir
 }
 
 #[test]
@@ -256,18 +267,24 @@ fn simulation_doc_for_compile_filters_workspace_documents() {
         uri: focus_uri.to_string(),
         content: "model Focus end Focus;".to_string(),
         parsed: Some(parsed.clone()),
+        partial: None,
+        parse_errors: Vec::new(),
         parse_error: None,
     };
     let other_workspace_doc = Document {
         uri: "/tmp/other.mo".to_string(),
         content: "model Other end Other;".to_string(),
         parsed: Some(parsed.clone()),
+        partial: None,
+        parse_errors: Vec::new(),
         parse_error: None,
     };
     let library_doc = Document {
         uri: "/opt/msl/Modelica/Blocks/Continuous.mo".to_string(),
         content: String::new(),
         parsed: Some(parsed),
+        partial: None,
+        parse_errors: Vec::new(),
         parse_error: None,
     };
 
@@ -329,6 +346,252 @@ fn collect_simulation_parsed_docs_keeps_focus_and_libraries_only() {
     assert!(
         !uris.contains(other_uri),
         "non-focus workspace docs must be excluded"
+    );
+}
+
+#[test]
+fn collect_local_compile_unit_sources_loads_same_directory_siblings() {
+    let temp = new_temp_dir("local-compile-unit");
+    let focus = temp.join("Root.mo");
+    let sibling = temp.join("Helper.mo");
+    std::fs::write(&focus, "model Root\n  Helper h;\nend Root;\n").expect("write focus");
+    std::fs::write(
+        &sibling,
+        "model Helper\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Helper;\n",
+    )
+    .expect("write sibling");
+
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document(
+            &focus.to_string_lossy(),
+            &std::fs::read_to_string(&focus).expect("read"),
+        )
+        .expect("focus should parse");
+
+    let docs = collect_local_compile_unit_sources(&session, &focus.to_string_lossy())
+        .expect("local compile unit docs should load");
+    let uris: HashSet<String> = docs.into_iter().map(|(uri, _)| uri).collect();
+
+    assert!(
+        uris.contains(&focus.to_string_lossy().to_string()),
+        "focus document must be included"
+    );
+    assert!(
+        uris.contains(&sibling.to_string_lossy().to_string()),
+        "same-directory sibling must be included"
+    );
+}
+
+#[test]
+fn collect_local_compile_unit_sources_keep_unrelated_syntax_errors_as_sources() {
+    let temp = new_temp_dir("local-compile-unit-errors");
+    let focus = temp.join("Root.mo");
+    let sibling = temp.join("Helper.mo");
+    let broken = temp.join("Broken.mo");
+    std::fs::write(&focus, "model Root\n  Helper h;\nend Root;\n").expect("write focus");
+    std::fs::write(
+        &sibling,
+        "model Helper\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Helper;\n",
+    )
+    .expect("write sibling");
+    std::fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
+
+    let mut session = Session::new(SessionConfig::default());
+    session.update_document(
+        &focus.to_string_lossy(),
+        &std::fs::read_to_string(&focus).expect("read"),
+    );
+
+    let docs = collect_local_compile_unit_sources(&session, &focus.to_string_lossy())
+        .expect("local compile unit sources should load");
+    let uris: HashSet<String> = docs.into_iter().map(|(uri, _)| uri).collect();
+
+    assert!(uris.contains(&broken.to_string_lossy().to_string()));
+}
+
+#[test]
+fn compile_model_for_simulation_loads_same_directory_siblings_from_disk() {
+    run_async_test(async {
+        let temp = new_temp_dir("compile-siblings");
+        let focus = temp.join("Root.mo");
+        let sibling = temp.join("Helper.mo");
+        std::fs::write(&focus, "model Root\n  Helper h;\nend Root;\n").expect("write focus");
+        std::fs::write(
+            &sibling,
+            "model Helper\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Helper;\n",
+        )
+        .expect("write sibling");
+
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session
+                .add_document(
+                    &focus.to_string_lossy(),
+                    &std::fs::read_to_string(&focus).expect("read focus"),
+                )
+                .expect("focus should parse");
+        }
+
+        let compiled = server
+            .compile_model_for_simulation("Root", &focus.to_string_lossy())
+            .await
+            .expect("compile with sibling file should succeed");
+        assert_eq!(compiled.dae.states.len(), 1);
+    });
+}
+
+#[test]
+fn compile_model_for_simulation_ignores_unrelated_local_parse_errors() {
+    run_async_test(async {
+        let temp = new_temp_dir("compile-sibling-parse-error");
+        let focus = temp.join("Root.mo");
+        let sibling = temp.join("Helper.mo");
+        let broken = temp.join("Broken.mo");
+        std::fs::write(&focus, "model Root\n  Helper h;\nend Root;\n").expect("write focus");
+        std::fs::write(
+            &sibling,
+            "model Helper\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Helper;\n",
+        )
+        .expect("write sibling");
+        std::fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
+
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+
+        let compiled = server
+            .compile_model_for_simulation("Root", &focus.to_string_lossy())
+            .await
+            .expect("compile should ignore unrelated local parse errors");
+        assert_eq!(compiled.dae.states.len(), 1);
+    });
+}
+
+#[test]
+fn compile_model_for_simulation_reports_required_local_parse_errors() {
+    run_async_test(async {
+        let temp = new_temp_dir("compile-required-parse-error");
+        let focus = temp.join("Root.mo");
+        let sibling = temp.join("Helper.mo");
+        std::fs::write(&focus, "model Root\n  Helper h;\nend Root;\n").expect("write focus");
+        std::fs::write(&sibling, "model Helper\n  Real x\nend Helper;\n").expect("write sibling");
+
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+
+        let err = server
+            .compile_model_for_simulation("Root", &focus.to_string_lossy())
+            .await
+            .expect_err("required broken sibling must fail simulation compile");
+        assert!(
+            err.contains(&sibling.to_string_lossy().to_string()),
+            "required parse error should mention the broken sibling file: {err}"
+        );
+        assert!(
+            !err.contains("unresolved type reference"),
+            "required parse error must not degrade into unresolved type errors: {err}"
+        );
+    });
+}
+
+#[test]
+fn compile_model_for_simulation_reports_active_local_parse_errors() {
+    run_async_test(async {
+        let temp = new_temp_dir("compile-active-parse-error");
+        let focus = temp.join("Broken.mo");
+        std::fs::write(&focus, "model Broken\n  Real x\nend Broken;\n").expect("write focus");
+
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+
+        let err = server
+            .compile_model_for_simulation("Broken", &focus.to_string_lossy())
+            .await
+            .expect_err("active broken document must fail simulation compile");
+        assert!(
+            err.contains("unexpected"),
+            "active parse error should come from structured parse diagnostics: {err}"
+        );
+        assert!(
+            !err.contains("parse error in active document"),
+            "active parse errors must not use the old string short-circuit: {err}"
+        );
+    });
+}
+
+#[test]
+fn package_layout_errors_map_to_plain_lsp_diagnostics() {
+    let temp = new_temp_dir("package-layout-diag");
+    let lib = temp.join("Modelica");
+    std::fs::create_dir_all(&lib).expect("mkdir");
+    std::fs::write(lib.join("package.mo"), "package Modelica end Modelica;")
+        .expect("write package");
+    std::fs::write(lib.join("A.mo"), "model A end A;").expect("write child");
+
+    let err = parse_library_with_cache(&lib).expect_err("missing within must fail");
+    let layout = err
+        .downcast_ref::<PackageLayoutError>()
+        .expect("package layout error type must be preserved");
+    let diagnostics = library_load_diagnostics_for_package_layout_error(layout);
+    let file_key = canonical_path_key(&lib.join("A.mo").to_string_lossy());
+    let file_diagnostics = diagnostics
+        .get(&file_key)
+        .expect("source-backed package-layout diagnostic should be keyed by file");
+    assert!(
+        file_diagnostics
+            .iter()
+            .any(|diag| diag.code.as_ref() == Some(&NumberOrString::String("PKG-009".to_string()))),
+        "expected PKG-009 diagnostic for child file: {file_diagnostics:?}"
+    );
+    assert!(
+        file_diagnostics
+            .iter()
+            .all(|diag| diag.source.as_deref() == Some("rumoca")),
+        "expected standard LSP diagnostics, not rendered miette output: {file_diagnostics:?}"
+    );
+}
+
+#[test]
+fn package_layout_library_load_warning_is_concise_when_file_diagnostics_exist() {
+    let temp = new_temp_dir("package-layout-warning");
+    let lib = temp.join("Modelica");
+    std::fs::create_dir_all(&lib).expect("mkdir");
+    std::fs::write(lib.join("package.mo"), "package Modelica end Modelica;")
+        .expect("write package");
+    std::fs::write(lib.join("A.mo"), "model A end A;").expect("write child");
+
+    let err = parse_library_with_cache(&lib).expect_err("missing within must fail");
+    let message = library_load_error_message(&lib.to_string_lossy(), &err);
+    assert!(
+        message.contains("see diagnostics"),
+        "source-backed package-layout failures should defer details to diagnostics: {message}"
+    );
+    assert!(
+        !message.contains("PKG-009"),
+        "warning should not repeat the full diagnostic summary: {message}"
     );
 }
 

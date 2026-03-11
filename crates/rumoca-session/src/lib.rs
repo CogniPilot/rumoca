@@ -68,6 +68,7 @@ pub mod libraries {
         LibraryCacheStatus, ParsedLibrary, parse_library_with_cache, parse_library_with_cache_in,
         resolve_library_cache_dir,
     };
+    pub use crate::package_layout::PackageLayoutError;
 }
 
 /// Parsing and merge helpers.
@@ -83,6 +84,7 @@ pub mod parsing {
     pub use crate::merge::{
         collect_class_type_counts, collect_model_names, merge_stored_definitions,
     };
+    pub use crate::package_layout::collect_compile_unit_source_files;
     pub use crate::parse::{
         LenientParseResult, ParseError, ParseFailure, ParseResult, ParseSuccess,
         parse_and_merge_parallel, parse_files_parallel, parse_files_parallel_lenient,

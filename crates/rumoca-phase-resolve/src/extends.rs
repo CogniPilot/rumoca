@@ -391,7 +391,9 @@ impl Resolver {
             return false;
         }
         if path_ids.len() == 1 {
-            return self.is_package_def(path_ids[0]);
+            // MLS §13.2: a single-segment import may name a class directly
+            // (for example `import Complex;` inside an operator record).
+            return self.class_types.contains_key(&path_ids[0]);
         }
         path_ids[..path_ids.len() - 1]
             .iter()

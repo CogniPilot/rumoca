@@ -3,7 +3,8 @@ use indexmap::{IndexMap, IndexSet};
 /// Reachability planner for strict target compilation.
 ///
 /// The planner traverses class dependency edges starting from the requested
-/// target and then filters the closure down to compilable model names.
+/// target. Strict compilation only compiles the requested model as a root;
+/// reachable classes are used to scope diagnostics and closure validity.
 pub(crate) struct ReachabilityPlanner<'a> {
     graph: &'a IndexMap<String, IndexSet<String>>,
     compilable_models: IndexSet<String>,
@@ -43,14 +44,11 @@ impl<'a> ReachabilityPlanner<'a> {
     }
 
     pub(crate) fn compile_targets(&self, requested_model: &str) -> Vec<String> {
-        let reachable = self.reachable_classes(requested_model);
-        let mut targets = IndexSet::new();
-        targets.insert(requested_model.to_string());
-        for name in reachable {
-            if self.compilable_models.contains(&name) {
-                targets.insert(name);
-            }
+        let requested = requested_model.to_string();
+        if self.compilable_models.contains(&requested) {
+            vec![requested]
+        } else {
+            Vec::new()
         }
-        targets.into_iter().collect()
     }
 }

@@ -14,6 +14,12 @@ pub(super) const SIM_RATE_GATE_EPSILON: f64 = 1.0e-12;
 // Temporary relaxation while broader discrete-signal evaluation is being integrated.
 // Tighten back after baseline stabilization.
 pub(super) const SIM_RATE_GATE_TOLERANCE: f64 = 0.03;
+/// Structural floor for the default 180-model baseline simulation run.
+///
+/// This is intentionally much looser than the baseline delta gate. Its job is to
+/// reject obviously invalid runs (for example near-zero or zero successful
+/// simulations) before we start comparing finer-grained regressions.
+pub(super) const DEFAULT_SIM_OK_HARD_FLOOR_RATIO: f64 = 0.50;
 /// Compile-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
 pub(super) const COMPILE_RATE_GATE_TOLERANCE: f64 = 0.0;
 /// Balance-rate gate tolerance (absolute ratio, 0.0 = no regression allowed).
@@ -170,6 +176,7 @@ pub(super) struct MslQualityGateInput<'a> {
 impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
     fn from(summary: &'a MslSummary) -> Self {
         let simulatable_attempted = summary.compiled_models
+            + summary.resolve_failed
             + summary.instantiate_failed
             + summary.typecheck_failed
             + summary.flatten_failed
@@ -1488,7 +1495,7 @@ pub(super) fn enforce_msl_quality_gate(summary: &MslSummary) -> io::Result<()> {
         return Ok(());
     }
 
-    assert_valid_quality_gate_summary(summary);
+    assert_valid_msl_summary(summary);
 
     let gate_input = MslQualityGateInput::from(summary);
     let baseline_path = msl_quality_baseline_path();
@@ -1527,12 +1534,36 @@ pub(super) fn should_skip_msl_quality_gate() -> bool {
         || sim_set_mode() != SimSetMode::Short
 }
 
-pub(super) fn assert_valid_quality_gate_summary(summary: &MslSummary) {
+pub(super) fn assert_valid_msl_summary(summary: &MslSummary) {
     assert_ne!(
         summary.total_models, 0,
         "MSL quality gate: invalid run (total_models == 0). \
          Compile/balance KPIs are not measurable; fix model selection before accepting this run."
     );
+    assert_eq!(
+        summary.resolve_errors, 0,
+        "MSL quality gate: invalid run (resolve_errors > 0). \
+         The typed-tree/session build failed before model compilation; fix resolve errors before accepting this run."
+    );
+    if !should_skip_msl_quality_gate()
+        && summary.sim_target_models.len() == SIM_SET_LIMIT_DEFAULT
+        && summary.sim_attempted > 0
+    {
+        let required_sim_ok = ((summary.sim_target_models.len() as f64)
+            * DEFAULT_SIM_OK_HARD_FLOOR_RATIO)
+            .ceil() as usize;
+        assert!(
+            summary.sim_ok >= required_sim_ok,
+            "MSL quality gate: invalid run (sim_ok below hard floor). \
+             Default {}-model simulation run produced only {}/{} successful simulations; \
+             required at least {} successful simulations ({:.1}% floor).",
+            SIM_SET_LIMIT_DEFAULT,
+            summary.sim_ok,
+            summary.sim_target_models.len(),
+            required_sim_ok,
+            DEFAULT_SIM_OK_HARD_FLOOR_RATIO * 100.0
+        );
+    }
 }
 
 pub(super) fn print_compile_and_sim_gate_pass(

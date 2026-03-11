@@ -12,6 +12,7 @@ mod expressions;
 pub mod generated;
 mod grammar;
 mod helpers;
+mod recovery;
 mod references;
 mod sections;
 
@@ -24,6 +25,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 pub use errors::{ParseError, convert_parol_error, format_parse_error};
+pub use recovery::parse_to_recovered_ast;
 
 // Re-export at crate root for parol-generated code expectations
 pub use generated::modelica_grammar_trait as grammar_trait;

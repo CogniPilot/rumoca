@@ -8,6 +8,7 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
     let mut counters = ResultCounters::default();
     for result in results {
         match result.phase_reached.as_str() {
+            "Resolve" => process_phase_failure(result, "Resolve", &mut counters),
             "Success" => process_success_result(result, &mut counters),
             "NeedsInner" => process_phase_failure(result, "NeedsInner", &mut counters),
             "Instantiate" => process_phase_failure(result, "Instantiate", &mut counters),
@@ -71,6 +72,7 @@ fn build_summary_from_counters(
         total_mo_files: inputs.total_mo_files,
         parse_errors: inputs.parse_errors,
         resolve_errors: 0,
+        resolve_failed: counters.resolve_failed,
         typecheck_errors: 0,
         total_models: inputs.total_models,
         needs_inner: counters.needs_inner,

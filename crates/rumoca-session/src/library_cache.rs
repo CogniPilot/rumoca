@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::package_layout::validate_library_package_layout;
+use crate::package_layout::{collect_library_source_files, validate_library_package_layout};
 use crate::parse::parse_files_parallel;
 
 const LIBRARY_CACHE_SCHEMA_VERSION: u32 = 1;
@@ -189,22 +189,6 @@ fn system_time_to_nanos(time: SystemTime) -> Duration {
     time.duration_since(UNIX_EPOCH).unwrap_or_default()
 }
 
-fn recursive_collect_modelica_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|entry| entry.path());
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            recursive_collect_modelica_files(&path, out)?;
-            continue;
-        }
-        if path.extension().is_some_and(|ext| ext == "mo") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
 fn recursive_collect_dirs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     out.push(dir.to_path_buf());
     let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
@@ -219,18 +203,7 @@ fn recursive_collect_dirs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result
 }
 
 fn collect_modelica_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-    if path.is_dir() {
-        let mut files = Vec::new();
-        recursive_collect_modelica_files(path, &mut files)?;
-        return Ok(files);
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        format!("library path does not exist: {}", path.display()),
-    ))
+    collect_library_source_files(path).map_err(|err| std::io::Error::other(err.to_string()))
 }
 
 fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<String> {
@@ -446,12 +419,7 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
     {
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(docs) = try_read_cache(&cache_file, &cache_key) {
-            validate_library_package_layout(path, &docs).map_err(|err| {
-                anyhow::anyhow!(
-                    "validate Modelica package layout under {}: {err}",
-                    path.display()
-                )
-            })?;
+            validate_library_package_layout(path, &docs)?;
             return Ok(ParsedLibrary {
                 documents: docs,
                 file_count: files.len(),
@@ -463,12 +431,7 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
 
         let docs = parse_files_parallel(&files)
             .with_context(|| format!("parse library files under {}", path.display()))?;
-        validate_library_package_layout(path, &docs).map_err(|err| {
-            anyhow::anyhow!(
-                "validate Modelica package layout under {}: {err}",
-                path.display()
-            )
-        })?;
+        validate_library_package_layout(path, &docs)?;
         if write_cache(&cache_file, path, &cache_key, &docs).is_ok() {
             return Ok(ParsedLibrary {
                 documents: docs,
@@ -489,12 +452,7 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
 
     let docs = parse_files_parallel(&files)
         .with_context(|| format!("parse library files under {}", path.display()))?;
-    validate_library_package_layout(path, &docs).map_err(|err| {
-        anyhow::anyhow!(
-            "validate Modelica package layout under {}: {err}",
-            path.display()
-        )
-    })?;
+    validate_library_package_layout(path, &docs)?;
     Ok(ParsedLibrary {
         documents: docs,
         file_count: files.len(),
@@ -511,6 +469,7 @@ pub fn parse_library_with_cache(path: &Path) -> Result<ParsedLibrary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::libraries::PackageLayoutError;
 
     #[test]
     fn library_cache_hits_after_first_parse() {
@@ -589,5 +548,77 @@ mod tests {
         assert_eq!(parsed.cache_status, LibraryCacheStatus::Disabled);
         assert_eq!(parsed.file_count, 1);
         assert!(parsed.cache_file.is_none());
+    }
+
+    #[test]
+    fn parse_library_with_cache_ignores_non_package_resource_mo_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lib_dir = temp.path().join("lib");
+        let cache_dir = temp.path().join("cache");
+        std::fs::create_dir_all(lib_dir.join("Resources/Images/Docs")).expect("mkdir");
+        std::fs::write(lib_dir.join("package.mo"), "package Lib\nend Lib;").expect("write package");
+        std::fs::write(lib_dir.join("A.mo"), "within Lib;\nmodel A\nend A;").expect("write child");
+        std::fs::write(
+            lib_dir.join("Resources/Images/Docs/Demo.mo"),
+            "model Demo\nend Demo;",
+        )
+        .expect("write resource demo");
+
+        let parsed = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("parse");
+        assert_eq!(parsed.file_count, 2);
+        assert_eq!(parsed.documents.len(), 2);
+        assert!(
+            parsed
+                .documents
+                .iter()
+                .all(|(uri, _)| !uri.contains("Resources/Images/Docs/Demo.mo")),
+            "resource .mo outside package tree must not be parsed as a library entity"
+        );
+    }
+
+    #[test]
+    fn parse_library_with_cache_keeps_top_level_wrapper_mo_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lib_dir = temp.path().join("lib");
+        let cache_dir = temp.path().join("cache");
+        std::fs::create_dir_all(lib_dir.join("Pkg")).expect("mkdir");
+        std::fs::write(
+            lib_dir.join("Complex.mo"),
+            "within ; operator record Complex end Complex;",
+        )
+        .expect("write wrapper root file");
+        std::fs::write(
+            lib_dir.join("Pkg/package.mo"),
+            "within ; package Pkg end Pkg;",
+        )
+        .expect("write package");
+        std::fs::write(lib_dir.join("Pkg/A.mo"), "within Pkg; model A end A;")
+            .expect("write child");
+
+        let parsed = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("parse");
+        assert_eq!(parsed.file_count, 3);
+        assert!(
+            parsed
+                .documents
+                .iter()
+                .any(|(uri, _)| uri.ends_with("Complex.mo")),
+            "top-level wrapper-root .mo files must be kept"
+        );
+    }
+
+    #[test]
+    fn parse_library_with_cache_preserves_package_layout_error_type() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lib_dir = temp.path().join("Pkg");
+        std::fs::create_dir_all(&lib_dir).expect("mkdir");
+        std::fs::write(lib_dir.join("package.mo"), "package Pkg end Pkg;").expect("write package");
+        std::fs::write(lib_dir.join("A.mo"), "model A end A;").expect("write child");
+
+        let err =
+            parse_library_with_cache_in(&lib_dir, None).expect_err("missing within must fail");
+        let layout = err
+            .downcast_ref::<PackageLayoutError>()
+            .expect("package layout error type must be preserved");
+        assert_eq!(layout.diagnostics()[0].code.as_deref(), Some("PKG-009"));
     }
 }

@@ -9,11 +9,12 @@ use rumoca_session::compile::{
     Document, FailedPhase, PhaseResult, Session, SessionConfig, compile_phase_timing_stats,
 };
 use rumoca_session::libraries::{
-    LibraryCacheStatus, infer_library_roots, parse_library_with_cache,
+    LibraryCacheStatus, PackageLayoutError, infer_library_roots, parse_library_with_cache,
     should_load_library_for_source,
 };
 use rumoca_session::parsing::{
-    ast, collect_model_names, merge_stored_definitions, parse_source_to_ast,
+    ast, collect_compile_unit_source_files, collect_model_names, merge_stored_definitions,
+    parse_source_to_ast,
 };
 use rumoca_session::project::{
     EffectiveSimulationConfig, EffectiveSimulationPreset, PlotViewConfig, ProjectConfig,
@@ -46,6 +47,8 @@ pub struct ModelicaLanguageServer {
     loaded_libraries: Arc<RwLock<HashSet<String>>>,
     dirty_libraries: Arc<RwLock<HashSet<String>>>,
     library_document_overlays: Arc<RwLock<HashMap<String, Document>>>,
+    library_load_diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
+    library_load_diagnostic_uris: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     loading_libraries: Arc<RwLock<HashMap<String, u64>>>,
     library_state_epoch: Arc<AtomicU64>,
     indexing_notified_libraries: Arc<RwLock<HashSet<String>>>,
@@ -74,6 +77,39 @@ struct LibraryLoadOutcome {
     cache_path: String,
 }
 
+fn library_load_diagnostics_for_package_layout_error(
+    err: &PackageLayoutError,
+) -> HashMap<String, Vec<Diagnostic>> {
+    let mut by_uri = HashMap::new();
+    let source_map = err.source_map();
+    for file_name in source_map.source_ids().into_keys() {
+        let diagnostics =
+            handlers::common_diagnostics_for_file(err.diagnostics(), &file_name, source_map);
+        if diagnostics.is_empty() {
+            continue;
+        }
+        by_uri.insert(canonical_path_key(&file_name), diagnostics);
+    }
+    by_uri
+}
+
+fn library_load_error_message(lib_path: &str, err: &anyhow::Error) -> String {
+    let Some(layout) = err.downcast_ref::<PackageLayoutError>() else {
+        return format!("Failed to load library '{}': {}", lib_path, err);
+    };
+    if layout
+        .diagnostics()
+        .iter()
+        .any(|diagnostic| !diagnostic.labels.is_empty())
+    {
+        return format!(
+            "Failed to load library '{}': invalid Modelica package layout (see diagnostics)",
+            lib_path
+        );
+    }
+    format!("Failed to load library '{}': {}", lib_path, err)
+}
+
 impl ModelicaLanguageServer {
     /// Create a new language server instance.
     pub fn new(client: Client) -> Self {
@@ -85,6 +121,8 @@ impl ModelicaLanguageServer {
             loaded_libraries: Arc::new(RwLock::new(HashSet::new())),
             dirty_libraries: Arc::new(RwLock::new(HashSet::new())),
             library_document_overlays: Arc::new(RwLock::new(HashMap::new())),
+            library_load_diagnostics: Arc::new(RwLock::new(HashMap::new())),
+            library_load_diagnostic_uris: Arc::new(RwLock::new(HashMap::new())),
             loading_libraries: Arc::new(RwLock::new(HashMap::new())),
             library_state_epoch: Arc::new(AtomicU64::new(0)),
             indexing_notified_libraries: Arc::new(RwLock::new(HashSet::new())),
@@ -210,6 +248,8 @@ impl ModelicaLanguageServer {
             uri: uri_path.to_string(),
             content: content.to_string(),
             parsed,
+            partial: None,
+            parse_errors: Vec::new(),
             parse_error,
         };
         self.library_document_overlays
@@ -231,6 +271,68 @@ impl ModelicaLanguageServer {
         self.session.read().await.get_document(uri_path).cloned()
     }
 
+    async fn stored_library_load_diagnostics(&self, uri_path: &str) -> Vec<Diagnostic> {
+        self.library_load_diagnostics
+            .read()
+            .await
+            .get(&canonical_path_key(uri_path))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    async fn replace_library_load_diagnostics(
+        &self,
+        lib_path: &str,
+        diagnostics_by_uri: HashMap<String, Vec<Diagnostic>>,
+    ) {
+        let path_key = canonical_path_key(lib_path);
+        let new_keys: HashSet<String> = diagnostics_by_uri.keys().cloned().collect();
+        let old_keys = {
+            let mut stored = self.library_load_diagnostics.write().await;
+            let mut owners = self.library_load_diagnostic_uris.write().await;
+            let old_keys = owners.remove(&path_key).unwrap_or_default();
+            for uri in &old_keys {
+                stored.remove(uri);
+            }
+            for (uri, diagnostics) in &diagnostics_by_uri {
+                stored.insert(uri.clone(), diagnostics.clone());
+            }
+            if !new_keys.is_empty() {
+                owners.insert(path_key, new_keys.clone());
+            }
+            old_keys
+        };
+
+        for (uri_path, diagnostics) in diagnostics_by_uri {
+            if let Ok(uri) = Url::from_file_path(&uri_path) {
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
+            }
+        }
+        for cleared in old_keys.difference(&new_keys) {
+            if let Ok(uri) = Url::from_file_path(cleared) {
+                self.client.publish_diagnostics(uri, Vec::new(), None).await;
+            }
+        }
+    }
+
+    async fn publish_package_layout_diagnostics(&self, lib_path: &str, err: &PackageLayoutError) {
+        self.replace_library_load_diagnostics(
+            lib_path,
+            library_load_diagnostics_for_package_layout_error(err),
+        )
+        .await;
+    }
+
+    async fn maybe_publish_package_layout_diagnostics(&self, lib_path: &str, err: &anyhow::Error) {
+        let Some(layout) = err.downcast_ref::<PackageLayoutError>() else {
+            return;
+        };
+        self.publish_package_layout_diagnostics(lib_path, layout)
+            .await;
+    }
+
     async fn rebuild_dirty_libraries_before_compile(
         &self,
         current_document_path: &str,
@@ -241,8 +343,16 @@ impl ModelicaLanguageServer {
         }
 
         for library_root in &dirty_roots {
-            let parsed = parse_library_with_cache(Path::new(library_root))
-                .map_err(|err| format!("failed to rebuild library '{}': {}", library_root, err))?;
+            let parsed = match parse_library_with_cache(Path::new(library_root)) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    self.maybe_publish_package_layout_diagnostics(library_root, &err)
+                        .await;
+                    return Err(library_load_error_message(library_root, &err));
+                }
+            };
+            self.replace_library_load_diagnostics(library_root, HashMap::new())
+                .await;
             let source_set_id = library_source_set_id(library_root);
             let inserted_count = {
                 let mut session = self.session.write().await;
@@ -339,9 +449,13 @@ impl ModelicaLanguageServer {
             Ok(parsed) => parsed,
             Err(err) => {
                 self.cancel_library_load(path_key, expected_epoch).await;
-                return Err(format!("Failed to load library '{}': {}", lib_path, err));
+                self.maybe_publish_package_layout_diagnostics(lib_path, &err)
+                    .await;
+                return Err(library_load_error_message(lib_path, &err));
             }
         };
+        self.replace_library_load_diagnostics(lib_path, HashMap::new())
+            .await;
 
         let cache_status = parsed.cache_status;
         let cache_key = parsed.cache_key.clone();
@@ -602,29 +716,37 @@ impl ModelicaLanguageServer {
         let focus_key = canonical_path_key(focus_document_path);
         let loaded_libraries = self.loaded_libraries.read().await.clone();
         let mut isolated_session = Session::new(SessionConfig::default());
-        let mut parsed_docs = {
+        let local_compile_unit_sources;
+        let local_doc_keys;
+        let parsed_docs_by_key;
+        {
             let session = self.session.read().await;
-            collect_simulation_parsed_docs(
+            local_compile_unit_sources =
+                collect_local_compile_unit_sources(&session, focus_document_path)?;
+            local_doc_keys = local_compile_unit_sources
+                .iter()
+                .map(|(uri, _)| canonical_path_key(uri))
+                .collect::<std::collections::BTreeSet<_>>();
+            parsed_docs_by_key = collect_isolated_library_parsed_docs(
                 &session,
                 focus_document_path,
                 &focus_key,
                 &loaded_libraries,
-            )?
-        };
-        if let Some(overlay_doc) = self.document_snapshot(focus_document_path).await {
-            if let Some(parse_error) = &overlay_doc.parse_error {
-                return Err(format!("parse error in active document: {parse_error}"));
-            }
-            let Some(parsed) = overlay_doc.parsed else {
-                return Err(format!(
-                    "active document has no parsed AST: {}",
-                    overlay_doc.uri
-                ));
-            };
-            parsed_docs.retain(|(uri, _)| canonical_path_key(uri) != focus_key);
-            parsed_docs.push((overlay_doc.uri, parsed));
+                &local_doc_keys,
+            )?;
         }
-        isolated_session.add_parsed_batch(parsed_docs);
+        isolated_session.add_parsed_batch(parsed_docs_by_key.into_values().collect());
+        for (uri, source) in local_compile_unit_sources {
+            let _ = isolated_session.update_document(&uri, &source);
+        }
+        if let Some(overlay_doc) = self.document_snapshot(focus_document_path).await {
+            let needs_refresh = isolated_session
+                .get_document(&overlay_doc.uri)
+                .is_none_or(|doc| doc.content != overlay_doc.content);
+            if needs_refresh {
+                let _ = isolated_session.update_document(&overlay_doc.uri, &overlay_doc.content);
+            }
+        }
 
         let mut report = isolated_session.compile_model_strict_reachable_with_recovery(model);
         if !report.failures.is_empty() {
@@ -945,7 +1067,8 @@ impl ModelicaLanguageServer {
             .await
             .contains_key(&file_name);
         if is_library_overlay {
-            let diagnostics = handlers::compute_diagnostics(text, &file_name, None);
+            let mut diagnostics = handlers::compute_diagnostics(text, &file_name, None);
+            diagnostics.extend(self.stored_library_load_diagnostics(&file_name).await);
             self.client
                 .publish_diagnostics(uri, diagnostics, None)
                 .await;
@@ -953,8 +1076,9 @@ impl ModelicaLanguageServer {
         }
         self.ensure_source_libraries_loaded(text, &file_name).await;
         let mut session = self.session.write().await;
-        let diagnostics = handlers::compute_diagnostics(text, &file_name, Some(&mut session));
+        let mut diagnostics = handlers::compute_diagnostics(text, &file_name, Some(&mut session));
         drop(session);
+        diagnostics.extend(self.stored_library_load_diagnostics(&file_name).await);
         self.client
             .publish_diagnostics(uri, diagnostics, None)
             .await;

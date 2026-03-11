@@ -8,7 +8,7 @@ use indexmap::{IndexMap, IndexSet};
 use rayon::prelude::*;
 use rumoca_core::{
     DefId, Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, PrimaryLabel,
-    SourceId, SourceMap, Span,
+    SourceMap, Span,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
@@ -16,30 +16,35 @@ use rumoca_ir_flat as flat;
 use rumoca_phase_dae::{ToDaeOptions, to_dae_with_options};
 use rumoca_phase_flatten::{FlattenOptions, flatten_ref_with_options};
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
-use rumoca_phase_resolve::{ResolveOptions, resolve_with_options};
+use rumoca_phase_resolve::{ResolveOptions, resolve_with_options, resolve_with_options_collect};
 use rumoca_phase_typecheck::typecheck_instanced;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
 use crate::experiment::experiment_settings_for_model;
 use crate::library_cache::{
     LibraryCacheStatus, parse_library_with_cache_in, resolve_library_cache_dir,
 };
-use crate::merge::{
-    MergeSemanticError, MergeSemanticLabel, collect_class_type_counts, collect_model_names,
-    merge_stored_definitions,
-};
+use crate::merge::{collect_class_type_counts, collect_model_names, merge_stored_definitions};
 
 mod dependency_fingerprint;
 use dependency_fingerprint::{CompileCacheEntry, DependencyFingerprintCache, Fingerprint};
+mod diagnostic_adapters;
+use diagnostic_adapters::{merge_error_to_common, miette_error_to_common};
 mod model_diagnostics;
 use model_diagnostics::{
     global_resolution_failure_diagnostics, model_diagnostics_for_tree, synthesized_inner_warning,
 };
 mod reachability;
 use reachability::ReachabilityPlanner;
+mod strict_compile_diagnostics;
+use strict_compile_diagnostics::{
+    class_primary_span, collect_parse_error_diagnostics, collect_parse_failures_for_files,
+    collect_resolve_failures_for_files, collect_target_source_files, default_tree_span,
+    document_parse_diagnostics, phase_result_to_failure, same_path,
+};
 
 static RAYON_INIT: Once = Once::new();
 
@@ -176,6 +181,13 @@ impl ResolvedBuildCache {
         self.strict_compile_recovery = None;
     }
 
+    fn clear_mode(&mut self, mode: ResolveBuildMode) {
+        match mode {
+            ResolveBuildMode::Standard => self.standard = None,
+            ResolveBuildMode::StrictCompileRecovery => self.strict_compile_recovery = None,
+        }
+    }
+
     fn any(&self) -> Option<&Arc<ast::ResolvedTree>> {
         self.standard
             .as_ref()
@@ -192,6 +204,10 @@ pub struct Document {
     pub content: String,
     /// Parsed definition (cached, None if parsing failed).
     pub parsed: Option<ast::StoredDefinition>,
+    /// Recovery-parsed structure used only for strict compile closure planning.
+    pub partial: Option<ast::StoredDefinition>,
+    /// Structured parse errors for the current document contents.
+    pub parse_errors: Vec<crate::parse::ParseError>,
     /// Parse error (if parsing failed).
     pub parse_error: Option<String>,
 }
@@ -570,6 +586,12 @@ impl Session {
         self.dependency_fingerprints = None;
     }
 
+    fn invalidate_strict_compile_state(&mut self) {
+        self.resolved_cache
+            .clear_mode(ResolveBuildMode::StrictCompileRecovery);
+        self.dependency_fingerprints = None;
+    }
+
     fn detach_uri_from_source_sets(&mut self, uri: &str) {
         let mut removable_docs: Vec<String> = Vec::new();
         for uris in self.source_sets.values_mut() {
@@ -608,6 +630,8 @@ impl Session {
                 uri: uri.to_string(),
                 content: content.to_string(),
                 parsed: Some(parsed),
+                partial: None,
+                parse_errors: Vec::new(),
                 parse_error: None,
             },
         );
@@ -628,15 +652,27 @@ impl Session {
         }
         let previous_parsed = self.documents.get(uri).and_then(|doc| doc.parsed.clone());
         self.detach_uri_from_source_sets(uri);
-        let (parsed, parse_error, invalidate_resolved) =
-            match rumoca_phase_parse::parse_to_ast(content, uri) {
-                Ok(def) => (Some(def), None, true),
-                Err(e) => {
+        let (parsed, partial, parse_errors, parse_error, invalidate_resolved) =
+            match rumoca_phase_parse::parse_to_ast_with_errors(content, uri) {
+                Ok(def) => (Some(def), None, Vec::new(), None, true),
+                Err(errors) => {
                     // Keep last successful parse for semantic features (completion/hover) while
                     // the user is typing an incomplete statement.
                     let fallback = previous_parsed;
                     let should_invalidate = fallback.is_none();
-                    (fallback, Some(e.to_string()), should_invalidate)
+                    let partial = rumoca_phase_parse::parse_to_recovered_ast(content, uri);
+                    let formatted = errors
+                        .iter()
+                        .map(|error| rumoca_phase_parse::format_parse_error(error, uri, content))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    (
+                        fallback,
+                        Some(partial),
+                        errors,
+                        Some(formatted),
+                        should_invalidate,
+                    )
                 }
             };
         self.documents.insert(
@@ -645,12 +681,16 @@ impl Session {
                 uri: uri.to_string(),
                 content: content.to_string(),
                 parsed,
+                partial,
+                parse_errors,
                 parse_error: parse_error.clone(),
             },
         );
         // Invalidate cached state only when parse succeeded or no fallback parse exists.
         if invalidate_resolved {
             self.invalidate_resolved_state();
+        } else {
+            self.invalidate_strict_compile_state();
         }
         parse_error
     }
@@ -667,6 +707,8 @@ impl Session {
                 uri: uri.to_string(),
                 content: String::new(), // Content not needed when pre-parsed
                 parsed: Some(parsed),
+                partial: None,
+                parse_errors: Vec::new(),
                 parse_error: None,
             },
         );
@@ -686,6 +728,8 @@ impl Session {
                     uri,
                     content: String::new(),
                     parsed: Some(parsed),
+                    partial: None,
+                    parse_errors: Vec::new(),
                     parse_error: None,
                 },
             );
@@ -759,6 +803,8 @@ impl Session {
                     uri,
                     content: String::new(),
                     parsed: Some(parsed),
+                    partial: None,
+                    parse_errors: Vec::new(),
                     parse_error: None,
                 },
             );
@@ -863,6 +909,17 @@ impl Session {
         self.documents.get(uri)
     }
 
+    /// Return structured parse diagnostics and a source map for one document.
+    pub fn document_parse_diagnostics_with_source_map(
+        &self,
+        uri: &str,
+    ) -> Option<(Vec<CommonDiagnostic>, SourceMap)> {
+        let doc = self.documents.get(uri)?;
+        let source_map = self.session_source_map();
+        let diagnostics = document_parse_diagnostics(doc, &source_map);
+        (!diagnostics.is_empty()).then_some((diagnostics, source_map))
+    }
+
     /// Get all document URIs.
     pub fn document_uris(&self) -> Vec<&str> {
         self.documents.keys().map(|s| s.as_str()).collect()
@@ -882,7 +939,7 @@ impl Session {
     /// Build the resolved tree, returning diagnostics on failure.
     fn build_resolved_with_diagnostics(
         &mut self,
-    ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
+    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
         self.build_resolved_with_diagnostics_inner(ResolveBuildMode::Standard)
     }
 
@@ -894,14 +951,14 @@ impl Session {
     /// unrelated symbols.
     fn build_resolved_for_strict_compile_with_diagnostics(
         &mut self,
-    ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
+    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
         self.build_resolved_with_diagnostics_inner(ResolveBuildMode::StrictCompileRecovery)
     }
 
     fn build_resolved_with_diagnostics_inner(
         &mut self,
         mode: ResolveBuildMode,
-    ) -> Result<Arc<ast::ResolvedTree>, CommonDiagnostics> {
+    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
         let session_source_map = self.session_source_map();
         if mode.include_parse_error_diags() {
             let parse_error_diags =
@@ -911,14 +968,26 @@ impl Session {
             }
         }
 
-        if let Some(resolved) = self.resolved_cache.get(mode) {
-            return Ok(resolved.clone());
+        if mode == ResolveBuildMode::Standard
+            && let Some(resolved) = self.resolved_cache.get(mode)
+        {
+            return Ok((resolved.clone(), CommonDiagnostics::new()));
         }
 
         let definitions: Vec<_> = self
             .documents
             .values()
-            .filter_map(|doc| doc.parsed.clone().map(|p| (doc.uri.clone(), p)))
+            .filter_map(|doc| {
+                let parsed = if mode == ResolveBuildMode::StrictCompileRecovery {
+                    doc.parse_error
+                        .as_ref()
+                        .and(doc.partial.clone())
+                        .or_else(|| doc.parsed.clone())
+                } else {
+                    doc.parsed.clone()
+                }?;
+                Some((doc.uri.clone(), parsed))
+            })
             .collect();
         let multi_document_session = definitions.len() > 1;
         let merged = merge_stored_definitions(definitions).map_err(|e| {
@@ -939,13 +1008,18 @@ impl Session {
             unresolved_component_refs_are_errors: unresolved_are_errors,
             unresolved_function_calls_are_errors: unresolved_are_errors,
         };
-        let resolved = resolve_with_options(parsed, resolve_options)?;
+        let (resolved, diagnostics) = if mode == ResolveBuildMode::StrictCompileRecovery {
+            resolve_with_options_collect(parsed, resolve_options)
+        } else {
+            let resolved = resolve_with_options(parsed, resolve_options)?;
+            (resolved, CommonDiagnostics::new())
+        };
 
         self.model_names = collect_model_names(&resolved.0.definitions);
         let resolved = Arc::new(resolved);
         self.resolved_cache.set(mode, resolved.clone());
 
-        Ok(resolved)
+        Ok((resolved, diagnostics))
     }
 
     /// Get the resolved tree, returning an error if resolution hasn't been performed.
@@ -1035,6 +1109,13 @@ impl Session {
         Ok(ast::ResolvedTree(self.ensure_resolved()?.0.clone()))
     }
 
+    /// Get any cached resolved tree without triggering a full rebuild.
+    pub fn resolved_cached(&self) -> Option<ast::ResolvedTree> {
+        self.resolved_cache
+            .any()
+            .map(|resolved| ast::ResolvedTree(resolved.0.clone()))
+    }
+
     /// Compile a specific model.
     ///
     /// Uses the phase order: Resolve -> Instantiate -> Typecheck -> Flatten -> ToDae
@@ -1120,31 +1201,44 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        let resolved = match self.build_resolved_for_strict_compile_with_diagnostics() {
-            Ok(tree) => tree,
-            Err(diags) => {
-                let mut failures = Vec::new();
-                failures.extend(diags.iter().map(|diag| ModelFailureDiagnostic {
-                    model_name: "<resolve>".to_string(),
-                    phase: None,
-                    error_code: diag.code.clone(),
-                    error: diag.message.clone(),
-                    primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
-                }));
-                return StrictCompileReport {
-                    requested_model: model_name.to_string(),
-                    requested_result: None,
-                    summary: CompilationSummary::default(),
-                    failures,
-                    source_map: Some(self.session_source_map()),
-                };
-            }
-        };
+        let (resolved, resolve_diags) =
+            match self.build_resolved_for_strict_compile_with_diagnostics() {
+                Ok(build) => build,
+                Err(diags) => {
+                    let mut failures = Vec::new();
+                    failures.extend(diags.iter().map(|diag| ModelFailureDiagnostic {
+                        model_name: "<resolve>".to_string(),
+                        phase: None,
+                        error_code: diag.code.clone(),
+                        error: diag.message.clone(),
+                        primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
+                    }));
+                    return StrictCompileReport {
+                        requested_model: model_name.to_string(),
+                        requested_result: None,
+                        summary: CompilationSummary::default(),
+                        failures,
+                        source_map: Some(self.session_source_map()),
+                    };
+                }
+            };
 
         let tree = &resolved.0;
+        let reachable_classes = self.strict_reachable_classes(tree, model_name);
         let targets = self.strict_compile_targets(tree, model_name);
-        let target_source_files = collect_target_source_files(tree, &targets);
-        let mut failures = collect_parse_failures_for_files(&self.documents, &target_source_files);
+        let target_source_files = collect_target_source_files(tree, &reachable_classes);
+        let mut failures = collect_parse_failures_for_files(
+            &self.documents,
+            &tree.source_map,
+            &target_source_files,
+        );
+        let resolve_failures = collect_resolve_failures_for_files(
+            &resolve_diags,
+            &tree.source_map,
+            &target_source_files,
+        );
+        let target_has_resolve_failures = !resolve_failures.is_empty();
+        failures.extend(resolve_failures);
         let results = self.compile_models_with_cache(tree, &targets);
         let summary = CompilationSummary::from_results(&results);
 
@@ -1153,7 +1247,7 @@ impl Session {
             if let Some(failure) = phase_result_to_failure(tree, &name, &result) {
                 failures.push(failure);
             }
-            if name == model_name {
+            if name == model_name && !target_has_resolve_failures {
                 requested_result = Some(result);
             }
         }
@@ -1173,6 +1267,14 @@ impl Session {
             .get_or_insert_with(|| DependencyFingerprintCache::from_tree(tree));
         let planner = ReachabilityPlanner::new(dep_cache.class_dependencies(), &self.model_names);
         planner.compile_targets(model_name)
+    }
+
+    fn strict_reachable_classes(&mut self, tree: &ast::ClassTree, model_name: &str) -> Vec<String> {
+        let dep_cache = self
+            .dependency_fingerprints
+            .get_or_insert_with(|| DependencyFingerprintCache::from_tree(tree));
+        let planner = ReachabilityPlanner::new(dep_cache.class_dependencies(), &self.model_names);
+        planner.reachable_classes(model_name)
     }
 
     /// Compile a model with an explicit compilation mode.
@@ -1195,7 +1297,7 @@ impl Session {
         let mut collected = Vec::new();
 
         let resolved = match self.build_resolved_with_diagnostics() {
-            Ok(tree) => tree,
+            Ok((tree, _)) => tree,
             Err(diags) => {
                 collected.extend(diags.iter().cloned());
                 return global_resolution_failure_diagnostics(self.session_source_map(), collected);
@@ -1370,116 +1472,6 @@ impl Session {
     }
 }
 
-fn miette_error_to_common(
-    err: &dyn miette::Diagnostic,
-    fallback_span: Span,
-    source_map: &SourceMap,
-) -> CommonDiagnostic {
-    let code = err
-        .code()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "EI000".to_string());
-
-    let mut converted_labels = Vec::new();
-    if let Some(labels) = err.labels() {
-        for labeled in labels {
-            let start = labeled.offset();
-            let len = labeled.len().max(1);
-            let end = start.saturating_add(len);
-            let source_id =
-                miette_label_source_id(err, source_map, start, len, fallback_span.source);
-            let mut label = Label::secondary(Span::from_offsets(source_id, start, end));
-            if let Some(message) = labeled.label() {
-                label = label.with_message(message.to_string());
-            }
-            converted_labels.push(label);
-        }
-    }
-
-    let (primary_label, secondary_labels) = if let Some(first) = converted_labels.first() {
-        let mut primary = PrimaryLabel::new(first.span);
-        if let Some(message) = first.message.clone() {
-            primary = primary.with_message(message);
-        }
-        (
-            primary,
-            converted_labels.into_iter().skip(1).collect::<Vec<_>>(),
-        )
-    } else {
-        (
-            PrimaryLabel::new(fallback_span).with_message("model compilation failed here"),
-            Vec::new(),
-        )
-    };
-
-    let mut diag = CommonDiagnostic::error(code, err.to_string(), primary_label);
-    for label in secondary_labels {
-        diag = diag.with_label(label);
-    }
-
-    diag
-}
-
-fn miette_label_source_id(
-    err: &dyn miette::Diagnostic,
-    source_map: &SourceMap,
-    offset: usize,
-    len: usize,
-    fallback_source_id: SourceId,
-) -> SourceId {
-    let Some(source_code) = err.source_code() else {
-        return fallback_source_id;
-    };
-    let span = miette::SourceSpan::from((offset, len));
-    let Ok(contents) = source_code.read_span(&span, 0, 0) else {
-        return fallback_source_id;
-    };
-    let Some(name) = contents.name() else {
-        return fallback_source_id;
-    };
-    source_map.get_id(name).unwrap_or(fallback_source_id)
-}
-
-fn merge_error_to_common(err: &anyhow::Error, source_map: &SourceMap) -> CommonDiagnostic {
-    let fallback_span = default_tree_span(source_map);
-    let Some(merge_error) = err.downcast_ref::<MergeSemanticError>() else {
-        return CommonDiagnostic::error(
-            "EM001",
-            err.to_string(),
-            PrimaryLabel::new(fallback_span).with_message("merge failed"),
-        );
-    };
-    let primary_label = merge_error
-        .labels
-        .first()
-        .and_then(|label| merge_label_to_span(source_map, label).map(|span| (span, label)))
-        .map(|(span, label)| PrimaryLabel::new(span).with_message(label.message))
-        .unwrap_or_else(|| PrimaryLabel::new(fallback_span).with_message("merge failed"));
-
-    let mut diag = CommonDiagnostic::error("EM001", err.to_string(), primary_label);
-
-    for merge_label in merge_error.labels.iter().skip(1) {
-        let Some(span) = merge_label_to_span(source_map, merge_label) else {
-            continue;
-        };
-        let label = if merge_label.primary {
-            Label::primary(span)
-        } else {
-            Label::secondary(span)
-        }
-        .with_message(merge_label.message);
-        diag = diag.with_label(label);
-    }
-
-    diag
-}
-
-fn merge_label_to_span(source_map: &SourceMap, merge_label: &MergeSemanticLabel) -> Option<Span> {
-    let source_id = source_map.get_id(&merge_label.file_name)?;
-    let end = merge_label.end.max(merge_label.start.saturating_add(1));
-    Some(Span::from_offsets(source_id, merge_label.start, end))
-}
-
 fn resolve_class_for_completion<'a>(
     tree: &'a ast::ClassTree,
     class_name: &str,
@@ -1565,139 +1557,21 @@ fn diagnostics_from_vec(diags: Vec<CommonDiagnostic>) -> CommonDiagnostics {
     out
 }
 
-fn phase_result_to_failure(
-    tree: &ast::ClassTree,
-    model_name: &str,
-    result: &PhaseResult,
-) -> Option<ModelFailureDiagnostic> {
-    match result {
-        PhaseResult::Success(_) => None,
-        PhaseResult::NeedsInner { missing_inners } => Some(ModelFailureDiagnostic {
-            model_name: model_name.to_string(),
-            phase: Some(FailedPhase::Instantiate),
-            error_code: None,
-            error: format!(
-                "model needs inner declarations: {}",
-                missing_inners.join(", ")
-            ),
-            primary_label: class_primary_label(tree, model_name, "model needs inner declarations"),
-        }),
-        PhaseResult::Failed {
-            phase,
-            error,
-            error_code,
-        } => Some(ModelFailureDiagnostic {
-            model_name: model_name.to_string(),
-            phase: Some(*phase),
-            error_code: error_code.clone(),
-            error: error.clone(),
-            primary_label: class_primary_label(tree, model_name, "phase failed"),
-        }),
-    }
-}
-
-fn class_primary_label(tree: &ast::ClassTree, model_name: &str, message: &str) -> Option<Label> {
-    let span = class_primary_span(tree, model_name)?;
-    Some(Label::primary(span).with_message(message))
-}
-
-fn class_primary_span(tree: &ast::ClassTree, model_name: &str) -> Option<Span> {
-    let class = tree.get_class_by_qualified_name(model_name)?;
-    let name_location = &class.name.location;
-    let start = name_location.start as usize;
-    let end = (name_location.end as usize).max(start.saturating_add(1));
-    let span = if let Some(source_id) = tree.source_map.get_id(&name_location.file_name) {
-        Span::from_offsets(source_id, start, end)
-    } else {
-        default_tree_span(&tree.source_map)
-    };
-    Some(span)
-}
-
-fn collect_parse_failures_for_files(
-    documents: &IndexMap<String, Document>,
-    files: &IndexSet<String>,
-) -> Vec<ModelFailureDiagnostic> {
-    if files.is_empty() {
-        return Vec::new();
-    }
-    documents
-        .values()
-        .filter_map(|doc| {
-            let is_target_file = files.iter().any(|file| same_path(file, &doc.uri));
-            if !is_target_file {
-                return None;
-            }
-            doc.parse_error.as_ref().map(|err| ModelFailureDiagnostic {
-                model_name: doc.uri.clone(),
-                phase: None,
-                error_code: Some("syntax-error".to_string()),
-                error: err.clone(),
-                primary_label: None,
-            })
-        })
-        .collect()
-}
-
-fn collect_parse_error_diagnostics(
-    documents: &IndexMap<String, Document>,
-    source_map: &SourceMap,
-) -> Vec<CommonDiagnostic> {
-    let mut out = Vec::new();
-    for doc in documents.values() {
-        let Some(err) = doc.parse_error.as_ref() else {
-            continue;
-        };
-        let span = source_map
-            .get_id(&doc.uri)
-            .map(|source_id| leading_non_whitespace_span(source_id, &doc.content))
-            .unwrap_or_else(|| Span::from_offsets(SourceId(0), 0, 1));
-        out.push(
-            CommonDiagnostic::error(
-                "syntax-error",
-                err.clone(),
-                PrimaryLabel::new(span).with_message("parse error in this document"),
-            )
-            .with_note(format!("document: {}", doc.uri)),
-        );
-    }
-    out
-}
-
-fn leading_non_whitespace_span(source_id: SourceId, content: &str) -> Span {
-    if content.is_empty() {
-        return Span::from_offsets(source_id, 0, 1);
-    }
-    if let Some((start, ch)) = content.char_indices().find(|(_, ch)| !ch.is_whitespace()) {
-        return Span::from_offsets(source_id, start, start + ch.len_utf8());
-    }
-    let end = content.chars().next().map_or(1, |ch| ch.len_utf8());
-    Span::from_offsets(source_id, 0, end)
-}
-
-fn default_tree_span(source_map: &SourceMap) -> Span {
-    let source_id = SourceId(0);
-    if let Some((_, content)) = source_map.get_source(source_id) {
-        return leading_non_whitespace_span(source_id, content);
-    }
-    Span::from_offsets(source_id, 0, 1)
-}
-
-fn collect_target_source_files(tree: &ast::ClassTree, targets: &[String]) -> IndexSet<String> {
-    let mut files = IndexSet::new();
+fn split_cached_target_results(
+    cache: &IndexMap<String, PhaseResult>,
+    targets: &[String],
+) -> (IndexMap<String, PhaseResult>, Vec<String>) {
+    let mut results = IndexMap::new();
+    let mut missing = Vec::new();
     for target in targets {
-        let Some(class) = tree.get_class_by_qualified_name(target) else {
-            continue;
-        };
-        files.insert(class.location.file_name.clone());
+        match cache.get(target).cloned() {
+            Some(result) => {
+                results.insert(target.clone(), result);
+            }
+            None => missing.push(target.clone()),
+        }
     }
-    files
-}
-
-fn same_path(left: &str, right: &str) -> bool {
-    let left_key = std::fs::canonicalize(left).unwrap_or_else(|_| PathBuf::from(left));
-    let right_key = std::fs::canonicalize(right).unwrap_or_else(|_| PathBuf::from(right));
-    left_key == right_key
+    (results, missing)
 }
 
 fn is_simulatable_class_type(class_type: &ast::ClassType) -> bool {
@@ -1838,10 +1712,6 @@ impl Default for Session {
     }
 }
 
-// ============================================================================
-// CompiledLibrary - convenience wrapper around Session
-// ============================================================================
-
 /// Pre-compiled library for efficient multi-model compilation.
 ///
 /// This is a convenience wrapper around [`Session`] that initializes from
@@ -1850,11 +1720,32 @@ impl Default for Session {
 ///
 /// For new code, consider using [`Session`] directly with [`Session::add_parsed_batch`].
 pub struct CompiledLibrary {
-    session: Session,
     resolved: Arc<ast::ResolvedTree>,
+    model_names: Vec<String>,
+    class_type_counts: std::collections::HashMap<String, usize>,
+    class_dependencies: IndexMap<String, IndexSet<String>>,
+    resolve_diagnostics: CommonDiagnostics,
+    compile_cache: Mutex<IndexMap<String, PhaseResult>>,
 }
 
 impl CompiledLibrary {
+    fn from_indexed_state(
+        resolved: Arc<ast::ResolvedTree>,
+        model_names: Vec<String>,
+        class_type_counts: std::collections::HashMap<String, usize>,
+        resolve_diagnostics: CommonDiagnostics,
+    ) -> Self {
+        let dependency_fingerprints = DependencyFingerprintCache::from_tree(&resolved.0);
+        Self {
+            resolved,
+            model_names,
+            class_type_counts,
+            class_dependencies: dependency_fingerprints.class_dependencies().clone(),
+            resolve_diagnostics,
+            compile_cache: Mutex::new(IndexMap::new()),
+        }
+    }
+
     /// Create a compiled library from a ast::StoredDefinition.
     ///
     /// This resolves the AST once. Type checking happens after instantiation.
@@ -1864,7 +1755,33 @@ impl CompiledLibrary {
         // Build resolved tree to catch resolution errors early
         session.build_resolved()?;
         let resolved = session.ensure_resolved()?.clone();
-        Ok(Self { session, resolved })
+        Ok(Self::from_indexed_state(
+            resolved.clone(),
+            session.model_names.clone(),
+            collect_class_type_counts(&resolved.0.definitions),
+            CommonDiagnostics::new(),
+        ))
+    }
+
+    /// Create a compiled library from a parsed batch, indexing it tolerantly.
+    ///
+    /// This preserves whole-library resolve diagnostics for later strict
+    /// target-closure compilation without requiring the entire library to
+    /// resolve cleanly up front.
+    pub fn from_parsed_batch_tolerant(
+        documents: Vec<(String, ast::StoredDefinition)>,
+    ) -> Result<Self> {
+        let mut session = Session::new(SessionConfig::default());
+        session.add_parsed_batch(documents);
+        let (resolved, resolve_diagnostics) = session
+            .build_resolved_for_strict_compile_with_diagnostics()
+            .map_err(|diags| diagnostics_to_anyhow(&diags))?;
+        Ok(Self::from_indexed_state(
+            resolved.clone(),
+            session.model_names.clone(),
+            collect_class_type_counts(&resolved.0.definitions),
+            resolve_diagnostics,
+        ))
     }
 
     /// Create a compiled library from an already-resolved tree.
@@ -1872,23 +1789,25 @@ impl CompiledLibrary {
     /// This avoids re-running resolve and is intended for callers that already
     /// hold a validated resolved tree (e.g., MSL regression harness).
     pub fn from_resolved_tree(resolved: ast::ResolvedTree, model_names: Vec<String>) -> Self {
-        let mut session = Session::new(SessionConfig::default());
         let resolved = Arc::new(resolved);
-        session
-            .resolved_cache
-            .set(ResolveBuildMode::Standard, resolved.clone());
-        session
-            .resolved_cache
-            .set(ResolveBuildMode::StrictCompileRecovery, resolved.clone());
-        session.model_names = model_names;
-        Self { session, resolved }
+        Self::from_indexed_state(
+            resolved.clone(),
+            model_names,
+            collect_class_type_counts(&resolved.0.definitions),
+            CommonDiagnostics::new(),
+        )
     }
 
     /// Get all model names in the library.
     ///
     /// This is infallible after construction since build_resolved was called.
     pub fn model_names(&self) -> &[String] {
-        &self.session.model_names
+        &self.model_names
+    }
+
+    /// Count all class types in the library.
+    pub fn class_type_counts(&self) -> &std::collections::HashMap<String, usize> {
+        &self.class_type_counts
     }
 
     /// Get the class tree.
@@ -1904,12 +1823,115 @@ impl CompiledLibrary {
         &self.resolved
     }
 
+    fn cached_phase_result(&self, model_name: &str) -> PhaseResult {
+        if let Some(result) = self
+            .compile_cache
+            .lock()
+            .expect("compiled library cache poisoned")
+            .get(model_name)
+            .cloned()
+        {
+            return result;
+        }
+
+        let result = compile_model_internal(&self.resolved_tree().0, model_name);
+        self.compile_cache
+            .lock()
+            .expect("compiled library cache poisoned")
+            .entry(model_name.to_string())
+            .or_insert_with(|| result.clone());
+        result
+    }
+
+    fn strict_reachable_classes(&self, model_name: &str) -> Vec<String> {
+        ReachabilityPlanner::new(&self.class_dependencies, &self.model_names)
+            .reachable_classes(model_name)
+    }
+
+    fn strict_compile_targets(&self, model_name: &str) -> Vec<String> {
+        ReachabilityPlanner::new(&self.class_dependencies, &self.model_names)
+            .compile_targets(model_name)
+    }
+
+    fn compile_targets_with_cache(&self, targets: &[String]) -> Vec<(String, PhaseResult)> {
+        let (mut results, missing) = {
+            let cache = self
+                .compile_cache
+                .lock()
+                .expect("compiled library cache poisoned");
+            split_cached_target_results(&cache, targets)
+        };
+
+        if !missing.is_empty() {
+            let tree = &self.resolved_tree().0;
+            let compiled_misses: Vec<_> = missing
+                .par_iter()
+                .map(|name| (name.clone(), compile_model_internal(tree, name)))
+                .collect();
+
+            let mut cache = self
+                .compile_cache
+                .lock()
+                .expect("compiled library cache poisoned");
+            for (name, result) in compiled_misses {
+                cache.entry(name.clone()).or_insert_with(|| result.clone());
+                results.insert(name, result);
+            }
+        }
+
+        targets
+            .iter()
+            .filter_map(|target| {
+                results
+                    .shift_remove(target)
+                    .map(|result| (target.clone(), result))
+            })
+            .collect()
+    }
+
+    /// Compile the requested model strictly against its reachable closure while
+    /// preserving unrelated library diagnostics outside that closure.
+    pub fn compile_model_strict_reachable_with_recovery(
+        &self,
+        model_name: &str,
+    ) -> StrictCompileReport {
+        let tree = &self.resolved_tree().0;
+        let reachable_classes = self.strict_reachable_classes(model_name);
+        let targets = self.strict_compile_targets(model_name);
+        let target_source_files = collect_target_source_files(tree, &reachable_classes);
+        let mut failures = collect_resolve_failures_for_files(
+            &self.resolve_diagnostics,
+            &tree.source_map,
+            &target_source_files,
+        );
+        let target_has_resolve_failures = !failures.is_empty();
+        let results = self.compile_targets_with_cache(&targets);
+        let summary = CompilationSummary::from_results(&results);
+
+        let mut requested_result = None;
+        for (name, result) in results {
+            if let Some(failure) = phase_result_to_failure(tree, &name, &result) {
+                failures.push(failure);
+            }
+            if name == model_name && !target_has_resolve_failures {
+                requested_result = Some(result.clone());
+            }
+        }
+
+        StrictCompileReport {
+            requested_model: model_name.to_string(),
+            requested_result,
+            summary,
+            failures,
+            source_map: Some(tree.source_map.clone()),
+        }
+    }
+
     /// Compile a specific model.
     ///
     /// Uses the new phase order: Instantiate -> Typecheck -> Flatten -> ToDae
     pub fn compile_model(&self, model_name: &str) -> Result<CompilationResult> {
-        let tree = &self.resolved_tree().0;
-        match compile_model_internal(tree, model_name) {
+        match self.cached_phase_result(model_name) {
             PhaseResult::Success(result) => Ok(*result),
             PhaseResult::NeedsInner { missing_inners } => Err(anyhow::anyhow!(
                 "Missing inner declarations: {:?}",
@@ -1925,33 +1947,21 @@ impl CompiledLibrary {
     ///
     /// Returns PhaseResult directly (infallible for pre-built libraries).
     pub fn compile_model_phases(&self, model_name: &str) -> PhaseResult {
-        let tree = &self.resolved_tree().0;
-        compile_model_internal(tree, model_name)
+        self.cached_phase_result(model_name)
     }
 
     /// Compile multiple models in parallel.
     pub fn compile_models_parallel(&self, model_names: &[&str]) -> Vec<(String, PhaseResult)> {
-        let tree = &self.resolved_tree().0;
-        model_names
-            .par_iter()
-            .map(|name| {
-                let result = compile_model_internal(tree, name);
-                (name.to_string(), result)
-            })
-            .collect()
+        let names = model_names
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        self.compile_targets_with_cache(&names)
     }
 
     /// Compile all models in parallel.
     pub fn compile_all_parallel(&self) -> Vec<(String, PhaseResult)> {
-        let tree = &self.resolved_tree().0;
-        self.session
-            .model_names
-            .par_iter()
-            .map(|name| {
-                let result = compile_model_internal(tree, name);
-                (name.clone(), result)
-            })
-            .collect()
+        self.compile_targets_with_cache(&self.model_names)
     }
 
     /// Compile all models and return summary.
