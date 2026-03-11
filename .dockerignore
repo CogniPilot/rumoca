@@ -1,0 +1,14 @@
+.git
+.github
+target
+dev
+pkg
+.vscode
+.claude
+build
+dist
+__pycache__
+*.egg-info
+*.html
+*.swp
+*.swo
