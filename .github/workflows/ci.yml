@@ -730,14 +730,14 @@ jobs:
           mkdir -p release-assets
 
           echo "=== Downloaded structure ==="
-          find artifacts -type f | head -50
+          find artifacts -type f | sed -n '1,50p'
 
           # Move Rust binaries
           for dir in artifacts/rumoca*; do
             if [ -d "$dir" ]; then
               echo "Processing Rust artifact: $dir"
               artifact_name="$(basename "$dir")"
-              source_file="$(find "$dir" -maxdepth 1 -type f | head -n 1)"
+              source_file="$(find "$dir" -maxdepth 1 -type f -print -quit)"
               if [ -z "$source_file" ]; then
                 echo "No binary file found under $dir; skipping"
                 continue
@@ -785,7 +785,7 @@ jobs:
               echo "::error::Missing LSP artifact directory for $vscode_target: $artifact_dir"
               exit 1
             fi
-            source_file="$(find "$artifact_dir" -maxdepth 1 -type f | head -n 1)"
+            source_file="$(find "$artifact_dir" -maxdepth 1 -type f -print -quit)"
             if [ -z "$source_file" ]; then
               echo "::error::No LSP binary found under $artifact_dir"
               exit 1
@@ -802,7 +802,7 @@ jobs:
               npx @vscode/vsce package --target "$vscode_target" --no-dependencies --no-yarn
             )
 
-            vsix_file="$(find editors/vscode -maxdepth 1 -type f -name '*.vsix' | head -n 1)"
+            vsix_file="$(find editors/vscode -maxdepth 1 -type f -name '*.vsix' -print -quit)"
             if [ -z "$vsix_file" ]; then
               echo "::error::VSIX packaging did not produce an artifact for $vscode_target"
               exit 1
