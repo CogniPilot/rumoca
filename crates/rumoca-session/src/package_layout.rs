@@ -118,11 +118,15 @@ pub fn collect_compile_unit_source_files(path: &Path) -> Result<Vec<PathBuf>> {
         bail!("compile-unit path is not a file: {}", path.display());
     }
 
-    let Some(parent) = path.parent() else {
-        bail!(
-            "compile-unit file has no parent directory: {}",
-            path.display()
-        );
+    let parent = match path.parent() {
+        Some(p) if p.as_os_str().is_empty() => Path::new("."),
+        Some(p) => p,
+        None => {
+            bail!(
+                "compile-unit file has no parent directory: {}",
+                path.display()
+            );
+        }
     };
 
     let mut files = Vec::new();
@@ -979,6 +983,28 @@ mod tests {
                 sub.join("package.mo"),
                 pkg.join("package.mo")
             ]
+        );
+    }
+
+    #[test]
+    fn collect_compile_unit_handles_bare_filename() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("model.mo");
+        fs::write(&file, "model M end M;").expect("write");
+
+        // Simulate a bare filename by using just the file name component
+        let bare = Path::new(file.file_name().unwrap());
+
+        // Run from the temp directory so the bare filename resolves
+        let prev = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(temp.path()).expect("chdir");
+        let result = collect_compile_unit_source_files(bare);
+        std::env::set_current_dir(prev).expect("restore cwd");
+
+        let files = result.expect("bare filename should succeed");
+        assert!(
+            files.iter().any(|f| f.file_name().unwrap() == "model.mo"),
+            "should find the .mo file: {files:?}"
         );
     }
 }
