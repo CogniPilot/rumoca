@@ -29,8 +29,10 @@ jobs:
       is_release: ${{ steps.detect.outputs.is_release }}
       tag: ${{ steps.detect.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
         with:
+          token: ${{ github.token }}
+          persist-credentials: true
           fetch-depth: 0
           fetch-tags: true
 
@@ -63,7 +65,10 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Install Rust
         run: |
@@ -90,7 +95,10 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Install Rust
         run: |
@@ -137,7 +145,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -165,7 +176,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Install Rust
         run: |
@@ -205,7 +219,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Install Rust
         run: |
@@ -313,7 +330,10 @@ jobs:
     name: Documentation
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Install Rust
         run: |
@@ -338,7 +358,10 @@ jobs:
     name: Build WASM
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Install Rust nightly with rust-src
         run: |
@@ -454,7 +477,10 @@ jobs:
             rumoca_asset: rumoca-windows-x86_64.exe
             lsp_asset: rumoca-lsp-windows-x86_64.exe
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - name: Install Rust
         run: |
@@ -573,7 +599,10 @@ jobs:
             target: x86_64-pc-windows-msvc
             name: windows-x64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - uses: actions/setup-python@v5
         with:
@@ -612,7 +641,10 @@ jobs:
     name: Build Python sdist
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
 
       - uses: actions/setup-python@v5
         with:
@@ -649,8 +681,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
         with:
+          token: ${{ github.token }}
+          persist-credentials: true
           fetch-depth: 0
 
       - name: Verify tag is on main
