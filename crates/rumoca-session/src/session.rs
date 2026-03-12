@@ -31,6 +31,13 @@ use crate::merge::{collect_class_type_counts, collect_model_names, merge_stored_
 
 mod dependency_fingerprint;
 use dependency_fingerprint::{CompileCacheEntry, DependencyFingerprintCache, Fingerprint};
+mod compile_support;
+use compile_support::{
+    collect_class_component_members, compile_model_internal, diagnostics_from_vec,
+    diagnostics_to_anyhow, finalize_strict_compile_report, flatten_options_for_tree,
+    is_simulatable_class_type, missing_inner_label, resolve_class_for_completion,
+    split_cached_target_results, todae_options_for_tree,
+};
 mod diagnostic_adapters;
 use diagnostic_adapters::{merge_error_to_common, miette_error_to_common};
 mod model_diagnostics;
@@ -105,8 +112,6 @@ pub struct SessionConfig {
 }
 
 /// Targeted compilation execution mode.
-///
-/// Both variants currently use the same behavior path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompilationMode {
     /// Strict compile semantics for target and reachable dependencies.
@@ -114,6 +119,9 @@ pub enum CompilationMode {
     /// Strict compile semantics with internal recovery to collect diagnostics.
     #[default]
     StrictReachableWithRecovery,
+    /// Strict compile semantics with internal recovery while bypassing
+    /// cross-request compile-cache reuse.
+    StrictReachableUncachedWithRecovery,
 }
 
 /// Library/workspace indexing execution mode.
@@ -1201,6 +1209,27 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
+        self.compile_model_strict_reachable_report(model_name, true)
+    }
+
+    /// Compile the requested model using strict-reachable semantics with
+    /// internal recovery while bypassing the session compile cache.
+    ///
+    /// This is intended for focused editor-style compiles where library AST and
+    /// resolved state should be reused, but per-model phase results should not
+    /// accumulate across unrelated requests.
+    pub fn compile_model_strict_reachable_uncached_with_recovery(
+        &mut self,
+        model_name: &str,
+    ) -> StrictCompileReport {
+        self.compile_model_strict_reachable_report(model_name, false)
+    }
+
+    fn compile_model_strict_reachable_report(
+        &mut self,
+        model_name: &str,
+        use_compile_cache: bool,
+    ) -> StrictCompileReport {
         let (resolved, resolve_diags) =
             match self.build_resolved_for_strict_compile_with_diagnostics() {
                 Ok(build) => build,
@@ -1239,26 +1268,18 @@ impl Session {
         );
         let target_has_resolve_failures = !resolve_failures.is_empty();
         failures.extend(resolve_failures);
-        let results = self.compile_models_with_cache(tree, &targets);
-        let summary = CompilationSummary::from_results(&results);
-
-        let mut requested_result = None;
-        for (name, result) in results {
-            if let Some(failure) = phase_result_to_failure(tree, &name, &result) {
-                failures.push(failure);
-            }
-            if name == model_name && !target_has_resolve_failures {
-                requested_result = Some(result);
-            }
-        }
-
-        StrictCompileReport {
-            requested_model: model_name.to_string(),
-            requested_result,
-            summary,
+        let results = if use_compile_cache {
+            self.compile_models_with_cache(tree, &targets)
+        } else {
+            self.compile_models_without_cache(tree, &targets)
+        };
+        finalize_strict_compile_report(
+            tree,
+            model_name,
+            target_has_resolve_failures,
             failures,
-            source_map: Some(tree.source_map.clone()),
-        }
+            results,
+        )
     }
 
     fn strict_compile_targets(&mut self, tree: &ast::ClassTree, model_name: &str) -> Vec<String> {
@@ -1278,8 +1299,6 @@ impl Session {
     }
 
     /// Compile a model with an explicit compilation mode.
-    ///
-    /// Both strict-reachable variants currently share behavior.
     pub fn compile_model_with_mode(
         &mut self,
         model_name: &str,
@@ -1288,6 +1307,9 @@ impl Session {
         match mode {
             CompilationMode::StrictReachable | CompilationMode::StrictReachableWithRecovery => {
                 self.compile_model_strict_reachable_with_recovery(model_name)
+            }
+            CompilationMode::StrictReachableUncachedWithRecovery => {
+                self.compile_model_strict_reachable_uncached_with_recovery(model_name)
             }
         }
     }
@@ -1470,240 +1492,17 @@ impl Session {
         }
         results
     }
-}
 
-fn resolve_class_for_completion<'a>(
-    tree: &'a ast::ClassTree,
-    class_name: &str,
-) -> Option<&'a ast::ClassDef> {
-    if let Some(class) = tree.get_class_by_qualified_name(class_name) {
-        return Some(class);
+    fn compile_models_without_cache(
+        &self,
+        tree: &ast::ClassTree,
+        model_names: &[String],
+    ) -> Vec<(String, PhaseResult)> {
+        model_names
+            .par_iter()
+            .map(|name| (name.clone(), compile_model_internal(tree, name)))
+            .collect()
     }
-
-    let suffix = format!(".{class_name}");
-    let mut matched_name: Option<&str> = None;
-    for name in tree.name_map.keys() {
-        if !(name == class_name || name.ends_with(&suffix)) {
-            continue;
-        }
-        if matched_name.is_some() {
-            return None;
-        }
-        matched_name = Some(name);
-    }
-    matched_name.and_then(|name| tree.get_class_by_qualified_name(name))
-}
-
-fn collect_class_component_members(
-    tree: &ast::ClassTree,
-    class: &ast::ClassDef,
-    members: &mut IndexMap<String, String>,
-    visiting: &mut std::collections::HashSet<DefId>,
-) {
-    if let Some(def_id) = class.def_id
-        && !visiting.insert(def_id)
-    {
-        return;
-    }
-
-    for ext in &class.extends {
-        let Some(base_def_id) = ext.base_def_id else {
-            continue;
-        };
-        let Some(base_class) = tree.get_class_by_def_id(base_def_id) else {
-            continue;
-        };
-        collect_class_component_members(tree, base_class, members, visiting);
-        for break_name in &ext.break_names {
-            members.shift_remove(break_name);
-        }
-    }
-
-    for (name, component) in &class.components {
-        members.insert(name.clone(), component.type_name.to_string());
-    }
-
-    if let Some(def_id) = class.def_id {
-        visiting.remove(&def_id);
-    }
-}
-
-fn missing_inner_label(idx: usize, span: Span) -> Label {
-    let label = match idx {
-        0 => Label::primary(span),
-        _ => Label::secondary(span),
-    };
-    label.with_message("missing matching `inner`")
-}
-
-fn diagnostics_to_anyhow(diags: &CommonDiagnostics) -> anyhow::Error {
-    let message = diags
-        .iter()
-        .map(|d| d.message.clone())
-        .collect::<Vec<_>>()
-        .join("; ");
-    if message.is_empty() {
-        anyhow::anyhow!("Resolve errors")
-    } else {
-        anyhow::anyhow!("Resolve errors: {message}")
-    }
-}
-
-fn diagnostics_from_vec(diags: Vec<CommonDiagnostic>) -> CommonDiagnostics {
-    let mut out = CommonDiagnostics::new();
-    for diag in diags {
-        out.emit(diag);
-    }
-    out
-}
-
-fn split_cached_target_results(
-    cache: &IndexMap<String, PhaseResult>,
-    targets: &[String],
-) -> (IndexMap<String, PhaseResult>, Vec<String>) {
-    let mut results = IndexMap::new();
-    let mut missing = Vec::new();
-    for target in targets {
-        match cache.get(target).cloned() {
-            Some(result) => {
-                results.insert(target.clone(), result);
-            }
-            None => missing.push(target.clone()),
-        }
-    }
-    (results, missing)
-}
-
-fn is_simulatable_class_type(class_type: &ast::ClassType) -> bool {
-    matches!(
-        class_type,
-        ast::ClassType::Model | ast::ClassType::Block | ast::ClassType::Class
-    )
-}
-
-fn is_library_tree(tree: &ast::ClassTree) -> bool {
-    tree.definitions.classes.len() > 1
-}
-
-fn summarize_typecheck_error_code(diags: &CommonDiagnostics) -> Option<String> {
-    let mut codes = diags.iter().filter_map(|d| d.code.as_deref());
-    let Some(first) = codes.next() else {
-        return Some("ET000".to_string());
-    };
-    if codes.all(|code| code == first) {
-        Some(first.to_string())
-    } else {
-        Some("ET000".to_string())
-    }
-}
-
-fn todae_options_for_tree(tree: &ast::ClassTree) -> ToDaeOptions {
-    ToDaeOptions {
-        error_on_unbalanced: !is_library_tree(tree),
-    }
-}
-
-fn flatten_options_for_tree() -> FlattenOptions {
-    // Connection compatibility is model-local at flatten time (overlay-scoped),
-    // so strict validation should always be enabled for compiled models even
-    // when the source tree contains many library classes.
-    FlattenOptions {
-        strict_connection_validation: true,
-    }
-}
-
-/// Internal function for parallel compilation.
-///
-/// Uses the phase order: Instantiate -> Typecheck -> Flatten -> ToDae
-/// Type checking runs after instantiation so it has full access to the
-/// modification context for dimension evaluation (MLS §10.1).
-fn compile_model_internal(tree: &ast::ClassTree, model_name: &str) -> PhaseResult {
-    // Prevent thread-local `pre()` state from leaking across model compiles
-    // when worker threads are reused (e.g., MSL parallel compile batches).
-    rumoca_sim::clear_runtime_pre_values();
-
-    let experiment_settings = experiment_settings_for_model(tree, model_name);
-
-    // Phase 1: Instantiate
-    let instantiate_start = maybe_start_timer();
-    let instantiate_outcome = instantiate_model_with_outcome(tree, model_name);
-    maybe_record_compile_phase_timing(FailedPhase::Instantiate, instantiate_start);
-    let mut overlay = match instantiate_outcome {
-        InstantiationOutcome::Success(o) => o,
-        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
-            return PhaseResult::NeedsInner { missing_inners };
-        }
-        InstantiationOutcome::Error(e) => {
-            use miette::Diagnostic;
-            let error_code = e.code().map(|c| c.to_string());
-            return PhaseResult::Failed {
-                phase: FailedPhase::Instantiate,
-                error: format!("{}", e),
-                error_code,
-            };
-        }
-    };
-
-    // Phase 2: Typecheck (evaluates dimensions with modification context)
-    let typecheck_start = maybe_start_timer();
-    let typecheck_result = typecheck_instanced(tree, &mut overlay, model_name);
-    maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_start);
-    if let Err(diags) = typecheck_result {
-        return PhaseResult::Failed {
-            phase: FailedPhase::Typecheck,
-            error: diags
-                .iter()
-                .map(|d| d.message.clone())
-                .collect::<Vec<_>>()
-                .join("; "),
-            error_code: summarize_typecheck_error_code(&diags),
-        };
-    }
-
-    // Phase 3: Flatten
-    let flatten_start = maybe_start_timer();
-    let flat_result =
-        flatten_ref_with_options(tree, &overlay, model_name, flatten_options_for_tree());
-    maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_start);
-    let flat = match flat_result {
-        Ok(f) => f,
-        Err(e) => {
-            use miette::Diagnostic;
-            let error_code = e.code().map(|c| c.to_string());
-            return PhaseResult::Failed {
-                phase: FailedPhase::Flatten,
-                error: format!("{}", e),
-                error_code,
-            };
-        }
-    };
-
-    // Phase 4: ToDae
-    let todae_start = maybe_start_timer();
-    let dae_result = to_dae_with_options(&flat, todae_options_for_tree(tree));
-    maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
-    let dae = match dae_result {
-        Ok(d) => d,
-        Err(e) => {
-            use miette::Diagnostic;
-            let error_code = e.code().map(|c| c.to_string());
-            return PhaseResult::Failed {
-                phase: FailedPhase::ToDae,
-                error: format!("{}", e),
-                error_code,
-            };
-        }
-    };
-
-    PhaseResult::Success(Box::new(CompilationResult {
-        flat,
-        dae,
-        experiment_start_time: experiment_settings.start_time,
-        experiment_stop_time: experiment_settings.stop_time,
-        experiment_tolerance: experiment_settings.tolerance,
-        experiment_interval: experiment_settings.interval,
-        experiment_solver: experiment_settings.solver,
-    }))
 }
 
 impl Default for Session {
@@ -1853,6 +1652,14 @@ impl CompiledLibrary {
             .compile_targets(model_name)
     }
 
+    fn compile_targets_without_cache(&self, targets: &[String]) -> Vec<(String, PhaseResult)> {
+        let tree = &self.resolved_tree().0;
+        targets
+            .par_iter()
+            .map(|name| (name.clone(), compile_model_internal(tree, name)))
+            .collect()
+    }
+
     fn compile_targets_with_cache(&self, targets: &[String]) -> Vec<(String, PhaseResult)> {
         let (mut results, missing) = {
             let cache = self
@@ -1899,32 +1706,46 @@ impl CompiledLibrary {
         let reachable_classes = self.strict_reachable_classes(model_name);
         let targets = self.strict_compile_targets(model_name);
         let target_source_files = collect_target_source_files(tree, &reachable_classes);
-        let mut failures = collect_resolve_failures_for_files(
+        let failures = collect_resolve_failures_for_files(
             &self.resolve_diagnostics,
             &tree.source_map,
             &target_source_files,
         );
         let target_has_resolve_failures = !failures.is_empty();
         let results = self.compile_targets_with_cache(&targets);
-        let summary = CompilationSummary::from_results(&results);
-
-        let mut requested_result = None;
-        for (name, result) in results {
-            if let Some(failure) = phase_result_to_failure(tree, &name, &result) {
-                failures.push(failure);
-            }
-            if name == model_name && !target_has_resolve_failures {
-                requested_result = Some(result.clone());
-            }
-        }
-
-        StrictCompileReport {
-            requested_model: model_name.to_string(),
-            requested_result,
-            summary,
+        finalize_strict_compile_report(
+            tree,
+            model_name,
+            target_has_resolve_failures,
             failures,
-            source_map: Some(tree.source_map.clone()),
-        }
+            results,
+        )
+    }
+
+    /// Compile the requested model strictly against its reachable closure
+    /// without retaining phase results from prior focused compiles.
+    pub fn compile_model_strict_reachable_uncached_with_recovery(
+        &self,
+        model_name: &str,
+    ) -> StrictCompileReport {
+        let tree = &self.resolved_tree().0;
+        let reachable_classes = self.strict_reachable_classes(model_name);
+        let targets = self.strict_compile_targets(model_name);
+        let target_source_files = collect_target_source_files(tree, &reachable_classes);
+        let failures = collect_resolve_failures_for_files(
+            &self.resolve_diagnostics,
+            &tree.source_map,
+            &target_source_files,
+        );
+        let target_has_resolve_failures = !failures.is_empty();
+        let results = self.compile_targets_without_cache(&targets);
+        finalize_strict_compile_report(
+            tree,
+            model_name,
+            target_has_resolve_failures,
+            failures,
+            results,
+        )
     }
 
     /// Compile a specific model.

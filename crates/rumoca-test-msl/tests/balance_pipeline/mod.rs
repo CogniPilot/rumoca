@@ -549,68 +549,7 @@ fn is_non_sim_failure(phase: FailedPhase, error_code: Option<&str>) -> bool {
 /// Convert PhaseResult to MslModelResult.
 pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> MslModelResult {
     match phase_result {
-        PhaseResult::Success(result) => {
-            let detail = rumoca_eval_dae::analysis::balance_detail(&result.dae);
-            // Start from the exact DAE-balance basis (continuous unknowns/equations).
-            let scalar_unknowns =
-                (detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns) as i64;
-            let brk = detail.oc_break_edge_scalar_count as i64;
-            let available_oc_interface = detail.overconstrained_interface_count.max(0);
-            let base_without_iflow =
-                (detail.f_x_scalar + detail.algorithm_outputs + detail.when_eq_scalar) as i64;
-            let iflow_needed = (scalar_unknowns - base_without_iflow).max(0);
-            let effective_iflow = (detail.interface_flow_count as i64).min(iflow_needed);
-            let base_equations = base_without_iflow + effective_iflow;
-            let oc_needed = (scalar_unknowns - base_equations).max(0);
-            let effective_oc_interface = available_oc_interface.min(oc_needed);
-            let raw_equations = base_equations + effective_oc_interface;
-            let raw_balance = raw_equations - scalar_unknowns;
-            let effective_brk = brk.min(raw_balance.max(0));
-            let scalar_equations = raw_equations - effective_brk;
-            let init_check =
-                initialization_balance_check(&result.dae, scalar_unknowns, scalar_equations);
-            let scalar_equations_with_init = scalar_equations + init_check.closure_used;
-
-            // OMC checkModel() includes top-level input connector scalars as local
-            // unknowns with implicit binding equations, and includes when-only
-            // discrete outputs in local counts. It may also use initialization
-            // equations to close local deficits. Include these in reported
-            // comparison counts while preserving eq-var parity.
-            let input_scalars = result.dae.inputs.values().map(|v| v.size()).sum::<usize>() as i64;
-            let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
-            let report_offset = input_scalars + discrete_scalars;
-            let scalar_unknowns_for_report = scalar_unknowns + report_offset;
-            let scalar_equations_for_report = scalar_equations_with_init + report_offset;
-            let balance_for_report = scalar_equations_for_report - scalar_unknowns_for_report;
-            MslModelResult {
-                model_name: name,
-                phase_reached: "Success".to_string(),
-                error: None,
-                error_code: None,
-                num_states: Some(result.dae.states.len()),
-                num_algebraics: Some(result.dae.algebraics.len()),
-                num_f_x: Some(result.dae.f_x.len()),
-                balance: Some(balance_for_report),
-                is_balanced: Some(balance_for_report == 0),
-                is_partial: Some(result.dae.is_partial),
-                class_type: Some(result.dae.class_type.as_str().to_string()),
-                scalar_equations: usize::try_from(scalar_equations_for_report).ok(),
-                scalar_unknowns: usize::try_from(scalar_unknowns_for_report).ok(),
-                initial_equation_scalars: usize::try_from(init_check.initial_equation_scalars).ok(),
-                initial_algorithm_scalars: usize::try_from(init_check.initial_algorithm_scalars)
-                    .ok(),
-                initial_balance_deficit_before: Some(init_check.deficit_before),
-                initial_closure_used: usize::try_from(init_check.closure_used).ok(),
-                initial_balance_deficit_after: Some(init_check.deficit_after),
-                initial_balance_ok: Some(init_check.is_balanced()),
-                sim_status: None,
-                sim_error: None,
-                sim_seconds: None,
-                sim_wall_seconds: None,
-                sim_trace_file: None,
-                sim_trace_error: None,
-            }
-        }
+        PhaseResult::Success(result) => summarize_success_result(name, result.as_ref()),
         PhaseResult::NeedsInner { missing_inners } => phase_error_result(
             name,
             "NeedsInner",
@@ -633,6 +572,70 @@ pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> M
             }
             phase_error_result(name, phase_str, Some(error), error_code)
         }
+    }
+}
+
+pub(super) fn summarize_success_result(
+    name: String,
+    result: &rumoca_session::compile::CompilationResult,
+) -> MslModelResult {
+    let detail = rumoca_eval_dae::analysis::balance_detail(&result.dae);
+    // Start from the exact DAE-balance basis (continuous unknowns/equations).
+    let scalar_unknowns =
+        (detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns) as i64;
+    let brk = detail.oc_break_edge_scalar_count as i64;
+    let available_oc_interface = detail.overconstrained_interface_count.max(0);
+    let base_without_iflow =
+        (detail.f_x_scalar + detail.algorithm_outputs + detail.when_eq_scalar) as i64;
+    let iflow_needed = (scalar_unknowns - base_without_iflow).max(0);
+    let effective_iflow = (detail.interface_flow_count as i64).min(iflow_needed);
+    let base_equations = base_without_iflow + effective_iflow;
+    let oc_needed = (scalar_unknowns - base_equations).max(0);
+    let effective_oc_interface = available_oc_interface.min(oc_needed);
+    let raw_equations = base_equations + effective_oc_interface;
+    let raw_balance = raw_equations - scalar_unknowns;
+    let effective_brk = brk.min(raw_balance.max(0));
+    let scalar_equations = raw_equations - effective_brk;
+    let init_check = initialization_balance_check(&result.dae, scalar_unknowns, scalar_equations);
+    let scalar_equations_with_init = scalar_equations + init_check.closure_used;
+
+    // OMC checkModel() includes top-level input connector scalars as local
+    // unknowns with implicit binding equations, and includes when-only
+    // discrete outputs in local counts. It may also use initialization
+    // equations to close local deficits. Include these in reported
+    // comparison counts while preserving eq-var parity.
+    let input_scalars = result.dae.inputs.values().map(|v| v.size()).sum::<usize>() as i64;
+    let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
+    let report_offset = input_scalars + discrete_scalars;
+    let scalar_unknowns_for_report = scalar_unknowns + report_offset;
+    let scalar_equations_for_report = scalar_equations_with_init + report_offset;
+    let balance_for_report = scalar_equations_for_report - scalar_unknowns_for_report;
+    MslModelResult {
+        model_name: name,
+        phase_reached: "Success".to_string(),
+        error: None,
+        error_code: None,
+        num_states: Some(result.dae.states.len()),
+        num_algebraics: Some(result.dae.algebraics.len()),
+        num_f_x: Some(result.dae.f_x.len()),
+        balance: Some(balance_for_report),
+        is_balanced: Some(balance_for_report == 0),
+        is_partial: Some(result.dae.is_partial),
+        class_type: Some(result.dae.class_type.as_str().to_string()),
+        scalar_equations: usize::try_from(scalar_equations_for_report).ok(),
+        scalar_unknowns: usize::try_from(scalar_unknowns_for_report).ok(),
+        initial_equation_scalars: usize::try_from(init_check.initial_equation_scalars).ok(),
+        initial_algorithm_scalars: usize::try_from(init_check.initial_algorithm_scalars).ok(),
+        initial_balance_deficit_before: Some(init_check.deficit_before),
+        initial_closure_used: usize::try_from(init_check.closure_used).ok(),
+        initial_balance_deficit_after: Some(init_check.deficit_after),
+        initial_balance_ok: Some(init_check.is_balanced()),
+        sim_status: None,
+        sim_error: None,
+        sim_seconds: None,
+        sim_wall_seconds: None,
+        sim_trace_file: None,
+        sim_trace_error: None,
     }
 }
 

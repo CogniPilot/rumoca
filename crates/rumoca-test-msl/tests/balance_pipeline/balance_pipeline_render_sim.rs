@@ -241,13 +241,10 @@ impl RenderSimSetup {
         let sim_target_names =
             select_sim_target_names_from_compile_scope(compile_scope_names, run_simulation);
         let sim_target_models = match sim_target_names.as_ref() {
-            Some(names) => {
-                let mut sorted: Vec<String> = names.iter().cloned().collect();
-                sorted.sort();
-                sorted
-            }
+            Some(names) => names.clone(),
             None => Vec::new(),
         };
+        let sim_target_name_set = sim_target_models.iter().cloned().collect();
         let total_sim_targets = sim_target_models.len();
         let total_render_targets = if !msl_render_enabled() {
             0
@@ -282,7 +279,11 @@ impl RenderSimSetup {
             sim_solver_fail_live: AtomicUsize::new(0),
             sim_balance_fail_live: AtomicUsize::new(0),
             render_completed: AtomicUsize::new(0),
-            sim_target_names,
+            sim_target_names: if run_simulation {
+                Some(sim_target_name_set)
+            } else {
+                None
+            },
             sim_target_models,
             total_render_targets,
             total_sim_targets,
@@ -353,19 +354,18 @@ impl RenderSimSetup {
 fn select_sim_target_names_from_compile_scope(
     compile_scope_names: &[String],
     run_simulation: bool,
-) -> Option<HashSet<String>> {
+) -> Option<Vec<String>> {
     if !run_simulation {
         return None;
     }
 
     let mut names: Vec<String> = compile_scope_names.to_vec();
-    names.sort();
     let subset_requested = apply_sim_subset_filters(&mut names, "Simulation");
     if !subset_requested {
         apply_default_sim_set_mode_selection(&mut names);
     }
 
-    Some(names.into_iter().collect())
+    Some(names)
 }
 
 fn apply_default_sim_set_mode_selection(names: &mut Vec<String>) {
@@ -390,7 +390,7 @@ fn apply_default_sim_set_mode_selection(names: &mut Vec<String>) {
     }
 
     eprintln!(
-        "WARNING: simulation set mode ({mode}) is using lexical fallback for streaming compile (state-count ranking requires full compile-result retention)"
+        "WARNING: simulation set mode ({mode}) is using compile-scope order fallback for streaming compile (full live state-count ranking still requires retaining all compile results)"
     );
     apply_lexical_mode_limit(names, mode, limit);
 }

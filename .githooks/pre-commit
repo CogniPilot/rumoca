@@ -15,7 +15,7 @@ if [[ -n "$required_toolchain" && "$active_toolchain" != "$required_toolchain"* 
 fi
 
 echo "pre-commit: checking staged Rust file line counts (SPEC_0021)..."
-cargo run --quiet --bin rum -- check-rust-file-lines
+cargo run --quiet --bin rum -- repo policy rust-file-lines
 
 echo "pre-commit: enforcing traversal policy..."
 cargo run --quiet --bin rumoca-traversal-policy-check

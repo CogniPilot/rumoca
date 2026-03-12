@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 
 // =============================================================================
 // Simulation worker orchestration (isolated process)
@@ -30,6 +31,8 @@ pub(super) const SIM_OUTPUT_SAMPLES_NO_STATES: usize = 500;
 pub(super) const SIM_PROGRESS_LOG_INTERVAL_SECS: u64 = 15;
 /// Poll interval while waiting on isolated simulation worker process.
 pub(super) const SIM_WORKER_POLL_MILLIS: u64 = 20;
+/// Optional threshold for logging slow simulation-preparation work.
+pub(super) const SLOW_SIM_PREP_LOG_THRESHOLD_ENV: &str = "RUMOCA_MSL_SLOW_SIM_PREP_LOG_SECS";
 /// Optional per-worker address-space cap (MB), configured via env.
 ///
 /// When unset, no per-worker memory cap is applied and worker fan-out defaults
@@ -64,6 +67,19 @@ pub(super) fn sim_worker_memory_limit_mb() -> Option<usize> {
     let raw = std::env::var(SIM_WORKER_MEMORY_MB_ENV).ok()?;
     let parsed = raw.trim().parse::<usize>().ok()?;
     if parsed == 0 { None } else { Some(parsed) }
+}
+
+fn slow_sim_prep_log_threshold_secs_from_override(raw: Option<&str>) -> Option<f64> {
+    raw.and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+}
+
+fn slow_sim_prep_log_threshold_secs() -> Option<f64> {
+    slow_sim_prep_log_threshold_secs_from_override(
+        std::env::var(SLOW_SIM_PREP_LOG_THRESHOLD_ENV)
+            .ok()
+            .as_deref(),
+    )
 }
 
 fn sim_worker_prlimit_available() -> bool {
@@ -253,7 +269,7 @@ pub(super) fn resolve_sim_worker_exe() -> Result<&'static Path, String> {
 pub(super) fn sim_worker_io_paths(
     run_id: usize,
     model_name: &str,
-) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
+) -> io::Result<(PathBuf, PathBuf)> {
     let sim_worker_dir = get_msl_cache_dir().join("results").join("sim_worker");
     fs::create_dir_all(&sim_worker_dir)?;
     let sim_trace_dir = get_msl_cache_dir()
@@ -262,7 +278,6 @@ pub(super) fn sim_worker_io_paths(
         .join("rumoca");
     fs::create_dir_all(&sim_trace_dir)?;
     Ok((
-        sim_worker_dir.join(format!("dae_{run_id}.json")),
         sim_worker_dir.join(format!("sim_{run_id}.json")),
         sim_trace_dir.join(format!("{model_name}.json")),
     ))
@@ -330,7 +345,6 @@ impl SimRunContext<'_> {
 }
 
 pub(super) struct SimWorkerArtifacts {
-    input_path: PathBuf,
     output_path: PathBuf,
     trace_path: PathBuf,
     trace_relative_path: String,
@@ -339,7 +353,7 @@ pub(super) struct SimWorkerArtifacts {
 impl SimWorkerArtifacts {
     fn create(model_name: &str) -> Result<Self, String> {
         let run_id = SIM_WORKER_RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let (input_path, output_path, trace_path) = sim_worker_io_paths(run_id, model_name)
+        let (output_path, trace_path) = sim_worker_io_paths(run_id, model_name)
             .map_err(|e| format!("failed to create sim worker artifact paths: {e}"))?;
         if trace_path.exists() {
             let _ = fs::remove_file(&trace_path);
@@ -350,26 +364,21 @@ impl SimWorkerArtifacts {
             .to_string_lossy()
             .to_string();
         Ok(Self {
-            input_path,
             output_path,
             trace_path,
             trace_relative_path,
         })
     }
-
-    fn write_input(&self, dae: &Dae) -> Result<(), String> {
-        let mut file = File::create(&self.input_path)
-            .map_err(|e| format!("failed to create worker DAE input: {e}"))?;
-        serde_json::to_writer(&mut file, dae)
-            .map_err(|e| format!("failed to serialize worker DAE input: {e}"))
-    }
 }
 
 impl Drop for SimWorkerArtifacts {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.input_path);
         let _ = fs::remove_file(&self.output_path);
     }
+}
+
+fn serialize_worker_input(dae: &Dae) -> Result<Vec<u8>, String> {
+    bincode::serialize(dae).map_err(|e| format!("failed to serialize worker DAE input: {e}"))
 }
 
 #[derive(Debug, Clone)]
@@ -381,6 +390,16 @@ pub(super) struct SimExecutionSettings {
     pub(super) atol: Option<f64>,
     pub(super) solver: String,
     pub(super) timeout_seconds: Option<f64>,
+}
+
+pub(super) struct PreparedSimulationRun {
+    model_name: String,
+    n_states: usize,
+    n_algebraics: usize,
+    output_samples: usize,
+    settings: SimExecutionSettings,
+    dae_payload: Vec<u8>,
+    artifacts: SimWorkerArtifacts,
 }
 
 pub(super) fn spawn_sim_worker_process(
@@ -411,8 +430,7 @@ pub(super) fn spawn_sim_worker_process(
         }
         None => Command::new(worker_exe),
     };
-    cmd.arg("--dae-json")
-        .arg(&artifacts.input_path)
+    cmd.arg("--dae-stdin")
         .arg("--result-json")
         .arg(&artifacts.output_path)
         .arg("--model-name")
@@ -446,9 +464,27 @@ pub(super) fn spawn_sim_worker_process(
         cmd.stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
     }
+    cmd.stdin(std::process::Stdio::piped());
 
     cmd.spawn()
         .map_err(|e| format!("failed to spawn sim worker: {e}"))
+}
+
+fn write_sim_worker_stdin(
+    child: &mut std::process::Child,
+    payload: &[u8],
+    model_name: &str,
+) -> Result<(), String> {
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| format!("sim worker stdin unavailable for {model_name}"))?;
+    stdin
+        .write_all(payload)
+        .map_err(|e| format!("failed to stream worker DAE input for {model_name}: {e}"))?;
+    stdin
+        .flush()
+        .map_err(|e| format!("failed to flush worker DAE input for {model_name}: {e}"))
 }
 
 pub(super) enum WorkerWaitOutcome {
@@ -510,7 +546,7 @@ pub(super) fn read_sim_worker_result(
     File::open(&artifacts.output_path)
         .map_err(|e| format!("failed to open worker result: {e}"))
         .and_then(|file| {
-            serde_json::from_reader::<_, SimWorkerResult>(file)
+            serde_json::from_reader::<_, SimWorkerResult>(std::io::BufReader::new(file))
                 .map_err(|e| format!("failed to parse worker result JSON: {e}"))
         })
 }
@@ -523,8 +559,84 @@ pub(super) fn run_simulation_worker(
     n_states: usize,
     n_algebraics: usize,
 ) -> MslSimModelResult {
+    let prepared = match prepare_simulation_run(
+        dae,
+        model_name,
+        settings.clone(),
+        output_samples,
+        n_states,
+        n_algebraics,
+    ) {
+        Ok(run) => run,
+        Err(result) => return *result,
+    };
+    run_prepared_simulation(prepared)
+}
+
+pub(super) fn prepare_simulation_run(
+    dae: &Dae,
+    model_name: &str,
+    settings: SimExecutionSettings,
+    output_samples: usize,
+    n_states: usize,
+    n_algebraics: usize,
+) -> Result<PreparedSimulationRun, Box<MslSimModelResult>> {
     let ctx = SimRunContext {
         model_name,
+        n_states,
+        n_algebraics,
+    };
+
+    let prep_started = Instant::now();
+    let artifact_create_started = Instant::now();
+    let artifacts =
+        SimWorkerArtifacts::create(model_name).map_err(|err| Box::new(ctx.solver_fail(err)))?;
+    let artifact_create_secs = artifact_create_started.elapsed().as_secs_f64();
+    let serialize_started = Instant::now();
+    let dae_payload = match serialize_worker_input(dae) {
+        Ok(payload) => payload,
+        Err(err) => return Err(Box::new(ctx.solver_fail(err))),
+    };
+    let serialize_secs = serialize_started.elapsed().as_secs_f64();
+    let input_bytes = dae_payload.len();
+    let prep_secs = prep_started.elapsed().as_secs_f64();
+    if slow_sim_prep_log_threshold_secs().is_some_and(|threshold| prep_secs >= threshold) {
+        eprintln!(
+            "    slow sim prep: model={model_name} total={prep_secs:.2}s create={artifact_create_secs:.2}s serialize_input={serialize_secs:.2}s input_bytes={input_bytes} states={} algebraics={} f_x={} f_z={} f_m={} f_c={} relation={} initial_eqs={}",
+            dae.states.len(),
+            dae.algebraics.len(),
+            dae.f_x.len(),
+            dae.f_z.len(),
+            dae.f_m.len(),
+            dae.f_c.len(),
+            dae.relation.len(),
+            dae.initial_equations.len(),
+        );
+    }
+
+    Ok(PreparedSimulationRun {
+        model_name: model_name.to_string(),
+        n_states,
+        n_algebraics,
+        output_samples,
+        settings,
+        dae_payload,
+        artifacts,
+    })
+}
+
+pub(super) fn run_prepared_simulation(run: PreparedSimulationRun) -> MslSimModelResult {
+    let PreparedSimulationRun {
+        model_name,
+        n_states,
+        n_algebraics,
+        output_samples,
+        settings,
+        dae_payload,
+        artifacts,
+    } = run;
+    let ctx = SimRunContext {
+        model_name: &model_name,
         n_states,
         n_algebraics,
     };
@@ -533,15 +645,6 @@ pub(super) fn run_simulation_worker(
         Ok(path) => path,
         Err(err) => return ctx.solver_fail(err),
     };
-
-    let artifacts = match SimWorkerArtifacts::create(model_name) {
-        Ok(artifacts) => artifacts,
-        Err(err) => return ctx.solver_fail(err),
-    };
-
-    if let Err(err) = artifacts.write_input(dae) {
-        return ctx.solver_fail(err);
-    }
 
     let solver_timeout_secs = settings
         .timeout_seconds
@@ -556,13 +659,18 @@ pub(super) fn run_simulation_worker(
         worker_exe,
         &artifacts,
         &ctx,
-        settings,
+        &settings,
         output_samples,
         solver_timeout_secs,
     ) {
         Ok(child) => child,
         Err(err) => return ctx.solver_fail(err),
     };
+    if let Err(err) = write_sim_worker_stdin(&mut child, &dae_payload, &model_name) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return ctx.solver_fail(err);
+    }
 
     let wait_outcome = match wait_for_sim_worker(&mut child, &ctx, process_timeout_secs) {
         Ok(outcome) => outcome,
@@ -681,5 +789,99 @@ pub(super) fn output_samples_for_model(n_state_scalars: usize) -> usize {
         SIM_OUTPUT_SAMPLES_NO_STATES
     } else {
         SIM_OUTPUT_SAMPLES_DEFAULT
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_session::compile::{Session, SessionConfig};
+
+    #[test]
+    fn slow_sim_prep_log_threshold_parses_positive_numbers_only() {
+        assert_eq!(slow_sim_prep_log_threshold_secs_from_override(None), None);
+        assert_eq!(
+            slow_sim_prep_log_threshold_secs_from_override(Some("")),
+            None
+        );
+        assert_eq!(
+            slow_sim_prep_log_threshold_secs_from_override(Some("0")),
+            None
+        );
+        assert_eq!(
+            slow_sim_prep_log_threshold_secs_from_override(Some("-1")),
+            None
+        );
+        assert_eq!(
+            slow_sim_prep_log_threshold_secs_from_override(Some("7.5")),
+            Some(7.5)
+        );
+    }
+
+    #[test]
+    fn serialize_worker_input_round_trips_binary_dae_payload() {
+        let source =
+            "model RoundTrip\n  Real x(start = 1);\nequation\n  der(x) = -x;\nend RoundTrip;\n";
+        let mut session = Session::new(SessionConfig::default());
+        session
+            .add_document("round_trip.mo", source)
+            .expect("add source file");
+        let compiled = session
+            .compile_model("RoundTrip")
+            .expect("compile round-trip model");
+
+        let payload = serialize_worker_input(&compiled.dae).expect("serialize worker input");
+        let round_tripped: Dae =
+            bincode::deserialize_from(std::io::Cursor::new(payload)).expect("decode worker input");
+
+        let expected = serde_json::to_value(&compiled.dae).expect("serialize expected DAE");
+        let actual = serde_json::to_value(&round_tripped).expect("serialize round-tripped DAE");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sim_worker_io_paths_returns_output_and_trace_paths() {
+        let (output_path, trace_path) = sim_worker_io_paths(7, "Demo.Model").expect("worker paths");
+
+        assert!(output_path.ends_with("sim_worker/sim_7.json"));
+        assert!(trace_path.ends_with("sim_traces/rumoca/Demo.Model.json"));
+    }
+
+    #[test]
+    fn run_prepared_simulation_streams_binary_dae_over_stdin() {
+        let source =
+            "model WorkerPipe\n  Real x(start = 1);\nequation\n  der(x) = -x;\nend WorkerPipe;\n";
+        let mut session = Session::new(SessionConfig::default());
+        session
+            .add_document("worker_pipe.mo", source)
+            .expect("add source file");
+        let compiled = session
+            .compile_model("WorkerPipe")
+            .expect("compile worker pipe model");
+
+        let settings = SimExecutionSettings {
+            t_start: 0.0,
+            t_end: 0.1,
+            dt: Some(0.01),
+            rtol: Some(1e-6),
+            atol: Some(1e-6),
+            solver: "auto".to_string(),
+            timeout_seconds: Some(5.0),
+        };
+        let prepared = prepare_simulation_run(
+            &compiled.dae,
+            "WorkerPipe",
+            settings,
+            10,
+            compiled.dae.states.len(),
+            compiled.dae.algebraics.len(),
+        )
+        .expect("prepare simulation");
+        let result = run_prepared_simulation(prepared);
+
+        assert!(matches!(result.status, SimStatus::Ok), "{result:?}");
+        assert_eq!(result.error, None);
+        assert!(result.sim_seconds.is_some());
+        assert!(result.sim_wall_seconds.is_some());
     }
 }

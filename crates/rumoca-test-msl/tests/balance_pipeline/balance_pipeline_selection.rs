@@ -14,9 +14,43 @@ pub(super) const SIM_TOTAL_MEMORY_MB_ENV: &str = "RUMOCA_MSL_SIM_TOTAL_MEMORY_MB
 pub(super) const SIM_SET_LIMIT_DEFAULT: usize = 180;
 pub(super) const DEFAULT_SIM_TARGETS_FILE_REL: &str =
     "tests/msl_tests/msl_simulation_targets_180.json";
+const USE_GENERATED_SIM_TARGETS_ENV: &str = "RUMOCA_MSL_USE_GENERATED_SIM_TARGETS";
+const USE_PRIOR_COMPLEXITY_SCHEDULE_ENV: &str = "RUMOCA_MSL_USE_PRIOR_COMPLEXITY_SCHEDULE";
+const GENERATED_SIM_TARGETS_FILE_REL: &str = "results/msl_simulation_targets.json";
+const PRIOR_RESULTS_FILE_REL: &str = "results/msl_results.json";
 
 pub(super) const SIM_SET_ENV: &str = "RUMOCA_MSL_SIM_SET";
 pub(super) const SIM_SET_LIMIT_ENV: &str = "RUMOCA_MSL_SIM_SET_LIMIT";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct PriorModelComplexity {
+    num_states: usize,
+    num_algebraics: usize,
+    num_f_x: usize,
+    scalar_equations: usize,
+    scalar_unknowns: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct PriorResultsSummary {
+    #[serde(default)]
+    model_results: Vec<PriorResultRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PriorResultRecord {
+    model_name: String,
+    #[serde(default)]
+    num_states: Option<usize>,
+    #[serde(default)]
+    num_algebraics: Option<usize>,
+    #[serde(default)]
+    num_f_x: Option<usize>,
+    #[serde(default)]
+    scalar_equations: Option<usize>,
+    #[serde(default)]
+    scalar_unknowns: Option<usize>,
+}
 
 fn default_stage_parallelism(auto_threads: usize) -> usize {
     if auto_threads <= 4 {
@@ -83,9 +117,73 @@ pub(super) fn sim_targets_file_override() -> Option<PathBuf> {
     Some(PathBuf::from(trimmed))
 }
 
-pub(super) fn default_sim_targets_file() -> Option<PathBuf> {
+fn generated_sim_targets_file() -> Option<PathBuf> {
+    let path = get_msl_cache_dir().join(GENERATED_SIM_TARGETS_FILE_REL);
+    path.is_file().then_some(path)
+}
+
+fn env_var_bool(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn committed_sim_targets_file() -> Option<PathBuf> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SIM_TARGETS_FILE_REL);
     path.is_file().then_some(path)
+}
+
+fn select_default_sim_targets_file(
+    override_file: Option<PathBuf>,
+    committed_file: Option<PathBuf>,
+    generated_file: Option<PathBuf>,
+    use_generated_targets: bool,
+) -> Option<PathBuf> {
+    override_file.or_else(|| {
+        if use_generated_targets {
+            generated_file.or(committed_file)
+        } else {
+            committed_file.or(generated_file)
+        }
+    })
+}
+
+pub(super) fn default_sim_targets_file() -> Option<PathBuf> {
+    committed_sim_targets_file().or_else(generated_sim_targets_file)
+}
+
+fn generated_sim_targets_file_requested() -> bool {
+    env_var_bool(USE_GENERATED_SIM_TARGETS_ENV)
+}
+
+fn prior_complexity_schedule_requested() -> bool {
+    env_var_bool(USE_PRIOR_COMPLEXITY_SCHEDULE_ENV)
+}
+
+fn should_apply_prior_complexity_schedule(
+    subset_requested: bool,
+    schedule_requested: bool,
+) -> bool {
+    !subset_requested && schedule_requested
+}
+
+fn prior_results_file() -> Option<PathBuf> {
+    let path = get_msl_cache_dir().join(PRIOR_RESULTS_FILE_REL);
+    path.is_file().then_some(path)
+}
+
+fn dedup_model_names_preserve_order(names: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    names
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .collect()
 }
 
 pub(super) fn parse_target_model_names(value: &serde_json::Value) -> Result<Vec<String>, String> {
@@ -134,10 +232,67 @@ pub(super) fn load_target_model_names(path: &Path) -> Result<Vec<String>, String
     let raw = fs::read_to_string(path).map_err(|e| format!("read failed: {e}"))?;
     let value: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse failed: {e}"))?;
-    let mut names = parse_target_model_names(&value)?;
-    names.sort();
-    names.dedup();
-    Ok(names)
+    Ok(dedup_model_names_preserve_order(parse_target_model_names(
+        &value,
+    )?))
+}
+
+fn retain_selected_model_order(names: &mut Vec<String>, selected: &[String]) {
+    let available: HashSet<String> = names.iter().cloned().collect();
+    *names = selected
+        .iter()
+        .filter(|name| available.contains(*name))
+        .cloned()
+        .collect();
+}
+
+fn load_prior_model_complexities(path: &Path) -> Option<HashMap<String, PriorModelComplexity>> {
+    let raw = fs::read_to_string(path).ok()?;
+    let summary: PriorResultsSummary = serde_json::from_str(&raw).ok()?;
+    let mut complexities = HashMap::new();
+    for result in summary.model_results {
+        let complexity = PriorModelComplexity {
+            num_states: result.num_states.unwrap_or_default(),
+            num_algebraics: result.num_algebraics.unwrap_or_default(),
+            num_f_x: result.num_f_x.unwrap_or_default(),
+            scalar_equations: result.scalar_equations.unwrap_or_default(),
+            scalar_unknowns: result.scalar_unknowns.unwrap_or_default(),
+        };
+        if complexity != PriorModelComplexity::default() {
+            complexities.insert(result.model_name, complexity);
+        }
+    }
+    Some(complexities)
+}
+
+fn apply_prior_complexity_schedule(names: &mut [String], label: &str) {
+    let Some(path) = prior_results_file() else {
+        return;
+    };
+    let Some(complexities) = load_prior_model_complexities(&path) else {
+        eprintln!(
+            "WARNING: failed to read prior MSL results from '{}'; keeping lexical target order",
+            path.display()
+        );
+        return;
+    };
+    let ranked_models = names
+        .iter()
+        .filter(|name| complexities.contains_key(*name))
+        .count();
+    if ranked_models == 0 {
+        return;
+    }
+    names.sort_by(|left, right| {
+        let left_key = complexities.get(left).copied().unwrap_or_default();
+        let right_key = complexities.get(right).copied().unwrap_or_default();
+        right_key.cmp(&left_key).then_with(|| left.cmp(right))
+    });
+    println!(
+        "{label} schedule: ranked {ranked_models}/{} models using prior compile metrics from {}",
+        names.len(),
+        path.display()
+    );
 }
 
 pub(super) fn sim_subset_patterns() -> Vec<String> {
@@ -239,9 +394,12 @@ pub(super) fn model_name_matches_any_pattern(
 pub(super) fn apply_sim_subset_filters(names: &mut Vec<String>, label: &str) -> bool {
     let baseline_count = names.len();
     let target_file_override = sim_targets_file_override();
-    let target_file = target_file_override
-        .clone()
-        .or_else(default_sim_targets_file);
+    let target_file = select_default_sim_targets_file(
+        target_file_override.clone(),
+        committed_sim_targets_file(),
+        generated_sim_targets_file(),
+        generated_sim_targets_file_requested(),
+    );
     let patterns = sim_subset_patterns();
     let exact_match = sim_subset_exact_match_enabled();
     let limit = sim_subset_limit();
@@ -257,8 +415,7 @@ pub(super) fn apply_sim_subset_filters(names: &mut Vec<String>, label: &str) -> 
                 err
             )
         });
-        let selected: HashSet<String> = selected.into_iter().collect();
-        names.retain(|name| selected.contains(name));
+        retain_selected_model_order(names, &selected);
         if is_override {
             println!(
                 "{} target file (RUMOCA_MSL_SIM_TARGETS_FILE={}) kept {}/{} root examples",
@@ -323,7 +480,13 @@ pub(super) fn select_compile_targets_for_focused_simulation(
         .collect();
     names.sort();
     let baseline_count = names.len();
-    let _subset_requested = apply_sim_subset_filters(&mut names, "Compile");
+    let subset_requested = apply_sim_subset_filters(&mut names, "Compile");
+    if should_apply_prior_complexity_schedule(
+        subset_requested,
+        prior_complexity_schedule_requested(),
+    ) {
+        apply_prior_complexity_schedule(&mut names, "Compile");
+    }
 
     if names.is_empty() {
         None
@@ -356,5 +519,137 @@ mod tests {
     fn default_stage_parallelism_reserves_headroom_on_large_hosts() {
         assert_eq!(default_stage_parallelism(8), 5);
         assert_eq!(default_stage_parallelism(32), 29);
+    }
+
+    #[test]
+    fn load_target_model_names_preserves_record_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("targets.json");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "records": [
+                    {"model_name": "Modelica.Electrical.Digital.Examples.DFFREGSRL"},
+                    {"model_name": "Modelica.Blocks.Examples.BooleanNetwork1"},
+                    {"model_name": "Modelica.Electrical.Digital.Examples.DFFREGSRL"},
+                    {"model_name": "Modelica.Electrical.Digital.Examples.DFFREG"}
+                ]
+            }))
+            .expect("serialize targets"),
+        )
+        .expect("write targets");
+
+        assert_eq!(
+            load_target_model_names(&path).expect("load target names"),
+            vec![
+                "Modelica.Electrical.Digital.Examples.DFFREGSRL".to_string(),
+                "Modelica.Blocks.Examples.BooleanNetwork1".to_string(),
+                "Modelica.Electrical.Digital.Examples.DFFREG".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn load_prior_model_complexities_reads_state_rankings() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("msl_results.json");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "model_results": [
+                    {
+                        "model_name": "Modelica.Electrical.Digital.Examples.DFFREG",
+                        "num_states": 0,
+                        "num_algebraics": 42,
+                        "num_f_x": 0,
+                        "scalar_equations": 84,
+                        "scalar_unknowns": 84
+                    },
+                    {
+                        "model_name": "Modelica.Blocks.Examples.BooleanNetwork1",
+                        "num_states": 4,
+                        "num_algebraics": 8,
+                        "num_f_x": 18,
+                        "scalar_equations": 18,
+                        "scalar_unknowns": 18
+                    }
+                ]
+            }))
+            .expect("serialize prior results"),
+        )
+        .expect("write prior results");
+
+        let complexities = load_prior_model_complexities(&path).expect("prior complexities");
+        assert_eq!(
+            complexities.get("Modelica.Blocks.Examples.BooleanNetwork1"),
+            Some(&PriorModelComplexity {
+                num_states: 4,
+                num_algebraics: 8,
+                num_f_x: 18,
+                scalar_equations: 18,
+                scalar_unknowns: 18,
+            })
+        );
+        assert_eq!(
+            complexities.get("Modelica.Electrical.Digital.Examples.DFFREG"),
+            Some(&PriorModelComplexity {
+                num_states: 0,
+                num_algebraics: 42,
+                num_f_x: 0,
+                scalar_equations: 84,
+                scalar_unknowns: 84,
+            })
+        );
+    }
+
+    #[test]
+    fn default_sim_targets_file_prefers_committed_baseline_list() {
+        let default_targets = default_sim_targets_file().expect("default target file");
+        assert!(
+            default_targets.ends_with(DEFAULT_SIM_TARGETS_FILE_REL),
+            "default target file should be the committed baseline list, got {}",
+            default_targets.display()
+        );
+    }
+
+    #[test]
+    fn select_default_sim_targets_file_prefers_committed_baseline_without_generated_opt_in() {
+        let selected = select_default_sim_targets_file(
+            None,
+            Some(PathBuf::from("/repo/tests/msl_simulation_targets_180.json")),
+            Some(PathBuf::from(
+                "/repo/target/msl/results/msl_simulation_targets.json",
+            )),
+            false,
+        )
+        .expect("default target file");
+        assert_eq!(
+            selected,
+            PathBuf::from("/repo/tests/msl_simulation_targets_180.json")
+        );
+    }
+
+    #[test]
+    fn select_default_sim_targets_file_can_use_generated_targets_with_explicit_opt_in() {
+        let selected = select_default_sim_targets_file(
+            None,
+            Some(PathBuf::from("/repo/tests/msl_simulation_targets_180.json")),
+            Some(PathBuf::from(
+                "/repo/target/msl/results/msl_simulation_targets.json",
+            )),
+            true,
+        )
+        .expect("generated target file");
+        assert_eq!(
+            selected,
+            PathBuf::from("/repo/target/msl/results/msl_simulation_targets.json")
+        );
+    }
+
+    #[test]
+    fn prior_complexity_schedule_is_opt_in_only() {
+        assert!(!should_apply_prior_complexity_schedule(false, false));
+        assert!(!should_apply_prior_complexity_schedule(true, true));
+        assert!(should_apply_prior_complexity_schedule(false, true));
     }
 }

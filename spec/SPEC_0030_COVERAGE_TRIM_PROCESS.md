@@ -8,7 +8,7 @@ Defines the required workflow for workspace coverage generation, trim-candidate 
 
 ## Scope
 Applies to:
-- `rum coverage*` tooling
+- `rum coverage ...` tooling
 - coverage-trim triage/deletion changes
 - `crates/rumoca-tool-dev/coverage/trim-gate-baseline.json`
 
@@ -17,25 +17,25 @@ Applies to:
 Generate workspace coverage artifacts:
 
 ```bash
-cargo run --bin rum -- coverage
+rum coverage run
 ```
 
 Optionally include ignored/slow suites in the same dataset:
 
 ```bash
-cargo run --bin rum -- coverage --include-ignored
+rum coverage run --include-ignored
 ```
 
 Generate trim report and candidate inventory:
 
 ```bash
-cargo run --bin rum -- coverage-report
+rum coverage report
 ```
 
 Run regression gate:
 
 ```bash
-cargo run --bin rum -- coverage-gate
+rum coverage gate
 ```
 
 ## Artifacts
@@ -77,7 +77,7 @@ Before deleting any candidate:
 Promotion is explicit only:
 
 ```bash
-cargo run --bin rum -- coverage-gate --promote-baseline
+rum coverage gate --promote-baseline
 ```
 
 Requirements:
@@ -94,5 +94,5 @@ When gate fails:
 
 If a promotion is incorrect:
 1. Revert `crates/rumoca-tool-dev/coverage/trim-gate-baseline.json`.
-2. Re-run `coverage`, `coverage-report`, and `coverage-gate`.
+2. Re-run `coverage run`, `coverage report`, and `coverage gate`.
 3. Confirm pass against restored baseline or re-triage with corrected rationale.
