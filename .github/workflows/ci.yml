@@ -834,6 +834,51 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets/
+
+      - name: Publish VS Code extensions to marketplaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          vsix_files=(release-assets/*.vsix)
+          if [ "${#vsix_files[@]}" -eq 0 ]; then
+            echo "::error::No VS Code extension packages found in release-assets"
+            exit 1
+          fi
+
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "::warning::VSCE_PAT secret not set; skipping Visual Studio Marketplace publish"
+          else
+            for vsix_file in "${vsix_files[@]}"; do
+              echo "Publishing $(basename "$vsix_file") to Visual Studio Marketplace"
+              (
+                cd editors/vscode
+                npx @vscode/vsce publish --packagePath "../../${vsix_file}" --no-dependencies --no-yarn
+              )
+            done
+          fi
+
+          if [ -z "${OVSX_TOKEN:-}" ]; then
+            echo "::warning::OVSX_TOKEN secret not set; skipping Open VSX publish"
+          else
+            for vsix_file in "${vsix_files[@]}"; do
+              echo "Publishing $(basename "$vsix_file") to Open VSX"
+              (
+                cd editors/vscode
+                npx --yes ovsx publish "../../${vsix_file}" -p "${OVSX_TOKEN}"
+              )
+            done
+          fi
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
