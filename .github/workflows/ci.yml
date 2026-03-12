@@ -421,10 +421,10 @@ jobs:
           path: gh-pages/
 
   # ============================================================================
-  # Cross-platform Rust binary and VS Code extension builds
+  # Cross-platform Rust binary builds
   # ============================================================================
   build-rust-binaries:
-    name: Build Rust + VSIX (${{ matrix.target }})
+    name: Build Rust (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -435,37 +435,22 @@ jobs:
             target: x86_64-unknown-linux-musl
             rumoca_asset: rumoca-linux-x86_64
             lsp_asset: rumoca-lsp-linux-x86_64
-            vscode_target: linux-x64
-            vscode_asset: vscode-extension-linux-x64
-            vscode_binary_name: rumoca-lsp
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             rumoca_asset: rumoca-linux-aarch64
             lsp_asset: rumoca-lsp-linux-aarch64
-            vscode_target: linux-arm64
-            vscode_asset: vscode-extension-linux-arm64
-            vscode_binary_name: rumoca-lsp
           - os: macos-15-intel
             target: x86_64-apple-darwin
             rumoca_asset: rumoca-macos-x86_64
             lsp_asset: rumoca-lsp-macos-x86_64
-            vscode_target: darwin-x64
-            vscode_asset: vscode-extension-darwin-x64
-            vscode_binary_name: rumoca-lsp
           - os: macos-15
             target: aarch64-apple-darwin
             rumoca_asset: rumoca-macos-aarch64
             lsp_asset: rumoca-lsp-macos-aarch64
-            vscode_target: darwin-arm64
-            vscode_asset: vscode-extension-darwin-arm64
-            vscode_binary_name: rumoca-lsp
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             rumoca_asset: rumoca-windows-x86_64.exe
             lsp_asset: rumoca-lsp-windows-x86_64.exe
-            vscode_target: win32-x64
-            vscode_asset: vscode-extension-win32-x64
-            vscode_binary_name: rumoca-lsp.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -565,38 +550,6 @@ jobs:
         with:
           name: ${{ matrix.lsp_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install VS Code extension dependencies
-        shell: bash
-        run: |
-          cd editors/vscode
-          npm ci
-
-      - name: Prepare bundled LSP binary
-        shell: bash
-        run: |
-          mkdir -p editors/vscode/bin
-          cp "target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}" \
-            "editors/vscode/bin/${{ matrix.vscode_binary_name }}"
-          chmod +x "editors/vscode/bin/${{ matrix.vscode_binary_name }}" 2>/dev/null || true
-          ls -la editors/vscode/bin
-
-      - name: Package VS Code extension
-        shell: bash
-        run: |
-          cd editors/vscode
-          npx @vscode/vsce package --target ${{ matrix.vscode_target }} --no-dependencies --no-yarn
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.vscode_asset }}
-          path: editors/vscode/*.vsix
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
@@ -724,8 +677,21 @@ jobs:
         with:
           path: artifacts
 
-      - name: Organize artifacts
+      - name: Setup Node.js for VSIX packaging
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install VS Code extension dependencies
+        shell: bash
         run: |
+          cd editors/vscode
+          npm ci
+
+      - name: Organize artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p release-assets
 
           echo "=== Downloaded structure ==="
@@ -745,17 +711,60 @@ jobs:
             fi
           done
 
-          # Move VS Code extension packages
-          for dir in artifacts/vscode-extension-*; do
-            if [ -d "$dir" ]; then
-              echo "Processing VS Code artifact: $dir"
-              source_file="$(find "$dir" -maxdepth 1 -type f -name '*.vsix' | head -n 1)"
-              if [ -z "$source_file" ]; then
-                echo "No VSIX file found under $dir; skipping"
-                continue
-              fi
-              cp "$source_file" "release-assets/$(basename "$source_file")"
+          # Package VS Code extensions at deployment time from the released LSP binaries.
+          map_target() {
+            case "$1" in
+              linux-x64)
+                printf '%s\n' 'rumoca-lsp-linux-x86_64|rumoca-lsp'
+                ;;
+              linux-arm64)
+                printf '%s\n' 'rumoca-lsp-linux-aarch64|rumoca-lsp'
+                ;;
+              darwin-x64)
+                printf '%s\n' 'rumoca-lsp-macos-x86_64|rumoca-lsp'
+                ;;
+              darwin-arm64)
+                printf '%s\n' 'rumoca-lsp-macos-aarch64|rumoca-lsp'
+                ;;
+              win32-x64)
+                printf '%s\n' 'rumoca-lsp-windows-x86_64.exe|rumoca-lsp.exe'
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          for vscode_target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            IFS='|' read -r artifact_name binary_name <<<"$(map_target "$vscode_target")"
+            artifact_dir="artifacts/${artifact_name}"
+            if [ ! -d "$artifact_dir" ]; then
+              echo "::error::Missing LSP artifact directory for $vscode_target: $artifact_dir"
+              exit 1
             fi
+            source_file="$(find "$artifact_dir" -maxdepth 1 -type f | head -n 1)"
+            if [ -z "$source_file" ]; then
+              echo "::error::No LSP binary found under $artifact_dir"
+              exit 1
+            fi
+
+            echo "Packaging VSIX for $vscode_target from $source_file"
+            rm -f editors/vscode/bin/* editors/vscode/*.vsix
+            mkdir -p editors/vscode/bin
+            cp "$source_file" "editors/vscode/bin/$binary_name"
+            chmod +x "editors/vscode/bin/$binary_name" 2>/dev/null || true
+
+            (
+              cd editors/vscode
+              npx @vscode/vsce package --target "$vscode_target" --no-dependencies --no-yarn
+            )
+
+            vsix_file="$(find editors/vscode -maxdepth 1 -type f -name '*.vsix' | head -n 1)"
+            if [ -z "$vsix_file" ]; then
+              echo "::error::VSIX packaging did not produce an artifact for $vscode_target"
+              exit 1
+            fi
+            cp "$vsix_file" "release-assets/$(basename "$vsix_file")"
           done
 
           echo "=== Release assets ==="
