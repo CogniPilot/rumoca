@@ -48,4 +48,5 @@ pub use document_links::handle_document_links;
 pub use inlay_hints::handle_inlay_hints;
 pub use signature_help::handle_signature_help;
 
+#[cfg(feature = "server")]
 pub(crate) use diagnostics::common_diagnostics_for_file;
