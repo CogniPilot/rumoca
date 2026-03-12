@@ -265,6 +265,7 @@ fn absolutize_cache_path(path: PathBuf) -> PathBuf {
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos", unix))]
 fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {

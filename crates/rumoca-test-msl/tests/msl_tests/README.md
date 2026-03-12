@@ -13,6 +13,12 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   - Owns state-count-ranked fast/long/full simulation-set selection via
     `RUMOCA_MSL_SIM_SET`.
   - Keeps the compile-target reduction behavior for focused runs centralized.
+- Focused model compiles reuse the shared parsed/resolved MSL library tree, but
+  each requested model is compiled on its own uncached reachable closure so
+  per-model phase results do not accumulate across the full 180-model gate.
+- The harness stages the official `ModelicaStandardLibrary_v4.1.0.zip` release
+  asset and treats `Complex.mo` plus `Modelica 4.1.0/package.mo` as required
+  cache-layout sentinels, so stale partial MSL caches are rejected and rebuilt.
 - `balance_pipeline_sim_worker.rs`
   - Owns isolated simulation worker execution and timeout/result mapping.
 - `balance_pipeline_render_sim.rs`
@@ -35,8 +41,8 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   `tests/msl_tests/msl_simulation_targets_180.json`.
 - Focused subset controls (`RUMOCA_MSL_SIM_MATCH`, `RUMOCA_MSL_SIM_LIMIT`) are
   for iterative simulation work and must not be treated as baseline runs.
-- By default, the pipeline loads `RUMOCA_MSL_SIM_TARGETS_FILE` from this
-  committed targets file when no environment override is provided.
+- By default, the pipeline uses this committed targets file when no
+  environment override is provided.
 - Baseline JSON (`msl_quality_baseline.json`) also captures OMC parity
   distributions for this set (runtime speedup ratio + trace-accuracy
   min/median/mean/max), populated from `omc_simulation_reference.json`.
@@ -56,6 +62,13 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   - accepts JSON array (`["Modelica...."]`)
   - accepts object with `model_names`
   - accepts object with `records[*].model_name` (parity manifest friendly)
+- Local target-set experimentation can opt into generated/cache-driven inputs:
+  - `RUMOCA_MSL_USE_GENERATED_SIM_TARGETS=1` allows
+    `target/msl/results/msl_simulation_targets.json` to replace the committed
+    baseline list when present.
+  - `RUMOCA_MSL_USE_PRIOR_COMPLEXITY_SCHEDULE=1` sorts the default compile scope
+    by prior `target/msl/results/msl_results.json` complexity metrics instead of
+    keeping lexical baseline order.
 - Simulation attempts are limited to standalone root MSL examples:
   - explicit `Modelica.*.Examples.*` roots
   - non-partial models

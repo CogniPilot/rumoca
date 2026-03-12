@@ -6,6 +6,18 @@ use super::*;
 const COMPILE_CHUNK_PROGRESS_INTERVAL_SECS: u64 = 15;
 const COMPILE_CHUNK_PROGRESS_POLL_MILLIS: u64 = 250;
 const MODEL_ATTEMPT_TIMEOUT_ERROR_CODE: &str = "EMSL_TIMEOUT_MODEL_ATTEMPT";
+const STREAMING_COMPILE_RESULT_QUEUE_BOUND: usize = 1;
+const SLOW_COMPILE_LOG_THRESHOLD_ENV: &str = "RUMOCA_MSL_SLOW_COMPILE_LOG_SECS";
+
+trait FocusedClosureCompiler {
+    fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport;
+}
+
+impl FocusedClosureCompiler for CompiledLibrary {
+    fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport {
+        self.compile_model_strict_reachable_uncached_with_recovery(model_name)
+    }
+}
 
 pub(super) fn log_simulation_run_configuration(run_simulation: bool) {
     if !run_simulation {
@@ -59,12 +71,102 @@ pub(super) fn select_compile_models_for_run(
     }
 }
 
-pub(super) fn compile_batch_size() -> usize {
-    std::env::var("RUMOCA_MSL_COMPILE_BATCH_SIZE")
-        .ok()
+fn compile_batch_size_from_override(run_simulation: bool, override_value: Option<&str>) -> usize {
+    override_value
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .filter(|size| *size > 0)
-        .unwrap_or(24)
+        .unwrap_or(if run_simulation { 1 } else { 24 })
+}
+
+pub(super) fn compile_batch_size(run_simulation: bool) -> usize {
+    compile_batch_size_from_override(
+        run_simulation,
+        std::env::var("RUMOCA_MSL_COMPILE_BATCH_SIZE")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn slow_compile_log_threshold_secs_from_override(raw: Option<&str>) -> Option<f64> {
+    raw.and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+}
+
+fn slow_compile_log_threshold_secs() -> Option<f64> {
+    slow_compile_log_threshold_secs_from_override(
+        std::env::var(SLOW_COMPILE_LOG_THRESHOLD_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn effective_compile_chunk_batch_size(run_simulation: bool, compile_count: usize) -> usize {
+    compile_batch_size(run_simulation).min(compile_count.max(1))
+}
+
+fn delta_compile_timing_stat(
+    before: rumoca_session::compile::CompilePhaseTimingStat,
+    after: rumoca_session::compile::CompilePhaseTimingStat,
+) -> rumoca_session::compile::CompilePhaseTimingStat {
+    rumoca_session::compile::CompilePhaseTimingStat {
+        calls: after.calls.saturating_sub(before.calls),
+        total_nanos: after.total_nanos.saturating_sub(before.total_nanos),
+    }
+}
+
+fn delta_compile_phase_timing_snapshot(
+    before: rumoca_session::compile::CompilePhaseTimingSnapshot,
+    after: rumoca_session::compile::CompilePhaseTimingSnapshot,
+) -> rumoca_session::compile::CompilePhaseTimingSnapshot {
+    rumoca_session::compile::CompilePhaseTimingSnapshot {
+        instantiate: delta_compile_timing_stat(before.instantiate, after.instantiate),
+        typecheck: delta_compile_timing_stat(before.typecheck, after.typecheck),
+        flatten: delta_compile_timing_stat(before.flatten, after.flatten),
+        todae: delta_compile_timing_stat(before.todae, after.todae),
+    }
+}
+
+fn delta_flatten_timing_stat(
+    before: rumoca_phase_flatten::FlattenPhaseTimingStat,
+    after: rumoca_phase_flatten::FlattenPhaseTimingStat,
+) -> rumoca_phase_flatten::FlattenPhaseTimingStat {
+    rumoca_phase_flatten::FlattenPhaseTimingStat {
+        calls: after.calls.saturating_sub(before.calls),
+        total_nanos: after.total_nanos.saturating_sub(before.total_nanos),
+    }
+}
+
+fn delta_flatten_phase_timing_snapshot(
+    before: rumoca_phase_flatten::FlattenPhaseTimingSnapshot,
+    after: rumoca_phase_flatten::FlattenPhaseTimingSnapshot,
+) -> rumoca_phase_flatten::FlattenPhaseTimingSnapshot {
+    rumoca_phase_flatten::FlattenPhaseTimingSnapshot {
+        connections: delta_flatten_timing_stat(before.connections, after.connections),
+        eval_fallback: delta_flatten_timing_stat(before.eval_fallback, after.eval_fallback),
+    }
+}
+
+fn log_slow_model_compile(
+    model_name: &str,
+    elapsed_secs: f64,
+    compile_delta: rumoca_session::compile::CompilePhaseTimingSnapshot,
+    flatten_delta: rumoca_phase_flatten::FlattenPhaseTimingSnapshot,
+) {
+    eprintln!(
+        "    slow compile: model={model_name} elapsed={elapsed_secs:.2}s | instantiate={:.2}s/{} typecheck={:.2}s/{} flatten={:.2}s/{} todae={:.2}s/{} | flatten.connections={:.2}s/{} eval_fallback={:.2}s/{}",
+        compile_delta.instantiate.total_seconds(),
+        compile_delta.instantiate.calls,
+        compile_delta.typecheck.total_seconds(),
+        compile_delta.typecheck.calls,
+        compile_delta.flatten.total_seconds(),
+        compile_delta.flatten.calls,
+        compile_delta.todae.total_seconds(),
+        compile_delta.todae.calls,
+        flatten_delta.connections.total_seconds(),
+        flatten_delta.connections.calls,
+        flatten_delta.eval_fallback.total_seconds(),
+        flatten_delta.eval_fallback.calls,
+    );
 }
 
 struct ChunkedCompileRenderOutput {
@@ -135,67 +237,68 @@ fn compile_timeout_phase_result(
     }
 }
 
-fn compile_model_with_budget_timeout(
-    library: &std::sync::Arc<CompiledLibrary>,
+fn finalize_compile_entry(
     model_name: &str,
+    compile_outcome: ModelCompileOutcome,
+    elapsed_secs: f64,
     budget_secs: f64,
 ) -> ModelCompileEntry {
-    let start = Instant::now();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let library_ref = std::sync::Arc::clone(library);
-    let model_name_for_worker = model_name.to_string();
-    let model_name_for_result = model_name.to_string();
-    let _detached_worker = std::thread::spawn(move || {
-        let report =
-            library_ref.compile_model_strict_reachable_with_recovery(&model_name_for_worker);
-        let _ = sender.send(report);
-    });
+    if elapsed_secs > budget_secs {
+        return ModelCompileEntry {
+            model_name: model_name.to_string(),
+            compile_outcome: ModelCompileOutcome::Phase(compile_timeout_phase_result(
+                model_name,
+                elapsed_secs,
+                budget_secs,
+            )),
+            remaining_budget_secs: None,
+        };
+    }
 
-    let timeout = Duration::from_secs_f64(budget_secs);
-    let elapsed_secs;
-    let compile_outcome = match receiver.recv_timeout(timeout) {
-        Ok(result) => {
-            elapsed_secs = start.elapsed().as_secs_f64();
-            ModelCompileOutcome::StrictReport(result)
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            elapsed_secs = start.elapsed().as_secs_f64();
-            return ModelCompileEntry {
-                model_name: model_name_for_result,
-                compile_outcome: ModelCompileOutcome::Phase(compile_timeout_phase_result(
-                    model_name,
-                    elapsed_secs,
-                    budget_secs,
-                )),
-                remaining_budget_secs: None,
-            };
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            elapsed_secs = start.elapsed().as_secs_f64();
-            ModelCompileOutcome::Phase(PhaseResult::Failed {
-                phase: FailedPhase::ToDae,
-                error: format!(
-                    "model compile worker disconnected after {:.3}s ({model_name})",
-                    elapsed_secs
-                ),
-                error_code: Some("EMSL_COMPILE_WORKER_DISCONNECTED".to_string()),
-            })
-        }
-    };
     let remaining_budget_secs = if compile_outcome.is_success() {
         Some((budget_secs - elapsed_secs).max(0.0))
     } else {
         None
     };
     ModelCompileEntry {
-        model_name: model_name_for_result,
+        model_name: model_name.to_string(),
         compile_outcome,
         remaining_budget_secs,
     }
 }
 
-fn compile_chunk_with_model_budgets(
-    library: &std::sync::Arc<CompiledLibrary>,
+fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send>(
+    library: &std::sync::Arc<T>,
+    model_name: &str,
+    budget_secs: f64,
+) -> ModelCompileEntry {
+    let slow_log_threshold = slow_compile_log_threshold_secs();
+    let compile_timing_before = slow_log_threshold.map(|_| compile_phase_timing_stats());
+    let flatten_timing_before = slow_log_threshold.map(|_| flatten_phase_timing_stats());
+    let start = Instant::now();
+    // Compile synchronously inside the bounded Rayon worker pool. The earlier
+    // detached-thread timeout path could not actually cancel compile work, so
+    // timed-out models kept consuming memory in the background.
+    let compile_outcome =
+        ModelCompileOutcome::StrictReport(library.strict_compile_for_focused_model(model_name));
+    let elapsed_secs = start.elapsed().as_secs_f64();
+    if let (Some(threshold_secs), Some(before_compile), Some(before_flatten)) = (
+        slow_log_threshold,
+        compile_timing_before,
+        flatten_timing_before,
+    ) && elapsed_secs >= threshold_secs
+    {
+        let compile_delta =
+            delta_compile_phase_timing_snapshot(before_compile, compile_phase_timing_stats());
+        let flatten_delta =
+            delta_flatten_phase_timing_snapshot(before_flatten, flatten_phase_timing_stats());
+        log_slow_model_compile(model_name, elapsed_secs, compile_delta, flatten_delta);
+    }
+    finalize_compile_entry(model_name, compile_outcome, elapsed_secs, budget_secs)
+}
+
+fn compile_chunk_with_model_budgets<T: FocusedClosureCompiler + Sync + Send>(
+    library: &std::sync::Arc<T>,
     names_chunk: &[String],
     compile_threads: usize,
     budget_secs: f64,
@@ -242,21 +345,381 @@ fn run_compile_chunk_progress_loop(
     }
 }
 
-fn run_chunked_compile_and_render(
-    library: &std::sync::Arc<CompiledLibrary>,
+struct StreamingChunkOutput {
+    model_results: Vec<MslModelResult>,
+    compile_seconds: f64,
+    drain_seconds: f64,
+}
+
+enum StreamingPreparedEntry {
+    Final(Box<MslModelResult>),
+    PendingSimulation {
+        model_result: Box<MslModelResult>,
+        prepared_simulation: Box<PreparedSimulationRun>,
+    },
+}
+
+struct StreamingChunkPlan<'a> {
+    names_chunk: &'a [String],
+    simulation_threads: usize,
+    model_budget_secs: f64,
+    chunk_idx: usize,
+    chunk_count: usize,
+    log_parallelism: bool,
+}
+
+fn finalize_simulation_into_model_result(
+    mut model_result: MslModelResult,
+    sim: MslSimModelResult,
+    ctx: &RenderSimContext<'_>,
+) -> MslModelResult {
+    let done = ctx.sim_completed.fetch_add(1, Ordering::Relaxed) + 1;
+    update_live_sim_status(&sim, ctx);
+    maybe_log_sim_progress(done, ctx);
+    model_result.sim_status = Some(sim.status.to_string());
+    model_result.sim_error = sim.error;
+    model_result.sim_seconds = sim.sim_seconds;
+    model_result.sim_wall_seconds = sim.sim_wall_seconds;
+    model_result.sim_trace_file = sim.sim_trace_file;
+    model_result.sim_trace_error = sim.sim_trace_error;
+    model_result
+}
+
+fn prepare_successful_streaming_entry(
+    model_name: String,
+    result: rumoca_session::compile::CompilationResult,
+    remaining_budget_secs: Option<f64>,
+    ctx: &RenderSimContext<'_>,
+) -> StreamingPreparedEntry {
+    maybe_dump_model_introspection(&model_name, &result, ctx);
+    maybe_render_model_outputs(&model_name, &result, ctx);
+
+    let model_result = summarize_success_result(model_name.clone(), &result);
+    let should_simulate = ctx.run_simulation
+        && !result.dae.is_partial
+        && is_root_standalone_msl_example_model(&model_name, &result)
+        && is_selected_sim_target(&model_name, ctx);
+    if !should_simulate {
+        return StreamingPreparedEntry::Final(Box::new(model_result));
+    }
+
+    ctx.sim_attempted.fetch_add(1, Ordering::Relaxed);
+    let mut settings = simulation_settings_from_result(&result);
+    if let Some(budget_secs) = remaining_budget_secs {
+        if budget_secs <= 0.0 {
+            let timeout_result = MslSimModelResult {
+                name: model_name,
+                status: SimStatus::Timeout,
+                error: Some(
+                    "model attempt timeout exhausted before simulation could start".to_string(),
+                ),
+                n_states: Some(result.dae.states.len()),
+                n_algebraics: Some(result.dae.algebraics.len()),
+                sim_seconds: Some(0.0),
+                sim_wall_seconds: Some(0.0),
+                sim_trace_file: None,
+                sim_trace_error: None,
+            };
+            return StreamingPreparedEntry::Final(Box::new(finalize_simulation_into_model_result(
+                model_result,
+                timeout_result,
+                ctx,
+            )));
+        }
+        settings.timeout_seconds = Some(budget_secs);
+    }
+
+    let n_states = result.dae.states.len();
+    let n_algebraics = result.dae.algebraics.len();
+    let n_state_scalars: usize = result.dae.states.values().map(|value| value.size()).sum();
+    let output_samples = output_samples_for_model(n_state_scalars);
+    match prepare_simulation_run(
+        &result.dae,
+        &model_name,
+        settings,
+        output_samples,
+        n_states,
+        n_algebraics,
+    ) {
+        Ok(prepared_simulation) => StreamingPreparedEntry::PendingSimulation {
+            model_result: Box::new(model_result),
+            prepared_simulation: Box::new(prepared_simulation),
+        },
+        Err(sim_result) => StreamingPreparedEntry::Final(Box::new(
+            finalize_simulation_into_model_result(model_result, *sim_result, ctx),
+        )),
+    }
+}
+
+fn prepare_streaming_compile_result_entry(
+    entry: ModelCompileEntry,
+    ctx: &RenderSimContext<'_>,
+) -> StreamingPreparedEntry {
+    let ModelCompileEntry {
+        model_name,
+        compile_outcome,
+        remaining_budget_secs,
+    } = entry;
+
+    match compile_outcome {
+        ModelCompileOutcome::Phase(PhaseResult::Success(result)) => {
+            prepare_successful_streaming_entry(model_name, *result, remaining_budget_secs, ctx)
+        }
+        ModelCompileOutcome::Phase(phase_result) => {
+            StreamingPreparedEntry::Final(Box::new(convert_phase_result(model_name, phase_result)))
+        }
+        ModelCompileOutcome::StrictReport(report) => {
+            let requested_success = report.failures.is_empty()
+                && matches!(
+                    report.requested_result.as_ref(),
+                    Some(PhaseResult::Success(_))
+                );
+            if requested_success {
+                let result = match report.requested_result {
+                    Some(PhaseResult::Success(result)) => result,
+                    _ => unreachable!("requested_success implies success result"),
+                };
+                prepare_successful_streaming_entry(model_name, *result, remaining_budget_secs, ctx)
+            } else {
+                StreamingPreparedEntry::Final(Box::new(convert_compile_outcome(
+                    model_name,
+                    ModelCompileOutcome::StrictReport(report),
+                )))
+            }
+        }
+    }
+}
+
+fn consume_streaming_prepared_entry(
+    entry: StreamingPreparedEntry,
+    ctx: &RenderSimContext<'_>,
+) -> MslModelResult {
+    match entry {
+        StreamingPreparedEntry::Final(model_result) => *model_result,
+        StreamingPreparedEntry::PendingSimulation {
+            model_result,
+            prepared_simulation,
+        } => finalize_simulation_into_model_result(
+            *model_result,
+            run_prepared_simulation(*prepared_simulation),
+            ctx,
+        ),
+    }
+}
+
+fn streaming_simulation_worker_loop(
+    compile_rx: &std::sync::Arc<
+        std::sync::Mutex<std::sync::mpsc::Receiver<(usize, StreamingPreparedEntry)>>,
+    >,
+    result_tx: &std::sync::mpsc::Sender<(usize, MslModelResult)>,
+    context: &RenderSimContext<'_>,
+) {
+    loop {
+        let next_entry = {
+            let receiver = compile_rx.lock().expect("compile receiver mutex poisoned");
+            receiver.recv()
+        };
+        let Ok((result_idx, entry)) = next_entry else {
+            break;
+        };
+        let model_result = consume_streaming_prepared_entry(entry, context);
+        if result_tx.send((result_idx, model_result)).is_err() {
+            break;
+        }
+    }
+}
+
+fn run_streaming_compile_and_render_chunk<T: FocusedClosureCompiler + Sync + Send>(
+    library: &std::sync::Arc<T>,
+    context: &RenderSimContext<'_>,
+    plan: StreamingChunkPlan<'_>,
+) -> StreamingChunkOutput {
+    let StreamingChunkPlan {
+        names_chunk,
+        simulation_threads,
+        model_budget_secs,
+        chunk_idx,
+        chunk_count,
+        log_parallelism,
+    } = plan;
+
+    if log_parallelism {
+        println!("Simulation execution parallelism: {simulation_threads}");
+    }
+
+    let pipeline_start = Instant::now();
+    let compile_start = Instant::now();
+    let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);
+    let chunk_models_for_log = names_chunk.len();
+    let compile_progress_logger = std::thread::spawn(move || {
+        run_compile_chunk_progress_loop(
+            compile_in_flight_flag,
+            chunk_idx,
+            chunk_count,
+            chunk_models_for_log,
+        );
+    });
+
+    let (compile_tx, compile_rx) = std::sync::mpsc::sync_channel::<(usize, StreamingPreparedEntry)>(
+        STREAMING_COMPILE_RESULT_QUEUE_BOUND,
+    );
+    let compile_rx = std::sync::Arc::new(std::sync::Mutex::new(compile_rx));
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<(usize, MslModelResult)>();
+    let mut compile_seconds = 0.0;
+
+    std::thread::scope(|scope| {
+        for _ in 0..simulation_threads.max(1) {
+            let compile_rx = std::sync::Arc::clone(&compile_rx);
+            let result_tx = result_tx.clone();
+            scope.spawn(move || {
+                streaming_simulation_worker_loop(&compile_rx, &result_tx, context);
+            });
+        }
+        drop(result_tx);
+
+        let _compile_watchdog = StageAbortWatchdog::new(
+            format!("compile chunk {chunk_idx}/{chunk_count}"),
+            "RUMOCA_MSL_STAGE_TIMEOUT_COMPILE_CHUNK_SECS",
+            300,
+        );
+        for (result_idx, model_name) in names_chunk.iter().enumerate() {
+            let entry = prepare_streaming_compile_result_entry(
+                compile_model_with_budget_timeout(library, model_name, model_budget_secs),
+                context,
+            );
+            if compile_tx.send((result_idx, entry)).is_err() {
+                break;
+            }
+        }
+        compile_seconds = compile_start.elapsed().as_secs_f64();
+        compile_in_flight.store(false, Ordering::Relaxed);
+        let _ = compile_progress_logger.join();
+        drop(compile_tx);
+    });
+
+    let pipeline_seconds = pipeline_start.elapsed().as_secs_f64();
+    let drain_seconds = (pipeline_seconds - compile_seconds).max(0.0);
+    let mut ordered_results: Vec<Option<MslModelResult>> = std::iter::repeat_with(|| None)
+        .take(names_chunk.len())
+        .collect();
+    for (result_idx, model_result) in result_rx {
+        ordered_results[result_idx] = Some(model_result);
+    }
+
+    let model_results = ordered_results
+        .into_iter()
+        .map(|result| result.expect("every compiled model should produce a final result"))
+        .collect();
+
+    StreamingChunkOutput {
+        model_results,
+        compile_seconds,
+        drain_seconds,
+    }
+}
+
+fn run_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
+    library: &std::sync::Arc<T>,
+    context: &RenderSimContext<'_>,
+    plan: StreamingChunkPlan<'_>,
+) -> StreamingChunkOutput {
+    let StreamingChunkPlan {
+        names_chunk,
+        simulation_threads,
+        model_budget_secs,
+        chunk_idx,
+        chunk_count,
+        log_parallelism,
+    } = plan;
+    let _sim_chunk_watchdog = StageAbortWatchdog::new(
+        format!("simulate/render chunk {chunk_idx}/{chunk_count}"),
+        "RUMOCA_MSL_STAGE_TIMEOUT_SIM_CHUNK_SECS",
+        300,
+    );
+    run_streaming_compile_and_render_chunk(
+        library,
+        context,
+        StreamingChunkPlan {
+            names_chunk,
+            simulation_threads,
+            model_budget_secs,
+            chunk_idx,
+            chunk_count,
+            log_parallelism,
+        },
+    )
+}
+
+fn run_compile_only_chunk<T: FocusedClosureCompiler + Sync + Send>(
+    library: &std::sync::Arc<T>,
+    context: &RenderSimContext<'_>,
+    plan: StreamingChunkPlan<'_>,
+) -> StreamingChunkOutput {
+    let StreamingChunkPlan {
+        names_chunk,
+        simulation_threads,
+        model_budget_secs,
+        chunk_idx,
+        chunk_count,
+        log_parallelism,
+    } = plan;
+    let chunk_models_for_log = names_chunk.len();
+    let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);
+    let compile_progress_logger = std::thread::spawn(move || {
+        run_compile_chunk_progress_loop(
+            compile_in_flight_flag,
+            chunk_idx,
+            chunk_count,
+            chunk_models_for_log,
+        );
+    });
+
+    let chunk_compile_start = Instant::now();
+    let chunk_results = {
+        let _compile_watchdog = StageAbortWatchdog::new(
+            format!("compile chunk {chunk_idx}/{chunk_count}"),
+            "RUMOCA_MSL_STAGE_TIMEOUT_COMPILE_CHUNK_SECS",
+            300,
+        );
+        compile_chunk_with_model_budgets(
+            library,
+            names_chunk,
+            simulation_threads,
+            model_budget_secs,
+        )
+    };
+    compile_in_flight.store(false, Ordering::Relaxed);
+    let _ = compile_progress_logger.join();
+    let compile_seconds = chunk_compile_start.elapsed().as_secs_f64();
+
+    let render_start = Instant::now();
+    let model_results = collect_render_sim_results(
+        chunk_results,
+        false,
+        context,
+        simulation_threads,
+        log_parallelism,
+    );
+    let drain_seconds = render_start.elapsed().as_secs_f64();
+
+    StreamingChunkOutput {
+        model_results,
+        compile_seconds,
+        drain_seconds,
+    }
+}
+
+fn run_chunked_compile_and_render<T: FocusedClosureCompiler + Sync + Send>(
+    library: &std::sync::Arc<T>,
     compile_names: &[String],
     run_simulation: bool,
     context: &RenderSimContext<'_>,
     worker_threads: usize,
 ) -> ChunkedCompileRenderOutput {
     let compile_count = compile_names.len();
-    let base_batch_size = compile_batch_size().min(compile_count.max(1));
-    let batch_size = if run_simulation {
-        base_batch_size.max(worker_threads.max(1))
-    } else {
-        base_batch_size
-    }
-    .min(compile_count.max(1));
+    let batch_size = effective_compile_chunk_batch_size(run_simulation, compile_count);
     let chunk_count = compile_count.div_ceil(batch_size.max(1));
     println!("  Compile batch size: {}", batch_size);
 
@@ -267,80 +730,67 @@ fn run_chunked_compile_and_render(
     let model_budget_secs = model_attempt_timeout_secs();
 
     for (chunk_idx, names_chunk) in compile_names.chunks(batch_size).enumerate() {
+        let chunk_idx = chunk_idx + 1;
+        let chunk_models = names_chunk.join(", ");
         println!(
-            "  chunk {}/{}: compiling {} models",
-            chunk_idx + 1,
+            "  chunk {}/{}: compiling {} models [{}]",
+            chunk_idx,
             chunk_count,
-            names_chunk.len()
+            names_chunk.len(),
+            chunk_models
         );
-        let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);
-        let chunk_idx_for_log = chunk_idx + 1;
-        let chunk_count_for_log = chunk_count;
-        let chunk_models_for_log = names_chunk.len();
-        let compile_progress_logger = std::thread::spawn(move || {
-            run_compile_chunk_progress_loop(
-                compile_in_flight_flag,
-                chunk_idx_for_log,
-                chunk_count_for_log,
-                chunk_models_for_log,
-            );
-        });
-
-        let chunk_compile_start = Instant::now();
-        let chunk_results = {
-            let _compile_watchdog = StageAbortWatchdog::new(
-                format!("compile chunk {}/{}", chunk_idx + 1, chunk_count),
-                "RUMOCA_MSL_STAGE_TIMEOUT_COMPILE_CHUNK_SECS",
-                300,
-            );
-            compile_chunk_with_model_budgets(
-                library,
-                names_chunk,
-                worker_threads,
-                model_budget_secs,
-            )
-        };
-        compile_in_flight.store(false, Ordering::Relaxed);
-        let _ = compile_progress_logger.join();
-        let chunk_compile_seconds = chunk_compile_start.elapsed().as_secs_f64();
-        compile_only_seconds += chunk_compile_seconds;
-        println!(
-            "    chunk {}/{} compile done in {:.2}s",
-            chunk_idx + 1,
-            chunk_count,
-            chunk_compile_seconds
-        );
-
-        let chunk_render_start = Instant::now();
-        let mut chunk_model_results = {
-            let _sim_chunk_watchdog = StageAbortWatchdog::new(
-                format!("simulate/render chunk {}/{}", chunk_idx + 1, chunk_count),
-                "RUMOCA_MSL_STAGE_TIMEOUT_SIM_CHUNK_SECS",
-                300,
-            );
-            collect_render_sim_results(
-                chunk_results,
-                run_simulation,
-                context,
-                worker_threads,
-                first_chunk,
-            )
-        };
-        first_chunk = false;
-        let chunk_render_seconds = chunk_render_start.elapsed().as_secs_f64();
-        render_and_write_seconds += chunk_render_seconds;
-        model_results.append(&mut chunk_model_results);
         if run_simulation {
+            let mut chunk_output = run_simulation_chunk(
+                library,
+                context,
+                StreamingChunkPlan {
+                    names_chunk,
+                    simulation_threads: worker_threads,
+                    model_budget_secs,
+                    chunk_idx,
+                    chunk_count,
+                    log_parallelism: first_chunk,
+                },
+            );
+            first_chunk = false;
+            compile_only_seconds += chunk_output.compile_seconds;
+            render_and_write_seconds += chunk_output.drain_seconds;
+            println!(
+                "    chunk {}/{} compile done in {:.2}s",
+                chunk_idx, chunk_count, chunk_output.compile_seconds
+            );
+            model_results.append(&mut chunk_output.model_results);
             println!(
                 "    chunk {}/{} sim/render done in {:.2}s (sim completed so far: {}/{})",
-                chunk_idx + 1,
+                chunk_idx,
                 chunk_count,
-                chunk_render_seconds,
+                chunk_output.drain_seconds,
                 context.sim_completed.load(Ordering::Relaxed),
                 context.total_sim_targets
             );
+            continue;
         }
+
+        let mut chunk_output = run_compile_only_chunk(
+            library,
+            context,
+            StreamingChunkPlan {
+                names_chunk,
+                simulation_threads: worker_threads,
+                model_budget_secs,
+                chunk_idx,
+                chunk_count,
+                log_parallelism: first_chunk,
+            },
+        );
+        first_chunk = false;
+        compile_only_seconds += chunk_output.compile_seconds;
+        render_and_write_seconds += chunk_output.drain_seconds;
+        println!(
+            "    chunk {}/{} compile done in {:.2}s",
+            chunk_idx, chunk_count, chunk_output.compile_seconds
+        );
+        model_results.append(&mut chunk_output.model_results);
     }
 
     ChunkedCompileRenderOutput {
@@ -517,6 +967,28 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_session::compile::CompilationSummary;
+    use std::sync::Mutex;
+
+    struct FakeFocusedCompiler {
+        uncached_called: Mutex<Vec<String>>,
+    }
+
+    impl FocusedClosureCompiler for FakeFocusedCompiler {
+        fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport {
+            self.uncached_called
+                .lock()
+                .expect("uncached call log should not be poisoned")
+                .push(model_name.to_string());
+            StrictCompileReport {
+                requested_model: model_name.to_string(),
+                requested_result: None,
+                summary: CompilationSummary::default(),
+                failures: Vec::new(),
+                source_map: None,
+            }
+        }
+    }
 
     #[test]
     fn compile_chunk_progress_loop_exits_promptly_after_flag_clears() {
@@ -534,6 +1006,122 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(1),
             "progress logger must not add a full log-interval stall after chunk completion"
+        );
+    }
+
+    #[test]
+    fn finalize_compile_entry_converts_over_budget_compile_to_timeout() {
+        let entry = finalize_compile_entry(
+            "Modelica.Blocks.Examples.PID_Controller",
+            ModelCompileOutcome::StrictReport(StrictCompileReport {
+                requested_model: "Modelica.Blocks.Examples.PID_Controller".to_string(),
+                requested_result: None,
+                summary: CompilationSummary::default(),
+                failures: Vec::new(),
+                source_map: None,
+            }),
+            12.5,
+            10.0,
+        );
+
+        assert!(entry.remaining_budget_secs.is_none());
+        match entry.compile_outcome {
+            ModelCompileOutcome::Phase(PhaseResult::Failed {
+                error_code, error, ..
+            }) => {
+                assert_eq!(
+                    error_code.as_deref(),
+                    Some(MODEL_ATTEMPT_TIMEOUT_ERROR_CODE)
+                );
+                assert!(error.contains("compile exceeded 10.000s budget"));
+            }
+            _ => panic!("expected timeout failure"),
+        }
+    }
+
+    #[test]
+    fn finalize_compile_entry_preserves_under_budget_compile_outcome() {
+        let entry = finalize_compile_entry(
+            "Modelica.Blocks.Examples.PID_Controller",
+            ModelCompileOutcome::StrictReport(StrictCompileReport {
+                requested_model: "Modelica.Blocks.Examples.PID_Controller".to_string(),
+                requested_result: None,
+                summary: CompilationSummary::default(),
+                failures: Vec::new(),
+                source_map: None,
+            }),
+            2.5,
+            10.0,
+        );
+
+        assert!(entry.remaining_budget_secs.is_none());
+        match entry.compile_outcome {
+            ModelCompileOutcome::StrictReport(report) => {
+                assert_eq!(
+                    report.requested_model,
+                    "Modelica.Blocks.Examples.PID_Controller"
+                );
+            }
+            _ => panic!("expected strict report"),
+        }
+    }
+
+    #[test]
+    fn compile_model_with_budget_timeout_uses_focused_uncached_compile_path() {
+        let compiler = std::sync::Arc::new(FakeFocusedCompiler {
+            uncached_called: Mutex::new(Vec::new()),
+        });
+
+        let entry = compile_model_with_budget_timeout(
+            &compiler,
+            "Modelica.Electrical.Digital.Examples.DFFREG",
+            10.0,
+        );
+
+        assert!(entry.remaining_budget_secs.is_none());
+        let calls = compiler
+            .uncached_called
+            .lock()
+            .expect("uncached call log should not be poisoned");
+        assert_eq!(
+            calls.as_slice(),
+            &["Modelica.Electrical.Digital.Examples.DFFREG".to_string()]
+        );
+    }
+
+    #[test]
+    fn compile_batch_size_defaults_to_one_for_simulation_runs() {
+        assert_eq!(compile_batch_size_from_override(true, None), 1);
+        assert_eq!(compile_batch_size_from_override(false, None), 24);
+        assert_eq!(compile_batch_size_from_override(true, Some("4")), 4);
+        assert_eq!(compile_batch_size_from_override(false, Some("2")), 2);
+    }
+
+    #[test]
+    fn effective_simulation_compile_batch_size_stays_focused() {
+        assert_eq!(effective_compile_chunk_batch_size(true, 8), 1);
+        assert_eq!(effective_compile_chunk_batch_size(true, 0), 1);
+        assert_eq!(effective_compile_chunk_batch_size(false, 8), 8);
+    }
+
+    #[test]
+    fn slow_compile_log_threshold_parses_positive_numbers_only() {
+        assert_eq!(slow_compile_log_threshold_secs_from_override(None), None);
+        assert_eq!(
+            slow_compile_log_threshold_secs_from_override(Some("")),
+            None
+        );
+        assert_eq!(
+            slow_compile_log_threshold_secs_from_override(Some("0")),
+            None
+        );
+        assert_eq!(
+            slow_compile_log_threshold_secs_from_override(Some("-1")),
+            None
+        );
+        assert_eq!(
+            slow_compile_log_threshold_secs_from_override(Some("12.5")),
+            Some(12.5)
         );
     }
 }

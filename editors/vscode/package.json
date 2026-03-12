@@ -225,6 +225,7 @@
     "esbuild": "npm run esbuild-base -- --sourcemap",
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "tsc -p ./",
+    "test": "npm run compile && node --test tests/*.test.mjs",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "package": "npm run esbuild-base -- --minify && npx @vscode/vsce package --no-dependencies --no-yarn"
@@ -252,7 +253,6 @@
     }
   }
 }
-
 
 
 

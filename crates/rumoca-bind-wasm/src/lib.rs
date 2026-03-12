@@ -3,16 +3,18 @@
 //! Thin layer over `rumoca-session` and `rumoca-tool-lsp`. All heavy logic
 //! lives in those crates; this module only provides WASM entry points.
 
-use std::sync::Mutex;
+mod class_browser_helpers;
+
+use std::{collections::BTreeMap, sync::Mutex};
 
 use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
 use wasm_bindgen::prelude::*;
 
 use rumoca_session::Session;
-use rumoca_session::compile::CompilationResult;
+use rumoca_session::compile::{CompilationMode, CompilationResult, FailedPhase, PhaseResult};
 use rumoca_session::parsing::{
-    Causality, ClassDef, ClassType, ComponentReference, Expression, OpBinary, StoredDefinition,
-    TerminalType, Token, Variability, parse_source_to_ast, validate_source_syntax,
+    Causality, ClassDef, Expression, OpBinary, StoredDefinition, Variability, parse_source_to_ast,
+    validate_source_syntax,
 };
 use rumoca_session::runtime::{
     SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
@@ -22,8 +24,14 @@ use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::class_browser_helpers::{
+    class_type_label, component_reference_to_path, expression_path, extract_string_literal,
+    join_path, token_list_to_text,
+};
+
 /// Global compilation session containing both library and user documents.
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+const WASM_LIBRARY_SOURCE_SET_ID: &str = "wasm::libraries";
 
 // ==========================================================================
 // Initialization
@@ -576,9 +584,38 @@ fn compile_requested_model(
     session: &mut Session,
     model_name: &str,
 ) -> Result<CompilationResult, JsValue> {
-    session
-        .compile_model(model_name)
-        .map_err(|e| JsValue::from_str(&format!("Compilation error: {}", e)))
+    let mut report = session.compile_model_with_mode(
+        model_name,
+        CompilationMode::StrictReachableUncachedWithRecovery,
+    );
+    if !report.failures.is_empty() {
+        return Err(JsValue::from_str(&format!(
+            "Compilation error: {}",
+            report.failure_summary(8)
+        )));
+    }
+    match report.requested_result.take() {
+        Some(PhaseResult::Success(result)) => Ok(*result),
+        Some(PhaseResult::NeedsInner { missing_inners }) => Err(JsValue::from_str(&format!(
+            "Compilation error: missing inner declarations: {}",
+            missing_inners.join(", ")
+        ))),
+        Some(PhaseResult::Failed { phase, error, .. }) => {
+            let phase_name = match phase {
+                FailedPhase::Instantiate => "instantiate",
+                FailedPhase::Typecheck => "typecheck",
+                FailedPhase::Flatten => "flatten",
+                FailedPhase::ToDae => "todae",
+            };
+            Err(JsValue::from_str(&format!(
+                "Compilation error: {phase_name} failed: {error}"
+            )))
+        }
+        None => Err(JsValue::from_str(&format!(
+            "Compilation error: {}",
+            report.failure_summary(8)
+        ))),
+    }
 }
 
 fn with_singleton_session<T>(
@@ -601,6 +638,49 @@ fn compile_source_in_session(
     build_compile_response(&result)
 }
 
+#[derive(Default)]
+struct LibraryLoadSummary {
+    parsed_count: usize,
+    inserted_count: usize,
+    error_count: usize,
+    skipped_files: Vec<String>,
+}
+
+fn parse_library_sources_json(libraries_json: &str) -> Result<BTreeMap<String, String>, JsValue> {
+    serde_json::from_str(libraries_json)
+        .map_err(|e| JsValue::from_str(&format!("Invalid JSON: {}", e)))
+}
+
+fn load_library_sources_in_session(
+    session: &mut Session,
+    libraries_json: &str,
+) -> Result<LibraryLoadSummary, JsValue> {
+    let libraries = parse_library_sources_json(libraries_json)?;
+    let mut definitions: Vec<(String, StoredDefinition)> = Vec::with_capacity(libraries.len());
+    let mut skipped_files: Vec<String> = Vec::new();
+
+    for (filename, source) in libraries {
+        match parse_source_to_ast(&source, &filename) {
+            Ok(definition) => definitions.push((filename, definition)),
+            Err(error) => skipped_files.push(format!("{filename}: {error}")),
+        }
+    }
+
+    let parsed_count = definitions.len();
+    let inserted_count = session.replace_parsed_source_set(
+        WASM_LIBRARY_SOURCE_SET_ID,
+        definitions,
+        Some("input.mo"),
+    );
+
+    Ok(LibraryLoadSummary {
+        parsed_count,
+        inserted_count,
+        error_count: skipped_files.len(),
+        skipped_files,
+    })
+}
+
 /// Compile Modelica source code to DAE JSON.
 #[wasm_bindgen]
 pub fn compile(source: &str, model_name: &str) -> Result<String, JsValue> {
@@ -618,9 +698,14 @@ pub fn compile_to_json(source: &str, model_name: &str) -> Result<String, JsValue
 pub fn compile_with_libraries(
     source: &str,
     model_name: &str,
-    _libraries_json: &str,
+    libraries_json: &str,
 ) -> Result<String, JsValue> {
-    compile(source, model_name)
+    with_singleton_session(|session| {
+        if !libraries_json.trim().is_empty() {
+            load_library_sources_in_session(session, libraries_json)?;
+        }
+        compile_source_in_session(session, source, model_name)
+    })
 }
 
 // ==========================================================================
@@ -630,34 +715,19 @@ pub fn compile_with_libraries(
 /// Load and parse library sources into the session.
 #[wasm_bindgen]
 pub fn load_libraries(libraries_json: &str) -> Result<String, JsValue> {
-    let libraries: std::collections::HashMap<String, String> = serde_json::from_str(libraries_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid JSON: {}", e)))?;
-
     let mut lock = SESSION
         .lock()
         .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
     let session = lock.get_or_insert_with(Session::default);
-
-    let mut parsed_count = 0usize;
-    let mut error_count = 0usize;
-    let mut skipped: Vec<String> = Vec::new();
-
-    for (filename, source) in &libraries {
-        match session.add_document(filename, source) {
-            Ok(()) => parsed_count += 1,
-            Err(e) => {
-                error_count += 1;
-                skipped.push(format!("{}: {}", filename, e));
-            }
-        }
-    }
+    let summary = load_library_sources_in_session(session, libraries_json)?;
 
     let result = serde_json::json!({
-        "parsed_count": parsed_count,
-        "error_count": error_count,
+        "parsed_count": summary.parsed_count,
+        "inserted_count": summary.inserted_count,
+        "error_count": summary.error_count,
         "library_names": [],
         "conflicts": [],
-        "skipped_files": skipped,
+        "skipped_files": summary.skipped_files,
     });
     serde_json::to_string(&result).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
@@ -709,70 +779,6 @@ pub fn get_library_count() -> u32 {
         .ok()
         .and_then(|s| s.as_ref().map(|sess| sess.document_uris().len() as u32))
         .unwrap_or(0)
-}
-
-fn class_type_label(class_type: &ClassType) -> String {
-    class_type.as_str().to_string()
-}
-
-fn token_list_to_text(tokens: &[Token]) -> Option<String> {
-    let text = tokens
-        .iter()
-        .map(|tok| tok.text.as_ref())
-        .collect::<Vec<_>>()
-        .join("");
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn component_reference_to_path(comp: &ComponentReference) -> String {
-    comp.parts
-        .iter()
-        .map(|part| part.ident.text.as_ref())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-fn expression_path(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::ComponentReference(comp) => Some(component_reference_to_path(comp)),
-        Expression::FieldAccess { base, field } => {
-            expression_path(base).map(|base_path| format!("{base_path}.{field}"))
-        }
-        Expression::Parenthesized { inner } => expression_path(inner),
-        _ => None,
-    }
-}
-
-fn extract_string_literal(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::String,
-            token,
-        } => Some(token.text.to_string()),
-        Expression::Parenthesized { inner } => extract_string_literal(inner),
-        Expression::Binary {
-            op: OpBinary::Add(_) | OpBinary::AddElem(_),
-            lhs,
-            rhs,
-        } => {
-            let lhs = extract_string_literal(lhs)?;
-            let rhs = extract_string_literal(rhs)?;
-            Some(format!("{lhs}{rhs}"))
-        }
-        _ => None,
-    }
-}
-
-fn join_path(context: Option<&str>, tail: &str) -> String {
-    match context {
-        Some(prefix) if !prefix.is_empty() => format!("{prefix}.{tail}"),
-        _ => tail.to_string(),
-    }
 }
 
 #[derive(Default)]
@@ -1168,710 +1174,4 @@ fn simulate_model_in_session(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_get_version() {
-        let version = get_version();
-        assert!(!version.is_empty());
-    }
-
-    #[test]
-    fn test_get_git_commit() {
-        let commit = get_git_commit();
-        assert!(!commit.is_empty());
-    }
-
-    #[test]
-    fn test_get_build_time_utc() {
-        let build_time = get_build_time_utc();
-        assert!(!build_time.is_empty());
-    }
-
-    #[test]
-    fn test_parse_valid() {
-        let result = validate_source_syntax("model M Real x; end M;", "test.mo");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_parse_invalid() {
-        let result = validate_source_syntax("model M Real x end M;", "test.mo");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_list_classes_includes_nested_packages() {
-        let source = r#"
-        package Lib
-          package Nested
-            model Probe
-              Real x;
-            equation
-              x = 1.0;
-            end Probe;
-          end Nested;
-        end Lib;
-        "#;
-
-        let mut session = Session::default();
-        session.update_document("input.mo", source);
-        let json = list_classes_in_session(&mut session).expect("list_classes should succeed");
-        let tree: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(
-            tree.get("total_classes")
-                .and_then(|v| v.as_u64())
-                .unwrap_or_default(),
-            3
-        );
-        let classes = tree
-            .get("classes")
-            .and_then(|v| v.as_array())
-            .expect("classes array");
-        assert!(
-            classes
-                .iter()
-                .any(|node| { node.get("qualified_name").and_then(|v| v.as_str()) == Some("Lib") }),
-            "expected top-level package Lib in class tree: {tree:?}"
-        );
-    }
-
-    const DOC_MODEL_SOURCE: &str = r#"
-        model DocModel "Short description"
-          Real x "State";
-        equation
-          der(x) = -x;
-          annotation(
-            Documentation(
-              info = "<html><p>Detailed docs</p></html>",
-              revisions = "<html><ul><li>r1</li></ul></html>"
-            )
-          );
-        end DocModel;
-        "#;
-
-    #[cfg(target_arch = "wasm32")]
-    #[test]
-    fn test_get_class_info_extracts_documentation_annotation() {
-        let mut session = Session::default();
-        session.update_document("input.mo", DOC_MODEL_SOURCE);
-        let json = get_class_info_in_session(&mut session, "DocModel")
-            .expect("get_class_info should succeed");
-        let info: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(
-            info.get("class_type").and_then(|v| v.as_str()),
-            Some("model"),
-            "unexpected class info payload: {info:?}"
-        );
-        assert!(
-            info.get("documentation_html")
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| s.contains("Detailed docs")),
-            "expected Documentation(info=...) to be extracted: {info:?}"
-        );
-        assert!(
-            info.get("documentation_revisions_html")
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| s.contains("<li>r1</li>")),
-            "expected Documentation(revisions=...) to be extracted: {info:?}"
-        );
-        assert!(
-            info.get("source_modelica")
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| s.contains("model DocModel")),
-            "expected reconstructed Modelica source in class info: {info:?}"
-        );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn test_extract_documentation_annotation_fields_native() {
-        let parsed =
-            parse_source_to_ast(DOC_MODEL_SOURCE, "input.mo").expect("parse should succeed");
-        let class =
-            find_class_by_qualified_name(&parsed, "DocModel").expect("DocModel should be present");
-        let docs = extract_documentation_fields(&class.annotation);
-        assert!(
-            docs.info_html
-                .as_deref()
-                .is_some_and(|s| s.contains("Detailed docs")),
-            "expected Documentation(info=...) to be extracted, got: {:?}",
-            docs.info_html
-        );
-        assert!(
-            docs.revisions_html
-                .as_deref()
-                .is_some_and(|s| s.contains("<li>r1</li>")),
-            "expected Documentation(revisions=...) to be extracted, got: {:?}",
-            docs.revisions_html
-        );
-        assert!(
-            class.to_modelica("").contains("model DocModel"),
-            "expected reconstructed Modelica source to contain model header"
-        );
-    }
-
-    #[test]
-    fn test_compile_to_json_valid_model() {
-        let mut session = Session::default();
-        let source = r#"
-        model Ball
-          Real x(start=0);
-          Real v(start=1);
-        equation
-          der(x) = v;
-          der(v) = -9.81;
-        end Ball;
-        "#;
-
-        let json = compile_source_in_session(&mut session, source, "Ball")
-            .expect("compile should succeed");
-        let result: serde_json::Value =
-            serde_json::from_str(&json).expect("compile should return valid JSON");
-        let balance = result
-            .get("balance")
-            .expect("compile output should include balance section");
-        assert!(
-            balance
-                .get("is_balanced")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            "expected Ball to be balanced, got: {balance:?}"
-        );
-        assert_eq!(
-            balance
-                .get("num_equations")
-                .and_then(|v| v.as_u64())
-                .unwrap_or_default(),
-            2
-        );
-        assert_eq!(
-            balance
-                .get("num_unknowns")
-                .and_then(|v| v.as_i64())
-                .unwrap_or_default(),
-            2
-        );
-    }
-
-    #[test]
-    fn test_compile_to_json_prepared_retains_observables_from_native_orbit_model() {
-        let mut session = Session::default();
-        let source = r#"
-        model SatelliteOrbit2D
-          parameter Real mu = 398600.4418;
-          parameter Real r0 = 7000;
-          parameter Real v0 = sqrt(mu / r0);
-          Real rx(start = r0, fixed = true);
-          Real ry(start = 0, fixed = true);
-          Real vx(start = 0, fixed = true);
-          Real vy(start = v0, fixed = true);
-          Real inv_r;
-          Real inv_v2;
-          Real inv_h;
-          Real inv_energy;
-          Real inv_a;
-          Real inv_rv;
-          Real inv_ex;
-          Real inv_ey;
-          Real inv_ecc;
-        equation
-          der(rx) = vx;
-          der(ry) = vy;
-          inv_r = sqrt(rx * rx + ry * ry);
-          inv_v2 = vx * vx + vy * vy;
-          inv_h = rx * vy - ry * vx;
-          inv_energy = 0.5 * inv_v2 - mu / inv_r;
-          inv_a = 1 / (2 / inv_r - inv_v2 / mu);
-          inv_rv = rx * vx + ry * vy;
-          inv_ex = ((inv_v2 - mu / inv_r) * rx - inv_rv * vx) / mu;
-          inv_ey = ((inv_v2 - mu / inv_r) * ry - inv_rv * vy) / mu;
-          inv_ecc = sqrt(inv_ex * inv_ex + inv_ey * inv_ey);
-          der(vx) = -mu * rx / (inv_r ^ 3);
-          der(vy) = -mu * ry / (inv_r ^ 3);
-        end SatelliteOrbit2D;
-        "#;
-
-        let json = compile_source_in_session(&mut session, source, "SatelliteOrbit2D")
-            .expect("compile should succeed for orbit model");
-        let result: serde_json::Value =
-            serde_json::from_str(&json).expect("compile should return valid JSON");
-
-        let native_y = result
-            .get("dae_native")
-            .and_then(|d| d.get("y"))
-            .and_then(|y| y.as_object())
-            .expect("dae_native.y should exist for orbit model");
-        assert!(
-            native_y.contains_key("inv_r"),
-            "native dae should include algebraic variable inv_r, got keys: {:?}",
-            native_y.keys().collect::<Vec<_>>()
-        );
-
-        let prepared = result
-            .get("dae_prepared")
-            .and_then(|d| d.as_object())
-            .expect("dae_prepared should exist");
-        let observables = prepared
-            .get("__rumoca_observables")
-            .and_then(|v| v.as_array())
-            .expect("dae_prepared.__rumoca_observables should exist");
-        assert!(
-            !observables.is_empty(),
-            "expected prepared dae to retain at least one observable"
-        );
-
-        let observable_names: std::collections::HashSet<String> = observables
-            .iter()
-            .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
-            .collect();
-        for expected in [
-            "inv_r",
-            "inv_v2",
-            "inv_h",
-            "inv_energy",
-            "inv_a",
-            "inv_rv",
-            "inv_ex",
-            "inv_ey",
-            "inv_ecc",
-        ] {
-            assert!(
-                observable_names.contains(expected),
-                "missing expected retained observable `{expected}`; got: {:?}",
-                observable_names
-            );
-        }
-    }
-
-    #[test]
-    fn test_render_template_preserves_prepared_observables_from_json_context() {
-        let mut session = Session::default();
-        let source = r#"
-        model SatelliteOrbit2D
-          parameter Real mu = 398600.4418;
-          parameter Real r0 = 7000;
-          parameter Real v0 = sqrt(mu / r0);
-          Real rx(start = r0, fixed = true);
-          Real ry(start = 0, fixed = true);
-          Real vx(start = 0, fixed = true);
-          Real vy(start = v0, fixed = true);
-          Real inv_r;
-          Real inv_v2;
-          Real inv_h;
-          Real inv_energy;
-          Real inv_a;
-          Real inv_rv;
-          Real inv_ex;
-          Real inv_ey;
-          Real inv_ecc;
-        equation
-          der(rx) = vx;
-          der(ry) = vy;
-          inv_r = sqrt(rx * rx + ry * ry);
-          inv_v2 = vx * vx + vy * vy;
-          inv_h = rx * vy - ry * vx;
-          inv_energy = 0.5 * inv_v2 - mu / inv_r;
-          inv_a = 1 / (2 / inv_r - inv_v2 / mu);
-          inv_rv = rx * vx + ry * vy;
-          inv_ex = ((inv_v2 - mu / inv_r) * rx - inv_rv * vx) / mu;
-          inv_ey = ((inv_v2 - mu / inv_r) * ry - inv_rv * vy) / mu;
-          inv_ecc = sqrt(inv_ex * inv_ex + inv_ey * inv_ey);
-          der(vx) = -mu * rx / (inv_r ^ 3);
-          der(vy) = -mu * ry / (inv_r ^ 3);
-        end SatelliteOrbit2D;
-        "#;
-
-        let compiled = compile_source_in_session(&mut session, source, "SatelliteOrbit2D")
-            .expect("compile should succeed for orbit model");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&compiled).expect("compile should return valid JSON");
-        let prepared = parsed
-            .get("dae_prepared")
-            .expect("compile response should contain dae_prepared");
-
-        let rendered = render_template(
-            &prepared.to_string(),
-            "{% for o in dae.__rumoca_observables %}{{ o.name }}\n{% endfor %}",
-        )
-        .expect("render_template should succeed with JSON context");
-
-        for expected in [
-            "inv_r",
-            "inv_v2",
-            "inv_h",
-            "inv_energy",
-            "inv_a",
-            "inv_rv",
-            "inv_ex",
-            "inv_ey",
-            "inv_ecc",
-        ] {
-            assert!(
-                rendered.lines().any(|line| line.trim() == expected),
-                "expected rendered observables to contain `{expected}`, got:\n{rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_compile_to_json_recovers_after_syntax_diagnostics() {
-        let mut session = Session::default();
-        let invalid = r#"
-        model Ball
-          Real x(start=0);
-          Real v(start=1)
-        equation
-          der(x) = v;
-          der(v) = -9.81;
-        end Ball;
-        "#;
-        let valid = r#"
-        model Ball
-          Real x(start=0);
-          Real v(start=1);
-        equation
-          der(x) = v;
-          der(v) = -9.81;
-        end Ball;
-        "#;
-
-        let diags_json = lsp_diagnostics_in_session(&mut session, invalid)
-            .expect("diagnostics should still return syntax errors");
-        let diags: Vec<serde_json::Value> =
-            serde_json::from_str(&diags_json).expect("diagnostics payload should be valid JSON");
-        assert!(
-            diags.iter().any(|d| {
-                d.get("code")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(|code| code.starts_with("EP"))
-            }),
-            "expected syntax diagnostics for invalid source, got: {diags:?}"
-        );
-
-        let json = compile_source_in_session(&mut session, valid, "Ball")
-            .expect("compile should recover after diagnostics");
-        let result: serde_json::Value =
-            serde_json::from_str(&json).expect("compile should return valid JSON");
-        assert!(
-            result
-                .get("balance")
-                .and_then(|b| b.get("is_balanced"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            "expected recovered compile to be balanced, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn test_lsp_diagnostics_reports_unknown_builtin_modifier_with_multiple_classes() {
-        let mut session = Session::default();
-        let source = r#"
-        package Lib
-          model Helper
-            Real y;
-          equation
-            y = 1.0;
-          end Helper;
-        end Lib;
-
-        model M
-          Real x(startd = 1.0);
-        equation
-          der(x) = -x;
-        end M;
-        "#;
-
-        let json =
-            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
-        let diagnostics: Vec<serde_json::Value> =
-            serde_json::from_str(&json).expect("diagnostics should be valid JSON");
-
-        assert!(
-            diagnostics.iter().any(|d| {
-                d.get("code").and_then(|c| c.as_str()) == Some("ET001")
-                    && d.get("message")
-                        .and_then(|m| m.as_str())
-                        .is_some_and(|m| m.contains("unknown modifier `startd`"))
-            }),
-            "expected ET001 unknown-modifier diagnostic, got: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn test_lsp_diagnostics_reports_unknown_builtin_modifier_startdt() {
-        let mut session = Session::default();
-        let source = r#"
-        model M
-          Real x(startdt = 1.0);
-        equation
-          der(x) = -x;
-        end M;
-        "#;
-
-        let json =
-            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
-        let diagnostics: Vec<serde_json::Value> =
-            serde_json::from_str(&json).expect("diagnostics should be valid JSON");
-
-        assert!(
-            diagnostics.iter().any(|d| {
-                d.get("code").and_then(|c| c.as_str()) == Some("ET001")
-                    && d.get("message")
-                        .and_then(|m| m.as_str())
-                        .is_some_and(|m| m.contains("unknown modifier `startdt`"))
-            }),
-            "expected ET001 unknown-modifier diagnostic, got: {:?}",
-            diagnostics
-        );
-    }
-
-    #[test]
-    fn test_lsp_code_actions_returns_unknown_modifier_fix() {
-        let mut session = Session::default();
-        let source = r#"
-        model M
-          Real x(startdt = 1.0);
-        equation
-          der(x) = -x;
-        end M;
-        "#;
-
-        let diag_json =
-            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
-        let diagnostics: Vec<serde_json::Value> =
-            serde_json::from_str(&diag_json).expect("diagnostics should be valid JSON");
-        let et001 = diagnostics
-            .iter()
-            .find(|d| d.get("code").and_then(|c| c.as_str()) == Some("ET001"))
-            .expect("expected ET001 diagnostic");
-
-        let range = et001.get("range").expect("diagnostic range");
-        let start = range
-            .get("start")
-            .expect("range.start should exist")
-            .as_object()
-            .expect("range.start should be object");
-        let end = range
-            .get("end")
-            .expect("range.end should exist")
-            .as_object()
-            .expect("range.end should be object");
-        let start_line = start
-            .get("line")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-        let start_character = start
-            .get("character")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-        let end_line = end.get("line").and_then(|v| v.as_u64()).unwrap_or_default() as u32;
-        let end_character = end
-            .get("character")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-
-        let actions_json = lsp_code_actions(
-            source,
-            start_line,
-            start_character,
-            end_line,
-            end_character,
-            &serde_json::to_string(&vec![et001]).expect("serialize diagnostics"),
-        )
-        .expect("code actions should serialize");
-        let actions: Vec<serde_json::Value> =
-            serde_json::from_str(&actions_json).expect("actions should be valid JSON");
-        assert!(
-            actions.iter().any(|action| {
-                action
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|title| title.contains("Replace `startdt` with `start`"))
-            }),
-            "expected unknown-modifier quick-fix action, got: {actions:?}"
-        );
-    }
-
-    #[test]
-    fn test_lsp_code_actions_returns_missing_semicolon_fix() {
-        let mut session = Session::default();
-        let source = r#"
-        model M
-          Real x(start=0)
-        equation
-          der(x) = -x;
-        end M;
-        "#;
-
-        let diag_json =
-            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
-        let diagnostics: Vec<serde_json::Value> =
-            serde_json::from_str(&diag_json).expect("diagnostics should be valid JSON");
-        let missing_semicolon_diag = diagnostics
-            .iter()
-            .find(|d| {
-                d.get("code").and_then(|c| c.as_str()) == Some("EP001")
-                    && d.get("message").and_then(|m| m.as_str()).is_some_and(|m| {
-                        m.contains("missing `;`") || m.contains("unexpected `equation`")
-                    })
-            })
-            .unwrap_or_else(|| {
-                panic!("expected missing-semicolon diagnostic, got: {diagnostics:?}")
-            });
-
-        let range = missing_semicolon_diag
-            .get("range")
-            .expect("diagnostic range");
-        let start = range
-            .get("start")
-            .expect("range.start should exist")
-            .as_object()
-            .expect("range.start should be object");
-        let end = range
-            .get("end")
-            .expect("range.end should exist")
-            .as_object()
-            .expect("range.end should be object");
-        let start_line = start
-            .get("line")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-        let start_character = start
-            .get("character")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-        let end_line = end.get("line").and_then(|v| v.as_u64()).unwrap_or_default() as u32;
-        let end_character = end
-            .get("character")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-
-        let actions_json = lsp_code_actions(
-            source,
-            start_line,
-            start_character,
-            end_line,
-            end_character,
-            &serde_json::to_string(&vec![missing_semicolon_diag]).expect("serialize diagnostics"),
-        )
-        .expect("code actions should serialize");
-        let actions: Vec<serde_json::Value> =
-            serde_json::from_str(&actions_json).expect("actions should be valid JSON");
-        assert!(
-            actions.iter().any(|action| {
-                action
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|title| title.contains("Insert missing `;`"))
-            }),
-            "expected missing-semicolon quick-fix action, got: {actions:?}"
-        );
-    }
-
-    #[test]
-    fn test_lsp_code_actions_returns_did_you_mean_type_fix() {
-        let mut session = Session::default();
-        let source = r#"
-        model Ball
-          Real x(start=0);
-          Readl v(start=1);
-        equation
-          der(x) = v;
-          der(v) = -9.81;
-        end Ball;
-        "#;
-
-        let diag_json =
-            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
-        let diagnostics: Vec<serde_json::Value> =
-            serde_json::from_str(&diag_json).expect("diagnostics should be valid JSON");
-        let unresolved_type_diag = diagnostics
-            .iter()
-            .find(|d| {
-                d.get("code").and_then(|c| c.as_str()) == Some("ER002")
-                    && d.get("message")
-                        .and_then(|m| m.as_str())
-                        .is_some_and(|m| m.contains("unresolved type reference"))
-            })
-            .unwrap_or_else(|| panic!("expected unresolved-type diagnostic, got: {diagnostics:?}"));
-
-        let range = unresolved_type_diag.get("range").expect("diagnostic range");
-        let start = range
-            .get("start")
-            .expect("range.start should exist")
-            .as_object()
-            .expect("range.start should be object");
-        let end = range
-            .get("end")
-            .expect("range.end should exist")
-            .as_object()
-            .expect("range.end should be object");
-        let start_line = start
-            .get("line")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-        let start_character = start
-            .get("character")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-        let end_line = end.get("line").and_then(|v| v.as_u64()).unwrap_or_default() as u32;
-        let end_character = end
-            .get("character")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default() as u32;
-
-        let actions_json = lsp_code_actions(
-            source,
-            start_line,
-            start_character,
-            end_line,
-            end_character,
-            &serde_json::to_string(&vec![unresolved_type_diag]).expect("serialize diagnostics"),
-        )
-        .expect("code actions should serialize");
-        let actions: Vec<serde_json::Value> =
-            serde_json::from_str(&actions_json).expect("actions should be valid JSON");
-        assert!(
-            actions.iter().any(|action| {
-                action
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|title| title.contains("Replace with `Real`"))
-            }),
-            "expected did-you-mean quick-fix action, got: {actions:?}"
-        );
-    }
-
-    #[test]
-    fn test_lsp_diagnostics_reports_builtin_modifier_type_mismatch() {
-        let mut session = Session::default();
-        let source = r#"
-        model M
-          Boolean df = true;
-          Real v(start = df);
-        equation
-          der(v) = -v;
-        end M;
-        "#;
-
-        let json =
-            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
-        let diagnostics: Vec<serde_json::Value> =
-            serde_json::from_str(&json).expect("diagnostics should be valid JSON");
-
-        assert!(
-            diagnostics.iter().any(|d| {
-                d.get("code").and_then(|c| c.as_str()) == Some("ET002")
-                    && d.get("message").and_then(|m| m.as_str()).is_some_and(|m| {
-                        m.contains("modifier `start`")
-                            && m.contains("expects `Real`, found `Boolean`")
-                    })
-            }),
-            "expected ET002 modifier type mismatch diagnostic, got: {:?}",
-            diagnostics
-        );
-    }
-}
+mod tests;

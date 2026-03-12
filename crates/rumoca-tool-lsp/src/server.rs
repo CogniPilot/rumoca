@@ -77,6 +77,12 @@ struct LibraryLoadOutcome {
     cache_path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagnosticsTrigger {
+    Live,
+    Save,
+}
+
 fn library_load_diagnostics_for_package_layout_error(
     err: &PackageLayoutError,
 ) -> HashMap<String, Vec<Diagnostic>> {
@@ -748,7 +754,8 @@ impl ModelicaLanguageServer {
             }
         }
 
-        let mut report = isolated_session.compile_model_strict_reachable_with_recovery(model);
+        let mut report =
+            isolated_session.compile_model_strict_reachable_uncached_with_recovery(model);
         if !report.failures.is_empty() {
             return Err(report.failure_summary(8));
         }
@@ -1059,7 +1066,7 @@ impl ModelicaLanguageServer {
     }
 
     /// Publish diagnostics for a document.
-    async fn publish_diagnostics(&self, uri: Url, text: &str) {
+    async fn publish_diagnostics(&self, uri: Url, text: &str, trigger: DiagnosticsTrigger) {
         let file_name = session_document_uri_key(&uri);
         let is_library_overlay = self
             .library_document_overlays
@@ -1075,6 +1082,20 @@ impl ModelicaLanguageServer {
             return;
         }
         self.ensure_source_libraries_loaded(text, &file_name).await;
+        let should_compile = if trigger == DiagnosticsTrigger::Save {
+            true
+        } else {
+            let session = self.session.read().await;
+            should_run_live_compile_diagnostics(session.document_uris().len())
+        };
+        if !should_compile {
+            let mut diagnostics = handlers::compute_diagnostics(text, &file_name, None);
+            diagnostics.extend(self.stored_library_load_diagnostics(&file_name).await);
+            self.client
+                .publish_diagnostics(uri, diagnostics, None)
+                .await;
+            return;
+        }
         let mut session = self.session.write().await;
         let mut diagnostics = handlers::compute_diagnostics(text, &file_name, Some(&mut session));
         drop(session);
@@ -1305,14 +1326,16 @@ impl LanguageServer for ModelicaLanguageServer {
         let text = params.text_document.text;
         if self.is_library_document_path(&uri_path).await {
             self.update_library_document_overlay(&uri_path, &text).await;
-            self.publish_diagnostics(uri, &text).await;
+            self.publish_diagnostics(uri, &text, DiagnosticsTrigger::Live)
+                .await;
             return;
         }
         {
             let mut session = self.session.write().await;
             session.update_document(&uri_path, &text);
         }
-        self.publish_diagnostics(uri, &text).await;
+        self.publish_diagnostics(uri, &text, DiagnosticsTrigger::Live)
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -1326,7 +1349,8 @@ impl LanguageServer for ModelicaLanguageServer {
                 self.update_library_document_overlay(&uri_path, &change.text)
                     .await;
                 self.mark_library_dirty_for_document(&uri_path).await;
-                self.publish_diagnostics(uri, &change.text).await;
+                self.publish_diagnostics(uri, &change.text, DiagnosticsTrigger::Live)
+                    .await;
                 return;
             }
             {
@@ -1334,7 +1358,8 @@ impl LanguageServer for ModelicaLanguageServer {
                 session.update_document(&uri_path, &change.text);
             }
             self.mark_library_dirty_for_document(&uri_path).await;
-            self.publish_diagnostics(uri, &change.text).await;
+            self.publish_diagnostics(uri, &change.text, DiagnosticsTrigger::Live)
+                .await;
         }
     }
 
@@ -1359,12 +1384,14 @@ impl LanguageServer for ModelicaLanguageServer {
             self.reload_project_config().await;
         }
         if let Some(text) = params.text {
-            self.publish_diagnostics(uri, &text).await;
+            self.publish_diagnostics(uri, &text, DiagnosticsTrigger::Save)
+                .await;
         } else {
             let uri_path = session_document_uri_key(&uri);
             if let Some(doc) = self.document_snapshot(&uri_path).await {
                 let text = doc.content.clone();
-                self.publish_diagnostics(uri, &text).await;
+                self.publish_diagnostics(uri, &text, DiagnosticsTrigger::Save)
+                    .await;
             }
         }
     }

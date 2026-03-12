@@ -13,6 +13,7 @@ path = "src/bin/rumoca-sim-worker.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+bincode = "1.3"
 clap = { workspace = true }
 mimalloc = { workspace = true }
 serde = { workspace = true }
@@ -20,14 +21,13 @@ serde_json = { workspace = true, features = ["unbounded_depth"] }
 rumoca-session = { workspace = true }
 
 [dev-dependencies]
-flate2 = "1.0"
-tar = "0.4"
 walkdir = "2.5"
 ureq = "2.9"
 dirs = "5.0"
 rayon = { workspace = true }
 ntest = "0.9"
 tempfile = { workspace = true }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rumoca-eval-dae = { workspace = true }

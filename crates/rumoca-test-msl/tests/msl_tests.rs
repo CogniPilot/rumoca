@@ -6,7 +6,6 @@
 //! Run with:
 //! `cargo test --release --package rumoca-test-msl --test msl_tests test_msl_all -- --ignored --nocapture`
 
-use flate2::read::GzDecoder;
 use rayon::prelude::*;
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
 use rumoca_session::{
@@ -20,13 +19,13 @@ use rumoca_session::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tar::Archive;
 use walkdir::WalkDir;
+use zip::read::ZipArchive;
 
 fn check_release_mode() {
     #[cfg(debug_assertions)]
@@ -46,8 +45,8 @@ fn check_release_mode() {
 }
 
 const MSL_VERSION: &str = "v4.1.0";
-const MSL_URL: &str =
-    "https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.tar.gz";
+const MSL_RELEASE_ZIP_URL: &str = "https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip";
+const MSL_MODELICA_DIR_NAME: &str = "Modelica 4.1.0";
 
 fn get_msl_cache_dir() -> PathBuf {
     let cache_dir = msl_cache_dir_from_manifest(env!("CARGO_MANIFEST_DIR"));
@@ -59,9 +58,55 @@ fn get_msl_dir() -> PathBuf {
     get_msl_cache_dir().join(format!("ModelicaStandardLibrary-{}", &MSL_VERSION[1..]))
 }
 
+fn msl_cache_layout_valid(msl_dir: &Path) -> bool {
+    msl_dir.join("Complex.mo").is_file()
+        && msl_dir
+            .join(MSL_MODELICA_DIR_NAME)
+            .join("package.mo")
+            .is_file()
+}
+
 fn msl_exists() -> bool {
     let msl_dir = get_msl_dir();
-    msl_dir.exists() && msl_dir.join("Modelica").exists()
+    msl_cache_layout_valid(&msl_dir)
+}
+
+fn reset_msl_cache_dir(msl_dir: &Path) -> io::Result<()> {
+    if msl_dir.exists() {
+        fs::remove_dir_all(msl_dir)?;
+    }
+    fs::create_dir_all(msl_dir)?;
+    Ok(())
+}
+
+fn extract_msl_release_zip(data: &[u8], msl_dir: &Path) -> io::Result<()> {
+    let cursor = Cursor::new(data);
+    let mut archive = ZipArchive::new(cursor)
+        .map_err(|error| io::Error::other(format!("Failed to open MSL zip: {error}")))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| io::Error::other(format!("Failed to read MSL zip entry: {error}")))?;
+        let relative_path = entry
+            .enclosed_name()
+            .ok_or_else(|| io::Error::other(format!("Invalid zip entry path: {}", entry.name())))?;
+        let output_path = msl_dir.join(relative_path);
+
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path)?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut output = File::create(&output_path)?;
+        io::copy(&mut entry, &mut output)?;
+    }
+
+    Ok(())
 }
 
 fn ensure_msl_downloaded() -> io::Result<PathBuf> {
@@ -74,7 +119,7 @@ fn ensure_msl_downloaded() -> io::Result<PathBuf> {
 
     println!("Downloading MSL {} from GitHub...", MSL_VERSION);
 
-    let response = ureq::get(MSL_URL)
+    let response = ureq::get(MSL_RELEASE_ZIP_URL)
         .call()
         .map_err(|e| io::Error::other(format!("Download failed: {}", e)))?;
 
@@ -91,11 +136,24 @@ fn ensure_msl_downloaded() -> io::Result<PathBuf> {
         .read_to_end(&mut data)
         .map_err(|e| io::Error::other(format!("Read failed: {}", e)))?;
 
-    println!("Downloaded {} bytes, extracting...", data.len());
+    println!(
+        "Downloaded {} bytes, extracting official release zip...",
+        data.len()
+    );
 
-    let tar = GzDecoder::new(&data[..]);
-    let mut archive = Archive::new(tar);
-    archive.unpack(get_msl_cache_dir())?;
+    reset_msl_cache_dir(&msl_dir)?;
+    extract_msl_release_zip(&data, &msl_dir)?;
+
+    if !msl_cache_layout_valid(&msl_dir) {
+        return Err(io::Error::other(format!(
+            "Extracted MSL cache at '{}' is invalid: missing Complex.mo or {}",
+            msl_dir.display(),
+            msl_dir
+                .join(MSL_MODELICA_DIR_NAME)
+                .join("package.mo")
+                .display()
+        )));
+    }
 
     println!("Extracted MSL to {:?}", msl_dir);
     Ok(msl_dir)
@@ -423,6 +481,41 @@ struct MslPhaseTimings {
     render_and_write_seconds: f64,
     summarize_seconds: f64,
     core_pipeline_seconds: f64,
+}
+
+#[test]
+fn msl_cache_layout_valid_requires_complex_and_modelica_package() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cache_root = temp.path().join("ModelicaStandardLibrary-4.1.0");
+    fs::create_dir_all(&cache_root).expect("cache root");
+
+    assert!(
+        !msl_cache_layout_valid(&cache_root),
+        "empty cache root must be rejected"
+    );
+
+    fs::write(
+        cache_root.join("Complex.mo"),
+        "within; encapsulated package Complex end Complex;",
+    )
+    .expect("complex package");
+    assert!(
+        !msl_cache_layout_valid(&cache_root),
+        "Complex.mo alone must not mark the cache valid"
+    );
+
+    let modelica_dir = cache_root.join(MSL_MODELICA_DIR_NAME);
+    fs::create_dir_all(&modelica_dir).expect("Modelica dir");
+    fs::write(
+        modelica_dir.join("package.mo"),
+        "within; package Modelica end Modelica;",
+    )
+    .expect("Modelica package");
+
+    assert!(
+        msl_cache_layout_valid(&cache_root),
+        "cache root with Complex.mo and Modelica package must be accepted"
+    );
 }
 
 mod balance_pipeline;
