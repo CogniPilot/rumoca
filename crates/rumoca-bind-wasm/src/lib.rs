@@ -581,16 +581,30 @@ fn compile_requested_model(
         .map_err(|e| JsValue::from_str(&format!("Compilation error: {}", e)))
 }
 
-/// Compile Modelica source code to DAE JSON.
-#[wasm_bindgen]
-pub fn compile(source: &str, model_name: &str) -> Result<String, JsValue> {
+fn with_singleton_session<T>(
+    f: impl FnOnce(&mut Session) -> Result<T, JsValue>,
+) -> Result<T, JsValue> {
     let mut lock = SESSION
         .lock()
         .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
     let session = lock.get_or_insert_with(Session::default);
+    f(session)
+}
+
+fn compile_source_in_session(
+    session: &mut Session,
+    source: &str,
+    model_name: &str,
+) -> Result<String, JsValue> {
     session.update_document("input.mo", source);
     let result = compile_requested_model(session, model_name)?;
     build_compile_response(&result)
+}
+
+/// Compile Modelica source code to DAE JSON.
+#[wasm_bindgen]
+pub fn compile(source: &str, model_name: &str) -> Result<String, JsValue> {
+    with_singleton_session(|session| compile_source_in_session(session, source, model_name))
 }
 
 /// Compile Modelica source code to DAE JSON (alias for worker compatibility).
@@ -906,13 +920,7 @@ fn find_class_by_qualified_name<'a>(
     Some(class)
 }
 
-/// List all loaded classes as a package/class hierarchy.
-#[wasm_bindgen]
-pub fn list_classes() -> Result<String, JsValue> {
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
-    let session = lock.get_or_insert_with(Session::default);
+fn list_classes_in_session(session: &mut Session) -> Result<String, JsValue> {
     let tree = session
         .tree()
         .map_err(|e| JsValue::from_str(&format!("Class tree error: {}", e)))?;
@@ -932,13 +940,16 @@ pub fn list_classes() -> Result<String, JsValue> {
     serde_json::to_string(&response).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
 
-/// Get detailed class documentation and summary metadata.
+/// List all loaded classes as a package/class hierarchy.
 #[wasm_bindgen]
-pub fn get_class_info(qualified_name: &str) -> Result<String, JsValue> {
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
-    let session = lock.get_or_insert_with(Session::default);
+pub fn list_classes() -> Result<String, JsValue> {
+    with_singleton_session(list_classes_in_session)
+}
+
+fn get_class_info_in_session(
+    session: &mut Session,
+    qualified_name: &str,
+) -> Result<String, JsValue> {
     let tree = session
         .tree()
         .map_err(|e| JsValue::from_str(&format!("Class tree error: {}", e)))?;
@@ -978,6 +989,12 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, JsValue> {
     serde_json::to_string(&info).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
 
+/// Get detailed class documentation and summary metadata.
+#[wasm_bindgen]
+pub fn get_class_info(qualified_name: &str) -> Result<String, JsValue> {
+    with_singleton_session(|session| get_class_info_in_session(session, qualified_name))
+}
+
 // ==========================================================================
 // Code Generation
 // ==========================================================================
@@ -998,10 +1015,10 @@ pub fn render_template(dae_json: &str, template: &str) -> Result<String, JsValue
 /// Compute diagnostics (syntax, lint, and compilation errors).
 #[wasm_bindgen]
 pub fn lsp_diagnostics(source: &str) -> Result<String, JsValue> {
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let session = lock.get_or_insert_with(Session::default);
+    with_singleton_session(|session| lsp_diagnostics_in_session(session, source))
+}
+
+fn lsp_diagnostics_in_session(session: &mut Session, source: &str) -> Result<String, JsValue> {
     let diagnostics = rumoca_tool_lsp::compute_diagnostics(source, "input.mo", Some(session));
     serde_json::to_string(&diagnostics)
         .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
@@ -1117,10 +1134,18 @@ pub fn simulate_model(
     t_end: f64,
     dt: f64,
 ) -> Result<String, JsValue> {
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
-    let session = lock.get_or_insert_with(Session::default);
+    with_singleton_session(|session| {
+        simulate_model_in_session(session, source, model_name, t_end, dt)
+    })
+}
+
+fn simulate_model_in_session(
+    session: &mut Session,
+    source: &str,
+    model_name: &str,
+    t_end: f64,
+    dt: f64,
+) -> Result<String, JsValue> {
     session.update_document("input.mo", source);
     let result = compile_requested_model(session, model_name)?;
 
@@ -1178,7 +1203,6 @@ mod tests {
 
     #[test]
     fn test_list_classes_includes_nested_packages() {
-        clear_library_cache();
         let source = r#"
         package Lib
           package Nested
@@ -1191,12 +1215,9 @@ mod tests {
         end Lib;
         "#;
 
-        let mut lock = SESSION.lock().expect("session lock");
-        let session = lock.get_or_insert_with(Session::default);
+        let mut session = Session::default();
         session.update_document("input.mo", source);
-        drop(lock);
-
-        let json = list_classes().expect("list_classes should succeed");
+        let json = list_classes_in_session(&mut session).expect("list_classes should succeed");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(
             tree.get("total_classes")
@@ -1233,13 +1254,10 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     #[test]
     fn test_get_class_info_extracts_documentation_annotation() {
-        clear_library_cache();
-        let mut lock = SESSION.lock().expect("session lock");
-        let session = lock.get_or_insert_with(Session::default);
+        let mut session = Session::default();
         session.update_document("input.mo", DOC_MODEL_SOURCE);
-        drop(lock);
-
-        let json = get_class_info("DocModel").expect("get_class_info should succeed");
+        let json = get_class_info_in_session(&mut session, "DocModel")
+            .expect("get_class_info should succeed");
         let info: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(
             info.get("class_type").and_then(|v| v.as_str()),
@@ -1296,7 +1314,7 @@ mod tests {
 
     #[test]
     fn test_compile_to_json_valid_model() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model Ball
           Real x(start=0);
@@ -1307,9 +1325,10 @@ mod tests {
         end Ball;
         "#;
 
-        let json = compile_to_json(source, "Ball").expect("compile_to_json should succeed");
+        let json = compile_source_in_session(&mut session, source, "Ball")
+            .expect("compile should succeed");
         let result: serde_json::Value =
-            serde_json::from_str(&json).expect("compile_to_json should return valid JSON");
+            serde_json::from_str(&json).expect("compile should return valid JSON");
         let balance = result
             .get("balance")
             .expect("compile output should include balance section");
@@ -1338,7 +1357,7 @@ mod tests {
 
     #[test]
     fn test_compile_to_json_prepared_retains_observables_from_native_orbit_model() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model SatelliteOrbit2D
           parameter Real mu = 398600.4418;
@@ -1374,10 +1393,10 @@ mod tests {
         end SatelliteOrbit2D;
         "#;
 
-        let json = compile_to_json(source, "SatelliteOrbit2D")
-            .expect("compile_to_json should succeed for orbit model");
+        let json = compile_source_in_session(&mut session, source, "SatelliteOrbit2D")
+            .expect("compile should succeed for orbit model");
         let result: serde_json::Value =
-            serde_json::from_str(&json).expect("compile_to_json should return valid JSON");
+            serde_json::from_str(&json).expect("compile should return valid JSON");
 
         let native_y = result
             .get("dae_native")
@@ -1428,7 +1447,7 @@ mod tests {
 
     #[test]
     fn test_render_template_preserves_prepared_observables_from_json_context() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model SatelliteOrbit2D
           parameter Real mu = 398600.4418;
@@ -1464,10 +1483,10 @@ mod tests {
         end SatelliteOrbit2D;
         "#;
 
-        let compiled = compile_to_json(source, "SatelliteOrbit2D")
-            .expect("compile_to_json should succeed for orbit model");
+        let compiled = compile_source_in_session(&mut session, source, "SatelliteOrbit2D")
+            .expect("compile should succeed for orbit model");
         let parsed: serde_json::Value =
-            serde_json::from_str(&compiled).expect("compile_to_json should return valid JSON");
+            serde_json::from_str(&compiled).expect("compile should return valid JSON");
         let prepared = parsed
             .get("dae_prepared")
             .expect("compile response should contain dae_prepared");
@@ -1498,7 +1517,7 @@ mod tests {
 
     #[test]
     fn test_compile_to_json_recovers_after_syntax_diagnostics() {
-        clear_library_cache();
+        let mut session = Session::default();
         let invalid = r#"
         model Ball
           Real x(start=0);
@@ -1518,8 +1537,8 @@ mod tests {
         end Ball;
         "#;
 
-        let diags_json =
-            lsp_diagnostics(invalid).expect("diagnostics should still return syntax errors");
+        let diags_json = lsp_diagnostics_in_session(&mut session, invalid)
+            .expect("diagnostics should still return syntax errors");
         let diags: Vec<serde_json::Value> =
             serde_json::from_str(&diags_json).expect("diagnostics payload should be valid JSON");
         assert!(
@@ -1531,10 +1550,10 @@ mod tests {
             "expected syntax diagnostics for invalid source, got: {diags:?}"
         );
 
-        let json = compile_to_json(valid, "Ball")
-            .expect("compile_to_json should recover after diagnostics");
+        let json = compile_source_in_session(&mut session, valid, "Ball")
+            .expect("compile should recover after diagnostics");
         let result: serde_json::Value =
-            serde_json::from_str(&json).expect("compile_to_json should return valid JSON");
+            serde_json::from_str(&json).expect("compile should return valid JSON");
         assert!(
             result
                 .get("balance")
@@ -1547,7 +1566,7 @@ mod tests {
 
     #[test]
     fn test_lsp_diagnostics_reports_unknown_builtin_modifier_with_multiple_classes() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         package Lib
           model Helper
@@ -1564,7 +1583,8 @@ mod tests {
         end M;
         "#;
 
-        let json = lsp_diagnostics(source).expect("diagnostics should serialize");
+        let json =
+            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
         let diagnostics: Vec<serde_json::Value> =
             serde_json::from_str(&json).expect("diagnostics should be valid JSON");
 
@@ -1582,7 +1602,7 @@ mod tests {
 
     #[test]
     fn test_lsp_diagnostics_reports_unknown_builtin_modifier_startdt() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model M
           Real x(startdt = 1.0);
@@ -1591,7 +1611,8 @@ mod tests {
         end M;
         "#;
 
-        let json = lsp_diagnostics(source).expect("diagnostics should serialize");
+        let json =
+            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
         let diagnostics: Vec<serde_json::Value> =
             serde_json::from_str(&json).expect("diagnostics should be valid JSON");
 
@@ -1609,7 +1630,7 @@ mod tests {
 
     #[test]
     fn test_lsp_code_actions_returns_unknown_modifier_fix() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model M
           Real x(startdt = 1.0);
@@ -1618,7 +1639,8 @@ mod tests {
         end M;
         "#;
 
-        let diag_json = lsp_diagnostics(source).expect("diagnostics should serialize");
+        let diag_json =
+            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
         let diagnostics: Vec<serde_json::Value> =
             serde_json::from_str(&diag_json).expect("diagnostics should be valid JSON");
         let et001 = diagnostics
@@ -1675,7 +1697,7 @@ mod tests {
 
     #[test]
     fn test_lsp_code_actions_returns_missing_semicolon_fix() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model M
           Real x(start=0)
@@ -1684,7 +1706,8 @@ mod tests {
         end M;
         "#;
 
-        let diag_json = lsp_diagnostics(source).expect("diagnostics should serialize");
+        let diag_json =
+            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
         let diagnostics: Vec<serde_json::Value> =
             serde_json::from_str(&diag_json).expect("diagnostics should be valid JSON");
         let missing_semicolon_diag = diagnostics
@@ -1750,7 +1773,7 @@ mod tests {
 
     #[test]
     fn test_lsp_code_actions_returns_did_you_mean_type_fix() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model Ball
           Real x(start=0);
@@ -1761,7 +1784,8 @@ mod tests {
         end Ball;
         "#;
 
-        let diag_json = lsp_diagnostics(source).expect("diagnostics should serialize");
+        let diag_json =
+            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
         let diagnostics: Vec<serde_json::Value> =
             serde_json::from_str(&diag_json).expect("diagnostics should be valid JSON");
         let unresolved_type_diag = diagnostics
@@ -1823,7 +1847,7 @@ mod tests {
 
     #[test]
     fn test_lsp_diagnostics_reports_builtin_modifier_type_mismatch() {
-        clear_library_cache();
+        let mut session = Session::default();
         let source = r#"
         model M
           Boolean df = true;
@@ -1833,7 +1857,8 @@ mod tests {
         end M;
         "#;
 
-        let json = lsp_diagnostics(source).expect("diagnostics should serialize");
+        let json =
+            lsp_diagnostics_in_session(&mut session, source).expect("diagnostics should serialize");
         let diagnostics: Vec<serde_json::Value> =
             serde_json::from_str(&json).expect("diagnostics should be valid JSON");
 

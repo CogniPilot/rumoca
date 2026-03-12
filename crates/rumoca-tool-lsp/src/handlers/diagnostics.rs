@@ -77,6 +77,7 @@ pub fn compute_diagnostics(
     diagnostics
 }
 
+#[cfg(feature = "server")]
 pub(crate) fn common_diagnostics_for_file(
     diagnostics: &[CommonDiagnostic],
     file_name: &str,
