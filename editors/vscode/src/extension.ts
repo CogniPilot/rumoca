@@ -6,9 +6,17 @@ import { execSync, spawn, spawnSync } from 'child_process';
 import {
     LanguageClient,
     LanguageClientOptions,
-    ServerOptions,
     TransportKind
 } from 'vscode-languageclient/node';
+import {
+    ModelicaPathSources,
+    resolveModelicaPathSources as resolveModelicaPathSourcesForEntries,
+} from './modelica_paths';
+import {
+    StartedLanguageClient,
+    createLanguageClientRuntime,
+} from './language_client_runtime';
+import { createNotebookControllerRuntime } from './notebook_controller_runtime';
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel;
@@ -559,53 +567,11 @@ function inferModelNameFromSource(source: string): string | undefined {
     return match ? match[1] : undefined;
 }
 
-function mergeLibraryPathLists(primary: readonly string[], secondary: readonly string[]): string[] {
-    const merged: string[] = [];
-    const seen = new Set<string>();
-    for (const entry of [...primary, ...secondary]) {
-        const trimmed = String(entry).trim();
-        if (!trimmed) {
-            continue;
-        }
-        const key = process.platform === 'win32' ? trimmed.toLowerCase() : trimmed;
-        if (seen.has(key)) {
-            continue;
-        }
-        seen.add(key);
-        merged.push(trimmed);
-    }
-    return merged;
-}
-
-function parsePathListEnvVar(name: string): string[] {
-    const raw = process.env[name];
-    if (!raw) {
-        return [];
-    }
-    return raw
-        .split(path.delimiter)
-        .map((entry) => entry.trim())
-        .filter(Boolean);
-}
-
-function resolveModelicaPathSources(config: vscode.WorkspaceConfiguration): {
-    configuredPaths: string[];
-    environmentPaths: string[];
-    mergedPaths: string[];
-    usedLegacyAlias: boolean;
-} {
-    const configuredPaths = (config.get<string[]>('modelicaPath') ?? [])
-        .map((entry) => String(entry).trim())
-        .filter(Boolean);
-    const envModelicaPath = parsePathListEnvVar('MODELICAPATH');
-    const envLegacyPath = parsePathListEnvVar('MODELICPATH');
-    const environmentPaths = mergeLibraryPathLists(envModelicaPath, envLegacyPath);
-    return {
-        configuredPaths,
-        environmentPaths,
-        mergedPaths: mergeLibraryPathLists(configuredPaths, environmentPaths),
-        usedLegacyAlias: envLegacyPath.length > 0,
-    };
+function resolveModelicaPathSources(config: vscode.WorkspaceConfiguration): ModelicaPathSources {
+    return resolveModelicaPathSourcesForEntries(
+        config.get<string[]>('modelicaPath') ?? [],
+        process.env,
+    );
 }
 
 function getSimulationSettings(config: vscode.WorkspaceConfiguration): SimulationSettings {
@@ -747,6 +713,33 @@ async function getProjectSimulationConfig(
             fallback,
         }
     );
+}
+
+async function reopenEmbeddedModelicaDocuments() {
+    if (!client) {
+        return;
+    }
+    openVirtualDocuments.clear();
+    for (const [cellUri, blocks] of modelicaBlocks.entries()) {
+        for (let index = 0; index < blocks.length; index++) {
+            const block = blocks[index];
+            const virtualUri = getVirtualDocumentUri(cellUri, index);
+            const virtualUriStr = virtualUri.toString();
+            try {
+                await client.sendNotification('textDocument/didOpen', {
+                    textDocument: {
+                        uri: virtualUriStr,
+                        languageId: 'modelica',
+                        version: 1,
+                        text: block.content
+                    }
+                });
+                openVirtualDocuments.set(virtualUriStr, { version: 1, content: block.content });
+            } catch {
+                // Ignore restart replay errors; the next edit will retry.
+            }
+        }
+    }
 }
 
 async function setProjectSimulationPreset(
@@ -5554,8 +5547,8 @@ async function executeModelicaCell(
  */
 function createNotebookController(
     context: vscode.ExtensionContext,
-    rumocaPath: string,
-    globalLibPaths: string[],
+    getRumocaPath: () => string | undefined,
+    getGlobalLibPaths: () => string[],
     log: (msg: string) => void
 ): vscode.NotebookController {
     const controller = vscode.notebooks.createNotebookController(
@@ -5584,7 +5577,11 @@ function createNotebookController(
             log(`Executing Modelica cell: ${code.substring(0, 100)}...`);
 
             try {
-                const result = await executeModelicaCell(code, rumocaPath, globalLibPaths);
+                const rumocaPath = getRumocaPath();
+                if (!rumocaPath) {
+                    throw new Error('Rumoca executable is not available for notebook execution.');
+                }
+                const result = await executeModelicaCell(code, rumocaPath, getGlobalLibPaths());
 
                 if (result.success) {
                     const modelName = result.model || 'model';
@@ -5663,9 +5660,8 @@ export async function activate(context: vscode.ExtensionContext) {
     const startTime = Date.now();
     outputChannel = vscode.window.createOutputChannel('Rumoca Extension');
 
-    const config = vscode.workspace.getConfiguration('rumoca');
-    const debug = config.get<boolean>('debug') ?? false;
-    const useSystemServer = config.get<boolean>('useSystemServer') ?? false;
+    let config = vscode.workspace.getConfiguration('rumoca');
+    let debug = config.get<boolean>('debug') ?? false;
 
     const log = (msg: string) => {
         outputChannel.appendLine(msg);
@@ -5678,6 +5674,15 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     };
 
+    const refreshConfig = (): vscode.WorkspaceConfiguration => {
+        config = vscode.workspace.getConfiguration('rumoca');
+        debug = config.get<boolean>('debug') ?? false;
+        if (debug) {
+            outputChannel.show(true);
+        }
+        return config;
+    };
+
     if (debug) {
         outputChannel.show(true); // Show output channel immediately when debugging
     }
@@ -5686,22 +5691,14 @@ export async function activate(context: vscode.ExtensionContext) {
     console.log('[Rumoca] Debug mode:', debug);
     debugLog(`[DEBUG] Workspace folders: ${vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath).join(', ') || 'none'}`);
 
-    // Find the server executable
-    let serverPath = config.get<string>('serverPath');
-    let usingSystemFallback = false;
-    let usingBundledServer = false;
-
     const elapsed = () => `${Date.now() - startTime}ms`;
 
-    // Helper to find system-installed rumoca-lsp
     const findSystemServer = (): string | undefined => {
-        // Try PATH first
         const pathResult = findInPath('rumoca-lsp');
         if (pathResult) {
             debugLog(`[${elapsed()}] Found rumoca-lsp in PATH: ${pathResult}`);
             return pathResult;
         }
-        // Try cargo installation location
         const cargoPath = path.join(process.env.HOME || '', '.cargo', 'bin', 'rumoca-lsp');
         if (fs.existsSync(cargoPath)) {
             debugLog(`[${elapsed()}] Found rumoca-lsp at cargo location: ${cargoPath}`);
@@ -5710,97 +5707,121 @@ export async function activate(context: vscode.ExtensionContext) {
         return undefined;
     };
 
-    if (serverPath) {
-        // Explicit path configured - use it directly
-        debugLog(`[${elapsed()}] Using configured serverPath: ${serverPath}`);
-    } else if (useSystemServer) {
-        // User explicitly wants system server
-        debugLog(`[${elapsed()}] useSystemServer is enabled, searching for system rumoca-lsp...`);
-        serverPath = findSystemServer();
-        if (serverPath) {
-            log(`Using system-installed rumoca-lsp: ${serverPath}`);
-        }
-    } else {
-        debugLog(`[${elapsed()}] Searching for rumoca-lsp...`);
+    const openRumocaSetting = (setting: string) => {
+        void vscode.commands.executeCommand('workbench.action.openSettings', setting);
+    };
 
-        // 1. Check for bundled binary (platform-specific extension)
-        const binaryName = process.platform === 'win32' ? 'rumoca-lsp.exe' : 'rumoca-lsp';
-        const bundledPath = path.join(context.extensionPath, 'bin', binaryName);
-        debugLog(`[${elapsed()}] Checking for bundled binary: ${bundledPath}`);
-        if (fs.existsSync(bundledPath)) {
-            serverPath = bundledPath;
-            usingBundledServer = true;
-            log(`Using bundled rumoca-lsp`);
-            debugLog(`[${elapsed()}] Found bundled rumoca-lsp: ${serverPath}`);
-        } else {
-            // 2. Fall back to system-installed version
-            debugLog(`[${elapsed()}] No bundled binary, searching for system rumoca-lsp...`);
-            serverPath = findSystemServer();
-            if (serverPath) {
-                usingSystemFallback = true;
-            }
-        }
-    }
-
-    if (!serverPath) {
+    const promptForMissingLanguageServer = async (): Promise<void> => {
         const installAction = 'Install with cargo';
         const msg = 'rumoca-lsp not found. Install it with: cargo install rumoca';
         log(`ERROR: ${msg}`);
 
         const selection = await vscode.window.showErrorMessage(msg, installAction, 'Configure Path');
         if (selection === installAction) {
-            // Open terminal with install command
             const terminal = vscode.window.createTerminal('Rumoca Install');
             terminal.show();
             terminal.sendText('cargo install rumoca');
         } else if (selection === 'Configure Path') {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.serverPath');
+            openRumocaSetting('rumoca.serverPath');
         }
-        return;
-    }
+    };
 
-    // Show warning if using system fallback (bundled binary not found)
-    if (usingSystemFallback) {
-        log(`Warning: Using system-installed rumoca-lsp: ${serverPath}`);
+    const resolveLanguageServerExecutable = async (
+        currentConfig: vscode.WorkspaceConfiguration
+    ): Promise<{ serverPath: string; usingBundledServer: boolean; usingSystemFallback: boolean } | undefined> => {
+        const configuredServerPath = currentConfig.get<string>('serverPath');
+        if (configuredServerPath) {
+            debugLog(`[${elapsed()}] Using configured serverPath: ${configuredServerPath}`);
+            return {
+                serverPath: configuredServerPath,
+                usingBundledServer: false,
+                usingSystemFallback: false,
+            };
+        }
+
+        if (currentConfig.get<boolean>('useSystemServer') ?? false) {
+            debugLog(`[${elapsed()}] useSystemServer is enabled, searching for system rumoca-lsp...`);
+            const systemServerPath = findSystemServer();
+            if (!systemServerPath) {
+                await promptForMissingLanguageServer();
+                return undefined;
+            }
+            log(`Using system-installed rumoca-lsp: ${systemServerPath}`);
+            return {
+                serverPath: systemServerPath,
+                usingBundledServer: false,
+                usingSystemFallback: false,
+            };
+        }
+
+        debugLog(`[${elapsed()}] Searching for rumoca-lsp...`);
+        const binaryName = process.platform === 'win32' ? 'rumoca-lsp.exe' : 'rumoca-lsp';
+        const bundledPath = path.join(context.extensionPath, 'bin', binaryName);
+        debugLog(`[${elapsed()}] Checking for bundled binary: ${bundledPath}`);
+        if (fs.existsSync(bundledPath)) {
+            log('Using bundled rumoca-lsp');
+            debugLog(`[${elapsed()}] Found bundled rumoca-lsp: ${bundledPath}`);
+            return {
+                serverPath: bundledPath,
+                usingBundledServer: true,
+                usingSystemFallback: false,
+            };
+        }
+
+        debugLog(`[${elapsed()}] No bundled binary, searching for system rumoca-lsp...`);
+        const fallbackServerPath = findSystemServer();
+        if (!fallbackServerPath) {
+            await promptForMissingLanguageServer();
+            return undefined;
+        }
+        return {
+            serverPath: fallbackServerPath,
+            usingBundledServer: false,
+            usingSystemFallback: true,
+        };
+    };
+
+    const showSystemFallbackWarning = (resolvedServerPath: string) => {
+        log(`Warning: Using system-installed rumoca-lsp: ${resolvedServerPath}`);
         log('The bundled binary was not found. This may indicate a platform mismatch.');
         vscode.window.showWarningMessage(
-            `Using system-installed rumoca-lsp. Set "rumoca.useSystemServer": true to suppress this warning.`,
+            'Using system-installed rumoca-lsp. Set "rumoca.useSystemServer": true to suppress this warning.',
             'Open Settings'
         ).then(selection => {
             if (selection === 'Open Settings') {
-                vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.useSystemServer');
+                openRumocaSetting('rumoca.useSystemServer');
             }
         });
-    }
+    };
 
-    // Verify the binary exists and is executable
-    debugLog(`[${elapsed()}] Verifying server binary exists...`);
-    if (!fs.existsSync(serverPath)) {
-        const msg = `rumoca-lsp not found at: ${serverPath}`;
-        log(`ERROR: ${msg}`);
-        vscode.window.showErrorMessage(msg);
-        return;
-    }
+    const validateLanguageServerExecutable = async (
+        resolvedServerPath: string,
+        usingBundledServer: boolean
+    ): Promise<string | undefined> => {
+        debugLog(`[${elapsed()}] Verifying server binary exists...`);
+        if (!fs.existsSync(resolvedServerPath)) {
+            const msg = `rumoca-lsp not found at: ${resolvedServerPath}`;
+            log(`ERROR: ${msg}`);
+            vscode.window.showErrorMessage(msg);
+            return undefined;
+        }
 
-    let probeResult = probeServerExecutable(serverPath);
-    if (!probeResult.ok) {
-        const detail = probeResult.detail ?? 'unknown error';
-        log(`ERROR: Failed to execute rumoca-lsp at ${serverPath}: ${detail}`);
-
-        if (usingBundledServer) {
+        let usableServerPath = resolvedServerPath;
+        let probeResult = probeServerExecutable(usableServerPath);
+        if (!probeResult.ok && usingBundledServer) {
             const fallbackServerPath = findSystemServer();
-            if (fallbackServerPath && fallbackServerPath !== serverPath) {
+            if (fallbackServerPath && fallbackServerPath !== usableServerPath) {
                 const fallbackProbeResult = probeServerExecutable(fallbackServerPath);
                 if (fallbackProbeResult.ok) {
-                    serverPath = fallbackServerPath;
+                    usableServerPath = fallbackServerPath;
                     probeResult = fallbackProbeResult;
-                    log(`Warning: Bundled rumoca-lsp could not execute; falling back to system server: ${serverPath}`);
+                    log(`Warning: Bundled rumoca-lsp could not execute; falling back to system server: ${usableServerPath}`);
                     vscode.window.showWarningMessage(
                         'Bundled rumoca-lsp could not execute on this machine. Falling back to the system-installed server.',
                         'Open Settings'
                     ).then(selection => {
                         if (selection === 'Open Settings') {
-                            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.useSystemServer');
+                            openRumocaSetting('rumoca.useSystemServer');
                         }
                     });
                 } else {
@@ -5809,85 +5830,120 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
             }
         }
-    }
 
-    if (!serverPath || !probeResult.ok) {
+        if (probeResult.ok) {
+            return usableServerPath;
+        }
+
         const probeDetail = probeResult.detail ?? 'unknown error';
         const msg = `Failed to execute rumoca-lsp: ${probeDetail}`;
         log(`ERROR: ${msg}`);
         outputChannel.show();
         const selection = await vscode.window.showErrorMessage(msg, 'Open Settings', 'Configure Path');
         if (selection === 'Open Settings') {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.useSystemServer');
+            openRumocaSetting('rumoca.useSystemServer');
         } else if (selection === 'Configure Path') {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'rumoca.serverPath');
+            openRumocaSetting('rumoca.serverPath');
         }
-        return;
-    }
+        return undefined;
+    };
 
-    debugLog(`[${elapsed()}] Starting language server: ${serverPath}`);
+    const startLanguageClient = async (): Promise<StartedLanguageClient> => {
+        const currentConfig = refreshConfig();
+        const resolvedServer = await resolveLanguageServerExecutable(currentConfig);
+        if (!resolvedServer) {
+            return { clientStarted: false };
+        }
+        if (resolvedServer.usingSystemFallback) {
+            showSystemFallbackWarning(resolvedServer.serverPath);
+        }
 
-    const serverOptions: ServerOptions = {
-        run: {
-            command: serverPath,
-            transport: TransportKind.stdio
+        const usableServerPath = await validateLanguageServerExecutable(
+            resolvedServer.serverPath,
+            resolvedServer.usingBundledServer,
+        );
+        if (!usableServerPath) {
+            return { clientStarted: false };
+        }
+
+        debugLog(`[${elapsed()}] Starting language server: ${usableServerPath}`);
+        const modelicaPathSources = resolveModelicaPathSources(currentConfig);
+        if (modelicaPathSources.configuredPaths.length > 0) {
+            debugLog(`[${elapsed()}] Configured modelicaPath: ${modelicaPathSources.configuredPaths.join(', ')}`);
+        }
+        if (modelicaPathSources.environmentPaths.length > 0) {
+            debugLog(`[${elapsed()}] Environment MODELICAPATH: ${modelicaPathSources.environmentPaths.join(', ')}`);
+        }
+        if (modelicaPathSources.usedLegacyAlias) {
+            log('Warning: MODELICPATH is deprecated; use MODELICAPATH instead.');
+        }
+
+        const nextClient = new LanguageClient(
+            'rumoca',
+            'Rumoca LSP',
+            {
+                run: { command: usableServerPath, transport: TransportKind.stdio },
+                debug: { command: usableServerPath, transport: TransportKind.stdio }
+            },
+            {
+                documentSelector: [
+                    { scheme: 'file', language: 'modelica' },
+                    { scheme: 'vscode-notebook-cell', language: 'modelica' },
+                    { scheme: EMBEDDED_MODELICA_SCHEME, language: 'modelica' }
+                ],
+                outputChannelName: 'Rumoca LSP',
+                initializationOptions: {
+                    debug: debug,
+                    modelicaPath: modelicaPathSources.mergedPaths
+                }
+            } satisfies LanguageClientOptions
+        );
+
+        client = nextClient;
+        try {
+            debugLog(`[${elapsed()}] Calling client.start() - this launches the server and waits for initialization...`);
+            debugLog(`[${elapsed()}] If stuck here, the language server may be scanning workspace files...`);
+            await nextClient.start();
+            await reopenEmbeddedModelicaDocuments();
+            debugLog(`[${elapsed()}] Language server started successfully`);
+            return {
+                clientStarted: true,
+                serverPath: usableServerPath,
+            };
+        } catch (error) {
+            if (client === nextClient) {
+                client = undefined;
+            }
+            const msg = `Failed to start language server: ${error}`;
+            log(`ERROR: ${msg}`);
+            outputChannel.show();
+            vscode.window.showErrorMessage(msg);
+            return { clientStarted: false };
+        }
+    };
+
+    const languageClientRuntime = createLanguageClientRuntime<LanguageClient>({
+        getClient: () => client,
+        setClient: (nextClient) => {
+            client = nextClient;
         },
-        debug: {
-            command: serverPath,
-            transport: TransportKind.stdio
-        }
-    };
+        startLanguageClient,
+        stopLanguageClient: async (existingClient) => {
+            await existingClient.stop();
+        },
+        log,
+        reportError: (msg) => {
+            log(`ERROR: ${msg}`);
+            outputChannel.show();
+            vscode.window.showErrorMessage(msg);
+        },
+    });
 
-    // Get library paths from configuration + environment.
-    const modelicaPathSources = resolveModelicaPathSources(config);
-    const modelicaPath = modelicaPathSources.mergedPaths;
-    if (modelicaPathSources.configuredPaths.length > 0) {
-        debugLog(`[${elapsed()}] Configured modelicaPath: ${modelicaPathSources.configuredPaths.join(', ')}`);
-    }
-    if (modelicaPathSources.environmentPaths.length > 0) {
-        debugLog(`[${elapsed()}] Environment MODELICAPATH: ${modelicaPathSources.environmentPaths.join(', ')}`);
-    }
-    if (modelicaPathSources.usedLegacyAlias) {
-        log('Warning: MODELICPATH is deprecated; use MODELICAPATH instead.');
-    }
-
-    const clientOptions: LanguageClientOptions = {
-        documentSelector: [
-            { scheme: 'file', language: 'modelica' },
-            // Support Modelica cells in Jupyter notebooks
-            { scheme: 'vscode-notebook-cell', language: 'modelica' },
-            // Support embedded Modelica in %%modelica blocks
-            { scheme: EMBEDDED_MODELICA_SCHEME, language: 'modelica' }
-        ],
-        outputChannelName: 'Rumoca LSP',
-        initializationOptions: {
-            debug: debug,
-            modelicaPath: modelicaPath
-        }
-    };
-
-    debugLog(`[${elapsed()}] Creating LanguageClient...`);
-    client = new LanguageClient(
-        'rumoca',
-        'Rumoca LSP',
-        serverOptions,
-        clientOptions
-    );
-    debugLog(`[${elapsed()}] LanguageClient created`);
-
-    // Start the client. This will also launch the server
-    try {
-        debugLog(`[${elapsed()}] Calling client.start() - this launches the server and waits for initialization...`);
-        debugLog(`[${elapsed()}] If stuck here, the language server may be scanning workspace files...`);
-        await client.start();
-        debugLog(`[${elapsed()}] Language server started successfully`);
-    } catch (error) {
-        const msg = `Failed to start language server: ${error}`;
-        log(`ERROR: ${msg}`);
-        outputChannel.show();
-        vscode.window.showErrorMessage(msg);
+    const initialLanguageClient = await startLanguageClient();
+    if (!initialLanguageClient.clientStarted) {
         return;
     }
+    languageClientRuntime.setServerPath(initialLanguageClient.serverPath);
 
     const wireResultsPanelMessageHandling = (panel: vscode.WebviewPanel) => {
         const messageDisposable = panel.webview.onDidReceiveMessage(async (message) => {
@@ -6299,15 +6355,27 @@ export async function activate(context: vscode.ExtensionContext) {
         }),
     );
 
-    // Create notebook controller for Modelica cells in Jupyter notebooks
-    // This allows executing Modelica code and getting JSON output for Python interop
-    const rumocaExecutable = serverPath.replace('-lsp', '');
-    if (fs.existsSync(rumocaExecutable)) {
-        createNotebookController(context, rumocaExecutable, modelicaPath, log);
-        debugLog(`[${elapsed()}] Notebook controller created using: ${rumocaExecutable}`);
-    } else {
-        debugLog(`[${elapsed()}] Skipping notebook controller - rumoca executable not found at: ${rumocaExecutable}`);
-    }
+    const getNotebookRumocaExecutable = () => languageClientRuntime.getNotebookExecutable();
+    const notebookControllerRuntime = createNotebookControllerRuntime({
+        refreshConfig,
+        languageClientRuntime,
+        fileExists: (targetPath) => fs.existsSync(targetPath),
+        createNotebookController: () => createNotebookController(
+            context,
+            getNotebookRumocaExecutable,
+            () => resolveModelicaPathSources(vscode.workspace.getConfiguration('rumoca')).mergedPaths,
+            log
+        ),
+        debugLog,
+    });
+    context.subscriptions.push({
+        dispose: () => notebookControllerRuntime.disposeNotebookController(),
+    });
+    notebookControllerRuntime.reconcileNotebookController();
+
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+        void notebookControllerRuntime.handleConfigurationChange((section) => event.affectsConfiguration(section));
+    }));
 
     // ========================================================================
     // Register embedded Modelica support for %%modelica blocks in Python cells

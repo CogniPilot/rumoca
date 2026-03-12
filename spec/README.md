@@ -1,5 +1,14 @@
 # Rumoca Specification Index
 
+Contributor-facing workflow commands referenced by the active specs are standardized through the
+`rum` developer CLI. The main groups are:
+
+- `rum verify ...`
+- `rum coverage ...`
+- `rum repo ...`
+
+For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Active Specifications
 
 | Spec | Title | Domain | Lines | Status |

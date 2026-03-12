@@ -27,20 +27,43 @@ pub(crate) const OMC_THREADS_DEFAULT: usize = 1;
 pub(crate) const SIM_STOP_TIME_DEFAULT: f64 = 1.0;
 pub(crate) const OMC_BATCH_TIMEOUT_POLL: Duration = Duration::from_millis(25);
 
-pub(crate) const MSL_PACKAGES: [&str; 5] = [
-    "Complex.mo",
-    "ModelicaServices/package.mo",
-    "Modelica/package.mo",
-    "ModelicaTest/package.mo",
-    "ModelicaTestOverdetermined.mo",
-];
+#[derive(Debug, Clone, Copy)]
+struct MslPackageSpec {
+    package_name: &'static str,
+    candidates: &'static [&'static str],
+}
 
-pub(crate) const MSL_TOP_PACKAGES: [&str; 5] = [
-    "Complex",
-    "ModelicaServices",
-    "Modelica",
-    "ModelicaTest",
-    "ModelicaTestOverdetermined",
+const MSL_PACKAGE_SPECS: &[MslPackageSpec] = &[
+    MslPackageSpec {
+        package_name: "Complex",
+        candidates: &["Complex.mo"],
+    },
+    MslPackageSpec {
+        package_name: "ModelicaServices",
+        candidates: &[
+            "ModelicaServices/package.mo",
+            "ModelicaServices 4.1.0/package.mo",
+        ],
+    },
+    MslPackageSpec {
+        package_name: "Modelica",
+        candidates: &["Modelica/package.mo", "Modelica 4.1.0/package.mo"],
+    },
+    MslPackageSpec {
+        package_name: "ModelicaTest",
+        candidates: &["ModelicaTest/package.mo", "ModelicaTest 4.1.0/package.mo"],
+    },
+    MslPackageSpec {
+        package_name: "ModelicaReference",
+        candidates: &[
+            "ModelicaReference/package.mo",
+            "ModelicaReference 4.1.0/package.mo",
+        ],
+    },
+    MslPackageSpec {
+        package_name: "ModelicaTestOverdetermined",
+        candidates: &["ModelicaTestOverdetermined.mo"],
+    },
 ];
 
 pub(crate) const EXCLUDE_PREFIXES: [&str; 3] = [
@@ -187,12 +210,30 @@ pub(crate) fn summarize_batch_timings(
     })
 }
 
-pub(crate) fn msl_load_lines(paths: &MslPaths) -> Vec<String> {
-    MSL_PACKAGES
+fn resolve_msl_packages(paths: &MslPaths) -> Vec<(&'static str, PathBuf)> {
+    MSL_PACKAGE_SPECS
         .iter()
-        .map(|pkg| paths.msl_dir.join(pkg))
-        .filter(|path| path.exists())
-        .map(|path| format!("loadFile(\"{}\");", path.display()))
+        .filter_map(|spec| {
+            spec.candidates
+                .iter()
+                .map(|candidate| paths.msl_dir.join(candidate))
+                .find(|path| path.exists())
+                .map(|path| (spec.package_name, path))
+        })
+        .collect()
+}
+
+pub(crate) fn msl_load_lines(paths: &MslPaths) -> Vec<String> {
+    resolve_msl_packages(paths)
+        .into_iter()
+        .map(|(_, path)| format!("loadFile(\"{}\");", path.display()))
+        .collect()
+}
+
+pub(crate) fn msl_top_packages(paths: &MslPaths) -> Vec<&'static str> {
+    resolve_msl_packages(paths)
+        .into_iter()
+        .map(|(package_name, _)| package_name)
         .collect()
 }
 
@@ -425,6 +466,77 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
 mod tests {
     use super::*;
     use std::fs;
+
+    fn test_paths(msl_dir: PathBuf) -> MslPaths {
+        MslPaths {
+            repo_root: PathBuf::from("/tmp/repo"),
+            msl_dir,
+            results_dir: PathBuf::from("/tmp/results"),
+            flat_dir: PathBuf::from("/tmp/results/omc_flat"),
+            work_dir: PathBuf::from("/tmp/results/omc_work"),
+            sim_work_dir: PathBuf::from("/tmp/results/omc_sim_work"),
+            omc_trace_dir: PathBuf::from("/tmp/results/sim_traces/omc"),
+            rumoca_trace_dir: PathBuf::from("/tmp/results/sim_traces/rumoca"),
+        }
+    }
+
+    #[test]
+    fn msl_load_lines_supports_release_zip_layout() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let msl_dir = temp.path();
+        std::fs::write(msl_dir.join("Complex.mo"), "").expect("write Complex.mo");
+        std::fs::create_dir_all(msl_dir.join("Modelica 4.1.0")).expect("create Modelica dir");
+        std::fs::write(msl_dir.join("Modelica 4.1.0/package.mo"), "")
+            .expect("write Modelica/package.mo");
+        std::fs::create_dir_all(msl_dir.join("ModelicaServices 4.1.0"))
+            .expect("create ModelicaServices dir");
+        std::fs::write(msl_dir.join("ModelicaServices 4.1.0/package.mo"), "")
+            .expect("write ModelicaServices/package.mo");
+
+        let paths = test_paths(msl_dir.to_path_buf());
+        let lines = msl_load_lines(&paths);
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines.iter().any(|line| line.contains("Complex.mo")),
+            "expected Complex.mo loadFile entry"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Modelica 4.1.0/package.mo")),
+            "expected Modelica release-layout package load"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("ModelicaServices 4.1.0/package.mo")),
+            "expected ModelicaServices release-layout package load"
+        );
+        assert_eq!(
+            msl_top_packages(&paths),
+            vec!["Complex", "ModelicaServices", "Modelica"]
+        );
+    }
+
+    #[test]
+    fn msl_load_lines_supports_legacy_layout() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let msl_dir = temp.path();
+        std::fs::write(msl_dir.join("Complex.mo"), "").expect("write Complex.mo");
+        std::fs::create_dir_all(msl_dir.join("Modelica")).expect("create Modelica dir");
+        std::fs::write(msl_dir.join("Modelica/package.mo"), "").expect("write Modelica/package.mo");
+
+        let paths = test_paths(msl_dir.to_path_buf());
+        let lines = msl_load_lines(&paths);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Modelica/package.mo")),
+            "expected legacy Modelica package load"
+        );
+        assert_eq!(msl_top_packages(&paths), vec!["Complex", "Modelica"]);
+    }
 
     #[test]
     fn fatal_omc_error_detection_ignores_warning_lines() {

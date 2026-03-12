@@ -1,5 +1,5 @@
 {
-  "generated_by": "rum coverage-gate",
+  "generated_by": "rum coverage gate",
   "generated_at_unix_secs": 1772289098,
   "source_candidates_file": "target/llvm-cov/trim-candidates.json",
   "workspace_line_coverage_percent": 75.56601867822789,

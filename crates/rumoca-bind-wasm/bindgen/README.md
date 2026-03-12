@@ -63,7 +63,7 @@ wasm-pack build crates/rumoca-bind-wasm --release --target nodejs --out-dir pkg
 - For browser usage with Vite, the `web` target generally works best.
 - To use `rumoca-bind-wasm` with the Vite bundler, you likely need
   [`vite-plugin-wasm`](https://www.npmjs.com/package/vite-plugin-wasm) plugin.
-- If you use `rumoca-dev-tools wasm-test build`, output naming is normalized to
+- If you use `rum wasm build`, output naming is normalized to
   `rumoca.js` / `rumoca_bg.wasm`; the `bindgen` patch script handles this.
 
 ## Debug Build

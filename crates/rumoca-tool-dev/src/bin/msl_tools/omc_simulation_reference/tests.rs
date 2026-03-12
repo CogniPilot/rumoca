@@ -25,6 +25,63 @@ fn load_simulation_targets_filters_explicit_success_non_partial() {
 }
 
 #[test]
+fn select_models_preserves_generated_target_file_order() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_root = temp.path().join("repo");
+    let results_dir = repo_root.join("target/msl/results");
+    let msl_dir = repo_root.join("target/msl/ModelicaStandardLibrary-4.1.0");
+    std::fs::create_dir_all(&results_dir).expect("results dir");
+    std::fs::create_dir_all(&msl_dir).expect("msl dir");
+    let generated_targets = results_dir.join("msl_simulation_targets.json");
+    write_pretty_json(
+        &generated_targets,
+        &json!({
+            "model_names": [
+                "Modelica.Electrical.Digital.Examples.DFFREGSRL",
+                "Modelica.Blocks.Examples.BooleanNetwork1",
+                "Modelica.Electrical.Digital.Examples.DFFREG"
+            ]
+        }),
+    )
+    .expect("write generated targets");
+
+    let args = Args {
+        dry_run: false,
+        batch_size: 1,
+        resume: false,
+        workers: 1,
+        omc_threads: 1,
+        batch_timeout_seconds: 30,
+        stop_time: 1.0,
+        use_experiment_stop_time: false,
+        max_models: 0,
+        balance_results_file: None,
+        target_models_file: None,
+        trace_exclusions_file: None,
+    };
+    let paths = MslPaths {
+        repo_root: repo_root.clone(),
+        msl_dir,
+        results_dir,
+        flat_dir: repo_root.join("target/msl/results/omc_flat"),
+        work_dir: repo_root.join("target/msl/results/omc_work"),
+        sim_work_dir: repo_root.join("target/msl/results/omc_sim_work"),
+        omc_trace_dir: repo_root.join("target/msl/results/sim_traces/omc"),
+        rumoca_trace_dir: repo_root.join("target/msl/results/sim_traces/rumoca"),
+    };
+
+    let selection = select_models(&args, &paths).expect("select models");
+    assert_eq!(
+        selection.names,
+        vec![
+            "Modelica.Electrical.Digital.Examples.DFFREGSRL".to_string(),
+            "Modelica.Blocks.Examples.BooleanNetwork1".to_string(),
+            "Modelica.Electrical.Digital.Examples.DFFREG".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn parse_sim_results_success_and_failure() {
     let success_entry = "MODEL:Modelica.Blocks.Examples.PID_Controller\nSIM_TIME:0.123\nTOTAL_TIME:0.456\nRESULT_FILE:Modelica.Blocks.Examples.PID_Controller_res.csv\nERROR:\n---\n";
     let success = parse_sim_entry(success_entry).expect("success entry");

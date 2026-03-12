@@ -2,9 +2,15 @@ mod completion_cmd;
 mod coverage_analysis;
 mod coverage_gate;
 mod crate_dag_cmd;
-mod msl_cmd;
+#[cfg(test)]
+mod main_tests;
+mod msl_flamegraph_cmd;
+#[path = "bin/msl_tools/mod.rs"]
+mod msl_tools;
 mod release_cmd;
+mod repo_cli_cmd;
 mod test_cmd;
+mod verify_cmd;
 mod vscode_cmd;
 mod wasm_tooling;
 
@@ -12,7 +18,7 @@ mod wasm_tooling;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::{Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use completion_cmd::CompletionsArgs;
 use coverage_analysis::{
     CallsiteIndex, build_workspace_callsite_index, count_callsites_same_file,
@@ -20,21 +26,24 @@ use coverage_analysis::{
 };
 use coverage_gate::CoverageGateArgs;
 use crate_dag_cmd::CrateDagArgs;
-use msl_cmd::MslArgs;
 use rumoca_session::compile::core::workspace_root_from_manifest_dir;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use test_cmd::TestArgs;
+use verify_cmd::VerifyArgs;
+
+pub(crate) use msl_tools::common;
 
 #[derive(Debug, Parser)]
 #[command(name = "rum")]
-#[command(version)]
 #[command(about = "Rumoca developer command")]
+#[command(disable_help_flag = true)]
+#[command(disable_version_flag = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -42,43 +51,23 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Check max line count for staged Rust files (SPEC_0021)
-    CheckRustFileLines(CheckRustFileLinesArgs),
-    /// Configure repository git hooks
-    InstallGitHooks,
-    /// Build/install Python bindings via maturin
-    BuildPython(BuildPythonArgs),
-    /// Build/package/install VSCode extension
-    BuildVscodeExt(BuildVscodeExtArgs),
-    /// Fast VSCode extension development loop (watch + Extension Host)
-    VscodeDev(VscodeDevArgs),
-    /// Quick MSL development check
-    DevCheck,
-    /// Run workspace checks/tests
-    Test(TestArgs),
-    /// Run local CI-parity checks (fmt+clippy+rustdoc+workspace tests)
-    CiParity,
-    /// Print shell completion scripts
-    Completions(CompletionsArgs),
-    /// Run MSL tooling commands via the unified developer CLI
-    Msl(MslArgs),
-    /// Generate standardized unified workspace coverage artifacts in target/llvm-cov
+    /// Run verification jobs used locally and in CI
+    Verify(VerifyArgs),
+    /// VS Code extension workflows
+    Vscode(VscodeArgs),
+    /// WASM editor workflows
+    Wasm(WasmArgs),
+    /// Python binding workflows
+    Python(PythonArgs),
+    /// Coverage generation, reporting, and policy gates
     Coverage(CoverageArgs),
-    /// Generate per-package inventory and trim candidates from unified workspace llvm-cov JSON
-    CoverageReport(CoverageReportArgs),
-    /// Enforce coverage-trim regression thresholds against committed baseline
-    CoverageGate(CoverageGateArgs),
-    /// Build/serve/clean WASM editor artifacts
-    WasmTest(WasmTestArgs),
-    /// WASM editor smoke checks
-    WasmEditorSmokeCheck,
-    /// Generate workspace crate dependency DAG plots (html/dot/svg/png)
-    CrateDag(CrateDagArgs),
-    /// Release version bump, optional commit/tag/push
-    Release(ReleaseArgs),
+    /// Repository maintenance, packaging, and release workflows
+    Repo(RepoArgs),
+    /// Print the rum version
+    Ver,
 }
 
-#[derive(Debug, Parser, Clone)]
+#[derive(Debug, Args, Clone)]
 struct CheckRustFileLinesArgs {
     /// Maximum allowed lines in a Rust source file
     #[arg(long, default_value_t = 2000)]
@@ -88,28 +77,35 @@ struct CheckRustFileLinesArgs {
     all_files: bool,
 }
 
-#[derive(Debug, Parser, Clone)]
+#[derive(Debug, Args, Clone)]
 struct BuildPythonArgs {
     /// Build release wheel and install it
     #[arg(long)]
     release: bool,
 }
 
-#[derive(Debug, Parser, Clone)]
-struct BuildVscodeExtArgs {
-    /// Launch VSCode extension development mode
-    #[arg(long, short = 'd')]
-    dev: bool,
-    /// Build/package only; do not install extension
-    #[arg(long, short = 'b')]
-    build: bool,
+#[derive(Debug, Args, Clone)]
+struct VscodeBuildArgs {
+    /// Package only; do not install the extension locally
+    #[arg(long)]
+    no_install: bool,
     /// Use system rumoca-lsp; skip cargo build/copy
     #[arg(long, short = 's')]
     system: bool,
 }
 
-#[derive(Debug, Parser, Clone)]
-struct VscodeDevArgs {
+#[derive(Debug, Args, Clone)]
+struct VscodePackageArgs {
+    /// Release package target
+    #[arg(long, value_enum)]
+    target: vscode_cmd::VscodePackageTarget,
+    /// On Debian/Ubuntu, install musl-tools automatically when required
+    #[arg(long)]
+    install_musl_tools: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+struct VscodeHostArgs {
     /// Skip rebuilding/copying rumoca-lsp into editors/vscode/bin
     #[arg(long)]
     skip_lsp_build: bool,
@@ -121,8 +117,79 @@ struct VscodeDevArgs {
     workspace_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Parser, Clone)]
+#[derive(Debug, Args, Clone)]
+struct VscodeArgs {
+    #[command(subcommand)]
+    command: VscodeCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum VscodeCommand {
+    /// Build/package/install the VS Code extension
+    Build(VscodeBuildArgs),
+    /// Package a platform-specific VSIX with bundled release binaries
+    Package(VscodePackageArgs),
+    /// VS Code extension verification gate
+    Test,
+    /// Watch Rust/TypeScript and launch the Extension Development Host
+    Edit(VscodeHostArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct WasmArgs {
+    #[command(subcommand)]
+    command: WasmCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum WasmCommand {
+    /// Build the WASM editor bundle
+    Build,
+    /// WASM editor verification gate
+    Test,
+    /// Build and serve the WASM editor
+    Edit(WasmEditArgs),
+    /// Clean generated WASM artifacts
+    Clean,
+}
+
+#[derive(Debug, Args, Clone)]
+struct WasmEditArgs {
+    /// Override serve port (default: PORT env or 8080)
+    #[arg(long)]
+    port: Option<u16>,
+}
+
+#[derive(Debug, Args, Clone)]
+struct PythonArgs {
+    #[command(subcommand)]
+    command: PythonCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum PythonCommand {
+    /// Build/install Python bindings via maturin
+    Build(BuildPythonArgs),
+}
+
+#[derive(Debug, Args, Clone)]
 struct CoverageArgs {
+    #[command(subcommand)]
+    command: CoverageCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum CoverageCommand {
+    /// Generate standardized unified workspace coverage artifacts in target/llvm-cov
+    Run(CoverageRunArgs),
+    /// Generate per-package inventory and trim candidates from unified workspace llvm-cov JSON
+    Report(CoverageReportArgs),
+    /// Enforce coverage-trim regression thresholds against committed baseline
+    Gate(CoverageGateArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct CoverageRunArgs {
     /// Reuse llvm-cov artifacts between runs for faster iteration.
     #[arg(long)]
     no_clean: bool,
@@ -134,7 +201,7 @@ struct CoverageArgs {
     packages: Vec<String>,
 }
 
-#[derive(Debug, Parser, Clone)]
+#[derive(Debug, Args, Clone)]
 struct CoverageReportArgs {
     /// Workspace package(s) to report. If omitted, all workspace packages are shown.
     #[arg(long = "package", short = 'p')]
@@ -147,25 +214,7 @@ struct CoverageReportArgs {
     near_zero_callsites: usize,
 }
 
-#[derive(Debug, Parser, Clone)]
-struct WasmTestArgs {
-    /// Action to run (default: all)
-    #[arg(value_enum, default_value_t = WasmAction::All)]
-    action: WasmAction,
-    /// Override serve port (default: PORT env or 8080)
-    #[arg(long)]
-    port: Option<u16>,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum, PartialEq, Eq)]
-enum WasmAction {
-    Build,
-    Serve,
-    Clean,
-    All,
-}
-
-#[derive(Debug, Parser, Clone)]
+#[derive(Debug, Args, Clone)]
 struct ReleaseArgs {
     /// Release version (X.Y.Z)
     version: String,
@@ -186,52 +235,194 @@ struct ReleaseArgs {
     push: bool,
 }
 
+#[derive(Debug, Args, Clone)]
+struct RepoArgs {
+    #[command(subcommand)]
+    command: RepoCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoCommand {
+    /// Install/update the rum CLI and shell completions
+    Cli(RepoCliArgs),
+    /// Repository git hook workflows
+    Hooks(RepoHooksArgs),
+    /// Workspace graphing utilities
+    Graph(RepoGraphArgs),
+    /// MSL/OMC reference, baseline, and parity-maintenance tooling
+    Msl(RepoMslArgs),
+    /// Print shell completion scripts
+    Completions(CompletionsArgs),
+    /// Release version bump, optional commit/tag/push
+    Release(ReleaseArgs),
+    /// Repository policy helpers
+    Policy(RepoPolicyArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoCliArgs {
+    #[command(subcommand)]
+    command: RepoCliCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoCliCommand {
+    /// Install/update the rum binary with cargo install and configure shell completions
+    Install(RepoCliInstallArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoCliInstallArgs {
+    /// Also persist the cargo bin directory into your shell PATH configuration
+    #[arg(long)]
+    path: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoHooksArgs {
+    #[command(subcommand)]
+    command: RepoHooksCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoHooksCommand {
+    /// Configure repository git hooks
+    Install,
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoGraphArgs {
+    #[command(subcommand)]
+    command: RepoGraphCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoGraphCommand {
+    /// Generate workspace crate dependency DAG plots (html/dot/svg/png)
+    Crates(CrateDagArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoMslArgs {
+    #[command(subcommand)]
+    command: RepoMslCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoMslCommand {
+    /// Generate OMC compile/check reference data
+    OmcReference(msl_tools::omc_reference::Args),
+    /// Generate OMC simulation reference data and trace comparisons
+    OmcSimulationReference(msl_tools::omc_simulation_reference::Args),
+    /// Run cargo-flamegraph for one focused MSL compile/simulation model
+    Flamegraph(msl_flamegraph_cmd::MslFlamegraphArgs),
+    /// Compare rumoca balance output against OMC reference data
+    CompareBalance(msl_tools::compare_balance::Args),
+    /// Build rumoca-vs-OMC simulation parity failure manifest
+    ParityManifest(msl_tools::parity_manifest::Args),
+    /// Regenerate OMC+Rumoca traces and plot them for one model
+    PlotCompare(msl_tools::plot_compare::Args),
+    /// Promote target quality snapshot to committed baseline JSON
+    PromoteQualityBaseline(msl_tools::promote_quality_baseline::Args),
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoPolicyArgs {
+    #[command(subcommand)]
+    command: RepoPolicyCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoPolicyCommand {
+    /// Check max line count for Rust files (SPEC_0021)
+    RustFileLines(CheckRustFileLinesArgs),
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::CheckRustFileLines(args) => cmd_check_rust_file_lines(args),
-        Commands::InstallGitHooks => cmd_install_git_hooks(),
-        Commands::BuildPython(args) => cmd_build_python(args),
-        Commands::BuildVscodeExt(args) => vscode_cmd::build_vscode_ext(args),
-        Commands::VscodeDev(args) => vscode_cmd::vscode_dev(args),
-        Commands::DevCheck => cmd_dev_check(),
-        Commands::Test(args) => test_cmd::run(args, &repo_root()),
-        Commands::CiParity => test_cmd::run_ci_parity(&repo_root()),
-        Commands::Completions(args) => {
-            completion_cmd::run(args, "rum", &Commands::subcommand_names())
-        }
-        Commands::Msl(args) => msl_cmd::run(args, &repo_root()),
+        Commands::Verify(args) => verify_cmd::run(args, &repo_root()),
+        Commands::Vscode(args) => cmd_vscode(args),
+        Commands::Wasm(args) => cmd_wasm(args),
+        Commands::Python(args) => cmd_python(args),
         Commands::Coverage(args) => cmd_coverage(args),
-        Commands::CoverageReport(args) => cmd_coverage_report(args),
-        Commands::CoverageGate(args) => cmd_coverage_gate(args),
-        Commands::WasmTest(args) => cmd_wasm_test(args),
-        Commands::WasmEditorSmokeCheck => cmd_wasm_editor_smoke_check(),
-        Commands::CrateDag(args) => crate_dag_cmd::run(&repo_root(), args),
-        Commands::Release(args) => release_cmd::cmd_release(args),
+        Commands::Repo(args) => cmd_repo(args),
+        Commands::Ver => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
     }
 }
 
-impl Commands {
-    fn subcommand_names() -> Vec<&'static str> {
-        vec![
-            "check-rust-file-lines",
-            "install-git-hooks",
-            "build-python",
-            "build-vscode-ext",
-            "vscode-dev",
-            "dev-check",
-            "test",
-            "ci-parity",
-            "completions",
-            "msl",
-            "coverage",
-            "coverage-report",
-            "coverage-gate",
-            "wasm-test",
-            "wasm-editor-smoke-check",
-            "crate-dag",
-            "release",
-        ]
+fn cmd_vscode(args: VscodeArgs) -> Result<()> {
+    match args.command {
+        VscodeCommand::Build(args) => vscode_cmd::build_vscode_ext(args),
+        VscodeCommand::Package(args) => vscode_cmd::package_vscode_ext(args),
+        VscodeCommand::Test => vscode_cmd::run_vscode_ci(&repo_root()),
+        VscodeCommand::Edit(args) => vscode_cmd::vscode_dev(args),
+    }
+}
+
+fn cmd_wasm(args: WasmArgs) -> Result<()> {
+    match args.command {
+        WasmCommand::Build => cmd_build_wasm(),
+        WasmCommand::Test => run_wasm_test_suite(&repo_root()),
+        WasmCommand::Edit(args) => {
+            let root = repo_root();
+            ensure_wasm_deps(&root)?;
+            build_wasm(&root)?;
+            serve_wasm(&root, args.port)
+        }
+        WasmCommand::Clean => clean_wasm(&repo_root()),
+    }
+}
+
+fn cmd_python(args: PythonArgs) -> Result<()> {
+    match args.command {
+        PythonCommand::Build(args) => cmd_build_python(args),
+    }
+}
+
+fn cmd_coverage(args: CoverageArgs) -> Result<()> {
+    match args.command {
+        CoverageCommand::Run(args) => cmd_coverage_run(args),
+        CoverageCommand::Report(args) => cmd_coverage_report(args),
+        CoverageCommand::Gate(args) => cmd_coverage_gate(args),
+    }
+}
+
+fn cmd_repo(args: RepoArgs) -> Result<()> {
+    match args.command {
+        RepoCommand::Cli(args) => match args.command {
+            RepoCliCommand::Install(args) => repo_cli_cmd::cmd_install_rum_cli(args),
+        },
+        RepoCommand::Hooks(args) => match args.command {
+            RepoHooksCommand::Install => cmd_install_git_hooks(),
+        },
+        RepoCommand::Graph(args) => match args.command {
+            RepoGraphCommand::Crates(args) => crate_dag_cmd::run(&repo_root(), args),
+        },
+        RepoCommand::Msl(args) => match args.command {
+            RepoMslCommand::OmcReference(args) => msl_tools::omc_reference::run(args),
+            RepoMslCommand::OmcSimulationReference(args) => {
+                msl_tools::omc_simulation_reference::run(args)
+            }
+            RepoMslCommand::Flamegraph(args) => msl_flamegraph_cmd::run(args, &repo_root()),
+            RepoMslCommand::CompareBalance(args) => msl_tools::compare_balance::run(args),
+            RepoMslCommand::ParityManifest(args) => msl_tools::parity_manifest::run(args),
+            RepoMslCommand::PlotCompare(args) => msl_tools::plot_compare::run(args),
+            RepoMslCommand::PromoteQualityBaseline(args) => {
+                msl_tools::promote_quality_baseline::run(args)
+            }
+        },
+        RepoCommand::Completions(args) => {
+            let mut command = Cli::command();
+            completion_cmd::run(args, &mut command)
+        }
+        RepoCommand::Release(args) => release_cmd::cmd_release(args),
+        RepoCommand::Policy(args) => match args.command {
+            RepoPolicyCommand::RustFileLines(args) => cmd_check_rust_file_lines(args),
+        },
     }
 }
 
@@ -244,7 +435,7 @@ fn is_windows() -> bool {
     cfg!(windows)
 }
 
-fn exe_name(base: &str) -> String {
+pub(crate) fn exe_name(base: &str) -> String {
     if is_windows() {
         format!("{base}.exe")
     } else {
@@ -279,7 +470,7 @@ fn run_capture(mut command: Command) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn command_exists(program: &str) -> bool {
+pub(crate) fn command_exists(program: &str) -> bool {
     Command::new(program)
         .arg("--version")
         .stdout(Stdio::null())
@@ -449,52 +640,7 @@ fn cmd_build_python(args: BuildPythonArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_dev_check() -> Result<()> {
-    let root = repo_root();
-    let cache_dir = resolved_msl_cache_dir(&root);
-    let results_file = cache_dir.join("results/msl_results.json");
-
-    if !results_file.is_file() {
-        println!(
-            "No cached MSL results at {}. Running full baseline test first...",
-            results_file.display()
-        );
-        let mut cmd = Command::new("cargo");
-        cmd.arg("test")
-            .arg("--release")
-            .arg("--package")
-            .arg("rumoca")
-            .arg("--test")
-            .arg("msl_tests")
-            .arg("test_msl_all")
-            .arg("--")
-            .arg("--ignored")
-            .arg("--nocapture")
-            .env("RUMOCA_MSL_CACHE_DIR", &cache_dir)
-            .current_dir(&root);
-        run_status(cmd)?;
-    }
-
-    println!("Running quick-check set...");
-    let mut cmd = Command::new("cargo");
-    cmd.arg("test")
-        .arg("--release")
-        .arg("--package")
-        .arg("rumoca")
-        .arg("--test")
-        .arg("msl_quick_check")
-        .arg("test_quick_check")
-        .arg("--")
-        .arg("--ignored")
-        .arg("--nocapture")
-        .env("RUMOCA_MSL_CACHE_DIR", &cache_dir)
-        .current_dir(&root);
-    run_status(cmd)?;
-
-    Ok(())
-}
-
-fn cmd_coverage(args: CoverageArgs) -> Result<()> {
+fn cmd_coverage_run(args: CoverageRunArgs) -> Result<()> {
     let root = repo_root();
     ensure_cargo_llvm_cov_available(&root)?;
     ensure_llvm_tools_preview_available(&root)?;
@@ -505,7 +651,7 @@ fn cmd_coverage(args: CoverageArgs) -> Result<()> {
 
     let mut runbook = String::new();
     runbook.push_str("# rumoca coverage runbook\n");
-    runbook.push_str("# generated by rum coverage\n\n");
+    runbook.push_str("# generated by rum coverage run\n\n");
     let package_args = coverage_package_args(&args.packages);
     let mut full_args = vec!["llvm-cov".to_string()];
     if args.packages.is_empty() {
@@ -634,14 +780,14 @@ fn cmd_coverage_report(args: CoverageReportArgs) -> Result<()> {
     let output_dir = root.join("target/llvm-cov");
     ensure!(
         output_dir.is_dir(),
-        "coverage output directory not found: {}. Run `rum coverage` first.",
+        "coverage output directory not found: {}. Run `rum coverage run` first.",
         output_dir.display()
     );
     let summary_path = output_dir.join("workspace-summary.json");
     let full_path = output_dir.join("workspace-full.json");
     ensure!(
         summary_path.is_file() && full_path.is_file(),
-        "missing workspace coverage artifacts (expected {} and {}). Run `rum coverage` first.",
+        "missing workspace coverage artifacts (expected {} and {}). Run `rum coverage run` first.",
         summary_path.display(),
         full_path.display()
     );
@@ -683,13 +829,13 @@ fn cmd_coverage_report(args: CoverageReportArgs) -> Result<()> {
         all_candidates
             .iter()
             .all(|candidate| !candidate.owner_decision.is_empty()),
-        "coverage-report candidate generation produced empty owner decisions"
+        "coverage report candidate generation produced empty owner decisions"
     );
     ensure!(
         all_candidates
             .iter()
             .all(|candidate| candidate.owner_decision != "untriaged"),
-        "coverage-report candidate generation produced untriaged owner decisions"
+        "coverage report candidate generation produced untriaged owner decisions"
     );
     let (report_path, candidates_path) =
         write_coverage_report_artifacts(&output_dir, &inventories, &all_candidates)?;
@@ -801,7 +947,7 @@ fn build_trim_candidates_json(
     all_candidates: &[CoverageCandidate],
 ) -> serde_json::Value {
     serde_json::json!({
-        "generated_by": "rum coverage-report",
+        "generated_by": "rum coverage report",
         "generated_at_unix_secs": unix_timestamp_seconds(),
         "report_version": 1,
         "packages": inventories.iter().map(|inventory| {
@@ -1231,7 +1377,7 @@ fn ensure_llvm_tools_preview_available(root: &Path) -> Result<()> {
         "missing rustup component `llvm-tools-preview` for the active toolchain.\n\
 expected tools:\n  {}\n  {}\n\
 install with:\n  {}\n\
-then re-run:\n  cargo run --bin rum -- coverage",
+then re-run:\n  rum coverage run",
         llvm_cov.display(),
         llvm_profdata.display(),
         install_cmd
@@ -1323,32 +1469,26 @@ fn run_cargo_with_args(root: &Path, args: &[String]) -> Result<()> {
     run_status(command)
 }
 
-fn cmd_wasm_test(args: WasmTestArgs) -> Result<()> {
+fn cmd_build_wasm() -> Result<()> {
     let root = repo_root();
-    match args.action {
-        WasmAction::Build => {
-            ensure_wasm_deps(&root)?;
-            build_wasm(&root)?;
-            run_wasm_simulation_smoke(&root)?;
-        }
-        WasmAction::Serve => {
-            serve_wasm(&root, args.port)?;
-        }
-        WasmAction::Clean => {
-            clean_wasm(&root)?;
-        }
-        WasmAction::All => {
-            ensure_wasm_deps(&root)?;
-            build_wasm(&root)?;
-            run_wasm_simulation_smoke(&root)?;
-            serve_wasm(&root, args.port)?;
-        }
-    }
-    Ok(())
+    ensure_wasm_deps(&root)?;
+    build_wasm(&root)
 }
 
-fn cmd_wasm_editor_smoke_check() -> Result<()> {
-    let root = repo_root();
+pub(crate) fn run_wasm_test_suite(root: &Path) -> Result<()> {
+    let mut wasm_tests = Command::new("cargo");
+    wasm_tests
+        .arg("test")
+        .arg("-p")
+        .arg("rumoca-bind-wasm")
+        .arg("--verbose")
+        .current_dir(root);
+    run_status(wasm_tests)?;
+
+    run_wasm_editor_smoke_check(root)
+}
+
+pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
     let js_checks = [
         "editors/wasm/src/main.js",
         "editors/wasm/src/modules/command_palette.js",
@@ -1358,69 +1498,39 @@ fn cmd_wasm_editor_smoke_check() -> Result<()> {
     ];
     for file in js_checks {
         let mut cmd = Command::new("node");
-        cmd.arg("--check").arg(file).current_dir(&root);
+        cmd.arg("--check").arg(file).current_dir(root);
         run_status(cmd)?;
     }
 
-    let mut rg_quickfix = Command::new("rg");
-    rg_quickfix
-        .arg("-n")
-        .arg("diagnostic-quick-fix")
-        .arg("editors/wasm/src/modules/diagnostics_panel.js")
-        .arg("editors/wasm/index.html")
-        .current_dir(&root);
-    run_status(rg_quickfix)?;
+    ensure_any_file_contains(
+        root,
+        &[
+            "editors/wasm/src/modules/diagnostics_panel.js",
+            "editors/wasm/index.html",
+        ],
+        "diagnostic-quick-fix",
+    )?;
+    ensure_any_file_contains(
+        root,
+        &[
+            "editors/wasm/src/main.js",
+            "editors/wasm/src/modules/diagnostics_panel.js",
+        ],
+        "triggerModelicaQuickFix",
+    )?;
+    ensure_any_file_contains(
+        root,
+        &[
+            "editors/wasm/src/main.js",
+            "editors/wasm/src/modules/diagnostics_panel.js",
+        ],
+        "triggerQuickFixAtCursor",
+    )?;
 
-    let mut rg_trigger = Command::new("rg");
-    rg_trigger
-        .arg("-n")
-        .arg("triggerModelicaQuickFix|triggerQuickFixAtCursor")
-        .arg("editors/wasm/src/main.js")
-        .arg("editors/wasm/src/modules/diagnostics_panel.js")
-        .current_dir(&root);
-    run_status(rg_trigger)?;
-
-    let cargo_tests = [
-        (
-            "rumoca-tool-lsp",
-            "handlers::diagnostics::tests::unresolved_component_diagnostic_points_to_equation_site",
-        ),
-        (
-            "rumoca-tool-lsp",
-            "handlers::semantic_tokens::tests::highlights_reinit_as_keyword_in_when_equation",
-        ),
-        (
-            "rumoca-bind-wasm",
-            "test_lsp_diagnostics_reports_unknown_builtin_modifier_startdt",
-        ),
-        (
-            "rumoca-bind-wasm",
-            "test_lsp_code_actions_returns_unknown_modifier_fix",
-        ),
-        (
-            "rumoca-bind-wasm",
-            "test_lsp_code_actions_returns_missing_semicolon_fix",
-        ),
-        (
-            "rumoca-bind-wasm",
-            "test_lsp_code_actions_returns_did_you_mean_type_fix",
-        ),
-    ];
-    for (package, test_name) in cargo_tests {
-        let mut cmd = Command::new("cargo");
-        cmd.arg("test")
-            .arg("-p")
-            .arg(package)
-            .arg(test_name)
-            .arg("--")
-            .arg("--nocapture")
-            .current_dir(&root);
-        run_status(cmd)?;
-    }
-
-    ensure_wasm_deps(&root)?;
-    build_wasm(&root)?;
-    run_wasm_simulation_smoke(&root)?;
+    ensure_wasm_deps(root)?;
+    build_wasm(root)?;
+    run_wasm_simulation_smoke(root)?;
+    run_wasm_library_smoke(root)?;
     Ok(())
 }
 
@@ -1432,18 +1542,28 @@ fn run_wasm_simulation_smoke(root: &Path) -> Result<()> {
     run_status(wasm_smoke)
 }
 
-fn resolved_msl_cache_dir(root: &Path) -> PathBuf {
-    match std::env::var("RUMOCA_MSL_CACHE_DIR") {
-        Ok(value) => {
-            let path = PathBuf::from(value);
-            if path.is_absolute() {
-                path
-            } else {
-                root.join(path)
-            }
+fn run_wasm_library_smoke(root: &Path) -> Result<()> {
+    let mut wasm_smoke = Command::new("node");
+    wasm_smoke
+        .arg("editors/wasm/tests/library_smoke.mjs")
+        .current_dir(root);
+    run_status(wasm_smoke)
+}
+
+fn ensure_any_file_contains(root: &Path, files: &[&str], needle: &str) -> Result<()> {
+    for file in files {
+        let path = root.join(file);
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read smoke-check file {}", path.display()))?;
+        if contents.contains(needle) {
+            return Ok(());
         }
-        Err(_) => root.join("target/msl"),
     }
+
+    bail!(
+        "expected to find `{needle}` in one of: {}",
+        files.join(", ")
+    )
 }
 
 fn newest_file_with_ext(dir: &Path, ext: &str) -> Result<Option<PathBuf>> {
@@ -1766,21 +1886,4 @@ fn make_executable(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::classify_candidate;
-
-    #[test]
-    fn classify_keeps_single_use_private_helper() {
-        let label = classify_candidate("private", false, Some(2), 2);
-        assert_eq!(label, "single_use_helper_keep");
-    }
-
-    #[test]
-    fn classify_marks_zero_callsite_private_as_dead_likely() {
-        let label = classify_candidate("private", false, Some(1), 1);
-        assert_eq!(label, "dead_likely");
-    }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push hook: CI-parity checks (excluding slow MSL/coverage jobs).
+# Pre-push hook: CI-mirroring local verification, excluding only the slow 180-model MSL parity job.
 
 set -euo pipefail
 
@@ -15,12 +15,12 @@ if [[ -n "$required_toolchain" && "$active_toolchain" != "$required_toolchain"* 
 fi
 
 echo "pre-push: checking Rust file line counts across workspace..."
-cargo run --quiet --bin rum -- check-rust-file-lines --all-files
+cargo run --quiet --bin rum -- repo policy rust-file-lines --all-files
 
 echo "pre-push: enforcing traversal policy..."
 cargo run --quiet --bin rumoca-traversal-policy-check
 
-echo "pre-push: running ci-parity command..."
-cargo run --bin rum -- ci-parity
+echo "pre-push: running verify quick command (CI mirror without MSL parity)..."
+cargo run --bin rum -- verify quick
 
 echo "pre-push checks passed."

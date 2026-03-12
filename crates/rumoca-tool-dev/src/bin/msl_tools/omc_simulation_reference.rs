@@ -311,8 +311,7 @@ fn select_models(args: &Args, paths: &MslPaths) -> Result<ModelSelection> {
     let start = Instant::now();
     if let Some(target_file) = args.target_models_file.clone() {
         let resolved = resolve_optional_path(&paths.repo_root, target_file);
-        let mut names = load_target_models(&resolved)?;
-        names.sort();
+        let names = load_target_models(&resolved)?;
         return Ok(ModelSelection {
             names,
             source_file: resolved,
@@ -323,8 +322,7 @@ fn select_models(args: &Args, paths: &MslPaths) -> Result<ModelSelection> {
 
     let generated_targets = paths.results_dir.join("msl_simulation_targets.json");
     if generated_targets.is_file() {
-        let mut names = load_target_models(&generated_targets)?;
-        names.sort();
+        let names = load_target_models(&generated_targets)?;
         return Ok(ModelSelection {
             names,
             source_file: generated_targets,
@@ -338,8 +336,7 @@ fn select_models(args: &Args, paths: &MslPaths) -> Result<ModelSelection> {
         .repo_root
         .join("crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json");
     if committed_targets.is_file() {
-        let mut names = load_target_models(&committed_targets)?;
-        names.sort();
+        let names = load_target_models(&committed_targets)?;
         return Ok(ModelSelection {
             names,
             source_file: committed_targets,
@@ -354,8 +351,7 @@ fn select_models(args: &Args, paths: &MslPaths) -> Result<ModelSelection> {
             .clone()
             .unwrap_or_else(|| paths.results_dir.join("msl_balance_results.json")),
     );
-    let mut names = load_simulation_targets(&balance_file)?;
-    names.sort();
+    let names = load_simulation_targets(&balance_file)?;
     Ok(ModelSelection {
         names,
         source_file: balance_file,

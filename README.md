@@ -210,6 +210,42 @@ The installer defaults to:
 pip install rumoca
 ```
 
+## Developer CLI
+
+Contributor workflows are standardized through the `rum` developer CLI.
+
+Bootstrap it once from the repository root:
+
+```bash
+cargo run --bin rum -- repo cli install
+```
+
+After that, the main command groups are:
+
+- `rum verify full` for the full GitHub CI verification suite
+- `rum verify ...` for repo-wide verification and CI-facing gates
+- `rum vscode ...` for VS Code extension build, test, and edit workflows
+- `rum wasm ...` for wasm editor build, test, and edit workflows
+- `rum coverage ...` for coverage generation, reporting, and gating
+- `rum repo ...` for hooks, releases, completions, graphs, and MSL reference-data maintenance
+
+Common examples:
+
+```bash
+rum verify full
+rum verify quick
+rum verify msl-parity
+rum vscode test
+rum wasm test
+rum repo msl promote-quality-baseline
+rum help verify
+```
+
+`rum verify quick` mirrors the main CI verification suite but skips the slow
+180-model MSL parity gate. `rum verify full` includes that parity job.
+Both commands assume the local coverage/editor prerequisites are installed
+(`cargo-llvm-cov`, Node/npm, and wasm Rust tooling), matching GitHub CI.
+
 ## Compiler Pipeline
 
 | Stage       | Crate                      | Main Responsibility                                            |
@@ -240,19 +276,14 @@ example over Remote/SSH).
 Maintainer reproduction commands for Linux release artifacts:
 
 ```bash
-# Linux x64 musl
-sudo apt-get update && sudo apt-get install -y musl-tools
-rustup target add x86_64-unknown-linux-musl
-CC_x86_64_unknown_linux_musl=musl-gcc \
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-cargo build --release --target x86_64-unknown-linux-musl --bin rumoca --bin rumoca-lsp
+rum vscode package --target linux-x64
+rum vscode package --target linux-arm64
+```
 
-# Linux arm64 musl (on a native arm64 Linux host/runner)
-sudo apt-get update && sudo apt-get install -y musl-tools
-rustup target add aarch64-unknown-linux-musl
-CC_aarch64_unknown_linux_musl=musl-gcc \
-CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-cargo build --release --target aarch64-unknown-linux-musl --bin rumoca --bin rumoca-lsp
+On Debian/Ubuntu, the first run can install `musl-tools` for you:
+
+```bash
+rum vscode package --target linux-x64 --install-musl-tools
 ```
 
 - Extension docs: `editors/vscode/README.md`
@@ -262,20 +293,12 @@ cargo build --release --target aarch64-unknown-linux-musl --bin rumoca --bin rum
 
 Contributions are welcome.
 
-Project specifications:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup, workflow, and verification commands.
 
-- [Specifications folder](spec/)
-
-For compiler-affecting changes, follow:
+Compiler-affecting changes should still follow:
 
 - `spec/SPEC_0025_PR_REVIEW_PROCESS.md`
 - `spec/README.md`
-
-Install repo hooks before opening PRs:
-
-```bash
-cargo run --bin rum -- install-git-hooks
-```
 
 ## Citation
 

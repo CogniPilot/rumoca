@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod msl_tools;
-pub use msl_tools::{
+pub(crate) use msl_tools::{
     common, compare_balance, omc_reference, omc_simulation_reference, parity_manifest,
     plot_compare, promote_quality_baseline,
 };

@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const LIVE_COMPILE_DIAGNOSTICS_DOC_LIMIT: usize = 256;
+
 pub(super) fn should_reserve_library_load(
     loaded: &HashSet<String>,
     loading: &HashMap<String, u64>,
@@ -55,6 +57,10 @@ pub(super) fn completion_context_needs_resolved_session(
     trimmed.contains('.')
         || (trimmed.contains('(') && !trimmed.contains(')'))
         || requires_import_resolution
+}
+
+pub(super) fn should_run_live_compile_diagnostics(document_count: usize) -> bool {
+    document_count <= LIVE_COMPILE_DIAGNOSTICS_DOC_LIMIT
 }
 
 #[derive(Debug, Clone)]

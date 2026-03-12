@@ -746,6 +746,43 @@ fn test_compiled_library_tolerant_strict_reachable_ignores_unrelated_library_err
 }
 
 #[test]
+fn test_compiled_library_strict_reachable_uncached_does_not_fill_cache() {
+    let definition = rumoca_phase_parse::parse_to_ast(
+        r#"
+        package P
+          model A
+            Real x(start=0);
+          equation
+            der(x) = 1;
+          end A;
+
+          model B
+            Real y(start=0);
+          equation
+            der(y) = 2;
+          end B;
+        end P;
+        "#,
+        "pkg.mo",
+    )
+    .expect("package should parse");
+
+    let library = CompiledLibrary::from_stored_definition(definition)
+        .expect("compiled library should build from one parsed package");
+
+    let report = library.compile_model_strict_reachable_uncached_with_recovery("P.A");
+    assert!(report.requested_succeeded(), "P.A should compile");
+    assert!(
+        library
+            .compile_cache
+            .lock()
+            .expect("compiled library cache poisoned")
+            .is_empty(),
+        "uncached strict compile should not retain phase results in the shared library cache"
+    );
+}
+
+#[test]
 fn test_strict_reachable_keeps_collecting_when_requested_fails() {
     let mut session = Session::default();
     let source = r#"
@@ -1577,4 +1614,47 @@ fn test_compile_model_strict_reachable_with_recovery_reuses_cache() {
         }
         other => panic!("expected cached strict requested result, got {other:?}"),
     }
+}
+
+#[test]
+fn test_compile_model_strict_reachable_uncached_with_recovery_ignores_cache() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "pkg.mo",
+            r#"
+            package P
+              model A
+                Real x(start=0);
+              equation
+                der(x) = 1;
+              end A;
+            end P;
+            "#,
+        )
+        .expect("package should parse");
+
+    let first = session.compile_model_strict_reachable_uncached_with_recovery("P.A");
+    assert!(first.requested_succeeded(), "P.A should compile");
+
+    session.compile_cache.insert(
+        "P.A".to_string(),
+        CompileCacheEntry {
+            fingerprint: [123; 32],
+            result: PhaseResult::NeedsInner {
+                missing_inners: vec!["cached-P.A".to_string()],
+            },
+        },
+    );
+
+    let second = session.compile_model_strict_reachable_uncached_with_recovery("P.A");
+    assert!(
+        second.requested_succeeded(),
+        "uncached strict compile should ignore cache override"
+    );
+    assert!(
+        matches!(second.requested_result, Some(PhaseResult::Success(_))),
+        "expected uncached strict requested result to compile successfully, got {:?}",
+        second.requested_result
+    );
 }

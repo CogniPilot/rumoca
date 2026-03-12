@@ -2,22 +2,26 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::fs::File;
-use std::io::Read;
-use std::io::Write;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::Parser;
 use rumoca_session::compile::Dae;
 use rumoca_session::runtime::{SimError, SimOptions, SimResult, SimSolverMode, simulate_dae};
-use serde::Deserialize;
 
 #[derive(Debug, Parser)]
 #[command(name = "rumoca-sim-worker")]
 #[command(about = "Isolated simulation worker for MSL test harness")]
 struct Args {
+    #[arg(
+        long,
+        required_unless_present = "dae_stdin",
+        conflicts_with = "dae_stdin"
+    )]
+    dae_bin: Option<PathBuf>,
     #[arg(long)]
-    dae_json: PathBuf,
+    dae_stdin: bool,
     #[arg(long)]
     result_json: PathBuf,
     #[arg(long)]
@@ -236,19 +240,20 @@ fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> 
         },
     };
 
-    let mut file = File::create(trace_path).map_err(|e| {
+    let file = File::create(trace_path).map_err(|e| {
         format!(
             "failed to create trace file '{}': {e}",
             trace_path.display()
         )
     })?;
-    serde_json::to_writer(&mut file, &trace).map_err(|e| {
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer(&mut writer, &trace).map_err(|e| {
         format!(
             "failed to serialize trace JSON '{}': {e}",
             trace_path.display()
         )
     })?;
-    file.write_all(b"\n").map_err(|e| {
+    writer.write_all(b"\n").map_err(|e| {
         format!(
             "failed to finalize trace JSON '{}': {e}",
             trace_path.display()
@@ -257,29 +262,27 @@ fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> 
     Ok(())
 }
 
-fn parse_dae_json(mut reader: impl Read, source_label: &str) -> Result<Dae, String> {
+fn parse_dae_binary(mut reader: impl Read, source_label: &str) -> Result<Dae, String> {
     let mut payload = Vec::new();
     reader
         .read_to_end(&mut payload)
-        .map_err(|e| format!("failed to read dae_json '{source_label}': {e}"))?;
+        .map_err(|e| format!("failed to read dae_bin '{source_label}': {e}"))?;
 
     let source = source_label.to_string();
     let thread_source = source.clone();
     let parser = std::thread::Builder::new()
-        .name("rumoca-sim-worker-json-parse".to_string())
+        .name("rumoca-sim-worker-binary-parse".to_string())
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
-            let mut deserializer = serde_json::Deserializer::from_slice(&payload);
-            deserializer.disable_recursion_limit();
-            Dae::deserialize(&mut deserializer)
-                .map_err(|e| format!("failed to parse dae_json '{thread_source}': {e}"))
+            bincode::deserialize::<Dae>(&payload)
+                .map_err(|e| format!("failed to parse dae_bin '{thread_source}': {e}"))
         })
-        .map_err(|e| format!("failed to spawn dae_json parser thread for '{source}': {e}"))?;
+        .map_err(|e| format!("failed to spawn dae_bin parser thread for '{source}': {e}"))?;
 
     match parser.join() {
         Ok(result) => result,
         Err(panic_info) => Err(format!(
-            "failed to parse dae_json '{source}': parser thread panicked: {}",
+            "failed to parse dae_bin '{source}': parser thread panicked: {}",
             panic_message(panic_info)
         )),
     }
@@ -305,10 +308,17 @@ fn effective_output_dt(args: &Args) -> Option<f64> {
 }
 
 fn run(args: &Args) -> SimWorkerResult {
-    let dae = match File::open(&args.dae_json)
-        .map_err(|e| format!("failed to open dae_json '{}': {e}", args.dae_json.display()))
-        .and_then(|file| parse_dae_json(file, &args.dae_json.display().to_string()))
-    {
+    let dae = match if args.dae_stdin {
+        parse_dae_binary(BufReader::new(std::io::stdin().lock()), "stdin")
+    } else {
+        let dae_bin = args
+            .dae_bin
+            .as_ref()
+            .expect("clap should require dae_bin unless dae_stdin is set");
+        File::open(dae_bin)
+            .map_err(|e| format!("failed to open dae_bin '{}': {e}", dae_bin.display()))
+            .and_then(|file| parse_dae_binary(BufReader::new(file), &dae_bin.display().to_string()))
+    } {
         Ok(dae) => dae,
         Err(err) => {
             return SimWorkerResult {
@@ -369,9 +379,10 @@ fn run(args: &Args) -> SimWorkerResult {
 }
 
 fn write_result(path: &PathBuf, result: &SimWorkerResult) -> std::io::Result<()> {
-    let mut file = File::create(path)?;
-    serde_json::to_writer(&mut file, result).map_err(std::io::Error::other)?;
-    file.write_all(b"\n")?;
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer(&mut writer, result).map_err(std::io::Error::other)?;
+    writer.write_all(b"\n")?;
     Ok(())
 }
 
@@ -384,8 +395,8 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, effective_output_dt, parse_dae_json, sample_grid_dt};
-    use rumoca_session::compile::{Session, SessionConfig};
+    use super::{Args, effective_output_dt, parse_dae_binary, sample_grid_dt};
+    use rumoca_session::compile::{Dae, Session, SessionConfig};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -411,28 +422,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_dae_json_handles_deeply_nested_expression_trees() {
-        let source =
-            "model DeepJson\n  Real x(start = 0);\nequation\n  der(x) = 0 + 1;\nend DeepJson;\n";
+    fn parse_dae_binary_handles_deeply_nested_expression_trees() {
+        let source = "model DeepBinary\n  Real x(start = 0);\nequation\n  der(x) = 0 + 1;\nend DeepBinary;\n";
         let mut session = Session::new(SessionConfig::default());
         session
-            .add_document("deep_json.mo", source)
+            .add_document("deep_binary.mo", source)
             .expect("add source file");
         let compiled = session
-            .compile_model("DeepJson")
+            .compile_model("DeepBinary")
             .expect("compile deep nested expression model");
         let mut dae_json = serde_json::to_value(&compiled.dae).expect("serialize deep DAE json");
         let base_add_expr = dae_json["f_x"][0]["rhs"]["Binary"]["rhs"].clone();
         dae_json["f_x"][0]["rhs"]["Binary"]["rhs"] = deep_add_expr_json(&base_add_expr, 512);
-        let payload = serde_json::to_vec(&dae_json).expect("encode deep DAE JSON payload");
+        let deep_dae: Dae =
+            serde_json::from_value(dae_json).expect("deserialize mutated deep DAE value");
+        let payload = bincode::serialize(&deep_dae).expect("encode deep DAE binary payload");
         let parsed =
-            parse_dae_json(std::io::Cursor::new(payload), "in-memory").expect("parse deep DAE");
+            parse_dae_binary(std::io::Cursor::new(payload), "in-memory").expect("parse deep DAE");
         assert_eq!(parsed.f_x.len(), 1);
     }
 
     fn test_args() -> Args {
         Args {
-            dae_json: PathBuf::from("in.json"),
+            dae_bin: Some(PathBuf::from("in.bin")),
+            dae_stdin: false,
             result_json: PathBuf::from("out.json"),
             model_name: "M".to_string(),
             t_start: 0.0,

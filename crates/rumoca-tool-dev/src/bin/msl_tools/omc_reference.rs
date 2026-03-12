@@ -1,8 +1,8 @@
 use crate::common::{
     AUTO_WORKERS_DEFAULT, BATCH_SIZE_OMC_REFERENCE_DEFAULT, BatchTimingDetail, EXCLUDE_PREFIXES,
-    MSL_TOP_PACKAGES, MSL_VERSION, MslPaths, OMC_THREADS_DEFAULT, PendingBatch,
-    apply_omc_thread_env, choose_effective_batch_size, get_git_commit, get_omc_version,
-    has_fatal_omc_error, load_target_models, msl_load_lines, resolve_worker_count, round3,
+    MSL_VERSION, MslPaths, OMC_THREADS_DEFAULT, PendingBatch, apply_omc_thread_env,
+    choose_effective_batch_size, get_git_commit, get_omc_version, has_fatal_omc_error,
+    load_target_models, msl_load_lines, msl_top_packages, resolve_worker_count, round3,
     run_command_with_timeout, run_parallel_batches_with_progress, summarize_batch_timings,
     summarize_omc_error, unix_timestamp_seconds, write_pretty_json,
 };
@@ -799,7 +799,7 @@ fn discover_models(paths: &MslPaths, work_dir: &Path, omc_threads: usize) -> Res
 fn generate_discovery_script(paths: &MslPaths, names_file: &Path) -> String {
     let mut lines = msl_load_lines(paths);
     lines.push("allNames := \"\";".to_string());
-    for package in MSL_TOP_PACKAGES {
+    for package in msl_top_packages(paths) {
         lines.push(format!(
             "names := getClassNames({package}, recursive=true, qualified=true);"
         ));

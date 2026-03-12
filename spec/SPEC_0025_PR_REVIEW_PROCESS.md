@@ -181,7 +181,7 @@ Coverage-trim workflow and baseline handling are defined in:
 If the run is approved and you want to update the committed baseline:
 
 ```bash
-cargo run --release --package rumoca-tool-dev --bin rumoca-msl-tools -- promote-quality-baseline
+rum repo msl promote-quality-baseline
 ```
 
 Mandatory freshness checks before commit:
@@ -243,9 +243,9 @@ Requirements:
 ### 1. Author Checklist
 
 Before requesting review:
-- [ ] Repository hooks are installed (`cargo run --bin rum -- install-git-hooks`)
-- [ ] Local `pre-push` hook passes (fast CI-parity gate: fmt, clippy, rustdoc, workspace tests)
-- [ ] Manual CI-parity command passes (`cargo run --bin rum -- ci-parity`)
+- [ ] Repository hooks are installed (`rum repo hooks install`)
+- [ ] Local `pre-push` hook passes (fast quick gate: fmt, clippy, rustdoc, workspace tests)
+- [ ] Manual quick verification passes (`rum verify quick`)
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
 - [ ] `cargo test --workspace` passes
@@ -255,7 +255,7 @@ Before requesting review:
 - [ ] For compiler/simulator behavior changes: gate refreshed or reused consistent `omc_reference.json`, `omc_simulation_reference.json`, and `sim_trace_comparison.json` for the current target sets
 - [ ] For compiler/simulator behavior changes: regenerated `target/msl/results/msl_quality_current.json`
 - [ ] For compiler/simulator behavior changes: `omc_simulation_reference.json` has populated runtime ratio stats (`runtime_comparison.ratio_stats.system_ratio_both_success.sample_count > 0`, `runtime_comparison.ratio_stats.wall_ratio_both_success.sample_count > 0`)
-- [ ] For compiler/simulator behavior changes: if baseline changed, promoted with `rumoca-msl-tools promote-quality-baseline` from `rumoca-tool-dev`
+- [ ] For compiler/simulator behavior changes: if baseline changed, promoted with `rum repo msl promote-quality-baseline`
 - [ ] For coverage-trim or coverage-gate changes: followed `spec/SPEC_0030_COVERAGE_TRIM_PROCESS.md` (run, report, gate, and explicit promotion/rollback policy)
 - [ ] MSL metrics are compared against `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`
 - [ ] No unattributed copied code is introduced

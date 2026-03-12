@@ -89,6 +89,16 @@ fn completion_context_does_not_require_resolved_session_for_plain_identifier() {
 }
 
 #[test]
+fn live_compile_diagnostics_are_disabled_for_large_sessions() {
+    assert!(should_run_live_compile_diagnostics(
+        LIVE_COMPILE_DIAGNOSTICS_DOC_LIMIT
+    ));
+    assert!(!should_run_live_compile_diagnostics(
+        LIVE_COMPILE_DIAGNOSTICS_DOC_LIMIT + 1
+    ));
+}
+
+#[test]
 fn reserve_library_load_rejects_loaded_loading_and_stale_epoch() {
     let mut loaded = HashSet::new();
     loaded.insert("library::modelica".to_string());
@@ -320,6 +330,39 @@ fn simulation_doc_for_compile_filters_workspace_documents() {
 }
 
 #[test]
+fn live_publish_diagnostics_skips_full_compile_for_large_sessions() {
+    run_async_test(async {
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        let dir = new_temp_dir("large-live-diagnostics");
+        let active_path = dir.join("active.mo");
+        let active_uri = Url::from_file_path(&active_path).expect("file uri");
+        let active_source = "model Active\n  Real x;\nequation\n  der(x) = -x;\nend Active;\n";
+        {
+            let mut session = server.session.write().await;
+            session.update_document(&active_path.to_string_lossy(), active_source);
+            for idx in 0..=LIVE_COMPILE_DIAGNOSTICS_DOC_LIMIT {
+                let name = format!("Support{idx}");
+                let path = dir.join(format!("{name}.mo"));
+                let source =
+                    format!("model {name}\n  Real x;\nequation\n  der(x) = 1;\nend {name};\n");
+                session.update_document(&path.to_string_lossy(), &source);
+            }
+        }
+
+        server
+            .publish_diagnostics(active_uri, active_source, DiagnosticsTrigger::Live)
+            .await;
+
+        let has_resolved = server.session.read().await.has_resolved_cached();
+        assert!(
+            !has_resolved,
+            "live diagnostics should skip full compile diagnostics for large sessions"
+        );
+    });
+}
+
+#[test]
 fn collect_simulation_parsed_docs_keeps_focus_and_libraries_only() {
     let focus_uri = "focus.mo";
     let other_uri = "other.mo";
@@ -473,6 +516,46 @@ fn compile_model_for_simulation_ignores_unrelated_local_parse_errors() {
             .await
             .expect("compile should ignore unrelated local parse errors");
         assert_eq!(compiled.dae.states.len(), 1);
+    });
+}
+
+#[test]
+fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_errors() {
+    run_async_test(async {
+        let temp = new_temp_dir("compile-repeated-sibling-parse-error");
+        let focus = temp.join("Root.mo");
+        let sibling = temp.join("Helper.mo");
+        let broken = temp.join("Broken.mo");
+        std::fs::write(&focus, "model Root\n  Helper h;\nend Root;\n").expect("write focus");
+        std::fs::write(
+            &sibling,
+            "model Helper\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Helper;\n",
+        )
+        .expect("write sibling");
+
+        let (service, _socket) = LspService::new(ModelicaLanguageServer::new);
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+
+        let first = server
+            .compile_model_for_simulation("Root", &focus.to_string_lossy())
+            .await
+            .expect("first focused compile should succeed");
+        assert_eq!(first.dae.states.len(), 1);
+
+        std::fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
+
+        let second = server
+            .compile_model_for_simulation("Root", &focus.to_string_lossy())
+            .await
+            .expect("second focused compile should ignore unrelated local parse errors");
+        assert_eq!(second.dae.states.len(), 1);
     });
 }
 

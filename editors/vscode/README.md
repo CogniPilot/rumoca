@@ -150,16 +150,31 @@ Then check the "Rumoca Modelica" output channel in VS Code.
 ## Building the Extension from Source
 
 ```bash
-# Build the LSP server
-cargo build --release --bin rumoca-lsp
+# one-time bootstrap from repo root
+cargo run --bin rum -- repo cli install
 
-# Build the extension
-cd editors/vscode
-npm install
-npm run compile
-npx @vscode/vsce package
-code --install-extension rumoca-modelica-*.vsix
+# run the extension verification gate
+rum vscode test
+
+# build/package/install the extension locally
+rum vscode build
+
+# package a target-specific VSIX with bundled release binaries
+rum vscode package --target linux-x64
+
+# development loop with watch mode + Extension Development Host
+rum vscode edit
 ```
+
+`rum vscode package` is the maintainer path for release-style VSIX artifacts. On Debian/Ubuntu,
+you can let it install `musl-tools` on the first Linux packaging run:
+
+```bash
+rum vscode package --target linux-x64 --install-musl-tools
+```
+
+If you need the lower-level manual steps, `rum vscode build` and `rum vscode package` wrap the
+same TypeScript, Cargo, and VSIX packaging flow that lives under `editors/vscode/`.
 
 ## License
 

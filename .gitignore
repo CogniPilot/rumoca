@@ -13,7 +13,9 @@ _native.cpython*
 *.so
 .claude/
 .vscode/
-dev/
+dev/*
+!dev/editor_lsp_efficiency_roadmap.md
+!dev/cli_streamlining_roadmap.md
 pkg/
 perf.data*
 flamegraph.svg

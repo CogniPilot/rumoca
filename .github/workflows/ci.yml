@@ -75,17 +75,8 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)" --component rustfmt,clippy
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check Rust file line count (SPEC_0021)
-        run: cargo run --quiet --bin rum -- check-rust-file-lines --all-files
-
-      - name: Enforce traversal policy
-        run: cargo run --quiet --bin rumoca-traversal-policy-check
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Run lint gate
+        run: cargo run --quiet --bin rum -- verify lint
 
   test:
     name: Test (${{ matrix.os }})
@@ -119,24 +110,32 @@ jobs:
         uses: actions/cache@v4
         id: msl-cache
         with:
-          path: target/msl
-          key: msl-v4.1.0-workspace
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
 
-      - name: Download MSL
-        if: steps.msl-cache.outputs.cache-hit != 'true'
+      - name: Ensure MSL
         shell: bash
         run: |
-          mkdir -p target/msl
-          curl -L -o target/msl/msl-v4.1.0.tar.gz \
-            https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.tar.gz
-          tar -xzf target/msl/msl-v4.1.0.tar.gz -C target/msl
-          rm target/msl/msl-v4.1.0.tar.gz
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            echo "MSL cache is valid at $msl_dir"
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+          test -f "$msl_dir/Complex.mo"
+          test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
       - name: Run tests
-        run: cargo test --workspace --verbose --exclude rumoca-bind-python --exclude rumoca-bind-wasm
+        run: cargo run --quiet --bin rum -- verify workspace
 
       - name: Build all binaries
-        run: cargo build --verbose --bin rumoca --bin rumoca-lsp
+        run: cargo run --quiet --bin rum -- verify binaries
 
   docker-ci-smoke:
     name: Docker CI Image Smoke
@@ -201,23 +200,31 @@ jobs:
 
       - name: Generate workspace coverage artifacts
         run: |
-          cargo run --bin rum -- coverage
+          cargo run --bin rum -- coverage run
 
       - name: Generate trim candidate inventory
         run: |
-          cargo run --bin rum -- coverage-report
+          cargo run --bin rum -- coverage report
 
       - name: Enforce coverage regression gate
         run: |
-          cargo run --bin rum -- coverage-gate --allowed-workspace-line-coverage-drop 6.0
+          cargo run --bin rum -- coverage gate --allowed-workspace-line-coverage-drop 6.0
 
   msl-quality-gate:
     name: MSL Quality Gate
-    # Temporary disable: hosted-runner shutdowns are intermittently canceling this
-    # long job on main before the harness can complete.
-    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # Keep the 180-model parity run conservative on shared GitHub runners.
+      # This trades some throughput for lower peak memory pressure and fewer
+      # host-level cancellations during compile/sim worker fan-out.
+      RUMOCA_MSL_PARALLELISM: "3"
+      RUMOCA_MSL_SIM_PARALLELISM: "3"
+      RUMOCA_MSL_COMPILE_BATCH_SIZE: "2"
+      RUMOCA_MSL_SIM_WORKER_MEMORY_MB: "2048"
+      RUMOCA_MSL_SIM_TOTAL_MEMORY_MB: "6144"
+      RUMOCA_CI_RESOURCE_MONITOR_SECS: "10"
+      RUMOCA_CI_CLEAN_MSL_RESULTS: "1"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -242,18 +249,26 @@ jobs:
         uses: actions/cache@v4
         id: msl-cache
         with:
-          path: target/msl
-          key: msl-v4.1.0-workspace
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
 
-      - name: Download MSL
-        if: steps.msl-cache.outputs.cache-hit != 'true'
+      - name: Ensure MSL
         shell: bash
         run: |
-          mkdir -p target/msl
-          curl -L -o target/msl/msl-v4.1.0.tar.gz \
-            https://github.com/modelica/ModelicaStandardLibrary/archive/refs/tags/v4.1.0.tar.gz
-          tar -xzf target/msl/msl-v4.1.0.tar.gz -C target/msl
-          rm target/msl/msl-v4.1.0.tar.gz
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            echo "MSL cache is valid at $msl_dir"
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+          test -f "$msl_dir/Complex.mo"
+          test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
       - name: Install OpenModelica
         shell: bash
@@ -279,49 +294,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends omc
           omc --version
 
-      - name: Resolve OMC parity cache metadata
-        id: omc-meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          omc_version="$(omc --version | head -n1 | tr -d '\r')"
-          omc_version_hash="$(printf '%s' "$omc_version" | sha256sum | cut -c1-16)"
-          echo "version=$omc_version" >> "$GITHUB_OUTPUT"
-          echo "version_hash=$omc_version_hash" >> "$GITHUB_OUTPUT"
-          echo "OMC parity cache key metadata: version='$omc_version' hash=$omc_version_hash"
-
-      - name: Restore OMC parity cache
-        id: omc-parity-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: target/msl/results/omc_parity_cache
-          key: ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-
-
-      - name: Build MSL gate helper binaries
-        run: |
-          cargo build --release --package rumoca-test-msl --bin rumoca-sim-worker
-          cargo build --release --package rumoca-tool-dev --bin rumoca-msl-tools
-
       - name: Run full MSL quality gate
-        run: |
-          RUMOCA_SIM_WORKER_EXE=target/release/rumoca-sim-worker \
-          RUMOCA_MSL_TOOLS_EXE=target/release/rumoca-msl-tools \
-          RUMOCA_MSL_CACHE_DIR=target/msl \
-          cargo test --release --package rumoca-test-msl --test msl_tests \
-            balance_pipeline::balance_pipeline_core::test_msl_all -- --ignored --nocapture
-
-      - name: Ensure OMC parity cache directory exists
-        if: always()
-        run: mkdir -p target/msl/results/omc_parity_cache
-
-      - name: Save OMC parity cache
-        if: always() && steps.omc-parity-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: target/msl/results/omc_parity_cache
-          key: ${{ runner.os }}-omc-parity-v2-${{ steps.omc-meta.outputs.version_hash }}-${{ hashFiles('crates/rumoca-test-msl/tests/msl_tests/msl_simulation_targets_180.json') }}-${{ github.sha }}
+        run: cargo run --quiet --bin rum -- verify msl-parity
 
   # ============================================================================
   # Documentation
@@ -341,15 +315,47 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Build documentation
-        run: cargo doc --workspace --no-deps --exclude rumoca-bind-python --exclude rumoca-bind-wasm
-        env:
-          RUSTDOCFLAGS: -D warnings
+        run: cargo run --quiet --bin rum -- verify docs
 
       - name: Upload documentation
         uses: actions/upload-artifact@v4
         with:
           name: documentation
           path: target/doc/
+
+  # ============================================================================
+  # VS Code Extension
+  # ============================================================================
+  vscode:
+    name: VS Code Extension
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-vscode-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run VS Code extension CI gate
+        run: cargo run --quiet --bin rum -- vscode test
 
   # ============================================================================
   # WebAssembly Build & GitHub Pages
@@ -370,15 +376,10 @@ jobs:
           rustup target add wasm32-unknown-unknown
           rustup component add rust-src
 
-      - name: Install wasm-bindgen-cli (lockfile-matched)
-        shell: bash
-        run: |
-          set -euo pipefail
-          WASM_BINDGEN_VERSION="$(
-            python3 -c 'import pathlib, tomllib; lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text()); versions = sorted({pkg["version"] for pkg in lock.get("package", []) if pkg.get("name") == "wasm-bindgen"}); assert versions, "Failed to find wasm-bindgen in Cargo.lock"; print(versions[-1])'
-          )"
-          echo "Installing wasm-bindgen-cli v${WASM_BINDGEN_VERSION} to match Cargo.lock"
-          cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked --force
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -389,27 +390,8 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run rumoca-bind-wasm Rust tests
-        run: cargo test -p rumoca-bind-wasm --verbose
-
-      - name: Build WASM package
-        run: |
-          cargo build -p rumoca-bind-wasm --lib --release \
-            --target wasm32-unknown-unknown
-
-          mkdir -p pkg
-          wasm-bindgen \
-            --target web \
-            --out-dir pkg \
-            --out-name rumoca \
-            target/wasm32-unknown-unknown/release/rumoca_bind_wasm.wasm
-
-          cp editors/wasm/rumoca_worker.js pkg/
-          ls -lh pkg/
-
-      - name: Run WASM simulation regression test
-        run: |
-          node editors/wasm/tests/simulate_smoke.mjs
+      - name: Run WASM CI gate
+        run: cargo run --quiet --bin rum -- wasm test
 
       - name: Prepare GitHub Pages content
         run: |
@@ -581,7 +563,6 @@ jobs:
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
-    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -675,7 +656,7 @@ jobs:
   deploy:
     name: Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-release-tag.outputs.is_release == 'true'
-    needs: [detect-release-tag, lint, test, coverage-gate, docs, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
+    needs: [detect-release-tag, lint, test, coverage-gate, msl-quality-gate, docs, vscode, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     environment:
       name: github-pages

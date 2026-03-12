@@ -10,7 +10,7 @@ const DEFAULT_BASELINE_FILE_REL: &str = "crates/rumoca-tool-dev/coverage/trim-ga
 const DEFAULT_CANDIDATES_FILE_REL: &str = "target/llvm-cov/trim-candidates.json";
 const DEFAULT_DIFF_FILE_REL: &str = "target/llvm-cov/coverage-gate.md";
 const DEFAULT_SUMMARY_FILE_NAME: &str = "workspace-summary.json";
-const GENERATED_BY: &str = "rum coverage-gate";
+const GENERATED_BY: &str = "rum coverage gate";
 
 #[derive(Debug, Clone, ClapArgs)]
 pub(crate) struct CoverageGateArgs {
@@ -105,7 +105,7 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
     );
     ensure!(
         candidates_path.is_file(),
-        "missing trim candidates JSON '{}'; run `rum coverage-report` first",
+        "missing trim candidates JSON '{}'; run `rum coverage report` first",
         candidates_path.display()
     );
     let baseline_path = resolve_path(root, args.baseline_file.as_ref(), DEFAULT_BASELINE_FILE_REL);
@@ -130,7 +130,7 @@ pub(crate) fn run(root: &Path, args: &CoverageGateArgs) -> Result<()> {
 
     ensure!(
         baseline_path.is_file(),
-        "missing coverage baseline '{}'; run `rum coverage-gate --promote-baseline`",
+        "missing coverage baseline '{}'; run `rum coverage gate --promote-baseline`",
         baseline_path.display()
     );
     let baseline = load_baseline(&baseline_path)?;
