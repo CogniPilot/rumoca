@@ -1,0 +1,120 @@
+{% set builtin_map = {"Der": "D", "Pre": "pre", "Abs": "abs", "Sqrt": "sqrt"} %}
+{% set op_map = {"Sub": "-", "Add": "+", "Mul": "*", "Div": "/", "Lt": "<", "Gt": ">", "Leq": "<=", "Geq": ">="} %}
+
+{% macro render_op(op) %}
+  {%- if op["Sub"] is defined -%}-
+  {%- elif op["Add"] is defined -%}+
+  {%- elif op["Mul"] is defined -%}*
+  {%- elif op["Div"] is defined -%}/
+  {%- elif op["Lt"] is defined -%}
+  {%- elif op["Gt"] is defined -%}>
+  {%- elif op["Leq"] is defined -%}<=
+  {%- elif op["Geq"] is defined -%}>=
+  {%- endif -%}
+{% endmacro %}
+
+{% macro render_expr(node, builtin_map, op_map) %}
+  {%- if node["VarRef"] is defined -%}
+    {{ node["VarRef"]["name"] }}
+  {%- elif node["Literal"] is defined -%}
+    {%- if node["Literal"]["Real"] is defined -%}{{ node["Literal"]["Real"] }}
+    {%- elif node["Literal"]["Integer"] is defined -%}{{ node["Literal"]["Integer"] }}
+    {%- endif -%}
+  {%- elif node["Unary"] is defined -%}
+    {%- set op = node["Unary"]["op"] -%}
+    {%- if op["Minus"] is defined -%}-{% endif %}{{ render_expr(node["Unary"]["rhs"], builtin_map, op_map) }}
+  {%- elif node["Binary"] is defined -%}
+    {{ render_expr(node["Binary"]["lhs"], builtin_map, op_map) }} {{ render_op(node["Binary"]["op"]) }} {{ render_expr(node["Binary"]["rhs"], builtin_map, op_map) }}
+  {%- elif node["BuiltinCall"] is defined -%}
+    {%- set fn = node["BuiltinCall"]["function"] -%}
+    {{ builtin_map[fn] if fn in builtin_map else fn }}({{ render_expr(node["BuiltinCall"]["args"][0], builtin_map, op_map) }})
+  {%- endif -%}
+{% endmacro %}
+
+{% macro render_der_eq(eq, builtin_map, op_map) %}
+  {%- if eq["rhs"]["Binary"]["rhs"]["BuiltinCall"] is defined -%}
+    {%- set der_side = eq["rhs"]["Binary"]["rhs"] -%}
+    {%- set var_side = eq["rhs"]["Binary"]["lhs"] -%}
+  {%- else -%}
+    {%- set der_side = eq["rhs"]["Binary"]["lhs"] -%}
+    {%- set var_side = eq["rhs"]["Binary"]["rhs"] -%}
+  {%- endif -%}
+  {%- set fn = der_side["BuiltinCall"]["function"] -%}
+  {%- set expr = der_side["BuiltinCall"]["args"][0]["VarRef"]["name"] -%}
+  {{ builtin_map[fn] if fn in builtin_map else fn }}({{ expr }}) ~ {{ render_expr(var_side, builtin_map, op_map) -}}
+{% endmacro %}
+
+{% macro render_dae(dae) %}
+# ===============
+# From Rumoca
+# ===============
+
+using ModelingToolkit, DifferentialEquations, Plots
+
+@independent_variables t
+@variables {% for var in dae.x %}{{ var }}(t) {% endfor %}
+@parameters {% for param in dae.p %}{{ dae.p[param]["name"] }}={{ dae.p[param]["start"]["Literal"]["Real"] }} {% endfor %}
+
+D = Differential(t)
+
+eqs = [
+{%- for eq in dae.f_x %}
+    {{ render_der_eq(eq, builtin_map, op_map) }},
+{%- endfor %}
+]
+
+# Will change to model_name once it works
+@named sys = ODESystem(eqs, t)
+
+{%- if dae.f_z %}
+# Event handling
+function affect!(integrator)
+{%- for eq in dae.f_z %}
+    {%- set var_name = eq["lhs"] %}
+    {%- set ns = namespace(idx=1) %}
+    {%- for var in dae.x %}
+        {%- if var == var_name %}{%- set ns.idx = loop.index %}{%- endif %}
+    {%- endfor %}
+    {%- set ns2 = namespace(expr = render_expr(eq["rhs"]["If"]["branches"][0][1], builtin_map, op_map) | replace("pre(" ~ var_name ~ ")", "integrator.u[" ~ ns.idx ~ "]")) %}
+    {%- for param in dae.p %}
+        {%- set ns2.expr = ns2.expr | replace("-" ~ param ~ " ", "-" ~ dae.p[param]["start"]["Literal"]["Real"] | string ~ " ") %}
+        {%- set ns2.expr = ns2.expr | replace(" " ~ param ~ " ", " " ~ dae.p[param]["start"]["Literal"]["Real"] | string ~ " ") %}
+    {%- endfor %}
+    integrator.u[{{ ns.idx }}] = {{ ns2.expr }}
+{%- endfor %}
+end
+
+cb = ContinuousCallback(
+    (u, t, integrator) -> {{ render_expr(dae.f_c[0]["rhs"]["Binary"]["lhs"], builtin_map, op_map) | replace("h", "u[1]") }},
+    affect!
+)
+{%- endif %}
+
+sys = complete(sys)
+
+prob = ODEProblem(sys, Dict(
+{%- for var in dae.x %}
+    {%- set ns = namespace(init=none) %}
+    {%- for ieq in dae.initial_equations %}
+        {%- if ieq["rhs"]["Binary"]["lhs"]["VarRef"]["name"] == var %}
+            {%- set rhs = ieq["rhs"]["Binary"]["rhs"] %}
+            {%- if rhs["VarRef"] is defined and dae.p[rhs["VarRef"]["name"]] is defined %}
+                {%- set ns.init = dae.p[rhs["VarRef"]["name"]]["start"]["Literal"]["Real"] %}
+            {%- elif rhs["Literal"] is defined %}
+                {%- set ns.init = rhs["Literal"]["Real"] if rhs["Literal"]["Real"] is defined else rhs["Literal"]["Integer"] %}
+            {%- endif %}
+        {%- endif %}
+    {%- endfor %}
+    {{ var }} => {{ ns.init if ns.init is not none else (dae.x[var]["start"]["Literal"]["Real"] if dae.x[var]["start"] else 0.0) }},
+{%- endfor %}
+), (0.0, 3.0))
+# Need to add tspan above when it is included in IR ^
+sol = solve(prob, Tsit5(){{ ", callback=cb" if dae.f_z else "" }}, dense=true)
+
+p = plot(sol, idxs=[{% for var in dae.x %}{{ var }}{{ ", " if not loop.last }}{% endfor %}],
+         label=[{% for var in dae.x %}"{{ var }}"{{ " " if not loop.last }}{% endfor %}])
+savefig(p, "output.png")
+display(p)
+{% endmacro %}
+
+{{ render_dae(dae) }}
