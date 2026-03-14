@@ -4,6 +4,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 
 ## Unreleased
 
+- Python bindings and notebooks: the Python API is now explicit with `rumoca.compile(...)` for inline source and `rumoca.compile_file(...)` for file-backed models, while VS Code notebook snippets emit valid DAE-JSON-oriented Python instead of stale object-style APIs.
 - MSL sim-worker IPC: the hot parent-to-worker DAE handoff now streams compact binary DAE payloads over stdin instead of writing large JSON temp files, removing the worst per-model serialization stall while keeping process isolation.
 - The example SymPy template was rewritten against the current DAE template schema and now renders current Rumoca models again instead of depending on removed legacy metadata and expression variants.
 - SymPy example-template runtime checks are now ignored in the default Rust workspace test pass and exposed explicitly through `rum verify template-runtimes`, so host CI no longer depends on ad hoc Python package installs.
@@ -49,7 +50,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 - Added a stronger template-generation and visitor-based architecture for downstream code emission.
 - Grew support for functions, `when`, `for`, equation and statement blocks, modification expressions, and broader expression handling.
 - Added more model semantics such as `extends`, connect equations, causality handling, resets, event logic, and piecewise behavior.
-- Built out richer examples and notebooks, including rover, quadrotor, bouncing-ball, and Gazebo-oriented flows.
+- Built out richer examples and notebooks, including rover, bouncing-ball, and Gazebo-oriented flows.
 
 ## 0.4.x
 

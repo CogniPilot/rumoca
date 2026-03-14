@@ -30,3 +30,5 @@ msl
 *.swo
 
 *.html
+.rumoca
+examples/.rumoca/results
