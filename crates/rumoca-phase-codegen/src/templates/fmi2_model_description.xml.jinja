@@ -1,0 +1,252 @@
+{#- FMI 2.0 Model Exchange modelDescription.xml template. -#}
+{#- Generates a conformant modelDescription.xml from DAE IR. -#}
+{#- Reference: FMI 2.0.4 specification, §§2.2, 3.2 -#}
+{%- set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} -%}
+{#- Macro: compute total scalar size of a variable map -#}
+{%- macro var_size(vars) -%}
+{%- set ns = namespace(total=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set ns.total = ns.total + var.dims | product -%}
+{%- else -%}
+{%- set ns.total = ns.total + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{{ ns.total }}
+{%- endmacro -%}
+{#- Compute variable counts for offset calculation -#}
+{%- set n_x = var_size(dae.x) | trim | int -%}
+{%- set n_xdot = n_x -%}
+{%- set n_y = var_size(dae.y) | trim | int -%}
+{%- set n_u = var_size(dae.u) | trim | int -%}
+{%- set n_w = var_size(dae.w) | trim | int -%}
+{%- set n_p = var_size(dae.p) | trim | int -%}
+{%- set n_z = var_size(dae.z) | trim | int -%}
+{%- set n_m = var_size(dae.m) | trim | int -%}
+{#-
+  Value reference layout (contiguous blocks):
+    0          .. n_x-1        : states (x)
+    n_x        .. 2*n_x-1      : derivatives (xdot)
+    2*n_x      .. 2*n_x+n_y-1  : algebraics (y)
+    2*n_x+n_y  .. +n_u-1       : inputs (u)
+    +n_u       .. +n_w-1       : outputs (w)
+    +n_w       .. +n_p-1       : parameters (p)
+    +n_p       .. +n_z-1       : discrete reals (z)
+    +n_z       .. +n_m-1       : discrete valued (m)
+-#}
+{%- set vr_x     = 0 -%}
+{%- set vr_xdot  = n_x -%}
+{%- set vr_y     = 2 * n_x -%}
+{%- set vr_u     = vr_y + n_y -%}
+{%- set vr_w     = vr_u + n_u -%}
+{%- set vr_p     = vr_w + n_w -%}
+{%- set vr_z     = vr_p + n_p -%}
+{%- set vr_m     = vr_z + n_z -%}
+{%- set n_total  = vr_m + n_m -%}
+{#- Macro: XML-escape a string -#}
+{%- macro xml_escape(s) -%}
+{{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
+{%- endmacro -%}
+{#- Macro: emit a <ScalarVariable> element -#}
+{%- macro scalar_var(name, vr, causality, variability, var, initial) -%}
+    <ScalarVariable name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}>
+      <Real{% if var.start is not none %} start="{{ render_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_expr(var.max, cfg) }}"{% endif %}/>
+    </ScalarVariable>
+{%- endmacro -%}
+{#- Macro: emit ScalarVariable for a derivative -#}
+{%- macro deriv_var(name, vr, state_vr) -%}
+    <ScalarVariable name="der({{ xml_escape(name) }})" valueReference="{{ vr }}" causality="local" variability="continuous" initial="calculated">
+      <Real/>
+    </ScalarVariable>
+{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription
+    fmiVersion="2.0"
+    modelName="{{ model_name }}"
+    guid="{{ model_name }}-rumoca"
+{% if dae.model_description %}    description="{{ xml_escape(dae.model_description) }}"
+{% endif %}    generationTool="Rumoca"
+    numberOfEventIndicators="{{ (dae.relation | default([]) | length) + (dae.synthetic_root_conditions | default([]) | length) }}">
+
+  <ModelExchange modelIdentifier="{{ model_name | sanitize }}"/>
+
+  <CoSimulation modelIdentifier="{{ model_name | sanitize }}" canHandleVariableCommunicationStepSize="true"/>
+
+  <LogCategories>
+    <Category name="logAll"/>
+    <Category name="logError"/>
+    <Category name="logStatusWarning"/>
+  </LogCategories>
+
+  <ModelVariables>
+{#- States (x) -#}
+{% set ns_vr = namespace(offset=vr_x) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "continuous", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ scalar_var(name, ns_vr.offset, "local", "continuous", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+{#- Derivatives (xdot) -#}
+{% set ns_vr = namespace(offset=vr_xdot) %}
+{% set ns_state_vr = namespace(offset=vr_x) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ deriv_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, ns_state_vr.offset) }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% set ns_state_vr.offset = ns_state_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ deriv_var(name, ns_vr.offset, ns_state_vr.offset) }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% set ns_state_vr.offset = ns_state_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+{#- Algebraics (y) -#}
+{% set ns_vr = namespace(offset=vr_y) %}
+{% for name, var in dae.y | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "continuous", var, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ scalar_var(name, ns_vr.offset, "local", "continuous", var, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+{#- Inputs (u) -#}
+{% set ns_vr = namespace(offset=vr_u) %}
+{% for name, var in dae.u | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "input", "continuous", var, none) }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ scalar_var(name, ns_vr.offset, "input", "continuous", var, none) }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+{#- Outputs (w) -#}
+{% set ns_vr = namespace(offset=vr_w) %}
+{% for name, var in dae.w | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "output", "continuous", var, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ scalar_var(name, ns_vr.offset, "output", "continuous", var, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+{#- Parameters (p) -#}
+{% set ns_vr = namespace(offset=vr_p) %}
+{% for name, var in dae.p | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "parameter", "fixed", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ scalar_var(name, ns_vr.offset, "parameter", "fixed", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+{#- Discrete Reals (z) -#}
+{% set ns_vr = namespace(offset=vr_z) %}
+{% for name, var in dae.z | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "discrete", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ scalar_var(name, ns_vr.offset, "local", "discrete", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+{#- Discrete Valued (m) -#}
+{% set ns_vr = namespace(offset=vr_m) %}
+{% for name, var in dae.m | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+{{ scalar_var(name ~ "[" ~ (i + 1) ~ "]", ns_vr.offset, "local", "discrete", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% else %}
+{{ scalar_var(name, ns_vr.offset, "local", "discrete", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endif %}
+{% endfor %}
+  </ModelVariables>
+
+  <ModelStructure>
+    <Outputs>
+{% set ns_idx = namespace(val=1) %}
+{#- Skip states, derivatives, algebraics to find output indices -#}
+{%- set out_start_idx = 1 + 2 * n_x + n_y + n_u -%}
+{% for name, var in dae.w | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+      <Unknown index="{{ out_start_idx + ns_idx.val - 1 }}"/>
+{% set ns_idx.val = ns_idx.val + 1 %}
+{% endfor %}
+{% else %}
+      <Unknown index="{{ out_start_idx + ns_idx.val - 1 }}"/>
+{% set ns_idx.val = ns_idx.val + 1 %}
+{% endif %}
+{% endfor %}
+    </Outputs>
+    <Derivatives>
+{#- Derivative indices are right after states (1-based), contiguous per scalar derivative -#}
+{% set ns_deriv = namespace(offset=0) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+      <Unknown index="{{ 1 + n_x + ns_deriv.offset }}"/>
+{% set ns_deriv.offset = ns_deriv.offset + 1 %}
+{% endfor %}
+{% else %}
+      <Unknown index="{{ 1 + n_x + ns_deriv.offset }}"/>
+{% set ns_deriv.offset = ns_deriv.offset + 1 %}
+{% endif %}
+{% endfor %}
+    </Derivatives>
+    <InitialUnknowns>
+{#- Derivatives are calculated initial unknowns and occupy the same contiguous block -#}
+{%- set deriv_start = 1 + n_x -%}
+{% set ns_init = namespace(offset=0) %}
+{% for name, var in dae.x | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+{% for i in range(sz) %}
+      <Unknown index="{{ deriv_start + ns_init.offset }}"/>
+{% set ns_init.offset = ns_init.offset + 1 %}
+{% endfor %}
+{% else %}
+      <Unknown index="{{ deriv_start + ns_init.offset }}"/>
+{% set ns_init.offset = ns_init.offset + 1 %}
+{% endif %}
+{% endfor %}
+    </InitialUnknowns>
+  </ModelStructure>
+
+</fmiModelDescription>

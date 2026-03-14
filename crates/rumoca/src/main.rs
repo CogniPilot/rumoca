@@ -59,6 +59,8 @@ enum Commands {
     Simulate(SimulateArgs),
     /// Compile and print balance/summary information
     Check(CheckArgs),
+    /// Export an FMI 2.0 FMU (Functional Mock-up Unit)
+    ExportFmu(ExportFmuArgs),
     /// Format Modelica files
     Fmt(FmtArgs),
     /// Lint Modelica files
@@ -200,6 +202,16 @@ struct CheckArgs {
 }
 
 #[derive(Args, Debug)]
+struct ExportFmuArgs {
+    #[command(flatten)]
+    input: ModelInputArgs,
+
+    /// Output directory for generated FMU sources (default: <MODEL>.fmu/)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
 struct FmtArgs {
     /// Files or directories to format. If empty, formats current directory.
     #[arg()]
@@ -312,6 +324,7 @@ fn try_main() -> Result<()> {
         Commands::Compile(args) => run_compile(args),
         Commands::Simulate(args) => run_simulate(args),
         Commands::Check(args) => run_check(args),
+        Commands::ExportFmu(args) => run_export_fmu(args),
         Commands::Fmt(args) => run_fmt(args),
         Commands::Lint(args) => run_lint(args),
         Commands::Completions { shell } => {
@@ -546,6 +559,125 @@ fn run_check(args: CheckArgs) -> Result<()> {
     init_debug_tracing(args.input.debug);
     let (result, model) = compile_with_inferred_model(&args.input)?;
     print_summary(&model, &result);
+    Ok(())
+}
+
+fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
+    use rumoca_session::runtime::fmi2_templates;
+    use std::fs;
+
+    init_debug_tracing(args.input.debug);
+    let (result, model) = compile_with_inferred_model(&args.input)?;
+
+    // Sanitize model identifier (replace dots with underscores for C compatibility)
+    let model_identifier = model.replace('.', "_");
+
+    let out_dir = args
+        .output
+        .unwrap_or_else(|| PathBuf::from(format!("{}.fmu", model_identifier)));
+
+    // Create FMU directory structure
+    let sources_dir = out_dir.join("sources");
+    fs::create_dir_all(&sources_dir)?;
+
+    // Render and write modelDescription.xml
+    let xml = result
+        .render_template_str_with_name(fmi2_templates::FMI2_MODEL_DESCRIPTION, &model_identifier)?;
+    let xml_path = out_dir.join("modelDescription.xml");
+    fs::write(&xml_path, &xml)?;
+    eprintln!("  wrote {}", xml_path.display());
+
+    // Render and write C source
+    let c_code =
+        result.render_template_str_with_name(fmi2_templates::FMI2_MODEL, &model_identifier)?;
+    let c_path = sources_dir.join(format!("{}.c", model_identifier));
+    fs::write(&c_path, &c_code)?;
+    eprintln!("  wrote {}", c_path.display());
+
+    // Write CMakeLists.txt and build script
+    write_fmu_cmake(&sources_dir, &model_identifier)?;
+    write_fmu_build_script(&out_dir, &model_identifier)?;
+
+    eprintln!(
+        "\nFMU sources exported to: {}\nRun ./build.sh to compile and package the .fmu",
+        out_dir.display()
+    );
+
+    Ok(())
+}
+
+/// Write a CMakeLists.txt for building the FMU shared library.
+fn write_fmu_cmake(sources_dir: &Path, model_identifier: &str) -> Result<()> {
+    let cmake_path = sources_dir.join("CMakeLists.txt");
+    let cmake_content = format!(
+        r#"cmake_minimum_required(VERSION 3.10)
+project({ident} C)
+
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+add_library({ident} SHARED {ident}.c)
+target_compile_options({ident} PRIVATE -Wall -Wextra -pedantic)
+
+if(WIN32)
+  set(FMU_PLATFORM "win64")
+elseif(APPLE)
+  set(FMU_PLATFORM "darwin64")
+elseif(UNIX)
+  set(FMU_PLATFORM "linux64")
+else()
+  message(FATAL_ERROR "Unsupported platform for FMI2 packaging")
+endif()
+
+# Install into FMU binaries directory
+install(TARGETS {ident}
+    RUNTIME DESTINATION ${{CMAKE_INSTALL_PREFIX}}/binaries/${{FMU_PLATFORM}}
+    LIBRARY DESTINATION ${{CMAKE_INSTALL_PREFIX}}/binaries/${{FMU_PLATFORM}})
+"#,
+        ident = model_identifier
+    );
+    std::fs::write(&cmake_path, &cmake_content)?;
+    eprintln!("  wrote {}", cmake_path.display());
+    Ok(())
+}
+
+/// Write a POSIX shell script that compiles and packages the FMU.
+fn write_fmu_build_script(out_dir: &Path, model_identifier: &str) -> Result<()> {
+    use std::io::Write;
+
+    let build_script_path = out_dir.join("build.sh");
+    let mut f = std::fs::File::create(&build_script_path)?;
+    write!(
+        f,
+        r#"#!/bin/sh
+# Build script for {ident} FMU
+set -e
+cd "$(dirname "$0")"
+
+# Detect platform for FMU binaries directory
+case "$(uname -s)" in
+  Linux*)   PLATFORM=linux64; LIB_EXT=so ;;
+  Darwin*)  PLATFORM=darwin64; LIB_EXT=dylib ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=win64; LIB_EXT=dll ;;
+  *) echo "Unknown platform"; exit 1 ;;
+esac
+
+# Compile shared library
+mkdir -p binaries/$PLATFORM
+cc -shared -fPIC -O2 -o binaries/$PLATFORM/{ident}.$LIB_EXT sources/{ident}.c -lm
+
+# Package as .fmu (ZIP archive)
+zip -r {ident}.fmu modelDescription.xml binaries/ sources/
+echo "Created {ident}.fmu"
+"#,
+        ident = model_identifier
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&build_script_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    eprintln!("  wrote {}", build_script_path.display());
     Ok(())
 }
 
@@ -1033,11 +1165,12 @@ fn run_simulation(
 }
 
 fn completion_script(shell: CompletionShell) -> String {
-    let top = "compile simulate check completions --help -h --version -V";
+    let top = "compile simulate check export-fmu completions --help -h --version -V";
     let compile_opts =
         "--model --library --json --template-file --template-prepared --verbose --debug";
     let simulate_opts = "--model --library --t-end --dt --solver --output --verbose --debug";
     let check_opts = "--model --library --verbose --debug";
+    let export_fmu_opts = "--model --library --output --verbose --debug";
     let completion_opts = "bash zsh fish powershell";
     match shell {
         CompletionShell::Bash => format!(
@@ -1053,6 +1186,7 @@ fn completion_script(shell: CompletionShell) -> String {
     compile) opts="{compile_opts}" ;;
     simulate) opts="{simulate_opts}" ;;
     check) opts="{check_opts}" ;;
+    export-fmu) opts="{export_fmu_opts}" ;;
     completions) opts="{completion_opts}" ;;
     *) opts="{top}" ;;
   esac
@@ -1076,6 +1210,7 @@ _rumoca() {{
         compile) _values 'options' {compile_opts} ;;
         simulate) _values 'options' {simulate_opts} ;;
         check) _values 'options' {check_opts} ;;
+        export-fmu) _values 'options' {export_fmu_opts} ;;
         completions) _values 'shell' {completion_opts} ;;
       esac
       ;;
@@ -1088,10 +1223,12 @@ compdef _rumoca rumoca
             "complete -c rumoca -n '__fish_use_subcommand' -a 'compile' -d 'Compile a Modelica file'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'simulate' -d 'Simulate a Modelica file'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
+            "complete -c rumoca -n '__fish_use_subcommand' -a 'export-fmu' -d 'Export FMI 2.0 FMU'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
             "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --library --json --template-file --template-prepared --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --library --t-end --output --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --library --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from export-fmu' -a '--model --library --output --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'",
         ]
         .join("\n")
@@ -1106,6 +1243,7 @@ compdef _rumoca rumoca
       "compile" {{ $candidates = @({compile_tokens}) }}
       "simulate" {{ $candidates = @({simulate_tokens}) }}
       "check" {{ $candidates = @({check_tokens}) }}
+      "export-fmu" {{ $candidates = @({export_fmu_tokens}) }}
       "completions" {{ $candidates = @({completion_tokens}) }}
     }}
   }}
@@ -1118,6 +1256,7 @@ compdef _rumoca rumoca
             compile_tokens = to_ps_tokens(compile_opts),
             simulate_tokens = to_ps_tokens(simulate_opts),
             check_tokens = to_ps_tokens(check_opts),
+            export_fmu_tokens = to_ps_tokens(export_fmu_opts),
             completion_tokens = to_ps_tokens(completion_opts),
         ),
     }
