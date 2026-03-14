@@ -2939,6 +2939,7 @@ dependencies = [
  "rumoca-ir-core",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-phase-dae",
  "serde_json",
  "thiserror 2.0.17",
 ]
@@ -3099,6 +3100,7 @@ dependencies = [
  "bincode",
  "clap",
  "dirs",
+ "flate2",
  "mimalloc",
  "ntest",
  "rayon",
@@ -3117,6 +3119,7 @@ dependencies = [
  "rumoca-session",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "ureq",
  "walkdir",

@@ -48,7 +48,7 @@ use rumoca_session::libraries::{
 use rumoca_session::parsing::collect_compile_unit_source_files;
 use rumoca_session::runtime::{
     dae_balance, dae_is_balanced, dae_to_template_json, prepare_dae_for_template_codegen,
-    render_dae_template, render_dae_template_with_json,
+    render_dae_template, render_dae_template_with_json, render_dae_template_with_name,
 };
 use serde_json::{Map, Value};
 
@@ -581,6 +581,18 @@ impl CompilationResult {
         // Use the codegen module's render function which sets up the context properly
         // with the DAE as `dae` and includes custom filters/functions
         render_dae_template(&self.dae, template).map_err(CompilerError::TemplateError)
+    }
+
+    /// Render the DAE using a template string with an explicit model name.
+    ///
+    /// The model name is exposed as `model_name` in the template context.
+    pub fn render_template_str_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CompilerError> {
+        render_dae_template_with_name(&self.dae, template, model_name)
+            .map_err(CompilerError::TemplateError)
     }
 
     /// Render a structurally prepared DAE using a template string.
