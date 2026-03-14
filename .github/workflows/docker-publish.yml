@@ -1,0 +1,59 @@
+name: Docker Publish
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-docker-images:
+    name: Publish Docker Image (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [core, ci, dev]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve GHCR image names
+        id: image
+        shell: bash
+        run: |
+          owner_lc="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          image_name="ghcr.io/${owner_lc}/rumoca-${{ matrix.target }}"
+          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push packaged Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          target: ${{ matrix.target }}
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ steps.image.outputs.image_name }}:main
+            ${{ steps.image.outputs.image_name }}:${{ steps.image.outputs.sha_tag }}
+          cache-from: type=gha,scope=rumoca-docker-${{ matrix.target }}
+          cache-to: type=gha,mode=min,scope=rumoca-docker-${{ matrix.target }}

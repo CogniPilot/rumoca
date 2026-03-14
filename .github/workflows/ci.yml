@@ -19,6 +19,7 @@ permissions:
   contents: write
   id-token: write
   pages: write
+  packages: read
 
 jobs:
   detect-release-tag:
@@ -136,6 +137,32 @@ jobs:
 
       - name: Build all binaries
         run: cargo run --quiet --bin rum -- verify binaries
+
+  template-runtime-tests:
+    name: Template Runtime Tests
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/cognipilot/rumoca-dev:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/rumoca/cargo/registry
+            /opt/rumoca/cargo/git
+            target
+          key: template-runtime-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run template runtime checks
+        run: cargo run --quiet --bin rum -- verify template-runtimes
 
   docker-ci-smoke:
     name: Docker CI Image Smoke
