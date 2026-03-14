@@ -10,6 +10,21 @@
 import casadi as ca
 import numpy as np
 
+def _size(x, dim=None):
+    """Modelica size() for CasADi MX objects, Python lists, and numpy arrays."""
+    if dim is None:
+        return len(x) if hasattr(x, '__len__') else x.size1()
+    if dim == 1:
+        return len(x) if hasattr(x, '__len__') else x.size1()
+    return x.shape[dim - 1] if hasattr(x, 'shape') else x.size2()
+
+def _sum(x):
+    """Modelica sum() for CasADi: handles lists, comprehensions, and MX vectors."""
+    if isinstance(x, list):
+        return ca.sum1(ca.vertcat(*x))
+    return ca.sum1(x)
+
+
 def create_model():
     """Create CasADi MX model with vector symbols and Function objects.
 
@@ -19,6 +34,7 @@ def create_model():
 
     # Time symbol
     t = ca.MX.sym('t')
+    time = t  # Modelica built-in `time` maps to CasADi time symbol
 
     # =========================================================================
     # State Variables (1 variables)
@@ -41,12 +57,15 @@ def create_model():
         raise ValueError(f"der() called on non-state variable: {v}")
 
     # =========================================================================
-    # Algebraic Variables (1 variables)
+    # Continuous Algebraic Variables (1 algebraics + 0 outputs)
     # =========================================================================
     n_z = 1
     _z = ca.MX.sym('z', n_z)
+    n_z_continuous = 1
+    n_z_discrete = 0
 
     # Named slices into _z
+    # Continuous algebraics (y, w) come first, then discrete (z, m)
     y = _z[0]  # y
 
     # =========================================================================
@@ -68,6 +87,16 @@ def create_model():
     # =========================================================================
     # Constants
     # =========================================================================
+
+
+    # Enumeration literal ordinals (MLS §4.9.5)
+    AssertionLevel_error = 2
+    AssertionLevel_warning = 1
+    StateSelect_always = 5
+    StateSelect_avoid = 2
+    StateSelect_default = 3
+    StateSelect_never = 1
+    StateSelect_prefer = 4
 
     # =========================================================================
     # User-Defined Functions (0)
@@ -93,52 +122,73 @@ def create_model():
     # Integrator Builder
     # =========================================================================
     def build_integrator(dt, opts=None):
-        """Build a CasADi integrator from the implicit DAE.
+        """Build a CasADi integrator from the implicit DAE residual.
 
-        Extracts explicit ODE from the implicit residual f_x by computing the
-        mass matrix M = df_x/d(xdot), splitting ODE rows (M nonzero) from
-        algebraic rows (M zero), then solving for xdot = M_ode^{-1} * (-f_x|_{xdot=0}).
+        For pure ODEs (no algebraics, exactly n_x equations), converts to
+        explicit form via mass-matrix inversion and uses CVODES.
+
+        For DAE systems or over-determined ODEs, uses an augmented-z
+        approach: xdot symbols are included in the algebraic vector so IDAS
+        receives the original residual directly, preserving structural
+        sparsity.
 
         Args:
-            dt: Integration step size.
+            dt: Time grid (scalar step or array of output times).
             opts: Optional dict of integrator options passed to ca.integrator().
 
         Returns:
             A CasADi integrator Function.
         """
-        _M = ca.jacobian(f_x, _xdot)
-        _p_full = ca.vertcat(_p, _u)
+        # Discrete variables are treated as fixed parameters during continuous
+        # integration (MLS §8.5). Only continuous algebraics (y, w) are part of
+        # the DAE solved by IDAS. Discrete variables (z, m) are updated at
+        # event boundaries by the simulation driver.
+        _z_c = _z[:n_z_continuous]  # continuous algebraics only
+        if n_z_discrete > 0:
+            _z_d = _z[n_z_continuous:]  # discrete (fixed during integration)
+            _p_full = ca.vertcat(_p, _u, _z_d)
+        else:
+            _p_full = ca.vertcat(_p, _u)
+        _n_eq = f_x.shape[0]
 
-        if n_z == 0:
+        # Pure ODE: exactly n_x equations, no continuous algebraics → explicit CVODES
+        if _n_eq == n_x and n_z_continuous == 0:
+            _M = ca.jacobian(f_x, _xdot)
             _f0 = ca.substitute(f_x, _xdot, ca.MX.zeros(n_x))
             _ode = ca.solve(_M, -_f0)
-            _dae = {'x': _x, 'ode': _ode, 'p': _p_full}
-            _solver = 'cvodes'
-        else:
-            _n_eq = f_x.shape[0]
-            _M_fn = ca.Function('mass_matrix_eval', [_x, _xdot, _z, _u, _p, t], [_M])
-            _M_num = np.array(_M_fn(
-                np.zeros(n_x), np.zeros(n_x), np.zeros(n_z),
-                np.zeros(n_u), np.zeros(n_p), 0.0,
-            ))
-            _ode_rows = [i for i in range(_n_eq) if np.sum(np.abs(_M_num[i, :])) > 1e-15]
-            _alg_rows = [i for i in range(_n_eq) if np.sum(np.abs(_M_num[i, :])) <= 1e-15]
-            _f_ode = f_x[_ode_rows, :]
-            _f_alg = f_x[_alg_rows, :]
-            _M_ode = ca.jacobian(_f_ode, _xdot)
-            _f_ode0 = ca.substitute(_f_ode, _xdot, ca.MX.zeros(n_x))
-            _ode = ca.solve(_M_ode, -_f_ode0)
-            _alg = ca.substitute(_f_alg, _xdot, ca.MX.zeros(n_x))
-            _dae = {'x': _x, 'z': _z, 'ode': _ode, 'alg': _alg, 'p': _p_full}
-            _solver = 'idas'
+            _dae = {'x': _x, 't': t, 'ode': _ode, 'p': _p_full}
+            return ca.integrator('integrator', 'cvodes', _dae, 0, dt, opts or {})
 
-        return ca.integrator('integrator', _solver, _dae, 0, dt, opts or {})
+        # General DAE / over-determined ODE: augmented-z approach.
+        # Include xdot in the algebraic vector so IDAS solves the original
+        # implicit residual f_x(x, xdot, z_c, p, t) = 0 directly.
+        # Only continuous algebraics are in the augmented z vector.
+        _z_aug = ca.vertcat(_xdot, _z_c)
+        _dae = {
+            'x': _x, 'z': _z_aug, 't': t,
+            'ode': _z_aug[:n_x],
+            'alg': f_x,
+            'p': _p_full,
+        }
+        return ca.integrator('integrator', 'idas', _dae, 0, dt, opts or {})
 
     # =========================================================================
     # Default Values
     # =========================================================================
     def _flat_start(value, expected_size, var_name):
-        arr = np.array(value).reshape(-1)
+        # Convert value to a float64 numpy array.  When `value` is a CasADi
+        # symbolic expression (e.g. a parameter whose start references another
+        # parameter), np.array(..., dtype=float64) will fail; fall back to
+        # float() which works on constant CasADi expressions.
+        if isinstance(value, (bool, np.bool_)):
+            value = float(value)
+        try:
+            arr = np.array(value, dtype=np.float64).reshape(-1)
+        except (ValueError, TypeError, RuntimeError):
+            try:
+                arr = np.array([float(value)], dtype=np.float64)
+            except (ValueError, TypeError, RuntimeError):
+                arr = np.zeros(expected_size, dtype=np.float64)
         if arr.size == expected_size:
             return arr
         if arr.size == 1 and expected_size > 1:
@@ -186,7 +236,7 @@ def create_model():
         'n_u': n_u,
         'n_p': n_p,
         'state_names': ['x'],
-        'algebraic_names': ['y'],
+        'algebraic_names': ['y', ],
         'input_names': [],
         'param_names': ['c', 'k'],
     }
