@@ -22,3 +22,19 @@ pub fn render_dae_template_with_json(dae_json: &Value, template: &str) -> Result
     rumoca_phase_codegen::render_template_with_dae_json(dae_json, template)
         .map_err(|error| error.to_string())
 }
+
+pub fn render_dae_template_with_name(
+    dae_model: &dae::Dae,
+    template: &str,
+    model_name: &str,
+) -> Result<String, String> {
+    rumoca_phase_codegen::render_template_with_name(dae_model, template, model_name)
+        .map_err(|error| error.to_string())
+}
+
+/// Built-in FMI 2.0 template sources, re-exported from the codegen crate.
+pub mod fmi2_templates {
+    pub use rumoca_phase_codegen::templates::{
+        FMI2_MODEL, FMI2_MODEL_DESCRIPTION, FMI2_TEST_DRIVER,
+    };
+}

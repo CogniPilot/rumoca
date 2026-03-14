@@ -28,6 +28,8 @@ rayon = { workspace = true }
 ntest = "0.9"
 tempfile = { workspace = true }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+flate2 = { workspace = true }
+tar = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rumoca-eval-dae = { workspace = true }

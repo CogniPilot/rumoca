@@ -90,4 +90,11 @@ pub mod templates {
     pub const DAE_MODELICA: &str = include_str!("templates/dae_modelica.mo.jinja");
     /// Flat Modelica template (renders Model for OMC comparison).
     pub const FLAT_MODELICA: &str = include_str!("templates/flat_modelica.mo.jinja");
+    /// FMI 2.0 Model Exchange — modelDescription.xml template.
+    pub const FMI2_MODEL_DESCRIPTION: &str =
+        include_str!("templates/fmi2_model_description.xml.jinja");
+    /// FMI 2.0 Model Exchange — C source implementing the FMI2 API.
+    pub const FMI2_MODEL: &str = include_str!("templates/fmi2_model.c.jinja");
+    /// FMI 2.0 test driver — standalone main() that simulates via FMI2 ME and outputs CSV.
+    pub const FMI2_TEST_DRIVER: &str = include_str!("templates/fmi2_test_driver.c.jinja");
 }

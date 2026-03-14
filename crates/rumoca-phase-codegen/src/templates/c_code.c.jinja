@@ -12,7 +12,7 @@
 #include <stddef.h>
 
 {# Configuration for render_expr - C style #}
-{% set cfg = {"prefix": "", "power": "pow_op", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} %}
 
 /* Model dimensions */
 #define MODEL_N_STATES {{ dae.x | length }}
