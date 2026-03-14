@@ -32,3 +32,6 @@ msl
 *.html
 .rumoca
 examples/.rumoca/results
+
+# Working notes (not for commit)
+crates/rumoca/tests/CASADI_UPSTREAM_*.md

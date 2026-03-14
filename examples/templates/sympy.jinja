@@ -26,16 +26,20 @@ sp.Symbol("{{ name }}")
 {%- endmacro %}
 {%- macro render_residual(eq) -%}
 {%- if eq.lhs is defined and eq.lhs is not none -%}
+{%- if eq.rhs is defined and eq.rhs.Binary is defined and eq.rhs.Binary.lhs is defined -%}
+({{ render_expr(eq.rhs.Binary.lhs, cfg) }} - ({{ render_expr(eq.rhs, cfg) }}))
+{%- else -%}
 ({{ eq.lhs | sanitize }} - ({{ render_expr(eq.rhs, cfg) }}))
+{%- endif -%}
 {%- else -%}
 {{ render_expr(eq.rhs, cfg) }}
 {%- endif -%}
 {%- endmacro %}
 {%- macro render_explicit_target(eq) -%}
-{%- if eq.lhs is defined and eq.lhs is not none -%}
-{{ eq.lhs | sanitize }}
-{%- elif eq.rhs is defined and eq.rhs.Binary is defined and eq.rhs.Binary.lhs is defined -%}
+{%- if eq.rhs is defined and eq.rhs.Binary is defined and eq.rhs.Binary.lhs is defined -%}
 {{ render_expr(eq.rhs.Binary.lhs, cfg) }}
+{%- elif eq.lhs is defined and eq.lhs is not none -%}
+{{ eq.lhs | sanitize }}
 {%- endif -%}
 {%- endmacro %}
 """
