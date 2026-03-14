@@ -25,10 +25,17 @@
 //! # Render code from DAE JSON with an explicit template
 //! template = "model {{ model_name }} end {{ model_name }};"
 //! code = rumoca.render_template(dae_json, template)
+//!
+//! # Compile inline Modelica source to DAE JSON
+//! dae_json = rumoca.compile("model M Real x; equation der(x) = -x; end M;", "M")
+//!
+//! # Compile a model from a file path
+//! dae_json = rumoca.compile_file("M.mo", "M")
 //! ```
 
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
+use std::fs;
 
 use rumoca_session::parsing::validate_source_syntax;
 use rumoca_session::runtime::render_dae_template_with_json;
@@ -254,7 +261,7 @@ fn render_template(dae_json: &str, template: &str) -> Result<String, PyRuntimeSt
         .map_err(|e| PyRuntimeStringError(format!("Template rendering error: {e}")))
 }
 
-/// Compile Modelica source code to DAE JSON.
+/// Compile inline Modelica source code to DAE JSON.
 ///
 /// Args:
 ///     source: Modelica source code as a string
@@ -273,14 +280,53 @@ fn compile(
     model_name: &str,
     filename: Option<&str>,
 ) -> Result<String, PyRuntimeStringError> {
+    compile_source_to_dae_json(source, model_name, filename)
+}
+
+/// Compile a Modelica file to DAE JSON.
+///
+/// Args:
+///     path: Filesystem path to a readable ``.mo`` file
+///     model_name: Name of the model to compile
+///
+/// Returns:
+///     DAE as a JSON string
+///
+/// Raises:
+///     RuntimeError: If the file cannot be read or compilation fails
+#[pyfunction]
+fn compile_file(path: &str, model_name: &str) -> Result<String, PyRuntimeStringError> {
+    let source = fs::read_to_string(path)
+        .map_err(|e| PyRuntimeStringError(format!("Failed to read {path}: {e}")))?;
+    compile_source_to_dae_json(&source, model_name, Some(path))
+}
+
+/// Compile inline Modelica source code to DAE JSON.
+///
+/// Compatibility alias for ``compile(...)`` when working with source strings directly.
+#[pyfunction(name = "compile_source")]
+#[pyo3(signature = (source, model_name, filename=None))]
+fn compile_source(
+    source: &str,
+    model_name: &str,
+    filename: Option<&str>,
+) -> Result<String, PyRuntimeStringError> {
+    compile_source_to_dae_json(source, model_name, filename)
+}
+
+fn compile_source_to_dae_json(
+    source: &str,
+    model_name: &str,
+    filename: Option<&str>,
+) -> Result<String, PyRuntimeStringError> {
     use rumoca_session::compile::PhaseResult;
     use rumoca_session::{Session, SessionConfig};
 
-    let filename = filename.unwrap_or("input.mo");
+    let filename = filename.unwrap_or("input.mo").to_string();
     let mut session = Session::new(SessionConfig::default());
 
     session
-        .add_document(filename, source)
+        .add_document(&filename, source)
         .map_err(|e| PyRuntimeStringError(format!("Parse error: {e}")))?;
 
     let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
@@ -306,6 +352,8 @@ fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lint, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(compile, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_file, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_source, m)?)?;
     m.add_function(wrap_pyfunction!(render_template, m)?)?;
     m.add_class::<ParseResult>()?;
     m.add_class::<LintMessage>()?;
@@ -315,6 +363,7 @@ fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_version() {
@@ -355,5 +404,90 @@ mod tests {
         let source = "model M Real x end M;";
         let out = format_or_original(source, None);
         assert_eq!(out, source);
+    }
+
+    #[test]
+    fn test_compile_inline_source() {
+        let dae_json = compile(
+            "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
+            "Ball",
+            Some("Ball.mo"),
+        )
+        .expect("compile inline");
+        let dae: serde_json::Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        assert_eq!(
+            dae.get("class_type").and_then(|v| v.as_str()),
+            Some("Model")
+        );
+        assert!(
+            dae.get("x")
+                .and_then(|v| v.as_object())
+                .is_some_and(|state_map| state_map.contains_key("x"))
+        );
+    }
+
+    #[test]
+    fn test_compile_file_reads_source_from_path() {
+        let temp_file = unique_temp_model_path("rumoca_bind_python_ball");
+        fs::write(
+            &temp_file,
+            "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
+        )
+        .expect("write temp model");
+
+        let dae_json =
+            compile_file(temp_file.to_string_lossy().as_ref(), "Ball").expect("compile from file");
+        let dae: serde_json::Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        assert_eq!(
+            dae.get("class_type").and_then(|v| v.as_str()),
+            Some("Model")
+        );
+        assert!(
+            dae.get("x")
+                .and_then(|v| v.as_object())
+                .is_some_and(|state_map| state_map.contains_key("x"))
+        );
+
+        let _ = fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn test_compile_source_alias_matches_compile() {
+        let dae_json = compile_source(
+            "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
+            "Ball",
+            Some("Ball.mo"),
+        )
+        .expect("compile via alias");
+        let dae: serde_json::Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        assert_eq!(
+            dae.get("class_type").and_then(|v| v.as_str()),
+            Some("Model")
+        );
+        assert!(
+            dae.get("x")
+                .and_then(|v| v.as_object())
+                .is_some_and(|state_map| state_map.contains_key("x"))
+        );
+    }
+
+    #[test]
+    fn test_compile_rejects_empty_source() {
+        let err = compile("", "Ball", Some("Ball.mo")).expect_err("empty source should fail");
+        assert!(!err.0.is_empty());
+    }
+
+    #[test]
+    fn test_compile_file_rejects_missing_file() {
+        let err = compile_file("missing.mo", "Ball").expect_err("missing file should fail");
+        assert!(err.0.contains("Failed to read"));
+    }
+
+    fn unique_temp_model_path(stem: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{stem}_{nanos}.mo"))
     }
 }

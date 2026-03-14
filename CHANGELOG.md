@@ -4,6 +4,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 
 ## Unreleased
 
+- Python bindings and notebooks: the Python API is now explicit with `rumoca.compile(...)` for inline source and `rumoca.compile_file(...)` for file-backed models, while VS Code notebook snippets emit valid DAE-JSON-oriented Python instead of stale object-style APIs.
 - MSL sim-worker IPC: the hot parent-to-worker DAE handoff now streams compact binary DAE payloads over stdin instead of writing large JSON temp files, removing the worst per-model serialization stall while keeping process isolation.
 - Focused editor and MSL compiles: shared parsed/resolved library state is now reused while each requested model compiles on its own uncached reachable closure, which removes cross-model memory blow-ups in the parity harness and keeps wasm/VS Code compile behavior aligned.
 - MSL staging: the parity harness and CI now use the official `ModelicaStandardLibrary_v4.1.0.zip` release asset and reject stale caches missing `Complex.mo`, fixing incomplete library staging.
@@ -45,7 +46,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 - Added a stronger template-generation and visitor-based architecture for downstream code emission.
 - Grew support for functions, `when`, `for`, equation and statement blocks, modification expressions, and broader expression handling.
 - Added more model semantics such as `extends`, connect equations, causality handling, resets, event logic, and piecewise behavior.
-- Built out richer examples and notebooks, including rover, quadrotor, bouncing-ball, and Gazebo-oriented flows.
+- Built out richer examples and notebooks, including rover, bouncing-ball, and Gazebo-oriented flows.
 
 ## 0.4.x
 

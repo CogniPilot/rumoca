@@ -17,6 +17,7 @@ import {
     createLanguageClientRuntime,
 } from './language_client_runtime';
 import { createNotebookControllerRuntime } from './notebook_controller_runtime';
+import { buildNotebookPythonSnippet } from './notebook_python_snippets';
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel;
@@ -5587,49 +5588,14 @@ function createNotebookController(
                     const modelName = result.model || 'model';
                     const outputFile = result.outputFile;
 
-                    // Generate Python code that uses rumoca to compile the model
-                    let pythonCode: string;
-                    if (outputFile) {
-                        // If output file specified, compile from file
-                        pythonCode = `import rumoca
-
-# Compile from saved .mo file
-${modelName} = rumoca.compile("${outputFile}")
-
-# Access the model data
-print(${modelName})  # Display model summary
-
-# Get as Python dict for further processing
-# model_dict = ${modelName}.to_base_modelica_dict()`;
-                    } else {
-                        // Inline the Modelica code in the Python call (requires native bindings)
-                        const escapedModelica = code.replace(/\\/g, '\\\\').replace(/"""/g, '\\"""');
-                        pythonCode = `import rumoca
-
-# Compile from inline Modelica source (requires native bindings)
-${modelName} = rumoca.compile_source("""
-${escapedModelica}
-""", "${modelName}")
-
-# Access the model data
-print(${modelName})  # Display model summary
-
-# Get as Python dict for further processing
-# model_dict = ${modelName}.to_base_modelica_dict()`;
-                    }
-
-                    // Output the Python code that can be copied to a Python cell
-                    // Also show a summary of the compilation
-                    const summaryText = outputFile
-                        ? `✓ Model "${modelName}" compiled and saved to: ${outputFile}\n\nCopy the Python code below to a Python cell to use the model:`
-                        : `✓ Model "${modelName}" compiled successfully.\n\nCopy the Python code below to a Python cell to use the model:`;
+                    const snippet = buildNotebookPythonSnippet(modelName, code, outputFile);
 
                     execution.replaceOutput([
                         new vscode.NotebookCellOutput([
-                            vscode.NotebookCellOutputItem.text(summaryText, 'text/plain')
+                            vscode.NotebookCellOutputItem.text(snippet.summaryText, 'text/plain')
                         ]),
                         new vscode.NotebookCellOutput([
-                            vscode.NotebookCellOutputItem.text(pythonCode, 'text/x-python')
+                            vscode.NotebookCellOutputItem.text(snippet.pythonCode, 'text/x-python')
                         ])
                     ]);
                     execution.end(true, Date.now());
