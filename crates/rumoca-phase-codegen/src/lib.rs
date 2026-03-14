@@ -97,4 +97,7 @@ pub mod templates {
     pub const FMI2_MODEL: &str = include_str!("templates/fmi2_model.c.jinja");
     /// FMI 2.0 test driver — standalone main() that simulates via FMI2 ME and outputs CSV.
     pub const FMI2_TEST_DRIVER: &str = include_str!("templates/fmi2_test_driver.c.jinja");
+    /// Embedded C template — bare-metal flight controller target with RK4 integrator.
+    /// No dynamic memory, no OS dependencies, configurable float/double precision.
+    pub const EMBEDDED_C: &str = include_str!("templates/embedded_c.c.jinja");
 }
