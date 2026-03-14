@@ -234,6 +234,7 @@ Common examples:
 ```bash
 rum verify full
 rum verify quick
+rum verify template-runtimes
 rum verify msl-parity
 rum vscode test
 rum wasm test
@@ -245,6 +246,8 @@ rum help verify
 180-model MSL parity gate. `rum verify full` includes that parity job.
 Both commands assume the local coverage/editor prerequisites are installed
 (`cargo-llvm-cov`, Node/npm, and wasm Rust tooling), matching GitHub CI.
+`rum verify template-runtimes` runs ignored example-template runtime checks
+that depend on optional backend environments such as Python with SymPy.
 
 ## Compiler Pipeline
 

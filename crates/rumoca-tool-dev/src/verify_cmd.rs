@@ -25,6 +25,8 @@ pub(crate) enum VerifyCommand {
     Lint,
     /// Workspace tests that mirror the main test matrix
     Workspace,
+    /// Environment-dependent example template runtime checks
+    TemplateRuntimes,
     /// Full verification suite mirrored by GitHub CI
     Full,
     /// Full local verification suite, excluding the slow 180-model MSL parity gate
@@ -128,12 +130,28 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
     match args.command {
         VerifyCommand::Lint => run_lint_job(root),
         VerifyCommand::Workspace => test_cmd::run_workspace_tests(root),
+        VerifyCommand::TemplateRuntimes => run_template_runtime_checks(root),
         VerifyCommand::Full => run_verify_suite(root, VerifySuite::Full),
         VerifyCommand::Quick => run_verify_suite(root, VerifySuite::Quick),
         VerifyCommand::Binaries => test_cmd::run_workspace_binary_build(root),
         VerifyCommand::Docs => test_cmd::run_workspace_docs(root),
         VerifyCommand::MslParity => run_msl_quality_gate(root),
     }
+}
+
+fn run_template_runtime_checks(root: &Path) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("test")
+        .arg("--verbose")
+        .arg("-p")
+        .arg("rumoca")
+        .arg("--test")
+        .arg("sympy_template_regression")
+        .arg("--")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .current_dir(root);
+    run_status(cmd)
 }
 
 fn run_verify_suite(root: &Path, suite: VerifySuite) -> Result<()> {
