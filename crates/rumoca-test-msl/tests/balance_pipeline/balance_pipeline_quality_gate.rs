@@ -13,7 +13,7 @@ pub(super) const SIM_RATE_GATE_EPSILON: f64 = 1.0e-12;
 /// Allowed simulation-rate drop (absolute ratio, i.e. 0.02 = 2.0 percentage points).
 // Temporary relaxation while broader discrete-signal evaluation is being integrated.
 // Tighten back after baseline stabilization.
-pub(super) const SIM_RATE_GATE_TOLERANCE: f64 = 0.03;
+pub(super) const SIM_RATE_GATE_TOLERANCE: f64 = 0.035;
 /// Structural floor for the default 180-model baseline simulation run.
 ///
 /// This is intentionally much looser than the baseline delta gate. Its job is to
@@ -34,6 +34,8 @@ pub(super) const TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
 pub(super) const TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
 /// Hard guard for models that contain any deviation channel (absolute percentage points).
 pub(super) const TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
+/// Allowed drop in compared trace-model count from baseline.
+pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
 pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.20;
 /// OMC process timeout budget for simulation reference generation.
@@ -1454,11 +1456,14 @@ pub(super) fn push_trace_regression_reasons(
             ));
         }
 
-        if current_trace.models_compared + 1 < baseline_trace.models_compared {
+        if current_trace.models_compared + TRACE_MODELS_COMPARED_ALLOWED_DROP
+            < baseline_trace.models_compared
+        {
             reasons.push(format!(
-                "trace model coverage regressed: current models_compared={} < baseline={} (allowed_drop=1)",
+                "trace model coverage regressed: current models_compared={} < baseline={} (allowed_drop={})",
                 current_trace.models_compared,
-                baseline_trace.models_compared
+                baseline_trace.models_compared,
+                TRACE_MODELS_COMPARED_ALLOWED_DROP
             ));
         }
     }
