@@ -12,6 +12,7 @@ use minijinja::{Environment, UndefinedBehavior, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
+use rumoca_phase_dae as dae_phase;
 use serde_json::json;
 use std::path::Path;
 
@@ -27,6 +28,17 @@ pub enum CodegenInput<'a> {
 }
 
 pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
+    // Apply codegen-only transformations on a clone so the original DAE
+    // (used by the simulator) is not affected.
+    let mut dae = dae.clone();
+    dae_phase::lower_record_function_params_dae(&mut dae);
+    dae_phase::insert_array_size_args_dae(&mut dae);
+
+    // Pre-split f_x equations by their lhs target variable classification.
+    // This is derived data (the canonical f_x is still the source of truth)
+    // but saves every template from re-implementing the same classification.
+    let (ode_eqs, alg_eqs, output_eqs, unmatched_eqs) = classify_fx_equations(&dae);
+
     json!({
         // Long-form names used by existing templates.
         "states": &dae.states,
@@ -52,6 +64,11 @@ pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
         "f_z": &dae.f_z,
         "f_m": &dae.f_m,
         "f_c": &dae.f_c,
+        // Pre-classified f_x equation subsets (derived from f_x + variable maps).
+        "ode_equations": ode_eqs,
+        "alg_equations": alg_eqs,
+        "output_equations": output_eqs,
+        "unmatched_equations": unmatched_eqs,
         "relation": &dae.relation,
         "initial_equations": &dae.initial_equations,
         "functions": &dae.functions,
@@ -63,6 +80,49 @@ pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
         "class_type": &dae.class_type,
         "model_description": dae.model_description,
     })
+}
+
+/// Classify f_x equations into ODE, algebraic, output, and unmatched buckets
+/// based on each equation's `lhs` field and the DAE variable maps.
+fn classify_fx_equations(
+    dae: &dae::Dae,
+) -> (
+    Vec<&dae::Equation>,
+    Vec<&dae::Equation>,
+    Vec<&dae::Equation>,
+    Vec<&dae::Equation>,
+) {
+    let mut ode = Vec::new();
+    let mut alg = Vec::new();
+    let mut output = Vec::new();
+    let mut unmatched = Vec::new();
+
+    for eq in &dae.f_x {
+        match &eq.lhs {
+            Some(var_name) => {
+                let name = &var_name.0;
+                // Strip array subscript for lookup: "x[1]" → "x"
+                let base_name = name.split('[').next().unwrap_or(name);
+                let base_var = dae::VarName::new(base_name);
+                if dae.states.contains_key(&base_var)
+                    || dae.derivative_aliases.contains_key(&base_var)
+                {
+                    ode.push(eq);
+                } else if dae.algebraics.contains_key(&base_var) {
+                    alg.push(eq);
+                } else if dae.outputs.contains_key(&base_var) {
+                    output.push(eq);
+                } else {
+                    unmatched.push(eq);
+                }
+            }
+            None => {
+                unmatched.push(eq);
+            }
+        }
+    }
+
+    (ode, alg, output, unmatched)
 }
 
 fn dae_template_value(dae: &dae::Dae) -> Value {
@@ -272,6 +332,7 @@ fn create_environment() -> Environment<'static> {
     // Custom filters
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
+    env.add_filter("last_segment", last_segment_filter);
 
     // Custom functions for expression rendering
     env.add_function("render_expr", render_expr_function);
@@ -284,12 +345,82 @@ fn create_environment() -> Environment<'static> {
     // Custom function for flat equation rendering (Model residual equations)
     env.add_function("render_flat_equation", render_flat_equation_function);
 
+    // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
+    env.add_function("ode_rhs", ode_rhs_function);
+    // Find derivative expression for a specific state variable
+    env.add_function("ode_rhs_for_state", ode_rhs_for_state_function);
+
+    // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
+    env.add_function("alg_rhs_for_var", alg_rhs_for_var_function);
+
+    // Detect self-referential functions (body only calls itself)
+    env.add_function("is_self_call", is_self_call_function);
+
+    // Index into an array expression to render element i (1-based)
+    env.add_function("render_expr_at_index", render_expr_at_index_function);
+
+    // Check if an expression is a string literal (for skipping in C codegen)
+    env.add_function("is_string_literal", is_string_literal_function);
+
+    // Check if a function has Complex-typed parameters
+    env.add_function("has_complex_params", has_complex_params_function);
+
     env
 }
 
-/// Filter to sanitize variable names (replace dots with underscores).
+/// Python keywords that cannot be used as variable names.
+const PYTHON_KEYWORDS: &[&str] = &[
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+/// Sanitize a raw name into a valid Python identifier.
+///
+/// - Replaces dots with underscores (Modelica flattened names)
+/// - Strips single quotes from Modelica quoted identifiers (e.g. `'X'` → `X`)
+/// - Replaces remaining non-alphanumeric/underscore chars with underscores
+/// - Prefixes names starting with a digit with `_`
+/// - Appends `_` to Python keywords
+fn sanitize_identifier(raw: &str) -> String {
+    // Strip closing brackets before sanitizing — array subscripts like [1] become _1
+    let name = raw.replace('.', "_").replace(['\'', ']'], "");
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name = if name.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("_{name}")
+    } else {
+        name
+    };
+    if PYTHON_KEYWORDS.contains(&name.as_str()) {
+        format!("{name}_")
+    } else {
+        name
+    }
+}
+
+/// Jinja filter wrapping `sanitize_identifier`.
 fn sanitize_filter(value: Value) -> String {
-    value.to_string().replace('.', "_")
+    sanitize_identifier(&value.to_string())
+}
+
+/// Filter to extract the last segment of a dot-separated name.
+///
+/// Used for mapping qualified function names to their short builtin name:
+/// `{{ "Modelica.Math.sin" | last_segment }}` → `sin`
+fn last_segment_filter(value: Value) -> String {
+    let s = value.to_string();
+    let s = s.trim_matches('"');
+    s.rsplit('.').next().unwrap_or(s).to_string()
 }
 
 /// Filter to compute the product of all elements in a sequence.
@@ -330,6 +461,79 @@ fn product_filter(value: Value) -> Value {
 fn render_expr_function(expr: Value, config: Value) -> RenderResult {
     let cfg = ExprConfig::from_value(&config);
     render_expression(&expr, &cfg)
+}
+
+/// Render element `index` (1-based) of an expression. If the expression is an
+/// `Array { elements }`, extracts `elements[index-1]` and renders it.
+/// Otherwise renders the whole expression (scalar broadcast).
+///
+/// Usage in templates:
+/// ```jinja
+/// {{ render_expr_at_index(var.start, i + 1, config) }}
+/// ```
+fn render_expr_at_index_function(expr: Value, index: Value, config: Value) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    let idx = index.as_usize().unwrap_or(1);
+
+    // Check if expression is an Array variant with elements
+    if let Ok(array) = get_field(&expr, "Array")
+        && let Ok(elements) = get_field(&array, "elements")
+        && let Some(len) = elements.len()
+        && idx >= 1
+        && idx <= len
+    {
+        let elem = elements
+            .get_item(&Value::from(idx - 1))
+            .map_err(|e| render_err(format!("index {idx} out of bounds: {e}")))?;
+        return render_expression(&elem, &cfg);
+    }
+
+    // Fallback: render whole expression (scalar value broadcast to all indices)
+    render_expression(&expr, &cfg)
+}
+
+/// Check if an expression is a string literal.
+///
+/// Returns "yes" if it's a Literal::String, empty string otherwise.
+/// Used in C codegen to skip string parameter assignments.
+fn is_string_literal_function(expr: Value) -> String {
+    if let Ok(literal) = get_field(&expr, "Literal")
+        && get_field(&literal, "String").is_ok()
+    {
+        return "yes".to_string();
+    }
+    String::new()
+}
+
+/// Check if a function has Complex-typed parameters.
+///
+/// Returns "yes" if any input parameter has type_name == "Complex".
+fn has_complex_params_function(func: Value) -> String {
+    if let Ok(inputs) = get_field(&func, "inputs")
+        && list_any(&inputs, |param| {
+            get_field(&param, "type_name")
+                .map(|type_name| type_name.to_string().trim_matches('"') == "Complex")
+                .unwrap_or(false)
+        })
+    {
+        return "yes".to_string();
+    }
+    String::new()
+}
+
+fn list_any(list: &Value, mut predicate: impl FnMut(Value) -> bool) -> bool {
+    let Some(len) = list.len() else {
+        return false;
+    };
+    for i in 0..len {
+        let Ok(item) = list.get_item(&Value::from(i)) else {
+            continue;
+        };
+        if predicate(item) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Render an equation in `lhs = rhs` form.
@@ -423,6 +627,318 @@ fn render_explicit_lhs(lhs: &Value, cfg: &ExprConfig) -> String {
     } else {
         raw
     }
+}
+
+/// Extract the explicit RHS from a residual ODE equation.
+///
+/// Given an equation in residual form `0 = der(x) - expr` (MLS Appendix B.1a),
+/// returns the rendered `expr`. This converts the implicit DAE form used internally
+/// to explicit ODE form needed by FMI 2.0 `fmi2GetDerivatives` (FMI 2.0.4 §3.2.2).
+///
+/// Usage in templates:
+/// ```jinja
+/// m->xdot[{{ loop.index0 }}] = {{ ode_rhs(eq, cfg) }};
+/// ```
+fn ode_rhs_function(eq: Value, config: Value) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+
+    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+
+    // Residual form: rhs is Binary { Sub, lhs: der(x), rhs: expr }
+    // We want to return just `expr`
+    if let Ok(binary) = get_field(&rhs, "Binary")
+        && is_sub_op(&binary)
+    {
+        let rhs_expr = get_field(&binary, "rhs")
+            .and_then(|v| render_expression(&v, &cfg))
+            .unwrap_or_default();
+        return Ok(rhs_expr);
+    }
+
+    // Fallback: negate the whole expression (0 = expr → xdot = -expr)
+    let expr_str = render_expression(&rhs, &cfg)?;
+    Ok(format!("-({expr_str})"))
+}
+
+/// Find the derivative expression for a named state variable from the f_x equation list.
+///
+/// Searches through f_x equations (MLS Appendix B.1a residual form) to find the one
+/// matching `der(state_name)`, and returns the explicit RHS. This correctly handles
+/// cases where state ordering in `dae.x` differs from equation ordering in `dae.f_x`,
+/// which is required for FMI 2.0 `fmi2GetDerivatives` (FMI 2.0.4 §3.2.2).
+///
+/// Usage in templates:
+/// ```jinja
+/// {% for name, var in dae.x | items %}
+/// m->xdot[{{ loop.index0 }}] = {{ ode_rhs_for_state(name, dae.f_x, cfg) }};
+/// {% endfor %}
+/// ```
+fn ode_rhs_for_state_function(state_name: Value, equations: Value, config: Value) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    let name_str = state_name.to_string().trim_matches('"').to_string();
+
+    // Iterate through equations to find the one whose LHS is der(state_name)
+    let Ok(iter) = equations.try_iter() else {
+        return Ok("0.0".to_string());
+    };
+    for eq in iter {
+        if let Some(rhs_expr) = find_derivative_rhs(&eq, &name_str, &cfg) {
+            return Ok(rhs_expr);
+        }
+    }
+
+    // No matching equation found — emit warning so it's visible in generated code
+    Ok(format!(
+        "0.0 /* WARNING: no ODE equation found for der({}) */",
+        name_str
+    ))
+}
+
+/// Extract the derivative RHS from a single equation if it matches `0 = der(state_name) - expr`.
+/// Helper for `ode_rhs_for_state_function`; decomposes MLS B.1a residual form.
+fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option<String> {
+    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    let binary = get_field(&rhs, "Binary").ok()?;
+    if !is_sub_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    if !is_der_of(&lhs, state_name) {
+        return None;
+    }
+    let rhs_expr = get_field(&binary, "rhs")
+        .and_then(|v| render_expression(&v, cfg))
+        .unwrap_or_default();
+    Some(rhs_expr)
+}
+
+/// Check if an expression is `BuiltinCall { function: Der, args: [VarRef { name }] }`
+/// where `name` matches the given state name (MLS §3.7.4.2: der operator).
+fn is_der_of(expr: &Value, state_name: &str) -> bool {
+    let state_name = state_name.trim_matches('"');
+    let Ok(builtin) = get_field(expr, "BuiltinCall") else {
+        return false;
+    };
+    let Ok(func) = get_field(&builtin, "function") else {
+        return false;
+    };
+    let func_str = func.to_string();
+    if func_str != "Der" && func_str != "\"Der\"" {
+        return false;
+    }
+    let Ok(args) = get_field(&builtin, "args") else {
+        return false;
+    };
+    let Ok(first_arg) = args.get_item(&Value::from(0)) else {
+        return false;
+    };
+    let Ok(var_ref) = get_field(&first_arg, "VarRef") else {
+        return false;
+    };
+    let Ok(name) = get_field(&var_ref, "name") else {
+        return false;
+    };
+    // VarName may serialize as a string or {"0": "name"}
+    let var_name = get_field(&name, "0")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| name.to_string());
+    var_name.trim_matches('"') == state_name
+}
+
+/// Extract the explicit RHS for an algebraic variable from f_x equations.
+///
+/// Searches f_x for an equation matching `0 = var_name - expr` and returns
+/// the rendered `expr`. This is the algebraic analogue of `ode_rhs_for_state`.
+///
+/// Usage in templates:
+/// ```jinja
+/// {% for name, var in dae.y | items %}
+/// m->y[{{ loop.index0 }}] = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
+/// {% endfor %}
+/// ```
+fn alg_rhs_for_var_function(var_name: Value, equations: Value, config: Value) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    let name_str = var_name.to_string().trim_matches('"').to_string();
+
+    let Ok(iter) = equations.try_iter() else {
+        return Ok("0.0".to_string());
+    };
+    for eq in iter {
+        if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg) {
+            return Ok(rhs_expr);
+        }
+    }
+
+    // No matching equation found — emit warning so it's visible in generated code
+    Ok(format!(
+        "0.0 /* WARNING: no equation found for {} */",
+        name_str
+    ))
+}
+
+/// Extract the algebraic RHS from a single equation if it matches `0 = var_name - expr`.
+/// Helper for `alg_rhs_for_var_function`; decomposes MLS B.1a residual form for algebraics.
+fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
+    let binary = get_field(&rhs, "Binary").ok()?;
+    if !is_sub_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    if !is_var_ref_of(&lhs, var_name) {
+        return None;
+    }
+    let rhs_expr = get_field(&binary, "rhs")
+        .and_then(|v| render_expression(&v, cfg))
+        .unwrap_or_default();
+    Some(rhs_expr)
+}
+
+/// Check if an expression is `VarRef { name }` matching the given variable name.
+fn is_var_ref_of(expr: &Value, target_name: &str) -> bool {
+    let target_name = target_name.trim_matches('"');
+    let Ok(var_ref) = get_field(expr, "VarRef") else {
+        return false;
+    };
+    let Ok(name) = get_field(&var_ref, "name") else {
+        return false;
+    };
+    // VarName may serialize as a string or {"0": "name"}
+    let var_name = get_field(&name, "0")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| name.to_string());
+    var_name.trim_matches('"') == target_name
+}
+
+/// Check if a function body contains a call to itself.
+///
+/// Detects the pattern where an external/builtin function's body is trivially
+/// `y = func_name(args)` — a self-referential call that would cause infinite
+/// recursion or forward reference errors in generated code.
+///
+/// Usage in templates:
+/// ```jinja2
+/// {% if is_self_call(func_name, func) %}...{% endif %}
+/// ```
+fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinja::Error> {
+    let name_str = func_name.to_string().replace('"', "");
+    let Ok(body) = get_field(&func, "body") else {
+        return Ok(false);
+    };
+    let Some(len) = body.len() else {
+        return Ok(false);
+    };
+    // Walk all statements looking for a FunctionCall to self
+    for i in 0..len {
+        let Ok(stmt) = body.get_item(&Value::from(i)) else {
+            continue;
+        };
+        if stmt_contains_self_call(&stmt, &name_str) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Recursively check if a statement or expression contains a FunctionCall to `name`.
+fn stmt_contains_self_call(stmt: &Value, name: &str) -> bool {
+    // Check Assignment: { comp, value }
+    if let Ok(assign) = get_field(stmt, "Assignment")
+        && let Ok(value) = get_field(&assign, "value")
+    {
+        return expr_contains_self_call(&value, name);
+    }
+    // Check FunctionCall statement: { comp, args, outputs }
+    if let Ok(func_call) = get_field(stmt, "FunctionCall")
+        && let Ok(comp) = get_field(&func_call, "comp")
+    {
+        let raw = get_field(&comp, "name")
+            .and_then(|n| get_field(&n, "0").or_else(|_| Ok(n.clone())))
+            .map(|v| v.to_string().replace('"', ""))
+            .unwrap_or_default();
+        if raw == name {
+            return true;
+        }
+    }
+    // Check If statement branches (cond_blocks + else_block)
+    if let Ok(if_stmt) = get_field(stmt, "If") {
+        if let Ok(cond_blocks) = get_field(&if_stmt, "cond_blocks")
+            && list_any(&cond_blocks, |block| {
+                get_field(&block, "stmts")
+                    .map(|stmts| list_any(&stmts, |s| stmt_contains_self_call(&s, name)))
+                    .unwrap_or(false)
+            })
+        {
+            return true;
+        }
+        if let Ok(else_block) = get_field(&if_stmt, "else_block")
+            && list_any(&else_block, |s| stmt_contains_self_call(&s, name))
+        {
+            return true;
+        }
+    }
+    // Check For loop body
+    if let Ok(for_stmt) = get_field(stmt, "For")
+        && let Ok(equations) = get_field(&for_stmt, "equations")
+        && list_any(&equations, |s| stmt_contains_self_call(&s, name))
+    {
+        return true;
+    }
+    false
+}
+
+/// Check if an expression contains a FunctionCall to `name`.
+fn expr_contains_self_call(expr: &Value, name: &str) -> bool {
+    if let Ok(func_call) = get_field(expr, "FunctionCall") {
+        if let Ok(call_name) = get_field(&func_call, "name") {
+            let raw = get_field(&call_name, "0")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|_| call_name.to_string());
+            let raw = raw.replace('"', "");
+            if raw == name {
+                return true;
+            }
+        }
+        // Also check arguments for nested self-calls
+        if let Ok(args) = get_field(&func_call, "args")
+            && list_any(&args, |arg| expr_contains_self_call(&arg, name))
+        {
+            return true;
+        }
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        if let Ok(lhs) = get_field(&binary, "lhs")
+            && expr_contains_self_call(&lhs, name)
+        {
+            return true;
+        }
+        if let Ok(rhs) = get_field(&binary, "rhs")
+            && expr_contains_self_call(&rhs, name)
+        {
+            return true;
+        }
+    }
+    if let Ok(unary) = get_field(expr, "Unary")
+        && let Ok(rhs) = get_field(&unary, "rhs")
+        && expr_contains_self_call(&rhs, name)
+    {
+        return true;
+    }
+    if let Ok(if_expr) = get_field(expr, "If")
+        && let Ok(branches) = get_field(&if_expr, "branches")
+        && list_any(&branches, |branch| {
+            let cond_has_self = get_field(&branch, "condition")
+                .map(|cond| expr_contains_self_call(&cond, name))
+                .unwrap_or(false);
+            let then_has_self = get_field(&branch, "then")
+                .map(|then| expr_contains_self_call(&then, name))
+                .unwrap_or(false);
+            cond_has_self || then_has_self
+        })
+    {
+        return true;
+    }
+    false
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.
@@ -531,7 +1047,7 @@ fn render_statement(stmt: &Value, cfg: &ExprConfig, indent: &str) -> RenderResul
 fn render_assignment(assign: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
     let comp_val = get_field(assign, "comp")
         .map_err(|_| render_err(format!("Assignment missing 'comp' field: {assign}")))?;
-    let comp = render_component_ref(&comp_val);
+    let comp = render_component_ref(&comp_val, cfg);
     if comp.trim().is_empty() {
         return Err(render_err(format!(
             "Assignment target resolved to empty component reference: {assign}"
@@ -546,6 +1062,15 @@ fn render_assignment(assign: &Value, cfg: &ExprConfig, indent: &str) -> RenderRe
     } else {
         ""
     };
+    // In C mode, array literal assignment needs memcpy instead of =
+    if matches!(cfg.if_style, IfStyle::Ternary)
+        && value.starts_with(&cfg.array_start)
+        && !comp.contains('[')
+    {
+        return Ok(format!(
+            "{indent}memcpy({comp}, {value}, sizeof({value})){semi}"
+        ));
+    }
     Ok(format!("{indent}{comp} = {value}{semi}"))
 }
 
@@ -563,10 +1088,20 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
     // Generate for loop header based on config
     match cfg.if_style {
         IfStyle::Ternary => {
-            result.push_str(&format!("{indent}for (int {loop_var} = 0; {loop_var} < /* {range_str} */; {loop_var}++) {{\n"));
+            // Parse Modelica range "start:end" or "start:step:end" into C for-loop bounds
+            let parts: Vec<&str> = range_str.split(':').collect();
+            let (start, end) = match parts.len() {
+                2 => (parts[0].trim().to_string(), parts[1].trim().to_string()),
+                3 => (parts[0].trim().to_string(), parts[2].trim().to_string()),
+                _ => ("1".to_string(), range_str.clone()),
+            };
+            result.push_str(&format!(
+                "{indent}for (int {loop_var} = {start}; {loop_var} <= {end}; {loop_var}++) {{\n"
+            ));
         }
         IfStyle::Function => {
-            result.push_str(&format!("{indent}for {loop_var} in range({range_str}):\n"));
+            let py_range = modelica_range_to_python_range(&range_str);
+            result.push_str(&format!("{indent}for {loop_var} in {py_range}:\n"));
         }
         IfStyle::Modelica => {
             result.push_str(&format!("{indent}for {loop_var} in {range_str} loop\n"));
@@ -615,6 +1150,7 @@ fn extract_for_loop_index(
         .ok()
         .and_then(|i| i.get_attr("text").ok())
         .map(|t| t.to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "i".to_string());
 
     let range = first
@@ -738,8 +1274,16 @@ fn render_if_branch(
         }
     }
 
-    if let Some(ref stmts_val) = stmts {
-        result.push_str(&render_statements(stmts_val, cfg, next_indent)?);
+    let body = if let Some(ref stmts_val) = stmts {
+        render_statements(stmts_val, cfg, next_indent)?
+    } else {
+        String::new()
+    };
+
+    if body.is_empty() && matches!(cfg.if_style, IfStyle::Function) {
+        result.push_str(&format!("{next_indent}pass\n"));
+    } else {
+        result.push_str(&body);
     }
 
     if matches!(cfg.if_style, IfStyle::Ternary) {
@@ -764,7 +1308,12 @@ fn render_if_else_block(
         IfStyle::Modelica => result.push_str(&format!("{indent}else\n")),
     }
 
-    result.push_str(&render_statements(else_val, cfg, next_indent)?);
+    let body = render_statements(else_val, cfg, next_indent)?;
+    if body.is_empty() && matches!(cfg.if_style, IfStyle::Function) {
+        result.push_str(&format!("{next_indent}pass\n"));
+    } else {
+        result.push_str(&body);
+    }
 
     match cfg.if_style {
         IfStyle::Ternary => result.push_str(&format!("\n{indent}}}")),
@@ -790,7 +1339,7 @@ fn render_function_call_statement(
 ) -> RenderResult {
     let comp = func_call
         .get_attr("comp")
-        .map(|c| render_component_ref(&c))
+        .map(|c| render_component_ref(&c, cfg))
         .unwrap_or_default();
 
     let args = render_args(func_call, cfg).unwrap_or_default();
@@ -849,7 +1398,7 @@ fn format_func_call_with_outputs(
 fn render_reinit_statement(reinit: &Value, cfg: &ExprConfig, indent: &str) -> RenderResult {
     let var = reinit
         .get_attr("variable")
-        .map(|v| render_component_ref(&v))
+        .map(|v| render_component_ref(&v, cfg))
         .unwrap_or_default();
     let value = reinit
         .get_attr("value")
@@ -877,24 +1426,30 @@ fn render_assert_statement(assert: &Value, cfg: &ExprConfig, indent: &str) -> Re
 }
 
 /// Render an AST ComponentReference to a string.
-fn render_component_ref(comp: &Value) -> String {
-    if let Some(s) = comp.as_str() {
-        return s.replace('.', "_");
+fn render_component_ref(comp: &Value, cfg: &ExprConfig) -> String {
+    let result = if let Some(s) = comp.as_str() {
+        s.replace('.', "_")
+    } else {
+        let Some(parts_val) = get_field(comp, "parts").ok() else {
+            return String::new();
+        };
+        let Some(len) = parts_val.len() else {
+            return String::new();
+        };
+
+        let part_strs: Vec<_> = (0..len)
+            .filter_map(|i| parts_val.get_item(&Value::from(i)).ok())
+            .map(|part| render_component_ref_part(&part))
+            .collect();
+
+        part_strs.join("_")
+    };
+    // Escape reserved words (configured per-target, e.g. Python keywords)
+    if cfg.reserved_words.iter().any(|kw| kw == &result) {
+        format!("{result}_")
+    } else {
+        result
     }
-
-    let Some(parts_val) = get_field(comp, "parts").ok() else {
-        return String::new();
-    };
-    let Some(len) = parts_val.len() else {
-        return String::new();
-    };
-
-    let part_strs: Vec<_> = (0..len)
-        .filter_map(|i| parts_val.get_item(&Value::from(i)).ok())
-        .map(|part| render_component_ref_part(&part))
-        .collect();
-
-    part_strs.join("_")
 }
 
 /// Render a single component reference part (identifier + optional subscripts).
@@ -987,7 +1542,7 @@ fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(render_ast_terminal(&terminal, cfg));
     }
     if let Ok(comp_ref) = get_field(expr, "ComponentReference") {
-        return Ok(render_component_ref(&comp_ref));
+        return Ok(render_component_ref(&comp_ref, cfg));
     }
     if let Ok(if_expr) = get_field(expr, "If") {
         return render_ast_if_expr(&if_expr, cfg);
@@ -1008,7 +1563,13 @@ fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult {
         return render_ast_named_arg(&named, cfg);
     }
 
-    // Fallback: try to convert to string
+    // Fallback: try to render as a DAE expression (function bodies may contain
+    // DAE IR expressions rather than AST expressions).
+    if let Ok(result) = render_expression(expr, cfg) {
+        return Ok(result);
+    }
+
+    // Last resort: try to convert to string
     let s = expr.to_string();
     if s != "none" && !s.is_empty() {
         return Ok(s);
@@ -1035,6 +1596,37 @@ fn render_ast_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
         && let Some(func) = &cfg.mul_elem_fn
     {
         return Ok(format!("{func}({lhs}, {rhs})"));
+    }
+    // Render power as function call when configured (e.g., "pow" → pow(lhs, rhs))
+    if is_power_op(&op)
+        && cfg
+            .power
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        return Ok(format!("{}({lhs}, {rhs})", cfg.power));
+    }
+    // Render and/or as function calls when configured (e.g., "ca.logic_and" → ca.logic_and(lhs, rhs))
+    if get_field(&op, "And").is_ok()
+        && cfg
+            .and_op
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && cfg.and_op.contains('.')
+    {
+        return Ok(format!("{}({lhs}, {rhs})", cfg.and_op));
+    }
+    if get_field(&op, "Or").is_ok()
+        && cfg
+            .or_op
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && cfg.or_op.contains('.')
+    {
+        return Ok(format!("{}({lhs}, {rhs})", cfg.or_op));
     }
     let op = get_binop_string(&op, cfg)?;
     Ok(format!("({lhs} {op} {rhs})"))
@@ -1105,12 +1697,13 @@ fn render_ast_if_expr(if_expr: &Value, cfg: &ExprConfig) -> RenderResult {
 fn render_ast_func_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
     let name = func_call
         .get_attr("name")
-        .map(|n| render_component_ref(&n))
+        .map(|n| render_component_ref(&n, cfg))
         .unwrap_or_default();
     let args = func_call
         .get_attr("args")
         .and_then(|a| render_ast_args(&a, cfg))
         .unwrap_or_default();
+
     Ok(format!("{}({})", name, args))
 }
 
@@ -1220,6 +1813,18 @@ struct ExprConfig {
     modelica_builtins: bool,
     /// Optional function for element-wise multiply (e.g., `ca.times` for CasADi).
     mul_elem_fn: Option<String>,
+    /// Optional function for `size()` builtin (e.g., `_size` for CasADi).
+    /// When set, `Size` builtin emits `size_fn(args)` instead of the default.
+    size_fn: Option<String>,
+    /// Optional function for `sum()` builtin (e.g., `_sum` for CasADi).
+    /// When set, `Sum` builtin emits `sum_fn(args)` instead of the default.
+    sum_fn: Option<String>,
+    /// Reserved words to escape by appending `_` (e.g., Python keywords).
+    /// Applied in `render_component_ref` for function body identifiers.
+    reserved_words: Vec<String>,
+    /// Explicit builtin rendering style. When set, overrides the heuristic
+    /// that infers C vs Python from `if_style` and `prefix`.
+    builtin_style: Option<BuiltinStyle>,
 }
 
 #[derive(Clone, Copy)]
@@ -1229,6 +1834,16 @@ enum IfStyle {
     /// Ternary: cond ? then : else
     Ternary,
     /// Modelica-style: if cond then expr elseif cond2 then expr2 else expr3
+    Modelica,
+}
+
+#[derive(Clone, Copy)]
+enum BuiltinStyle {
+    /// C math library names (fabs, fmin, fmax, sqrt, etc.)
+    C,
+    /// Python/CasADi names with prefix (ca.fabs, ca.sqrt, etc.)
+    Python,
+    /// Modelica names (abs, min, max, etc.)
     Modelica,
 }
 
@@ -1249,6 +1864,10 @@ impl Default for ExprConfig {
             one_based_index: false,
             modelica_builtins: false,
             mul_elem_fn: None,
+            size_fn: None,
+            sum_fn: None,
+            reserved_words: Vec::new(),
+            builtin_style: None,
         }
     }
 }
@@ -1320,6 +1939,27 @@ impl ExprConfig {
             && !s.is_empty()
         {
             cfg.mul_elem_fn = Some(s);
+        }
+        if let Some(s) = get_str_attr(v, "size_fn")
+            && !s.is_empty()
+        {
+            cfg.size_fn = Some(s);
+        }
+        if let Some(s) = get_str_attr(v, "sum_fn")
+            && !s.is_empty()
+        {
+            cfg.sum_fn = Some(s);
+        }
+        if let Some(s) = get_str_attr(v, "reserved_words") {
+            cfg.reserved_words = s.split(',').map(|w| w.trim().to_string()).collect();
+        }
+        if let Some(s) = get_str_attr(v, "builtin_style") {
+            cfg.builtin_style = match s.as_str() {
+                "c" => Some(BuiltinStyle::C),
+                "python" => Some(BuiltinStyle::Python),
+                "modelica" => Some(BuiltinStyle::Modelica),
+                _ => None,
+            };
         }
 
         cfg
@@ -1409,12 +2049,49 @@ fn render_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
     {
         return Ok(format!("{func}({lhs}, {rhs})"));
     }
+    // Render power as a function call when the power config is a function name
+    // (e.g., "pow" → pow(lhs, rhs)) rather than an infix operator (e.g., "**" → (lhs ** rhs))
+    if is_power_op(&op_value)
+        && cfg
+            .power
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        return Ok(format!("{}({lhs}, {rhs})", cfg.power));
+    }
+    // Render and/or as function calls when configured with function names
+    // (e.g., "ca.logic_and" → ca.logic_and(lhs, rhs)) instead of infix (e.g., "and" → (lhs and rhs))
+    if get_field(&op_value, "And").is_ok()
+        && cfg
+            .and_op
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && cfg.and_op.contains('.')
+    {
+        return Ok(format!("{}({lhs}, {rhs})", cfg.and_op));
+    }
+    if get_field(&op_value, "Or").is_ok()
+        && cfg
+            .or_op
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && cfg.or_op.contains('.')
+    {
+        return Ok(format!("{}({lhs}, {rhs})", cfg.or_op));
+    }
     let op_str = get_binop_string(&op_value, cfg)?;
     Ok(format!("({lhs} {op_str} {rhs})"))
 }
 
 fn is_mul_elem_op(op: &Value) -> bool {
     get_field(op, "MulElem").is_ok()
+}
+
+fn is_power_op(op: &Value) -> bool {
+    get_field(op, "Exp").is_ok() || get_field(op, "ExpElem").is_ok()
 }
 
 fn get_binop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -1466,9 +2143,14 @@ fn render_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
     let rhs = get_field(unary, "rhs")
         .and_then(|v| render_expression(&v, cfg))
         .map_err(|_| render_err("Unary expression missing 'rhs' field"))?;
-    let op_str = get_field(unary, "op")
-        .and_then(|o| get_unop_string(&o, cfg))
-        .map_err(|_| render_err("Unary expression missing 'op' field"))?;
+    let op_value =
+        get_field(unary, "op").map_err(|_| render_err("Unary expression missing 'op' field"))?;
+    // Render not as function call when configured with a function name containing '.'
+    // (e.g., "ca.logic_not" → ca.logic_not(rhs)) instead of prefix (e.g., "not " → (not rhs))
+    if get_field(&op_value, "Not").is_ok() && cfg.not_op.contains('.') {
+        return Ok(format!("{}({rhs})", cfg.not_op));
+    }
+    let op_str = get_unop_string(&op_value, cfg)?;
     Ok(format!("({op_str}{rhs})"))
 }
 
@@ -1499,7 +2181,7 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         })
         .unwrap_or_default();
     let name = if cfg.sanitize_dots {
-        raw_name.replace('.', "_")
+        sanitize_identifier(&raw_name)
     } else {
         raw_name
     };
@@ -1548,7 +2230,12 @@ fn render_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(":".to_string());
     }
     if let Ok(expr) = get_field(sub, "Expr") {
-        return render_expression(&expr, cfg);
+        let rendered = render_expression(&expr, cfg)?;
+        // For 0-based indexing (C), adjust expression subscripts from 1-based to 0-based
+        if !cfg.one_based_index {
+            return Ok(format!("({rendered} - 1)"));
+        }
+        return Ok(rendered);
     }
     Err(render_err(format!("unhandled Subscript variant: {sub}")))
 }
@@ -1559,12 +2246,135 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         .map(|f| f.to_string())
         .unwrap_or_default();
 
+    // C mode: Sum with ArrayComprehension argument → inline for-loop sum.
+    // C doesn't have list comprehensions, so we emit a GCC statement expression.
+    if func_name == "Sum"
+        && matches!(cfg.if_style, IfStyle::Ternary)
+        && cfg.prefix.is_empty()
+        && let Some(result) = try_render_c_sum_comprehension(builtin, cfg)?
+    {
+        return Ok(result);
+    }
+
     let args = render_args(builtin, cfg)?;
 
-    if cfg.modelica_builtins {
-        return Ok(render_builtin_modelica(&func_name, &args, cfg));
+    // Use explicit builtin_style when set; fall back to heuristic for backwards compat.
+    let default_style = if cfg.modelica_builtins {
+        BuiltinStyle::Modelica
+    } else if matches!(cfg.if_style, IfStyle::Ternary) && cfg.prefix.is_empty() {
+        BuiltinStyle::C
+    } else {
+        BuiltinStyle::Python
+    };
+    let style = cfg.builtin_style.unwrap_or(default_style);
+
+    match style {
+        BuiltinStyle::Modelica => Ok(render_builtin_modelica(&func_name, &args, cfg)),
+        BuiltinStyle::C => Ok(render_builtin_c(&func_name, &args, cfg)),
+        BuiltinStyle::Python => Ok(render_builtin_python(&func_name, &args, cfg)),
     }
-    Ok(render_builtin_python(&func_name, &args, cfg))
+}
+
+/// Try to render `sum(expr for i in start:end)` as a C for-loop.
+/// Returns None if the argument is not an ArrayComprehension.
+fn try_render_c_sum_comprehension(
+    builtin: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<String>, minijinja::Error> {
+    let args_val = get_field(builtin, "args").ok();
+    let Some(ref args_val) = args_val else {
+        return Ok(None);
+    };
+    let Some(1) = args_val.len() else {
+        return Ok(None);
+    };
+    let Ok(first_arg) = args_val.get_item(&Value::from(0)) else {
+        return Ok(None);
+    };
+    let Ok(array_comp) = get_field(&first_arg, "ArrayComprehension") else {
+        return Ok(None);
+    };
+
+    let body = get_field(&array_comp, "expr").and_then(|v| render_expression(&v, cfg))?;
+    let indices = get_field(&array_comp, "indices")?;
+    let Some(1) = indices.len() else {
+        return Ok(None); // Only handle single-index comprehensions
+    };
+    let index = indices
+        .get_item(&Value::from(0))
+        .map_err(|_| render_err("missing index"))?;
+    let name = get_field(&index, "name").map(|v| v.to_string())?;
+    let range = get_field(&index, "range").and_then(|v| render_expression(&v, cfg))?;
+
+    let range_parts: Vec<&str> = range.split(':').collect();
+    if range_parts.len() != 2 {
+        return Ok(None);
+    }
+    let start = range_parts[0].trim();
+    let end = range_parts[1].trim();
+
+    Ok(Some(format!(
+        "({{ double _s = 0; for (int {name} = {start}; {name} <= ({end}); {name}++) _s += {body}; _s; }})"
+    )))
+}
+
+/// Render builtins using C math library names (fabs, fmin, fmax, etc.).
+fn render_builtin_c(func_name: &str, args: &str, cfg: &ExprConfig) -> String {
+    match func_name {
+        "Der" => format!("der({})", args),
+        "Pre" => format!("pre({})", args),
+        "Abs" => format!("fabs({})", args),
+        "Sign" => format!("(({args}) > 0 ? 1.0 : (({args}) < 0 ? -1.0 : 0.0))"),
+        "Sqrt" => format!("sqrt({})", args),
+        "Sin" => format!("sin({})", args),
+        "Cos" => format!("cos({})", args),
+        "Tan" => format!("tan({})", args),
+        "Asin" => format!("asin({})", args),
+        "Acos" => format!("acos({})", args),
+        "Atan" => format!("atan({})", args),
+        "Atan2" => format!("atan2({})", args),
+        "Sinh" => format!("sinh({})", args),
+        "Cosh" => format!("cosh({})", args),
+        "Tanh" => format!("tanh({})", args),
+        "Exp" => format!("exp({})", args),
+        "Log" => format!("log({})", args),
+        "Log10" => format!("log10({})", args),
+        "Floor" => format!("floor({})", args),
+        "Ceil" => format!("ceil({})", args),
+        "Min" => format!("fmin({})", args),
+        "Max" => format!("fmax({})", args),
+        "Sum" => format!("__rumoca_sum_d({args}, {args}_size)"),
+        "Transpose" => format!("/* transpose */ ({})", args),
+        "Zeros" => format!("/* zeros({}) */ 0.0", args),
+        "Ones" => format!("/* ones({}) */ 1.0", args),
+        "Mod" => format!("fmod({})", args),
+        "Rem" => format!("remainder({})", args),
+        "Smooth" => {
+            if let Some(pos) = args.find(", ") {
+                args[pos + 2..].to_string()
+            } else {
+                args.to_string()
+            }
+        }
+        "Homotopy" => {
+            if let Some(pos) = args.find(", ") {
+                args[..pos].to_string()
+            } else {
+                args.to_string()
+            }
+        }
+        "NoEvent" => args.to_string(),
+        "Sample" => cfg.false_val.clone(),
+        "Integer" => format!("(int)({})", args),
+        "Edge" => format!("({args} && !pre({args}))"),
+        "Change" => format!("({args} != pre({args}))"),
+        "Size" => {
+            // size(x, dim) → x_size for 1D arrays
+            let base = args.split(',').next().unwrap_or(args).trim();
+            format!("{base}_size")
+        }
+        _ => format!("{}({})", func_name.to_lowercase(), args),
+    }
 }
 
 /// Render builtins using Modelica names (abs, min, max, etc.).
@@ -1630,12 +2440,61 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Ceil" => format!("{}ceil({})", cfg.prefix, args),
         "Min" => format!("{}fmin({})", cfg.prefix, args),
         "Max" => format!("{}fmax({})", cfg.prefix, args),
-        "Sum" => format!("{}sum1({})", cfg.prefix, args),
+        "Sum" => {
+            if let Some(ref sum_fn) = cfg.sum_fn {
+                format!("{}({})", sum_fn, args)
+            } else {
+                format!("{}sum1({})", cfg.prefix, args)
+            }
+        }
         "Transpose" => format!("({}).T", args),
         "Zeros" => format!("{}zeros({})", cfg.prefix, args),
         "Ones" => format!("{}ones({})", cfg.prefix, args),
         "Identity" => format!("{}eye({})", cfg.prefix, args),
         "Cross" => format!("{}cross({})", cfg.prefix, args),
+        "Mod" => format!("{}fmod({})", cfg.prefix, args),
+        "Rem" => format!("{}remainder({})", cfg.prefix, args),
+        // Modelica builtins that reduce to their arguments in continuous simulation
+        "Smooth" => {
+            // smooth(order, expr) → expr
+            if let Some(pos) = args.find(", ") {
+                args[pos + 2..].to_string()
+            } else {
+                args.to_string()
+            }
+        }
+        "Homotopy" => {
+            // homotopy(actual, simplified) → actual
+            if let Some(pos) = args.find(", ") {
+                args[..pos].to_string()
+            } else {
+                args.to_string()
+            }
+        }
+        "NoEvent" => {
+            // noEvent(expr) → expr (event handling hint, no-op for CasADi)
+            args.to_string()
+        }
+        "Sample" => {
+            // sample(start, interval) → false (not relevant for continuous integration)
+            cfg.false_val.clone()
+        }
+        "Integer" => format!("{}floor({})", cfg.prefix, args),
+        "Size" => {
+            if let Some(ref size_fn) = cfg.size_fn {
+                format!("{}({})", size_fn, args)
+            } else {
+                // Default: use len() for single-arg, shape[] for multi-arg
+                let parts: Vec<&str> = args.splitn(2, ',').collect();
+                if parts.len() == 2 {
+                    let arr = parts[0].trim();
+                    let dim = parts[1].trim();
+                    format!("{arr}.shape[{dim} - 1]")
+                } else {
+                    format!("len({args})")
+                }
+            }
+        }
         _ => format!("{}({})", func_name.to_lowercase(), args),
     }
 }
@@ -1693,6 +2552,11 @@ fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
         });
     }
     if let Ok(s) = get_field(literal, "String") {
+        // In C mode (ternary if_style), string literals can't be assigned to double.
+        // Emit 0.0 with a comment showing the original string value.
+        if matches!(cfg.if_style, IfStyle::Ternary) {
+            return Ok(format!("0.0 /* string: \"{}\" */", s));
+        }
         return Ok(format!("\"{}\"", s));
     }
     Ok("0".to_string())
@@ -1722,15 +2586,15 @@ fn render_if_branches(
     let mut result = else_branch.to_string();
 
     for i in (0..len).rev() {
-        let Some(branch) = branches.get_item(&Value::from(i)).ok() else {
-            continue;
-        };
-        let Ok(cond) = branch.get_item(&Value::from(0)) else {
-            continue;
-        };
-        let Ok(then) = branch.get_item(&Value::from(1)) else {
-            continue;
-        };
+        let branch = branches
+            .get_item(&Value::from(i))
+            .map_err(|e| render_err(format!("if branch {i}: cannot access branch: {e}")))?;
+        let cond = branch
+            .get_item(&Value::from(0))
+            .map_err(|e| render_err(format!("if branch {i}: cannot access condition: {e}")))?;
+        let then = branch.get_item(&Value::from(1)).map_err(|e| {
+            render_err(format!("if branch {i}: cannot access then-expression: {e}"))
+        })?;
 
         let cond_str = render_expression(&cond, cfg)?;
         let then_str = render_expression(&then, cfg)?;
@@ -1811,7 +2675,27 @@ fn render_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
     }
 }
 
-/// Render an array-comprehension expression as `{expr for i in range ... if filter}`.
+/// Convert a Modelica range string "start:end" or "start:step:end" to Python "range(start, end+1)"
+/// or "range(start, end+1, step)". If the string doesn't contain colons, returns it unchanged.
+fn modelica_range_to_python_range(range_str: &str) -> String {
+    let parts: Vec<&str> = range_str.split(':').collect();
+    match parts.len() {
+        2 => {
+            let start = parts[0].trim();
+            let end = parts[1].trim();
+            format!("range({start}, ({end}) + 1)")
+        }
+        3 => {
+            let start = parts[0].trim();
+            let step = parts[1].trim();
+            let end = parts[2].trim();
+            format!("range({start}, ({end}) + 1, {step})")
+        }
+        _ => range_str.to_string(),
+    }
+}
+
+/// Render an array-comprehension expression.
 fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderResult {
     let body = get_field(array_comp, "expr")
         .and_then(|v| render_expression(&v, cfg))
@@ -1831,7 +2715,14 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
         let range = get_field(&index, "range")
             .and_then(|v| render_expression(&v, cfg))
             .map_err(|_| render_err("ArrayComprehension index missing 'range' field"))?;
-        index_clauses.push(format!("{name} in {range}"));
+
+        // For Python mode, convert Modelica range "start:end" to "range(start, end+1)"
+        let iter_expr = if matches!(cfg.if_style, IfStyle::Function) {
+            modelica_range_to_python_range(&range)
+        } else {
+            range
+        };
+        index_clauses.push(format!("{name} in {iter_expr}"));
     }
 
     let for_clause = if index_clauses.is_empty() {
@@ -1846,7 +2737,44 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
         String::new()
     };
 
-    Ok(format!("{{{body}{for_clause}{filter_clause}}}"))
+    // For C/ternary mode, emit a GCC statement expression with a for-loop
+    // since C doesn't have list comprehensions.
+    if matches!(cfg.if_style, IfStyle::Ternary) && len == 1 {
+        let index = indices
+            .get_item(&Value::from(0))
+            .map_err(|_| render_err("ArrayComprehension index entry missing"))?;
+        let name = get_field(&index, "name")
+            .map(|v| v.to_string())
+            .map_err(|_| render_err("ArrayComprehension index missing 'name'"))?;
+        let range = get_field(&index, "range")
+            .and_then(|v| render_expression(&v, cfg))
+            .map_err(|_| render_err("ArrayComprehension index missing 'range'"))?;
+
+        // Parse "start:end" range
+        let range_parts: Vec<&str> = range.split(':').collect();
+        if range_parts.len() == 2 {
+            let start = range_parts[0].trim();
+            let end = range_parts[1].trim();
+            let filter_cond = if let Ok(filter) = get_field(array_comp, "filter") {
+                let cond = render_expression(&filter, cfg)?;
+                format!("if ({cond}) ")
+            } else {
+                String::new()
+            };
+            return Ok(format!(
+                "({{ double _s = 0; for (int {name} = {start}; {name} <= ({end}); {name}++) {filter_cond}_s += {body}; _s; }})"
+            ));
+        }
+    }
+
+    // Use list comprehension [...] for Python, set comprehension {...} otherwise
+    let (open, close) = if matches!(cfg.if_style, IfStyle::Function) {
+        ("[", "]")
+    } else {
+        ("{", "}")
+    };
+
+    Ok(format!("{open}{body}{for_clause}{filter_clause}{close}"))
 }
 
 /// Render an index expression as `base[subscripts]`.
