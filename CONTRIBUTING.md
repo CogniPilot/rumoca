@@ -46,6 +46,7 @@ rum verify full
 rum verify lint
 rum verify workspace
 rum verify quick
+rum verify template-runtimes
 ```
 
 `rum verify quick` runs the same verification surface as GitHub CI except for
@@ -53,6 +54,8 @@ the slow 180-model MSL parity job. `rum verify full` includes that parity run.
 Because those commands include coverage, VS Code, and wasm gates, they expect
 the same local prerequisites that CI installs: `cargo-llvm-cov`, Node/npm, and
 the wasm Rust target/tooling.
+`rum verify template-runtimes` is for ignored example-template execution checks
+that require optional runtimes such as Python with SymPy.
 
 Editor validation:
 

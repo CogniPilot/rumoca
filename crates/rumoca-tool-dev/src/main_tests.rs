@@ -60,6 +60,16 @@ fn cli_parses_verify_workspace_job() {
 }
 
 #[test]
+fn cli_parses_verify_template_runtimes_job() {
+    let cli = Cli::try_parse_from(["rum", "verify", "template-runtimes"])
+        .expect("parse verify template-runtimes");
+    match cli.command {
+        Commands::Verify(args) => assert_eq!(args.command, VerifyCommand::TemplateRuntimes),
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_verify_msl_parity_job() {
     let cli =
         Cli::try_parse_from(["rum", "verify", "msl-parity"]).expect("parse verify msl-parity");
