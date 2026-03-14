@@ -178,5 +178,20 @@
   "Modelica.Thermal.HeatTransfer.Examples.Motor",
   "Modelica.Thermal.HeatTransfer.Examples.TwoMasses",
   "Modelica.Utilities.Examples.WriteRealMatrixToFile",
-  "Modelica.Utilities.Examples.readRealParameterModel"
+  "Modelica.Utilities.Examples.readRealParameterModel",
+  "Modelica.Mechanics.Rotational.Examples.First",
+  "Modelica.Mechanics.Rotational.Examples.Backlash",
+  "Modelica.Mechanics.Rotational.Examples.EddyCurrentBrake",
+  "Modelica.Mechanics.Rotational.Examples.Friction",
+  "Modelica.Mechanics.Rotational.Examples.CoupledClutches",
+  "Modelica.Mechanics.Translational.Examples.Oscillator",
+  "Modelica.Mechanics.Translational.Examples.Damper",
+  "Modelica.Mechanics.Translational.Examples.Vehicle",
+  "Modelica.Mechanics.Translational.Examples.InitialConditions",
+  "Modelica.Mechanics.Translational.Examples.SignConvention",
+  "Modelica.Mechanics.Translational.Examples.WhyArrows",
+  "Modelica.Mechanics.Translational.Examples.Accelerate",
+  "Modelica.Mechanics.Translational.Examples.ElastoGap",
+  "Modelica.Mechanics.Translational.Examples.Brake",
+  "Modelica.Mechanics.Rotational.Examples.FirstGrounded"
 ]

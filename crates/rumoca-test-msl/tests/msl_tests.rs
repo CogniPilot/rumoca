@@ -165,10 +165,15 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
         .filter_map(|e| e.ok())
         .filter(|e| {
             let path = e.path();
+            let path_str = path.to_string_lossy();
             path.is_file()
                 && path.extension().is_some_and(|ext| ext == "mo")
-                && !path.to_string_lossy().contains("Obsolete")
-                && !path.to_string_lossy().contains("ModelicaTestConversion")
+                && !path_str.contains("Obsolete")
+                && !path_str.contains("ModelicaTestConversion")
+                && !path_str.contains("ModelicaTest/")
+                && !path.components().any(|c| {
+                    c.as_os_str().to_string_lossy().contains(' ')
+                })
         })
         .map(|e| e.path().to_path_buf())
         .collect()
