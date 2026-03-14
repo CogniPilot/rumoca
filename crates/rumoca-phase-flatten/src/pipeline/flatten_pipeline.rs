@@ -150,6 +150,8 @@ pub(crate) fn finalize_flat_model(
     rewrite_function_extends_aliases_in_flat_functions(flat, tree);
     functions::collect_functions(flat, tree)?;
     mark_record_constructor_calls(flat, tree);
+    functions::lower_record_function_params(flat);
+    functions::insert_array_size_args(flat);
     drop_invalid_field_access_bindings(flat);
     propagate_unexpanded_record_array_dims(flat, overlay);
     flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(
@@ -170,5 +172,6 @@ pub(crate) fn finalize_flat_model(
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
+
     Ok(())
 }
