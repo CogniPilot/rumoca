@@ -20,7 +20,8 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) {
     // as-is because:
     // - f_z/f_m: pre() is semantically correct for event update rules
     // - f_c: conditions are paired with relation[] and must be preserved
-    let mut pre_targets: HashMap<dae::VarName, PreTarget> = HashMap::new();
+    // IndexMap for deterministic parameter insertion order (SPEC_0017).
+    let mut pre_targets: IndexMap<dae::VarName, PreTarget> = IndexMap::new();
     collect_pre_targets_from_equations(&dae.f_x, &mut pre_targets);
 
     if pre_targets.is_empty() {
@@ -67,7 +68,7 @@ struct PreTarget;
 
 fn collect_pre_targets_from_equations(
     equations: &[dae::Equation],
-    targets: &mut HashMap<dae::VarName, PreTarget>,
+    targets: &mut IndexMap<dae::VarName, PreTarget>,
 ) {
     for eq in equations {
         collect_pre_targets_from_expr(&eq.rhs, targets);
@@ -76,7 +77,7 @@ fn collect_pre_targets_from_equations(
 
 fn collect_pre_targets_from_expr(
     expr: &dae::Expression,
-    targets: &mut HashMap<dae::VarName, PreTarget>,
+    targets: &mut IndexMap<dae::VarName, PreTarget>,
 ) {
     match expr {
         dae::Expression::BuiltinCall {
@@ -174,7 +175,7 @@ fn collect_all_variables(dae: &dae::Dae) -> HashMap<dae::VarName, &dae::Variable
     all
 }
 
-fn rewrite_equations(equations: &mut [dae::Equation], targets: &HashMap<dae::VarName, PreTarget>) {
+fn rewrite_equations(equations: &mut [dae::Equation], targets: &IndexMap<dae::VarName, PreTarget>) {
     for eq in equations {
         eq.rhs = rewrite_pre_expr(
             std::mem::replace(&mut eq.rhs, dae::Expression::Empty),
@@ -185,7 +186,7 @@ fn rewrite_equations(equations: &mut [dae::Equation], targets: &HashMap<dae::Var
 
 fn rewrite_pre_expr(
     expr: dae::Expression,
-    targets: &HashMap<dae::VarName, PreTarget>,
+    targets: &IndexMap<dae::VarName, PreTarget>,
 ) -> dae::Expression {
     match expr {
         dae::Expression::BuiltinCall {
@@ -198,7 +199,7 @@ fn rewrite_pre_expr(
 
 fn rewrite_pre_builtin(
     args: Vec<dae::Expression>,
-    targets: &HashMap<dae::VarName, PreTarget>,
+    targets: &IndexMap<dae::VarName, PreTarget>,
 ) -> dae::Expression {
     let rewritten_args: Vec<dae::Expression> = args
         .into_iter()
@@ -223,7 +224,7 @@ fn rewrite_pre_builtin(
 
 fn rewrite_non_pre_expr(
     expr: dae::Expression,
-    targets: &HashMap<dae::VarName, PreTarget>,
+    targets: &IndexMap<dae::VarName, PreTarget>,
 ) -> dae::Expression {
     match expr {
         dae::Expression::Binary { op, lhs, rhs } => dae::Expression::Binary {

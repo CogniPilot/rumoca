@@ -197,6 +197,7 @@
   </ModelVariables>
 
   <ModelStructure>
+{% if n_w > 0 %}
     <Outputs>
 {% set ns_idx = namespace(val=1) %}
 {#- Skip states, derivatives, algebraics to find output indices -#}
@@ -214,6 +215,7 @@
 {% endif %}
 {% endfor %}
     </Outputs>
+{% endif %}
     <Derivatives>
 {#- Derivative indices are right after states (1-based), contiguous per scalar derivative -#}
 {% set ns_deriv = namespace(offset=0) %}

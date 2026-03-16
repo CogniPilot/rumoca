@@ -24,6 +24,15 @@ def _sum(x):
         return ca.sum1(ca.vertcat(*x))
     return ca.sum1(x)
 
+def pre(x):
+    """Modelica pre() operator for CasADi.
+
+    During continuous integration, pre(x) = x since events are not handled
+    mid-step. A full event-driven simulation driver would snapshot discrete
+    variables at event boundaries and substitute them here.
+    """
+    return x
+
 {% set cfg = {"prefix": "ca.", "power": "**", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} -%}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
@@ -231,7 +240,9 @@ def create_model():
     {{ func_name | sanitize }} = lambda *_args: ca.{{ func_name | last_segment }}(*_args)  # {{ func_name }} (builtin)
 {%- endif %}
 {%- endfor %}
-{#- Pass 2: Define non-trivial user functions with CasADi Function wrapping. -#}
+{#- Pass 2: Define all _impl functions and assign temporary Python aliases.
+    This ensures closures can reference any function by its sanitized name,
+    regardless of declaration order (forward-reference safe). -#}
 {%- for func_name, func in dae.functions | items %}
 {%- if not is_self_call(func_name, func) %}
 
@@ -251,20 +262,31 @@ def create_model():
 {%- else %}
         pass
 {%- endif %}
+    {{ func_name | sanitize }} = _{{ func_name | sanitize }}_impl  # temporary alias
+{%- endif %}
+{%- endfor %}
 
-    # Wrap as CasADi Function for differentiation support
+{#- Pass 3: Create CasADi Function wrappers (now all names are resolvable). -#}
+{%- for func_name, func in dae.functions | items %}
+{%- if not is_self_call(func_name, func) %}
+{%- if func.outputs | length > 0 %}
+{%- set ns_def = namespace(has_defaults=false) %}
+{%- for inp in func.inputs %}
+{%- if inp.default %}{% set ns_def.has_defaults = true %}{% endif %}
+{%- endfor %}
+{%- if ns_def.has_defaults %}
+    # {{ func_name | sanitize }}: kept as Python function (has default parameters)
+{%- else %}
 {%- for inp in func.inputs %}
     _{{ func_name | sanitize }}_{{ inp.name | sanitize }} = ca.MX.sym('{{ inp.name | sanitize }}'{% if inp.dims %}, {{ inp.dims | join(", ") }}{% endif %})
 {%- endfor %}
-{%- if func.outputs | length > 0 %}
     _{{ func_name | sanitize }}_result = _{{ func_name | sanitize }}_impl({% for inp in func.inputs %}_{{ func_name | sanitize }}_{{ inp.name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %})
     {{ func_name | sanitize }} = ca.Function('{{ func_name | sanitize }}',
         [{% for inp in func.inputs %}_{{ func_name | sanitize }}_{{ inp.name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %}],
         [_{{ func_name | sanitize }}_result],
         [{% for inp in func.inputs %}'{{ inp.name | sanitize }}'{{ ", " if not loop.last else "" }}{% endfor %}],
         ['{{ func.outputs[0].name | sanitize }}'])
-{%- else %}
-    {{ func_name | sanitize }} = _{{ func_name | sanitize }}_impl
+{%- endif %}
 {%- endif %}
 {%- endif %}
 {%- endfor %}
@@ -322,9 +344,9 @@ def create_model():
 {%- if dae.initial_equations | length > 0 %}
 
     init_fn = ca.Function('init',
-        [_x, _z, _p],
+        [_x, _z, _p, t],
         [init_residual],
-        ['x', 'z', 'p'],
+        ['x', 'z', 'p', 't'],
         ['residual'])
 {%- endif %}
 

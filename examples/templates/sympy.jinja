@@ -1,7 +1,10 @@
 {%- set cfg = {
   "modelica_builtins": true,
   "if_style": "function",
-  "sanitize_dots": true
+  "sanitize_dots": true,
+  "and_op": "sp.And",
+  "or_op": "sp.Or",
+  "not_op": "sp.Not"
 } -%}
 {%- macro symbol_expr(name, var) -%}
 {% if var.dims is defined and var.dims | length > 0 -%}
@@ -138,6 +141,7 @@ class Model:
 
     def __init__(self):
         self.time = sp.Symbol("time")
+        time = self.time
 
         # States, algebraics, inputs, outputs, parameters, constants, discretes.
 {{ declare_vector("x", dae.x) }}
