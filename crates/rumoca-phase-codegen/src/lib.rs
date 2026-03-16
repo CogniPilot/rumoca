@@ -82,7 +82,7 @@ pub mod templates {
     pub const JULIA_MTK: &str = include_str!("templates/julia_mtk.jl.jinja");
     /// JAX/Diffrax template (Python).
     pub const JAX: &str = include_str!("templates/jax.py.jinja");
-/// ONNX model builder template (Python).
+    /// ONNX model builder template (Python).
     pub const ONNX: &str = include_str!("templates/onnx.py.jinja");
     /// DAE Modelica template (renders Dae IR with classified variables and split equations).
     pub const DAE_MODELICA: &str = include_str!("templates/dae_modelica.mo.jinja");
