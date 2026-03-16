@@ -1953,12 +1953,80 @@ fn expand_dae_record_arg(arg: &dae::Expression, fields: &[&str], out: &mut Vec<d
         return;
     }
 
+    // Check for FieldAccess on the record variable (e.g. `c.re` passed directly)
+    if let dae::Expression::FieldAccess { .. } = arg {
+        // Single field access on a record — just push the base.field expression
+        // This handles cases like passing `c.re` where `c` was the original record param.
+        out.push(arg.clone());
+        // Pad remaining fields with 0.0
+        for _ in 1..fields.len() {
+            out.push(dae::Expression::Literal(dae::Literal::Real(0.0)));
+        }
+        return;
+    }
+
+    // Scalar expression passed to a record-typed parameter (e.g. Real expr passed
+    // where Complex is expected) — treat as the first field, zero-fill the rest.
+    // This avoids generating invalid C like `(expr).re`.
+    if is_obviously_scalar(arg) {
+        out.push(arg.clone());
+        for _ in 1..fields.len() {
+            out.push(dae::Expression::Literal(dae::Literal::Real(0.0)));
+        }
+        return;
+    }
+
     // General expression → emit FieldAccess
     for field in fields {
         out.push(dae::Expression::FieldAccess {
             base: Box::new(arg.clone()),
             field: field.to_string(),
         });
+    }
+}
+
+/// Returns true if the expression is obviously a scalar (not a record type).
+fn is_obviously_scalar(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::Literal(_) => true,
+        dae::Expression::Binary { .. } | dae::Expression::Unary { .. } => true,
+        dae::Expression::BuiltinCall { function, .. } => {
+            // Math builtins return scalars
+            matches!(
+                function,
+                dae::BuiltinFunction::Abs
+                    | dae::BuiltinFunction::Sign
+                    | dae::BuiltinFunction::Sqrt
+                    | dae::BuiltinFunction::Sin
+                    | dae::BuiltinFunction::Cos
+                    | dae::BuiltinFunction::Tan
+                    | dae::BuiltinFunction::Asin
+                    | dae::BuiltinFunction::Acos
+                    | dae::BuiltinFunction::Atan
+                    | dae::BuiltinFunction::Atan2
+                    | dae::BuiltinFunction::Sinh
+                    | dae::BuiltinFunction::Cosh
+                    | dae::BuiltinFunction::Tanh
+                    | dae::BuiltinFunction::Exp
+                    | dae::BuiltinFunction::Log
+                    | dae::BuiltinFunction::Log10
+                    | dae::BuiltinFunction::Floor
+                    | dae::BuiltinFunction::Ceil
+                    | dae::BuiltinFunction::Min
+                    | dae::BuiltinFunction::Max
+                    | dae::BuiltinFunction::Sum
+                    | dae::BuiltinFunction::Size
+                    | dae::BuiltinFunction::Der
+                    | dae::BuiltinFunction::Pre
+                    | dae::BuiltinFunction::Mod
+                    | dae::BuiltinFunction::Rem
+                    | dae::BuiltinFunction::Div
+            )
+        }
+        dae::Expression::If { else_branch, .. } => is_obviously_scalar(else_branch),
+        // User-defined function calls return scalar double in generated C
+        dae::Expression::FunctionCall { .. } => true,
+        _ => false,
     }
 }
 
@@ -2081,13 +2149,10 @@ fn insert_size_args_dae_expr(expr: &mut dae::Expression, map: &HashMap<String, V
             let mut new_args = std::mem::take(args);
             for &param_idx in array_indices.iter().rev() {
                 if param_idx < new_args.len() {
-                    let size_expr = dae::Expression::BuiltinCall {
-                        function: dae::BuiltinFunction::Size,
-                        args: vec![
-                            new_args[param_idx].clone(),
-                            dae::Expression::Literal(dae::Literal::Integer(1)),
-                        ],
-                    };
+                    // If the argument is an Array literal with known element count,
+                    // use the literal count directly instead of size() which can't
+                    // be rendered for compound literals in C.
+                    let size_expr = array_size_expr_for_arg(&new_args[param_idx]);
                     new_args.insert(param_idx + 1, size_expr);
                 }
             }
@@ -2142,6 +2207,20 @@ fn insert_size_args_dae_expr(expr: &mut dae::Expression, map: &HashMap<String, V
             }
         }
         dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {}
+    }
+}
+
+fn array_size_expr_for_arg(arg: &dae::Expression) -> dae::Expression {
+    if let dae::Expression::Array { elements, .. } = arg {
+        return dae::Expression::Literal(dae::Literal::Integer(elements.len() as i64));
+    }
+
+    dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Size,
+        args: vec![
+            arg.clone(),
+            dae::Expression::Literal(dae::Literal::Integer(1)),
+        ],
     }
 }
 

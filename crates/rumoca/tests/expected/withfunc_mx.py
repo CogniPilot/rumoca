@@ -24,6 +24,15 @@ def _sum(x):
         return ca.sum1(ca.vertcat(*x))
     return ca.sum1(x)
 
+def pre(x):
+    """Modelica pre() operator for CasADi.
+
+    During continuous integration, pre(x) = x since events are not handled
+    mid-step. A full event-driven simulation driver would snapshot discrete
+    variables at event boundaries and substitute them here.
+    """
+    return x
+
 
 def create_model():
     """Create CasADi MX model with vector symbols and Function objects.
@@ -99,8 +108,7 @@ def create_model():
         y = 0.0  # output variable
         y = (x * x)
         return y
-
-    # Wrap as CasADi Function for differentiation support
+    sq = _sq_impl  # temporary alias
     _sq_x = ca.MX.sym('x')
     _sq_result = _sq_impl(_sq_x)
     sq = ca.Function('sq',

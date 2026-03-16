@@ -77,20 +77,32 @@ fn ensure_msl_downloaded() -> std::io::Result<PathBuf> {
 }
 
 fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
+    let has_modelica_versioned = msl_dir.join("Modelica 4.1.0").is_dir();
+    let has_modelica_services_versioned = msl_dir.join("ModelicaServices 4.1.0").is_dir();
+    let has_modelica_reference_versioned = msl_dir.join("ModelicaReference 4.1.0").is_dir();
+
     WalkDir::new(msl_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
             let path = e.path();
             let path_str = path.to_string_lossy();
+            let is_unversioned_alias = path
+                .strip_prefix(msl_dir)
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .and_then(|component| component.as_os_str().to_str())
+                .is_some_and(|top| {
+                    (top == "Modelica" && has_modelica_versioned)
+                        || (top == "ModelicaServices" && has_modelica_services_versioned)
+                        || (top == "ModelicaReference" && has_modelica_reference_versioned)
+                });
             path.is_file()
                 && path.extension().is_some_and(|ext| ext == "mo")
                 && !path_str.contains("Obsolete")
                 && !path_str.contains("ModelicaTestConversion")
                 && !path_str.contains("ModelicaTest/")
-                && !path.components().any(|c| {
-                    c.as_os_str().to_string_lossy().contains(' ')
-                })
+                && !is_unversioned_alias
         })
         .map(|e| e.path().to_path_buf())
         .collect()

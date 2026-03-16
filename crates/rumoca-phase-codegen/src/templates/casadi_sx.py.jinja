@@ -20,6 +20,15 @@ def _sum(x):
         return ca.sum1(ca.vertcat(*x))
     return ca.sum1(x)
 
+def pre(x):
+    """Modelica pre() operator for CasADi.
+
+    During continuous integration, pre(x) = x since events are not handled
+    mid-step. A full event-driven simulation driver would snapshot discrete
+    variables at event boundaries and substitute them here.
+    """
+    return x
+
 {# Configuration for render_expr - CasADi/Python style #}
 {% set cfg = {"prefix": "ca.", "power": "**", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} %}
 {% macro var_size(vars) -%}
