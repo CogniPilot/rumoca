@@ -828,117 +828,31 @@ fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinj
     let Some(len) = body.len() else {
         return Ok(false);
     };
-    // Walk all statements looking for a FunctionCall to self
-    for i in 0..len {
-        let Ok(stmt) = body.get_item(&Value::from(i)) else {
-            continue;
-        };
-        if stmt_contains_self_call(&stmt, &name_str) {
-            return Ok(true);
-        }
+    // Only match trivial bodies: exactly one assignment whose RHS is a direct
+    // FunctionCall to self (e.g. `result := sin(u)`). This avoids matching
+    // complex functions that happen to contain a nested self-reference.
+    if len != 1 {
+        return Ok(false);
+    }
+    let Ok(stmt) = body.get_item(&Value::from(0)) else {
+        return Ok(false);
+    };
+    let Ok(assign) = get_field(&stmt, "Assignment") else {
+        return Ok(false);
+    };
+    let Ok(value) = get_field(&assign, "value") else {
+        return Ok(false);
+    };
+    // Check if value is a direct FunctionCall to self
+    if let Ok(func_call) = get_field(&value, "FunctionCall")
+        && let Ok(name) = get_field(&func_call, "name")
+    {
+        let call_name = get_field(&name, "0")
+            .map(|v| v.to_string().replace('"', ""))
+            .unwrap_or_else(|_| name.to_string().replace('"', ""));
+        return Ok(call_name == name_str);
     }
     Ok(false)
-}
-
-/// Recursively check if a statement or expression contains a FunctionCall to `name`.
-fn stmt_contains_self_call(stmt: &Value, name: &str) -> bool {
-    // Check Assignment: { comp, value }
-    if let Ok(assign) = get_field(stmt, "Assignment")
-        && let Ok(value) = get_field(&assign, "value")
-    {
-        return expr_contains_self_call(&value, name);
-    }
-    // Check FunctionCall statement: { comp, args, outputs }
-    if let Ok(func_call) = get_field(stmt, "FunctionCall")
-        && let Ok(comp) = get_field(&func_call, "comp")
-    {
-        let raw = get_field(&comp, "name")
-            .and_then(|n| get_field(&n, "0").or_else(|_| Ok(n.clone())))
-            .map(|v| v.to_string().replace('"', ""))
-            .unwrap_or_default();
-        if raw == name {
-            return true;
-        }
-    }
-    // Check If statement branches (cond_blocks + else_block)
-    if let Ok(if_stmt) = get_field(stmt, "If") {
-        if let Ok(cond_blocks) = get_field(&if_stmt, "cond_blocks")
-            && list_any(&cond_blocks, |block| {
-                get_field(&block, "stmts")
-                    .map(|stmts| list_any(&stmts, |s| stmt_contains_self_call(&s, name)))
-                    .unwrap_or(false)
-            })
-        {
-            return true;
-        }
-        if let Ok(else_block) = get_field(&if_stmt, "else_block")
-            && list_any(&else_block, |s| stmt_contains_self_call(&s, name))
-        {
-            return true;
-        }
-    }
-    // Check For loop body
-    if let Ok(for_stmt) = get_field(stmt, "For")
-        && let Ok(equations) = get_field(&for_stmt, "equations")
-        && list_any(&equations, |s| stmt_contains_self_call(&s, name))
-    {
-        return true;
-    }
-    false
-}
-
-/// Check if an expression contains a FunctionCall to `name`.
-fn expr_contains_self_call(expr: &Value, name: &str) -> bool {
-    if let Ok(func_call) = get_field(expr, "FunctionCall") {
-        if let Ok(call_name) = get_field(&func_call, "name") {
-            let raw = get_field(&call_name, "0")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|_| call_name.to_string());
-            let raw = raw.replace('"', "");
-            if raw == name {
-                return true;
-            }
-        }
-        // Also check arguments for nested self-calls
-        if let Ok(args) = get_field(&func_call, "args")
-            && list_any(&args, |arg| expr_contains_self_call(&arg, name))
-        {
-            return true;
-        }
-    }
-    if let Ok(binary) = get_field(expr, "Binary") {
-        if let Ok(lhs) = get_field(&binary, "lhs")
-            && expr_contains_self_call(&lhs, name)
-        {
-            return true;
-        }
-        if let Ok(rhs) = get_field(&binary, "rhs")
-            && expr_contains_self_call(&rhs, name)
-        {
-            return true;
-        }
-    }
-    if let Ok(unary) = get_field(expr, "Unary")
-        && let Ok(rhs) = get_field(&unary, "rhs")
-        && expr_contains_self_call(&rhs, name)
-    {
-        return true;
-    }
-    if let Ok(if_expr) = get_field(expr, "If")
-        && let Ok(branches) = get_field(&if_expr, "branches")
-        && list_any(&branches, |branch| {
-            let cond_has_self = get_field(&branch, "condition")
-                .map(|cond| expr_contains_self_call(&cond, name))
-                .unwrap_or(false);
-            let then_has_self = get_field(&branch, "then")
-                .map(|then| expr_contains_self_call(&then, name))
-                .unwrap_or(false);
-            cond_has_self || then_has_self
-        })
-    {
-        return true;
-    }
-    false
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.
