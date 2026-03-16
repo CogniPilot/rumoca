@@ -17,6 +17,11 @@ sp.Symbol("{{ name }}")
 {% if group | length > 0 %}
 {% for name, var in group | items %}
         {{ name | sanitize }} = {{ symbol_expr(name, var) }}
+{% if var.dims is defined and var.dims | length == 1 %}
+{% for i in range(1, var.dims[0] + 1) %}
+        {{ name | sanitize }}_{{ i }} = {{ name | sanitize }}[{{ i }}]
+{% endfor %}
+{% endif %}
 {% endfor %}
         self.{{ attr }}, self.{{ attr }}_start, self.{{ attr }}_index = _vector([
 {%- for name, var in group | items %}
