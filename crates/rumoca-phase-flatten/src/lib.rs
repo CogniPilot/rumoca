@@ -39,6 +39,7 @@ mod enum_literals;
 mod equations;
 mod errors;
 mod flat_eval;
+mod function_lowering;
 mod functions;
 mod outer_refs;
 mod path_utils;

@@ -1,0 +1,746 @@
+//! DAE-level lowering passes for code generation.
+//!
+//! This module contains record function parameter decomposition, array size
+//! argument insertion, and parameter dependency sorting that operate on the
+//! DAE IR before code generation.
+
+use indexmap::IndexSet;
+use rumoca_ir_dae as dae;
+use std::collections::HashMap;
+
+type Dae = dae::Dae;
+
+// =============================================================================
+// Record function parameter decomposition (DAE level)
+// =============================================================================
+
+/// Known record types and their field names for decomposition.
+const KNOWN_RECORD_FIELDS: &[(&str, &[&str])] = &[
+    ("Complex", &["re", "im"]),
+    ("Modelica.Units.SI.ComplexVoltage", &["re", "im"]),
+    ("Modelica.Units.SI.ComplexCurrent", &["re", "im"]),
+];
+
+fn dae_record_fields(type_name: &str) -> Option<&'static [&'static str]> {
+    for &(name, fields) in KNOWN_RECORD_FIELDS {
+        if type_name == name || type_name.ends_with(&format!(".{name}")) {
+            return Some(fields);
+        }
+    }
+    None
+}
+
+/// Decompose record-typed function params in the DAE. This rewrites function
+/// signatures (replacing `c: Complex` with `c_re, c_im: Real`) and decomposes
+/// call-site arguments throughout all DAE equations.
+/// Decompose record-typed function params in the DAE for code generators.
+/// Must NOT be called before simulation — only before codegen rendering.
+pub fn lower_record_function_params_dae(dae: &mut Dae) {
+    // Identify functions with record params and rewrite their signatures.
+    let mut decomp_map: HashMap<String, Vec<(usize, Vec<&'static str>)>> = HashMap::new();
+
+    for (func_name, func) in dae.functions.iter_mut() {
+        let mut decomposed: Vec<(usize, String, Vec<&'static str>)> = Vec::new();
+        for (idx, input) in func.inputs.iter().enumerate() {
+            if let Some(fields) = dae_record_fields(&input.type_name) {
+                decomposed.push((idx, input.name.clone(), fields.to_vec()));
+            }
+        }
+        if decomposed.is_empty() {
+            continue;
+        }
+
+        // Replace record inputs with scalar field inputs
+        let old_inputs = std::mem::take(&mut func.inputs);
+        for (idx, input) in old_inputs.into_iter().enumerate() {
+            let Some((_, param_name, fields)) = decomposed.iter().find(|(i, _, _)| *i == idx)
+            else {
+                func.inputs.push(input);
+                continue;
+            };
+            for field in fields {
+                func.inputs.push(dae::FunctionParam {
+                    name: format!("{param_name}_{field}"),
+                    type_name: "Real".to_string(),
+                    dims: vec![],
+                    default: None,
+                    description: None,
+                });
+            }
+        }
+
+        let entry: Vec<(usize, Vec<&str>)> = decomposed
+            .iter()
+            .map(|(idx, _, fields)| (*idx, fields.clone()))
+            .collect();
+        decomp_map.insert(func_name.as_str().to_string(), entry);
+    }
+
+    if decomp_map.is_empty() {
+        return;
+    }
+
+    // Rewrite call sites in all DAE equations and function bodies.
+    for eq in &mut dae.f_x {
+        decompose_record_args_dae_expr(&mut eq.rhs, &decomp_map);
+    }
+    for eq in &mut dae.f_z {
+        decompose_record_args_dae_expr(&mut eq.rhs, &decomp_map);
+    }
+    for eq in &mut dae.f_m {
+        decompose_record_args_dae_expr(&mut eq.rhs, &decomp_map);
+    }
+    for eq in &mut dae.f_c {
+        decompose_record_args_dae_expr(&mut eq.rhs, &decomp_map);
+    }
+    for eq in &mut dae.initial_equations {
+        decompose_record_args_dae_expr(&mut eq.rhs, &decomp_map);
+    }
+    for func in dae.functions.values_mut() {
+        for stmt in &mut func.body {
+            decompose_record_args_dae_stmt(stmt, &decomp_map);
+        }
+    }
+}
+
+fn decompose_record_args_dae_stmt(
+    stmt: &mut dae::Statement,
+    map: &HashMap<String, Vec<(usize, Vec<&str>)>>,
+) {
+    match stmt {
+        dae::Statement::Assignment { value, .. } => {
+            decompose_record_args_dae_expr(value, map);
+        }
+        dae::Statement::For { indices, equations } => {
+            for idx in indices {
+                decompose_record_args_dae_expr(&mut idx.range, map);
+            }
+            for inner in equations {
+                decompose_record_args_dae_stmt(inner, map);
+            }
+        }
+        dae::Statement::While(block) => {
+            decompose_record_args_dae_expr(&mut block.cond, map);
+            for inner in &mut block.stmts {
+                decompose_record_args_dae_stmt(inner, map);
+            }
+        }
+        dae::Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                decompose_record_args_dae_expr(&mut block.cond, map);
+                for inner in &mut block.stmts {
+                    decompose_record_args_dae_stmt(inner, map);
+                }
+            }
+            if let Some(stmts) = else_block {
+                for inner in stmts {
+                    decompose_record_args_dae_stmt(inner, map);
+                }
+            }
+        }
+        dae::Statement::FunctionCall { args, outputs, .. } => {
+            for arg in args.iter_mut() {
+                decompose_record_args_dae_expr(arg, map);
+            }
+            for out in outputs {
+                decompose_record_args_dae_expr(out, map);
+            }
+        }
+        dae::Statement::Reinit { value, .. } => {
+            decompose_record_args_dae_expr(value, map);
+        }
+        dae::Statement::Assert {
+            condition,
+            message,
+            level,
+        } => {
+            decompose_record_args_dae_expr(condition, map);
+            decompose_record_args_dae_expr(message, map);
+            if let Some(l) = level {
+                decompose_record_args_dae_expr(l, map);
+            }
+        }
+        dae::Statement::When(blocks) => {
+            for block in blocks {
+                decompose_record_args_dae_expr(&mut block.cond, map);
+                for inner in &mut block.stmts {
+                    decompose_record_args_dae_stmt(inner, map);
+                }
+            }
+        }
+        dae::Statement::Empty | dae::Statement::Return | dae::Statement::Break => {}
+    }
+}
+
+fn decompose_record_args_dae_expr(
+    expr: &mut dae::Expression,
+    map: &HashMap<String, Vec<(usize, Vec<&str>)>>,
+) {
+    match expr {
+        dae::Expression::FunctionCall { name, args, .. } => {
+            for arg in args.iter_mut() {
+                decompose_record_args_dae_expr(arg, map);
+            }
+            let Some(decomposed) = map.get(name.as_str()) else {
+                return;
+            };
+            let old_args = std::mem::take(args);
+            let mut old_idx = 0;
+            for (param_idx, fields) in decomposed {
+                while old_idx < *param_idx && old_idx < old_args.len() {
+                    args.push(old_args[old_idx].clone());
+                    old_idx += 1;
+                }
+                if old_idx < old_args.len() {
+                    expand_dae_record_arg(&old_args[old_idx], fields, args);
+                    old_idx += 1;
+                }
+            }
+            while old_idx < old_args.len() {
+                args.push(old_args[old_idx].clone());
+                old_idx += 1;
+            }
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            decompose_record_args_dae_expr(lhs, map);
+            decompose_record_args_dae_expr(rhs, map);
+        }
+        dae::Expression::Unary { rhs, .. } => {
+            decompose_record_args_dae_expr(rhs, map);
+        }
+        dae::Expression::BuiltinCall { args, .. } => {
+            for arg in args {
+                decompose_record_args_dae_expr(arg, map);
+            }
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (c, t) in branches {
+                decompose_record_args_dae_expr(c, map);
+                decompose_record_args_dae_expr(t, map);
+            }
+            decompose_record_args_dae_expr(else_branch, map);
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+            for e in elements {
+                decompose_record_args_dae_expr(e, map);
+            }
+        }
+        dae::Expression::Range { start, step, end } => {
+            decompose_record_args_dae_expr(start, map);
+            if let Some(s) = step {
+                decompose_record_args_dae_expr(s, map);
+            }
+            decompose_record_args_dae_expr(end, map);
+        }
+        dae::Expression::Index { base, .. } | dae::Expression::FieldAccess { base, .. } => {
+            decompose_record_args_dae_expr(base, map);
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            decompose_record_args_dae_expr(expr, map);
+            for idx in indices {
+                decompose_record_args_dae_expr(&mut idx.range, map);
+            }
+            if let Some(f) = filter {
+                decompose_record_args_dae_expr(f, map);
+            }
+        }
+        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {}
+    }
+}
+
+fn named_constructor_arg_dae<'a>(
+    ctor_args: &'a [dae::Expression],
+    field: &str,
+) -> Option<&'a dae::Expression> {
+    for arg in ctor_args {
+        if let dae::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: true,
+        } = arg
+            && name.as_str().strip_prefix("__rumoca_named_arg__.") == Some(field)
+        {
+            return args.first();
+        }
+    }
+    None
+}
+
+fn expand_dae_record_arg(arg: &dae::Expression, fields: &[&str], out: &mut Vec<dae::Expression>) {
+    // Constructor call → extract positional/named args
+    if let dae::Expression::FunctionCall {
+        args: ctor_args,
+        is_constructor: true,
+        ..
+    } = arg
+    {
+        let positional: Vec<&dae::Expression> = ctor_args
+            .iter()
+            .filter(|a| {
+                !matches!(a, dae::Expression::FunctionCall { is_constructor: true, name, .. }
+                if name.as_str().starts_with("__rumoca_named_arg__."))
+            })
+            .collect();
+
+        for (i, field) in fields.iter().enumerate() {
+            let named = named_constructor_arg_dae(ctor_args, field);
+            if let Some(val) = named {
+                out.push(val.clone());
+            } else if i < positional.len() {
+                out.push(positional[i].clone());
+            } else {
+                out.push(dae::Expression::Literal(dae::Literal::Real(0.0)));
+            }
+        }
+        return;
+    }
+
+    // Variable reference → emit field VarRefs
+    if let dae::Expression::VarRef { name, .. } = arg {
+        for field in fields {
+            out.push(dae::Expression::VarRef {
+                name: dae::VarName::new(format!("{}.{}", name.as_str(), field)),
+                subscripts: vec![],
+            });
+        }
+        return;
+    }
+
+    // Check for FieldAccess on the record variable (e.g. `c.re` passed directly)
+    if let dae::Expression::FieldAccess { .. } = arg {
+        // Single field access on a record — just push the base.field expression
+        // This handles cases like passing `c.re` where `c` was the original record param.
+        out.push(arg.clone());
+        // Pad remaining fields with 0.0
+        for _ in 1..fields.len() {
+            out.push(dae::Expression::Literal(dae::Literal::Real(0.0)));
+        }
+        return;
+    }
+
+    // Scalar expression passed to a record-typed parameter (e.g. Real expr passed
+    // where Complex is expected) — treat as the first field, zero-fill the rest.
+    // This avoids generating invalid C like `(expr).re`.
+    if is_obviously_scalar(arg) {
+        out.push(arg.clone());
+        for _ in 1..fields.len() {
+            out.push(dae::Expression::Literal(dae::Literal::Real(0.0)));
+        }
+        return;
+    }
+
+    // General expression → emit FieldAccess
+    for field in fields {
+        out.push(dae::Expression::FieldAccess {
+            base: Box::new(arg.clone()),
+            field: field.to_string(),
+        });
+    }
+}
+
+/// Returns true if the expression is obviously a scalar (not a record type).
+fn is_obviously_scalar(expr: &dae::Expression) -> bool {
+    match expr {
+        dae::Expression::Literal(_) => true,
+        dae::Expression::Binary { .. } | dae::Expression::Unary { .. } => true,
+        dae::Expression::BuiltinCall { function, .. } => {
+            // Math builtins return scalars
+            matches!(
+                function,
+                dae::BuiltinFunction::Abs
+                    | dae::BuiltinFunction::Sign
+                    | dae::BuiltinFunction::Sqrt
+                    | dae::BuiltinFunction::Sin
+                    | dae::BuiltinFunction::Cos
+                    | dae::BuiltinFunction::Tan
+                    | dae::BuiltinFunction::Asin
+                    | dae::BuiltinFunction::Acos
+                    | dae::BuiltinFunction::Atan
+                    | dae::BuiltinFunction::Atan2
+                    | dae::BuiltinFunction::Sinh
+                    | dae::BuiltinFunction::Cosh
+                    | dae::BuiltinFunction::Tanh
+                    | dae::BuiltinFunction::Exp
+                    | dae::BuiltinFunction::Log
+                    | dae::BuiltinFunction::Log10
+                    | dae::BuiltinFunction::Floor
+                    | dae::BuiltinFunction::Ceil
+                    | dae::BuiltinFunction::Min
+                    | dae::BuiltinFunction::Max
+                    | dae::BuiltinFunction::Sum
+                    | dae::BuiltinFunction::Size
+                    | dae::BuiltinFunction::Der
+                    | dae::BuiltinFunction::Pre
+                    | dae::BuiltinFunction::Mod
+                    | dae::BuiltinFunction::Rem
+                    | dae::BuiltinFunction::Div
+            )
+        }
+        dae::Expression::If { else_branch, .. } => is_obviously_scalar(else_branch),
+        // User-defined function calls return scalar double in generated C
+        dae::Expression::FunctionCall { .. } => true,
+        _ => false,
+    }
+}
+
+/// Insert size arguments for variable-size array params at DAE call sites.
+/// Must NOT be called before simulation — only before codegen rendering.
+pub fn insert_array_size_args_dae(dae: &mut Dae) {
+    let array_param_map: HashMap<String, Vec<usize>> = dae
+        .functions
+        .iter()
+        .filter_map(|(name, func)| {
+            let indices: Vec<usize> = func
+                .inputs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| !p.dims.is_empty())
+                .map(|(i, _)| i)
+                .collect();
+            if indices.is_empty() {
+                None
+            } else {
+                Some((name.as_str().to_string(), indices))
+            }
+        })
+        .collect();
+
+    if array_param_map.is_empty() {
+        return;
+    }
+
+    for eq in &mut dae.f_x {
+        insert_size_args_dae_expr(&mut eq.rhs, &array_param_map);
+    }
+    for eq in &mut dae.f_z {
+        insert_size_args_dae_expr(&mut eq.rhs, &array_param_map);
+    }
+    for eq in &mut dae.f_m {
+        insert_size_args_dae_expr(&mut eq.rhs, &array_param_map);
+    }
+    for func in dae.functions.values_mut() {
+        for stmt in &mut func.body {
+            insert_size_args_dae_stmt(stmt, &array_param_map);
+        }
+    }
+}
+
+fn insert_size_args_dae_stmt(stmt: &mut dae::Statement, map: &HashMap<String, Vec<usize>>) {
+    match stmt {
+        dae::Statement::Assignment { value, .. } => insert_size_args_dae_expr(value, map),
+        dae::Statement::For { indices, equations } => {
+            for idx in indices {
+                insert_size_args_dae_expr(&mut idx.range, map);
+            }
+            for inner in equations {
+                insert_size_args_dae_stmt(inner, map);
+            }
+        }
+        dae::Statement::While(block) => {
+            insert_size_args_dae_expr(&mut block.cond, map);
+            for inner in &mut block.stmts {
+                insert_size_args_dae_stmt(inner, map);
+            }
+        }
+        dae::Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            for block in cond_blocks {
+                insert_size_args_dae_expr(&mut block.cond, map);
+                for inner in &mut block.stmts {
+                    insert_size_args_dae_stmt(inner, map);
+                }
+            }
+            if let Some(stmts) = else_block {
+                for inner in stmts {
+                    insert_size_args_dae_stmt(inner, map);
+                }
+            }
+        }
+        dae::Statement::FunctionCall { args, outputs, .. } => {
+            for arg in args.iter_mut() {
+                insert_size_args_dae_expr(arg, map);
+            }
+            for out in outputs {
+                insert_size_args_dae_expr(out, map);
+            }
+        }
+        dae::Statement::Reinit { value, .. } => insert_size_args_dae_expr(value, map),
+        dae::Statement::Assert {
+            condition,
+            message,
+            level,
+        } => {
+            insert_size_args_dae_expr(condition, map);
+            insert_size_args_dae_expr(message, map);
+            if let Some(l) = level {
+                insert_size_args_dae_expr(l, map);
+            }
+        }
+        dae::Statement::When(blocks) => {
+            for block in blocks {
+                insert_size_args_dae_expr(&mut block.cond, map);
+                for inner in &mut block.stmts {
+                    insert_size_args_dae_stmt(inner, map);
+                }
+            }
+        }
+        dae::Statement::Empty | dae::Statement::Return | dae::Statement::Break => {}
+    }
+}
+
+fn insert_size_args_dae_expr(expr: &mut dae::Expression, map: &HashMap<String, Vec<usize>>) {
+    match expr {
+        dae::Expression::FunctionCall { name, args, .. } => {
+            for arg in args.iter_mut() {
+                insert_size_args_dae_expr(arg, map);
+            }
+            let Some(array_indices) = map.get(name.as_str()) else {
+                return;
+            };
+            let mut new_args = std::mem::take(args);
+            for &param_idx in array_indices.iter().rev() {
+                if param_idx < new_args.len() {
+                    // If the argument is an Array literal with known element count,
+                    // use the literal count directly instead of size() which can't
+                    // be rendered for compound literals in C.
+                    let size_expr = array_size_expr_for_arg(&new_args[param_idx]);
+                    new_args.insert(param_idx + 1, size_expr);
+                }
+            }
+            *args = new_args;
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            insert_size_args_dae_expr(lhs, map);
+            insert_size_args_dae_expr(rhs, map);
+        }
+        dae::Expression::Unary { rhs, .. } => insert_size_args_dae_expr(rhs, map),
+        dae::Expression::BuiltinCall { args, .. } => {
+            for arg in args {
+                insert_size_args_dae_expr(arg, map);
+            }
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (c, t) in branches {
+                insert_size_args_dae_expr(c, map);
+                insert_size_args_dae_expr(t, map);
+            }
+            insert_size_args_dae_expr(else_branch, map);
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
+            for e in elements {
+                insert_size_args_dae_expr(e, map);
+            }
+        }
+        dae::Expression::Range { start, step, end } => {
+            insert_size_args_dae_expr(start, map);
+            if let Some(s) = step {
+                insert_size_args_dae_expr(s, map);
+            }
+            insert_size_args_dae_expr(end, map);
+        }
+        dae::Expression::Index { base, .. } | dae::Expression::FieldAccess { base, .. } => {
+            insert_size_args_dae_expr(base, map);
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            insert_size_args_dae_expr(expr, map);
+            for idx in indices {
+                insert_size_args_dae_expr(&mut idx.range, map);
+            }
+            if let Some(f) = filter {
+                insert_size_args_dae_expr(f, map);
+            }
+        }
+        dae::Expression::VarRef { .. } | dae::Expression::Literal(_) | dae::Expression::Empty => {}
+    }
+}
+
+fn array_size_expr_for_arg(arg: &dae::Expression) -> dae::Expression {
+    if let dae::Expression::Array { elements, .. } = arg {
+        return dae::Expression::Literal(dae::Literal::Integer(elements.len() as i64));
+    }
+
+    dae::Expression::BuiltinCall {
+        function: dae::BuiltinFunction::Size,
+        args: vec![
+            arg.clone(),
+            dae::Expression::Literal(dae::Literal::Integer(1)),
+        ],
+    }
+}
+
+// =============================================================================
+
+/// Topologically sort parameters so that start-value dependencies are ordered.
+///
+/// If parameter A's `start` expression references parameter B, then B must
+/// appear before A in the parameter map. This ensures code generators that
+/// evaluate start values sequentially produce correct numeric results.
+///
+/// Falls back to the original order if cycles are detected.
+pub(crate) fn sort_parameters_by_start_dependency(dae: &mut Dae) {
+    let param_names: IndexSet<dae::VarName> = dae.parameters.keys().cloned().collect();
+    if param_names.len() <= 1 {
+        return;
+    }
+
+    // Build adjacency: param → set of params its start expression depends on
+    let mut deps: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (idx, (_, var)) in dae.parameters.iter().enumerate() {
+        let Some(ref start_expr) = var.start else {
+            continue;
+        };
+        for ref_name in collect_expression_var_refs(start_expr) {
+            let Some(dep_idx) = param_names.get_index_of(&ref_name) else {
+                continue;
+            };
+            if dep_idx != idx {
+                deps.entry(idx).or_default().push(dep_idx);
+            }
+        }
+    }
+
+    // If no dependencies exist, nothing to reorder.
+    if deps.is_empty() {
+        return;
+    }
+
+    // Kahn's algorithm for topological sort
+    let n = param_names.len();
+    let mut in_degree = vec![0usize; n];
+    // Build forward edges: if node depends on dep, then dep → node
+    let mut forward: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (&node, predecessors) in &deps {
+        for &pred in predecessors {
+            forward[pred].push(node);
+            in_degree[node] += 1;
+        }
+    }
+
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for (i, &deg) in in_degree.iter().enumerate() {
+        if deg == 0 {
+            queue.push_back(i);
+        }
+    }
+
+    let mut sorted_indices = Vec::with_capacity(n);
+    while let Some(node) = queue.pop_front() {
+        sorted_indices.push(node);
+        for &next in &forward[node] {
+            in_degree[next] -= 1;
+            if in_degree[next] == 0 {
+                queue.push_back(next);
+            }
+        }
+    }
+
+    if sorted_indices.len() != n {
+        // Cycle detected — keep original order (conservative fallback)
+        return;
+    }
+
+    // Rebuild the parameters IndexMap in sorted order
+    let old_params: Vec<(dae::VarName, dae::Variable)> = dae.parameters.drain(..).collect();
+    for &idx in &sorted_indices {
+        let (name, var) = old_params[idx].clone();
+        dae.parameters.insert(name, var);
+    }
+}
+
+/// Collect all VarRef names from an expression tree.
+fn collect_expression_var_refs(expr: &dae::Expression) -> Vec<dae::VarName> {
+    let mut refs = Vec::new();
+    collect_var_refs_recursive(expr, &mut refs);
+    refs
+}
+
+fn collect_var_refs_recursive(expr: &dae::Expression, refs: &mut Vec<dae::VarName>) {
+    match expr {
+        dae::Expression::VarRef { name, .. } => {
+            refs.push(name.clone());
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            collect_var_refs_recursive(lhs, refs);
+            collect_var_refs_recursive(rhs, refs);
+        }
+        dae::Expression::Unary { rhs, .. } => {
+            collect_var_refs_recursive(rhs, refs);
+        }
+        dae::Expression::BuiltinCall { args, .. } => {
+            for arg in args {
+                collect_var_refs_recursive(arg, refs);
+            }
+        }
+        dae::Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_var_refs_recursive(arg, refs);
+            }
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, then_expr) in branches {
+                collect_var_refs_recursive(cond, refs);
+                collect_var_refs_recursive(then_expr, refs);
+            }
+            collect_var_refs_recursive(else_branch, refs);
+        }
+        dae::Expression::Array { elements, .. } => {
+            for elem in elements {
+                collect_var_refs_recursive(elem, refs);
+            }
+        }
+        dae::Expression::Tuple { elements } => {
+            for elem in elements {
+                collect_var_refs_recursive(elem, refs);
+            }
+        }
+        dae::Expression::Range { start, step, end } => {
+            collect_var_refs_recursive(start, refs);
+            if let Some(step_expr) = step {
+                collect_var_refs_recursive(step_expr, refs);
+            }
+            collect_var_refs_recursive(end, refs);
+        }
+        dae::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+        } => {
+            collect_var_refs_recursive(expr, refs);
+            for idx in indices {
+                collect_var_refs_recursive(&idx.range, refs);
+            }
+            if let Some(f) = filter {
+                collect_var_refs_recursive(f, refs);
+            }
+        }
+        dae::Expression::Index { base, .. } => {
+            collect_var_refs_recursive(base, refs);
+        }
+        dae::Expression::FieldAccess { base, .. } => {
+            collect_var_refs_recursive(base, refs);
+        }
+        dae::Expression::Literal(_) | dae::Expression::Empty => {}
+    }
+}
