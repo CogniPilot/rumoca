@@ -29,8 +29,22 @@ def pre(x):
     """
     return x
 
+def Modelica_ComplexMath_abs(c_re, c_im):
+    """ComplexMath.abs: magnitude of complex number (uses real sqrt)."""
+    return ca.sqrt(ca.power(c_re, 2) + ca.power(c_im, 2))
+
+def Modelica_ComplexMath_sqrt(c1_re, c1_im):
+    """ComplexMath.sqrt: square root of complex number."""
+    r = Modelica_ComplexMath_abs(c1_re, c1_im)
+    phi = ca.atan2(c1_im, c1_re)
+    return ca.sqrt(r) * ca.cos(phi / 2.0)
+
+def Modelica_ComplexMath_arg(c_re, c_im):
+    """ComplexMath.arg: argument (phase angle) of complex number."""
+    return ca.atan2(c_im, c_re)
+
 {# Configuration for render_expr - CasADi/Python style #}
-{% set cfg = {"prefix": "ca.", "power": "**", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} %}
+{% set cfg = {"prefix": "ca.", "power": "**", "power_fn": "ca.power", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} %}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
 {%- for name, var in vars | items -%}

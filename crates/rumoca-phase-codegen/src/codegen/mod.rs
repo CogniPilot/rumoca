@@ -15,6 +15,7 @@ use rumoca_ir_flat as flat;
 use serde_json::json;
 use std::path::Path;
 
+mod render_c;
 mod render_expr;
 mod render_stmt;
 
@@ -278,6 +279,7 @@ fn create_environment() -> Environment<'static> {
     // Custom filters
     env.add_filter("sanitize", sanitize_filter);
     env.add_filter("product", product_filter);
+    env.add_filter("last_segment", last_segment_filter);
 
     // Custom functions for expression rendering
     env.add_function("render_expr", render_expr_function);
@@ -293,12 +295,64 @@ fn create_environment() -> Environment<'static> {
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
 
+    // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
+    env.add_function("ode_rhs", render_c::ode_rhs_function);
+    // Find derivative expression for a specific state variable
+    env.add_function("ode_rhs_for_state", render_c::ode_rhs_for_state_function);
+
+    // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
+    env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
+
+    // Index into an array expression to render element i (1-based)
+    env.add_function(
+        "render_expr_at_index",
+        render_c::render_expr_at_index_function,
+    );
+
+    // Check if an expression is a string literal (for C codegen)
+    env.add_function("is_string_literal", render_c::is_string_literal_function);
+
+    // Check if a function has Complex-typed parameters
+    env.add_function("has_complex_params", render_c::has_complex_params_function);
+
     env
 }
 
-/// Filter to sanitize variable names (replace dots with underscores).
+/// Python keywords that cannot be used as identifiers.
+const PYTHON_KEYWORDS: &[&str] = &[
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+/// Filter to sanitize variable names for target language identifiers.
+///
+/// Replaces dots and other non-identifier characters with underscores,
+/// and appends `_` to Python keywords.
 fn sanitize_filter(value: Value) -> String {
-    value.to_string().replace('.', "_")
+    let s = value.to_string();
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            result.push(ch);
+        } else {
+            result.push('_');
+        }
+    }
+    // Escape Python keywords by appending underscore
+    if PYTHON_KEYWORDS.contains(&result.as_str()) {
+        result.push('_');
+    }
+    result
+}
+
+/// Filter to extract the last dot-separated segment of a name.
+///
+/// Used in templates: `{{ "Modelica.Math.sin" | last_segment }}` -> `"sin"`
+fn last_segment_filter(value: Value) -> String {
+    let s = value.to_string().replace('"', "");
+    s.rsplit('.').next().unwrap_or(&s).to_string()
 }
 
 /// Filter to compute the product of all elements in a sequence.
@@ -464,6 +518,9 @@ pub(crate) struct ExprConfig {
     pub(crate) modelica_builtins: bool,
     /// Optional function for element-wise multiply (e.g., `ca.times` for CasADi).
     pub(crate) mul_elem_fn: Option<String>,
+    /// Optional function-call form for power (e.g., `ca.power` for CasADi).
+    /// When set, `a^b` renders as `power_fn(a, b)` instead of `a ** b`.
+    pub(crate) power_fn: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -493,6 +550,7 @@ impl Default for ExprConfig {
             one_based_index: false,
             modelica_builtins: false,
             mul_elem_fn: None,
+            power_fn: None,
         }
     }
 }
@@ -564,6 +622,11 @@ impl ExprConfig {
             && !s.is_empty()
         {
             cfg.mul_elem_fn = Some(s);
+        }
+        if let Some(s) = get_str_attr(v, "power_fn")
+            && !s.is_empty()
+        {
+            cfg.power_fn = Some(s);
         }
 
         cfg

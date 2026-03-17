@@ -209,6 +209,10 @@ struct ExportFmuArgs {
     /// Output directory for generated FMU sources (default: <MODEL>.fmu/)
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Skip compiling and packaging the .fmu archive (only generate sources)
+    #[arg(long, default_value_t = false)]
+    no_build: bool,
 }
 
 #[derive(Args, Debug)]
@@ -598,10 +602,14 @@ fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
     write_fmu_cmake(&sources_dir, &model_identifier)?;
     write_fmu_build_script(&out_dir, &model_identifier)?;
 
-    eprintln!(
-        "\nFMU sources exported to: {}\nRun ./build.sh to compile and package the .fmu",
-        out_dir.display()
-    );
+    if args.no_build {
+        eprintln!(
+            "\nFMU sources exported to: {}\nRun ./build.sh to compile and package the .fmu",
+            out_dir.display()
+        );
+    } else {
+        build_fmu(&out_dir, &model_identifier)?;
+    }
 
     Ok(())
 }
@@ -678,6 +686,96 @@ echo "Created {ident}.fmu"
         std::fs::set_permissions(&build_script_path, std::fs::Permissions::from_mode(0o755))?;
     }
     eprintln!("  wrote {}", build_script_path.display());
+    Ok(())
+}
+
+/// Compile the generated C source into a shared library and package as .fmu.
+fn build_fmu(out_dir: &Path, model_identifier: &str) -> Result<()> {
+    use std::process::Command;
+
+    // Detect platform
+    let (platform, lib_ext) = if cfg!(target_os = "linux") {
+        ("linux64", "so")
+    } else if cfg!(target_os = "macos") {
+        ("darwin64", "dylib")
+    } else if cfg!(target_os = "windows") {
+        ("win64", "dll")
+    } else {
+        bail!("Unsupported platform for FMU packaging");
+    };
+
+    // Compile shared library
+    let bin_dir = out_dir.join("binaries").join(platform);
+    std::fs::create_dir_all(&bin_dir)?;
+
+    let c_path = out_dir
+        .join("sources")
+        .join(format!("{model_identifier}.c"));
+    let lib_path = bin_dir.join(format!("{model_identifier}.{lib_ext}"));
+
+    eprintln!("  compiling {}", c_path.display());
+    let status = Command::new("cc")
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&lib_path)
+        .arg(&c_path)
+        .arg("-lm")
+        .status()?;
+
+    if !status.success() {
+        bail!(
+            "C compiler failed with exit code {}",
+            status.code().unwrap_or(-1)
+        );
+    }
+    eprintln!("  wrote {}", lib_path.display());
+
+    // Package as .fmu (ZIP archive)
+    let fmu_path = out_dir.join(format!("{model_identifier}.fmu"));
+    create_fmu_zip(out_dir, &fmu_path)?;
+    eprintln!("\nCreated {}", fmu_path.display());
+
+    Ok(())
+}
+
+/// Create the .fmu ZIP archive containing modelDescription.xml, binaries/, and sources/.
+fn create_fmu_zip(out_dir: &Path, fmu_path: &Path) -> Result<()> {
+    use std::io::{Read as _, Write as _};
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    let file = std::fs::File::create(fmu_path)?;
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    // Walk the output directory and add relevant files
+    for entry in walkdir::WalkDir::new(out_dir) {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Skip the .fmu file itself and build.sh
+        if path == fmu_path || path == out_dir.join("build.sh") {
+            continue;
+        }
+
+        let rel_path = path.strip_prefix(out_dir)?;
+        let rel_str = rel_path.to_string_lossy();
+
+        if rel_str.is_empty() {
+            continue;
+        }
+
+        if entry.file_type().is_dir() {
+            zip.add_directory(format!("{rel_str}/"), options)?;
+        } else {
+            zip.start_file(rel_str.to_string(), options)?;
+            let mut f = std::fs::File::open(path)?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            zip.write_all(&buf)?;
+        }
+    }
+
+    zip.finish()?;
     Ok(())
 }
 
@@ -1170,7 +1268,7 @@ fn completion_script(shell: CompletionShell) -> String {
         "--model --library --json --template-file --template-prepared --verbose --debug";
     let simulate_opts = "--model --library --t-end --dt --solver --output --verbose --debug";
     let check_opts = "--model --library --verbose --debug";
-    let export_fmu_opts = "--model --library --output --verbose --debug";
+    let export_fmu_opts = "--model --library --output --no-build --verbose --debug";
     let completion_opts = "bash zsh fish powershell";
     match shell {
         CompletionShell::Bash => format!(
