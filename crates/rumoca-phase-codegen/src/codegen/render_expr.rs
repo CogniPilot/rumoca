@@ -91,8 +91,37 @@ fn render_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
     {
         return Ok(format!("{func}({lhs}, {rhs})"));
     }
+    // Use function-call form for power when power_fn is configured
+    // (avoids CasADi MX __pow__ SystemError with integer exponents),
+    // or when the power config starts with an alphabetic character
+    // (e.g., "pow" for C targets).
+    if is_exp_op(&op_value) {
+        if let Some(ref power_fn) = cfg.power_fn {
+            return Ok(format!("{power_fn}({lhs}, {rhs})"));
+        }
+        if cfg
+            .power
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            return Ok(format!("{}({lhs}, {rhs})", cfg.power));
+        }
+    }
+    // Use function-call form for logical operators when the op string
+    // looks like a function name (contains '.', e.g. "ca.logic_and").
+    if get_field(&op_value, "And").is_ok() && cfg.and_op.contains('.') {
+        return Ok(format!("{}({}, {})", cfg.and_op, lhs, rhs));
+    }
+    if get_field(&op_value, "Or").is_ok() && cfg.or_op.contains('.') {
+        return Ok(format!("{}({}, {})", cfg.or_op, lhs, rhs));
+    }
     let op_str = get_binop_string(&op_value, cfg)?;
     Ok(format!("({lhs} {op_str} {rhs})"))
+}
+
+pub(crate) fn is_exp_op(op: &Value) -> bool {
+    get_field(op, "Exp").is_ok() || get_field(op, "ExpElem").is_ok()
 }
 
 pub(crate) fn is_mul_elem_op(op: &Value) -> bool {
@@ -148,9 +177,13 @@ fn render_unary(unary: &Value, cfg: &ExprConfig) -> RenderResult {
     let rhs = get_field(unary, "rhs")
         .and_then(|v| render_expression(&v, cfg))
         .map_err(|_| render_err("Unary expression missing 'rhs' field"))?;
-    let op_str = get_field(unary, "op")
-        .and_then(|o| get_unop_string(&o, cfg))
-        .map_err(|_| render_err("Unary expression missing 'op' field"))?;
+    let op =
+        get_field(unary, "op").map_err(|_| render_err("Unary expression missing 'op' field"))?;
+    // Use function-call form for Not when not_op is a function (contains '.').
+    if get_field(&op, "Not").is_ok() && cfg.not_op.contains('.') {
+        return Ok(format!("{}({})", cfg.not_op, rhs));
+    }
+    let op_str = get_unop_string(&op, cfg)?;
     Ok(format!("({op_str}{rhs})"))
 }
 
@@ -241,6 +274,32 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         .map(|f| f.to_string())
         .unwrap_or_default();
 
+    // Strip semantic wrappers that don't map to any runtime function.
+    // These must be handled before render_args() to avoid rendering the
+    // wrapper arguments as a flat list.
+    match func_name.as_str() {
+        "Smooth" | "NoEvent" | "Homotopy" => {
+            let args_val = get_field(builtin, "args")?;
+            // Smooth: arg[1] is the expression (arg[0] is smoothness order)
+            // Homotopy: arg[0] is the actual expression (arg[1] is simplified)
+            // NoEvent: arg[0] is the expression
+            let idx = if func_name == "Smooth" { 1 } else { 0 };
+            if let Ok(inner) = args_val.get_item(&Value::from(idx)) {
+                return render_expression(&inner, cfg);
+            }
+            if let Ok(inner) = args_val.get_item(&Value::from(0)) {
+                return render_expression(&inner, cfg);
+            }
+            return Ok("0".to_string());
+        }
+        "Sample" => {
+            // sample(start, interval) is a clocked partition builtin.
+            // In continuous simulation, treat as always-true (MLS §16.3).
+            return Ok(cfg.true_val.clone());
+        }
+        _ => {}
+    }
+
     let args = render_args(builtin, cfg)?;
 
     if cfg.modelica_builtins {
@@ -270,7 +329,7 @@ fn render_builtin_modelica(func_name: &str, args: &str, _cfg: &ExprConfig) -> St
         "Exp" => format!("exp({})", args),
         "Log" => format!("log({})", args),
         "Log10" => format!("log10({})", args),
-        "Floor" => format!("floor({})", args),
+        "Floor" | "Integer" => format!("floor({})", args),
         "Ceil" => format!("ceil({})", args),
         "Min" => format!("min({})", args),
         "Max" => format!("max({})", args),
@@ -308,7 +367,7 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Exp" => format!("{}exp({})", cfg.prefix, args),
         "Log" => format!("{}log({})", cfg.prefix, args),
         "Log10" => format!("{}log10({})", cfg.prefix, args),
-        "Floor" => format!("{}floor({})", cfg.prefix, args),
+        "Floor" | "Integer" => format!("{}floor({})", cfg.prefix, args),
         "Ceil" => format!("{}ceil({})", cfg.prefix, args),
         "Min" => format!("{}fmin({})", cfg.prefix, args),
         "Max" => format!("{}fmax({})", cfg.prefix, args),
