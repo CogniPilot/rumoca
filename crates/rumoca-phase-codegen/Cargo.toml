@@ -11,7 +11,6 @@ rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-core = { workspace = true }
-rumoca-phase-dae = { workspace = true }
 minijinja = { workspace = true }
 miette = { workspace = true }
 serde_json = { workspace = true }
