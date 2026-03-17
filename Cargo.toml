@@ -93,6 +93,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = "3.0"
 walkdir = "2.5"
+zip = "2.4"
 # LSP types (usable from WASM and native, must match tower-lsp's version)
 lsp-types = "0.94"
 # LSP server (native only)

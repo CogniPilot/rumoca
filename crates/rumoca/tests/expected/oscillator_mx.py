@@ -33,6 +33,20 @@ def pre(x):
     """
     return x
 
+def Modelica_ComplexMath_abs(c_re, c_im):
+    """ComplexMath.abs: magnitude of complex number (uses real sqrt)."""
+    return ca.sqrt(ca.power(c_re, 2) + ca.power(c_im, 2))
+
+def Modelica_ComplexMath_sqrt(c1_re, c1_im):
+    """ComplexMath.sqrt: square root of complex number."""
+    r = Modelica_ComplexMath_abs(c1_re, c1_im)
+    phi = ca.atan2(c1_im, c1_re)
+    return ca.sqrt(r) * ca.cos(phi / 2.0)
+
+def Modelica_ComplexMath_arg(c_re, c_im):
+    """ComplexMath.arg: argument (phase angle) of complex number."""
+    return ca.atan2(c_im, c_re)
+
 
 def create_model():
     """Create CasADi MX model with vector symbols and Function objects.
@@ -170,11 +184,17 @@ def create_model():
         # Include xdot in the algebraic vector so IDAS solves the original
         # implicit residual f_x(x, xdot, z_c, p, t) = 0 directly.
         # Only continuous algebraics are in the augmented z vector.
-        _z_aug = ca.vertcat(_xdot, _z_c)
+        # CasADi requires purely symbolic integrator inputs, so we create a
+        # fresh symbol and substitute the original xdot/_z_c references.
+        _n_z_aug = n_x + n_z_continuous
+        _z_aug = ca.MX.sym('z_aug', _n_z_aug)
+        _xdot_aug = _z_aug[:n_x]
+        _z_c_aug = _z_aug[n_x:]
+        _f_x_sub = ca.substitute([f_x], [_xdot, _z_c], [_xdot_aug, _z_c_aug])[0]
         _dae = {
             'x': _x, 'z': _z_aug, 't': t,
-            'ode': _z_aug[:n_x],
-            'alg': f_x,
+            'ode': _xdot_aug,
+            'alg': _f_x_sub,
             'p': _p_full,
         }
         return ca.integrator('integrator', 'idas', _dae, 0, dt, opts or {})
@@ -230,6 +250,10 @@ def create_model():
     ))
     p0 = np.concatenate(_p0_parts) if _p0_parts else np.array([])
 
+    # Algebraic initial guesses (continuous y, w then discrete z, m)
+    _z0_parts = []
+    z0 = np.concatenate(_z0_parts) if _z0_parts else np.array([])
+
     return {
         'name': 'Model',
         't': t,
@@ -243,8 +267,10 @@ def create_model():
         'build_integrator': build_integrator,
         'x0': x0,
         'p0': p0,
+        'z0': z0,
         'n_x': n_x,
         'n_z': n_z,
+        'n_z_continuous': n_z_continuous,
         'n_u': n_u,
         'n_p': n_p,
         'state_names': ['v', 'x'],

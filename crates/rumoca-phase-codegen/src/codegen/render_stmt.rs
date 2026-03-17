@@ -374,8 +374,15 @@ fn render_if_branch(
         }
     }
 
-    if let Some(ref stmts_val) = stmts {
-        result.push_str(&render_statements(stmts_val, cfg, next_indent)?);
+    let body = if let Some(ref stmts_val) = stmts {
+        render_statements(stmts_val, cfg, next_indent)?
+    } else {
+        String::new()
+    };
+    if body.trim().is_empty() && matches!(cfg.if_style, IfStyle::Function) {
+        result.push_str(&format!("{next_indent}pass"));
+    } else {
+        result.push_str(&body);
     }
 
     if matches!(cfg.if_style, IfStyle::Ternary) {
