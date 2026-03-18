@@ -1,11 +1,8 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, process::Command};
 
 use rumoca::Compiler;
+use rumoca_phase_codegen::templates;
 use tempfile::Builder;
-
-fn sympy_template_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/templates/sympy.jinja")
-}
 
 fn python_command() -> &'static str {
     for candidate in ["python3", "python"] {
@@ -22,8 +19,7 @@ fn render_template(source: &str, model_name: &str, file_name: &str) -> String {
         .compile_str(source, file_name)
         .expect("compile test model");
 
-    compiled
-        .render_template(sympy_template_path().to_string_lossy().as_ref())
+    rumoca_phase_codegen::render_template_with_name(&compiled.dae, templates::SYMPY, model_name)
         .expect("render sympy template")
 }
 

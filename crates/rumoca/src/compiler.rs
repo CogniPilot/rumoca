@@ -610,6 +610,19 @@ impl CompilationResult {
             .map_err(CompilerError::TemplateError)
     }
 
+    /// Render a structurally prepared DAE using a template string with model name.
+    pub fn render_template_str_prepared_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+        scalarize: bool,
+    ) -> Result<String, CompilerError> {
+        let prepared = prepare_dae_for_template_codegen(&self.dae, scalarize)
+            .map_err(CompilerError::TemplateError)?;
+        render_dae_template_with_name(&prepared, template, model_name)
+            .map_err(CompilerError::TemplateError)
+    }
+
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
         dae_balance(&self.dae)

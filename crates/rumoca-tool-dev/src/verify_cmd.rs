@@ -151,6 +151,19 @@ fn run_template_runtime_checks(root: &Path) -> Result<()> {
         .arg("--ignored")
         .arg("--nocapture")
         .current_dir(root);
+    run_status(cmd)?;
+
+    let mut cmd = Command::new("cargo");
+    cmd.arg("test")
+        .arg("--verbose")
+        .arg("-p")
+        .arg("rumoca")
+        .arg("--test")
+        .arg("backend_template_runtime_regression")
+        .arg("--")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .current_dir(root);
     run_status(cmd)
 }
 
