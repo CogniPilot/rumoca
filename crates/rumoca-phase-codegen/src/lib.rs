@@ -98,4 +98,6 @@ pub mod templates {
     /// Embedded C template — bare-metal flight controller target with RK4 integrator.
     /// No dynamic memory, no OS dependencies, configurable float/double precision.
     pub const EMBEDDED_C: &str = include_str!("templates/embedded_c.c.jinja");
+    /// SymPy template (Python) — symbolic DAE model with residual form and explicit solve.
+    pub const SYMPY: &str = include_str!("templates/sympy.py.jinja");
 }

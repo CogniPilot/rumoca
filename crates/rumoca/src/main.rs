@@ -133,8 +133,12 @@ struct CompileArgs {
     input: ModelInputArgs,
 
     /// Export to JSON (native, recommended)
-    #[arg(long, conflicts_with = "template_file")]
+    #[arg(long, conflicts_with_all = ["template_file", "backend"])]
     json: bool,
+
+    /// Built-in backend for code generation
+    #[arg(short, long, value_enum, conflicts_with = "template_file")]
+    backend: Option<Backend>,
 
     /// Template file for custom export (advanced)
     #[arg(short, long)]
@@ -143,6 +147,45 @@ struct CompileArgs {
     /// Render templates from a structurally prepared DAE instead of raw compile output
     #[arg(long, requires = "template_file")]
     template_prepared: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Backend {
+    /// CasADi SX — scalar symbolic expressions (Python)
+    #[value(name = "casadi-sx")]
+    CasadiSx,
+    /// CasADi MX — matrix symbolic with vector variables (Python)
+    #[value(name = "casadi-mx")]
+    CasadiMx,
+    /// SymPy symbolic model (Python)
+    Sympy,
+    /// Embedded C with RK4 integrator (bare-metal)
+    #[value(name = "embedded-c")]
+    EmbeddedC,
+    /// FMI 2.0 Model Exchange C source
+    Fmi2,
+    /// DAE Modelica (classified variables and split equations)
+    #[value(name = "dae-modelica")]
+    DaeModelica,
+    /// Flat Modelica
+    #[value(name = "flat-modelica")]
+    FlatModelica,
+}
+
+impl Backend {
+    fn template(self) -> &'static str {
+        use rumoca_session::runtime::templates;
+        match self {
+            Backend::CasadiSx => templates::CASADI_SX,
+            Backend::CasadiMx => templates::CASADI_MX,
+
+            Backend::Sympy => templates::SYMPY,
+            Backend::EmbeddedC => templates::EMBEDDED_C,
+            Backend::Fmi2 => templates::FMI2_MODEL,
+            Backend::DaeModelica => templates::DAE_MODELICA,
+            Backend::FlatModelica => templates::FLAT_MODELICA,
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -532,6 +575,12 @@ fn run_compile(args: CompileArgs) -> Result<()> {
     let (result, model) = compile_with_inferred_model(&args.input)?;
     if args.json {
         println!("{}", result.to_json()?);
+        return Ok(());
+    }
+    if let Some(backend) = args.backend {
+        let rendered =
+            result.render_template_str_prepared_with_name(backend.template(), &model, true)?;
+        print!("{rendered}");
         return Ok(());
     }
     if let Some(template_file) = args.template_file {

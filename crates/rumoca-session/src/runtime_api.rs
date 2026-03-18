@@ -38,3 +38,8 @@ pub mod fmi2_templates {
         FMI2_MODEL, FMI2_MODEL_DESCRIPTION, FMI2_TEST_DRIVER,
     };
 }
+
+/// All built-in template sources, re-exported from the codegen crate.
+pub mod templates {
+    pub use rumoca_phase_codegen::templates::*;
+}
