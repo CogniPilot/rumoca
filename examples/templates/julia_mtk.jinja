@@ -22,9 +22,9 @@
     {%- endif -%}
   {%- elif node["Unary"] is defined -%}
     {%- set op = node["Unary"]["op"] -%}
-    {%- if op["Minus"] is defined -%}-{% endif %}{{ render_expr(node["Unary"]["rhs"], builtin_map, op_map) }}
+    {%- if op["Minus"] is defined -%}-({{ render_expr(node["Unary"]["rhs"], builtin_map, op_map) }}){%- endif -%}
   {%- elif node["Binary"] is defined -%}
-    {{ render_expr(node["Binary"]["lhs"], builtin_map, op_map) }} {{ render_op(node["Binary"]["op"]) }} {{ render_expr(node["Binary"]["rhs"], builtin_map, op_map) }}
+    ({{ render_expr(node["Binary"]["lhs"], builtin_map, op_map) }}) {{ render_op(node["Binary"]["op"]) }} ({{ render_expr(node["Binary"]["rhs"], builtin_map, op_map) }})
   {%- elif node["BuiltinCall"] is defined -%}
     {%- set fn = node["BuiltinCall"]["function"] -%}
     {{ builtin_map[fn] if fn in builtin_map else fn }}({{ render_expr(node["BuiltinCall"]["args"][0], builtin_map, op_map) }})
