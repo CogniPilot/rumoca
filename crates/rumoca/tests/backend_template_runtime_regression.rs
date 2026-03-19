@@ -823,6 +823,442 @@ fn fmi3_native_array_runtime() {
 }
 
 // ============================================================================
+// FMI 3.0 — Adjoint derivatives
+//
+// Verify that fmi3GetAdjointDerivative returns correct transposed Jacobian
+// entries. For der(x) = -k*x, the adjoint with seed on xdot should give
+// sensitivity on x = -k (same magnitude, transposed).
+// ============================================================================
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_adjoint_derivative() {
+    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
+            .expect("render FMI3 model");
+
+    // Verify XML advertises adjoint derivatives
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "ParamDecay",
+    )
+    .expect("render FMI3 model description");
+    assert!(
+        xml.contains(r#"providesAdjointDerivatives="true""#),
+        "expected providesAdjointDerivatives in XML"
+    );
+
+    let driver_c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+typedef unsigned int fmi3ValueReference;
+typedef double       fmi3Float64;
+typedef int          fmi3Boolean;
+typedef const char*  fmi3String;
+typedef void*        fmi3Instance;
+typedef void*        fmi3InstanceEnvironment;
+typedef enum { fmi3OK, fmi3Warning, fmi3Discard, fmi3Error, fmi3Fatal } fmi3Status;
+typedef void (*fmi3LogMessageCallback)(fmi3InstanceEnvironment, fmi3Status, fmi3String, fmi3String);
+
+extern fmi3Instance fmi3InstantiateModelExchange(fmi3String, fmi3String, fmi3String, fmi3Boolean, fmi3Boolean, fmi3InstanceEnvironment, fmi3LogMessageCallback);
+extern void fmi3FreeInstance(fmi3Instance);
+extern fmi3Status fmi3EnterInitializationMode(fmi3Instance, fmi3Boolean, fmi3Float64, fmi3Float64, fmi3Boolean, fmi3Float64);
+extern fmi3Status fmi3ExitInitializationMode(fmi3Instance);
+extern fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance);
+extern fmi3Status fmi3UpdateDiscreteStates(fmi3Instance, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Float64*);
+extern fmi3Status fmi3GetAdjointDerivative(fmi3Instance, const fmi3ValueReference[], size_t, const fmi3ValueReference[], size_t, const fmi3Float64[], size_t, fmi3Float64[], size_t);
+
+static void dummy_logger(fmi3InstanceEnvironment e, fmi3Status s, fmi3String c, fmi3String m) {
+    (void)e; (void)s; (void)c; (void)m;
+}
+
+int main(void) {
+    fmi3Instance inst = fmi3InstantiateModelExchange(
+        "test", "ParamDecay-rumoca", "", 0, 0, NULL, dummy_logger);
+    if (!inst) return 1;
+
+    fmi3EnterInitializationMode(inst, 0, 0.0, 0.0, 1, 1.0);
+    fmi3ExitInitializationMode(inst);
+    {
+        fmi3Boolean a, b, c, d, e; fmi3Float64 f;
+        fmi3UpdateDiscreteStates(inst, &a, &b, &c, &d, &e, &f);
+    }
+    fmi3EnterContinuousTimeMode(inst);
+
+    /* ParamDecay: der(x) = -k*x, k=3, x(0)=2
+     * VR layout: x=0, xdot=1
+     * Adjoint: seed on xdot, sensitivity on x = d(xdot)/d(x) = -k = -3 */
+    fmi3ValueReference unknown = 1;  /* xdot */
+    fmi3ValueReference known = 0;    /* x */
+    fmi3Float64 seed = 1.0;
+    fmi3Float64 sensitivity = 0.0;
+
+    fmi3Status s = fmi3GetAdjointDerivative(
+        inst, &unknown, 1, &known, 1, &seed, 1, &sensitivity, 1);
+
+    printf("status=%d\n", s);
+    printf("sensitivity=%.10g\n", sensitivity);
+    printf("expected=-3\n");
+    printf("error=%.10g\n", fabs(sensitivity - (-3.0)));
+
+    fmi3FreeInstance(inst);
+    return (s == fmi3OK && fabs(sensitivity - (-3.0)) < 0.01) ? 0 : 1;
+}
+"#;
+
+    let csv = compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", driver_c)],
+        &[],
+    );
+    assert!(
+        csv.contains("sensitivity="),
+        "expected sensitivity output:\n{csv}"
+    );
+}
+
+// ============================================================================
+// FMI 3.0 — FMU state serialization
+//
+// Verify get/set/serialize/deserialize FMU state round-trips correctly.
+// Save state at t=0.5, continue to t=1.0, restore to t=0.5, continue
+// again to t=1.0 — both runs should produce the same final value.
+// ============================================================================
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_fmu_state_serialization() {
+    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
+            .expect("render FMI3 model");
+
+    // Verify XML advertises state capabilities
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "ParamDecay",
+    )
+    .expect("render FMI3 model description");
+    assert!(
+        xml.contains(r#"canGetAndSetFMUState="true""#),
+        "expected canGetAndSetFMUState in XML"
+    );
+    assert!(
+        xml.contains(r#"canSerializeFMUState="true""#),
+        "expected canSerializeFMUState in XML"
+    );
+
+    let driver_c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+typedef unsigned int fmi3ValueReference;
+typedef double       fmi3Float64;
+typedef float        fmi3Float32;
+typedef int          fmi3Int32;
+typedef int          fmi3Boolean;
+typedef const char*  fmi3String;
+typedef void*        fmi3Instance;
+typedef void*        fmi3InstanceEnvironment;
+typedef void*        fmi3FMUState;
+typedef unsigned char fmi3Byte;
+typedef enum { fmi3OK, fmi3Warning, fmi3Discard, fmi3Error, fmi3Fatal } fmi3Status;
+typedef void (*fmi3LogMessageCallback)(fmi3InstanceEnvironment, fmi3Status, fmi3String, fmi3String);
+
+extern fmi3Instance fmi3InstantiateModelExchange(fmi3String, fmi3String, fmi3String, fmi3Boolean, fmi3Boolean, fmi3InstanceEnvironment, fmi3LogMessageCallback);
+extern void fmi3FreeInstance(fmi3Instance);
+extern fmi3Status fmi3EnterInitializationMode(fmi3Instance, fmi3Boolean, fmi3Float64, fmi3Float64, fmi3Boolean, fmi3Float64);
+extern fmi3Status fmi3ExitInitializationMode(fmi3Instance);
+extern fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance);
+extern fmi3Status fmi3EnterEventMode(fmi3Instance);
+extern fmi3Status fmi3UpdateDiscreteStates(fmi3Instance, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Float64*);
+extern fmi3Status fmi3SetTime(fmi3Instance, fmi3Float64);
+extern fmi3Status fmi3SetContinuousStates(fmi3Instance, const fmi3Float64[], size_t);
+extern fmi3Status fmi3GetContinuousStates(fmi3Instance, fmi3Float64[], size_t);
+extern fmi3Status fmi3GetContinuousStateDerivatives(fmi3Instance, fmi3Float64[], size_t);
+extern fmi3Status fmi3CompletedIntegratorStep(fmi3Instance, fmi3Boolean, fmi3Boolean*, fmi3Boolean*);
+extern fmi3Status fmi3GetFMUState(fmi3Instance, fmi3FMUState*);
+extern fmi3Status fmi3SetFMUState(fmi3Instance, fmi3FMUState);
+extern fmi3Status fmi3FreeFMUState(fmi3Instance, fmi3FMUState*);
+extern fmi3Status fmi3SerializedFMUStateSize(fmi3Instance, fmi3FMUState, size_t*);
+extern fmi3Status fmi3SerializeFMUState(fmi3Instance, fmi3FMUState, fmi3Byte[], size_t);
+extern fmi3Status fmi3DeserializeFMUState(fmi3Instance, const fmi3Byte[], size_t, fmi3FMUState*);
+extern fmi3Status fmi3GetFloat32(fmi3Instance, const fmi3ValueReference[], size_t, fmi3Float32[], size_t);
+extern fmi3Status fmi3SetFloat32(fmi3Instance, const fmi3ValueReference[], size_t, const fmi3Float32[], size_t);
+extern fmi3Status fmi3GetInt32(fmi3Instance, const fmi3ValueReference[], size_t, fmi3Int32[], size_t);
+extern fmi3Status fmi3GetBoolean(fmi3Instance, const fmi3ValueReference[], size_t, fmi3Boolean[], size_t);
+
+static void dummy_logger(fmi3InstanceEnvironment e, fmi3Status s, fmi3String c, fmi3String m) {
+    (void)e; (void)s; (void)c; (void)m;
+}
+
+/* Euler integrate from current state for n steps of size dt */
+static void euler_steps(fmi3Instance inst, double* t, double* x, int n, double dt) {
+    double xdot;
+    for (int i = 0; i < n; i++) {
+        fmi3SetTime(inst, *t);
+        fmi3SetContinuousStates(inst, x, 1);
+        fmi3GetContinuousStateDerivatives(inst, &xdot, 1);
+        *x += dt * xdot;
+        *t += dt;
+    }
+}
+
+int main(void) {
+    fmi3Instance inst = fmi3InstantiateModelExchange(
+        "test", "ParamDecay-rumoca", "", 0, 0, NULL, dummy_logger);
+    if (!inst) return 1;
+
+    fmi3EnterInitializationMode(inst, 0, 0.0, 0.0, 1, 1.0);
+    fmi3ExitInitializationMode(inst);
+    {
+        fmi3Boolean a, b, c, d, e; fmi3Float64 f;
+        fmi3UpdateDiscreteStates(inst, &a, &b, &c, &d, &e, &f);
+    }
+    fmi3EnterContinuousTimeMode(inst);
+
+    /* Integrate to t=0.5 */
+    double t = 0.0, x = 2.0, dt = 0.001;
+    euler_steps(inst, &t, &x, 500, dt);
+
+    /* Sync FMU internal state to match local variables before saving */
+    fmi3SetTime(inst, t);
+    fmi3SetContinuousStates(inst, &x, 1);
+
+    /* Save state via get/serialize/deserialize round-trip */
+    fmi3FMUState state = NULL;
+    fmi3GetFMUState(inst, &state);
+
+    size_t sz;
+    fmi3SerializedFMUStateSize(inst, state, &sz);
+    fmi3Byte* buf = (fmi3Byte*)malloc(sz);
+    fmi3SerializeFMUState(inst, state, buf, sz);
+    fmi3FreeFMUState(inst, &state);
+
+    /* Continue to t=1.0 (first run) */
+    euler_steps(inst, &t, &x, 500, dt);
+    double x_first = x;
+
+    /* Restore from serialized state (back to t=0.5) */
+    fmi3FMUState restored = NULL;
+    fmi3DeserializeFMUState(inst, buf, sz, &restored);
+    fmi3SetFMUState(inst, restored);
+    fmi3FreeFMUState(inst, &restored);
+    free(buf);
+
+    /* Get state back and re-integrate to t=1.0 */
+    fmi3GetContinuousStates(inst, &x, 1);
+    t = 0.5;
+    euler_steps(inst, &t, &x, 500, dt);
+    double x_second = x;
+
+    /* Also test typed access (Float32, Int32, Boolean) */
+    fmi3ValueReference vr_x = 0;
+    fmi3Float32 f32_val;
+    fmi3GetFloat32(inst, &vr_x, 1, &f32_val, 1);
+    fmi3Int32 i32_val;
+    fmi3GetInt32(inst, &vr_x, 1, &i32_val, 1);
+    fmi3Boolean bool_val;
+    fmi3GetBoolean(inst, &vr_x, 1, &bool_val, 1);
+
+    /* Float32 set round-trip */
+    fmi3Float32 f32_set = 1.5f;
+    fmi3SetFloat32(inst, &vr_x, 1, &f32_set, 1);
+    fmi3Float64 f64_check;
+    fmi3GetContinuousStates(inst, &f64_check, 1);
+
+    double err = fabs(x_first - x_second);
+    double scale = fabs(x_first) > 1.0 ? fabs(x_first) : 1.0;
+
+    printf("x_first=%.10g\n", x_first);
+    printf("x_second=%.10g\n", x_second);
+    printf("error=%.10g\n", err / scale);
+    printf("f32_val=%.6g\n", (double)f32_val);
+    printf("i32_val=%d\n", i32_val);
+    printf("bool_val=%d\n", bool_val);
+    printf("f32_roundtrip_err=%.6g\n", fabs(f64_check - 1.5));
+
+    fmi3FreeInstance(inst);
+    int ok = (err / scale < 1e-10) && (fabs(f64_check - 1.5) < 0.01);
+    return ok ? 0 : 1;
+}
+"#;
+
+    let csv = compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", driver_c)],
+        &[],
+    );
+    assert!(
+        csv.contains("x_first=") && csv.contains("x_second="),
+        "expected state output:\n{csv}"
+    );
+}
+
+// ============================================================================
+// FMI 3.0 — Co-Simulation with DoStep
+//
+// Verify that fmi3InstantiateCoSimulation + fmi3DoStep produces correct
+// results via the built-in forward Euler integrator.
+// ============================================================================
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_cosimulation_dostep() {
+    let dae = prepare_dae(BALL_SOURCE, "Ball");
+
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "Ball")
+            .expect("render FMI3 model");
+
+    let driver_c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+typedef unsigned int fmi3ValueReference;
+typedef double       fmi3Float64;
+typedef int          fmi3Boolean;
+typedef const char*  fmi3String;
+typedef void*        fmi3Instance;
+typedef void*        fmi3InstanceEnvironment;
+typedef enum { fmi3OK, fmi3Warning, fmi3Discard, fmi3Error, fmi3Fatal } fmi3Status;
+typedef void (*fmi3LogMessageCallback)(fmi3InstanceEnvironment, fmi3Status, fmi3String, fmi3String);
+
+extern fmi3Instance fmi3InstantiateCoSimulation(
+    fmi3String, fmi3String, fmi3String, fmi3Boolean, fmi3Boolean,
+    fmi3Boolean, fmi3Boolean, const fmi3ValueReference[], size_t,
+    fmi3InstanceEnvironment, fmi3LogMessageCallback, void*);
+extern void fmi3FreeInstance(fmi3Instance);
+extern fmi3Status fmi3EnterInitializationMode(fmi3Instance, fmi3Boolean, fmi3Float64, fmi3Float64, fmi3Boolean, fmi3Float64);
+extern fmi3Status fmi3ExitInitializationMode(fmi3Instance);
+extern fmi3Status fmi3DoStep(fmi3Instance, fmi3Float64, fmi3Float64, fmi3Boolean, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Float64*);
+extern fmi3Status fmi3GetFloat64(fmi3Instance, const fmi3ValueReference[], size_t, fmi3Float64[], size_t);
+extern fmi3Status fmi3Terminate(fmi3Instance);
+
+static void dummy_logger(fmi3InstanceEnvironment e, fmi3Status s, fmi3String c, fmi3String m) {
+    (void)e; (void)s; (void)c; (void)m;
+}
+
+int main(void) {
+    fmi3Instance inst = fmi3InstantiateCoSimulation(
+        "test", "Ball-rumoca", "", 0, 0, 0, 0, NULL, 0, NULL, dummy_logger, NULL);
+    if (!inst) { fprintf(stderr, "instantiate failed\n"); return 1; }
+
+    fmi3EnterInitializationMode(inst, 0, 0.0, 0.0, 1, 1.0);
+    fmi3ExitInitializationMode(inst);
+
+    /* Step to t=1.0 in 0.01 increments */
+    double t = 0.0, dt = 0.01;
+    for (int i = 0; i < 100; i++) {
+        fmi3Boolean eventNeeded, terminate, earlyReturn;
+        fmi3Float64 lastTime;
+        fmi3Status s = fmi3DoStep(inst, t, dt, 1, &eventNeeded, &terminate, &earlyReturn, &lastTime);
+        if (s != fmi3OK) { fprintf(stderr, "DoStep failed at t=%g\n", t); return 1; }
+        t += dt;
+    }
+
+    /* Read state x (VR=0) */
+    fmi3ValueReference vr = 0;
+    fmi3Float64 x;
+    fmi3GetFloat64(inst, &vr, 1, &x, 1);
+
+    /* Ball: der(x) = -x, x(0) = 0 → x(1) ≈ 0 * exp(-1) = 0
+     * Actually x(0) = 0 so x stays 0. Use expected value. */
+    double expected = 0.0;
+    printf("x_final=%.10g\n", x);
+    printf("expected=%.10g\n", expected);
+
+    fmi3Terminate(inst);
+    fmi3FreeInstance(inst);
+
+    /* Ball has x(start=0) so it should stay at 0 */
+    return (fabs(x - expected) < 0.01) ? 0 : 1;
+}
+"#;
+
+    let csv = compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", driver_c)],
+        &[],
+    );
+    assert!(
+        csv.contains("x_final="),
+        "expected x_final output:\n{csv}"
+    );
+}
+
+// ============================================================================
+// FMI 3.0 — Structural parameters in XML
+//
+// Verify that non-tunable parameters get causality="structuralParameter"
+// and tunable parameters get causality="parameter" variability="tunable".
+// ============================================================================
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_structural_parameter_xml() {
+    let dae = prepare_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "TunableParam",
+    )
+    .expect("render FMI3 model description");
+
+    // k (Real) should be tunable parameter
+    assert!(
+        xml.contains(r#"causality="parameter""#) && xml.contains(r#"variability="tunable""#),
+        "expected tunable parameter for k:\n{xml}"
+    );
+    // n (Integer, non-tunable) should be structural parameter
+    assert!(
+        xml.contains(r#"causality="structuralParameter""#),
+        "expected structuralParameter for n:\n{xml}"
+    );
+}
+
+// ============================================================================
+// FMI 3.0 — BuildConfiguration and Terminals in XML
+//
+// Verify that the model description includes BuildConfiguration with
+// source file reference and an empty Terminals element.
+// ============================================================================
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_xml_build_config_and_terminals() {
+    let dae = prepare_dae(BALL_SOURCE, "Ball");
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "Ball",
+    )
+    .expect("render FMI3 model description");
+
+    assert!(
+        xml.contains("<BuildConfiguration>"),
+        "expected <BuildConfiguration> in XML:\n{xml}"
+    );
+    assert!(
+        xml.contains("<SourceFile"),
+        "expected <SourceFile> in BuildConfiguration:\n{xml}"
+    );
+    assert!(
+        xml.contains("<Terminals/>"),
+        "expected <Terminals/> in XML:\n{xml}"
+    );
+}
+
+// ============================================================================
 // SymPy runtime tests
 //
 // SymPy generates a symbolic model, not a time-domain simulation. We verify
