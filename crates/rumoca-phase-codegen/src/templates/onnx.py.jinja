@@ -5,6 +5,9 @@
 #
 # Creates an ONNX computational graph for the DAE system.
 # The model computes xdot = f(x, u, p, t) for ODE integration.
+#
+# Uses operator-overloading (OnnxVar) so that render_expr output
+# like `x + y * sin(z)` automatically builds ONNX graph nodes.
 
 import numpy as np
 
@@ -14,31 +17,176 @@ try:
 except ImportError:
     raise ImportError("onnx package required: pip install onnx")
 
-{# Configuration for render_expr - ONNX style (we'll post-process) #}
-{% set cfg = {"prefix": "", "power": "**", "if_style": "ternary"} %}
+{# Configuration for render_expr - prefix maps sin→onnx_sin etc. #}
+{% set cfg = {"prefix": "onnx_", "power": "**", "if_style": "function"} %}
+
+# =========================================================================
+# GraphBuilder — accumulates ONNX nodes and initializers
+# =========================================================================
+
+class GraphBuilder:
+    def __init__(self):
+        self.nodes = []
+        self.initializers = []
+        self._counter = 0
+
+    def unique_name(self):
+        name = f'_t{self._counter}'
+        self._counter += 1
+        return name
+
+    def add_node(self, op, inputs, output=None, **attrs):
+        if output is None:
+            output = self.unique_name()
+        self.nodes.append(helper.make_node(op, inputs, [output], **attrs))
+        return output
+
+    def add_const(self, value, name=None):
+        if name is None:
+            name = self.unique_name()
+        self.initializers.append(numpy_helper.from_array(
+            np.array([value], dtype=np.float32), name))
+        return name
+
+    def add_const_int(self, value, name=None):
+        if name is None:
+            name = self.unique_name()
+        self.initializers.append(numpy_helper.from_array(
+            np.array(value, dtype=np.int64), name))
+        return name
+
+
+# =========================================================================
+# OnnxVar — wraps an ONNX tensor name; operator overloads build graph nodes
+# =========================================================================
+
+class OnnxVar:
+    def __init__(self, gb, name):
+        self.gb = gb
+        self.name = name
+
+    def _ensure(self, other):
+        if isinstance(other, OnnxVar):
+            return other.name
+        return self.gb.add_const(float(other))
+
+    def _binop(self, op, other):
+        return OnnxVar(self.gb, self.gb.add_node(op, [self.name, self._ensure(other)]))
+
+    def _rbinop(self, op, other):
+        return OnnxVar(self.gb, self.gb.add_node(op, [self._ensure(other), self.name]))
+
+    def __add__(self, other):    return self._binop('Add', other)
+    def __radd__(self, other):   return self._rbinop('Add', other)
+    def __sub__(self, other):    return self._binop('Sub', other)
+    def __rsub__(self, other):   return self._rbinop('Sub', other)
+    def __mul__(self, other):    return self._binop('Mul', other)
+    def __rmul__(self, other):   return self._rbinop('Mul', other)
+    def __truediv__(self, other): return self._binop('Div', other)
+    def __rtruediv__(self, other): return self._rbinop('Div', other)
+    def __pow__(self, other):    return self._binop('Pow', other)
+    def __rpow__(self, other):   return self._rbinop('Pow', other)
+    def __neg__(self):           return OnnxVar(self.gb, self.gb.add_node('Neg', [self.name]))
+
+    def __lt__(self, other):     return self._binop('Less', other)
+    def __le__(self, other):     return self._binop('LessOrEqual', other)
+    def __gt__(self, other):     return self._binop('Greater', other)
+    def __ge__(self, other):     return self._binop('GreaterOrEqual', other)
+
+    def __float__(self):
+        raise TypeError("OnnxVar cannot be converted to float (graph is symbolic)")
+
+    def __bool__(self):
+        raise TypeError("OnnxVar cannot be used in boolean context (graph is symbolic)")
+
+
+# =========================================================================
+# Module-level math functions (onnx_sin, onnx_cos, etc.)
+# =========================================================================
+
+def _unary(gb, op, x):
+    if not isinstance(x, OnnxVar):
+        x = OnnxVar(gb, gb.add_const(float(x)))
+    return OnnxVar(x.gb, x.gb.add_node(op, [x.name]))
+
+def _make_unary(op):
+    def fn(x):
+        return _unary(x.gb if isinstance(x, OnnxVar) else _global_gb, op, x)
+    return fn
+
+_global_gb = None  # set during model creation
+
+onnx_sin = _make_unary('Sin')
+onnx_cos = _make_unary('Cos')
+onnx_tan = _make_unary('Tan')
+onnx_sqrt = _make_unary('Sqrt')
+onnx_fabs = _make_unary('Abs')
+onnx_exp = _make_unary('Exp')
+onnx_log = _make_unary('Log')
+onnx_floor = _make_unary('Floor')
+onnx_ceil = _make_unary('Ceil')
+onnx_sign = _make_unary('Sign')
+onnx_asin = _make_unary('Asin')
+onnx_acos = _make_unary('Acos')
+onnx_atan = _make_unary('Atan')
+onnx_sinh = _make_unary('Sinh')
+onnx_cosh = _make_unary('Cosh')
+onnx_tanh = _make_unary('Tanh')
+
+def onnx_log10(x):
+    return onnx_log(x) * OnnxVar(x.gb, x.gb.add_const(1.0 / np.log(10.0)))
+
+def onnx_atan2(y, x):
+    gb = y.gb if isinstance(y, OnnxVar) else x.gb
+    if not isinstance(y, OnnxVar):
+        y = OnnxVar(gb, gb.add_const(float(y)))
+    if not isinstance(x, OnnxVar):
+        x = OnnxVar(gb, gb.add_const(float(x)))
+    ratio = y / x
+    return _unary(gb, 'Atan', ratio)
+
+def onnx_fmin(a, b):
+    gb = a.gb if isinstance(a, OnnxVar) else b.gb
+    na = a.name if isinstance(a, OnnxVar) else gb.add_const(float(a))
+    nb = b.name if isinstance(b, OnnxVar) else gb.add_const(float(b))
+    return OnnxVar(gb, gb.add_node('Min', [na, nb]))
+
+def onnx_fmax(a, b):
+    gb = a.gb if isinstance(a, OnnxVar) else b.gb
+    na = a.name if isinstance(a, OnnxVar) else gb.add_const(float(a))
+    nb = b.name if isinstance(b, OnnxVar) else gb.add_const(float(b))
+    return OnnxVar(gb, gb.add_node('Max', [na, nb]))
+
+def onnx_if_else(cond, true_val, false_val):
+    gb = cond.gb if isinstance(cond, OnnxVar) else (
+        true_val.gb if isinstance(true_val, OnnxVar) else false_val.gb)
+    nc = cond.name if isinstance(cond, OnnxVar) else gb.add_const(float(cond))
+    nt = true_val.name if isinstance(true_val, OnnxVar) else gb.add_const(float(true_val))
+    nf = false_val.name if isinstance(false_val, OnnxVar) else gb.add_const(float(false_val))
+    return OnnxVar(gb, gb.add_node('Where', [nc, nt, nf]))
+
+
+# =========================================================================
+# ONNX model creation
+# =========================================================================
 
 def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
-    """Create ONNX model for the DAE system.
+    """Create ONNX model computing xdot = f(x, u, p, t).
 
-    The model takes inputs:
-        - x: state vector [{{ dae.x | length }}]
-        - u: input vector [{{ dae.u | length }}]
-        - p: parameter vector [{{ dae.p | length }}]
-        - t: time scalar [1]
+    Inputs:
+        x: state vector [{{ dae.x | length }}]
+        u: input vector [{{ dae.u | length }}]
+        p: parameter vector [{{ dae.p | length }}]
+        t: time scalar [1]
 
-    And produces outputs:
-        - xdot: state derivatives [{{ dae.x | length }}]
-{% if dae.f_x | length > 0 %}
-        - f_x: continuous implicit equation residuals [{{ dae.f_x | length }}]
-{% endif %}
-
-    Args:
-        opset_version: ONNX opset version (default 17)
-
-    Returns:
-        ONNX ModelProto
+    Outputs:
+        xdot: state derivatives [{{ dae.x | length }}]
     """
-    # Input definitions
+    global _global_gb
+    gb = GraphBuilder()
+    _global_gb = gb
+
+    # --- Input tensor descriptors ---
     inputs = []
 {% if dae.x | length > 0 %}
     inputs.append(helper.make_tensor_value_info('x', TensorProto.FLOAT, [{{ dae.x | length }}]))
@@ -51,132 +199,99 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
 {% endif %}
     inputs.append(helper.make_tensor_value_info('t', TensorProto.FLOAT, [1]))
 
-    # Output definitions
+    # --- Output tensor descriptors ---
     outputs = []
 {% if dae.x | length > 0 %}
     outputs.append(helper.make_tensor_value_info('xdot', TensorProto.FLOAT, [{{ dae.x | length }}]))
 {% endif %}
-{% if dae.f_x | length > 0 %}
-    outputs.append(helper.make_tensor_value_info('f_x', TensorProto.FLOAT, [{{ dae.f_x | length }}]))
-{% endif %}
 
-    # Build computational graph
-    nodes = []
-    initializers = []
-
-    # === Extract individual variables from packed vectors ===
-
+    # --- Extract individual variables from packed input vectors ---
+    # Use _v_ prefix to avoid SSA conflicts with input tensor names
 {% for name, var in dae.x | items %}
     # State: {{ name }}
-    nodes.append(helper.make_node(
-        'Slice',
-        inputs=['x', '{{ name | sanitize }}_start', '{{ name | sanitize }}_end'],
-        outputs=['{{ name | sanitize }}'],
-        name='extract_{{ name | sanitize }}'
-    ))
-    initializers.append(numpy_helper.from_array(np.array([{{ loop.index0 }}], dtype=np.int64), '{{ name | sanitize }}_start'))
-    initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '{{ name | sanitize }}_end'))
+    gb.initializers.append(numpy_helper.from_array(np.array([{{ loop.index0 }}], dtype=np.int64), '_v_{{ name | sanitize }}_start'))
+    gb.initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '_v_{{ name | sanitize }}_end'))
+    gb.add_node('Slice', ['x', '_v_{{ name | sanitize }}_start', '_v_{{ name | sanitize }}_end'], output='_v_{{ name | sanitize }}')
+    {{ name | sanitize }} = OnnxVar(gb, '_v_{{ name | sanitize }}')
 {% endfor %}
 
 {% for name, var in dae.u | items %}
     # Input: {{ name }}
-    nodes.append(helper.make_node(
-        'Slice',
-        inputs=['u', '{{ name | sanitize }}_start', '{{ name | sanitize }}_end'],
-        outputs=['{{ name | sanitize }}'],
-        name='extract_{{ name | sanitize }}'
-    ))
-    initializers.append(numpy_helper.from_array(np.array([{{ loop.index0 }}], dtype=np.int64), '{{ name | sanitize }}_start'))
-    initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '{{ name | sanitize }}_end'))
+    gb.initializers.append(numpy_helper.from_array(np.array([{{ loop.index0 }}], dtype=np.int64), '_v_{{ name | sanitize }}_start'))
+    gb.initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '_v_{{ name | sanitize }}_end'))
+    gb.add_node('Slice', ['u', '_v_{{ name | sanitize }}_start', '_v_{{ name | sanitize }}_end'], output='_v_{{ name | sanitize }}')
+    {{ name | sanitize }} = OnnxVar(gb, '_v_{{ name | sanitize }}')
 {% endfor %}
 
 {% for name, var in dae.p | items %}
     # Parameter: {{ name }}
-    nodes.append(helper.make_node(
-        'Slice',
-        inputs=['p', '{{ name | sanitize }}_start', '{{ name | sanitize }}_end'],
-        outputs=['{{ name | sanitize }}'],
-        name='extract_{{ name | sanitize }}'
-    ))
-    initializers.append(numpy_helper.from_array(np.array([{{ loop.index0 }}], dtype=np.int64), '{{ name | sanitize }}_start'))
-    initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '{{ name | sanitize }}_end'))
+    gb.initializers.append(numpy_helper.from_array(np.array([{{ loop.index0 }}], dtype=np.int64), '_v_{{ name | sanitize }}_start'))
+    gb.initializers.append(numpy_helper.from_array(np.array([{{ loop.index }}], dtype=np.int64), '_v_{{ name | sanitize }}_end'))
+    gb.add_node('Slice', ['p', '_v_{{ name | sanitize }}_start', '_v_{{ name | sanitize }}_end'], output='_v_{{ name | sanitize }}')
+    {{ name | sanitize }} = OnnxVar(gb, '_v_{{ name | sanitize }}')
 {% endfor %}
 
+    # Time variable
+    time = OnnxVar(gb, 't')
+
+    # --- Constants ---
 {% for name, var in dae.constants | items %}
-    # Constant: {{ name }}
 {% if var.start %}
-    initializers.append(numpy_helper.from_array(
-        np.array([{{ render_expr(var.start, cfg) }}], dtype=np.float32),
-        '{{ name | sanitize }}'
-    ))
+    {{ name | sanitize }} = OnnxVar(gb, gb.add_const({{ render_expr(var.start, {"prefix": "", "power": "**", "if_style": "ternary"}) }}, '{{ name | sanitize }}'))
 {% else %}
-    initializers.append(numpy_helper.from_array(
-        np.array([0.0], dtype=np.float32),
-        '{{ name | sanitize }}'
-    ))
+    {{ name | sanitize }} = OnnxVar(gb, gb.add_const(0.0, '{{ name | sanitize }}'))
 {% endif %}
 {% endfor %}
 
-    # === ODE Equations ===
-    # Note: For complex expressions, you may need to build intermediate nodes.
-    # This template provides a starting point - complex models may require
-    # manual decomposition into ONNX ops.
-
-{% if dae.f_x | length > 0 %}
-    # Concatenate continuous equation residuals into f_x
-    f_x_components = []
-{% for eq in dae.f_x %}
-    # {{ eq.origin }}
-    # Expression: {{ render_expr(eq.rhs, cfg) }}
-    f_x_components.append('f_x_{{ loop.index0 }}')
+    # --- ODE Equations (via operator overloading) ---
+    xdot_components = []
+{% for name, var in dae.x | items %}
+    # der({{ name }})
+    _rhs_{{ loop.index0 }} = {{ ode_rhs_for_state(name, dae.f_x, cfg) }}
+    # Squeeze from [1] to scalar if needed, then reshape to [1] for concat
+    _sq_{{ loop.index0 }} = gb.add_node('Reshape', [_rhs_{{ loop.index0 }}.name, gb.add_const_int([1])], output='xdot_{{ loop.index0 }}')
+    xdot_components.append('xdot_{{ loop.index0 }}')
 {% endfor %}
 
-    if len(f_x_components) > 0:
-        nodes.append(helper.make_node(
-            'Concat',
-            inputs=f_x_components,
-            outputs=['f_x'],
-            axis=0,
-            name='concat_f_x'
-        ))
+{% if dae.x | length > 1 %}
+    gb.add_node('Concat', xdot_components, output='xdot', axis=0)
+{% elif dae.x | length == 1 %}
+    gb.add_node('Reshape', [xdot_components[0], gb.add_const_int([1])], output='xdot')
 {% endif %}
 
-    # Create the graph
+    # --- Build and validate graph ---
     graph = helper.make_graph(
-        nodes=nodes,
+        nodes=gb.nodes,
         name='DAEModel',
         inputs=inputs,
         outputs=outputs,
-        initializer=initializers
+        initializer=gb.initializers
     )
 
-    # Create the model
     model = helper.make_model(
         graph,
         opset_imports=[helper.make_opsetid('', opset_version)]
     )
+    model.ir_version = 8  # compatible with onnxruntime >= 1.10
 
-    # Validate
     onnx.checker.check_model(model)
-
     return model
 
 
-def get_default_values() -> dict:
-    """Get default values for states and parameters.
+# =========================================================================
+# Default values
+# =========================================================================
 
-    Returns:
-        Dictionary with 'x0' and 'p0' numpy arrays.
-    """
+def get_default_values() -> dict:
     x0 = np.array([
 {% for name, var in dae.x | items %}
-        {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
+        {% if var.start %}{{ render_expr(var.start, {"prefix": "", "power": "**", "if_style": "ternary"}) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
 {% endfor %}
     ], dtype=np.float32)
 
     p0 = np.array([
 {% for name, var in dae.p | items %}
-        {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
+        {% if var.start %}{{ render_expr(var.start, {"prefix": "", "power": "**", "if_style": "ternary"}) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
 {% endfor %}
     ], dtype=np.float32)
 
@@ -186,19 +301,10 @@ def get_default_values() -> dict:
 {% endfor %}
     ], dtype=np.float32)
 
-    return {
-        'x0': x0,
-        'p0': p0,
-        'u0': u0,
-    }
+    return {'x0': x0, 'p0': p0, 'u0': u0}
 
 
 def get_variable_names() -> dict:
-    """Get variable names for documentation.
-
-    Returns:
-        Dictionary with state_names, param_names, input_names.
-    """
     return {
         'state_names': [{% for name, var in dae.x | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
         'param_names': [{% for name, var in dae.p | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}],
@@ -206,23 +312,77 @@ def get_variable_names() -> dict:
     }
 
 
+# =========================================================================
+# Forward Euler simulation via ONNX Runtime
+# =========================================================================
+
+def simulate(t_end=1.0, dt=0.001):
+    """Build ONNX model, run forward Euler via onnxruntime, return CSV string."""
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        raise ImportError("onnxruntime package required: pip install onnxruntime")
+
+    model = create_onnx_model()
+    sess = ort.InferenceSession(model.SerializeToString())
+
+    defaults = get_default_values()
+    names = get_variable_names()
+
+    x = defaults['x0'].copy()
+    p = defaults['p0'].copy()
+    u = defaults['u0'].copy()
+
+    n_steps = int(t_end / dt)
+    lines = []
+    lines.append("time," + ",".join(names['state_names']))
+
+    for i in range(n_steps + 1):
+        t = np.array([i * dt], dtype=np.float32)
+        lines.append(",".join([f"{t[0]:.10g}"] + [f"{v:.10g}" for v in x]))
+
+        if i < n_steps:
+            feed = {'t': t}
+{% if dae.x | length > 0 %}
+            feed['x'] = x
+{% endif %}
+{% if dae.p | length > 0 %}
+            feed['p'] = p
+{% endif %}
+{% if dae.u | length > 0 %}
+            feed['u'] = u
+{% endif %}
+            result = sess.run(None, feed)
+            xdot = result[0]
+            x = x + dt * xdot
+
+    return "\n".join(lines)
+
+
+# =========================================================================
+# Main
+# =========================================================================
+
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description='Generate ONNX model from Modelica DAE')
+    parser = argparse.ArgumentParser(description='ONNX model from Modelica DAE')
     parser.add_argument('-o', '--output', default='model.onnx', help='Output ONNX file')
     parser.add_argument('--opset', type=int, default=17, help='ONNX opset version')
+    parser.add_argument('--simulate', action='store_true', help='Run forward Euler simulation')
     args = parser.parse_args()
 
-    model = create_onnx_model(opset_version=args.opset)
-    onnx.save(model, args.output)
+    if args.simulate:
+        print(simulate())
+    else:
+        model = create_onnx_model(opset_version=args.opset)
+        onnx.save(model, args.output)
 
-    names = get_variable_names()
-    defaults = get_default_values()
-
-    print(f"ONNX model saved to: {args.output}")
-    print(f"States ({len(names['state_names'])}): {names['state_names']}")
-    print(f"Parameters ({len(names['param_names'])}): {names['param_names']}")
-    print(f"Inputs ({len(names['input_names'])}): {names['input_names']}")
-    print(f"\nDefault x0: {defaults['x0']}")
-    print(f"Default p0: {defaults['p0']}")
+        names = get_variable_names()
+        defaults = get_default_values()
+        print(f"ONNX model saved to: {args.output}")
+        print(f"States ({len(names['state_names'])}): {names['state_names']}")
+        print(f"Parameters ({len(names['param_names'])}): {names['param_names']}")
+        print(f"Inputs ({len(names['input_names'])}): {names['input_names']}")
+        print(f"\nDefault x0: {defaults['x0']}")
+        print(f"Default p0: {defaults['p0']}")

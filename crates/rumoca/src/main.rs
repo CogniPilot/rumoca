@@ -164,12 +164,17 @@ enum Backend {
     EmbeddedC,
     /// FMI 2.0 Model Exchange C source
     Fmi2,
+    /// ONNX computational graph (Python)
+    Onnx,
     /// DAE Modelica (classified variables and split equations)
     #[value(name = "dae-modelica")]
     DaeModelica,
     /// Flat Modelica
     #[value(name = "flat-modelica")]
     FlatModelica,
+    /// Julia ModelingToolkit (Julia)
+    #[value(name = "julia-mtk")]
+    JuliaMtk,
 }
 
 impl Backend {
@@ -180,10 +185,12 @@ impl Backend {
             Backend::CasadiMx => templates::CASADI_MX,
 
             Backend::Sympy => templates::SYMPY,
+            Backend::Onnx => templates::ONNX,
             Backend::EmbeddedC => templates::EMBEDDED_C,
             Backend::Fmi2 => templates::FMI2_MODEL,
             Backend::DaeModelica => templates::DAE_MODELICA,
             Backend::FlatModelica => templates::FLAT_MODELICA,
+            Backend::JuliaMtk => templates::JULIA_MTK,
         }
     }
 }

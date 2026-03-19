@@ -1371,3 +1371,46 @@ fn sympy_param_decay() {
 fn sympy_oscillator() {
     sympy_trace_test(OSCILLATOR_SOURCE, "Oscillator");
 }
+
+// ============================================================================
+// ONNX runtime tests
+//
+// ONNX uses operator-overloading (OnnxVar) to build computational graphs
+// from render_expr output, then runs forward Euler via ONNX Runtime.
+// ============================================================================
+
+const ONNX_CSV_DRIVER: &str = r#"
+import importlib.util, sys, os
+
+spec = importlib.util.spec_from_file_location("model", os.path.join(os.path.dirname(__file__), "model.py"))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+print(mod.simulate())
+"#;
+
+fn onnx_trace_test(source: &str, model_name: &str) {
+    let rendered = render_template(source, model_name, templates::ONNX);
+    let csv = run_python(&rendered, ONNX_CSV_DRIVER);
+    let backend_traces = parse_csv_traces(&csv);
+    let (dae, sim) = reference_trace(source, model_name, 1.0);
+    assert_traces_match(&backend_traces, &dae, &sim, C_TOLERANCE, "ONNX");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn onnx_ball() {
+    onnx_trace_test(BALL_SOURCE, "Ball");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn onnx_param_decay() {
+    onnx_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn onnx_oscillator() {
+    onnx_trace_test(OSCILLATOR_SOURCE, "Oscillator");
+}
