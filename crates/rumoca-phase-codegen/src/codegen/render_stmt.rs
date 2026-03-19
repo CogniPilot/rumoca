@@ -744,10 +744,13 @@ fn render_ast_if_expr(if_expr: &Value, cfg: &ExprConfig) -> RenderResult {
         .unwrap_or_else(|_| "0".to_string());
 
     Ok(match cfg.if_style {
-        IfStyle::Function => format!(
-            "{}if_else({}, {}, {})",
-            cfg.prefix, cond, then_expr, else_expr
-        ),
+        IfStyle::Function => {
+            let fn_name = cfg.if_else_fn.as_deref().unwrap_or("if_else");
+            format!(
+                "{}{}({}, {}, {})",
+                cfg.prefix, fn_name, cond, then_expr, else_expr
+            )
+        }
         IfStyle::Ternary => format!("({} ? {} : {})", cond, then_expr, else_expr),
         IfStyle::Modelica => {
             format!("(if {} then {} else {})", cond, then_expr, else_expr)

@@ -5,53 +5,128 @@
 
 using ModelingToolkit
 using DifferentialEquations
+using IfElse: ifelse
 
 {# Configuration for render_expr - Julia style #}
-{% set cfg = {"prefix": "", "power": "^", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "true", "false_val": "false", "if_style": "ternary"} %}
+{% set cfg = {"prefix": "", "power": "^", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "true", "false_val": "false", "if_style": "function", "if_else_fn": "ifelse"} %}
+
+"""Modelica pre() operator stub — returns current value during continuous integration."""
+pre(x) = x
+
+# =========================================================================
+# User-Defined Functions ({{ dae.functions | length }})
+# =========================================================================
+{% for func_name, func in dae.functions | items %}
+{% if not is_self_call(func_name, func) %}
+# Function: {{ func_name }} ({{ "pure" if func.pure else "impure" }})
+function {{ func_name | sanitize }}({% for p in func.inputs %}{{ p.name | sanitize }}{% if p.default %}={{ render_expr(p.default, cfg) }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %})
+{% for p in func.locals %}
+    {{ p.name | sanitize }} = {% if p.default %}{{ render_expr(p.default, cfg) }}{% else %}0.0{% endif %}  # local
+{% endfor %}
+{% if func.outputs | length > 0 %}
+    {{ func.outputs[0].name | sanitize }} = 0.0  # output variable
+{% endif %}
+{% if func.body | length > 0 %}
+    # Function body ({{ func.body | length }} statements)
+{{ render_statements(func.body, cfg, "    ") }}
+{% endif %}
+{% if func.outputs | length > 0 %}
+    return {{ func.outputs[0].name | sanitize }}
+{% else %}
+    return nothing
+{% endif %}
+end
+
+{% endif %}
+{% endfor %}
 
 function create_model()
-    # Time variable
+    # Time variable and derivative operator
     @independent_variables t
+    D = Differential(t)
+    der = D  # Modelica der() maps to MTK Differential operator
+    time = t  # Modelica built-in `time` maps to MTK independent variable
 
-    # State variables ({{ dae.x | length }})
+    # =========================================================================
+    # State Variables ({{ dae.x | length }})
+    # =========================================================================
 {% if dae.x | length > 0 %}
     @variables begin
 {% for name, var in dae.x | items %}
+{% if var.dims %}
+        {{ name | sanitize }}(t)[1:{{ var.dims | product }}]{% if var.start %}, [description = "{{ name }}"]{% endif %}
+
+{% else %}
         {{ name | sanitize }}(t){% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
 
+{% endif %}
 {% endfor %}
     end
 {% endif %}
 
-    # Algebraic variables ({{ dae.y | length }})
+    # =========================================================================
+    # Algebraic Variables ({{ dae.y | length }})
+    # =========================================================================
 {% if dae.y | length > 0 %}
     @variables begin
 {% for name, var in dae.y | items %}
+{% if var.dims %}
+        {{ name | sanitize }}(t)[1:{{ var.dims | product }}]
+{% else %}
         {{ name | sanitize }}(t)
+{% endif %}
 {% endfor %}
     end
 {% endif %}
 
-    # Input variables ({{ dae.u | length }})
+    # =========================================================================
+    # Output Variables ({{ dae.w | length }})
+    # =========================================================================
+{% if dae.w | length > 0 %}
+    @variables begin
+{% for name, var in dae.w | items %}
+{% if var.dims %}
+        {{ name | sanitize }}(t)[1:{{ var.dims | product }}]
+{% else %}
+        {{ name | sanitize }}(t)
+{% endif %}
+{% endfor %}
+    end
+{% endif %}
+
+    # =========================================================================
+    # Input Variables ({{ dae.u | length }})
+    # =========================================================================
 {% if dae.u | length > 0 %}
     @variables begin
 {% for name, var in dae.u | items %}
+{% if var.dims %}
+        {{ name | sanitize }}(t)[1:{{ var.dims | product }}]
+{% else %}
         {{ name | sanitize }}(t)
+{% endif %}
 {% endfor %}
     end
 {% endif %}
 
-    # Parameters ({{ dae.p | length }})
-{% if dae.p | length > 0 %}
-    @parameters begin
-{% for name, var in dae.p | items %}
-        {{ name | sanitize }}{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
-
+    # =========================================================================
+    # Derivative Alias Variables ({{ dae.x_dot_alias | length }})
+    # =========================================================================
+{% if dae.x_dot_alias | length > 0 %}
+    @variables begin
+{% for name, var in dae.x_dot_alias | items %}
+{% if var.dims %}
+        {{ name | sanitize }}(t)[1:{{ var.dims | product }}]
+{% else %}
+        {{ name | sanitize }}(t)
+{% endif %}
 {% endfor %}
     end
 {% endif %}
 
+    # =========================================================================
     # Constants
+    # =========================================================================
 {% for name, var in dae.constants | items %}
 {% if var.start %}
     {{ name | sanitize }} = {{ render_expr(var.start, cfg) }}
@@ -59,11 +134,68 @@ function create_model()
     {{ name | sanitize }} = 0.0
 {% endif %}
 {% endfor %}
+{% if dae.enum_literal_ordinals | length > 0 %}
 
-    # Derivative operator
-    D = Differential(t)
+    # Enumeration literal ordinals (MLS §4.9.5)
+{% for name, ordinal in dae.enum_literal_ordinals | items %}
+    {{ name | sanitize }} = {{ ordinal }}
+{% endfor %}
+{% endif %}
 
-    # Equations
+    # =========================================================================
+    # Parameters ({{ dae.p | length }})
+    # =========================================================================
+{% if dae.p | length > 0 %}
+    @parameters begin
+{% for name, var in dae.p | items %}
+{% if var.dims %}
+        {{ name | sanitize }}[1:{{ var.dims | product }}]{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
+
+{% else %}
+        {{ name | sanitize }}{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
+
+{% endif %}
+{% endfor %}
+    end
+{% endif %}
+
+    # =========================================================================
+    # Discrete Real Variables ({{ dae.z | length }}) — as @parameters for callbacks
+    # =========================================================================
+{% if dae.z | length > 0 %}
+    @parameters begin
+{% for name, var in dae.z | items %}
+{% if var.dims %}
+        {{ name | sanitize }}[1:{{ var.dims | product }}]{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
+
+{% else %}
+        {{ name | sanitize }}{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
+
+{% endif %}
+{% endfor %}
+    end
+{% endif %}
+
+    # =========================================================================
+    # Discrete-Valued Variables ({{ dae.m | length }}) — as @parameters for callbacks
+    # =========================================================================
+{% if dae.m | length > 0 %}
+    @parameters begin
+{% for name, var in dae.m | items %}
+{% if var.dims %}
+        {{ name | sanitize }}[1:{{ var.dims | product }}]{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
+
+{% else %}
+        {{ name | sanitize }}{% if var.start %} = {{ render_expr(var.start, cfg) }}{% endif %}
+
+{% endif %}
+{% endfor %}
+    end
+{% endif %}
+
+    # =========================================================================
+    # Equations ({{ dae.f_x | length }})
+    # =========================================================================
     eqs = [
 {% for eq in dae.f_x %}
 {% if eq.lhs %}
@@ -73,6 +205,17 @@ function create_model()
 {% endif %}
 {% endfor %}
     ]
+
+{% if dae.initial_equations | length > 0 %}
+    # =========================================================================
+    # Initial Equations ({{ dae.initial_equations | length }})
+    # =========================================================================
+    initialization_eqs = [
+{% for eq in dae.initial_equations %}
+        0 ~ {{ render_expr(eq.rhs, cfg) }},  # {{ eq.origin }}
+{% endfor %}
+    ]
+{% endif %}
 
     # Build system
     @named sys = ODESystem(eqs, t)
@@ -96,7 +239,21 @@ function get_default_values()
 {% endfor %}
     )
 
-    return (x0=x0, p0=p0)
+    # Default discrete Real values
+    z0 = Dict(
+{% for name, var in dae.z | items %}
+        "{{ name }}" => {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}
+{% endfor %}
+    )
+
+    # Default discrete-valued values
+    m0 = Dict(
+{% for name, var in dae.m | items %}
+        "{{ name }}" => {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}
+{% endfor %}
+    )
+
+    return (x0=x0, p0=p0, z0=z0, m0=m0)
 end
 
 
@@ -113,12 +270,53 @@ function simulate(;
     u0_dict = isnothing(x0) ? defaults.x0 : merge(defaults.x0, x0)
     p_dict = isnothing(p) ? defaults.p0 : merge(defaults.p0, p)
 
-    # Convert to ModelingToolkit format
-    u0 = [getproperty(sys, Symbol(replace(k, "." => "_"))) => v for (k, v) in u0_dict]
-    params = [getproperty(sys, Symbol(replace(k, "." => "_"))) => v for (k, v) in p_dict]
+    # Convert string keys to MTK symbolic pairs and merge into one Dict.
+    # After structural_simplify, some variables may be eliminated — skip those.
+    sym_pairs = Dict{Any,Any}()
+    all_syms = Set(Symbol.(string.(vcat(ModelingToolkit.unknowns(sys), ModelingToolkit.parameters(sys)))))
+    for (k, v) in u0_dict
+        sym = Symbol(replace(k, "." => "_"))
+        if sym in all_syms
+            sym_pairs[getproperty(sys, sym)] = v
+        end
+    end
+    for (k, v) in p_dict
+        sym = Symbol(replace(k, "." => "_"))
+        if sym in all_syms
+            sym_pairs[getproperty(sys, sym)] = v
+        end
+    end
 
-    prob = ODEProblem(sys, u0, tspan, params)
-    return solve(prob; kwargs...)
+    prob = ODEProblem(sys, sym_pairs, tspan)
+
+{% if dae.relation | length > 0 %}
+    # =========================================================================
+    # Event Callbacks ({{ dae.relation | length }} zero-crossing conditions)
+    # =========================================================================
+    callbacks = []
+{% for rel in dae.relation %}
+    # Zero-crossing condition {{ loop.index }}
+    function condition_{{ loop.index }}(u, t, integrator)
+        return {{ render_expr(rel, cfg) }}
+    end
+    function affect_{{ loop.index }}!(integrator)
+{% if dae.f_z | length > 0 or dae.f_m | length > 0 %}
+        # Discrete variable updates fire on event
+{% for eq in dae.f_z %}
+        # f_z: {{ eq.origin }}
+{% endfor %}
+{% for eq in dae.f_m %}
+        # f_m: {{ eq.origin }}
+{% endfor %}
+{% endif %}
+    end
+    push!(callbacks, ContinuousCallback(condition_{{ loop.index }}, affect_{{ loop.index }}!))
+{% endfor %}
+    cbs = CallbackSet(callbacks...)
+    return solve(prob, Tsit5(); callback=cbs, kwargs...)
+{% else %}
+    return solve(prob, Tsit5(); kwargs...)
+{% endif %}
 end
 
 
@@ -129,7 +327,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
     defaults = get_default_values()
 
     println("States ({{ dae.x | length }}): ", [{% for name, var in dae.x | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
+    println("Algebraics ({{ dae.y | length }}): ", [{% for name, var in dae.y | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
+    println("Outputs ({{ dae.w | length }}): ", [{% for name, var in dae.w | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
     println("Parameters ({{ dae.p | length }}): ", [{% for name, var in dae.p | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
+    println("Discrete Reals ({{ dae.z | length }}): ", [{% for name, var in dae.z | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
+    println("Discrete-Valued ({{ dae.m | length }}): ", [{% for name, var in dae.m | items %}"{{ name }}"{{ ", " if not loop.last else "" }}{% endfor %}])
     println("\nEquations:")
     for eq in equations(sys)
         println("  ", eq)

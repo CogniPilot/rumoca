@@ -33,6 +33,23 @@ pub enum CodegenInput<'a> {
     Ast(&'a ast::ClassTree),
 }
 
+/// Extract unique enum type names from enum literal ordinals.
+/// E.g., from `Modelica.Blocks.Types.Smoothness.LinearSegments` → `Modelica.Blocks.Types.Smoothness`.
+fn enum_type_names_from_ordinals(ordinals: &dae::Dae) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for name in ordinals.enum_literal_ordinals.keys() {
+        // Strip the last `.Component` to get the type path
+        if let Some(dot_pos) = name.rfind('.') {
+            let type_name = &name[..dot_pos];
+            if seen.insert(type_name.to_string()) {
+                result.push(type_name.to_string());
+            }
+        }
+    }
+    result
+}
+
 pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
     json!({
         // Long-form names used by existing templates.
@@ -63,6 +80,7 @@ pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
         "initial_equations": &dae.initial_equations,
         "functions": &dae.functions,
         "enum_literal_ordinals": &dae.enum_literal_ordinals,
+        "enum_type_names": enum_type_names_from_ordinals(dae),
         "interface_flow_count": dae.interface_flow_count,
         "overconstrained_interface_count": dae.overconstrained_interface_count,
         "oc_break_edge_scalar_count": dae.oc_break_edge_scalar_count,
@@ -506,6 +524,7 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
 // ── ExprConfig and helpers ───────────────────────────────────────────
 
 /// Configuration for expression rendering.
+#[derive(Clone)]
 pub(crate) struct ExprConfig {
     pub(crate) prefix: String,
     pub(crate) power: String,
@@ -531,6 +550,9 @@ pub(crate) struct ExprConfig {
     /// Subscript rendering style: "bracket" (default: `x[0]`) or "underscore" (`x_1`, 1-based).
     /// The "underscore" style matches the C template's unpack_vars naming convention.
     pub(crate) subscript_underscore: bool,
+    /// Override function name for `IfStyle::Function` (default: `"if_else"`).
+    /// E.g., set to `"IfElse.ifelse"` for Julia ModelingToolkit.
+    pub(crate) if_else_fn: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -562,6 +584,7 @@ impl Default for ExprConfig {
             mul_elem_fn: None,
             power_fn: None,
             subscript_underscore: false,
+            if_else_fn: None,
         }
     }
 }
@@ -644,6 +667,11 @@ impl ExprConfig {
             && !val.is_none()
         {
             cfg.subscript_underscore = val.is_true();
+        }
+        if let Some(s) = get_str_attr(v, "if_else_fn")
+            && !s.is_empty()
+        {
+            cfg.if_else_fn = Some(s);
         }
 
         cfg

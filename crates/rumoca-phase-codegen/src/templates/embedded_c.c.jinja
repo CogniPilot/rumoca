@@ -256,12 +256,15 @@ static inline real_t __rumoca_sum(const real_t* arr, int n) {
     return s;
 }
 
-{#- Macro: unpack variables from model arrays into local C aliases -#}
+{#- Macro: unpack variables from model arrays into local C aliases.
+    Also emits pointer aliases for array variables so Index expressions
+    (base[subscript] style) can access them via pointer. -#}
 {% macro unpack_vars(vars, array, mutable=false, pre_array="", der_array="") -%}
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in vars | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
+{% set arr_base_offset = ns_idx.offset %}
 {% for i in range(sz) %}
     {% if mutable %}real_t{% else %}const real_t{% endif %} {{ name | sanitize }}_{{ i + 1 }} = {{ array }}[{{ ns_idx.offset }}]; (void){{ name | sanitize }}_{{ i + 1 }};
 {% if pre_array %}
@@ -269,6 +272,7 @@ static inline real_t __rumoca_sum(const real_t* arr, int n) {
 {% endif %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
+    {% if mutable %}real_t{% else %}const real_t{% endif %}* {{ name | sanitize }} = &{{ array }}[{{ arr_base_offset }}]; (void){{ name | sanitize }};
 {% else %}
     {% if mutable %}real_t{% else %}const real_t{% endif %} {{ name | sanitize }} = {{ array }}[{{ ns_idx.offset }}]; (void){{ name | sanitize }};
 {% if pre_array %}
@@ -342,8 +346,8 @@ static void {{ model_name }}_compute_algebraics({{ model_name }}_t* m, real_t t)
     const real_t time = t;
     (void)time;
 
-{{ unpack_vars(dae.x, "m->x") }}
-{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->c") }}
 {% if n_z > 0 %}
@@ -352,8 +356,8 @@ static void {{ model_name }}_compute_algebraics({{ model_name }}_t* m, real_t t)
 {% if n_m > 0 %}
 {{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
 {% endif %}
-{{ unpack_vars(dae.y, "m->y", mutable=true) }}
-{{ unpack_vars(dae.w, "m->w", mutable=true) }}
+{{ unpack_vars(dae.y, "m->y", mutable=true, pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", mutable=true, pre_array="m->w") }}
 
     /* Output equations: w = f(x, u, p, t) */
 {% set ns_out = namespace(offset=0) %}
@@ -401,9 +405,9 @@ static void {{ model_name }}_derivatives(const {{ model_name }}_t* m, real_t t, 
     const real_t time = t;
     (void)time;
 
-{{ unpack_vars(dae.x, "m->x") }}
-{{ unpack_vars(dae.y, "m->y") }}
-{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->c") }}
 {% if n_z > 0 %}
@@ -412,7 +416,7 @@ static void {{ model_name }}_derivatives(const {{ model_name }}_t* m, real_t t, 
 {% if n_m > 0 %}
 {{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
 {% endif %}
-{{ unpack_vars(dae.w, "m->w") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 
 {% set ns_xdot = namespace(offset=0) %}
 {% for name, var in dae.x | items %}

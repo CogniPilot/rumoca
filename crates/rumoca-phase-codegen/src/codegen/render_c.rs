@@ -206,17 +206,42 @@ pub(super) fn alg_rhs_for_var_function(
 /// - `0 = expr - der(x)` → `der(x) = expr`
 /// - `0 = k*der(x) - expr` → `der(x) = expr / k`
 /// - `0 = der(x)*k - expr` → `der(x) = expr / k`
+/// - `0 = -(any of above)` → unwrap negation, swap lhs/rhs
 ///
 /// Matches both scalar (`der(x)`) and indexed (`der(x[1])`) forms via `is_der_of`,
 /// which reconstructs the full VarRef name including subscripts.
 fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option<String> {
     let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
-    let binary = get_field(&rhs, "Binary").ok()?;
+
+    // Try direct Binary{Sub} first, then try unwrapping Unary{Minus}.
+    // 0 = -(A - B) is equivalent to 0 = B - A, so we swap lhs/rhs.
+    let (binary, swapped) = if let Ok(b) = get_field(&rhs, "Binary") {
+        (b, false)
+    } else if let Ok(unary) = get_field(&rhs, "Unary") {
+        let op = get_field(&unary, "op")
+            .ok()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        if op.contains("Minus") || op.contains("Neg") {
+            let inner = get_field(&unary, "rhs").ok()?;
+            let b = get_field(&inner, "Binary").ok()?;
+            (b, true)
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
     if !is_sub_op(&binary) {
         return None;
     }
-    let lhs = get_field(&binary, "lhs").ok()?;
-    let rhs_val = get_field(&binary, "rhs").ok()?;
+    let (lhs, rhs_val) = if swapped {
+        // -(A - B) = B - A: swap the operands
+        (get_field(&binary, "rhs").ok()?, get_field(&binary, "lhs").ok()?)
+    } else {
+        (get_field(&binary, "lhs").ok()?, get_field(&binary, "rhs").ok()?)
+    };
 
     // Case 1: 0 = der(x) - expr → der(x) = expr
     if is_der_of(&lhs, state_name) {
@@ -252,18 +277,53 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
 /// which reconstructs the full VarRef name including subscripts.
 fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
-    let binary = get_field(&rhs, "Binary").ok()?;
+
+    // Try direct Binary{Sub} first, then try unwrapping Unary{Minus}.
+    // 0 = -(A - B) is equivalent to 0 = B - A, so we swap lhs/rhs.
+    let (binary, swapped) = if let Ok(b) = get_field(&rhs, "Binary") {
+        (b, false)
+    } else if let Ok(unary) = get_field(&rhs, "Unary") {
+        let op = get_field(&unary, "op")
+            .ok()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        if op.contains("Minus") || op.contains("Neg") {
+            let inner = get_field(&unary, "rhs").ok()?;
+            let b = get_field(&inner, "Binary").ok()?;
+            (b, true)
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
     if !is_sub_op(&binary) {
         return None;
     }
-    let lhs = get_field(&binary, "lhs").ok()?;
-    if !is_var_ref_of(&lhs, var_name) {
-        return None;
+
+    // For algebraics: 0 = var - expr → var = expr
+    // Also: 0 = expr - var → var = expr
+    // With swap: 0 = -(A - B) → 0 = B - A
+    let (lhs_side, rhs_side) = if swapped {
+        (get_field(&binary, "rhs").ok()?, get_field(&binary, "lhs").ok()?)
+    } else {
+        (get_field(&binary, "lhs").ok()?, get_field(&binary, "rhs").ok()?)
+    };
+
+    // Case 1: 0 = var - expr → var = expr
+    if is_var_ref_of(&lhs_side, var_name) && !contains_der(&rhs_side) {
+        let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_default();
+        return Some(rhs_expr);
     }
-    let rhs_expr = get_field(&binary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .unwrap_or_default();
-    Some(rhs_expr)
+
+    // Case 2: 0 = expr - var → var = expr
+    if is_var_ref_of(&rhs_side, var_name) && !contains_der(&lhs_side) {
+        let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_default();
+        return Some(lhs_expr);
+    }
+
+    None
 }
 
 /// Check if an expression is `BuiltinCall { function: Der, args: [VarRef { name, subscripts }] }`
@@ -342,6 +402,54 @@ fn is_mul_op(binary: &Value) -> bool {
 fn is_sub_op(binary: &Value) -> bool {
     if let Ok(op) = get_field(binary, "op") {
         return get_field(&op, "Sub").is_ok() || get_field(&op, "SubElem").is_ok();
+    }
+    false
+}
+
+/// Check if an expression tree contains a `der()` call anywhere.
+/// Used to skip algebraic equations that are actually ODE equations.
+fn contains_der(expr: &Value) -> bool {
+    // Direct BuiltinCall with Der
+    if let Ok(builtin) = get_field(expr, "BuiltinCall") {
+        if let Ok(func) = get_field(&builtin, "function") {
+            let s = func.to_string();
+            if s == "Der" || s == "\"Der\"" {
+                return true;
+            }
+        }
+        // Check args
+        if let Ok(args) = get_field(&builtin, "args") {
+            if let Some(len) = args.len() {
+                for i in 0..len {
+                    if let Ok(arg) = args.get_item(&Value::from(i)) {
+                        if contains_der(&arg) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+    // Binary
+    if let Ok(binary) = get_field(expr, "Binary") {
+        if let Ok(lhs) = get_field(&binary, "lhs") {
+            if contains_der(&lhs) {
+                return true;
+            }
+        }
+        if let Ok(rhs) = get_field(&binary, "rhs") {
+            if contains_der(&rhs) {
+                return true;
+            }
+        }
+        return false;
+    }
+    // Unary
+    if let Ok(unary) = get_field(expr, "Unary") {
+        if let Ok(inner) = get_field(&unary, "rhs") {
+            return contains_der(&inner);
+        }
     }
     false
 }

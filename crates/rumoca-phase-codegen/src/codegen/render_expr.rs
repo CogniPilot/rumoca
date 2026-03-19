@@ -598,9 +598,10 @@ fn render_if_branches(
 
         result = match cfg.if_style {
             IfStyle::Function => {
+                let fn_name = cfg.if_else_fn.as_deref().unwrap_or("if_else");
                 format!(
-                    "{}if_else({}, {}, {})",
-                    cfg.prefix, cond_str, then_str, result
+                    "{}{}({}, {}, {})",
+                    cfg.prefix, fn_name, cond_str, then_str, result
                 )
             }
             IfStyle::Ternary => {

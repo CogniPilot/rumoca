@@ -157,6 +157,16 @@ fn try_fmi_c_compile(
     if !compile_output.status.success() {
         let stderr = String::from_utf8_lossy(&compile_output.stderr);
         let truncated: String = stderr.lines().take(20).collect::<Vec<_>>().join("\n");
+        // Save debug files for failed compilations
+        let debug_dir = std::path::Path::new("/tmp/fmi2_debug");
+        let _ = fs::create_dir_all(debug_dir);
+        let safe_name = model_name.replace('.', "_");
+        let _ = fs::write(debug_dir.join(format!("{safe_name}.c")), &model_c);
+        let _ = fs::write(debug_dir.join(format!("{safe_name}_driver.c")), &driver_c);
+        let _ = fs::write(
+            debug_dir.join(format!("{safe_name}_errors.txt")),
+            &truncated,
+        );
         return Err(format!("C compile failed:\n{truncated}"));
     }
 
