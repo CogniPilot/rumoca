@@ -9,6 +9,7 @@
 # Uses operator-overloading (OnnxVar) so that render_expr output
 # like `x + y * sin(z)` automatically builds ONNX graph nodes.
 
+import math
 import numpy as np
 
 try:
@@ -166,6 +167,25 @@ def onnx_if_else(cond, true_val, false_val):
     return OnnxVar(gb, gb.add_node('Where', [nc, nt, nf]))
 
 
+def _to_onnx_const(gb, val, name):
+    """Wrap a value as an OnnxVar graph constant. If already an OnnxVar
+    (e.g. from a start expression referencing another variable), return as-is."""
+    if isinstance(val, OnnxVar):
+        return val
+    try:
+        return OnnxVar(gb, gb.add_const(float(val), name))
+    except (ValueError, TypeError, ZeroDivisionError):
+        return OnnxVar(gb, gb.add_const(0.0, name))
+
+
+# Modelica enum values that may appear in start/parameter expressions
+StateSelect_never = 1
+StateSelect_avoid = 2
+StateSelect_default = 3
+StateSelect_prefer = 4
+StateSelect_always = 5
+
+
 # =========================================================================
 # ONNX model creation
 # =========================================================================
@@ -237,17 +257,60 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
     # --- Constants ---
 {% for name, var in dae.constants | items %}
 {% if var.start %}
-    {{ name | sanitize }} = OnnxVar(gb, gb.add_const({{ render_expr(var.start, {"prefix": "", "power": "**", "if_style": "ternary"}) }}, '{{ name | sanitize }}'))
+    {{ name | sanitize }} = _to_onnx_const(gb, {{ render_expr(var.start, cfg) }}, '{{ name | sanitize }}')
 {% else %}
     {{ name | sanitize }} = OnnxVar(gb, gb.add_const(0.0, '{{ name | sanitize }}'))
 {% endif %}
+{% endfor %}
+
+    # --- Discrete variables (treated as constants from start values) ---
+{% for name, var in dae.z | items %}
+{% if var.start %}
+    {{ name | sanitize }} = _to_onnx_const(gb, {{ render_expr(var.start, cfg) }}, '{{ name | sanitize }}')
+{% else %}
+    {{ name | sanitize }} = OnnxVar(gb, gb.add_const(0.0, '{{ name | sanitize }}'))
+{% endif %}
+{% endfor %}
+{% for name, var in dae.m | items %}
+{% if var.start %}
+    {{ name | sanitize }} = _to_onnx_const(gb, {{ render_expr(var.start, cfg) }}, '{{ name | sanitize }}')
+{% else %}
+    {{ name | sanitize }} = OnnxVar(gb, gb.add_const(0.0, '{{ name | sanitize }}'))
+{% endif %}
+{% endfor %}
+
+    # --- Output variables (initialize from start, then compute) ---
+{% for name, var in dae.w | items %}
+{% if var.start %}
+    {{ name | sanitize }} = _to_onnx_const(gb, {{ render_expr(var.start, cfg) }}, '_init_{{ name | sanitize }}')
+{% else %}
+    {{ name | sanitize }} = OnnxVar(gb, gb.add_const(0.0, '_init_{{ name | sanitize }}'))
+{% endif %}
+{% endfor %}
+{% for name, var in dae.w | items %}
+    _tmp_w = {{ alg_rhs_for_var(name, dae.f_x, cfg) }}
+    {{ name | sanitize }} = _to_onnx_const(gb, _tmp_w, '{{ name | sanitize }}')
+{% endfor %}
+
+    # --- Algebraic variables (initialize from start, then compute) ---
+{% for name, var in dae.y | items %}
+{% if var.start %}
+    {{ name | sanitize }} = _to_onnx_const(gb, {{ render_expr(var.start, cfg) }}, '_init_{{ name | sanitize }}')
+{% else %}
+    {{ name | sanitize }} = OnnxVar(gb, gb.add_const(0.0, '_init_{{ name | sanitize }}'))
+{% endif %}
+{% endfor %}
+{% for name, var in dae.y | items %}
+    _tmp_y = {{ alg_rhs_for_var(name, dae.f_x, cfg) }}
+    {{ name | sanitize }} = _to_onnx_const(gb, _tmp_y, '{{ name | sanitize }}')
 {% endfor %}
 
     # --- ODE Equations (via operator overloading) ---
     xdot_components = []
 {% for name, var in dae.x | items %}
     # der({{ name }})
-    _rhs_{{ loop.index0 }} = {{ ode_rhs_for_state(name, dae.f_x, cfg) }}
+    _tmp_rhs = {{ ode_rhs_for_state(name, dae.f_x, cfg) }}
+    _rhs_{{ loop.index0 }} = _to_onnx_const(gb, _tmp_rhs, '_rhs_{{ loop.index0 }}')
     # Squeeze from [1] to scalar if needed, then reshape to [1] for concat
     _sq_{{ loop.index0 }} = gb.add_node('Reshape', [_rhs_{{ loop.index0 }}.name, gb.add_const_int([1])], output='xdot_{{ loop.index0 }}')
     xdot_components.append('xdot_{{ loop.index0 }}')
@@ -283,15 +346,86 @@ def create_onnx_model(opset_version: int = 17) -> onnx.ModelProto:
 # =========================================================================
 
 def get_default_values() -> dict:
+{# Use a Python-safe config: math.* prefix for math functions, function-style if_else #}
+{% set init_cfg = {"prefix": "math.", "power": "**", "if_style": "function"} %}
+    def if_else(c, t, e):
+        return t if c else e
+
+    # Forward-declare all variables so cross-references resolve
+    time = 0.0
+{% for name, var in dae.constants | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+{% for name, var in dae.p | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+{% for name, var in dae.z | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+{% for name, var in dae.m | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+{% for name, var in dae.x | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+{% for name, var in dae.y | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+{% for name, var in dae.w | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+
+    # Assign start values (may reference other variables; errors fall back to 0.0)
+{% for name, var in dae.constants | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.p | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.z | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.m | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.x | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+
     x0 = np.array([
 {% for name, var in dae.x | items %}
-        {% if var.start %}{{ render_expr(var.start, {"prefix": "", "power": "**", "if_style": "ternary"}) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
+        {{ name | sanitize }},  # {{ name }}
 {% endfor %}
     ], dtype=np.float32)
 
     p0 = np.array([
 {% for name, var in dae.p | items %}
-        {% if var.start %}{{ render_expr(var.start, {"prefix": "", "power": "**", "if_style": "ternary"}) }}{% else %}0.0{% endif %}{{ "," if not loop.last else "" }}  # {{ name }}
+        {{ name | sanitize }},  # {{ name }}
 {% endfor %}
     ], dtype=np.float32)
 

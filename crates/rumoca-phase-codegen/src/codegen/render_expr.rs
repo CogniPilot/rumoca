@@ -13,18 +13,25 @@ use minijinja::Value;
 /// Serialized Rust enums produce map-like Values where variant names are keys.
 /// minijinja maps return `Ok(undefined)` for missing keys instead of `Err`,
 /// so we must check that the returned value is not undefined/none.
+/// We try both `get_attr` and `get_item` — `get_attr` may return `Ok(undefined)`
+/// for map-like Values even when `get_item` would succeed.
 pub(crate) fn get_field(value: &Value, name: &str) -> Result<Value, minijinja::Error> {
-    let result = value
-        .get_attr(name)
-        .or_else(|_| value.get_item(&Value::from(name)))?;
-    if result.is_undefined() || result.is_none() {
-        Err(minijinja::Error::new(
-            minijinja::ErrorKind::UndefinedError,
-            format!("field '{}' not found", name),
-        ))
-    } else {
-        Ok(result)
+    // Try get_attr first
+    if let Ok(result) = value.get_attr(name) {
+        if !result.is_undefined() && !result.is_none() {
+            return Ok(result);
+        }
     }
+    // Fall back to get_item (maps, sequences)
+    if let Ok(result) = value.get_item(&Value::from(name)) {
+        if !result.is_undefined() && !result.is_none() {
+            return Ok(result);
+        }
+    }
+    Err(minijinja::Error::new(
+        minijinja::ErrorKind::UndefinedError,
+        format!("field '{}' not found", name),
+    ))
 }
 
 /// Recursively render an expression to a string.
@@ -303,6 +310,26 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
         _ => {}
     }
 
+    // Handle Min/Max/Sum with single Array argument: expand to chained calls.
+    // Modelica `min({a,b,c})` → C `fmin(fmin(a,b),c)` (not `fmin((double[]){a,b,c})`)
+    if matches!(func_name.as_str(), "Min" | "Max" | "Sum") {
+        let args_val = get_field(builtin, "args")?;
+        if args_val.len() == Some(1) {
+            if let Ok(first_arg) = args_val.get_item(&Value::from(0)) {
+                if let Ok(array) = get_field(&first_arg, "Array") {
+                    if let Ok(elements) = get_field(&array, "elements") {
+                        let len = elements.len().unwrap_or(0);
+                        if len > 0 {
+                            return render_chained_minmaxsum(
+                                &func_name, &elements, len, cfg,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let args = render_args(builtin, cfg)?;
 
     if cfg.modelica_builtins {
@@ -380,7 +407,69 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Ones" => format!("{}ones({})", cfg.prefix, args),
         "Identity" => format!("{}eye({})", cfg.prefix, args),
         "Cross" => format!("{}cross({})", cfg.prefix, args),
+        "Div" => format!("{}div({})", cfg.prefix, args),
+        "Mod" => format!("fmod({})", args),
+        "Rem" => format!("remainder({})", args),
+        "Fill" => {
+            // fill(val, n) → val (scalar broadcast; array fill not supported yet)
+            if let Some(comma_pos) = args.find(',') {
+                args[..comma_pos].trim().to_string()
+            } else {
+                format!("{}fill({})", cfg.prefix, args)
+            }
+        }
+        "Size" => {
+            // size(arr, dim) — not directly representable in C, emit as comment
+            format!("0 /* size({}) — array intrinsic not yet supported */", args)
+        }
+        "Interval" => {
+            // interval(u) — clocked partition intrinsic (MLS §16.10)
+            // In continuous simulation, return the clock period if known
+            format!("0.0 /* interval({}) — clocked partition intrinsic */", args)
+        }
         _ => format!("{}({})", func_name.to_lowercase(), args),
+    }
+}
+
+/// Expand `min({a,b,c})` → `fmin(fmin(a,b),c)` (or `fmax`, or `((a)+(b)+(c))` for sum).
+fn render_chained_minmaxsum(
+    func_name: &str,
+    elements: &Value,
+    len: usize,
+    cfg: &ExprConfig,
+) -> RenderResult {
+    let mut elem_strs = Vec::new();
+    for i in 0..len {
+        if let Ok(elem) = elements.get_item(&Value::from(i)) {
+            elem_strs.push(render_expression(&elem, cfg)?);
+        }
+    }
+    if elem_strs.is_empty() {
+        return Ok("0".to_string());
+    }
+    if elem_strs.len() == 1 {
+        return Ok(elem_strs.into_iter().next().unwrap());
+    }
+    match func_name {
+        "Sum" => {
+            // sum({a,b,c}) → ((a) + (b) + (c))
+            let parts: Vec<String> = elem_strs.iter().map(|s| format!("({})", s)).collect();
+            Ok(format!("({})", parts.join(" + ")))
+        }
+        _ => {
+            // Min/Max: chain fmin/fmax calls
+            let fn_name = if func_name == "Min" {
+                if cfg.modelica_builtins { "min" } else { "fmin" }
+            } else {
+                if cfg.modelica_builtins { "max" } else { "fmax" }
+            };
+            let prefix = &cfg.prefix;
+            let mut result = elem_strs[0].clone();
+            for elem in &elem_strs[1..] {
+                result = format!("{prefix}{fn_name}({result}, {elem})");
+            }
+            Ok(result)
+        }
     }
 }
 
@@ -394,6 +483,13 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
                 .unwrap_or_else(|_| n.to_string())
         })
         .unwrap_or_default();
+
+    // Map Modelica standard library math functions to builtins
+    if let Some(builtin) = resolve_modelica_math_function(&raw_name) {
+        let args = render_args(func_call, cfg)?;
+        return Ok(render_builtin_python(builtin, &args, cfg));
+    }
+
     let name = if cfg.sanitize_dots {
         raw_name.replace('.', "_")
     } else {
@@ -402,6 +498,27 @@ fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
 
     let args = render_args(func_call, cfg)?;
     Ok(format!("{}({})", name, args))
+}
+
+/// Map Modelica.Math.* function names to their BuiltinCall equivalents.
+/// Returns the builtin function name (e.g., "Sin", "Cos") if recognized.
+fn resolve_modelica_math_function(name: &str) -> Option<&'static str> {
+    match name {
+        "Modelica.Math.sin" => Some("Sin"),
+        "Modelica.Math.cos" => Some("Cos"),
+        "Modelica.Math.tan" => Some("Tan"),
+        "Modelica.Math.asin" => Some("Asin"),
+        "Modelica.Math.acos" => Some("Acos"),
+        "Modelica.Math.atan" => Some("Atan"),
+        "Modelica.Math.atan2" => Some("Atan2"),
+        "Modelica.Math.sinh" => Some("Sinh"),
+        "Modelica.Math.cosh" => Some("Cosh"),
+        "Modelica.Math.tanh" => Some("Tanh"),
+        "Modelica.Math.exp" => Some("Exp"),
+        "Modelica.Math.log" => Some("Log"),
+        "Modelica.Math.log10" => Some("Log10"),
+        _ => None,
+    }
 }
 
 pub(crate) fn render_args(call: &Value, cfg: &ExprConfig) -> RenderResult {
@@ -594,6 +711,9 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
 }
 
 /// Render an index expression as `base[subscripts]`.
+/// For C targets (subscript_underscore=true), bracket subscripts are 0-based
+/// since they access via pointer/array (unlike VarRef underscore subscripts
+/// which are 1-based naming).
 fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
     let base = get_field(index, "base")
         .and_then(|v| render_expression(&v, cfg))
@@ -602,9 +722,19 @@ fn render_index(index: &Value, cfg: &ExprConfig) -> RenderResult {
         .map_err(|_| render_err("Index missing 'subscripts' field"))?;
     let len = subs.len().unwrap_or(0);
     let mut sub_strs = Vec::new();
+    // For bracket-style Index access on C targets, use 0-based subscripts
+    let index_cfg = if cfg.subscript_underscore {
+        ExprConfig {
+            one_based_index: false,
+            subscript_underscore: false, // don't trigger 1-based override
+            ..cfg.clone()
+        }
+    } else {
+        cfg.clone()
+    };
     for i in 0..len {
         if let Ok(sub) = subs.get_item(&Value::from(i)) {
-            sub_strs.push(render_subscript(&sub, cfg)?);
+            sub_strs.push(render_subscript(&sub, &index_cfg)?);
         }
     }
     Ok(format!("{}[{}]", base, sub_strs.join(", ")))

@@ -142,10 +142,18 @@ pub(super) fn ode_rhs_for_state_function(
     }
 
     // No matching equation found — emit warning so it's visible in generated code
-    Ok(format!(
-        "0.0 /* WARNING: no ODE equation found for der({}) */",
-        name_str
-    ))
+    // Use Python-style comment when power is "**" (Python backends)
+    if cfg.power == "**" {
+        Ok(format!(
+            "0.0  # WARNING: no ODE equation found for der({})",
+            name_str
+        ))
+    } else {
+        Ok(format!(
+            "0.0 /* WARNING: no ODE equation found for der({}) */",
+            name_str
+        ))
+    }
 }
 
 /// Extract the explicit RHS for an algebraic variable from f_x equations.
@@ -177,16 +185,27 @@ pub(super) fn alg_rhs_for_var_function(
     }
 
     // No matching equation found — emit warning so it's visible in generated code
-    Ok(format!(
-        "0.0 /* WARNING: no equation found for {} */",
-        name_str
-    ))
+    // Use Python-style comment when power is "**" (Python backends)
+    if cfg.power == "**" {
+        Ok(format!("0.0  # WARNING: no equation found for {}", name_str))
+    } else {
+        Ok(format!(
+            "0.0 /* WARNING: no equation found for {} */",
+            name_str
+        ))
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-/// Extract the derivative RHS from a single equation if it matches `0 = der(state_name) - expr`.
+/// Extract the derivative RHS from a single equation if it contains `der(state_name)`.
 /// Helper for `ode_rhs_for_state_function`; decomposes MLS B.1a residual form.
+///
+/// Handles multiple equation forms:
+/// - `0 = der(x) - expr` → `der(x) = expr`
+/// - `0 = expr - der(x)` → `der(x) = expr`
+/// - `0 = k*der(x) - expr` → `der(x) = expr / k`
+/// - `0 = der(x)*k - expr` → `der(x) = expr / k`
 ///
 /// Matches both scalar (`der(x)`) and indexed (`der(x[1])`) forms via `is_der_of`,
 /// which reconstructs the full VarRef name including subscripts.
@@ -197,13 +216,33 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
         return None;
     }
     let lhs = get_field(&binary, "lhs").ok()?;
-    if !is_der_of(&lhs, state_name) {
-        return None;
+    let rhs_val = get_field(&binary, "rhs").ok()?;
+
+    // Case 1: 0 = der(x) - expr → der(x) = expr
+    if is_der_of(&lhs, state_name) {
+        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_default();
+        return Some(rhs_expr);
     }
-    let rhs_expr = get_field(&binary, "rhs")
-        .and_then(|v| render_expression(&v, cfg))
-        .unwrap_or_default();
-    Some(rhs_expr)
+
+    // Case 2: 0 = expr - der(x) → der(x) = expr
+    if is_der_of(&rhs_val, state_name) {
+        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_default();
+        return Some(lhs_expr);
+    }
+
+    // Case 3: 0 = k*der(x) - expr or 0 = der(x)*k - expr → der(x) = expr / k
+    if let Some(coeff) = extract_der_coefficient(&lhs, state_name, cfg) {
+        let rhs_expr = render_expression(&rhs_val, cfg).unwrap_or_default();
+        return Some(format!("({rhs_expr}) / ({coeff})"));
+    }
+
+    // Case 4: 0 = expr - k*der(x) or 0 = expr - der(x)*k → der(x) = expr / k
+    if let Some(coeff) = extract_der_coefficient(&rhs_val, state_name, cfg) {
+        let lhs_expr = render_expression(&lhs, cfg).unwrap_or_default();
+        return Some(format!("({lhs_expr}) / ({coeff})"));
+    }
+
+    None
 }
 
 /// Extract the algebraic RHS from a single equation if it matches `0 = var_name - expr`.
@@ -266,6 +305,37 @@ fn is_var_ref_of(expr: &Value, target_name: &str) -> bool {
         return false;
     };
     var_ref_full_name(&var_ref) == target_name
+}
+
+/// Extract the coefficient from a `k*der(x)` or `der(x)*k` expression.
+///
+/// If `expr` is `Binary { Mul, lhs: k, rhs: der(x) }` or `Binary { Mul, lhs: der(x), rhs: k }`,
+/// returns the rendered `k`. Otherwise returns None.
+fn extract_der_coefficient(expr: &Value, state_name: &str, cfg: &ExprConfig) -> Option<String> {
+    let binary = get_field(expr, "Binary").ok()?;
+    if !is_mul_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    let rhs = get_field(&binary, "rhs").ok()?;
+
+    if is_der_of(&rhs, state_name) {
+        // k * der(x) → coefficient is k
+        return render_expression(&lhs, cfg).ok();
+    }
+    if is_der_of(&lhs, state_name) {
+        // der(x) * k → coefficient is k
+        return render_expression(&rhs, cfg).ok();
+    }
+    None
+}
+
+/// Check if a Binary expression's op is Mul or MulElem.
+fn is_mul_op(binary: &Value) -> bool {
+    if let Ok(op) = get_field(binary, "op") {
+        return get_field(&op, "Mul").is_ok() || get_field(&op, "MulElem").is_ok();
+    }
+    false
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.
