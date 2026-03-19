@@ -59,7 +59,7 @@ enum Commands {
     Simulate(SimulateArgs),
     /// Compile and print balance/summary information
     Check(CheckArgs),
-    /// Export an FMI 2.0 FMU (Functional Mock-up Unit)
+    /// Export an FMU (Functional Mock-up Unit)
     ExportFmu(ExportFmuArgs),
     /// Format Modelica files
     Fmt(FmtArgs),
@@ -244,6 +244,14 @@ struct CheckArgs {
     input: ModelInputArgs,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FmiVersionArg {
+    #[value(name = "2")]
+    Fmi2,
+    #[value(name = "3")]
+    Fmi3,
+}
+
 #[derive(Args, Debug)]
 struct ExportFmuArgs {
     #[command(flatten)]
@@ -252,6 +260,10 @@ struct ExportFmuArgs {
     /// Output directory for generated FMU sources (default: <MODEL>.fmu/)
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// FMI version to target (2 or 3, default: 2)
+    #[arg(long, value_enum, default_value = "2")]
+    fmi_version: FmiVersionArg,
 
     /// Skip compiling and packaging the .fmu archive (only generate sources)
     #[arg(long, default_value_t = false)]
@@ -616,7 +628,7 @@ fn run_check(args: CheckArgs) -> Result<()> {
 }
 
 fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
-    use rumoca_session::runtime::fmi2_templates;
+    use rumoca_session::runtime::{fmi2_templates, fmi3_templates};
     use std::fs;
 
     init_debug_tracing(args.input.debug);
@@ -624,6 +636,22 @@ fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
 
     // Sanitize model identifier (replace dots with underscores for C compatibility)
     let model_identifier = model.replace('.', "_");
+
+    // Select templates based on FMI version
+    let (xml_template, c_template, fmi_label) = match args.fmi_version {
+        FmiVersionArg::Fmi2 => (
+            fmi2_templates::FMI2_MODEL_DESCRIPTION,
+            fmi2_templates::FMI2_MODEL,
+            "FMI 2.0",
+        ),
+        FmiVersionArg::Fmi3 => (
+            fmi3_templates::FMI3_MODEL_DESCRIPTION,
+            fmi3_templates::FMI3_MODEL,
+            "FMI 3.0",
+        ),
+    };
+
+    eprintln!("Exporting {} FMU for {}", fmi_label, model_identifier);
 
     let out_dir = args
         .output
@@ -634,15 +662,13 @@ fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
     fs::create_dir_all(&sources_dir)?;
 
     // Render and write modelDescription.xml
-    let xml = result
-        .render_template_str_with_name(fmi2_templates::FMI2_MODEL_DESCRIPTION, &model_identifier)?;
+    let xml = result.render_template_str_with_name(xml_template, &model_identifier)?;
     let xml_path = out_dir.join("modelDescription.xml");
     fs::write(&xml_path, &xml)?;
     eprintln!("  wrote {}", xml_path.display());
 
     // Render and write C source
-    let c_code =
-        result.render_template_str_with_name(fmi2_templates::FMI2_MODEL, &model_identifier)?;
+    let c_code = result.render_template_str_with_name(c_template, &model_identifier)?;
     let c_path = sources_dir.join(format!("{}.c", model_identifier));
     fs::write(&c_path, &c_code)?;
     eprintln!("  wrote {}", c_path.display());

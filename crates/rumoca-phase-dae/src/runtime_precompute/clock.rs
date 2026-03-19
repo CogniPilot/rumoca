@@ -11,6 +11,7 @@ type ClockRuntimeMetadata = (
     Vec<dae::Expression>,
     Vec<dae::ClockSchedule>,
     IndexMap<String, f64>,
+    Vec<dae::Expression>,
 );
 
 pub(super) fn compute_clock_runtime_metadata(
@@ -29,6 +30,7 @@ pub(super) fn compute_clock_runtime_metadata(
     let clock_sources = build_clock_source_map(dae_model, compile_time_scalars);
     let mut clock_schedules = Vec::new();
     let mut unresolved_clock_exprs = Vec::new();
+    let mut triggered_clock_conditions = Vec::new();
     let mut static_constructor_count = 0usize;
     for expr in &clock_constructor_exprs {
         if !requires_static_clock_schedule(expr) {
@@ -47,7 +49,16 @@ pub(super) fn compute_clock_runtime_metadata(
                 dae_model,
                 compile_time_scalars,
                 &clock_sources,
-            ) || is_non_static_inferred_clock_composition(
+            ) {
+                // Extract the condition expression from Clock(condition)
+                if let dae::Expression::FunctionCall { args, .. } = expr {
+                    if let Some(cond) = args.first() {
+                        triggered_clock_conditions.push(cond.clone());
+                    }
+                }
+                continue;
+            }
+            if is_non_static_inferred_clock_composition(
                 expr,
                 compile_time_scalars,
                 &clock_sources,
@@ -96,7 +107,12 @@ pub(super) fn compute_clock_runtime_metadata(
     let clock_intervals =
         infer_clock_intervals_by_variable(dae_model, compile_time_scalars, &clock_schedules);
 
-    Ok((clock_constructor_exprs, clock_schedules, clock_intervals))
+    Ok((
+        clock_constructor_exprs,
+        clock_schedules,
+        clock_intervals,
+        triggered_clock_conditions,
+    ))
 }
 
 fn unresolved_clock_debug_enabled() -> bool {

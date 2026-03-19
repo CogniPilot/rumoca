@@ -21,7 +21,7 @@
 -#}
 {%- set _use_float = use_float | default(false) -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
-{% set cfg = {"prefix": "", "power": "powf" if _use_float else "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(" ~ ("float" if _use_float else "double") ~ "[]){", "array_end": "}"} %}
+{% set cfg = {"prefix": "", "power": "powf" if _use_float else "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(" ~ ("float" if _use_float else "double") ~ "[]){", "array_end": "}", "subscript_underscore": true} %}
 {#- Macro: compute total scalar size of a variable map -#}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
@@ -487,14 +487,14 @@ static void {{ model_name }}_init({{ model_name }}_t* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{% if var.start %}
+{% if var.start and is_string_literal(var.start) != "yes" %}
     {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr(var.start, cfg) }};
 {% endif %}
     m->c[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-{% if var.start %}
+{% if var.start and is_string_literal(var.start) != "yes" %}
     {{ name | sanitize }} = {{ render_expr(var.start, cfg) }};
 {% endif %}
     m->c[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
@@ -508,14 +508,14 @@ static void {{ model_name }}_init({{ model_name }}_t* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-{% if var.start %}
+{% if var.start and is_string_literal(var.start) != "yes" %}
     {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr(var.start, cfg) }};
 {% endif %}
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-{% if var.start %}
+{% if var.start and is_string_literal(var.start) != "yes" %}
     {{ name | sanitize }} = {{ render_expr(var.start, cfg) }};
 {% endif %}
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */

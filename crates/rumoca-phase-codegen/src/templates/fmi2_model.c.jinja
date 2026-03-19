@@ -13,7 +13,7 @@
 #include <stdio.h>
 
 {# Configuration for render_expr - C style #}
-{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}"} %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true} %}
 
 /* pre(x) macro: maps pre(varname) to the pre_varname local alias */
 #define pre(x) pre_##x
@@ -328,7 +328,7 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->constants[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
@@ -338,12 +338,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -354,11 +354,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -368,12 +368,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -384,12 +384,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -990,8 +990,13 @@ FMI2_EXPORT fmi2Status fmi2GetNominalsOfContinuousStates(
     fmi2Component c,
     fmi2Real x_nominal[], size_t nx)
 {
-    (void)c;
+    ModelInstance* m = (ModelInstance*)c;
+    (void)m;
     if (nx != N_STATES) return fmi2Error;
+
+    /* Unpack parameters and constants so nominal expressions can reference them */
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.x | items %}

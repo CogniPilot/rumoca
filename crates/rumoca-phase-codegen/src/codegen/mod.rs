@@ -69,6 +69,13 @@ pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
         "is_partial": dae.is_partial,
         "class_type": &dae.class_type,
         "model_description": dae.model_description,
+        // Runtime event/clock metadata.
+        "scheduled_time_events": &dae.scheduled_time_events,
+        "synthetic_root_conditions": &dae.synthetic_root_conditions,
+        "clock_schedules": &dae.clock_schedules,
+        "clock_intervals": &dae.clock_intervals,
+        "clock_constructor_exprs": &dae.clock_constructor_exprs,
+        "triggered_clock_conditions": &dae.triggered_clock_conditions,
     })
 }
 
@@ -521,6 +528,9 @@ pub(crate) struct ExprConfig {
     /// Optional function-call form for power (e.g., `ca.power` for CasADi).
     /// When set, `a^b` renders as `power_fn(a, b)` instead of `a ** b`.
     pub(crate) power_fn: Option<String>,
+    /// Subscript rendering style: "bracket" (default: `x[0]`) or "underscore" (`x_1`, 1-based).
+    /// The "underscore" style matches the C template's unpack_vars naming convention.
+    pub(crate) subscript_underscore: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -551,6 +561,7 @@ impl Default for ExprConfig {
             modelica_builtins: false,
             mul_elem_fn: None,
             power_fn: None,
+            subscript_underscore: false,
         }
     }
 }
@@ -627,6 +638,12 @@ impl ExprConfig {
             && !s.is_empty()
         {
             cfg.power_fn = Some(s);
+        }
+        if let Ok(val) = v.get_attr("subscript_underscore")
+            && !val.is_undefined()
+            && !val.is_none()
+        {
+            cfg.subscript_underscore = val.is_true();
         }
 
         cfg

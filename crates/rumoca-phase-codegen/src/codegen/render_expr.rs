@@ -222,6 +222,9 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
     let subscripts = render_subscripts(var_ref, cfg)?;
     if subscripts.is_empty() {
         Ok(name)
+    } else if cfg.subscript_underscore {
+        // Underscore style: x[1] → x_1 (1-based, matches C template unpack_vars naming)
+        Ok(format!("{}_{}", name, subscripts))
     } else {
         Ok(format!("{}[{}]", name, subscripts))
     }
@@ -253,7 +256,7 @@ pub(crate) fn render_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
         let val = idx
             .as_i64()
             .ok_or_else(|| render_err("subscript Index is not an integer"))?;
-        return if cfg.one_based_index {
+        return if cfg.one_based_index || cfg.subscript_underscore {
             Ok(format!("{}", val))
         } else {
             Ok(format!("{}", val - 1))

@@ -51,6 +51,7 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) {
             unit: None,
             state_select: rumoca_ir_core::StateSelect::Default,
             description: Some(format!("pre() of {}", target_name.as_str())),
+            is_tunable: false,
         };
         pre_params.insert(pre_param_name, pre_var);
     }
@@ -343,6 +344,7 @@ mod tests {
                 unit: None,
                 state_select: rumoca_ir_core::StateSelect::Default,
                 description: None,
+                is_tunable: false,
             },
         );
         dae.f_x.push(dae::Equation::residual(

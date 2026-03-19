@@ -655,7 +655,13 @@ pub(crate) fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderRes
         return render_ast_named_arg(&named, cfg);
     }
 
-    // Fallback: try to convert to string
+    // Fallback: try DAE IR expression renderer (function bodies may contain
+    // DAE-style expressions like VarRef, Literal, BuiltinCall, etc.)
+    if let Ok(result) = render_expression(expr, cfg) {
+        return Ok(result);
+    }
+
+    // Last resort: try to convert to string
     let s = expr.to_string();
     if s != "none" && !s.is_empty() {
         return Ok(s);

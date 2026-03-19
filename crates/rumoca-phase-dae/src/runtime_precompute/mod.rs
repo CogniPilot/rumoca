@@ -40,7 +40,7 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     scheduled_time_events.sort_by(f64::total_cmp);
     scheduled_time_events.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * (1.0 + a.abs().max(b.abs())));
 
-    let (clock_constructor_exprs, clock_schedules, clock_intervals) =
+    let (clock_constructor_exprs, clock_schedules, clock_intervals, triggered_clock_conditions) =
         clock::compute_clock_runtime_metadata(dae_model, &compile_time_scalars)?;
 
     dae_model.synthetic_root_conditions = synthetic_roots;
@@ -48,6 +48,7 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     dae_model.clock_constructor_exprs = clock_constructor_exprs;
     dae_model.clock_schedules = clock_schedules;
     dae_model.clock_intervals = clock_intervals;
+    dae_model.triggered_clock_conditions = triggered_clock_conditions;
     Ok(())
 }
 

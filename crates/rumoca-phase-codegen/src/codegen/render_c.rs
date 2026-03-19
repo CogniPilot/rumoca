@@ -187,6 +187,9 @@ pub(super) fn alg_rhs_for_var_function(
 
 /// Extract the derivative RHS from a single equation if it matches `0 = der(state_name) - expr`.
 /// Helper for `ode_rhs_for_state_function`; decomposes MLS B.1a residual form.
+///
+/// Matches both scalar (`der(x)`) and indexed (`der(x[1])`) forms via `is_der_of`,
+/// which reconstructs the full VarRef name including subscripts.
 fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option<String> {
     let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
     let binary = get_field(&rhs, "Binary").ok()?;
@@ -205,6 +208,9 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
 
 /// Extract the algebraic RHS from a single equation if it matches `0 = var_name - expr`.
 /// Helper for `alg_rhs_for_var_function`; decomposes MLS B.1a residual form for algebraics.
+///
+/// Matches both scalar (`y`) and indexed (`y[1]`) forms via `is_var_ref_of`,
+/// which reconstructs the full VarRef name including subscripts.
 fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
     let binary = get_field(&rhs, "Binary").ok()?;
@@ -221,8 +227,11 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
     Some(rhs_expr)
 }
 
-/// Check if an expression is `BuiltinCall { function: Der, args: [VarRef { name }] }`
-/// where `name` matches the given state name (MLS §3.7.4.2: der operator).
+/// Check if an expression is `BuiltinCall { function: Der, args: [VarRef { name, subscripts }] }`
+/// where the full name (including subscripts) matches the given state name.
+///
+/// Handles both scalar (`der(x)` matches `"x"`) and indexed
+/// (`der(x[1])` matches `"x[1]"`) forms.
 fn is_der_of(expr: &Value, state_name: &str) -> bool {
     let state_name = state_name.trim_matches('"');
     let Ok(builtin) = get_field(expr, "BuiltinCall") else {
@@ -244,30 +253,19 @@ fn is_der_of(expr: &Value, state_name: &str) -> bool {
     let Ok(var_ref) = get_field(&first_arg, "VarRef") else {
         return false;
     };
-    let Ok(name) = get_field(&var_ref, "name") else {
-        return false;
-    };
-    // VarName may serialize as a string or {"0": "name"}
-    let var_name = get_field(&name, "0")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| name.to_string());
-    var_name.trim_matches('"') == state_name
+    var_ref_full_name(&var_ref) == state_name
 }
 
-/// Check if an expression is `VarRef { name }` matching the given variable name.
+/// Check if an expression is `VarRef { name, subscripts }` matching the given variable name.
+///
+/// Handles both scalar (`y` matches `"y"`) and indexed
+/// (`y[1]` matches `"y[1]"`) forms.
 fn is_var_ref_of(expr: &Value, target_name: &str) -> bool {
     let target_name = target_name.trim_matches('"');
     let Ok(var_ref) = get_field(expr, "VarRef") else {
         return false;
     };
-    let Ok(name) = get_field(&var_ref, "name") else {
-        return false;
-    };
-    // VarName may serialize as a string or {"0": "name"}
-    let var_name = get_field(&name, "0")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| name.to_string());
-    var_name.trim_matches('"') == target_name
+    var_ref_full_name(&var_ref) == target_name
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.
@@ -276,6 +274,48 @@ fn is_sub_op(binary: &Value) -> bool {
         return get_field(&op, "Sub").is_ok() || get_field(&op, "SubElem").is_ok();
     }
     false
+}
+
+/// Reconstruct the full name of a VarRef including 1-based subscripts.
+///
+/// `VarRef { name: "x", subscripts: [] }` → `"x"`
+/// `VarRef { name: "x", subscripts: [Index(1)] }` → `"x[1]"`
+/// `VarRef { name: "x", subscripts: [Index(1), Index(2)] }` → `"x[1,2]"`
+fn var_ref_full_name(var_ref: &Value) -> String {
+    let Ok(name) = get_field(var_ref, "name") else {
+        return String::new();
+    };
+    let base_name = get_field(&name, "0")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| name.to_string());
+    let base_name = base_name.trim_matches('"').to_string();
+
+    // Check for subscripts
+    let Ok(subs) = get_field(var_ref, "subscripts") else {
+        return base_name;
+    };
+    let Some(len) = subs.len() else {
+        return base_name;
+    };
+    if len == 0 {
+        return base_name;
+    }
+
+    // Build subscript string (1-based Modelica convention)
+    let mut sub_parts = Vec::new();
+    for i in 0..len {
+        if let Ok(sub) = subs.get_item(&Value::from(i)) {
+            if let Ok(idx) = get_field(&sub, "Index") {
+                if let Some(val) = idx.as_i64() {
+                    sub_parts.push(val.to_string());
+                }
+            }
+        }
+    }
+    if sub_parts.is_empty() {
+        return base_name;
+    }
+    format!("{}[{}]", base_name, sub_parts.join(","))
 }
 
 fn list_any(list: &Value, mut predicate: impl FnMut(Value) -> bool) -> bool {

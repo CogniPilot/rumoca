@@ -539,6 +539,290 @@ fn fmi2_oscillator() {
 }
 
 // ============================================================================
+// FMI 3.0 runtime tests
+// ============================================================================
+
+fn fmi3_trace_test(source: &str, model_name: &str) {
+    let dae = prepare_dae(source, model_name);
+
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, model_name)
+            .expect("render FMI3 model");
+
+    let driver_c = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_TEST_DRIVER,
+        model_name,
+    )
+    .expect("render FMI3 test driver");
+
+    let csv = compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "1.0", "--dt", "0.001"],
+    );
+    let backend_traces = parse_csv_traces(&csv);
+
+    let opts = SimOptions {
+        t_end: 1.0,
+        ..SimOptions::default()
+    };
+    let sim = simulate_dae(&dae, &opts).expect("rumoca simulation");
+    assert_traces_match(&backend_traces, &dae, &sim, C_TOLERANCE, "FMI3");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_ball() {
+    fmi3_trace_test(BALL_SOURCE, "Ball");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_param_decay() {
+    fmi3_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_oscillator() {
+    fmi3_trace_test(OSCILLATOR_SOURCE, "Oscillator");
+}
+
+// ============================================================================
+// FMI 3.0 — Tunable parameters (Phase 1)
+//
+// Verify that tunable Real parameters get variability="tunable" in the XML
+// and structural Integer parameters get variability="fixed".
+// ============================================================================
+
+const TUNABLE_PARAM_SOURCE: &str = r#"
+model TunableParam
+  parameter Integer n = 2;
+  parameter Real k = 3;
+  Real x(start=1);
+equation
+  der(x) = -k * x;
+end TunableParam;
+"#;
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_tunable_param_xml() {
+    let dae = prepare_dae(TUNABLE_PARAM_SOURCE, "TunableParam");
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "TunableParam",
+    )
+    .expect("render FMI3 model description");
+
+    // k should be tunable (Real, non-structural)
+    assert!(
+        xml.contains(r#"variability="tunable""#),
+        "expected tunable variability for Real parameter k:\n{xml}"
+    );
+    // n should be fixed (Integer, structural)
+    assert!(
+        xml.contains(r#"variability="fixed""#),
+        "expected fixed variability for Integer parameter n:\n{xml}"
+    );
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_tunable_param_runtime() {
+    fmi3_trace_test(TUNABLE_PARAM_SOURCE, "TunableParam");
+}
+
+// ============================================================================
+// FMI 3.0 — Directional derivatives (Phase 3)
+//
+// Verify that fmi3GetDirectionalDerivative returns correct Jacobian entries
+// via finite differences for a simple model: der(x) = -k*x → ∂ẋ/∂x = -k.
+// ============================================================================
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_directional_derivative() {
+    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
+            .expect("render FMI3 model");
+
+    // Verify XML advertises directional derivatives
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "ParamDecay",
+    )
+    .expect("render FMI3 model description");
+    assert!(
+        xml.contains(r#"providesDirectionalDerivatives="true""#),
+        "expected providesDirectionalDerivatives in XML"
+    );
+
+    // Build a driver that calls fmi3GetDirectionalDerivative
+    let driver_c = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+typedef unsigned int fmi3ValueReference;
+typedef double       fmi3Float64;
+typedef int          fmi3Boolean;
+typedef const char*  fmi3String;
+typedef void*        fmi3Instance;
+typedef void*        fmi3InstanceEnvironment;
+typedef enum { fmi3OK, fmi3Warning, fmi3Discard, fmi3Error, fmi3Fatal } fmi3Status;
+typedef void (*fmi3LogMessageCallback)(fmi3InstanceEnvironment, fmi3Status, fmi3String, fmi3String);
+
+extern fmi3Instance fmi3InstantiateModelExchange(fmi3String, fmi3String, fmi3String, fmi3Boolean, fmi3Boolean, fmi3InstanceEnvironment, fmi3LogMessageCallback);
+extern void fmi3FreeInstance(fmi3Instance);
+extern fmi3Status fmi3EnterInitializationMode(fmi3Instance, fmi3Boolean, fmi3Float64, fmi3Float64, fmi3Boolean, fmi3Float64);
+extern fmi3Status fmi3ExitInitializationMode(fmi3Instance);
+extern fmi3Status fmi3EnterContinuousTimeMode(fmi3Instance);
+extern fmi3Status fmi3UpdateDiscreteStates(fmi3Instance, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Boolean*, fmi3Float64*);
+extern fmi3Status fmi3GetDirectionalDerivative(fmi3Instance, const fmi3ValueReference[], size_t, const fmi3ValueReference[], size_t, const fmi3Float64[], size_t, fmi3Float64[], size_t);
+
+static void dummy_logger(fmi3InstanceEnvironment e, fmi3Status s, fmi3String c, fmi3String m) {
+    (void)e; (void)s; (void)c; (void)m;
+}
+
+int main(void) {
+    fmi3Instance inst = fmi3InstantiateModelExchange(
+        "test", "ParamDecay-rumoca", "", 0, 0, NULL, dummy_logger);
+    if (!inst) return 1;
+
+    fmi3EnterInitializationMode(inst, 0, 0.0, 0.0, 1, 1.0);
+    fmi3ExitInitializationMode(inst);
+    {
+        fmi3Boolean a, b, c, d, e; fmi3Float64 f;
+        fmi3UpdateDiscreteStates(inst, &a, &b, &c, &d, &e, &f);
+    }
+    fmi3EnterContinuousTimeMode(inst);
+
+    /* ParamDecay: der(x) = -k*x, k=3, x(0)=2
+     * VR layout: x=0, xdot=1 (1 state)
+     * Jacobian: d(xdot)/d(x) = -k = -3
+     */
+    fmi3ValueReference unknown = 1;  /* xdot */
+    fmi3ValueReference known = 0;    /* x */
+    fmi3Float64 seed = 1.0;
+    fmi3Float64 sensitivity = 0.0;
+
+    fmi3Status s = fmi3GetDirectionalDerivative(
+        inst, &unknown, 1, &known, 1, &seed, 1, &sensitivity, 1);
+
+    printf("status=%d\n", s);
+    printf("sensitivity=%.10g\n", sensitivity);
+    printf("expected=-3\n");
+    printf("error=%.10g\n", fabs(sensitivity - (-3.0)));
+
+    fmi3FreeInstance(inst);
+    return (s == fmi3OK && fabs(sensitivity - (-3.0)) < 0.01) ? 0 : 1;
+}
+"#;
+
+    let csv = compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", driver_c)],
+        &[],
+    );
+    // If we get here without panic, the test passed (driver returns 0 on success)
+    assert!(
+        csv.contains("sensitivity="),
+        "expected sensitivity output:\n{csv}"
+    );
+}
+
+// ============================================================================
+// FMI 3.0 — Native array variables (Phase 4)
+//
+// Verify that array variables produce <Dimension> elements in the XML and
+// that the simulation still works correctly with per-variable VR layout.
+// ============================================================================
+
+const ARRAY_DECAY_SOURCE: &str = r#"
+model ArrayDecay
+  Real x[3](start={1,2,3});
+equation
+  der(x) = -x;
+end ArrayDecay;
+"#;
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_native_array_xml() {
+    let dae = prepare_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "ArrayDecay",
+    )
+    .expect("render FMI3 model description");
+
+    // Verify array variable has <Dimension> element
+    assert!(
+        xml.contains("<Dimension start=\"3\"/>"),
+        "expected <Dimension start=\"3\"/> for array variable x[3]:\n{xml}"
+    );
+    // Verify native array: single Float64 for x, not x[1], x[2], x[3]
+    assert!(
+        xml.contains("name=\"x\""),
+        "expected native array name=\"x\" (not x[1]):\n{xml}"
+    );
+    assert!(
+        !xml.contains("name=\"x[1]\""),
+        "should not have scalar-expanded x[1] with native arrays:\n{xml}"
+    );
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_native_array_runtime() {
+    // Test FMI3 C compile + run with array variables (per-variable VR layout).
+    // Uses a standalone driver since the reference simulator doesn't handle
+    // array state variables directly.
+    let dae = prepare_dae(ARRAY_DECAY_SOURCE, "ArrayDecay");
+
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ArrayDecay")
+            .expect("render FMI3 model");
+
+    let driver_c = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_TEST_DRIVER,
+        "ArrayDecay",
+    )
+    .expect("render FMI3 test driver");
+
+    let csv = compile_and_run_c(
+        &[("model.c", &model_c), ("driver.c", &driver_c)],
+        &["--t-end", "1.0", "--dt", "0.001"],
+    );
+    let traces = parse_csv_traces(&csv);
+
+    // der(x) = -x with x(0) = {1,2,3} → x(t) = x0*exp(-t)
+    // At t=1: x[i] ≈ x0[i] * exp(-1) ≈ x0[i] * 0.3679
+    for (col, x0) in [("x[1]", 1.0), ("x[2]", 2.0), ("x[3]", 3.0)] {
+        let trace = traces.get(col).unwrap_or_else(|| panic!("missing column {col}"));
+        let (t_last, v_last) = *trace.last().expect("trace should not be empty");
+        assert!(
+            t_last >= 0.99,
+            "expected t_end >= 0.99, got {t_last}"
+        );
+        let expected = x0 * (-1.0f64).exp();
+        let scale = expected.abs().max(1.0);
+        let err = (v_last - expected).abs() / scale;
+        assert!(
+            err <= C_TOLERANCE,
+            "Array state {col}: final={v_last:.6}, expected={expected:.6}, err={err:.4e}"
+        );
+    }
+}
+
+// ============================================================================
 // SymPy runtime tests
 //
 // SymPy generates a symbolic model, not a time-domain simulation. We verify
