@@ -4,7 +4,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use rumoca_session::compile::{
-    CompilationResult, PhaseResult, Session, SessionConfig, StrictCompileReport,
+    CompilationResult, PhaseResult, Session, SessionConfig, SourceRootKind, StrictCompileReport,
     compile_phase_timing_stats, reset_compile_phase_timing_stats,
 };
 use rumoca_session::libraries::parse_library_with_cache;
@@ -82,7 +82,12 @@ fn load_profiled_model(library: &std::path::Path, model: &str) -> Result<Box<Com
     })?;
 
     let mut session = Session::new(SessionConfig::default());
-    let inserted = session.replace_parsed_source_set("profile-msl", parsed.documents, None);
+    let inserted = session.replace_parsed_source_set(
+        "profile-msl",
+        SourceRootKind::DurableLibrary,
+        parsed.documents,
+        None,
+    );
     println!(
         "Loaded {} parsed library documents from {} (cache: {:?})",
         inserted,

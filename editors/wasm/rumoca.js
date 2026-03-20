@@ -428,9 +428,10 @@ export function render_template(dae_json, template) {
  * @param {string} model_name
  * @param {number} t_end
  * @param {number} dt
+ * @param {string} solver
  * @returns {string}
  */
-export function simulate_model(source, model_name, t_end, dt) {
+export function simulate_model(source, model_name, t_end, dt, solver) {
     let deferred4_0;
     let deferred4_1;
     try {
@@ -438,16 +439,18 @@ export function simulate_model(source, model_name, t_end, dt) {
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(model_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.simulate_model(ptr0, len0, ptr1, len1, t_end, dt);
-        var ptr3 = ret[0];
-        var len3 = ret[1];
+        const ptr2 = passStringToWasm0(solver, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.simulate_model(ptr0, len0, ptr1, len1, t_end, dt, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
         if (ret[3]) {
-            ptr3 = 0; len3 = 0;
+            ptr4 = 0; len4 = 0;
             throw takeFromExternrefTable0(ret[2]);
         }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
+        deferred4_0 = ptr4;
+        deferred4_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }

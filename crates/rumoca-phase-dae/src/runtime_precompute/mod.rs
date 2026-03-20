@@ -3,13 +3,16 @@
 use super::ToDaeError;
 use std::collections::{HashMap, HashSet};
 
+use rumoca_core::timing::{maybe_elapsed_seconds, maybe_start_timer_if};
 use rumoca_ir_dae as dae;
 
 mod clock;
 
 pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<(), ToDaeError> {
+    let profile = std::env::var("RUMOCA_TODAE_PROFILE").is_ok();
     let compile_time_scalars = collect_compile_time_scalars(dae_model);
 
+    let synthetic_root_start = maybe_start_timer_if(profile);
     let mut synthetic_roots = Vec::new();
     for eq in &dae_model.f_x {
         clock::collect_synthetic_root_conditions_expr(
@@ -20,7 +23,14 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
         );
     }
     clock::dedupe_expressions_in_place(&mut synthetic_roots);
+    if synthetic_root_start.is_some() {
+        eprintln!(
+            "ToDae runtime_precompute synthetic_roots: {:.3}s",
+            maybe_elapsed_seconds(synthetic_root_start)
+        );
+    }
 
+    let time_event_start = maybe_start_timer_if(profile);
     let mut seen_time_events = HashSet::new();
     let mut scheduled_time_events = Vec::new();
     for eq in dae_model
@@ -39,16 +49,66 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     }
     scheduled_time_events.sort_by(f64::total_cmp);
     scheduled_time_events.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * (1.0 + a.abs().max(b.abs())));
+    if time_event_start.is_some() {
+        eprintln!(
+            "ToDae runtime_precompute scheduled_time_events: {:.3}s",
+            maybe_elapsed_seconds(time_event_start)
+        );
+    }
 
+    let clock_metadata_start = maybe_start_timer_if(profile);
     let (clock_constructor_exprs, clock_schedules, clock_intervals) =
         clock::compute_clock_runtime_metadata(dae_model, &compile_time_scalars)?;
+    if clock_metadata_start.is_some() {
+        eprintln!(
+            "ToDae runtime_precompute clock_metadata: {:.3}s",
+            maybe_elapsed_seconds(clock_metadata_start)
+        );
+    }
 
+    let prune_start = maybe_start_timer_if(profile);
+    prune_time_only_relation_roots(dae_model, &compile_time_scalars);
+    if prune_start.is_some() {
+        eprintln!(
+            "ToDae runtime_precompute prune_time_only_relations: {:.3}s",
+            maybe_elapsed_seconds(prune_start)
+        );
+    }
     dae_model.synthetic_root_conditions = synthetic_roots;
     dae_model.scheduled_time_events = scheduled_time_events;
     dae_model.clock_constructor_exprs = clock_constructor_exprs;
     dae_model.clock_schedules = clock_schedules;
     dae_model.clock_intervals = clock_intervals;
     Ok(())
+}
+
+fn prune_time_only_relation_roots(dae_model: &mut dae::Dae, constants: &HashMap<String, f64>) {
+    if dae_model.relation.is_empty() || dae_model.f_c.is_empty() {
+        return;
+    }
+
+    let old_relations = std::mem::take(&mut dae_model.relation);
+    let old_conditions = std::mem::take(&mut dae_model.f_c);
+    let mut kept_relations = Vec::with_capacity(old_relations.len());
+    let mut kept_conditions = Vec::with_capacity(old_conditions.len());
+
+    for (relation, equation) in old_relations.into_iter().zip(old_conditions) {
+        if extract_time_event_instant(&relation, constants).is_some() {
+            continue;
+        }
+
+        let condition_index = kept_relations.len() + 1;
+        kept_conditions.push(dae::Equation::explicit(
+            dae::VarName::new(format!("c[{condition_index}]")),
+            relation.clone(),
+            equation.span,
+            equation.origin,
+        ));
+        kept_relations.push(relation);
+    }
+
+    dae_model.relation = kept_relations;
+    dae_model.f_c = kept_conditions;
 }
 
 fn insert_compile_time_scalar(values: &mut HashMap<String, f64>, name: &str, value: f64) -> bool {
@@ -844,6 +904,13 @@ mod tests {
             rhs: Box::new(var("switch_time")),
         };
         let mut dae_model = dae_with_if_condition(cond.clone());
+        dae_model.relation = vec![cond.clone()];
+        dae_model.f_c = vec![dae::Equation::explicit(
+            dae::VarName::new("c[1]"),
+            cond.clone(),
+            Span::DUMMY,
+            "condition equation from test".to_string(),
+        )];
         let mut switch_time = dae::Variable::new(dae::VarName::new("switch_time"));
         switch_time.start = Some(lit(2.5));
         dae_model
@@ -860,6 +927,51 @@ mod tests {
             "time-vs-parameter branch conditions should be scheduled time events, not synthetic roots"
         );
         assert_eq!(dae_model.scheduled_time_events, vec![2.5]);
+        assert!(
+            dae_model.relation.is_empty(),
+            "time-vs-parameter conditions should be represented as scheduled events, not solver roots"
+        );
+        assert!(
+            dae_model.f_c.is_empty(),
+            "condition equations must stay aligned with pruned time-only relation roots"
+        );
+    }
+
+    #[test]
+    fn test_runtime_precompute_renumbers_condition_partition_after_prune() {
+        let time_only = time_gt(2.5);
+        let root_cond = dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Gt(Default::default()),
+            lhs: Box::new(var("x")),
+            rhs: Box::new(lit(0.0)),
+        };
+        let mut dae_model = dae_with_if_condition(root_cond.clone());
+        dae_model.relation = vec![time_only.clone(), root_cond.clone()];
+        dae_model.f_c = vec![
+            dae::Equation::explicit(
+                dae::VarName::new("c[1]"),
+                time_only,
+                Span::DUMMY,
+                "condition equation from test",
+            ),
+            dae::Equation::explicit(
+                dae::VarName::new("c[2]"),
+                root_cond.clone(),
+                Span::DUMMY,
+                "condition equation from test",
+            ),
+        ];
+
+        populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
+
+        assert_eq!(dae_model.relation, vec![root_cond.clone()]);
+        assert_eq!(dae_model.f_c.len(), 1);
+        assert_eq!(
+            dae_model.f_c[0].lhs.as_ref(),
+            Some(&dae::VarName::new("c[1]")),
+            "surviving condition equations must be renumbered after pruning"
+        );
+        assert_eq!(dae_model.f_c[0].rhs, root_cond);
     }
 
     #[test]

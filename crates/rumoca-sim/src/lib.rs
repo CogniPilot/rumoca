@@ -12,6 +12,7 @@ pub mod function_validation;
 mod ic_solve;
 pub mod projection_maps;
 pub mod reconstruct;
+pub mod results_web;
 pub mod runtime;
 pub mod sim_trace_compare;
 pub mod simulation;

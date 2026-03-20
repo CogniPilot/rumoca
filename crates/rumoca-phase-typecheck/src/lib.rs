@@ -21,13 +21,12 @@
 //! - Array sizes for for-loops can be computed at compile time
 
 mod modifier_targets;
-pub(crate) mod path_utils;
 mod typechecker;
 
 use miette::{Diagnostic, SourceSpan};
 use rumoca_core::{
     DefId, Diagnostic as CommonDiagnostic, Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span,
-    TypeId,
+    TypeId, find_last_top_level_dot, has_top_level_dot, parent_scope, top_level_last_segment,
 };
 use rumoca_ir_ast::{
     ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
@@ -256,7 +255,7 @@ impl TypeChecker {
         // `kinematicPTP` can resolve `deltaq` as `kinematicPTP.deltaq`.
         for (_def_id, instance_data) in &overlay.components {
             let name = instance_data.qualified_name.to_flat_string();
-            let scope = path_utils::parent_scope(&name).unwrap_or("");
+            let scope = parent_scope(&name).unwrap_or("");
 
             // Try integer first (binding then start)
             if let Some(ref binding) = instance_data.binding
@@ -390,9 +389,9 @@ impl TypeChecker {
         model_name: &str,
         type_table: &TypeTable,
     ) {
-        let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
-            tree.get_class_by_qualified_name(path_utils::top_level_last_segment(model_name))
-        });
+        let model_class = tree
+            .get_class_by_qualified_name(model_name)
+            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
         let Some(model_class) = model_class else {
             return;
         };
@@ -422,9 +421,9 @@ impl TypeChecker {
         model_name: &str,
         type_table: &TypeTable,
     ) {
-        let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
-            tree.get_class_by_qualified_name(path_utils::top_level_last_segment(model_name))
-        });
+        let model_class = tree
+            .get_class_by_qualified_name(model_name)
+            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
         let Some(model_class) = model_class else {
             return;
         };
@@ -550,7 +549,7 @@ impl TypeChecker {
         let Some(def_qname) = tree.def_map.get(&def_id) else {
             return false;
         };
-        if path_utils::top_level_last_segment(def_qname) != alias {
+        if top_level_last_segment(def_qname) != alias {
             return false;
         }
 
@@ -614,7 +613,7 @@ impl TypeChecker {
     ) -> HashMap<String, TypeId> {
         let mut out = HashMap::new();
         let full_prefix = format!("{model_name}.");
-        let short_model = path_utils::top_level_last_segment(model_name);
+        let short_model = top_level_last_segment(model_name);
         let short_prefix = format!("{short_model}.");
 
         for data in overlay.components.values() {
@@ -634,7 +633,7 @@ impl TypeChecker {
                 Self::insert_instanced_aliases(&mut out, rest, canonical_type, None);
                 continue;
             }
-            if !path_utils::has_top_level_dot(&qn) {
+            if !has_top_level_dot(&qn) {
                 out.insert(qn, canonical_type);
             }
         }
@@ -648,7 +647,7 @@ impl TypeChecker {
         type_id: TypeId,
         short_model: Option<&str>,
     ) {
-        if path_utils::has_top_level_dot(rest) {
+        if has_top_level_dot(rest) {
             return;
         }
         out.insert(rest.to_string(), type_id);
@@ -846,7 +845,7 @@ impl TypeChecker {
         let base_name = ext.base_name.to_string();
         type_table
             .lookup(&base_name)
-            .or_else(|| type_table.lookup(path_utils::top_level_last_segment(&base_name)))
+            .or_else(|| type_table.lookup(top_level_last_segment(&base_name)))
             .unwrap_or(TypeId::UNKNOWN)
     }
 
@@ -997,7 +996,7 @@ impl TypeChecker {
             }
             ctx.enum_sizes.insert(name.clone(), size);
             // Also add short name (last segment after dot)
-            let short = path_utils::top_level_last_segment(name);
+            let short = top_level_last_segment(name);
             ctx.enum_sizes.entry(short.to_string()).or_insert(size);
             // Populate enum ordinals (MLS §4.9.5: ordinal is 1-based position)
             Self::collect_enum_ordinals(tree, def_id, name, ctx);
@@ -1109,9 +1108,9 @@ impl TypeChecker {
         model_name: &str,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let model_class = tree.get_class_by_qualified_name(model_name).or_else(|| {
-            tree.get_class_by_qualified_name(path_utils::top_level_last_segment(model_name))
-        });
+        let model_class = tree
+            .get_class_by_qualified_name(model_name)
+            .or_else(|| tree.get_class_by_qualified_name(top_level_last_segment(model_name)));
         let Some(model_class) = model_class else {
             return;
         };
@@ -1631,7 +1630,7 @@ impl TypeChecker {
         model_name: &str,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let Some(pos) = path_utils::find_last_top_level_dot(model_name) else {
+        let Some(pos) = find_last_top_level_dot(model_name) else {
             return;
         };
         let enclosing_name = &model_name[..pos];
@@ -1694,7 +1693,7 @@ impl TypeChecker {
         }
         // Try prepending scope prefixes from context
         let mut scope = context;
-        while let Some(parent_scope) = path_utils::parent_scope(scope) {
+        while let Some(parent_scope) = parent_scope(scope) {
             scope = parent_scope;
             let qualified = format!("{}.{}", scope, name);
             if let Some(cls) = tree.get_class_by_qualified_name(&qualified) {

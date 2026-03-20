@@ -182,12 +182,48 @@ const ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS: &[(&str, &str)] = &[
         "pub type Variability = rumoca_ir_core::Variability;",
     ),
     (
+        "crates/rumoca-ir-dae/src/types.rs",
+        "pub use rumoca_ir_core::BuiltinFunction;",
+    ),
+    (
+        "crates/rumoca-ir-dae/src/types.rs",
+        "pub use rumoca_ir_core::DerivativeAnnotation;",
+    ),
+    (
+        "crates/rumoca-ir-dae/src/types.rs",
+        "pub use rumoca_ir_core::ExternalFunction;",
+    ),
+    (
+        "crates/rumoca-ir-dae/src/types.rs",
+        "pub use rumoca_ir_core::Literal;",
+    ),
+    (
+        "crates/rumoca-ir-dae/src/types.rs",
+        "pub use rumoca_ir_core::VarName;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub type BuiltinFunction = rumoca_ir_core::BuiltinFunction;",
+    ),
+    (
         "crates/rumoca-ir-flat/src/lib.rs",
         "pub type Causality = rumoca_ir_core::Causality;",
     ),
     (
         "crates/rumoca-ir-flat/src/lib.rs",
         "pub type ClassType = rumoca_ir_core::ClassType;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub use rumoca_ir_core::DerivativeAnnotation;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub use rumoca_ir_core::ExternalFunction;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub use rumoca_ir_core::Literal;",
     ),
     (
         "crates/rumoca-ir-flat/src/lib.rs",
@@ -204,6 +240,10 @@ const ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS: &[(&str, &str)] = &[
     (
         "crates/rumoca-ir-flat/src/lib.rs",
         "pub type Token = rumoca_ir_core::Token;",
+    ),
+    (
+        "crates/rumoca-ir-flat/src/lib.rs",
+        "pub use rumoca_ir_core::VarName;",
     ),
     (
         "crates/rumoca-ir-flat/src/lib.rs",

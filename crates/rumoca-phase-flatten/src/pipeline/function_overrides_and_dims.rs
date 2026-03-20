@@ -808,12 +808,12 @@ pub(crate) fn infer_function_call_dims(
         return Some(dims.clone());
     }
 
-    let leaf = crate::path_utils::parse_path_with_indices(name)
+    let leaf = crate::path_utils::split_path_with_indices(name)
         .into_iter()
         .last()?;
     let mut matched_dims: Option<Vec<i64>> = None;
     for (fn_name, dims) in function_output_dims {
-        let same_leaf = crate::path_utils::parse_path_with_indices(fn_name)
+        let same_leaf = crate::path_utils::split_path_with_indices(fn_name)
             .into_iter()
             .last()
             .is_some_and(|candidate| candidate == leaf);

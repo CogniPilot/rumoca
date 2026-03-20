@@ -142,6 +142,7 @@ pub struct Contract {
     /// Implementation status.
     pub status: ContractStatus,
     /// Implementation notes.
+    #[serde(default)]
     pub notes: Option<String>,
     /// Which tier this belongs to (1=MVP, 2=Standard, 3=Advanced).
     pub tier: u8,
@@ -175,34 +176,6 @@ impl Contract {
     }
 }
 
-/// Compile-time contract metadata table entry.
-#[derive(Debug, Clone, Copy)]
-pub struct StaticContract {
-    pub id: &'static str,
-    pub category: ContractCategory,
-    pub name: &'static str,
-    pub mls_ref: &'static str,
-    pub requirement: &'static str,
-    pub status: ContractStatus,
-    pub notes: Option<&'static str>,
-    pub tier: u8,
-}
-
-impl From<&StaticContract> for Contract {
-    fn from(spec: &StaticContract) -> Self {
-        Self {
-            id: ContractId::new(spec.id),
-            category: spec.category,
-            name: spec.name.to_string(),
-            mls_ref: spec.mls_ref.to_string(),
-            requirement: spec.requirement.to_string(),
-            status: spec.status,
-            notes: spec.notes.map(ToOwned::to_owned),
-            tier: spec.tier,
-        }
-    }
-}
-
 /// Registry of all MLS contracts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContractRegistry {
@@ -215,16 +188,9 @@ impl ContractRegistry {
         Self::default()
     }
 
-    /// Build a registry from chunked static contract metadata tables.
-    pub fn from_static_tables(table_parts: &[&[StaticContract]]) -> Self {
-        let contracts = table_parts
-            .iter()
-            .flat_map(|table| table.iter())
-            .map(|spec| {
-                let contract = Contract::from(spec);
-                (contract.id.clone(), contract)
-            })
-            .collect();
+    /// Build a registry from a list of contracts.
+    pub fn from_contracts(list: Vec<Contract>) -> Self {
+        let contracts = list.into_iter().map(|c| (c.id.clone(), c)).collect();
         Self { contracts }
     }
 
@@ -283,5 +249,15 @@ impl ContractRegistry {
     }
 }
 
-mod contract_table;
-pub use contract_table::CONTRACT_TABLE;
+/// Deserializer shim for the contracts TOML file.
+#[derive(serde::Deserialize)]
+struct ContractsToml {
+    contracts: Vec<Contract>,
+}
+
+/// Load all contracts from the embedded TOML data file.
+pub fn load_all_contracts() -> Vec<Contract> {
+    let raw = include_str!("../../data/contracts.toml");
+    let parsed: ContractsToml = toml::from_str(raw).expect("contracts.toml must be valid TOML");
+    parsed.contracts
+}

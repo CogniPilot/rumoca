@@ -57,6 +57,195 @@ fn test_project_runtime_seeds_direct_assignments_before_newton() {
 }
 
 #[test]
+fn test_runtime_projection_leaves_alias_connected_unknowns_free() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.algebraics.insert(
+        VarName::new("source.p.v"),
+        Variable::new(VarName::new("source.p.v")),
+    );
+    dae.algebraics.insert(
+        VarName::new("node.v"),
+        Variable::new(VarName::new("node.v")),
+    );
+
+    // 0 = der(x)
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var("x")],
+        },
+        lit(0.0),
+    )));
+
+    // 0 = 24 - source.p.v
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        lit(24.0),
+        var("source.p.v"),
+    )));
+
+    // 0 = source.p.v - node.v
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("source.p.v"),
+        var("node.v"),
+    )));
+
+    let timeout = crate::TimeoutBudget::new(None);
+    let projected = project_algebraics_with_fixed_states_at_time(
+        &dae,
+        &[0.0, 0.0, 0.0],
+        1,
+        1.0,
+        1e-9,
+        &timeout,
+    )
+    .expect("runtime projection should not error")
+    .expect("runtime projection should converge when only alias-connected unknowns remain free");
+
+    assert!((projected[1] - 24.0).abs() < 1e-9);
+    assert!((projected[2] - 24.0).abs() < 1e-9);
+}
+
+#[test]
+fn test_runtime_projection_handles_hidden_step_source_intermediate_target() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.algebraics.insert(
+        VarName::new("source.v"),
+        Variable::new(VarName::new("source.v")),
+    );
+    dae.algebraics.insert(
+        VarName::new("source.p.v"),
+        Variable::new(VarName::new("source.p.v")),
+    );
+    dae.algebraics.insert(
+        VarName::new("node.v"),
+        Variable::new(VarName::new("node.v")),
+    );
+
+    // 0 = der(x)
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var("x")],
+        },
+        lit(0.0),
+    )));
+
+    // Hidden intermediate target, matching the MSL StepVoltage lowering shape:
+    // source.signalSource.y is not part of the solver vector.
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("source.signalSource.y"),
+        Expression::If {
+            branches: vec![(
+                binop(OpBinary::Lt(Default::default()), var("time"), lit(0.5)),
+                lit(0.0),
+            )],
+            else_branch: Box::new(lit(24.0)),
+        },
+    )));
+
+    // source.v = source.signalSource.y
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("source.v"),
+        var("source.signalSource.y"),
+    )));
+
+    // source.v = source.p.v
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("source.v"),
+        var("source.p.v"),
+    )));
+
+    // source.p.v = node.v
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("source.p.v"),
+        var("node.v"),
+    )));
+
+    let timeout = crate::TimeoutBudget::new(None);
+    let projected = project_algebraics_with_fixed_states_at_time(
+        &dae,
+        &[0.0, 0.0, 0.0, 0.0, 0.0], // stale pre-event seed
+        1,
+        1.0,
+        1e-9,
+        &timeout,
+    )
+    .expect("runtime projection should not error")
+    .expect("runtime projection should converge with hidden direct-assignment targets");
+
+    assert!((projected[1] - 24.0).abs() < 1e-9);
+    assert!((projected[2] - 24.0).abs() < 1e-9);
+    assert!((projected[3] - 24.0).abs() < 1e-9);
+}
+
+#[test]
+fn test_runtime_projection_ignores_fixed_differential_rows() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.algebraics.insert(
+        VarName::new("source.p.v"),
+        Variable::new(VarName::new("source.p.v")),
+    );
+    dae.algebraics.insert(
+        VarName::new("node.v"),
+        Variable::new(VarName::new("node.v")),
+    );
+
+    // Differential row that would conflict with the post-event algebraic solve
+    // if we let it participate while x is fixed.
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args: vec![var("x")],
+        },
+        var("source.p.v"),
+    )));
+
+    // 0 = 24 - source.p.v
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        lit(24.0),
+        var("source.p.v"),
+    )));
+
+    // 0 = source.p.v - node.v
+    dae.f_x.push(eq_from(binop(
+        OpBinary::Sub(Default::default()),
+        var("source.p.v"),
+        var("node.v"),
+    )));
+
+    let timeout = crate::TimeoutBudget::new(None);
+    let projected = project_algebraics_with_fixed_states_at_time(
+        &dae,
+        &[0.0, 0.0, 0.0],
+        1,
+        1.0,
+        1e-9,
+        &timeout,
+    )
+    .expect("runtime projection should not error")
+    .expect("runtime projection should converge when fixed differential rows are masked");
+
+    assert!((projected[1] - 24.0).abs() < 1e-9);
+    assert!((projected[2] - 24.0).abs() < 1e-9);
+}
+
+#[test]
 fn test_runtime_alias_propagation_uses_discrete_runtime_defined_anchor() {
     let mut dae = Dae::new();
     dae.algebraics

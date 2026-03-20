@@ -4,25 +4,133 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{Cli, RepoCliInstallArgs, completion_cmd, exe_name, repo_root, run_status};
+use crate::{
+    Cli, RepoCliInstallArgs, RepoCompletionsInstallArgs, RepoUbuntuInstallArgs, command_exists,
+    completion_cmd, repo_root, run_status,
+};
 
 fn rum_cli_install_package_dir(root: &Path) -> PathBuf {
     root.join("crates/rumoca-tool-dev")
 }
 
-pub(crate) fn cargo_install_rum_args(root: &Path) -> Vec<String> {
-    vec![
-        "install".to_string(),
-        "--path".to_string(),
-        rum_cli_install_package_dir(root).display().to_string(),
-        "--locked".to_string(),
-        "--bin".to_string(),
-        "rum".to_string(),
-        "--force".to_string(),
-    ]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShellCommandPlan {
+    pub(crate) program: String,
+    pub(crate) args: Vec<String>,
+}
+
+pub(crate) fn rum_cli_launcher_path(bin_dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        bin_dir.join("rum.cmd")
+    }
+    #[cfg(not(windows))]
+    {
+        bin_dir.join("rum")
+    }
+}
+
+pub(crate) fn ubuntu_vscode_smoke_prereq_install_plan(
+    no_update: bool,
+    use_sudo: bool,
+) -> Vec<ShellCommandPlan> {
+    let mut plans = Vec::new();
+    if !no_update {
+        plans.push(apt_command_plan(use_sudo, ["update"]));
+    }
+    plans.push(apt_command_plan(
+        use_sudo,
+        ["install", "-y", "xvfb", "xauth"],
+    ));
+    plans
+}
+
+fn apt_command_plan<const N: usize>(use_sudo: bool, args: [&str; N]) -> ShellCommandPlan {
+    if use_sudo {
+        let mut full_args = Vec::with_capacity(N + 1);
+        full_args.push("apt-get".to_string());
+        full_args.extend(args.into_iter().map(str::to_string));
+        ShellCommandPlan {
+            program: "sudo".to_string(),
+            args: full_args,
+        }
+    } else {
+        ShellCommandPlan {
+            program: "apt-get".to_string(),
+            args: args.into_iter().map(str::to_string).collect(),
+        }
+    }
+}
+
+fn render_shell_command(plan: &ShellCommandPlan) -> String {
+    std::iter::once(plan.program.as_str())
+        .chain(plan.args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(crate) fn install_ubuntu_vscode_smoke_prereqs(no_update: bool) -> Result<()> {
+    anyhow::ensure!(
+        cfg!(target_os = "linux"),
+        "`rum repo ubuntu install-vscode-smoke-prereqs` only supports Linux hosts"
+    );
+    anyhow::ensure!(
+        command_exists("apt-get"),
+        "missing `apt-get`; this helper currently targets Ubuntu/Debian-style package managers"
+    );
+
+    let plans = ubuntu_vscode_smoke_prereq_install_plan(no_update, command_exists("sudo"));
+    println!("Installing headless VS Code smoke prerequisites: xvfb xauth");
+    for plan in plans {
+        println!("Running: {}", render_shell_command(&plan));
+        let mut command = Command::new(&plan.program);
+        command.args(&plan.args);
+        run_status(command)?;
+    }
+    println!("Installed headless VS Code smoke prerequisites.");
+    Ok(())
+}
+
+pub(crate) fn rum_cli_launcher_contents(root: &Path) -> String {
+    let root = root.display().to_string();
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\r\nsetlocal\r\nset \"RUM_REPO_ROOT={root}\"\r\ncd /d \"%RUM_REPO_ROOT%\" || exit /b %errorlevel%\r\ncargo run -q -p rumoca-tool-dev --bin rum -- %*\r\n"
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\nset -eu\ncd {}\nexec cargo run -q -p rumoca-tool-dev --bin rum -- \"$@\"\n",
+            shell_single_quote(&root),
+        )
+    }
+}
+
+#[cfg(unix)]
+fn ensure_launcher_executable(path: &Path) -> Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    let mut permissions = metadata.permissions();
+    let mode = permissions.mode();
+    let desired_mode = mode | 0o755;
+    if desired_mode != mode {
+        permissions.set_mode(desired_mode);
+        fs::set_permissions(path, permissions)
+            .with_context(|| format!("failed to chmod {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_launcher_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +379,51 @@ pub(crate) fn completion_install_plan(
     }
 }
 
+fn completion_shell_to_install_shell(shell: completion_cmd::ShellKind) -> ShellKind {
+    match shell {
+        completion_cmd::ShellKind::Bash => ShellKind::Bash,
+        completion_cmd::ShellKind::Zsh => ShellKind::Zsh,
+        completion_cmd::ShellKind::Fish => ShellKind::Fish,
+        completion_cmd::ShellKind::PowerShell => ShellKind::PowerShell,
+    }
+}
+
+pub(crate) fn cmd_install_shell_completions(args: RepoCompletionsInstallArgs) -> Result<()> {
+    let shell = args
+        .shell
+        .map(completion_shell_to_install_shell)
+        .unwrap_or_else(current_shell_kind);
+    let home_dir =
+        user_home_dir().context("could not determine home directory to install completions")?;
+    let plan = completion_install_plan(shell, &home_dir).with_context(|| {
+        format!(
+            "shell completion installation is not supported for {:?}; use `rum repo completions print <shell>` instead",
+            shell
+        )
+    })?;
+    let changed = write_file_if_changed(&plan.script_path, &plan.script_contents)?;
+    print_path_update_status(
+        changed,
+        "Installed shell completions at",
+        "Shell completions already up to date at",
+        &plan.script_path,
+    );
+    if let Some(profile_update) = plan.profile_update {
+        let changed = append_unique_snippet(&profile_update.path, &profile_update.snippet)?;
+        print_path_update_status(
+            changed,
+            "Enabled shell completion loading in",
+            "Shell completion loading already configured in",
+            &profile_update.path,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn cmd_install_ubuntu_vscode_smoke_prereqs(args: RepoUbuntuInstallArgs) -> Result<()> {
+    install_ubuntu_vscode_smoke_prereqs(args.no_update)
+}
+
 fn user_home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
@@ -279,14 +432,11 @@ fn user_home_dir() -> Option<PathBuf> {
 
 fn write_file_if_changed(path: &Path, contents: &str) -> Result<bool> {
     let existing = if path.is_file() {
-        Some(
-            fs::read_to_string(path)
-                .with_context(|| format!("failed to read {}", path.display()))?,
-        )
+        Some(fs::read(path).with_context(|| format!("failed to read {}", path.display()))?)
     } else {
         None
     };
-    if existing.as_deref() == Some(contents) {
+    if existing.as_deref() == Some(contents.as_bytes()) {
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
@@ -344,12 +494,21 @@ fn print_path_update_status(changed: bool, updated_label: &str, existing_label: 
 
 pub(crate) fn cmd_install_rum_cli(args: RepoCliInstallArgs) -> Result<()> {
     let root = repo_root();
-    let install_args = cargo_install_rum_args(&root);
-    let mut cmd = Command::new("cargo");
-    cmd.args(&install_args).current_dir(&root);
-    run_status(cmd)?;
-
-    println!("Installed rum with `cargo {}`.", install_args.join(" "));
+    let bin_dir = cargo_bin_dir_hint().context("could not determine cargo bin directory")?;
+    let launcher_path = rum_cli_launcher_path(&bin_dir);
+    let launcher_contents = rum_cli_launcher_contents(&root);
+    let changed = write_file_if_changed(&launcher_path, &launcher_contents)?;
+    ensure_launcher_executable(&launcher_path)?;
+    print_path_update_status(
+        changed,
+        "Installed rum launcher at",
+        "Rum launcher already up to date at",
+        &launcher_path,
+    );
+    println!(
+        "The launcher runs `cargo run -q -p rumoca-tool-dev --bin rum -- ...` from {}.",
+        rum_cli_install_package_dir(&root).display()
+    );
     let shell = current_shell_kind();
     let home_dir = user_home_dir();
     if let Some(home_dir) = home_dir.as_deref() {
@@ -372,51 +531,120 @@ pub(crate) fn cmd_install_rum_cli(args: RepoCliInstallArgs) -> Result<()> {
             }
         } else {
             println!(
-                "Could not auto-install shell completions for this shell. Use `rum repo completions <shell>`."
+                "Could not auto-install shell completions for this shell. Use `rum repo completions print <shell>`."
             );
         }
     } else {
         println!(
-            "Could not determine home directory to install shell completions. Use `rum repo completions <shell>`."
+            "Could not determine home directory to install shell completions. Use `rum repo completions print <shell>`."
         );
     }
-    if let Some(bin_dir) = cargo_bin_dir_hint() {
-        let path_is_ready = path_var_contains_dir(env::var_os("PATH").as_deref(), &bin_dir);
-        if args.path && !path_is_ready {
-            let home_dir = home_dir
-                .clone()
-                .context("could not determine home directory for PATH update")?;
-            let update = shell_profile_update(shell, &home_dir, &bin_dir)
-                .context("automatic PATH updates are not supported for this shell")?;
-            let changed = append_unique_snippet(&update.path, &update.snippet)?;
-            if changed {
-                println!("Persisted PATH update in {}.", update.path.display());
-            } else {
-                println!("PATH update already present in {}.", update.path.display());
-            }
-        }
-        if path_var_contains_dir(env::var_os("PATH").as_deref(), &bin_dir) {
-            println!(
-                "{} is already on PATH. You can run `rum verify quick` now.",
-                bin_dir.display()
-            );
+    let path_is_ready = path_var_contains_dir(env::var_os("PATH").as_deref(), &bin_dir);
+    if args.path && !path_is_ready {
+        let home_dir = home_dir
+            .clone()
+            .context("could not determine home directory for PATH update")?;
+        let update = shell_profile_update(shell, &home_dir, &bin_dir)
+            .context("automatic PATH updates are not supported for this shell")?;
+        let changed = append_unique_snippet(&update.path, &update.snippet)?;
+        if changed {
+            println!("Persisted PATH update in {}.", update.path.display());
         } else {
-            let guidance = shell_path_update_guidance(shell, &bin_dir);
-            let rum_bin = bin_dir.join(exe_name("rum"));
-            println!("{} is not on PATH in this shell.", bin_dir.display());
-            println!("You can run rum immediately via {}.", rum_bin.display());
-            println!("Run now in this shell:\n  {}", guidance.current_command);
-            println!("{}\n  {}", guidance.persist_intro, guidance.persist_action);
-            if let Some(reload_hint) = guidance.reload_hint {
-                println!("Reload your shell or run:\n  {reload_hint}");
-            }
-            if !args.path {
-                println!("To write the persistent PATH update for you, rerun:");
-                println!("  cargo run --bin rum -- repo cli install --path");
-            }
+            println!("PATH update already present in {}.", update.path.display());
         }
+    }
+    if path_var_contains_dir(env::var_os("PATH").as_deref(), &bin_dir) {
+        println!(
+            "{} is already on PATH. You can run `rum verify quick` now.",
+            bin_dir.display()
+        );
     } else {
-        println!("Ensure your cargo bin directory is on PATH, then run `rum verify quick`.");
+        let guidance = shell_path_update_guidance(shell, &bin_dir);
+        println!("{} is not on PATH in this shell.", bin_dir.display());
+        println!(
+            "You can run rum immediately via {}.",
+            launcher_path.display()
+        );
+        println!("Run now in this shell:\n  {}", guidance.current_command);
+        println!("{}\n  {}", guidance.persist_intro, guidance.persist_action);
+        if let Some(reload_hint) = guidance.reload_hint {
+            println!("Reload your shell or run:\n  {reload_hint}");
+        }
+        if !args.path {
+            println!("To write the persistent PATH update for you, rerun:");
+            println!("  {} repo cli install --path", launcher_path.display());
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ubuntu_vscode_smoke_prereq_install_plan, write_file_if_changed};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn new_temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rumoca-tool-dev-{name}-{unique}"));
+        fs::create_dir_all(&dir).expect("mkdir temp dir");
+        dir
+    }
+
+    #[test]
+    fn ubuntu_vscode_smoke_prereq_install_plan_includes_update_and_install() {
+        let plan = ubuntu_vscode_smoke_prereq_install_plan(false, true);
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].program, "sudo");
+        assert_eq!(
+            plan[0].args,
+            vec!["apt-get".to_string(), "update".to_string()]
+        );
+        assert_eq!(
+            plan[1].args,
+            vec![
+                "apt-get".to_string(),
+                "install".to_string(),
+                "-y".to_string(),
+                "xvfb".to_string(),
+                "xauth".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ubuntu_vscode_smoke_prereq_install_plan_can_skip_update() {
+        let plan = ubuntu_vscode_smoke_prereq_install_plan(true, false);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].program, "apt-get");
+        assert_eq!(
+            plan[0].args,
+            vec![
+                "install".to_string(),
+                "-y".to_string(),
+                "xvfb".to_string(),
+                "xauth".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn write_file_if_changed_replaces_non_utf8_existing_file() {
+        let temp = new_temp_dir("binary-launcher-replace");
+        let path = temp.join("rum");
+        fs::write(&path, [0xff, 0x00, 0xfe]).expect("seed binary file");
+
+        let changed =
+            write_file_if_changed(&path, "#!/bin/sh\nexec cargo run -- \"$@\"\n").expect("write");
+
+        assert!(changed);
+        assert_eq!(
+            fs::read_to_string(&path).expect("launcher text"),
+            "#!/bin/sh\nexec cargo run -- \"$@\"\n"
+        );
+    }
 }

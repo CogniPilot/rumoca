@@ -2,24 +2,231 @@
 
 use lsp_types::{CompletionItem, CompletionItemKind, Position};
 use rumoca_session::Session;
+use rumoca_session::compile::ClassLocalCompletionKind;
+#[cfg(feature = "server")]
+use rumoca_session::compile::SessionSnapshot;
+#[cfg(test)]
+use rumoca_session::compile::SourceRootKind;
 use rumoca_session::compile::core as rumoca_core;
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::ir_core as rumoca_ir_core;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
-use crate::helpers::{find_enclosing_class, get_text_before_cursor};
+use crate::helpers::{
+    find_enclosing_class, find_enclosing_class_qualified_name, get_text_before_cursor,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CompletionSemanticLayer {
+    SyntaxFallback,
+    BuiltinKeyword,
+    PackageDefMap,
+    ClassInterface,
+}
+
+impl CompletionSemanticLayer {
+    #[cfg(feature = "server")]
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::SyntaxFallback => "syntax_fallback",
+            Self::BuiltinKeyword => "builtin_keyword",
+            Self::PackageDefMap => "package_def_map",
+            Self::ClassInterface => "class_interface",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CompletionResult {
+    pub(crate) items: Vec<CompletionItem>,
+    pub(crate) semantic_layer: CompletionSemanticLayer,
+}
+
+impl CompletionResult {
+    fn new(items: Vec<CompletionItem>, semantic_layer: CompletionSemanticLayer) -> Self {
+        Self {
+            items,
+            semantic_layer,
+        }
+    }
+}
+
+enum CompletionQuerySession<'a> {
+    Host(&'a mut Session),
+    #[cfg(feature = "server")]
+    Snapshot(&'a SessionSnapshot),
+}
+
+impl CompletionQuerySession<'_> {
+    fn namespace_index_query(&mut self, prefix: &str) -> Vec<(String, String, bool)> {
+        match self {
+            Self::Host(session) => session.namespace_index_query(prefix).unwrap_or_default(),
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => snapshot.namespace_index_query(prefix).unwrap_or_default(),
+        }
+    }
+
+    fn all_library_class_names_cached(&self) -> Vec<String> {
+        match self {
+            Self::Host(session) => session.all_library_class_names_cached(),
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => snapshot.all_library_class_names_cached(),
+        }
+    }
+
+    fn class_component_members_query(&mut self, class_name: &str) -> Vec<(String, String)> {
+        match self {
+            Self::Host(session) => session.class_component_members_query(class_name),
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => snapshot.class_component_members_query(class_name),
+        }
+    }
+
+    fn class_type_resolution_candidates_query(
+        &mut self,
+        uri: &str,
+        qualified_name: &str,
+        raw_name: &str,
+    ) -> Vec<String> {
+        match self {
+            Self::Host(session) => {
+                session.class_type_resolution_candidates_query(uri, qualified_name, raw_name)
+            }
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => {
+                snapshot.class_type_resolution_candidates_query(uri, qualified_name, raw_name)
+            }
+        }
+    }
+
+    fn class_component_type_query(
+        &mut self,
+        uri: &str,
+        qualified_name: &str,
+        component_name: &str,
+    ) -> Option<String> {
+        match self {
+            Self::Host(session) => {
+                session.class_component_type_query(uri, qualified_name, component_name)
+            }
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => {
+                snapshot.class_component_type_query(uri, qualified_name, component_name)
+            }
+        }
+    }
+
+    fn class_local_completion_items_query(
+        &mut self,
+        uri: &str,
+        qualified_name: &str,
+    ) -> Vec<rumoca_session::compile::ClassLocalCompletionItem> {
+        match self {
+            Self::Host(session) => session.class_local_completion_items_query(uri, qualified_name),
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => {
+                snapshot.class_local_completion_items_query(uri, qualified_name)
+            }
+        }
+    }
+
+    fn enclosing_class_qualified_name_query(&mut self, uri: &str, line: u32) -> Option<String> {
+        match self {
+            Self::Host(session) => session.enclosing_class_qualified_name_query(uri, line),
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => snapshot.enclosing_class_qualified_name_query(uri, line),
+        }
+    }
+}
+
+fn cached_library_class_names(session: Option<&mut CompletionQuerySession<'_>>) -> Vec<String> {
+    let Some(session) = session else {
+        return Vec::new();
+    };
+
+    let namespace_entries = session.namespace_index_query("");
+    let library_names = namespace_entries
+        .into_iter()
+        .map(|(_, full_name, _)| full_name)
+        .collect::<Vec<_>>();
+
+    if !library_names.is_empty() {
+        return library_names;
+    }
+
+    session.all_library_class_names_cached()
+}
+
+fn cached_library_namespace_children(
+    session: Option<&mut CompletionQuerySession<'_>>,
+    prefix: &str,
+) -> Vec<(String, String, bool)> {
+    let Some(session) = session else {
+        return Vec::new();
+    };
+    let cached = session.namespace_index_query(prefix);
+    if !cached.is_empty() {
+        return cached;
+    }
+
+    let class_names = cached_library_class_names(Some(session));
+    if class_names.is_empty() {
+        return Vec::new();
+    }
+
+    namespace_children_from_class_names(&class_names, prefix)
+}
 
 /// Handle completion request - returns keyword + scope-aware completions.
 ///
-/// When a `session` is provided, also includes library class name completions
-/// (e.g., "Modelica.Blocks.Continuous.PID") from the session's resolved tree.
+/// When a `session` is provided, also includes library import/package/class
+/// completions from the cached namespace closure built from parsed library docs.
 pub fn handle_completion(
     source: &str,
     ast: Option<&ast::StoredDefinition>,
-    session: Option<&Session>,
+    session: Option<&mut Session>,
+    uri: Option<&str>,
     line: u32,
     character: u32,
 ) -> Vec<CompletionItem> {
+    handle_completion_with_context(
+        source,
+        ast,
+        session.map(CompletionQuerySession::Host),
+        uri,
+        line,
+        character,
+    )
+    .items
+}
+
+#[cfg(feature = "server")]
+pub(crate) fn handle_completion_with_snapshot_and_provenance(
+    source: &str,
+    ast: Option<&ast::StoredDefinition>,
+    snapshot: Option<&SessionSnapshot>,
+    uri: Option<&str>,
+    line: u32,
+    character: u32,
+) -> CompletionResult {
+    handle_completion_with_context(
+        source,
+        ast,
+        snapshot.map(CompletionQuerySession::Snapshot),
+        uri,
+        line,
+        character,
+    )
+}
+
+fn handle_completion_with_context(
+    source: &str,
+    ast: Option<&ast::StoredDefinition>,
+    mut session: Option<CompletionQuerySession<'_>>,
+    uri: Option<&str>,
+    line: u32,
+    character: u32,
+) -> CompletionResult {
     let position = Position { line, character };
     let prefix = get_text_before_cursor(source, position)
         .unwrap_or_default()
@@ -37,59 +244,119 @@ pub fn handle_completion(
         .collect();
 
     let mut items = Vec::new();
+    let mut semantic_layer = CompletionSemanticLayer::SyntaxFallback;
     let mut library_class_names: Option<Vec<String>> = None;
+    let active_model = match (session.as_mut(), uri) {
+        (Some(session), Some(uri)) => session.enclosing_class_qualified_name_query(uri, line),
+        _ => ast.and_then(|tree| find_enclosing_class_qualified_name(tree, line)),
+    };
 
     // Check for dot-completion (e.g., "Modelica.Blocks." or "pid.")
     if prefix.ends_with('.') || prefix.contains('.') {
         // Try local AST dot-completion first
-        if let Some(dot_items) = dot_completion(ast, session, line, &prefix) {
+        if let Some(dot_items) = dot_completion(
+            ast,
+            session.as_mut(),
+            uri,
+            active_model.as_deref(),
+            line,
+            &prefix,
+        ) {
             return dot_items;
         }
+        let namespace_items = library_dot_completion_from_namespace(session.as_mut(), &prefix);
+        if !namespace_items.is_empty() {
+            return CompletionResult::new(namespace_items, CompletionSemanticLayer::PackageDefMap);
+        }
         // Try library dot-completion
-        let class_names = library_class_names.get_or_insert_with(|| {
-            session
-                .map(|s| s.all_class_names_cached())
-                .unwrap_or_default()
-        });
+        if library_class_names.is_none() {
+            library_class_names = Some(cached_library_class_names(session.as_mut()));
+        }
+        let class_names = library_class_names.as_ref().expect("populated cache");
         if !class_names.is_empty() {
             let lib_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
             let lib_items = library_dot_completion(&lib_refs, &prefix);
             if !lib_items.is_empty() {
-                return lib_items;
+                return CompletionResult::new(lib_items, CompletionSemanticLayer::PackageDefMap);
             }
         }
     }
 
     // Check for modifier completion (inside parentheses)
     if is_in_modification_context(&prefix) {
-        items.extend(modification_context_completions(
-            ast, session, line, &prefix, &partial,
-        ));
+        let modifier_items = modification_context_completions(
+            ast,
+            session.as_mut(),
+            uri,
+            active_model.as_deref(),
+            line,
+            &prefix,
+            &partial,
+        );
+        semantic_layer = semantic_layer.max(modifier_items.semantic_layer);
+        items.extend(modifier_items.items);
     }
 
-    // Scope-aware local completions from AST
-    if let Some(ast) = ast {
-        items.extend(local_completions(ast, line, &partial));
+    if let (Some(session), Some(uri), Some(active_model)) =
+        (session.as_mut(), uri, active_model.as_deref())
+    {
+        let local_items = query_local_completions(session, uri, active_model, &partial);
+        if !local_items.is_empty() {
+            semantic_layer = semantic_layer.max(CompletionSemanticLayer::ClassInterface);
+        }
+        items.extend(local_items);
+    } else if let Some(ast) = ast {
+        items.extend(ast_local_completions(ast, line, &partial));
     }
 
-    // Library top-level class completions (e.g., "Model" -> "Modelica")
+    extend_general_completion_items(
+        &mut items,
+        &mut semantic_layer,
+        &mut library_class_names,
+        session,
+        &partial,
+    );
+
+    CompletionResult::new(items, semantic_layer)
+}
+
+fn extend_general_completion_items(
+    items: &mut Vec<CompletionItem>,
+    semantic_layer: &mut CompletionSemanticLayer,
+    library_class_names: &mut Option<Vec<String>>,
+    mut session: Option<CompletionQuerySession<'_>>,
+    partial: &str,
+) {
     if !partial.is_empty() {
-        let class_names = library_class_names.get_or_insert_with(|| {
-            session
-                .map(|s| s.all_class_names_cached())
-                .unwrap_or_default()
-        });
-        let lib_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
-        items.extend(library_prefix_completions(&lib_refs, &partial));
+        let namespace_items = library_prefix_completions_from_namespace(session.as_mut(), partial);
+        if !namespace_items.is_empty() {
+            *semantic_layer = (*semantic_layer).max(CompletionSemanticLayer::PackageDefMap);
+            items.extend(namespace_items);
+        } else {
+            if library_class_names.is_none() {
+                *library_class_names = Some(cached_library_class_names(session.as_mut()));
+            }
+            let class_names = library_class_names.as_ref().expect("populated cache");
+            let lib_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
+            let prefix_items = library_prefix_completions(&lib_refs, partial);
+            if !prefix_items.is_empty() {
+                *semantic_layer = (*semantic_layer).max(CompletionSemanticLayer::PackageDefMap);
+            }
+            items.extend(prefix_items);
+        }
     }
 
-    // Built-in function completions
-    items.extend(builtin_completions(&partial));
+    let builtin_items = builtin_completions(partial);
+    if !builtin_items.is_empty() {
+        *semantic_layer = (*semantic_layer).max(CompletionSemanticLayer::BuiltinKeyword);
+    }
+    items.extend(builtin_items);
 
-    // Keyword completions
-    items.extend(keyword_completions(&partial));
-
-    items
+    let keyword_items = keyword_completions(partial);
+    if !keyword_items.is_empty() {
+        *semantic_layer = (*semantic_layer).max(CompletionSemanticLayer::BuiltinKeyword);
+    }
+    items.extend(keyword_items);
 }
 
 /// Dot-completion for library class names.
@@ -145,6 +412,21 @@ fn library_dot_completion(library_class_names: &[&str], prefix: &str) -> Vec<Com
     items
 }
 
+fn library_dot_completion_from_namespace(
+    session: Option<&mut CompletionQuerySession<'_>>,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let (search_prefix, filter_partial) = extract_qualified_prefix(prefix);
+    if search_prefix.is_empty() {
+        return Vec::new();
+    }
+
+    namespace_entries_to_completion_items(
+        cached_library_namespace_children(session, &search_prefix),
+        &filter_partial,
+    )
+}
+
 /// Extract the qualified prefix for dot-completion.
 ///
 /// Returns (search_prefix, partial_filter):
@@ -197,13 +479,102 @@ fn library_prefix_completions(library_class_names: &[&str], partial: &str) -> Ve
     items
 }
 
+fn library_prefix_completions_from_namespace(
+    session: Option<&mut CompletionQuerySession<'_>>,
+    partial: &str,
+) -> Vec<CompletionItem> {
+    namespace_entries_to_completion_items(cached_library_namespace_children(session, ""), partial)
+}
+
+fn namespace_children_from_class_names(
+    library_class_names: &[String],
+    prefix: &str,
+) -> Vec<(String, String, bool)> {
+    let normalized_prefix = if prefix.is_empty() {
+        String::new()
+    } else if prefix.ends_with('.') {
+        prefix.to_string()
+    } else {
+        format!("{prefix}.")
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut items = Vec::new();
+
+    for name in library_class_names {
+        let candidate = if normalized_prefix.is_empty() {
+            name.clone()
+        } else {
+            let Some(rest) = name.strip_prefix(&normalized_prefix) else {
+                continue;
+            };
+            rest.to_string()
+        };
+        let child = candidate.split('.').next().unwrap_or(candidate.as_str());
+        if child.is_empty() {
+            continue;
+        }
+        let full_name = if normalized_prefix.is_empty() {
+            child.to_string()
+        } else {
+            format!("{normalized_prefix}{child}")
+        };
+        let has_children = library_class_names
+            .iter()
+            .any(|candidate| candidate.starts_with(&format!("{full_name}.")));
+        if seen.insert(full_name.clone()) {
+            items.push((child.to_string(), full_name, has_children));
+        }
+    }
+
+    items.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    items
+}
+
+fn namespace_entries_to_completion_items(
+    entries: Vec<(String, String, bool)>,
+    partial: &str,
+) -> Vec<CompletionItem> {
+    let partial_lower = partial.to_lowercase();
+    entries
+        .into_iter()
+        .filter(|(label, _, _)| {
+            partial_lower.is_empty() || label.to_lowercase().starts_with(&partial_lower)
+        })
+        .map(|(label, full_name, has_children)| CompletionItem {
+            label,
+            kind: Some(if has_children {
+                CompletionItemKind::MODULE
+            } else {
+                CompletionItemKind::CLASS
+            }),
+            detail: Some(full_name),
+            ..Default::default()
+        })
+        .collect()
+}
+
 fn dot_completion(
     ast: Option<&ast::StoredDefinition>,
-    session: Option<&Session>,
+    session: Option<&mut CompletionQuerySession<'_>>,
+    uri: Option<&str>,
+    active_model: Option<&str>,
     line: u32,
     prefix: &str,
-) -> Option<Vec<CompletionItem>> {
-    let ast = ast?;
+) -> Option<CompletionResult> {
+    let (base_word, member_partial) = dot_completion_target(prefix)?;
+    dot_completion_items(
+        ast,
+        session,
+        uri,
+        active_model,
+        line,
+        &base_word,
+        &member_partial,
+    )
+}
+
+fn dot_completion_target(prefix: &str) -> Option<(String, String)> {
     let dot_pos = prefix.rfind('.')?;
     let member_partial = prefix[dot_pos + 1..].trim();
     // Extract the base name before the dot
@@ -220,18 +591,40 @@ fn dot_completion(
     if base_word.is_empty() {
         return None;
     }
+    Some((base_word, member_partial.to_string()))
+}
 
-    if let Some(class) = find_enclosing_class(ast, line)
-        && let Some(comp) = class.components.get(&base_word)
-    {
-        let type_candidates = resolve_type_candidates(Some(ast), line, &comp.type_name.to_string());
-        if let Some(items) =
-            session_type_member_completions(session, &type_candidates, member_partial, false)
-        {
-            return Some(items);
-        }
+fn dot_completion_items(
+    ast: Option<&ast::StoredDefinition>,
+    mut session: Option<&mut CompletionQuerySession<'_>>,
+    uri: Option<&str>,
+    active_model: Option<&str>,
+    line: u32,
+    base_word: &str,
+    member_partial: &str,
+) -> Option<CompletionResult> {
+    let component_type = scoped_component_type(
+        ast,
+        session.as_deref_mut(),
+        uri,
+        active_model,
+        line,
+        base_word,
+    )?;
+    let type_candidates = resolve_type_candidates(
+        ast,
+        session.as_deref_mut(),
+        uri,
+        active_model,
+        line,
+        &component_type,
+    );
+    if session.is_some() {
+        return session_type_member_completions(session, &type_candidates, member_partial, false)
+            .map(|items| CompletionResult::new(items, CompletionSemanticLayer::ClassInterface));
     }
-    None
+    ast.and_then(|ast| ast_type_member_completions(ast, &type_candidates, member_partial, false))
+        .map(|items| CompletionResult::new(items, CompletionSemanticLayer::SyntaxFallback))
 }
 
 fn component_completion_kind(comp: &ast::Component) -> CompletionItemKind {
@@ -254,56 +647,275 @@ fn is_in_modification_context(prefix: &str) -> bool {
 
 fn modification_context_completions(
     ast: Option<&ast::StoredDefinition>,
-    session: Option<&Session>,
+    mut session: Option<&mut CompletionQuerySession<'_>>,
+    uri: Option<&str>,
+    active_model: Option<&str>,
     line: u32,
     prefix: &str,
     partial: &str,
-) -> Vec<CompletionItem> {
+) -> CompletionResult {
     let Some(ctx) = modifier_context_from_prefix(prefix) else {
-        return modifier_completions(partial);
+        return CompletionResult::new(
+            modifier_completions(partial),
+            CompletionSemanticLayer::BuiltinKeyword,
+        );
     };
     if rumoca_core::is_builtin_type(&ctx.type_name) {
-        return modifier_completions(partial);
+        return CompletionResult::new(
+            modifier_completions(partial),
+            CompletionSemanticLayer::BuiltinKeyword,
+        );
     }
 
-    let type_candidates = resolve_type_candidates(ast, line, &ctx.type_name);
-    if let Some(items) = session_type_member_completions(session, &type_candidates, partial, true) {
-        return items;
+    let type_candidates = resolve_type_candidates(
+        ast,
+        session.as_deref_mut(),
+        uri,
+        active_model,
+        line,
+        &ctx.type_name,
+    );
+    if session.is_some() {
+        if let Some(items) =
+            session_type_member_completions(session, &type_candidates, partial, true)
+        {
+            return CompletionResult::new(items, CompletionSemanticLayer::ClassInterface);
+        }
+        return CompletionResult::new(
+            modifier_completions(partial),
+            CompletionSemanticLayer::BuiltinKeyword,
+        );
+    }
+    if let Some(ast) = ast
+        && let Some(items) = ast_type_member_completions(ast, &type_candidates, partial, true)
+    {
+        return CompletionResult::new(items, CompletionSemanticLayer::SyntaxFallback);
     }
 
-    modifier_completions(partial)
+    CompletionResult::new(
+        modifier_completions(partial),
+        CompletionSemanticLayer::BuiltinKeyword,
+    )
 }
 
 fn session_type_member_completions(
-    session: Option<&Session>,
+    session: Option<&mut CompletionQuerySession<'_>>,
     type_candidates: &[String],
     partial: &str,
     insert_assignment: bool,
 ) -> Option<Vec<CompletionItem>> {
     let session = session?;
+    query_type_member_completions(session, type_candidates, partial, insert_assignment)
+}
+
+fn query_type_member_completions(
+    session: &mut CompletionQuerySession<'_>,
+    type_candidates: &[String],
+    partial: &str,
+    insert_assignment: bool,
+) -> Option<Vec<CompletionItem>> {
     for type_name in type_candidates {
-        let members = session.class_component_members_cached(type_name);
+        let members = session.class_component_members_query(type_name);
         if members.is_empty() {
             continue;
         }
-        let items = members
-            .into_iter()
-            .filter(|(name, _)| partial.is_empty() || name.starts_with(partial))
-            .map(|(name, member_type)| CompletionItem {
-                label: name.clone(),
-                kind: Some(CompletionItemKind::PROPERTY),
-                detail: Some(member_type),
-                insert_text: Some(if insert_assignment {
-                    format!("{name} = ")
-                } else {
-                    name.clone()
-                }),
-                ..Default::default()
-            })
-            .collect();
-        return Some(items);
+        return Some(member_completion_items(members, partial, insert_assignment));
     }
     None
+}
+
+fn ast_type_member_completions(
+    ast: &ast::StoredDefinition,
+    type_candidates: &[String],
+    partial: &str,
+    insert_assignment: bool,
+) -> Option<Vec<CompletionItem>> {
+    for type_name in type_candidates {
+        let members = parsed_class_member_entries(ast, type_name);
+        if members.is_empty() {
+            continue;
+        }
+        return Some(member_completion_items(
+            members.into_iter().collect(),
+            partial,
+            insert_assignment,
+        ));
+    }
+    None
+}
+
+fn member_completion_items(
+    members: Vec<(String, String)>,
+    partial: &str,
+    insert_assignment: bool,
+) -> Vec<CompletionItem> {
+    members
+        .into_iter()
+        .filter(|(name, _)| partial.is_empty() || name.starts_with(partial))
+        .map(|(name, member_type)| CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::PROPERTY),
+            detail: Some(member_type),
+            insert_text: Some(if insert_assignment {
+                format!("{name} = ")
+            } else {
+                name.clone()
+            }),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn parsed_class_member_entries(
+    ast: &ast::StoredDefinition,
+    class_name: &str,
+) -> Vec<(String, String)> {
+    let Some((qualified_name, class)) = resolve_parsed_class_candidate(ast, class_name) else {
+        return Vec::new();
+    };
+    let mut members = BTreeMap::<String, String>::new();
+    let mut visiting = HashSet::<String>::new();
+    collect_parsed_class_component_members(
+        ast,
+        &qualified_name,
+        class,
+        &mut members,
+        &mut visiting,
+    );
+    members.into_iter().collect()
+}
+
+fn collect_parsed_class_component_members(
+    ast: &ast::StoredDefinition,
+    qualified_name: &str,
+    class: &ast::ClassDef,
+    members: &mut BTreeMap<String, String>,
+    visiting: &mut HashSet<String>,
+) {
+    if !visiting.insert(qualified_name.to_string()) {
+        return;
+    }
+
+    let class_line = class.location.start_line.saturating_sub(1);
+    for ext in &class.extends {
+        let base_name = ext.base_name.to_string();
+        let base_candidates =
+            resolve_type_candidates(Some(ast), None, None, None, class_line, &base_name);
+        for candidate in base_candidates {
+            let Some((base_qualified, base_class)) =
+                resolve_parsed_class_candidate(ast, &candidate)
+            else {
+                continue;
+            };
+            collect_parsed_class_component_members(
+                ast,
+                &base_qualified,
+                base_class,
+                members,
+                visiting,
+            );
+            for break_name in &ext.break_names {
+                members.remove(break_name);
+            }
+            break;
+        }
+    }
+
+    for (name, component) in &class.components {
+        members.insert(name.clone(), component.type_name.to_string());
+    }
+
+    visiting.remove(qualified_name);
+}
+
+fn resolve_parsed_class_candidate<'a>(
+    ast: &'a ast::StoredDefinition,
+    class_name: &str,
+) -> Option<(String, &'a ast::ClassDef)> {
+    if class_name.contains('.') {
+        return find_parsed_class_by_qualified_name(ast, class_name);
+    }
+    find_unique_parsed_class_by_simple_name(ast, class_name)
+}
+
+fn find_parsed_class_by_qualified_name<'a>(
+    ast: &'a ast::StoredDefinition,
+    class_name: &str,
+) -> Option<(String, &'a ast::ClassDef)> {
+    let within_prefix = ast
+        .within
+        .as_ref()
+        .map(ToString::to_string)
+        .filter(|prefix| !prefix.is_empty());
+    let relative_name = within_prefix
+        .as_ref()
+        .and_then(|prefix| class_name.strip_prefix(&format!("{prefix}.")))
+        .unwrap_or(class_name);
+    let mut parts = relative_name.split('.');
+    let first = parts.next()?;
+    let mut class = ast.classes.get(first)?;
+    let mut qualified_name = within_prefix
+        .map(|prefix| format!("{prefix}.{first}"))
+        .unwrap_or_else(|| first.to_string());
+    for part in parts {
+        class = class.classes.get(part)?;
+        qualified_name.push('.');
+        qualified_name.push_str(part);
+    }
+    Some((qualified_name, class))
+}
+
+fn find_unique_parsed_class_by_simple_name<'a>(
+    ast: &'a ast::StoredDefinition,
+    class_name: &str,
+) -> Option<(String, &'a ast::ClassDef)> {
+    let prefix = ast
+        .within
+        .as_ref()
+        .map(ToString::to_string)
+        .filter(|value| !value.is_empty());
+    let mut found: Option<(String, &'a ast::ClassDef)> = None;
+    for (name, class) in &ast.classes {
+        let qualified_name = prefix
+            .as_ref()
+            .map(|value| format!("{value}.{name}"))
+            .unwrap_or_else(|| name.clone());
+        if !find_unique_parsed_class_by_simple_name_in_class(
+            class_name,
+            &qualified_name,
+            class,
+            &mut found,
+        ) {
+            return None;
+        }
+    }
+    found
+}
+
+fn find_unique_parsed_class_by_simple_name_in_class<'a>(
+    class_name: &str,
+    qualified_name: &str,
+    class: &'a ast::ClassDef,
+    found: &mut Option<(String, &'a ast::ClassDef)>,
+) -> bool {
+    if class.name.text.as_ref() == class_name {
+        if found.is_some() {
+            return false;
+        }
+        *found = Some((qualified_name.to_string(), class));
+    }
+    for (nested_name, nested) in &class.classes {
+        let nested_qualified = format!("{qualified_name}.{nested_name}");
+        if !find_unique_parsed_class_by_simple_name_in_class(
+            class_name,
+            &nested_qualified,
+            nested,
+            found,
+        ) {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,18 +941,36 @@ fn modifier_context_from_prefix(prefix: &str) -> Option<ModifierContext> {
 
 fn resolve_type_candidates(
     ast: Option<&ast::StoredDefinition>,
+    session: Option<&mut CompletionQuerySession<'_>>,
+    uri: Option<&str>,
+    active_model: Option<&str>,
     line: u32,
     raw_type_name: &str,
 ) -> Vec<String> {
     let mut seen = HashSet::<String>::new();
     let mut candidates = Vec::<String>::new();
-    let mut push = |name: String| {
+    let push = |name: String, seen: &mut HashSet<String>, candidates: &mut Vec<String>| {
         if !name.is_empty() && seen.insert(name.clone()) {
             candidates.push(name);
         }
     };
 
-    push(raw_type_name.to_string());
+    push(raw_type_name.to_string(), &mut seen, &mut candidates);
+
+    if let Some(session) = session {
+        return match (uri, active_model) {
+            (Some(uri), Some(active_model)) => {
+                session.class_type_resolution_candidates_query(uri, active_model, raw_type_name)
+            }
+            _ => {
+                if raw_type_name.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![raw_type_name.to_string()]
+                }
+            }
+        };
+    }
 
     let Some(ast) = ast else {
         return candidates;
@@ -354,26 +984,58 @@ fn resolve_type_candidates(
             ast::Import::Qualified { path, .. } => {
                 let full = path.to_string();
                 if import_simple_name(&full) == raw_type_name {
-                    push(full);
+                    push(full, &mut seen, &mut candidates);
                 }
             }
             ast::Import::Renamed { alias, path, .. } => {
                 if alias.text.as_ref() == raw_type_name {
-                    push(path.to_string());
+                    push(path.to_string(), &mut seen, &mut candidates);
                 }
             }
             ast::Import::Selective { path, names, .. } => {
                 if names.iter().any(|name| name.text.as_ref() == raw_type_name) {
-                    push(format!("{}.{}", path, raw_type_name));
+                    push(
+                        format!("{}.{}", path, raw_type_name),
+                        &mut seen,
+                        &mut candidates,
+                    );
                 }
             }
             ast::Import::Unqualified { path, .. } => {
-                push(format!("{}.{}", path, raw_type_name));
+                push(
+                    format!("{}.{}", path, raw_type_name),
+                    &mut seen,
+                    &mut candidates,
+                );
             }
         }
     }
 
     candidates
+}
+
+fn scoped_component_type(
+    ast: Option<&ast::StoredDefinition>,
+    session: Option<&mut CompletionQuerySession<'_>>,
+    uri: Option<&str>,
+    active_model: Option<&str>,
+    line: u32,
+    component_name: &str,
+) -> Option<String> {
+    if let Some(session) = session {
+        return match (uri, active_model) {
+            (Some(uri), Some(active_model)) => {
+                session.class_component_type_query(uri, active_model, component_name)
+            }
+            _ => None,
+        };
+    }
+
+    let class = ast.and_then(|tree| find_enclosing_class(tree, line))?;
+    class
+        .components
+        .get(component_name)
+        .map(|component| component.type_name.to_string())
 }
 
 fn import_simple_name(path: &str) -> &str {
@@ -406,7 +1068,39 @@ fn modifier_completions(partial: &str) -> Vec<CompletionItem> {
         .collect()
 }
 
-fn local_completions(ast: &ast::StoredDefinition, line: u32, partial: &str) -> Vec<CompletionItem> {
+fn query_local_completions(
+    session: &mut CompletionQuerySession<'_>,
+    uri: &str,
+    active_model: &str,
+    partial: &str,
+) -> Vec<CompletionItem> {
+    session
+        .class_local_completion_items_query(uri, active_model)
+        .into_iter()
+        .filter(|item| partial.is_empty() || item.name.starts_with(partial))
+        .map(|item| CompletionItem {
+            label: item.name,
+            kind: Some(query_local_completion_kind(item.kind)),
+            detail: Some(item.detail),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn query_local_completion_kind(kind: ClassLocalCompletionKind) -> CompletionItemKind {
+    match kind {
+        ClassLocalCompletionKind::Constant => CompletionItemKind::CONSTANT,
+        ClassLocalCompletionKind::Property => CompletionItemKind::PROPERTY,
+        ClassLocalCompletionKind::Variable => CompletionItemKind::VARIABLE,
+        ClassLocalCompletionKind::Class => CompletionItemKind::CLASS,
+    }
+}
+
+fn ast_local_completions(
+    ast: &ast::StoredDefinition,
+    line: u32,
+    partial: &str,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     if let Some(class) = find_enclosing_class(ast, line) {
         for (name, comp) in &class.components {
@@ -531,18 +1225,25 @@ end Ball;
         session
             .add_document("input.mo", source)
             .expect("source parses");
-        let _ = session
-            .all_class_names()
-            .expect("resolution should succeed for completion");
 
-        let ast = parse_ast(source);
         let line = 4;
         let character = "  PID pid(".len() as u32;
-        let items = handle_completion(source, Some(&ast), Some(&session), line, character);
+        let items = handle_completion(
+            source,
+            None,
+            Some(&mut session),
+            Some("input.mo"),
+            line,
+            character,
+        );
         assert!(
             items.iter().any(|i| i.label == "kp"),
             "expected PID member `kp` in completions: {:?}",
             items.iter().map(|i| i.label.clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            !session.has_resolved_cached(),
+            "query-backed modifier completion should not need a resolved session"
         );
     }
 
@@ -575,14 +1276,18 @@ end Ball;
         session
             .add_document("input.mo", source)
             .expect("source parses");
-        let _ = session
-            .all_class_names()
-            .expect("resolution should succeed for completion");
 
         let ast = parse_ast(source);
         let line = 6;
         let character = "  pid.".len() as u32;
-        let items = handle_completion(source, Some(&ast), Some(&session), line, character);
+        let items = handle_completion(
+            source,
+            Some(&ast),
+            Some(&mut session),
+            Some("input.mo"),
+            line,
+            character,
+        );
         let labels = items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
         assert!(
             labels.iter().any(|label| label == "kp"),
@@ -593,6 +1298,10 @@ end Ball;
             !labels.iter().any(|label| label == "x"),
             "dot-completion on `pid.` should not include Ball-scoped names: {:?}",
             labels
+        );
+        assert!(
+            !session.has_resolved_cached(),
+            "query-backed dot completion should not need a resolved session"
         );
     }
 
@@ -617,14 +1326,17 @@ end Sim;
         session
             .add_document("input.mo", source)
             .expect("source parses");
-        let _ = session
-            .all_class_names()
-            .expect("resolution should succeed for completion");
 
-        let ast = parse_ast(source);
         let line = 12;
         let character = "  p1.".len() as u32;
-        let items = handle_completion(source, Some(&ast), Some(&session), line, character);
+        let items = handle_completion(
+            source,
+            None,
+            Some(&mut session),
+            Some("input.mo"),
+            line,
+            character,
+        );
         let labels = items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
         assert!(
             labels.iter().any(|label| label == "x"),
@@ -634,6 +1346,90 @@ end Sim;
         assert!(
             labels.iter().any(|label| label == "theta"),
             "expected Plane member `theta` completion for `p1.`, got: {:?}",
+            labels
+        );
+        assert!(
+            !session.has_resolved_cached(),
+            "local model member completion should stay on the query path"
+        );
+    }
+
+    #[test]
+    fn local_completion_uses_session_scope_query_when_available() {
+        let stale_source = r#"
+model Sim
+end Sim;
+"#;
+        let source = r#"
+model Sim
+  parameter Real kp;
+  model Inner
+  end Inner;
+  
+end Sim;
+"#;
+        let mut session = Session::default();
+        session
+            .add_document("input.mo", source)
+            .expect("source parses");
+
+        let stale_ast = parse_ast(stale_source);
+        let character = 2;
+        let items = handle_completion(
+            source,
+            Some(&stale_ast),
+            Some(&mut session),
+            Some("input.mo"),
+            5,
+            character,
+        );
+        let labels = items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "kp"),
+            "session-backed local completion should surface current local members, got: {:?}",
+            labels
+        );
+        assert!(
+            !session.has_resolved_cached(),
+            "session-backed local completion should stay off resolved caches"
+        );
+    }
+
+    #[test]
+    fn dot_completion_uses_ast_for_local_imported_alias_members() {
+        let source = r#"
+package Lib
+  model Helper
+    parameter Real gain = 1;
+    output Real y;
+  equation
+    y = gain;
+  end Helper;
+end Lib;
+
+model M
+  import Alias = Lib.Helper;
+  Alias helperInst;
+equation
+  helperInst.y = sin(helperInst.gain);
+end M;
+"#;
+        let ast = parse_ast(source);
+        let line = 14;
+        let character = "  helperInst.".len() as u32;
+        let items = handle_completion(source, Some(&ast), None, None, line, character);
+        let labels = items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "gain"),
+            "expected local alias member `gain` completion, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.iter().any(|label| label == "y"),
+            "expected local alias member `y` completion, got: {:?}",
             labels
         );
     }
@@ -648,7 +1444,7 @@ end M;
         let ast = parse_ast(source);
         let line = 2;
         let character = "  Real x(".len() as u32;
-        let items = handle_completion(source, Some(&ast), None, line, character);
+        let items = handle_completion(source, Some(&ast), None, None, line, character);
         assert!(
             items.iter().any(|i| i.label == "start"),
             "expected builtin modifier `start` completion"
@@ -661,6 +1457,107 @@ end M;
         assert!(
             items.iter().any(|i| i.label == "operator"),
             "expected `operator` keyword completion"
+        );
+    }
+
+    #[test]
+    fn library_dot_completion_uses_library_cache_after_local_edit() {
+        let lib = r#"
+package Lib
+  package Electrical
+    model Resistor
+      Real v;
+    equation
+      der(v) = 1;
+    end Resistor;
+  end Electrical;
+end Lib;
+"#;
+        let mut session = Session::default();
+        let parsed = parse_source_to_ast(lib, "Lib/package.mo").expect("parse library");
+        let inserted = session.replace_parsed_source_set(
+            "library::Lib",
+            SourceRootKind::Library,
+            vec![("Lib/package.mo".to_string(), parsed)],
+            None,
+        );
+        assert_eq!(inserted, 1, "expected library source-set to load");
+
+        let source = "model Active\n  Real x;\nend Active;\n";
+        session
+            .add_document("input.mo", source)
+            .expect("source parses");
+
+        let namespace_root_children = session
+            .namespace_index_query("")
+            .expect("build library completion cache");
+        assert!(
+            namespace_root_children
+                .iter()
+                .any(|(_, full_name, _)| full_name == "Lib"),
+            "expected root library namespace cache entry: {namespace_root_children:?}"
+        );
+        let lib_namespace_children = session
+            .namespace_index_query("Lib.")
+            .expect("load namespace children under Lib");
+        assert!(
+            lib_namespace_children
+                .iter()
+                .any(|(_, full_name, _)| full_name == "Lib.Electrical"),
+            "expected Lib children namespace cache entry: {lib_namespace_children:?}"
+        );
+        let electrical_namespace_children = session
+            .namespace_index_query("Lib.Electrical.")
+            .expect("load namespace children under Lib.Electrical");
+        assert!(
+            electrical_namespace_children
+                .iter()
+                .any(|(_, full_name, _)| full_name == "Lib.Electrical.Resistor"),
+            "expected nested library class in namespace cache: {electrical_namespace_children:?}"
+        );
+        assert!(
+            !session.has_resolved_cached(),
+            "priming the library cache should not build the full resolved session"
+        );
+        assert_eq!(
+            session
+                .namespace_index_query("Lib.")
+                .expect("expected namespace children under Lib"),
+            vec![("Electrical".to_string(), "Lib.Electrical".to_string(), true)],
+            "namespace cache should expose immediate children"
+        );
+
+        let edited_source = "model Active\n  Real x;\n  Real y;\nend Active;\n";
+        session.update_document("input.mo", edited_source);
+        assert!(
+            !session.has_resolved_cached(),
+            "editing a local document should invalidate the full resolved session"
+        );
+        assert!(
+            !session
+                .namespace_index_query("Lib.")
+                .expect("expected library namespace after local edit")
+                .is_empty(),
+            "editing a local document should preserve the library-only completion cache"
+        );
+
+        let completion_source = "model Active\n  Lib.\nend Active;\n";
+        let items = handle_completion(
+            completion_source,
+            None,
+            Some(&mut session),
+            Some("input.mo"),
+            1,
+            6,
+        );
+        let labels = items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "Electrical"),
+            "expected library completion from cached library class names, got: {labels:?}"
+        );
+        assert!(
+            !session.has_resolved_cached(),
+            "library completion should not rebuild the full resolved session"
         );
     }
 }

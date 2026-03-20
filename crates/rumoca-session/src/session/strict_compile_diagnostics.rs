@@ -1,10 +1,11 @@
-use super::{Document, FailedPhase, ModelFailureDiagnostic, PhaseResult};
+use super::{DaePhaseResult, Document, FailedPhase, ModelFailureDiagnostic, PhaseResult};
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, PrimaryLabel,
     SourceId, SourceMap, Span,
 };
 use rumoca_ir_ast as ast;
+use std::sync::Arc;
 
 pub(super) fn phase_result_to_failure(
     tree: &ast::ClassTree,
@@ -37,6 +38,37 @@ pub(super) fn phase_result_to_failure(
     }
 }
 
+pub(super) fn dae_phase_result_to_failure(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    result: &DaePhaseResult,
+) -> Option<ModelFailureDiagnostic> {
+    match result {
+        DaePhaseResult::Success(_) => None,
+        DaePhaseResult::NeedsInner { missing_inners } => Some(ModelFailureDiagnostic {
+            model_name: model_name.to_string(),
+            phase: Some(FailedPhase::Instantiate),
+            error_code: None,
+            error: format!(
+                "model needs inner declarations: {}",
+                missing_inners.join(", ")
+            ),
+            primary_label: class_primary_label(tree, model_name, "model needs inner declarations"),
+        }),
+        DaePhaseResult::Failed {
+            phase,
+            error,
+            error_code,
+        } => Some(ModelFailureDiagnostic {
+            model_name: model_name.to_string(),
+            phase: Some(*phase),
+            error_code: error_code.clone(),
+            error: error.clone(),
+            primary_label: class_primary_label(tree, model_name, "phase failed"),
+        }),
+    }
+}
+
 pub(super) fn class_primary_span(tree: &ast::ClassTree, model_name: &str) -> Option<Span> {
     let class = tree.get_class_by_qualified_name(model_name)?;
     let name_location = &class.name.location;
@@ -51,7 +83,7 @@ pub(super) fn class_primary_span(tree: &ast::ClassTree, model_name: &str) -> Opt
 }
 
 pub(super) fn collect_parse_failures_for_files(
-    documents: &IndexMap<String, Document>,
+    documents: &IndexMap<String, Arc<Document>>,
     source_map: &SourceMap,
     files: &IndexSet<String>,
 ) -> Vec<ModelFailureDiagnostic> {
@@ -100,7 +132,7 @@ pub(super) fn collect_resolve_failures_for_files(
 }
 
 pub(super) fn collect_parse_error_diagnostics(
-    documents: &IndexMap<String, Document>,
+    documents: &IndexMap<String, Arc<Document>>,
     source_map: &SourceMap,
 ) -> Vec<CommonDiagnostic> {
     let mut out = Vec::new();
@@ -114,22 +146,22 @@ pub(super) fn document_parse_diagnostics(
     doc: &Document,
     source_map: &SourceMap,
 ) -> Vec<CommonDiagnostic> {
-    if !doc.parse_errors.is_empty() {
+    if !doc.parse_errors().is_empty() {
         return doc
-            .parse_errors
+            .parse_errors()
             .iter()
             .map(|error| parse_error_to_common_diagnostic(error, doc, source_map))
             .collect();
     }
 
-    let Some(err) = doc.parse_error.as_ref() else {
+    let Some(err) = doc.parse_error() else {
         return Vec::new();
     };
     if let Some(span) = doc_default_parse_span(doc, source_map) {
         return vec![
             CommonDiagnostic::error(
                 "syntax-error",
-                err.clone(),
+                err.to_string(),
                 PrimaryLabel::new(span).with_message("parse error in this document"),
             )
             .with_note(format!("document: {}", doc.uri)),
@@ -178,9 +210,9 @@ fn collect_document_parse_failures(
     doc: &Document,
     source_map: &SourceMap,
 ) -> Vec<ModelFailureDiagnostic> {
-    if !doc.parse_errors.is_empty() {
+    if !doc.parse_errors().is_empty() {
         return doc
-            .parse_errors
+            .parse_errors()
             .iter()
             .map(|error| {
                 let diagnostic = parse_error_to_common_diagnostic(error, doc, source_map);
@@ -195,14 +227,14 @@ fn collect_document_parse_failures(
             .collect();
     }
 
-    let Some(err) = doc.parse_error.as_ref() else {
+    let Some(err) = doc.parse_error() else {
         return Vec::new();
     };
     vec![ModelFailureDiagnostic {
         model_name: doc.uri.clone(),
         phase: None,
         error_code: Some("syntax-error".to_string()),
-        error: err.clone(),
+        error: err.to_string(),
         primary_label: doc_default_parse_span(doc, source_map)
             .map(|span| Label::primary(span).with_message("parse error in this document")),
     }]

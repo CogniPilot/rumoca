@@ -101,11 +101,25 @@ fn solve_newton_linear_system_reduced(
     ))
 }
 
-fn free_residual_inf(rhs: &[f64], _n_x: usize, _fixed: &[bool]) -> f64 {
-    rhs.iter().map(|v| v.abs()).fold(
-        0.0_f64,
-        |a, b| if b.is_nan() { f64::INFINITY } else { a.max(b) },
-    )
+fn free_residual_inf(rhs: &[f64], _n_x: usize, fixed: &[bool]) -> f64 {
+    rhs.iter()
+        .enumerate()
+        .filter(|(idx, _)| !fixed.get(*idx).copied().unwrap_or(false))
+        .map(|(_, value)| value.abs())
+        .fold(
+            0.0_f64,
+            |a, b| if b.is_nan() { f64::INFINITY } else { a.max(b) },
+        )
+}
+
+fn zero_fixed_residual_rows(rhs: &mut [f64], fixed: &[bool]) {
+    for (idx, value) in rhs.iter_mut().enumerate() {
+        if fixed.get(idx).copied().unwrap_or(false) {
+            // Runtime projection holds fixed states constant, so their residual
+            // rows must not feed the Newton right-hand side.
+            *value = 0.0;
+        }
+    }
 }
 
 fn newton_init_step(
@@ -126,6 +140,7 @@ fn newton_init_step(
     config.timeout.check()?;
 
     let free_norm_before = free_residual_inf(&rhs, config.n_x, config.fixed);
+    zero_fixed_residual_rows(&mut rhs, config.fixed);
 
     let jac_ctx = InitJacobianEvalContext {
         dae,
@@ -814,6 +829,8 @@ fn build_runtime_projection_fixed_mask(dae: &Dae, n_x: usize, n_eq: usize) -> Ve
         *f = true;
     }
 
+    let target_assignment_stats =
+        crate::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
     let names = solver_vector_names(dae, n_eq);
     let name_to_idx: std::collections::HashMap<String, usize> = names
         .iter()
@@ -822,14 +839,28 @@ fn build_runtime_projection_fixed_mask(dae: &Dae, n_x: usize, n_eq: usize) -> Ve
         .collect();
 
     for eq in dae.f_x.iter().skip(n_x) {
-        let Some((target, _solution)) = extract_direct_assignment(&eq.rhs) else {
+        let Some((target, solution)) = runtime_direct_assignment(dae, eq) else {
             continue;
         };
+        if !runtime_projection_target_is_exogenous(dae, solution, n_x, n_eq, &name_to_idx) {
+            continue;
+        }
         let Some(idx) = solver_idx_for_target(target.as_str(), &name_to_idx) else {
             continue;
         };
+        let is_alias_solution =
+            crate::runtime::assignment::assignment_solution_is_alias_varref(dae, solution);
+        if !runtime_projection_target_can_be_seeded(
+            target.as_str(),
+            is_alias_solution,
+            &target_assignment_stats,
+        ) {
+            continue;
+        }
         if idx < n_x {
             fixed[idx] = false;
+        } else if idx < n_eq {
+            fixed[idx] = true;
         }
     }
 
@@ -851,6 +882,37 @@ fn build_runtime_projection_fixed_mask(dae: &Dae, n_x: usize, n_eq: usize) -> Ve
         }
     }
     fixed
+}
+
+fn runtime_projection_target_can_be_seeded(
+    target: &str,
+    is_alias_solution: bool,
+    stats: &std::collections::HashMap<
+        String,
+        crate::runtime::assignment::DirectAssignmentTargetStats,
+    >,
+) -> bool {
+    let target_stats = stats.get(target).copied().unwrap_or_default();
+    if target_stats.total > 1 && target_stats.non_alias != 1 {
+        return false;
+    }
+    !(target_stats.total > 1 && target_stats.non_alias == 1 && is_alias_solution)
+}
+
+fn runtime_projection_target_is_exogenous(
+    dae: &Dae,
+    solution: &Expression,
+    n_x: usize,
+    n_eq: usize,
+    name_to_idx: &std::collections::HashMap<String, usize>,
+) -> bool {
+    crate::runtime::assignment::direct_assignment_source_is_known(
+        dae,
+        solution,
+        n_x,
+        n_eq,
+        |target| solver_idx_for_target(target, name_to_idx),
+    )
 }
 
 fn propagate_runtime_projection_state_dependencies(

@@ -146,82 +146,279 @@ pub(super) fn flatten_options_for_tree() -> FlattenOptions {
 /// Type checking runs after instantiation so it has full access to the
 /// modification context for dimension evaluation (MLS §10.1).
 pub(super) fn compile_model_internal(tree: &ast::ClassTree, model_name: &str) -> PhaseResult {
-    // Prevent thread-local `pre()` state from leaking across model compiles
-    // when worker threads are reused (e.g., MSL parallel compile batches).
-    rumoca_sim::clear_runtime_pre_values();
-
-    let experiment_settings = experiment_settings_for_model(tree, model_name);
-
     let instantiate_start = maybe_start_timer();
-    let instantiate_outcome = instantiate_model_with_outcome(tree, model_name);
+    let instantiate_outcome = InstantiatedModelOutcome::from_instantiation_outcome(
+        instantiate_model_with_outcome(tree, model_name),
+    );
     maybe_record_compile_phase_timing(FailedPhase::Instantiate, instantiate_start);
-    let mut overlay = match instantiate_outcome {
-        InstantiationOutcome::Success(o) => o,
-        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
-            return PhaseResult::NeedsInner { missing_inners };
-        }
-        InstantiationOutcome::Error(e) => {
-            use miette::Diagnostic;
-            let error_code = e.code().map(|c| c.to_string());
-            return PhaseResult::Failed {
-                phase: FailedPhase::Instantiate,
-                error: format!("{}", e),
-                error_code,
-            };
-        }
-    };
 
     let typecheck_start = maybe_start_timer();
-    let typecheck_result = typecheck_instanced(tree, &mut overlay, model_name);
-    maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_start);
-    if let Err(diags) = typecheck_result {
-        return PhaseResult::Failed {
-            phase: FailedPhase::Typecheck,
-            error: diags
-                .iter()
-                .map(|d| d.message.clone())
-                .collect::<Vec<_>>()
-                .join("; "),
-            error_code: summarize_typecheck_error_code(&diags),
-        };
+    let (typed_outcome, typechecked_built) =
+        typed_model_outcome_from_instantiated(tree, model_name, instantiate_outcome);
+    if typechecked_built {
+        maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_start);
     }
 
     let flatten_start = maybe_start_timer();
-    let flat_result =
-        flatten_ref_with_options(tree, &overlay, model_name, flatten_options_for_tree());
-    maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_start);
-    let flat = match flat_result {
-        Ok(f) => f,
-        Err(e) => {
-            use miette::Diagnostic;
-            let error_code = e.code().map(|c| c.to_string());
-            return PhaseResult::Failed {
-                phase: FailedPhase::Flatten,
-                error: format!("{}", e),
-                error_code,
-            };
+    let (flat_outcome, flattened_built) =
+        flat_model_outcome_from_typed(tree, model_name, typed_outcome);
+    if flattened_built {
+        maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_start);
+    }
+
+    let todae_start = maybe_start_timer();
+    let (dae_outcome, todae_built) = dae_model_outcome_from_flat(tree, flat_outcome);
+    if todae_built {
+        maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
+    }
+
+    compile_phase_result_from_dae(tree, model_name, dae_outcome)
+}
+
+pub(super) fn typed_model_outcome_from_instantiated(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    instantiate_outcome: InstantiatedModelOutcome,
+) -> (TypedModelOutcome, bool) {
+    let mut overlay = match instantiate_outcome {
+        InstantiatedModelOutcome::Success(overlay) => *overlay,
+        InstantiatedModelOutcome::NeedsInner {
+            missing_inners,
+            missing_spans,
+        } => {
+            return (
+                TypedModelOutcome::NeedsInner {
+                    missing_inners,
+                    missing_spans,
+                },
+                false,
+            );
+        }
+        InstantiatedModelOutcome::Error(error) => {
+            return (TypedModelOutcome::InstantiateError(error), false);
         }
     };
 
-    let todae_start = maybe_start_timer();
-    let dae_result = to_dae_with_options(&flat, todae_options_for_tree(tree));
-    maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
-    let dae = match dae_result {
-        Ok(d) => d,
-        Err(e) => {
+    if let Err(diags) = typecheck_instanced(tree, &mut overlay, model_name) {
+        return (
+            TypedModelOutcome::TypecheckError(diags.iter().cloned().collect()),
+            true,
+        );
+    }
+
+    (TypedModelOutcome::Success(Box::new(overlay)), true)
+}
+
+pub(super) fn flat_model_outcome_from_typed(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    typed_outcome: TypedModelOutcome,
+) -> (FlatModelOutcome, bool) {
+    let overlay = match typed_outcome {
+        TypedModelOutcome::Success(overlay) => *overlay,
+        TypedModelOutcome::NeedsInner {
+            missing_inners,
+            missing_spans,
+        } => {
+            return (
+                FlatModelOutcome::NeedsInner {
+                    missing_inners,
+                    missing_spans,
+                },
+                false,
+            );
+        }
+        TypedModelOutcome::InstantiateError(error) => {
+            return (FlatModelOutcome::InstantiateError(error), false);
+        }
+        TypedModelOutcome::TypecheckError(diags) => {
+            return (FlatModelOutcome::TypecheckError(diags), false);
+        }
+    };
+
+    match flatten_ref_with_options(tree, &overlay, model_name, flatten_options_for_tree()) {
+        Ok(flat) => (
+            FlatModelOutcome::Success(Box::new(FlatModelArtifactData { flat })),
+            true,
+        ),
+        Err(error) => (
+            FlatModelOutcome::FlattenError {
+                error: Box::new(error),
+            },
+            true,
+        ),
+    }
+}
+
+pub(super) fn dae_model_outcome_from_flat(
+    tree: &ast::ClassTree,
+    flat_outcome: FlatModelOutcome,
+) -> (DaeModelOutcome, bool) {
+    let artifact = match flat_outcome {
+        FlatModelOutcome::Success(artifact) => *artifact,
+        FlatModelOutcome::NeedsInner {
+            missing_inners,
+            missing_spans,
+        } => {
+            return (
+                DaeModelOutcome::NeedsInner {
+                    missing_inners,
+                    missing_spans,
+                },
+                false,
+            );
+        }
+        FlatModelOutcome::InstantiateError(error) => {
+            return (DaeModelOutcome::InstantiateError(error), false);
+        }
+        FlatModelOutcome::TypecheckError(diags) => {
+            return (DaeModelOutcome::TypecheckError(diags), false);
+        }
+        FlatModelOutcome::FlattenError { error } => {
+            return (DaeModelOutcome::FlattenError { error }, false);
+        }
+    };
+
+    // MLS §5.6 / SPEC_0004: ToDae stays downstream of flatten and should
+    // consume the cached flat artifact rather than rebuilding earlier phases.
+    rumoca_sim::clear_runtime_pre_values();
+    match to_dae_with_options(&artifact.flat, todae_options_for_tree(tree)) {
+        Ok(dae) => (
+            DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
+                flat: Arc::new(artifact.flat),
+                dae: Arc::new(dae),
+            })),
+            true,
+        ),
+        Err(error) => (
+            DaeModelOutcome::ToDaeError {
+                error: Box::new(error),
+            },
+            true,
+        ),
+    }
+}
+
+fn unwrap_or_clone_arc<T: Clone>(value: Arc<T>) -> T {
+    Arc::unwrap_or_clone(value)
+}
+
+pub(super) fn dae_phase_result_from_dae(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    dae_outcome: DaeModelOutcome,
+) -> DaePhaseResult {
+    let experiment_settings = experiment_settings_for_model(tree, model_name);
+
+    match dae_outcome {
+        DaeModelOutcome::Success(artifact) => {
+            DaePhaseResult::Success(Box::new(DaeCompilationResult {
+                dae: artifact.dae,
+                experiment_start_time: experiment_settings.start_time,
+                experiment_stop_time: experiment_settings.stop_time,
+                experiment_tolerance: experiment_settings.tolerance,
+                experiment_interval: experiment_settings.interval,
+                experiment_solver: experiment_settings.solver,
+            }))
+        }
+        DaeModelOutcome::NeedsInner { missing_inners, .. } => {
+            DaePhaseResult::NeedsInner { missing_inners }
+        }
+        DaeModelOutcome::InstantiateError(error) => {
             use miette::Diagnostic;
-            let error_code = e.code().map(|c| c.to_string());
+            DaePhaseResult::Failed {
+                phase: FailedPhase::Instantiate,
+                error: format!("{error}"),
+                error_code: error.code().map(|code| code.to_string()),
+            }
+        }
+        DaeModelOutcome::TypecheckError(diags) => {
+            let diagnostics = diagnostics_from_vec(diags);
+            DaePhaseResult::Failed {
+                phase: FailedPhase::Typecheck,
+                error: diagnostics
+                    .iter()
+                    .map(|diag| diag.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                error_code: summarize_typecheck_error_code(&diagnostics),
+            }
+        }
+        DaeModelOutcome::FlattenError { error, .. } => {
+            use miette::Diagnostic;
+            DaePhaseResult::Failed {
+                phase: FailedPhase::Flatten,
+                error: format!("{error}"),
+                error_code: error.code().map(|code| code.to_string()),
+            }
+        }
+        DaeModelOutcome::ToDaeError { error, .. } => {
+            use miette::Diagnostic;
+            DaePhaseResult::Failed {
+                phase: FailedPhase::ToDae,
+                error: format!("{error}"),
+                error_code: error.code().map(|code| code.to_string()),
+            }
+        }
+    }
+}
+
+pub(super) fn compile_phase_result_from_dae(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    dae_outcome: DaeModelOutcome,
+) -> PhaseResult {
+    let experiment_settings = experiment_settings_for_model(tree, model_name);
+
+    let artifact = match dae_outcome {
+        DaeModelOutcome::Success(artifact) => *artifact,
+        DaeModelOutcome::NeedsInner { missing_inners, .. } => {
+            return PhaseResult::NeedsInner { missing_inners };
+        }
+        DaeModelOutcome::InstantiateError(error) => {
+            use miette::Diagnostic;
+            let error_code = error.code().map(|c| c.to_string());
+            return PhaseResult::Failed {
+                phase: FailedPhase::Instantiate,
+                error: format!("{}", error),
+                error_code,
+            };
+        }
+        DaeModelOutcome::TypecheckError(diags) => {
+            let diagnostics = diagnostics_from_vec(diags);
+            return PhaseResult::Failed {
+                phase: FailedPhase::Typecheck,
+                error: diagnostics
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                error_code: summarize_typecheck_error_code(&diagnostics),
+            };
+        }
+        DaeModelOutcome::FlattenError { error, .. } => {
+            use miette::Diagnostic;
+            let error_code = error.code().map(|c| c.to_string());
+            return PhaseResult::Failed {
+                phase: FailedPhase::Flatten,
+                error: format!("{}", error),
+                error_code,
+            };
+        }
+        DaeModelOutcome::ToDaeError { error, .. } => {
+            use miette::Diagnostic;
+            let error_code = error.code().map(|c| c.to_string());
             return PhaseResult::Failed {
                 phase: FailedPhase::ToDae,
-                error: format!("{}", e),
+                error: format!("{}", error),
                 error_code,
             };
         }
     };
 
     PhaseResult::Success(Box::new(CompilationResult {
-        flat,
-        dae,
+        flat: unwrap_or_clone_arc(artifact.flat),
+        dae: unwrap_or_clone_arc(artifact.dae),
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,

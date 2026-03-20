@@ -23,7 +23,7 @@ use rustc_hash::FxHashMap;
 
 use crate::errors::FlattenError;
 use crate::path_utils::{
-    first_path_segment_without_index, has_top_level_dot, parse_path_with_indices, strip_array_index,
+    first_path_segment_without_index, has_top_level_dot, split_path_with_indices, strip_array_index,
 };
 
 mod equation_generation;
@@ -54,7 +54,7 @@ struct ConnectionBuildCtx<'a> {
 /// Precomputed lookup structures for connection path matching.
 ///
 /// Built once per connection-processing pass to avoid repeated full scans and
-/// repeated `parse_path_with_indices` work in hot loops.
+/// repeated `split_path_with_indices` work in hot loops.
 struct ConnectionVarIndex {
     /// Variables indexed by normalized base prefix (indices stripped), for
     /// connector-subvariable expansion lookups.
@@ -81,7 +81,7 @@ impl ConnectionVarIndex {
         let mut parsed_parts_by_var: FxHashMap<flat::VarName, Vec<String>> = FxHashMap::default();
 
         for var_name in var_names {
-            let parsed_parts: Vec<String> = parse_path_with_indices(var_name.as_str())
+            let parsed_parts: Vec<String> = split_path_with_indices(var_name.as_str())
                 .into_iter()
                 .map(std::borrow::ToOwned::to_owned)
                 .collect();
@@ -142,7 +142,7 @@ struct ConnectionSubMatchIndex {
 
 impl ConnectionSubMatchIndex {
     fn new(path: &str, subs: &[flat::VarName], var_index: &ConnectionVarIndex) -> Self {
-        let path_segments = parse_path_with_indices(path);
+        let path_segments = split_path_with_indices(path);
         let path_explicit_index_count = path_segments
             .iter()
             .filter(|segment| extract_array_index(segment).is_some())
@@ -164,7 +164,7 @@ impl ConnectionSubMatchIndex {
             let b_parts = if let Some(parts) = var_index.parsed_parts(var) {
                 parts
             } else {
-                fallback_parts = parse_path_with_indices(var.as_str())
+                fallback_parts = split_path_with_indices(var.as_str())
                     .into_iter()
                     .map(std::borrow::ToOwned::to_owned)
                     .collect::<Vec<_>>();
@@ -767,7 +767,7 @@ fn find_exact_match_with_array_expansion(
     path: &str,
     var_index: &ConnectionVarIndex,
 ) -> Vec<flat::VarName> {
-    let segments = parse_path_with_indices(path);
+    let segments = split_path_with_indices(path);
     if segments.is_empty() {
         return Vec::new();
     }
@@ -809,7 +809,7 @@ fn find_sub_variables_with_array_expansion_indexed(
     prefix: &str,
     var_index: &ConnectionVarIndex,
 ) -> Vec<flat::VarName> {
-    let segments = parse_path_with_indices(prefix);
+    let segments = split_path_with_indices(prefix);
     if segments.is_empty() {
         return Vec::new();
     }
@@ -1016,7 +1016,7 @@ fn connect_output_to_array_element(
 /// Returns Some((base_var_name, index)) if path ends with [n] and the base is
 /// an array variable in the flat model.
 fn parse_array_element_ref(path: &str, flat: &flat::Model) -> Option<(flat::VarName, i64)> {
-    let parts = parse_path_with_indices(path);
+    let parts = split_path_with_indices(path);
     let last = parts.last()?;
     let idx_group = extract_array_index(last)?;
     if !(idx_group.starts_with('[') && idx_group.ends_with(']')) {
@@ -1187,7 +1187,7 @@ fn connect_sub_variable(
             };
             let index_in_bounds = projected_dims.is_empty()
                 || projected_indices_within_dims(&idx_suffix, projected_dims);
-            let idx_already_present = parse_path_with_indices(conn_b.as_str())
+            let idx_already_present = split_path_with_indices(conn_b.as_str())
                 .iter()
                 .filter_map(|part| extract_array_index(part))
                 .any(|idx| idx == idx_suffix);

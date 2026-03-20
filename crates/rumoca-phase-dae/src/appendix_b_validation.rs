@@ -39,7 +39,7 @@ fn validate_strict_solver_expression_invariants(dae_model: &dae::Dae) -> Result<
 }
 
 fn validate_runtime_contract_invariants(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
-    let mut seen_partition_for_name: HashMap<dae::VarName, &'static str> = HashMap::new();
+    let mut seen_partition_for_name: HashMap<&dae::VarName, &'static str> = HashMap::new();
     register_partition_names(&mut seen_partition_for_name, "x", dae_model.states.keys())?;
     register_partition_names(
         &mut seen_partition_for_name,
@@ -77,7 +77,7 @@ fn validate_runtime_contract_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
 }
 
 fn register_partition_names<'a, I>(
-    seen_partition_for_name: &mut HashMap<dae::VarName, &'static str>,
+    seen_partition_for_name: &mut HashMap<&'a dae::VarName, &'static str>,
     partition: &'static str,
     names: I,
 ) -> Result<(), ToDaeError>
@@ -85,7 +85,7 @@ where
     I: Iterator<Item = &'a dae::VarName>,
 {
     for name in names {
-        if let Some(previous_partition) = seen_partition_for_name.insert(name.clone(), partition) {
+        if let Some(previous_partition) = seen_partition_for_name.insert(name, partition) {
             return Err(ToDaeError::runtime_contract_violation(format!(
                 "variable `{name}` appears in multiple partitions: `{previous_partition}` and `{partition}`"
             )));
@@ -231,7 +231,7 @@ fn validate_condition_partition(dae_model: &dae::Dae) -> Result<(), ToDaeError> 
             )));
         }
 
-        if format!("{:?}", equation.rhs) != format!("{:?}", relation) {
+        if equation.rhs != *relation {
             return Err(ToDaeError::condition_partition_violation(format!(
                 "f_c[{index}] rhs does not match relation[{index}]"
             )));
@@ -508,14 +508,14 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
         }
     }
 
-    let mut seen_roots = HashSet::new();
+    let mut seen_roots: Vec<&dae::Expression> = Vec::new();
     for root in &dae_model.synthetic_root_conditions {
-        let key = format!("{root:?}");
-        if !seen_roots.insert(key) {
+        if seen_roots.contains(&root) {
             return Err(ToDaeError::runtime_metadata_violation(
                 "synthetic_root_conditions contain duplicates",
             ));
         }
+        seen_roots.push(root);
     }
 
     Ok(())

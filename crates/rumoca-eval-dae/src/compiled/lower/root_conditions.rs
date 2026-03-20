@@ -82,7 +82,9 @@ fn lower_inactive_root_row(
 }
 
 fn root_condition_is_inactive(dae_model: &dae::Dae, expr: &dae::Expression) -> bool {
-    uses_runtime_discrete_condition(expr) || !expression_uses_known_root_bindings(dae_model, expr)
+    uses_runtime_discrete_condition(expr)
+        || expression_uses_runtime_discrete_bindings(dae_model, expr)
+        || !expression_uses_known_root_bindings(dae_model, expr)
 }
 
 fn expression_uses_known_root_bindings(dae_model: &dae::Dae, expr: &dae::Expression) -> bool {
@@ -111,6 +113,21 @@ fn has_runtime_binding(dae_model: &dae::Dae, name: &dae::VarName) -> bool {
         || dae_model.discrete_reals.contains_key(name)
         || dae_model.discrete_valued.contains_key(name)
         || dae_model.derivative_aliases.contains_key(name)
+}
+
+fn expression_uses_runtime_discrete_bindings(dae_model: &dae::Dae, expr: &dae::Expression) -> bool {
+    let mut refs: HashSet<dae::VarName> = HashSet::new();
+    expr.collect_var_refs(&mut refs);
+    refs.into_iter().any(|name| {
+        is_runtime_discrete_binding(dae_model, &name)
+            || dae::component_base_name(name.as_str())
+                .map(|base| is_runtime_discrete_binding(dae_model, &dae::VarName::new(base)))
+                .unwrap_or(false)
+    })
+}
+
+fn is_runtime_discrete_binding(dae_model: &dae::Dae, name: &dae::VarName) -> bool {
+    dae_model.discrete_reals.contains_key(name) || dae_model.discrete_valued.contains_key(name)
 }
 
 fn uses_runtime_discrete_condition(expr: &dae::Expression) -> bool {

@@ -50,6 +50,12 @@ Read additional specs based on the area you touch:
    boundaries.
 5. Add or update tests that prove the behavior, not just exercise the code.
 6. Run the relevant verification commands before claiming the task is done.
+7. Record PR-size metrics in the review payload:
+   - `production_lines_added`, `production_lines_deleted`
+   - `test_lines_added`, `test_lines_deleted`
+   - `net_added_lines`, `files_touched`
+   - `public_items_added`, `public_items_removed`
+8. If `net_added_lines > 0`, complete a compression pass and justify remaining net growth.
 
 If you cannot identify the governing MLS/spec section for a semantic change,
 stop and read more before coding.
@@ -128,6 +134,30 @@ These rules come primarily from `SPEC_0021` and `SPEC_0025`.
 - Do not use `include!(...)` as a complexity or file-size escape hatch.
 - Use clear names, explicit comments for non-obvious logic, and modules with
   single responsibilities.
+- Require deletion/merge pass after each substantial feature:
+  - remove duplicated helper layers,
+  - collapse unnecessary abstractions,
+  - delete speculative compatibility code,
+  - remove one-use wrappers unless they materially improve correctness.
+
+### 0. Code Size Policy
+
+- Every PR should state explicit line deltas and whether net `production +
+  tests` line count is positive, zero, or negative.
+- Positive net growth requires a written explanation for each new abstraction and
+  each file/class added.
+- Prefer fewer modules and fewer exports when alternatives are equivalent.
+- Do not add traits for single concrete uses; require at least two current call
+  sites.
+- Avoid one-use wrappers unless they materially improve correctness or avoid
+  repeated bug-prone code.
+- Prefer inlining or collapsing if only one caller uses a new helper layer.
+- If a new abstraction is not used by at least two concrete call sites,
+  prefer direct implementation.
+- New public surface must be minimal; remove or narrow visibility when no
+  downstream consumer requires it.
+- Keep old and new paths separate only when an explicit migration window is
+  planned and documented.
 
 ## Testing And Verification
 
@@ -137,7 +167,7 @@ the required project gates from `SPEC_0025`.
 Standard checks:
 
 ```bash
-cargo run --bin rum -- ci-parity
+cargo run --bin rum -- verify msl-parity
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```
@@ -181,3 +211,5 @@ Do not say a compiler change is done unless:
 - architecture boundaries remain intact,
 - tests cover the changed behavior,
 - required verification commands were run or an explicit blocker was stated.
+- PR size budget was reviewed and any positive LOC delta is justified, with a
+  deletion/compression plan when no immediate reduction is possible.

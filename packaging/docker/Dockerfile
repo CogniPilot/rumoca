@@ -105,14 +105,31 @@ ENV CARGO_HOME=${CARGO_HOME} \
     PYO3_PYTHON=${PYTHON_VENV}/bin/python \
     RUSTUP_HOME=${RUSTUP_HOME}
 
+# VS Code desktop extension smoke runs under Electron, so the dev image needs a
+# virtual X server plus the usual Linux desktop runtime libraries even in
+# otherwise headless CI/devcontainer environments.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         clang \
         libclang-dev \
+        libasound2t64 \
+        libatk-bridge2.0-0 \
+        libdrm2 \
+        libgbm1 \
+        libgtk-3-0 \
+        libnss3 \
+        libx11-xcb1 \
+        libxcb-dri3-0 \
+        libxss1 \
+        libxshmfence1 \
+        libxtst6 \
+        xauth \
+        xvfb \
         lld \
         pkg-config \
         python3-dev \
+        zip \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
 

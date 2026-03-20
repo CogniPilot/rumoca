@@ -1,14 +1,16 @@
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use rumoca_ir_ast::StoredDefinition;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::instrumentation::record_library_cache_result;
 use crate::package_layout::{collect_library_source_files, validate_library_package_layout};
-use crate::parse::parse_files_parallel;
+use crate::parsed_artifact_cache::{
+    parse_file_with_precomputed_hash_status, resolve_parsed_artifact_cache_dir_from_root,
+};
 
 const LIBRARY_CACHE_SCHEMA_VERSION: u32 = 1;
 
@@ -26,21 +28,31 @@ pub struct ParsedLibrary {
     pub cache_status: LibraryCacheStatus,
     pub cache_key: String,
     pub cache_file: Option<PathBuf>,
+    pub timing: LibraryCacheTiming,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CachedLibraryFile {
-    uri: String,
-    definition: StoredDefinition,
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LibraryCacheTiming {
+    pub collect_files_ms: u64,
+    pub hash_inputs_ms: u64,
+    pub cache_lookup_ms: u64,
+    pub cache_deserialize_ms: u64,
+    pub parse_files_ms: u64,
+    pub validate_layout_ms: u64,
+    pub cache_write_ms: u64,
+    pub total_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CachedLibraryPayload {
-    schema_version: u32,
-    compiler_version: String,
+#[derive(Debug, Clone)]
+struct HashedLibraryFile {
+    path: PathBuf,
+    source_hash: String,
+}
+
+#[derive(Debug, Clone)]
+struct LibraryInputHash {
     cache_key: String,
-    source_path: String,
-    files: Vec<CachedLibraryFile>,
+    files: Vec<HashedLibraryFile>,
 }
 
 fn env_flag_is_truthy(var: &str) -> bool {
@@ -148,7 +160,7 @@ fn compiler_source_fingerprint() -> Option<String> {
     Some(hasher.finalize().to_hex().to_string())
 }
 
-fn cache_compiler_version() -> String {
+pub(crate) fn cache_compiler_version() -> String {
     static CACHED: OnceLock<String> = OnceLock::new();
 
     if let Some(explicit) = std::env::var_os("RUMOCA_LIBRARY_CACHE_COMPILER_FINGERPRINT") {
@@ -206,28 +218,37 @@ fn collect_modelica_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     collect_library_source_files(path).map_err(|err| std::io::Error::other(err.to_string()))
 }
 
-fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<String> {
+fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<LibraryInputHash> {
     let canonical_root = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut dirs = Vec::new();
     if path.is_dir() {
         recursive_collect_dirs(path, &mut dirs)?;
         dirs.sort();
     }
-    let mut entries: Vec<(String, u64, [u8; 32])> = files
+    let mut entries: Vec<(PathBuf, String, u64, [u8; 32])> = files
         .par_iter()
-        .map(|file| -> std::io::Result<(String, u64, [u8; 32])> {
-            let canonical_file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-            let rel = canonical_file
-                .strip_prefix(&canonical_root)
-                .unwrap_or(&canonical_file)
-                .to_string_lossy()
-                .to_string();
-            let bytes = fs::read(file)?;
-            let digest = *blake3::hash(&bytes).as_bytes();
-            Ok((rel, bytes.len() as u64, digest))
-        })
+        .map(
+            |file| -> std::io::Result<(PathBuf, String, u64, [u8; 32])> {
+                let canonical_file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+                let rel = canonical_file
+                    .strip_prefix(&canonical_root)
+                    .unwrap_or(&canonical_file)
+                    .to_string_lossy()
+                    .to_string();
+                let bytes = fs::read(file)?;
+                let digest = *blake3::hash(&bytes).as_bytes();
+                Ok((file.clone(), rel, bytes.len() as u64, digest))
+            },
+        )
         .collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let hashed_files = entries
+        .iter()
+        .map(|(path, _, _, digest)| HashedLibraryFile {
+            path: path.clone(),
+            source_hash: blake3::Hash::from(*digest).to_hex().to_string(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(format!("schema={}\n", LIBRARY_CACHE_SCHEMA_VERSION).as_bytes());
@@ -245,14 +266,17 @@ fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<String
         hasher.update(rel.as_bytes());
         hasher.update(b"\n");
     }
-    for (rel, size, digest) in entries {
+    for (_, rel, size, digest) in entries {
         hasher.update(rel.as_bytes());
         hasher.update(b"\n");
         hasher.update(&size.to_le_bytes());
         hasher.update(&digest);
     }
 
-    Ok(hasher.finalize().to_hex().to_string())
+    Ok(LibraryInputHash {
+        cache_key: hasher.finalize().to_hex().to_string(),
+        files: hashed_files,
+    })
 }
 
 fn absolutize_cache_path(path: PathBuf) -> PathBuf {
@@ -347,119 +371,92 @@ pub fn resolve_library_cache_dir() -> Option<PathBuf> {
     resolve_library_cache_dir_from_override(override_dir)
 }
 
-fn cache_file_path(cache_dir: &Path, cache_key: &str) -> PathBuf {
-    cache_dir.join(format!("{cache_key}.json"))
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis() as u64
 }
 
-fn try_read_cache(path: &Path, cache_key: &str) -> Option<Vec<(String, StoredDefinition)>> {
-    let text = fs::read_to_string(path).ok()?;
-    let mut deserializer = serde_json::Deserializer::from_str(&text);
-    deserializer.disable_recursion_limit();
-    let payload = CachedLibraryPayload::deserialize(&mut deserializer).ok()?;
-    if payload.schema_version != LIBRARY_CACHE_SCHEMA_VERSION {
-        return None;
-    }
-    if payload.compiler_version != cache_compiler_version() {
-        return None;
-    }
-    if payload.cache_key != cache_key {
-        return None;
-    }
-    Some(
-        payload
-            .files
-            .into_iter()
-            .map(|file| (file.uri, file.definition))
-            .collect(),
-    )
+fn usable_cache_dir(cache_dir: Option<PathBuf>) -> Option<PathBuf> {
+    let cache_dir = cache_dir?;
+    fs::create_dir_all(&cache_dir).ok()?;
+    Some(cache_dir)
 }
 
-fn write_cache(
-    path: &Path,
-    source_path: &Path,
-    cache_key: &str,
-    docs: &[(String, StoredDefinition)],
-) -> Result<()> {
-    let files = docs
-        .iter()
-        .map(|(uri, definition)| CachedLibraryFile {
-            uri: uri.clone(),
-            definition: definition.clone(),
+fn load_library_documents_from_artifact_cache(
+    files: &[HashedLibraryFile],
+    cache_dir: Option<&Path>,
+) -> Result<(Vec<(String, StoredDefinition)>, bool)> {
+    let docs = files
+        .par_iter()
+        .map(|file| {
+            parse_file_with_precomputed_hash_status(&file.path, &file.source_hash, cache_dir)
         })
-        .collect();
-
-    let payload = CachedLibraryPayload {
-        schema_version: LIBRARY_CACHE_SCHEMA_VERSION,
-        compiler_version: cache_compiler_version(),
-        cache_key: cache_key.to_string(),
-        source_path: source_path.to_string_lossy().to_string(),
-        files,
-    };
-    let text = serde_json::to_string(&payload).context("serialize library cache payload")?;
-    let tmp_path = path.with_extension(format!("{}.tmp", std::process::id()));
-    fs::write(&tmp_path, text).with_context(|| format!("write {}", tmp_path.display()))?;
-    if let Err(rename_err) = fs::rename(&tmp_path, path) {
-        fs::copy(&tmp_path, path)
-            .with_context(|| format!("copy {} -> {}", tmp_path.display(), path.display()))?;
-        let _ = fs::remove_file(&tmp_path);
-        if !path.is_file() {
-            return Err(rename_err).context("finalize library cache file");
-        }
-    }
-    Ok(())
+        .collect::<Result<Vec<_>>>()?;
+    let all_hits = docs.iter().all(|(_, _, status)| {
+        *status == crate::parsed_artifact_cache::ParsedArtifactCacheStatus::Hit
+    });
+    Ok((
+        docs.into_iter()
+            .map(|(uri, definition, _)| (uri, definition))
+            .collect(),
+        all_hits,
+    ))
 }
 
 pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Result<ParsedLibrary> {
+    let total_started = Instant::now();
+    let mut timing = LibraryCacheTiming::default();
+
+    let collect_started = Instant::now();
     let files = collect_modelica_files(path)
         .with_context(|| format!("collect .mo files under {}", path.display()))?;
-    let cache_key = hash_library_inputs(path, &files)
+    timing.collect_files_ms = elapsed_ms(collect_started);
+
+    let hash_started = Instant::now();
+    let input_hash = hash_library_inputs(path, &files)
         .with_context(|| format!("fingerprint {}", path.display()))?;
-
-    if let Some(cache_dir) = cache_dir
-        && fs::create_dir_all(cache_dir).is_ok()
-    {
-        let cache_file = cache_file_path(cache_dir, &cache_key);
-        if let Some(docs) = try_read_cache(&cache_file, &cache_key) {
-            validate_library_package_layout(path, &docs)?;
-            return Ok(ParsedLibrary {
-                documents: docs,
-                file_count: files.len(),
-                cache_status: LibraryCacheStatus::Hit,
-                cache_key,
-                cache_file: Some(cache_file),
-            });
+    timing.hash_inputs_ms = elapsed_ms(hash_started);
+    let parsed_artifact_cache_dir =
+        usable_cache_dir(resolve_parsed_artifact_cache_dir_from_root(cache_dir));
+    let load_started = Instant::now();
+    let (docs, all_hits) = load_library_documents_from_artifact_cache(
+        &input_hash.files,
+        parsed_artifact_cache_dir.as_deref(),
+    )
+    .with_context(|| format!("parse library files under {}", path.display()))?;
+    let load_ms = elapsed_ms(load_started);
+    if cache_dir.is_some() {
+        if all_hits {
+            timing.cache_deserialize_ms = load_ms;
+        } else {
+            timing.parse_files_ms = load_ms;
         }
-
-        let docs = parse_files_parallel(&files)
-            .with_context(|| format!("parse library files under {}", path.display()))?;
-        validate_library_package_layout(path, &docs)?;
-        if write_cache(&cache_file, path, &cache_key, &docs).is_ok() {
-            return Ok(ParsedLibrary {
-                documents: docs,
-                file_count: files.len(),
-                cache_status: LibraryCacheStatus::Miss,
-                cache_key,
-                cache_file: Some(cache_file),
-            });
-        }
-        return Ok(ParsedLibrary {
-            documents: docs,
-            file_count: files.len(),
-            cache_status: LibraryCacheStatus::Disabled,
-            cache_key,
-            cache_file: None,
-        });
+    } else {
+        timing.parse_files_ms = load_ms;
     }
-
-    let docs = parse_files_parallel(&files)
-        .with_context(|| format!("parse library files under {}", path.display()))?;
+    let validate_started = Instant::now();
     validate_library_package_layout(path, &docs)?;
+    timing.validate_layout_ms = elapsed_ms(validate_started);
+    let cache_status = match (parsed_artifact_cache_dir.is_some(), all_hits) {
+        (true, true) => LibraryCacheStatus::Hit,
+        (true, false) => LibraryCacheStatus::Miss,
+        (false, _) => LibraryCacheStatus::Disabled,
+    };
+    record_library_cache_result(
+        cache_status,
+        if cache_status == LibraryCacheStatus::Hit {
+            0
+        } else {
+            files.len()
+        },
+    );
+    timing.total_ms = elapsed_ms(total_started);
     Ok(ParsedLibrary {
         documents: docs,
         file_count: files.len(),
-        cache_status: LibraryCacheStatus::Disabled,
-        cache_key,
+        cache_status,
+        cache_key: input_hash.cache_key,
         cache_file: None,
+        timing,
     })
 }
 
@@ -471,6 +468,7 @@ pub fn parse_library_with_cache(path: &Path) -> Result<ParsedLibrary> {
 mod tests {
     use super::*;
     use crate::libraries::PackageLayoutError;
+    use crate::parse::parse_files_parallel_with_cache_statuses;
 
     #[test]
     fn library_cache_hits_after_first_parse() {
@@ -487,10 +485,27 @@ mod tests {
         let first = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("first parse");
         assert_eq!(first.cache_status, LibraryCacheStatus::Miss);
         assert_eq!(first.file_count, 1);
+        assert!(
+            first.timing.total_ms
+                >= first.timing.collect_files_ms
+                    + first.timing.hash_inputs_ms
+                    + first.timing.parse_files_ms
+                    + first.timing.validate_layout_ms
+                    + first.timing.cache_write_ms
+        );
 
         let second = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("second parse");
         assert_eq!(second.cache_status, LibraryCacheStatus::Hit);
         assert_eq!(second.file_count, 1);
+        assert!(
+            second.timing.total_ms
+                >= second.timing.collect_files_ms
+                    + second.timing.hash_inputs_ms
+                    + second.timing.cache_lookup_ms
+                    + second.timing.cache_deserialize_ms
+                    + second.timing.validate_layout_ms
+        );
+        assert!(second.cache_file.is_none());
     }
 
     #[test]
@@ -621,5 +636,50 @@ mod tests {
             .downcast_ref::<PackageLayoutError>()
             .expect("package layout error type must be preserved");
         assert_eq!(layout.diagnostics()[0].code.as_deref(), Some("PKG-009"));
+    }
+
+    #[test]
+    fn library_miss_reuses_unchanged_parsed_file_artifacts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lib_dir = temp.path().join("Lib");
+        let cache_dir = temp.path().join("cache");
+        std::fs::create_dir_all(&lib_dir).expect("mkdir");
+        std::fs::write(
+            lib_dir.join("package.mo"),
+            "package Lib\n  model A\n    Real x;\n  end A;\nend Lib;",
+        )
+        .expect("write package");
+        std::fs::write(
+            lib_dir.join("B.mo"),
+            "within Lib;\nmodel B\n  Real y;\nend B;",
+        )
+        .expect("write B");
+
+        let first = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("first parse");
+        assert_eq!(first.cache_status, LibraryCacheStatus::Miss);
+
+        std::fs::write(
+            lib_dir.join("B.mo"),
+            "within Lib;\nmodel B\n  Real y;\n  Real z;\nend B;",
+        )
+        .expect("update B");
+        let parsed_artifact_cache_dir =
+            resolve_parsed_artifact_cache_dir_from_root(Some(&cache_dir))
+                .expect("parsed artifact cache dir");
+        let files = [lib_dir.join("package.mo"), lib_dir.join("B.mo")];
+        let statuses =
+            parse_files_parallel_with_cache_statuses(&files, Some(&parsed_artifact_cache_dir))
+                .expect("parse with statuses");
+        assert_eq!(
+            statuses
+                .iter()
+                .map(|(_, _, status)| *status)
+                .collect::<Vec<_>>(),
+            vec![
+                crate::parsed_artifact_cache::ParsedArtifactCacheStatus::Hit,
+                crate::parsed_artifact_cache::ParsedArtifactCacheStatus::Miss
+            ],
+            "the changed library file should be reparsed while unchanged files reuse cached ASTs"
+        );
     }
 }

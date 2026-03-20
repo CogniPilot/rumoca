@@ -40,11 +40,15 @@
 //! ```
 
 mod experiment;
+mod instrumentation;
+#[cfg(test)]
+mod instrumentation_tests;
 mod library;
 mod library_cache;
 mod merge;
 mod package_layout;
 mod parse;
+mod parsed_artifact_cache;
 mod project_config;
 mod runtime_api;
 mod session;
@@ -65,8 +69,8 @@ pub mod libraries {
         source_contains_identifier,
     };
     pub use crate::library_cache::{
-        LibraryCacheStatus, ParsedLibrary, parse_library_with_cache, parse_library_with_cache_in,
-        resolve_library_cache_dir,
+        LibraryCacheStatus, LibraryCacheTiming, ParsedLibrary, parse_library_with_cache,
+        parse_library_with_cache_in, resolve_library_cache_dir,
     };
     pub use crate::package_layout::PackageLayoutError;
 }
@@ -99,7 +103,7 @@ pub mod project {
         PlotConfig, PlotDefaults, PlotModelConfig, PlotViewConfig, ProjectConfig,
         ProjectConfigFile, ProjectFileMoveHint, ProjectGcCandidate, ProjectGcReport, ProjectMeta,
         ProjectResyncRemap, ProjectResyncReport, ProjectSimulationSnapshot, SimulationConfig,
-        SimulationDefaults, SimulationModelOverride, Viewer3dConfig, clear_model_simulation_preset,
+        SimulationDefaults, SimulationModelOverride, clear_model_simulation_preset,
         gc_orphan_model_sidecars, load_last_simulation_result_for_model, load_plot_views_for_model,
         load_simulation_run, load_simulation_snapshot_for_model, resync_model_sidecars,
         resync_model_sidecars_with_known_models, resync_model_sidecars_with_move_hints,
@@ -120,12 +124,18 @@ pub mod compile {
     pub use rumoca_ir_dae::Dae;
     pub use rumoca_ir_flat::Model as FlatModel;
 
+    pub use crate::instrumentation::{
+        SessionCacheStatsSnapshot, reset_session_cache_stats, session_cache_stats,
+    };
     pub use crate::session::{
-        CompilationMode, CompilationResult, CompilationSummary, CompilePhaseTimingSnapshot,
-        CompilePhaseTimingStat, CompiledLibrary, Document, FailedPhase, IndexingMode,
-        IndexingReport, ModelDiagnostics, ModelFailureDiagnostic, PhaseResult, Session,
-        SessionConfig, StrictCompileReport, compile_phase_timing_stats,
-        reset_compile_phase_timing_stats,
+        ClassLocalCompletionItem, ClassLocalCompletionKind, CompilationMode, CompilationResult,
+        CompilationSummary, CompilePhaseTimingSnapshot, CompilePhaseTimingStat, CompiledLibrary,
+        DaeCompilationResult, Document, DocumentSymbol, DocumentSymbolKind, FailedPhase,
+        IndexingMode, IndexingReport, LocalComponentInfo, ModelDiagnostics, ModelFailureDiagnostic,
+        NavigationClassTargetInfo, PhaseResult, SemanticDiagnosticsMode, Session, SessionChange,
+        SessionConfig, SessionSnapshot, SourceRootDurability, SourceRootKind, StrictCompileReport,
+        WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
+        compile_phase_timing_stats, reset_compile_phase_timing_stats,
     };
 }
 

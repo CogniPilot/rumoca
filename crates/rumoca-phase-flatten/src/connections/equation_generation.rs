@@ -32,7 +32,7 @@ fn resolve_flow_var_scalar_count(flat: &flat::Model, var: &flat::VarName) -> Opt
 }
 
 pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
-    let parts = parse_path_with_indices(path);
+    let parts = split_path_with_indices(path);
     if !parts.iter().any(|p| p.contains('[')) {
         return None;
     }
@@ -239,7 +239,7 @@ pub(crate) fn connection_involves_disabled(
 
     // Check if any prefix of the connection path matches a disabled component
     for disabled in disabled_components {
-        let disabled_parts = parse_path_with_indices(disabled);
+        let disabled_parts = split_path_with_indices(disabled);
 
         // Check if 'a' starts with this disabled component
         if a_parts.len() >= disabled_parts.len()

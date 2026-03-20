@@ -110,3 +110,36 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
     assert!(dae.states.contains_key(&VarName::new("x")));
     assert!(dae.states.contains_key(&VarName::new("v")));
 }
+
+#[test]
+fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_closure() {
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x"), Variable::new(VarName::new("x")));
+    dae.states
+        .insert(VarName::new("y"), Variable::new(VarName::new("y")));
+    dae.algebraics
+        .insert(VarName::new("p"), Variable::new(VarName::new("p")));
+    dae.algebraics
+        .insert(VarName::new("n"), Variable::new(VarName::new("n")));
+    dae.algebraics
+        .insert(VarName::new("z"), Variable::new(VarName::new("z")));
+
+    // MLS Appendix B / SPEC_0003: variables that appear differentiated remain
+    // states. A direct-assignment candidate is not a dummy trajectory when its
+    // non-state alias closure depends on another state.
+    dae.f_x.push(eq(sub(der("x"), var("z"))));
+    dae.f_x.push(eq(sub(der("y"), int(1))));
+    dae.f_x.push(eq(sub(var("x"), sub(var("p"), var("n")))));
+    dae.f_x.push(eq(sub(var("p"), var("y"))));
+    dae.f_x.push(eq(sub(var("n"), int(0))));
+    dae.f_x.push(eq(sub(var("z"), int(1))));
+
+    let demoted = demote_direct_assigned_states(&mut dae);
+    assert_eq!(
+        demoted, 0,
+        "state demotion must reject alias closures that resolve through another state"
+    );
+    assert!(dae.states.contains_key(&VarName::new("x")));
+    assert!(dae.states.contains_key(&VarName::new("y")));
+}
