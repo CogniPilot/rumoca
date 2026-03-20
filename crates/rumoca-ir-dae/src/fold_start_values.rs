@@ -45,11 +45,11 @@ pub fn fold_start_values_to_literals(dae: &mut Dae) {
             if values.contains_key(name.as_str()) {
                 continue;
             }
-            if let Some(val) = eval_const_expr(expr, &values) {
-                if val.is_finite() {
-                    values.insert(name.to_string(), val);
-                    changed = true;
-                }
+            if let Some(val) = eval_const_expr(expr, &values)
+                && val.is_finite()
+            {
+                values.insert(name.to_string(), val);
+                changed = true;
             }
         }
         if !changed {
@@ -62,11 +62,12 @@ pub fn fold_start_values_to_literals(dae: &mut Dae) {
     let rewrite = |var: &mut Variable| {
         if let Some(ref start) = var.start {
             // Check for self-reference: start = VarRef(own_name)
-            if let Expression::VarRef { name, subscripts } = start {
-                if subscripts.is_empty() && name.as_str() == var.name.as_str() {
-                    var.start = None;
-                    return;
-                }
+            if let Expression::VarRef { name, subscripts } = start
+                && subscripts.is_empty()
+                && name.as_str() == var.name.as_str()
+            {
+                var.start = None;
+                return;
             }
             if let Some(&val) = values.get(var.name.as_str()) {
                 var.start = Some(Expression::Literal(Literal::Real(val)));
