@@ -11,7 +11,7 @@ pub(crate) struct CompletionsArgs {
     pub(crate) shell: ShellKind,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ShellKind {
     Bash,
     Zsh,

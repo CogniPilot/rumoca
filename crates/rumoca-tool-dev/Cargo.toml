@@ -20,6 +20,7 @@ path = "src/bin/rumoca-traversal-policy-check.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+bincode = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 mimalloc = { workspace = true }
@@ -27,6 +28,7 @@ rumoca-session = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
+lsp-types = { workspace = true }
 dirs = "5.0"
 flate2 = "1.0"
 rayon = { workspace = true }
@@ -35,6 +37,7 @@ tempfile = { workspace = true }
 ureq = "2.9"
 walkdir = "2.5"
 syn = { version = "2.0", features = ["full", "visit"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

@@ -164,38 +164,97 @@ jobs:
       - name: Run template runtime checks
         run: cargo run --quiet --bin rum -- verify template-runtimes
 
-  docker-ci-smoke:
-    name: Docker CI Image Smoke
-    # Temporary disable while the Docker image smoke path is being stabilized.
-    if: ${{ false }}
-    runs-on: ubuntu-latest
+  editor-msl-smoke:
+    name: Full-MSL LSP/Editor Gate
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      RUMOCA_MSL_CACHE_DIR: target/msl
+      RUMOCA_REQUIRE_EDITOR_RUNTIMES: "1"
     steps:
       - uses: actions/checkout@v5
         with:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install Rust nightly with rust-src
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustup target add wasm32-unknown-unknown
+          rustup component add rust-src
 
-      - name: Build packaged CI image
-        uses: docker/build-push-action@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
         with:
-          context: .
-          file: packaging/docker/Dockerfile
-          target: ci
-          tags: rumoca-ci:test
-          load: true
-          cache-from: type=gha,scope=rumoca-docker-ci
-          cache-to: type=gha,mode=min,scope=rumoca-docker-ci
+          node-version: '20'
 
-      - name: Run packaged CI smoke
+      - name: Install Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth
+
+      - name: Select headless browser
         shell: bash
         run: |
-          RUMOCA_DOCKER_SKIP_BUILD=1 \
-          RUMOCA_CI_IMAGE=rumoca-ci:test \
-          bash packaging/docker/smoke/ci.sh
+          set -euo pipefail
+          if command -v google-chrome >/dev/null 2>&1; then
+            browser=google-chrome
+          elif command -v chromium >/dev/null 2>&1; then
+            browser=chromium
+          elif command -v chromium-browser >/dev/null 2>&1; then
+            browser=chromium-browser
+          else
+            echo "::error::Missing Chrome/Chromium for headless WASM smoke."
+            exit 1
+          fi
+          echo "RUMOCA_BROWSER_BINARY=$browser" >> "$GITHUB_ENV"
+          "$browser" --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-editor-msl-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache MSL
+        uses: actions/cache@v4
+        id: msl-cache-editor
+        with:
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Ensure MSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            echo "MSL cache is valid at $msl_dir"
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+          test -f "$msl_dir/Complex.mo"
+          test -f "$msl_dir/Modelica 4.1.0/package.mo"
+
+      - name: Run unified full-MSL LSP/editor gate
+        run: cargo run --quiet --bin rum -- verify lsp-msl-completion-timings
+
+      - name: Upload full-MSL LSP/editor report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: lsp-msl-benchmark-report
+          path: target/lsp-msl-benchmark
+          if-no-files-found: warn
 
   coverage-gate:
     name: Coverage Gate
@@ -345,7 +404,7 @@ jobs:
         run: cargo run --quiet --bin rum -- verify docs
 
       - name: Upload documentation
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: documentation
           path: target/doc/
@@ -368,7 +427,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
@@ -404,7 +463,7 @@ jobs:
           rustup component add rust-src
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
@@ -444,7 +503,7 @@ jobs:
           find gh-pages -type f
 
       - name: Upload WASM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wasm-package
           path: pkg/
@@ -577,13 +636,13 @@ jobs:
           strip target/${{ matrix.target }}/release/rumoca-lsp
 
       - name: Upload rumoca binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.rumoca_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
 
       - name: Upload LSP binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.lsp_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
@@ -612,7 +671,7 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -640,7 +699,7 @@ jobs:
           fi
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.name }}
           path: crates/rumoca-bind-python/dist
@@ -654,7 +713,7 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -672,7 +731,7 @@ jobs:
           maturin sdist --out dist
 
       - name: Upload sdist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-sdist
           path: crates/rumoca-bind-python/dist
@@ -716,12 +775,12 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
       - name: Setup Node.js for VSIX packaging
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
@@ -843,7 +902,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload release bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-assets
           path: release-assets/
@@ -887,7 +946,7 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
           OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 

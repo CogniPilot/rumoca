@@ -24,9 +24,10 @@ pub(super) fn log_simulation_run_configuration(run_simulation: bool) {
         return;
     }
     println!(
-        "Per-model attempt timeout (compile+simulation): {}s",
+        "Per-model compile budget: {}s",
         model_attempt_timeout_secs()
     );
+    println!("Per-model simulation timeout: {}s", sim_timeout_secs());
     if let Some(stop_time_override) = simulation_stop_time_override() {
         println!(
             "Simulation horizon mode: override stopTime={} via RUMOCA_MSL_SIM_STOP_TIME_OVERRIDE",
@@ -71,19 +72,32 @@ pub(super) fn select_compile_models_for_run(
     }
 }
 
-fn compile_batch_size_from_override(run_simulation: bool, override_value: Option<&str>) -> usize {
+fn default_simulation_compile_batch_size(compile_count: usize) -> usize {
+    compile_count.max(1)
+}
+
+fn compile_batch_size_from_override(
+    run_simulation: bool,
+    override_value: Option<&str>,
+    simulation_default_batch_size: usize,
+) -> usize {
     override_value
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .filter(|size| *size > 0)
-        .unwrap_or(if run_simulation { 1 } else { 24 })
+        .unwrap_or(if run_simulation {
+            simulation_default_batch_size.max(1)
+        } else {
+            24
+        })
 }
 
-pub(super) fn compile_batch_size(run_simulation: bool) -> usize {
+pub(super) fn compile_batch_size(run_simulation: bool, compile_count: usize) -> usize {
     compile_batch_size_from_override(
         run_simulation,
         std::env::var("RUMOCA_MSL_COMPILE_BATCH_SIZE")
             .ok()
             .as_deref(),
+        default_simulation_compile_batch_size(compile_count),
     )
 }
 
@@ -100,8 +114,17 @@ fn slow_compile_log_threshold_secs() -> Option<f64> {
     )
 }
 
+fn effective_compile_chunk_batch_size_with_default(
+    run_simulation: bool,
+    compile_count: usize,
+    simulation_default_batch_size: usize,
+) -> usize {
+    compile_batch_size_from_override(run_simulation, None, simulation_default_batch_size)
+        .min(compile_count.max(1))
+}
+
 fn effective_compile_chunk_batch_size(run_simulation: bool, compile_count: usize) -> usize {
-    compile_batch_size(run_simulation).min(compile_count.max(1))
+    compile_batch_size(run_simulation, compile_count).min(compile_count.max(1))
 }
 
 fn delta_compile_timing_stat(
@@ -173,6 +196,9 @@ struct ChunkedCompileRenderOutput {
     model_results: Vec<MslModelResult>,
     compile_only_seconds: f64,
     render_and_write_seconds: f64,
+    batch_size: usize,
+    chunk_count: usize,
+    worker_threads: usize,
 }
 
 struct ParsedMslBatch {
@@ -252,11 +278,17 @@ fn finalize_compile_entry(
                 budget_secs,
             )),
             remaining_budget_secs: None,
+            compile_seconds: elapsed_secs,
         };
     }
 
     let remaining_budget_secs = if compile_outcome.is_success() {
-        Some((budget_secs - elapsed_secs).max(0.0))
+        // Keep the compile budget and simulation timeout independent. Once
+        // compile finishes within budget, the sim worker should still receive
+        // the nominal solver timeout rather than "10s minus compile time",
+        // otherwise near-threshold models regress due to compile overhead
+        // instead of simulation behavior.
+        Some(budget_secs)
     } else {
         None
     };
@@ -264,6 +296,7 @@ fn finalize_compile_entry(
         model_name: model_name.to_string(),
         compile_outcome,
         remaining_budget_secs,
+        compile_seconds: elapsed_secs,
     }
 }
 
@@ -388,13 +421,15 @@ fn finalize_simulation_into_model_result(
 fn prepare_successful_streaming_entry(
     model_name: String,
     result: rumoca_session::compile::CompilationResult,
+    compile_seconds: f64,
     remaining_budget_secs: Option<f64>,
     ctx: &RenderSimContext<'_>,
 ) -> StreamingPreparedEntry {
     maybe_dump_model_introspection(&model_name, &result, ctx);
     maybe_render_model_outputs(&model_name, &result, ctx);
 
-    let model_result = summarize_success_result(model_name.clone(), &result);
+    let mut model_result = summarize_success_result(model_name.clone(), &result);
+    model_result.compile_seconds = Some(compile_seconds);
     let should_simulate = ctx.run_simulation
         && !result.dae.is_partial
         && is_root_standalone_msl_example_model(&model_name, &result)
@@ -404,30 +439,31 @@ fn prepare_successful_streaming_entry(
     }
 
     ctx.sim_attempted.fetch_add(1, Ordering::Relaxed);
-    let mut settings = simulation_settings_from_result(&result);
-    if let Some(budget_secs) = remaining_budget_secs {
-        if budget_secs <= 0.0 {
-            let timeout_result = MslSimModelResult {
-                name: model_name,
-                status: SimStatus::Timeout,
-                error: Some(
-                    "model attempt timeout exhausted before simulation could start".to_string(),
-                ),
-                n_states: Some(result.dae.states.len()),
-                n_algebraics: Some(result.dae.algebraics.len()),
-                sim_seconds: Some(0.0),
-                sim_wall_seconds: Some(0.0),
-                sim_trace_file: None,
-                sim_trace_error: None,
-            };
-            return StreamingPreparedEntry::Final(Box::new(finalize_simulation_into_model_result(
-                model_result,
-                timeout_result,
-                ctx,
-            )));
-        }
-        settings.timeout_seconds = Some(budget_secs);
-    }
+    let settings =
+        match gate_simulation_settings_by_compile_budget(
+            simulation_settings_from_result(&result),
+            remaining_budget_secs,
+        ) {
+            Ok(settings) => settings,
+            Err(_) => {
+                let timeout_result = MslSimModelResult {
+                    name: model_name,
+                    status: SimStatus::Timeout,
+                    error: Some(
+                        "model attempt timeout exhausted before simulation could start".to_string(),
+                    ),
+                    n_states: Some(result.dae.states.len()),
+                    n_algebraics: Some(result.dae.algebraics.len()),
+                    sim_seconds: Some(0.0),
+                    sim_wall_seconds: Some(0.0),
+                    sim_trace_file: None,
+                    sim_trace_error: None,
+                };
+                return StreamingPreparedEntry::Final(Box::new(
+                    finalize_simulation_into_model_result(model_result, timeout_result, ctx),
+                ));
+            }
+        };
 
     let n_states = result.dae.states.len();
     let n_algebraics = result.dae.algebraics.len();
@@ -459,14 +495,23 @@ fn prepare_streaming_compile_result_entry(
         model_name,
         compile_outcome,
         remaining_budget_secs,
+        compile_seconds,
     } = entry;
 
     match compile_outcome {
         ModelCompileOutcome::Phase(PhaseResult::Success(result)) => {
-            prepare_successful_streaming_entry(model_name, *result, remaining_budget_secs, ctx)
+            prepare_successful_streaming_entry(
+                model_name,
+                *result,
+                compile_seconds,
+                remaining_budget_secs,
+                ctx,
+            )
         }
         ModelCompileOutcome::Phase(phase_result) => {
-            StreamingPreparedEntry::Final(Box::new(convert_phase_result(model_name, phase_result)))
+            let mut model_result = convert_phase_result(model_name, phase_result);
+            model_result.compile_seconds = Some(compile_seconds);
+            StreamingPreparedEntry::Final(Box::new(model_result))
         }
         ModelCompileOutcome::StrictReport(report) => {
             let requested_success = report.failures.is_empty()
@@ -479,12 +524,18 @@ fn prepare_streaming_compile_result_entry(
                     Some(PhaseResult::Success(result)) => result,
                     _ => unreachable!("requested_success implies success result"),
                 };
-                prepare_successful_streaming_entry(model_name, *result, remaining_budget_secs, ctx)
-            } else {
-                StreamingPreparedEntry::Final(Box::new(convert_compile_outcome(
+                prepare_successful_streaming_entry(
                     model_name,
-                    ModelCompileOutcome::StrictReport(report),
-                )))
+                    *result,
+                    compile_seconds,
+                    remaining_budget_secs,
+                    ctx,
+                )
+            } else {
+                let mut model_result =
+                    convert_compile_outcome(model_name, ModelCompileOutcome::StrictReport(report));
+                model_result.compile_seconds = Some(compile_seconds);
+                StreamingPreparedEntry::Final(Box::new(model_result))
             }
         }
     }
@@ -624,6 +675,9 @@ fn run_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
     context: &RenderSimContext<'_>,
     plan: StreamingChunkPlan<'_>,
 ) -> StreamingChunkOutput {
+    if plan.names_chunk.len() > 1 {
+        return run_parallel_simulation_chunk(library, context, plan);
+    }
     let StreamingChunkPlan {
         names_chunk,
         simulation_threads,
@@ -649,6 +703,66 @@ fn run_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
             log_parallelism,
         },
     )
+}
+
+fn run_parallel_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
+    library: &std::sync::Arc<T>,
+    context: &RenderSimContext<'_>,
+    plan: StreamingChunkPlan<'_>,
+) -> StreamingChunkOutput {
+    let StreamingChunkPlan {
+        names_chunk,
+        simulation_threads,
+        model_budget_secs,
+        chunk_idx,
+        chunk_count,
+        log_parallelism,
+    } = plan;
+    let chunk_models_for_log = names_chunk.len();
+    let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);
+    let compile_progress_logger = std::thread::spawn(move || {
+        run_compile_chunk_progress_loop(
+            compile_in_flight_flag,
+            chunk_idx,
+            chunk_count,
+            chunk_models_for_log,
+        );
+    });
+
+    let chunk_compile_start = Instant::now();
+    let chunk_results = {
+        let _compile_watchdog = StageAbortWatchdog::new(
+            format!("compile chunk {chunk_idx}/{chunk_count}"),
+            "RUMOCA_MSL_STAGE_TIMEOUT_COMPILE_CHUNK_SECS",
+            300,
+        );
+        compile_chunk_with_model_budgets(
+            library,
+            names_chunk,
+            simulation_threads,
+            model_budget_secs,
+        )
+    };
+    compile_in_flight.store(false, Ordering::Relaxed);
+    let _ = compile_progress_logger.join();
+    let compile_seconds = chunk_compile_start.elapsed().as_secs_f64();
+
+    let render_start = Instant::now();
+    let model_results = collect_render_sim_results(
+        chunk_results,
+        true,
+        context,
+        simulation_threads,
+        log_parallelism,
+    );
+    let drain_seconds = render_start.elapsed().as_secs_f64();
+
+    StreamingChunkOutput {
+        model_results,
+        compile_seconds,
+        drain_seconds,
+    }
 }
 
 fn run_compile_only_chunk<T: FocusedClosureCompiler + Sync + Send>(
@@ -797,6 +911,9 @@ fn run_chunked_compile_and_render<T: FocusedClosureCompiler + Sync + Send>(
         model_results,
         compile_only_seconds,
         render_and_write_seconds,
+        batch_size,
+        chunk_count,
+        worker_threads,
     }
 }
 
@@ -936,6 +1053,9 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
 
     timings.compile_seconds = chunked_output.compile_only_seconds;
     timings.render_and_write_seconds = chunked_output.render_and_write_seconds;
+    timings.compile_batch_size = chunked_output.batch_size;
+    timings.compile_chunk_count = chunked_output.chunk_count;
+    timings.worker_threads = chunked_output.worker_threads;
     update_phase_timing_totals(&mut timings);
     timings.frontend_compile_seconds =
         timings.parse_seconds + timings.session_build_seconds + timings.compile_seconds;
@@ -967,7 +1087,9 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_session::compile::CompilationSummary;
+    use rumoca_ir_dae as dae;
+    use rumoca_ir_flat as flat;
+    use rumoca_session::compile::{CompilationResult, CompilationSummary};
     use std::sync::Mutex;
 
     struct FakeFocusedCompiler {
@@ -1067,6 +1189,26 @@ mod tests {
     }
 
     #[test]
+    fn finalize_compile_entry_preserves_full_sim_timeout_after_successful_compile() {
+        let entry = finalize_compile_entry(
+            "Modelica.Blocks.Examples.PID_Controller",
+            ModelCompileOutcome::Phase(PhaseResult::Success(Box::new(CompilationResult {
+                flat: flat::Model::default(),
+                dae: dae::Dae::default(),
+                experiment_start_time: None,
+                experiment_stop_time: None,
+                experiment_tolerance: None,
+                experiment_interval: None,
+                experiment_solver: None,
+            }))),
+            2.5,
+            10.0,
+        );
+
+        assert_eq!(entry.remaining_budget_secs, Some(10.0));
+    }
+
+    #[test]
     fn compile_model_with_budget_timeout_uses_focused_uncached_compile_path() {
         let compiler = std::sync::Arc::new(FakeFocusedCompiler {
             uncached_called: Mutex::new(Vec::new()),
@@ -1090,18 +1232,29 @@ mod tests {
     }
 
     #[test]
-    fn compile_batch_size_defaults_to_one_for_simulation_runs() {
-        assert_eq!(compile_batch_size_from_override(true, None), 1);
-        assert_eq!(compile_batch_size_from_override(false, None), 24);
-        assert_eq!(compile_batch_size_from_override(true, Some("4")), 4);
-        assert_eq!(compile_batch_size_from_override(false, Some("2")), 2);
+    fn simulation_compile_batch_size_defaults_to_full_scope() {
+        assert_eq!(default_simulation_compile_batch_size(8), 8);
+        assert_eq!(default_simulation_compile_batch_size(0), 1);
+        assert_eq!(compile_batch_size_from_override(true, None, 6), 6);
+        assert_eq!(compile_batch_size_from_override(false, None, 6), 24);
+        assert_eq!(compile_batch_size_from_override(true, Some("4"), 6), 4);
+        assert_eq!(compile_batch_size_from_override(false, Some("2"), 6), 2);
     }
 
     #[test]
-    fn effective_simulation_compile_batch_size_stays_focused() {
-        assert_eq!(effective_compile_chunk_batch_size(true, 8), 1);
-        assert_eq!(effective_compile_chunk_batch_size(true, 0), 1);
-        assert_eq!(effective_compile_chunk_batch_size(false, 8), 8);
+    fn effective_simulation_compile_batch_size_caps_to_compile_scope() {
+        assert_eq!(
+            effective_compile_chunk_batch_size_with_default(true, 8, 16),
+            8
+        );
+        assert_eq!(
+            effective_compile_chunk_batch_size_with_default(true, 0, 16),
+            1
+        );
+        assert_eq!(
+            effective_compile_chunk_batch_size_with_default(false, 8, 16),
+            8
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use rumoca_core::Span;
+use rumoca_core::{
+    Span, maybe_elapsed_seconds as trace_timer_elapsed_seconds,
+    maybe_start_timer_if as trace_timer_start_if,
+};
 use rumoca_eval_dae::runtime::{VarEnv, build_env, eval_expr};
 use rumoca_ir_core::{OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
@@ -370,26 +373,6 @@ pub fn compute_mass_matrix(
         );
     }
     Ok(mass_matrix)
-}
-
-#[inline]
-fn trace_timer_start_if(trace: bool) -> Option<std::time::Instant> {
-    if !trace {
-        return None;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Some(std::time::Instant::now())
-    }
-}
-
-#[inline]
-fn trace_timer_elapsed_seconds(start: Option<std::time::Instant>) -> f64 {
-    start.map_or(0.0, |t0| t0.elapsed().as_secs_f64())
 }
 
 fn build_pin_equation(name: &dae::VarName, sz: usize, idx: usize, start_val: f64) -> dae::Equation {

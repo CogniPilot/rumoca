@@ -20,6 +20,7 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
 [dependencies]
 # Internal crates - rumoca-session wraps all compilation phases
 rumoca-session = { workspace = true }
+rumoca-sim = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 

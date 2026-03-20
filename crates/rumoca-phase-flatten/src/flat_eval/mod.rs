@@ -16,7 +16,7 @@ use rumoca_core::{IntegerBinaryOperator, eval_integer_binary, eval_integer_div_b
 use rumoca_eval_flat::constant::{EvalContext, Value};
 use rumoca_ir_flat as flat;
 
-use crate::path_utils::{parent_scope, parse_path_with_indices};
+use crate::path_utils::{parent_scope, split_path_with_indices};
 
 // Conditional tracing support (SPEC_0024)
 #[cfg(feature = "tracing")]
@@ -350,7 +350,7 @@ fn resolve_varref_boolean(name_str: &str, ctx: &ParamEvalContext) -> Option<bool
         return Some(val);
     }
 
-    let segments = parse_path_with_indices(name_str);
+    let segments = split_path_with_indices(name_str);
     for suffix_start in 1..segments.len() {
         let candidate = segments[suffix_start..].join(".");
         if let Some(val) = ctx.known_bools.get(&candidate).copied() {
@@ -381,7 +381,7 @@ fn resolve_enum_value_with_context(
         return Some(enum_val);
     }
 
-    let segments = parse_path_with_indices(&name_str);
+    let segments = split_path_with_indices(&name_str);
     for suffix_start in 1..segments.len() {
         let candidate = segments[suffix_start..].join(".");
         if let Some(enum_val) = ctx.known_enums.get(&candidate) {
@@ -431,7 +431,7 @@ fn resolve_in_parent_scope(
 /// when the actual parameter is `data.m` at the top level.
 /// This function tries `data.m`, then `m` by stripping leading segments.
 fn resolve_by_suffix_stripping(name: &str, known_ints: &FxHashMap<String, i64>) -> Option<i64> {
-    let segments = parse_path_with_indices(name);
+    let segments = split_path_with_indices(name);
     for suffix_start in 1..segments.len() {
         let candidate = segments[suffix_start..].join(".");
         if let Some(val) = known_ints.get(&candidate).copied() {
@@ -496,7 +496,7 @@ fn resolve_varref_real(name_str: &str, ctx: &ParamEvalContext) -> Option<f64> {
         }
     }
 
-    let segments = parse_path_with_indices(name_str);
+    let segments = split_path_with_indices(name_str);
     for suffix_start in 1..segments.len() {
         let candidate = segments[suffix_start..].join(".");
         if let Some(val) = ctx.known_reals.get(&candidate).copied() {
@@ -1349,7 +1349,7 @@ pub(crate) fn try_eval_flat_expr_enum(
 /// plain dotted parameter refs (e.g. `pipe1.system.energyDynamics`), require at
 /// least one non-final path segment to be type-like (uppercase-initial).
 pub(crate) fn looks_like_enum_literal_path(path: &str) -> bool {
-    let parts = crate::path_utils::parse_path_with_indices(path);
+    let parts = crate::path_utils::split_path_with_indices(path);
     if parts.len() < 2 {
         return false;
     }
@@ -1446,7 +1446,7 @@ pub(crate) fn canonicalize_enum_literal(
     literal: &str,
     known_enums: &FxHashMap<String, String>,
 ) -> String {
-    let parts = crate::path_utils::parse_path_with_indices(literal);
+    let parts = crate::path_utils::split_path_with_indices(literal);
     if parts.len() < 2 {
         return literal.to_string();
     }
@@ -1465,7 +1465,7 @@ pub(crate) fn canonicalize_enum_literal(
                 continue;
             }
             let candidate = value.as_str();
-            let candidate_segments = crate::path_utils::parse_path_with_indices(candidate).len();
+            let candidate_segments = crate::path_utils::split_path_with_indices(candidate).len();
             if candidate_segments > best_segments {
                 best_match = Some(candidate);
                 best_segments = candidate_segments;

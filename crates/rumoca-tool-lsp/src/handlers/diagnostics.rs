@@ -2,6 +2,9 @@
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use rumoca_session::Session;
+use rumoca_session::compile::SemanticDiagnosticsMode;
+#[cfg(test)]
+use rumoca_session::compile::SourceRootKind;
 use rumoca_session::compile::core as rumoca_core;
 use rumoca_session::compile::core::{
     Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
@@ -23,6 +26,20 @@ pub fn compute_diagnostics(
     source: &str,
     file_name: &str,
     session: Option<&mut Session>,
+) -> Vec<Diagnostic> {
+    compute_diagnostics_with_mode(
+        source,
+        file_name,
+        session,
+        SemanticDiagnosticsMode::Standard,
+    )
+}
+
+pub(crate) fn compute_diagnostics_with_mode(
+    source: &str,
+    file_name: &str,
+    session: Option<&mut Session>,
+    mode: SemanticDiagnosticsMode,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -53,7 +70,7 @@ pub fn compute_diagnostics(
     session.update_document(file_name, source);
     let mut seen_keys = HashSet::new();
     for model_name in collect_diagnostic_target_names(&ast) {
-        let model_diags = session.compile_model_diagnostics(&model_name);
+        let model_diags = session.semantic_diagnostics_query(&model_name, mode);
         let source_map = model_diags.source_map.as_ref();
         let is_global_resolution_failure = model_diags.global_resolution_failure;
         for diag in model_diags.diagnostics {
@@ -1424,6 +1441,47 @@ end Ball;
             "expected unresolved type reference to map after import line, got import={:?}, type={:?}",
             unresolved_import.range,
             unresolved_type.range
+        );
+    }
+
+    #[test]
+    fn loaded_library_clears_import_and_type_reference_diagnostics() {
+        let lib = r#"
+package Modelica
+  package Blocks
+    package Continuous
+      model PID
+        parameter Real k = 1;
+      end PID;
+    end Continuous;
+  end Blocks;
+end Modelica;
+"#;
+        let source = r#"
+model Ball
+  import Modelica.Blocks.Continuous.PID;
+  PID pid();
+end Ball;
+"#;
+        let mut session = Session::default();
+        let parsed =
+            parse_source_to_ast_with_errors(lib, "Modelica/package.mo").expect("parse library");
+        let inserted = session.replace_parsed_source_set(
+            "library::Modelica",
+            SourceRootKind::DurableLibrary,
+            vec![("Modelica/package.mo".to_string(), parsed)],
+            None,
+        );
+        assert_eq!(inserted, 1, "library source-set should be inserted");
+
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.code == Some(NumberOrString::String("ER002".to_string()))
+                    && (d.message.contains("unresolved import")
+                        || d.message.contains("unresolved type reference"))
+            }),
+            "loaded library should clear import/type resolution diagnostics, got: {diagnostics:?}"
         );
     }
 

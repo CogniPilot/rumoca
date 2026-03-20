@@ -19,6 +19,7 @@ mod sections;
 use generated::modelica_grammar_trait;
 use parol_runtime::{Result, Token};
 use rumoca_core::{BytePos, Span};
+use rumoca_ir_ast as ast;
 use std::collections::HashSet;
 use std::fmt::{Display, Error, Formatter};
 use std::ops::Deref;
@@ -50,6 +51,102 @@ pub struct ParsedComment {
     pub column: u32,
     /// Whether this is a line comment (//) or block comment (/* */)
     pub is_line_comment: bool,
+}
+
+/// Recoverable per-file syntax artifact.
+///
+/// This is the parser-owned entry point for editor-safe work. During the
+/// migration away from direct AST ownership, the internal tree is still
+/// `ast::StoredDefinition`, but callers must treat this as syntax-layer data:
+/// parsing never fails here, and parse errors are carried alongside the file.
+#[derive(Debug, Clone)]
+pub struct SyntaxFile {
+    current: CurrentSyntaxTree,
+    fallback_parsed: Option<ast::StoredDefinition>,
+    parse_errors: Vec<ParseError>,
+    parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum CurrentSyntaxTree {
+    Parsed(ast::StoredDefinition),
+    Recovered(ast::StoredDefinition),
+}
+
+impl SyntaxFile {
+    pub fn from_parsed(parsed: ast::StoredDefinition) -> Self {
+        Self {
+            current: CurrentSyntaxTree::Parsed(parsed),
+            fallback_parsed: None,
+            parse_errors: Vec::new(),
+            parse_error: None,
+        }
+    }
+
+    pub fn from_recovered(
+        recovered: ast::StoredDefinition,
+        parse_errors: Vec<ParseError>,
+        parse_error: Option<String>,
+        fallback_parsed: Option<ast::StoredDefinition>,
+    ) -> Self {
+        Self {
+            current: CurrentSyntaxTree::Recovered(recovered),
+            fallback_parsed,
+            parse_errors,
+            parse_error,
+        }
+    }
+
+    pub fn parsed(&self) -> Option<&ast::StoredDefinition> {
+        match &self.current {
+            CurrentSyntaxTree::Parsed(parsed) => Some(parsed),
+            CurrentSyntaxTree::Recovered(_) => self.fallback_parsed.as_ref(),
+        }
+    }
+
+    pub fn recovered(&self) -> Option<&ast::StoredDefinition> {
+        match &self.current {
+            CurrentSyntaxTree::Parsed(_) => None,
+            CurrentSyntaxTree::Recovered(recovered) => Some(recovered),
+        }
+    }
+
+    pub fn best_effort(&self) -> &ast::StoredDefinition {
+        match &self.current {
+            CurrentSyntaxTree::Parsed(parsed) => parsed,
+            CurrentSyntaxTree::Recovered(recovered) => recovered,
+        }
+    }
+
+    pub fn parse_errors(&self) -> &[ParseError] {
+        &self.parse_errors
+    }
+
+    pub fn parse_error(&self) -> Option<&str> {
+        self.parse_error.as_deref()
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.parse_errors.is_empty()
+    }
+
+    pub fn with_fallback_parsed(mut self, fallback_parsed: Option<ast::StoredDefinition>) -> Self {
+        if matches!(self.current, CurrentSyntaxTree::Recovered(_)) {
+            self.fallback_parsed = fallback_parsed;
+        }
+        self
+    }
+
+    fn into_parsed_result(self) -> std::result::Result<ast::StoredDefinition, Vec<ParseError>> {
+        if self.has_errors() {
+            Err(self.parse_errors)
+        } else {
+            Ok(match self.current {
+                CurrentSyntaxTree::Parsed(parsed) => parsed,
+                CurrentSyntaxTree::Recovered(_) => unreachable!("clean syntax must be parsed"),
+            })
+        }
+    }
 }
 
 /// Parser-local terminal token type used by the generated grammar actions.
@@ -167,10 +264,7 @@ pub fn parse_string(source: &str, file_name: &str) -> anyhow::Result<()> {
 }
 
 /// Parse a Modelica source string and return the AST.
-pub fn parse_to_ast(
-    source: &str,
-    file_name: &str,
-) -> anyhow::Result<rumoca_ir_ast::StoredDefinition> {
+pub fn parse_to_ast(source: &str, file_name: &str) -> anyhow::Result<ast::StoredDefinition> {
     match parse_to_ast_with_errors(source, file_name) {
         Ok(ast) => Ok(ast),
         Err(parse_errors) => {
@@ -191,16 +285,44 @@ pub fn parse_to_ast(
 pub fn parse_to_ast_with_errors(
     source: &str,
     file_name: &str,
-) -> std::result::Result<rumoca_ir_ast::StoredDefinition, Vec<ParseError>> {
-    parse_to_ast_internal(source, file_name)
+) -> std::result::Result<ast::StoredDefinition, Vec<ParseError>> {
+    parse_to_syntax(source, file_name).into_parsed_result()
+}
+
+/// Parse a Modelica source string into a recoverable syntax artifact.
+///
+/// Architecture note, following rust-analyzer's syntax-layer rule: parsing at
+/// the syntax boundary never fails. Failures are carried in the returned value,
+/// alongside a best-effort recovered tree for editor-facing queries.
+pub fn parse_to_syntax(source: &str, file_name: &str) -> SyntaxFile {
+    match parse_once_to_ast(source, file_name) {
+        Ok(parsed) => SyntaxFile::from_parsed(parsed),
+        Err(initial_errors) => {
+            let parse_errors = collect_recovered_parse_errors(source, file_name, initial_errors);
+            let parse_error = Some(
+                parse_errors
+                    .iter()
+                    .map(|error| format_parse_error(error, file_name, source))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            );
+            SyntaxFile::from_recovered(
+                parse_to_recovered_ast(source, file_name),
+                parse_errors,
+                parse_error,
+                None,
+            )
+        }
+    }
 }
 
 const MAX_SEMICOLON_RECOVERY_PASSES: usize = 32;
 
+#[cfg(test)]
 fn parse_to_ast_internal(
     source: &str,
     file_name: &str,
-) -> std::result::Result<rumoca_ir_ast::StoredDefinition, Vec<ParseError>> {
+) -> std::result::Result<ast::StoredDefinition, Vec<ParseError>> {
     match parse_once_to_ast(source, file_name) {
         Ok(ast) => Ok(ast),
         Err(initial_errors) => Err(collect_recovered_parse_errors(
@@ -214,7 +336,7 @@ fn parse_to_ast_internal(
 fn parse_once_to_ast(
     source: &str,
     file_name: &str,
-) -> std::result::Result<rumoca_ir_ast::StoredDefinition, Vec<ParseError>> {
+) -> std::result::Result<ast::StoredDefinition, Vec<ParseError>> {
     let mut grammar = ModelicaGrammar::new();
     if let Err(parol_err) = generated::modelica_parser::parse(source, file_name, &mut grammar) {
         return Err(convert_parol_error(parol_err, source));

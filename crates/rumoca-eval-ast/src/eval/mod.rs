@@ -7,7 +7,7 @@
 
 use rumoca_core::{
     IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
-    eval_integer_div_builtin,
+    eval_integer_div_builtin, find_last_top_level_dot, has_top_level_dot, top_level_last_segment,
 };
 use rumoca_ir_ast::{
     ClassDef, ClassType, Expression, Statement, StatementBlock, Subscript, TerminalType,
@@ -16,7 +16,6 @@ use rumoca_ir_core::{Causality, OpBinary, OpUnary};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
-use crate::path_utils::{find_last_top_level_dot, has_top_level_dot, top_level_last_segment};
 pub use dimension_inference::{
     infer_dimensions_from_binding, infer_dimensions_from_binding_with_scope,
 };

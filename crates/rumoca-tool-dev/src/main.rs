@@ -2,6 +2,7 @@ mod completion_cmd;
 mod coverage_analysis;
 mod coverage_gate;
 mod crate_dag_cmd;
+mod lsp_benchmark_cmd;
 #[cfg(test)]
 mod main_tests;
 mod msl_flamegraph_cmd;
@@ -42,8 +43,8 @@ pub(crate) use msl_tools::common;
 #[derive(Debug, Parser)]
 #[command(name = "rum")]
 #[command(about = "Rumoca developer command")]
-#[command(disable_help_flag = true)]
-#[command(disable_version_flag = true)]
+#[command(version)]
+#[command(disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -63,8 +64,6 @@ enum Commands {
     Coverage(CoverageArgs),
     /// Repository maintenance, packaging, and release workflows
     Repo(RepoArgs),
-    /// Print the rum version
-    Ver,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -158,6 +157,9 @@ struct WasmEditArgs {
     /// Override serve port (default: PORT env or 8080)
     #[arg(long)]
     port: Option<u16>,
+    /// Serve existing WASM assets without rebuilding first
+    #[arg(long)]
+    skip_build: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -245,14 +247,16 @@ struct RepoArgs {
 enum RepoCommand {
     /// Install/update the rum CLI and shell completions
     Cli(RepoCliArgs),
+    /// Ubuntu/Debian helper commands for local developer prerequisites
+    Ubuntu(RepoUbuntuArgs),
     /// Repository git hook workflows
     Hooks(RepoHooksArgs),
     /// Workspace graphing utilities
     Graph(RepoGraphArgs),
     /// MSL/OMC reference, baseline, and parity-maintenance tooling
     Msl(RepoMslArgs),
-    /// Print shell completion scripts
-    Completions(CompletionsArgs),
+    /// Shell completion workflows
+    Completions(RepoCompletionsArgs),
     /// Release version bump, optional commit/tag/push
     Release(ReleaseArgs),
     /// Repository policy helpers
@@ -267,7 +271,7 @@ struct RepoCliArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 enum RepoCliCommand {
-    /// Install/update the rum binary with cargo install and configure shell completions
+    /// Install/update the rum launcher and configure shell completions
     Install(RepoCliInstallArgs),
 }
 
@@ -279,9 +283,49 @@ struct RepoCliInstallArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+struct RepoCompletionsArgs {
+    #[command(subcommand)]
+    command: RepoCompletionsCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoCompletionsCommand {
+    /// Print a shell completion script to stdout
+    Print(CompletionsArgs),
+    /// Install shell completions for the current or specified shell
+    Install(RepoCompletionsInstallArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoCompletionsInstallArgs {
+    /// Shell to install for; defaults to the current shell when omitted
+    #[arg(value_enum)]
+    shell: Option<completion_cmd::ShellKind>,
+}
+
+#[derive(Debug, Args, Clone)]
 struct RepoHooksArgs {
     #[command(subcommand)]
     command: RepoHooksCommand,
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoUbuntuArgs {
+    #[command(subcommand)]
+    command: RepoUbuntuCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum RepoUbuntuCommand {
+    /// Install headless VS Code smoke prerequisites (`xvfb`, `xauth`) via apt
+    InstallVscodeSmokePrereqs(RepoUbuntuInstallArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct RepoUbuntuInstallArgs {
+    /// Skip `apt-get update` before installing packages
+    #[arg(long)]
+    no_update: bool,
 }
 
 #[derive(Debug, Subcommand, Clone)]
@@ -347,10 +391,6 @@ fn main() -> Result<()> {
         Commands::Python(args) => cmd_python(args),
         Commands::Coverage(args) => cmd_coverage(args),
         Commands::Repo(args) => cmd_repo(args),
-        Commands::Ver => {
-            println!("{}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
     }
 }
 
@@ -369,8 +409,10 @@ fn cmd_wasm(args: WasmArgs) -> Result<()> {
         WasmCommand::Test => run_wasm_test_suite(&repo_root()),
         WasmCommand::Edit(args) => {
             let root = repo_root();
-            ensure_wasm_deps(&root)?;
-            build_wasm(&root)?;
+            if !args.skip_build {
+                ensure_wasm_deps(&root)?;
+                build_wasm(&root)?;
+            }
             serve_wasm(&root, args.port)
         }
         WasmCommand::Clean => clean_wasm(&repo_root()),
@@ -396,6 +438,11 @@ fn cmd_repo(args: RepoArgs) -> Result<()> {
         RepoCommand::Cli(args) => match args.command {
             RepoCliCommand::Install(args) => repo_cli_cmd::cmd_install_rum_cli(args),
         },
+        RepoCommand::Ubuntu(args) => match args.command {
+            RepoUbuntuCommand::InstallVscodeSmokePrereqs(args) => {
+                repo_cli_cmd::cmd_install_ubuntu_vscode_smoke_prereqs(args)
+            }
+        },
         RepoCommand::Hooks(args) => match args.command {
             RepoHooksCommand::Install => cmd_install_git_hooks(),
         },
@@ -415,10 +462,15 @@ fn cmd_repo(args: RepoArgs) -> Result<()> {
                 msl_tools::promote_quality_baseline::run(args)
             }
         },
-        RepoCommand::Completions(args) => {
-            let mut command = Cli::command();
-            completion_cmd::run(args, &mut command)
-        }
+        RepoCommand::Completions(args) => match args.command {
+            RepoCompletionsCommand::Print(args) => {
+                let mut command = Cli::command();
+                completion_cmd::run(args, &mut command)
+            }
+            RepoCompletionsCommand::Install(args) => {
+                repo_cli_cmd::cmd_install_shell_completions(args)
+            }
+        },
         RepoCommand::Release(args) => release_cmd::cmd_release(args),
         RepoCommand::Policy(args) => match args.command {
             RepoPolicyCommand::RustFileLines(args) => cmd_check_rust_file_lines(args),
@@ -450,6 +502,25 @@ pub(crate) fn run_status(mut command: Command) -> Result<()> {
         .with_context(|| format!("failed to run command: {rendered}"))?;
     if !status.success() {
         bail!("command failed (status={status}): {rendered}");
+    }
+    Ok(())
+}
+
+pub(crate) fn run_status_quiet(mut command: Command) -> Result<()> {
+    let rendered = format!("{command:?}");
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run command: {rendered}"))?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "command failed (status={}): {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            rendered,
+            stdout,
+            stderr
+        );
     }
     Ok(())
 }
@@ -534,8 +605,9 @@ fn cmd_check_rust_file_lines(args: CheckRustFileLinesArgs) -> Result<()> {
         let file =
             fs::File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
         let line_count = BufReader::new(file).lines().count();
-        if line_count > args.max_lines {
-            violations.push((rel.to_string(), line_count));
+        let max_allowed = args.max_lines;
+        if line_count > max_allowed {
+            violations.push((rel.to_string(), line_count, max_allowed));
         }
     }
 
@@ -547,11 +619,8 @@ fn cmd_check_rust_file_lines(args: CheckRustFileLinesArgs) -> Result<()> {
         return Ok(());
     }
 
-    for (file, line_count) in &violations {
-        eprintln!(
-            "ERROR: {file} has {line_count} lines (max allowed: {}).",
-            args.max_lines
-        );
+    for (file, line_count, max_allowed) in &violations {
+        eprintln!("ERROR: {file} has {line_count} lines (max allowed: {max_allowed}).");
     }
     bail!("Rust file line-count check failed. Split oversized Rust files before committing.");
 }

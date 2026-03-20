@@ -21,6 +21,8 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod sim_report;
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -30,12 +32,16 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use miette::{
     GraphicalTheme, LabeledSpan, MietteDiagnostic, MietteHandlerOpts, NamedSource, Report, Severity,
 };
-use rumoca::{CompilationResult, Compiler, CompilerError, sim_report};
+use rumoca::{CompilationResult, Compiler, CompilerError};
 use rumoca_session::{
     compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
     compile::{Session, SessionConfig},
-    project::{ProjectFileMoveHint, resync_model_sidecars_with_move_hints},
+    project::{
+        ProjectFileMoveHint, resync_model_sidecars_with_move_hints,
+        write_last_simulation_result_for_model, write_simulation_run,
+    },
 };
+use rumoca_sim::results_web::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, PartialLintOptions};
 use walkdir::WalkDir;
 
@@ -617,6 +623,7 @@ fn run_compile(args: CompileArgs) -> Result<()> {
 fn run_simulate(args: SimulateArgs) -> Result<()> {
     init_debug_tracing(args.input.debug);
     let (result, model) = compile_with_inferred_model(&args.input)?;
+    let workspace_root = discover_workspace_root_for_model_file(&args.input.model_file);
     run_simulation(
         &result,
         &model,
@@ -624,6 +631,7 @@ fn run_simulate(args: SimulateArgs) -> Result<()> {
         args.dt,
         args.solver,
         args.output.as_deref(),
+        workspace_root.as_deref(),
     )
 }
 
@@ -1118,7 +1126,7 @@ fn infer_model_name(model_file: &str) -> Result<String> {
     let parse_error = session.update_document(model_file, &source);
     let definition = session
         .get_document(model_file)
-        .and_then(|doc| doc.parsed.clone().or_else(|| doc.partial.clone()))
+        .map(|doc| doc.best_effort().clone())
         .ok_or_else(|| anyhow::anyhow!("failed to load document '{}'", model_file))?;
 
     let top_level_names = definition
@@ -1302,6 +1310,7 @@ fn run_simulation(
     dt: Option<f64>,
     solver: SimulateSolverMode,
     output: Option<&str>,
+    workspace_root: Option<&Path>,
 ) -> Result<()> {
     use rumoca_session::runtime::{SimOptions, simulate_dae};
 
@@ -1324,24 +1333,61 @@ fn run_simulation(
         Some(p) => PathBuf::from(p),
         None => PathBuf::from(format!("{}_results.html", model)),
     };
-    let header_settings = sim_report::SimulationHeaderSettings {
+    let request_summary = SimulationRequestSummary {
         solver: solver.as_label().to_string(),
         t_start: opts.t_start,
-        t_end_requested: opts.t_end,
+        t_end: opts.t_end,
         dt: opts.dt,
         rtol: opts.rtol,
         atol: opts.atol,
-        compile_seconds: None,
-        simulate_seconds: None,
-        compile_phase_instantiate_seconds: None,
-        compile_phase_typecheck_seconds: None,
-        compile_phase_flatten_seconds: None,
-        compile_phase_todae_seconds: None,
     };
-    sim_report::write_html_report(&sim, model, &out_path, Some(&header_settings))?;
+    let metrics = SimulationRunMetrics::default();
+    let report = sim_report::write_html_report(
+        &sim,
+        model,
+        &out_path,
+        &request_summary,
+        &metrics,
+        workspace_root,
+    )?;
+    if let Some(workspace_root) = workspace_root {
+        write_last_simulation_result_for_model(
+            workspace_root,
+            model,
+            &report.payload,
+            Some(&report.metrics),
+        )?;
+        write_simulation_run(
+            workspace_root,
+            model,
+            &report.payload,
+            Some(&report.metrics),
+            Some(&report.views),
+        )?;
+    }
     println!("{}", out_path.display());
 
     Ok(())
+}
+
+fn discover_workspace_root_for_model_file(model_file: &str) -> Option<PathBuf> {
+    let input_path = PathBuf::from(model_file);
+    let absolute = if input_path.is_absolute() {
+        input_path
+    } else {
+        std::env::current_dir().ok()?.join(input_path)
+    };
+    let start_dir = if absolute.is_dir() {
+        absolute
+    } else {
+        absolute.parent()?.to_path_buf()
+    };
+    for ancestor in start_dir.ancestors() {
+        if ancestor.join(".rumoca").join("project.toml").is_file() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
 }
 
 fn completion_script(shell: CompletionShell) -> String {

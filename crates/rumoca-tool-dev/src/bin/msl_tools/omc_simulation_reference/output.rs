@@ -116,9 +116,7 @@ fn sorted_trace_metrics(quantification: &TraceQuantification) -> Vec<TraceModelM
 fn candidate_model_count(all_results: &BTreeMap<String, SimModelResult>) -> usize {
     all_results
         .values()
-        .filter(|result| {
-            result.status == "success" && result.rumoca_status.as_deref() == Some("sim_ok")
-        })
+        .filter(|result| omc_model_is_trace_candidate(result))
         .count()
 }
 

@@ -36,9 +36,13 @@ pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validat
 use indexmap::IndexMap;
 use rumoca_core::{
     BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, DefId, Diagnostics, PrimaryLabel, ScopeId,
-    SourceMap, Span,
+    SourceMap, Span, maybe_elapsed_ms, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::OpenOptions;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write as _;
 
 type ClassTree = ast::ClassTree;
 type Location = rumoca_ir_core::Location;
@@ -200,6 +204,83 @@ pub struct Resolver {
     builtin_count: u32,
     /// Statistics collected during resolution.
     pub(crate) stats: ResolutionStats,
+    /// Timing from the most recent core resolve pass.
+    last_core_timing: ResolveCoreTiming,
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Debug, Clone, Copy, Default)]
+struct ResolveCoreTiming {
+    registration_ms: u128,
+    extends_ms: u128,
+    contents_ms: u128,
+    cycle_check_ms: u128,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy)]
+struct ResolveTimingSummary {
+    registration_ms: u128,
+    extends_ms: u128,
+    contents_ms: u128,
+    cycle_check_ms: u128,
+    semantic_checks_ms: u128,
+    validation_ms: u128,
+    unresolved_emit_ms: u128,
+    total_ms: u128,
+    def_count: usize,
+    class_count: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn count_declared_classes(def: &ast::StoredDefinition) -> usize {
+    def.classes.values().map(count_class_and_nested).sum()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn count_class_and_nested(class: &ast::ClassDef) -> usize {
+    1 + class
+        .classes
+        .values()
+        .map(count_class_and_nested)
+        .sum::<usize>()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_resolve_timing_summary(summary: &ResolveTimingSummary) {
+    let Some(path) = std::env::var_os("RUMOCA_RESOLVE_TIMING_FILE") else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        concat!(
+            "{{",
+            "\"registrationMs\":{},",
+            "\"extendsMs\":{},",
+            "\"contentsMs\":{},",
+            "\"cycleCheckMs\":{},",
+            "\"semanticChecksMs\":{},",
+            "\"validationMs\":{},",
+            "\"unresolvedEmitMs\":{},",
+            "\"totalMs\":{},",
+            "\"defCount\":{},",
+            "\"classCount\":{}",
+            "}}"
+        ),
+        summary.registration_ms,
+        summary.extends_ms,
+        summary.contents_ms,
+        summary.cycle_check_ms,
+        summary.semantic_checks_ms,
+        summary.validation_ms,
+        summary.unresolved_emit_ms,
+        summary.total_ms,
+        summary.def_count,
+        summary.class_count,
+    );
 }
 
 impl Resolver {
@@ -221,6 +302,7 @@ impl Resolver {
             partial_type_root_ids: std::collections::HashSet::new(),
             builtin_count: 0,
             stats: ResolutionStats::default(),
+            last_core_timing: ResolveCoreTiming::default(),
         };
         resolver.register_builtins();
         resolver
@@ -321,22 +403,37 @@ impl Resolver {
     /// - All inheritance edges are recorded before inherited member lookup
     /// - Indirect cycles (A extends B, B extends A) are detected
     pub fn resolve(&mut self, tree: &mut ClassTree) {
+        let registration_start = maybe_start_timer();
         // Copy source map for use in diagnostics
         self.source_map = tree.source_map.clone();
         let global_scope = self.scope_tree.global();
 
         // Phase 1: Register all classes and their members
         self.register_stored_definition(&mut tree.definitions, global_scope, "");
+        let registration_ms = maybe_elapsed_ms(registration_start);
 
+        let extends_start = maybe_start_timer();
         // Phase 2a: Resolve all imports and extends clauses first
         // This ensures inheritance edges are complete for inherited member lookup
         self.resolve_extends_all(&mut tree.definitions, "");
+        let extends_ms = maybe_elapsed_ms(extends_start);
 
+        let contents_start = maybe_start_timer();
         // Phase 2b: Resolve equations, statements, expressions
         self.resolve_contents_all(&mut tree.definitions, global_scope, "");
+        let contents_ms = maybe_elapsed_ms(contents_start);
 
+        let cycle_check_start = maybe_start_timer();
         // Phase 3: Check for circular inheritance (detects indirect cycles)
         self.check_inheritance_cycles(&tree.definitions);
+        let cycle_check_ms = maybe_elapsed_ms(cycle_check_start);
+
+        self.last_core_timing = ResolveCoreTiming {
+            registration_ms,
+            extends_ms,
+            contents_ms,
+            cycle_check_ms,
+        };
 
         // Transfer the built scope tree to the ClassTree
         tree.scope_tree = std::mem::take(&mut self.scope_tree);
@@ -404,18 +501,47 @@ pub fn resolve_with_options_collect(
     parsed: ParsedTree,
     options: ResolveOptions,
 ) -> (ResolvedTree, Diagnostics) {
+    let total_start = maybe_start_timer();
     let mut tree = parsed.into_inner();
     let mut resolver = Resolver::new();
     resolver.resolve(&mut tree);
 
     // Run semantic checks on the AST.
+    let semantic_checks_start = maybe_start_timer();
     for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
         resolver.diagnostics.emit(diag);
     }
+    let semantic_checks_ms = maybe_elapsed_ms(semantic_checks_start);
 
     // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
+    let validation_start = maybe_start_timer();
     let validation = validation::validate_resolution(&tree);
+    let validation_ms = maybe_elapsed_ms(validation_start);
+    let unresolved_emit_start = maybe_start_timer();
     emit_unresolved_symbol_diagnostics(&mut resolver, &validation, options);
+    let unresolved_emit_ms = maybe_elapsed_ms(unresolved_emit_start);
+
+    #[cfg(target_arch = "wasm32")]
+    let _ = (
+        total_start,
+        semantic_checks_ms,
+        validation_ms,
+        unresolved_emit_ms,
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    write_resolve_timing_summary(&ResolveTimingSummary {
+        registration_ms: resolver.last_core_timing.registration_ms,
+        extends_ms: resolver.last_core_timing.extends_ms,
+        contents_ms: resolver.last_core_timing.contents_ms,
+        cycle_check_ms: resolver.last_core_timing.cycle_check_ms,
+        semantic_checks_ms,
+        validation_ms,
+        unresolved_emit_ms,
+        total_ms: maybe_elapsed_ms(total_start),
+        def_count: tree.name_map.len(),
+        class_count: count_declared_classes(&tree.definitions),
+    });
 
     (ResolvedTree::new(tree), resolver.take_diagnostics())
 }

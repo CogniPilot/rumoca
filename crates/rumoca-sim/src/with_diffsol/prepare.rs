@@ -5,7 +5,7 @@ use crate::simulation::dae_prepare::{
     demote_states_without_assignable_derivative_rows, demote_states_without_derivative_refs,
     eliminate_derivative_aliases, expand_compound_derivatives,
     index_reduce_missing_state_derivatives, normalize_ode_equation_signs,
-    promote_der_algebraics_to_states,
+    promote_der_algebraics_to_states, substitute_standalone_state_derivatives_in_non_ode_rows,
 };
 use crate::simulation::introspection::trace_flow_array_alias_watch;
 use crate::simulation::pipeline::{PreparedSimulation, run_logged_phase};
@@ -506,11 +506,15 @@ pub(super) fn run_orphan_and_direct_state_demotion_phases(
     }
 
     let mut n_demoted_direct_assigned_states = 0usize;
-    run_logged_phase(trace, "demote_direct_assigned_states(phase1i)", || {
-        run_timeout_step(budget, || {
-            n_demoted_direct_assigned_states = demote_direct_assigned_states(dae);
-        })
-    })?;
+    let disable_direct_state_demotion =
+        std::env::var("RUMOCA_SIM_DISABLE_DIRECT_STATE_DEMOTION").is_ok();
+    if !disable_direct_state_demotion {
+        run_logged_phase(trace, "demote_direct_assigned_states(phase1i)", || {
+            run_timeout_step(budget, || {
+                n_demoted_direct_assigned_states = demote_direct_assigned_states(dae);
+            })
+        })?;
+    }
     if n_demoted_direct_assigned_states > 0 {
         eprintln!(
             "[prepare_dae] demoted {} direct-assigned trajectory states",
@@ -835,6 +839,35 @@ pub(super) fn build_mass_matrix_with_trace(
     Ok(mass_matrix)
 }
 
+fn substitute_non_ode_state_derivatives_with_trace(
+    dae: &mut Dae,
+    budget: &TimeoutBudget,
+    trace: bool,
+    trace_prefix: &str,
+) -> Result<(), SimError> {
+    if trace {
+        eprintln!("[sim-trace] {trace_prefix} step start: substitute_standalone_state_derivatives");
+    }
+    let t0 = trace_timer_start_if(trace);
+    let mut n_rewritten = 0usize;
+    run_timeout_step(budget, || {
+        n_rewritten = substitute_standalone_state_derivatives_in_non_ode_rows(dae);
+    })?;
+    if trace {
+        eprintln!(
+            "[sim-trace] {trace_prefix} step done: substitute_standalone_state_derivatives elapsed={:.3}s",
+            trace_timer_elapsed_seconds(t0)
+        );
+    }
+    if n_rewritten > 0 {
+        eprintln!(
+            "[prepare_dae] substituted der(state) in {} non-ODE rows",
+            n_rewritten
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn log_prepare_substitutions_if_introspect(
     elim: &eliminate::EliminationResult,
     trace: bool,
@@ -958,6 +991,8 @@ pub(super) fn prepare_dae_for_template_codegen_only(
         run_timeout_step(budget, || normalize_ode_equation_signs(&mut dae))
     })?;
 
+    substitute_non_ode_state_derivatives_with_trace(&mut dae, budget, trace, "prepare(template)")?;
+
     budget.check()?;
     run_post_scalarize_elimination_phase(
         &mut dae,
@@ -1075,6 +1110,8 @@ pub(super) fn prepare_dae(
         run_timeout_step(budget, || normalize_ode_equation_signs(&mut dae))
     })?;
 
+    substitute_non_ode_state_derivatives_with_trace(&mut dae, budget, trace, "prepare")?;
+
     budget.check()?;
     run_post_scalarize_elimination_phase(
         &mut dae,
@@ -1097,7 +1134,6 @@ pub(super) fn prepare_dae(
     let mass_matrix = build_mass_matrix_with_trace(&dae, n_x, has_dummy, budget, trace)?;
 
     debug_print_mass_matrix(&dae, &mass_matrix);
-
     Ok(PreparedSimulation {
         dae,
         has_dummy_state: has_dummy,
@@ -1126,6 +1162,14 @@ mod tests {
     fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
         dae::Expression::Binary {
             op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    fn add(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Add(Default::default()),
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         }
@@ -1226,6 +1270,50 @@ mod tests {
                 .iter()
                 .any(|eq| expr_contains_var_ref(&eq.rhs, &VarName::new("d"))),
             "f_c expressions should not reference eliminated alias"
+        );
+    }
+
+    #[test]
+    fn test_substitute_standalone_state_derivatives_rewrites_non_ode_rows() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.algebraics
+            .insert(VarName::new("z"), dae::Variable::new(VarName::new("z")));
+        dae.algebraics
+            .insert(VarName::new("w"), dae::Variable::new(VarName::new("w")));
+
+        dae.f_x.push(eq(sub(
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Der,
+                args: vec![var("x")],
+            },
+            var("z"),
+        )));
+        dae.f_x.push(eq(add(
+            var("w"),
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Der,
+                args: vec![var("x")],
+            },
+        )));
+        dae.f_x.push(eq(sub(var("z"), int(1))));
+
+        problem::reorder_equations_for_solver(&mut dae).expect("reorder should succeed");
+        normalize_ode_equation_signs(&mut dae);
+
+        let rewritten = substitute_standalone_state_derivatives_in_non_ode_rows(&mut dae);
+        assert_eq!(rewritten, 1, "expected one non-ODE row to be rewritten");
+        assert!(
+            !crate::simulation::dae_prepare::expr_contains_der_of(
+                &dae.f_x[1].rhs,
+                &VarName::new("x")
+            ),
+            "non-ODE rows must not keep der(x) after substitution"
+        );
+        assert!(
+            expr_contains_var_ref(&dae.f_x[1].rhs, &VarName::new("z")),
+            "rewritten non-ODE row should reference the selected derivative expression"
         );
     }
 }

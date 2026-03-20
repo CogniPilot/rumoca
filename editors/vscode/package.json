@@ -221,11 +221,11 @@
   "scripts": {
     "vendor-webview-assets": "node ./scripts/vendor-webview-assets.mjs",
     "vscode:prepublish": "npm run esbuild-base -- --minify",
-    "esbuild-base": "npm run vendor-webview-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "esbuild-base": "npm run vendor-webview-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:vscode-languageclient --external:vscode-languageclient/node --external:vscode-languageclient/* --format=cjs --platform=node",
     "esbuild": "npm run esbuild-base -- --sourcemap",
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "tsc -p ./",
-    "test": "npm run compile && node --test tests/*.test.mjs",
+    "test": "npm run vendor-webview-assets && npm run compile && node --test tests/*.test.mjs",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "package": "npm run esbuild-base -- --minify && npx @vscode/vsce package --no-dependencies --no-yarn"
@@ -241,6 +241,7 @@
     "@types/vscode": "^1.75.0",
     "@typescript-eslint/eslint-plugin": "^8.56.1",
     "@typescript-eslint/parser": "^8.56.1",
+    "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.0",
     "eslint": "^10.0.3",
@@ -253,12 +254,6 @@
     }
   }
 }
-
-
-
-
-
-
 
 
 

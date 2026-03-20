@@ -21,6 +21,7 @@
 //! The handler code uses `lsp_types` directly and compiles to WASM.
 //! The `tower-lsp` server is behind the `server` feature flag (native only).
 
+pub mod completion_metrics;
 pub mod handlers;
 pub mod helpers;
 mod traversal_adapter;
@@ -33,9 +34,8 @@ pub use server::{ModelicaLanguageServer, run_server};
 
 // Re-export key handler functions
 pub use handlers::{
-    DocSymbols, compute_diagnostics, get_semantic_token_legend, handle_code_actions,
-    handle_code_lens, handle_completion, handle_document_symbols, handle_folding_ranges,
-    handle_formatting, handle_goto_definition, handle_hover, handle_prepare_rename,
-    handle_references, handle_rename, handle_semantic_tokens, handle_signature_help,
+    compute_diagnostics, get_semantic_token_legend, handle_code_actions, handle_code_lens,
+    handle_completion, handle_document_symbols, handle_folding_ranges, handle_formatting,
+    handle_goto_definition, handle_hover, handle_semantic_tokens, handle_signature_help,
     handle_workspace_symbols,
 };

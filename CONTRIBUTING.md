@@ -103,3 +103,10 @@ Project specifications live under [`spec/`](spec/).
 - Run the smallest verification gate that actually covers your change.
 - Prefer `rum` commands over ad hoc local scripts so local and CI workflows stay aligned.
 - Keep contributor-facing command examples in docs synchronized with the actual CLI.
+- Include a PR size budget in the pull-request body:
+  - production lines added/deleted,
+  - test lines added/deleted,
+  - net lines and file count,
+  - public API item delta.
+- If the PR has positive net lines, include a short cleanup/compression pass plan
+  and explicit rationale for every new abstraction.

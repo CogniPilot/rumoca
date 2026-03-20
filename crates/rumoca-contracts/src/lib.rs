@@ -225,7 +225,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
 static REGISTRY_TEMPLATE: OnceLock<ContractRegistry> = OnceLock::new();
 
 fn build_registry() -> ContractRegistry {
-    ContractRegistry::from_static_tables(registry::CONTRACT_TABLE)
+    ContractRegistry::from_contracts(registry::load_all_contracts())
 }
 
 /// Get a shared read-only registry template.

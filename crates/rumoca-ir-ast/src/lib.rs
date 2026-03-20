@@ -114,8 +114,8 @@ pub use types::{
 /// - The parsed class definitions (StoredDefinition)
 /// - The type table (all types in the compilation unit)
 /// - The scope tree (for name lookup)
-/// - The def_map (DefId → qualified name for O(1) class lookup)
-/// - The name_map (qualified name → DefId for O(1) class lookup by name)
+/// - The def_map (DefId → qualified name for O(1) resolved definition lookup)
+/// - The name_map (qualified name → DefId for O(1) resolved definition lookup)
 ///
 /// This is the primary IR produced by parsing + semantic analysis.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -127,9 +127,10 @@ pub struct ClassTree {
     /// Scope tree for name lookup.
     pub scope_tree: ScopeTree,
     /// Map from DefId to qualified name (e.g., "Package.SubPackage.Model").
-    /// Populated during the resolve phase for O(1) class lookup.
+    /// Populated during the resolve phase for O(1) resolved definition lookup.
     pub def_map: IndexMap<DefId, String>,
-    /// Inverse map from qualified name to DefId for O(1) class lookup by name.
+    /// Inverse map from qualified name to DefId for O(1) resolved definition lookup.
+    /// This includes non-class definitions such as components.
     /// Populated during the resolve phase alongside def_map.
     pub name_map: IndexMap<String, DefId>,
     /// Source map for mapping file names to SourceIds.

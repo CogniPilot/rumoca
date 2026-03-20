@@ -220,6 +220,12 @@ Bootstrap it once from the repository root:
 cargo run --bin rum -- repo cli install
 ```
 
+If you want the main Modelica parity gate right away:
+
+```bash
+rum verify msl-parity
+```
+
 After that, the main command groups are:
 
 - `rum verify full` for the full GitHub CI verification suite

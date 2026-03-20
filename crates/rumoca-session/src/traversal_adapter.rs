@@ -41,8 +41,12 @@ impl<'a> ClassDependencyCollector<'a> {
         for extend in &class.extends {
             self.collect_extend(extend);
         }
+        let scope_imports = class
+            .scope_id
+            .and_then(|scope_id| self.tree.scope_tree.get(scope_id))
+            .map(|scope| scope.imports.as_slice());
         for import in &class.imports {
-            self.add_class_dep_from_name(import.base_path());
+            self.collect_import(import, scope_imports);
         }
         for subscript in &class.array_subscripts {
             let _ = self.visit_subscript(subscript);
@@ -109,14 +113,97 @@ impl<'a> ClassDependencyCollector<'a> {
         }
     }
 
-    fn add_class_dep_from_name(&mut self, name: &ast::Name) {
-        if let Some(def_id) = name.def_id {
-            self.add_class_dep_by_def_id(def_id);
-            return;
+    fn collect_import(
+        &mut self,
+        import: &ast::Import,
+        scope_imports: Option<&[ast::scope::Import]>,
+    ) {
+        // MLS §13.2: qualified, renamed, and selective imports bind concrete
+        // imported definitions into the class scope. Use the resolved scope
+        // imports rather than Name::def_id so the dependency graph tracks the
+        // imported classes instead of only the package path.
+        match import {
+            ast::Import::Qualified { path, .. } => {
+                if !self.add_resolved_import_dep(path, scope_imports) {
+                    self.add_class_dep_from_name(path);
+                }
+            }
+            ast::Import::Renamed { path, .. } => {
+                if !self.add_resolved_import_dep(path, scope_imports) {
+                    self.add_class_dep_from_name(path);
+                }
+            }
+            ast::Import::Selective { path, names, .. } => {
+                if !self.add_selective_import_deps(path, names, scope_imports) {
+                    self.add_class_dep_from_name(path);
+                }
+            }
+            ast::Import::Unqualified { path, .. } => self.add_class_dep_from_name(path),
         }
+    }
 
-        let qualified = name.to_string();
-        let Some(&def_id) = self.tree.name_map.get(&qualified) else {
+    fn add_resolved_import_dep(
+        &mut self,
+        path: &ast::Name,
+        scope_imports: Option<&[ast::scope::Import]>,
+    ) -> bool {
+        let Some(scope_imports) = scope_imports else {
+            return false;
+        };
+        for import in scope_imports {
+            match import {
+                ast::scope::Import::Qualified {
+                    path: import_path,
+                    def_id,
+                }
+                | ast::scope::Import::Renamed {
+                    path: import_path,
+                    def_id,
+                    ..
+                } if import_path_matches(path, import_path) => {
+                    self.add_class_dep_by_def_id(*def_id);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn add_selective_import_deps(
+        &mut self,
+        path: &ast::Name,
+        names: &[ast::Token],
+        scope_imports: Option<&[ast::scope::Import]>,
+    ) -> bool {
+        let Some(scope_imports) = scope_imports else {
+            return false;
+        };
+        let mut found = false;
+        for import in scope_imports {
+            let ast::scope::Import::Unqualified {
+                path: import_path,
+                names: resolved_names,
+            } = import
+            else {
+                continue;
+            };
+            if !import_path_matches(path, import_path) {
+                continue;
+            }
+            for def_id in names
+                .iter()
+                .filter_map(|name| resolved_names.get(name.text.as_ref()).copied())
+            {
+                self.add_class_dep_by_def_id(def_id);
+                found = true;
+            }
+        }
+        found
+    }
+
+    fn add_class_dep_from_name(&mut self, name: &ast::Name) {
+        let Some(def_id) = name.def_id else {
             return;
         };
         self.add_class_dep_by_def_id(def_id);
@@ -130,6 +217,15 @@ impl<'a> ClassDependencyCollector<'a> {
             self.deps.insert(qualified_name.clone());
         }
     }
+}
+
+fn import_path_matches(path: &ast::Name, import_path: &[String]) -> bool {
+    path.name.len() == import_path.len()
+        && path
+            .name
+            .iter()
+            .zip(import_path)
+            .all(|(token, import_part)| token.text.as_ref() == import_part)
 }
 
 impl Visitor for ClassDependencyCollector<'_> {

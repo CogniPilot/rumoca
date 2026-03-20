@@ -133,6 +133,7 @@ pub(super) struct ModelCompileEntry {
     model_name: String,
     compile_outcome: ModelCompileOutcome,
     remaining_budget_secs: Option<f64>,
+    compile_seconds: f64,
 }
 
 pub(super) enum ModelCompileOutcome {
@@ -529,6 +530,7 @@ fn phase_error_result(
         initial_closure_used: None,
         initial_balance_deficit_after: None,
         initial_balance_ok: None,
+        compile_seconds: None,
         sim_status: None,
         sim_error: None,
         sim_seconds: None,
@@ -630,6 +632,7 @@ pub(super) fn summarize_success_result(
         initial_closure_used: usize::try_from(init_check.closure_used).ok(),
         initial_balance_deficit_after: Some(init_check.deficit_after),
         initial_balance_ok: Some(init_check.is_balanced()),
+        compile_seconds: None,
         sim_status: None,
         sim_error: None,
         sim_seconds: None,

@@ -5,6 +5,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 ## Unreleased
 
 - Python bindings and notebooks: the Python API is now explicit with `rumoca.compile(...)` for inline source and `rumoca.compile_file(...)` for file-backed models, while VS Code notebook snippets emit valid DAE-JSON-oriented Python instead of stale object-style APIs.
+- MSL switched-RLC simulation: runtime event projection now masks fixed differential rows and keeps alias-connected algebraics free, fixing the `SwitchedRLC_MSL` step-voltage regression and adding matching low-level/runtime and high-level example-based regression coverage.
 - MSL sim-worker IPC: the hot parent-to-worker DAE handoff now streams compact binary DAE payloads over stdin instead of writing large JSON temp files, removing the worst per-model serialization stall while keeping process isolation.
 - The example SymPy template was rewritten against the current DAE template schema and now renders current Rumoca models again instead of depending on removed legacy metadata and expression variants.
 - SymPy example-template runtime checks are now ignored in the default Rust workspace test pass and exposed explicitly through `rum verify template-runtimes`, so host CI no longer depends on ad hoc Python package installs.
@@ -18,7 +19,11 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 - VS Code packaging: Linux musl release packaging is now exposed as `rum vscode package --target linux-x64|linux-arm64`, so the release workflow no longer depends on raw Cargo/musl command recipes in the docs.
 - Developer bootstrap: `rum repo cli install` now installs `rum` and shell completions, with `--path` as the explicit opt-in for writing a persistent PATH update.
 - VS Code: `rumoca.modelicaPath` updates now restart the language server automatically, and notebook execution/controller availability stays aligned with the active `rumoca` and `rumoca-lsp` pair.
+- Editor MSL workflows: opening a Modelica-backed file now loads required libraries early enough to clear false unresolved-import diagnostics, top-level namespace completion reuses a library-only cache across local edits, code lenses and DAE preview hovers compile through the requested model's strict reachable closure, and CI runs the real VS Code extension-host and browser-hosted wasm editor MSL smokes through `rum verify vscode-msl` and `rum verify wasm-editor-msl` against the cached Modelica Standard Library.
+- LSP work scheduling: interactive completion now runs on its own editor lane while strict simulation compiles/simulations execute from isolated session snapshots on a separate strict lane, so `Modelica.` completion no longer waits on the heavier strict compile path.
+- Library cache persistence: parsed Modelica libraries are now stored as buffered binary cache payloads instead of large JSON blobs, cutting cold cache-hit startup work for top-level MSL completion while preserving one-time migration from existing JSON cache files.
 - Editors and CI: `rum vscode test` and GitHub Actions now run the same VS Code checks, and the wasm editor library-loading path has dedicated regression coverage.
+- Shared timing instrumentation is now centralized in `rumoca-core` with a wasm-safe guard, fixing wasm editor simulation smokes that previously panicked on unsupported `Instant::now()` calls and aligning the dev image with headless VS Code smoke requirements.
 
 ## 0.8.x
 

@@ -1,73 +1,61 @@
 //! Workspace symbols handler for Modelica files.
 
+use std::path::Path;
+
 use lsp_types::{Location, Position, Range, SymbolInformation, SymbolKind, Url};
-use rumoca_session::parsing::ast;
+use rumoca_session::{compile::WorkspaceSymbol, compile::WorkspaceSymbolKind, parsing::ast};
 
 use crate::helpers::location_to_range;
 
-/// Workspace symbol entry from a document.
-pub struct DocSymbols<'a> {
-    pub uri: &'a str,
-    pub ast: &'a ast::StoredDefinition,
-}
-
 /// Handle workspace symbols request - fuzzy search across all documents.
-pub fn handle_workspace_symbols(docs: &[DocSymbols<'_>], query: &str) -> Vec<SymbolInformation> {
-    let query_lower = query.to_lowercase();
-    let mut symbols = Vec::new();
+pub fn handle_workspace_symbols(entries: &[WorkspaceSymbol]) -> Vec<SymbolInformation> {
+    let mut symbols = Vec::with_capacity(entries.len());
 
-    for doc in docs {
-        let uri = match Url::parse(doc.uri).or_else(|_| Url::parse(&format!("file://{}", doc.uri)))
-        {
-            Ok(u) => u,
-            Err(_) => continue,
+    for symbol in entries {
+        let Some(uri) = workspace_symbol_uri(&symbol.uri) else {
+            continue;
         };
-        collect_symbols(doc.ast, &uri, &query_lower, &mut symbols);
+        let kind = match_symbol_kind(&symbol.kind);
+        let range = location_to_range(&symbol.location);
+        symbols.push(new_symbol_information(
+            symbol.name.clone(),
+            kind,
+            Location { uri, range },
+            symbol.container_name.clone(),
+        ));
     }
-
-    // Sort: exact match > prefix > contains
-    symbols.sort_by(|a, b| {
-        let a_score = match_score(&a.name, &query_lower);
-        let b_score = match_score(&b.name, &query_lower);
-        a_score.cmp(&b_score)
-    });
 
     symbols
 }
 
-fn match_score(name: &str, query: &str) -> u8 {
-    let name_lower = name.to_lowercase();
-    if name_lower == query {
-        0
-    } else if name_lower.starts_with(query) {
-        1
-    } else {
-        2
+fn workspace_symbol_uri(uri: &str) -> Option<Url> {
+    if uri.contains("://") {
+        return Url::parse(uri).ok();
     }
+    url_from_file_path(uri)
 }
 
-fn collect_symbols(
-    ast: &ast::StoredDefinition,
-    uri: &Url,
-    query: &str,
-    symbols: &mut Vec<SymbolInformation>,
-) {
-    for (name, class) in &ast.classes {
-        collect_class_symbols(name, class, uri, query, None, symbols);
-    }
+#[cfg(not(target_arch = "wasm32"))]
+fn url_from_file_path(path: impl AsRef<Path>) -> Option<Url> {
+    Url::from_file_path(path).ok()
 }
 
-fn collect_class_symbols(
-    name: &str,
-    class: &ast::ClassDef,
-    uri: &Url,
-    query: &str,
-    container: Option<String>,
-    symbols: &mut Vec<SymbolInformation>,
-) {
-    let name_lower = name.to_lowercase();
-    if query.is_empty() || name_lower.contains(query) {
-        let kind = match class.class_type {
+#[cfg(target_arch = "wasm32")]
+fn url_from_file_path(path: impl AsRef<Path>) -> Option<Url> {
+    let raw = path.as_ref().to_string_lossy();
+    if raw.is_empty() {
+        return None;
+    }
+    let mut normalized = raw.replace('\\', "/");
+    if !normalized.starts_with('/') {
+        normalized.insert(0, '/');
+    }
+    Url::parse(&format!("file://{}", normalized)).ok()
+}
+
+fn match_symbol_kind(kind: &WorkspaceSymbolKind) -> SymbolKind {
+    match kind {
+        WorkspaceSymbolKind::Class(class_type) => match class_type {
             ast::ClassType::Model | ast::ClassType::Block | ast::ClassType::Class => {
                 SymbolKind::CLASS
             }
@@ -77,48 +65,8 @@ fn collect_class_symbols(
             ast::ClassType::Package => SymbolKind::NAMESPACE,
             ast::ClassType::Function => SymbolKind::FUNCTION,
             ast::ClassType::Operator => SymbolKind::OPERATOR,
-        };
-
-        let range = location_to_range(&class.location);
-
-        symbols.push(new_symbol_information(
-            name.to_string(),
-            kind,
-            Location {
-                uri: uri.clone(),
-                range,
-            },
-            container.clone(),
-        ));
-    }
-
-    // Components
-    for (comp_name, comp) in &class.components {
-        let comp_lower = comp_name.to_lowercase();
-        if query.is_empty() || comp_lower.contains(query) {
-            let range = location_to_range(&comp.location);
-            symbols.push(new_symbol_information(
-                comp_name.clone(),
-                SymbolKind::VARIABLE,
-                Location {
-                    uri: uri.clone(),
-                    range,
-                },
-                Some(name.to_string()),
-            ));
-        }
-    }
-
-    // Nested classes
-    for (nested_name, nested) in &class.classes {
-        collect_class_symbols(
-            nested_name,
-            nested,
-            uri,
-            query,
-            Some(name.to_string()),
-            symbols,
-        );
+        },
+        WorkspaceSymbolKind::Component => SymbolKind::VARIABLE,
     }
 }
 

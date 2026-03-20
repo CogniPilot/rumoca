@@ -383,6 +383,7 @@ pub(super) fn seed_direct_assignment_initial_values_with_overrides(
         let mut env = build_env(dae, y, p, options.t_eval);
         env.is_initial = options.use_initial;
         apply_seed_env_overrides(&mut env, seed_env);
+        populate_missing_direct_assignment_targets_in_env(dae, &mut env, n_x);
 
         for eq in dae.f_x.iter().skip(n_x) {
             let (eq_changed, eq_updates) =

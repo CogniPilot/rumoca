@@ -1191,7 +1191,7 @@ mod tests {
     fn make_comp_ref(path: &str) -> ComponentReference {
         ComponentReference {
             local: false,
-            parts: crate::path_utils::parse_path_with_indices(path)
+            parts: crate::path_utils::split_path_with_indices(path)
                 .into_iter()
                 .map(|name| ComponentRefPart {
                     ident: Token {

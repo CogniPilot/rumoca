@@ -53,6 +53,47 @@ pub(super) fn print_simulation_results(summary: &MslSummary) {
     println!();
 }
 
+fn hottest_compile_model(summary: &MslSummary) -> Option<(&str, f64)> {
+    summary
+        .model_results
+        .iter()
+        .filter_map(|result| {
+            result
+                .compile_seconds
+                .map(|seconds| (result.model_name.as_str(), seconds))
+        })
+        .max_by(|(_, lhs), (_, rhs)| lhs.total_cmp(rhs))
+}
+
+fn hottest_sim_model(summary: &MslSummary) -> Option<(&str, f64)> {
+    summary
+        .model_results
+        .iter()
+        .filter_map(|result| {
+            result
+                .sim_wall_seconds
+                .map(|seconds| (result.model_name.as_str(), seconds))
+        })
+        .max_by(|(_, lhs), (_, rhs)| lhs.total_cmp(rhs))
+}
+
+fn print_profiler_follow_ups(summary: &MslSummary) {
+    println!("Profiler Follow-Ups:");
+    if let Some((model_name, seconds)) = hottest_compile_model(summary) {
+        println!("  - Hottest compile model: {model_name} ({seconds:.2}s)");
+        println!(
+            "    cargo run --bin rum -- repo msl flamegraph --model {model_name} --mode compile"
+        );
+    }
+    if let Some((model_name, seconds)) = hottest_sim_model(summary) {
+        println!("  - Hottest sim model: {model_name} ({seconds:.2}s)");
+        println!(
+            "    cargo run --bin rum -- repo msl flamegraph --model {model_name} --mode simulate"
+        );
+    }
+    println!();
+}
+
 pub(super) fn print_final_stats(summary: &MslSummary) {
     let write_start = Instant::now();
     write_msl_results(summary).expect("Failed to write results");
@@ -133,6 +174,28 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
 }
 
 pub(super) fn print_timing_breakdown(summary: &MslSummary) {
+    println!("Performance Snapshot:");
+    println!(
+        "  - Compile chunking: {} chunk(s) of up to {} model(s)",
+        summary.timings.compile_chunk_count, summary.timings.compile_batch_size
+    );
+    println!("  - Worker threads: {}", summary.timings.worker_threads);
+    println!(
+        "  - Compile-scope throughput: {:.2} models/s",
+        summary.total_models as f64 / summary.timings.frontend_compile_seconds.max(f64::EPSILON)
+    );
+    if summary.timings.render_and_write_seconds > 0.0 && summary.sim_attempted > 0 {
+        println!(
+            "  - Sim/render throughput: {:.2} models/s",
+            summary.sim_attempted as f64 / summary.timings.render_and_write_seconds
+        );
+    }
+    println!(
+        "  - Core pipeline subtotal: {:.2}s",
+        summary.timings.core_pipeline_seconds
+    );
+    println!();
+    print_profiler_follow_ups(summary);
     println!("Timing Breakdown:");
     println!(
         "  - Pipeline compile (parse+session+compile): {:.2}s",

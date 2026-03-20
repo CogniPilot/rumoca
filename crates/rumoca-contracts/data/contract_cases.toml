@@ -1,0 +1,2033 @@
+# Contract test case manifest — source of truth for coverage checks.
+# Regenerate with: cargo run -p rumoca-tool-dev -- dump-contract-cases
+
+[[cases]]
+contract_id = 'ALG-001'
+case_id = 'alg_001_assignment_in_algorithm'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-001'
+case_id = 'alg_basic_algorithm_section'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-001'
+case_id = 'alg_001_no_equality_in_algorithm'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-005'
+case_id = 'alg_005_while_boolean'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-007'
+case_id = 'alg_007_no_when_in_function'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-008'
+case_id = 'alg_008_when_in_initial_algorithm_rejected'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-009'
+case_id = 'alg_009_no_nested_when_statements'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-010'
+case_id = 'alg_010_when_in_for_rejected'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-012'
+case_id = 'alg_012_break_in_for'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-013'
+case_id = 'alg_013_return_in_function'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-016'
+case_id = 'alg_016_for_range'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-016'
+case_id = 'alg_for_loop_algorithm'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ANN-001'
+case_id = 'ann_001_component_annotation_each_rejected'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ANN-001'
+case_id = 'ann_001_class_annotation_redeclare_rejected'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ANN-001'
+case_id = 'ann_001_extends_annotation_replaceable_rejected'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ANN-008'
+case_id = 'ann_008_parameter_evaluate_ok'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ANN-008'
+case_id = 'ann_008_variable_evaluate_rejected'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ANN-008'
+case_id = 'ann_008_class_annotation_evaluate_rejected'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ANN-008'
+case_id = 'ann_008_extends_annotation_evaluate_rejected'
+test_file = 'tests/ann_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ARR-001'
+case_id = 'arr_001_fixed_dimensionality'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-001'
+case_id = 'arr_array_of_parameters'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-002'
+case_id = 'arr_002_rectangular_2d'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-003'
+case_id = 'arr_003_matching_sizes'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-005'
+case_id = 'arr_005_valid_index'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-006'
+case_id = 'arr_006_empty_array_constructor_rejected'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ARR-017'
+case_id = 'arr_017_zeros_or_ones_empty_rejected'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ARR-018'
+case_id = 'arr_018_fill_too_few_args_rejected'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ARR-023'
+case_id = 'arr_023_cat_requires_arguments_rejected'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ARR-009'
+case_id = 'arr_009_int_to_real_coercion'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-019'
+case_id = 'arr_019_linspace_valid'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-027'
+case_id = 'arr_027_same_dim_assignment'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-029'
+case_id = 'arr_029_add_same_size'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-029'
+case_id = 'arr_scalar_broadcast'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-030'
+case_id = 'arr_030_divide_by_scalar'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'CONN-001'
+case_id = 'conn_001_flow_connects_ok'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'CONN-001'
+case_id = 'conn_series_resistors'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'CONN-002'
+case_id = 'conn_002_same_type_connectors'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'CONN-002'
+case_id = 'conn_002_type_mismatch_rejected'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-003'
+case_id = 'conn_003_flow_to_flow_mismatch_rejected'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-007'
+case_id = 'conn_007_no_parameter_connector'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-008'
+case_id = 'conn_008_same_dimensions'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'CONN-008'
+case_id = 'conn_008_dimension_mismatch_rejected'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-009'
+case_id = 'conn_009_expandable_connector_rejects_flow_member'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-010'
+case_id = 'conn_010_expandable_connector_requires_expandable_peer'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-017'
+case_id = 'conn_017_balanced_connector'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'CONN-017'
+case_id = 'conn_017_unbalanced_connector_fails'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-026'
+case_id = 'conn_026_flow_sign_basic'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'CONN-029'
+case_id = 'conn_029_connect_requires_connectors'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CLK-001'
+case_id = 'clk_001_clock_constructor_forbidden_in_function'
+test_file = 'tests/clk_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CLK-002'
+case_id = 'clk_002_parameter_clock_prefix_rejected'
+test_file = 'tests/clk_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CLK-002'
+case_id = 'clk_002_discrete_clock_prefix_rejected'
+test_file = 'tests/clk_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CLK-013'
+case_id = 'clk_013_derivative_on_clock_operator_rejected'
+test_file = 'tests/clk_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CLK-013'
+case_id = 'clk_013_derivative_on_clock_operator_in_binding_rejected'
+test_file = 'tests/clk_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CLK-020'
+case_id = 'clk_020_flow_clock_prefix_rejected'
+test_file = 'tests/clk_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CLK-020'
+case_id = 'clk_020_stream_clock_prefix_rejected'
+test_file = 'tests/clk_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-001'
+case_id = 'decl_001_distinct_names_ok'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-001'
+case_id = 'decl_001_rejects_duplicate_names'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-002'
+case_id = 'decl_002_block_connector_needs_io_prefix'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-003'
+case_id = 'decl_003_record_no_protected'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-003'
+case_id = 'decl_003_record_public_ok'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-004'
+case_id = 'decl_004_record_no_flow'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-005'
+case_id = 'decl_005_record_no_model_component'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-006'
+case_id = 'decl_006_connector_no_protected'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-007'
+case_id = 'decl_007_connector_no_inner_outer'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-009'
+case_id = 'decl_009_no_protected_dot_access'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-012'
+case_id = 'decl_012_input_not_parameter'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-014'
+case_id = 'decl_014_partial_class_error'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-015'
+case_id = 'decl_015_component_not_same_name_as_class'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-018'
+case_id = 'decl_018_array_dim_constant'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-019'
+case_id = 'decl_019_constant_with_value'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-020'
+case_id = 'decl_020_no_der_on_discrete'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-022'
+case_id = 'decl_022_integer_discrete'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-024'
+case_id = 'decl_024_package_no_variables'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-024'
+case_id = 'decl_024_package_with_constant'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-032'
+case_id = 'decl_032_balanced_model'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-032'
+case_id = 'decl_032_balanced_ode'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'DECL-032'
+case_id = 'decl_032_unbalanced_model'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'DECL-036'
+case_id = 'decl_036_type_alias'
+test_file = 'tests/decl_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-001'
+case_id = 'eqn_001_ode_balanced'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-001'
+case_id = 'eqn_001_simple_balanced'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-001'
+case_id = 'eqn_001_underspecified'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-001'
+case_id = 'eqn_multiple_equations'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-002'
+case_id = 'eqn_002_input_with_binding'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-003'
+case_id = 'eqn_003_algorithm_section'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-004'
+case_id = 'eqn_004_if_equation_balanced'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-005'
+case_id = 'eqn_005_no_nested_when'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-006'
+case_id = 'eqn_006_no_when_in_initial'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-008'
+case_id = 'eqn_008_for_equation_vector'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-008'
+case_id = 'eqn_for_loop_equations'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-010'
+case_id = 'eqn_010_for_variable_readonly'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-011'
+case_id = 'eqn_011_if_boolean_ok'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-013'
+case_id = 'eqn_013_when_elsewhen_same_lhs_set_ok'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-013'
+case_id = 'eqn_013_when_elsewhen_different_lhs_set_fails'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-015'
+case_id = 'eqn_015_reinit_in_when'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-015'
+case_id = 'eqn_015_reinit_outside_when_fails'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-016'
+case_id = 'eqn_016_reinit_state_variable_ok'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-016'
+case_id = 'eqn_016_reinit_non_state_fails'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-021'
+case_id = 'eqn_021_constants_by_declaration'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-024'
+case_id = 'eqn_024_no_assignment_in_equations'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-025'
+case_id = 'eqn_025_type_compatible'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-025'
+case_id = 'eqn_025_record_wrapper_constructor_compatible'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-025'
+case_id = 'eqn_025_user_defined_record_type_mismatch_fails'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-025'
+case_id = 'eqn_025_record_constructor_type_mismatch_fails'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EQN-029'
+case_id = 'eqn_029_when_boolean_condition'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-029'
+case_id = 'eqn_when_clause_basic'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-033'
+case_id = 'eqn_033_perfect_matching'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-037'
+case_id = 'eqn_037_no_when_in_initial'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-001'
+case_id = 'expr_001_relational_scalar_ok'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-002'
+case_id = 'expr_002_no_real_equality'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-003'
+case_id = 'expr_003_der_of_continuous'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-004'
+case_id = 'expr_004_no_der_in_functions'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-005'
+case_id = 'expr_005_normal_arithmetic'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-006'
+case_id = 'expr_006_delaymax_parameter_expression_ok'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-006'
+case_id = 'expr_006_delaymax_parameter_expression_rejected'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-008'
+case_id = 'expr_008_delay_not_in_function'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-009'
+case_id = 'expr_009_cardinality_rejects_connector_arrays'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-009'
+case_id = 'expr_009_cardinality_rejects_expandable_connectors'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-012'
+case_id = 'expr_012_constant_to_parameter_ok'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-012'
+case_id = 'expr_012_variable_to_parameter_fails'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-013'
+case_id = 'expr_013_end_in_subscript'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-013'
+case_id = 'expr_013_end_outside_subscript_fails'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-014'
+case_id = 'expr_014_no_chained_relationals'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-015'
+case_id = 'expr_015_unary_minus_ok'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-016'
+case_id = 'expr_016_if_expr_boolean'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-016'
+case_id = 'expr_016_if_expr_non_boolean_fails'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-017'
+case_id = 'expr_017_if_expr_same_type'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-018'
+case_id = 'expr_018_abs_real'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-019'
+case_id = 'expr_019_sign_real'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-024'
+case_id = 'expr_024_div_integer'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-024'
+case_id = 'expr_024_mod_integer'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-025'
+case_id = 'expr_025_ceil_real'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-025'
+case_id = 'expr_025_floor_real'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-026'
+case_id = 'expr_026_integer_accepts_real_argument'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-026'
+case_id = 'expr_026_integer_rejects_boolean_argument'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-027'
+case_id = 'expr_027_delay_rejects_string_value_argument'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-028'
+case_id = 'expr_028_delay_rejects_non_real_time_argument'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-029'
+case_id = 'expr_029_delaytime_parameter_expression_ok'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-029'
+case_id = 'expr_029_delaytime_non_parameter_rejected'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-033'
+case_id = 'expr_033_cardinality_not_in_function'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-035'
+case_id = 'expr_035_instream_not_in_function'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-036'
+case_id = 'expr_036_actualstream_not_in_function'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-037'
+case_id = 'expr_037_pre_not_in_function'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-039'
+case_id = 'expr_039_noevent_usage'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-040'
+case_id = 'expr_040_integer_event_trigger'
+test_file = 'tests/expr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-001'
+case_id = 'func_001_input_output_ok'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-001'
+case_id = 'func_001_public_no_prefix_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-002'
+case_id = 'func_002_input_readonly'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-006'
+case_id = 'func_006_no_equations_in_function'
+test_file = 'tests/func_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-007'
+case_id = 'func_007_no_when_in_function'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-010'
+case_id = 'func_010_builtin_math_call_ok'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-010'
+case_id = 'func_010_initial_forbidden_in_function'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-010'
+case_id = 'func_010_sample_forbidden_in_function'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-011'
+case_id = 'func_011_non_clock_component_ok'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-011'
+case_id = 'func_011_clock_component_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-012'
+case_id = 'func_012_local_component_without_inner_outer_ok'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-012'
+case_id = 'func_012_inner_prefix_in_function_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-012'
+case_id = 'func_012_outer_prefix_in_function_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-014'
+case_id = 'func_014_single_algorithm'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-017'
+case_id = 'func_017_return_in_function'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-017'
+case_id = 'func_017_return_outside_function_algorithm_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-015'
+case_id = 'func_015_record_component_ok'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-015'
+case_id = 'func_015_connector_component_fails'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-001'
+case_id = 'func_basic_call'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-001'
+case_id = 'func_with_protected'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-001'
+case_id = 'func_multiple_outputs'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'FUNC-001'
+case_id = 'func_default_input'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-001'
+case_id = 'inst_001_modification_context'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-002'
+case_id = 'inst_002_outer_overrides_inner'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-003'
+case_id = 'inst_003_no_duplicate_modifications'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-006'
+case_id = 'inst_006_identical_inherited_components_are_kept_once'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-006'
+case_id = 'inst_006_conflicting_inherited_components_fail'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-007'
+case_id = 'inst_007_parameter_evaluable'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-008'
+case_id = 'inst_008_no_cyclic_binding'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-010'
+case_id = 'inst_010_final_cannot_modify'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-011'
+case_id = 'inst_011_inner_can_be_subtype_of_outer'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-011'
+case_id = 'inst_011_inner_must_match_outer_constraint'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-012'
+case_id = 'inst_012_outer_binding_is_rejected'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-012'
+case_id = 'inst_012_outer_modification_is_rejected'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-014'
+case_id = 'inst_014_replaceable_component_can_be_redeclared'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-014'
+case_id = 'inst_014_non_replaceable_component_cannot_be_redeclared'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-014'
+case_id = 'inst_014_replaceable_nested_class_can_be_redeclared'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-014'
+case_id = 'inst_014_non_replaceable_nested_class_cannot_be_redeclared'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-016'
+case_id = 'inst_016_conditional_parameter'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-022'
+case_id = 'inst_022_constant_component_cannot_be_redeclared'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-027'
+case_id = 'inst_027_constraining_clause_modifications_apply_after_redeclare'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-029'
+case_id = 'inst_029_break_existing_element_is_allowed'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-029'
+case_id = 'inst_029_break_missing_element_fails'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-034'
+case_id = 'inst_034_encapsulated_basic'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-034'
+case_id = 'inst_034_encapsulated_self_lookup_ok'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-037'
+case_id = 'inst_037_identical_inherited_child_class_is_kept_once'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-037'
+case_id = 'inst_037_conflicting_inherited_child_class_fails'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-039'
+case_id = 'inst_039_protected_extends_marks_inherited_components_protected'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-043'
+case_id = 'inst_043_original_type_is_used_as_implicit_constraint'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-043'
+case_id = 'inst_043_redeclare_must_still_be_subtype_without_explicit_constrainedby'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-053'
+case_id = 'inst_053_conditional_false_removed'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-053'
+case_id = 'inst_053_conditional_true_kept'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-001'
+case_id = 'lex_001_ascii_identifiers_non_ascii'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'LEX-001'
+case_id = 'lex_001_ascii_identifiers_valid'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-002'
+case_id = 'lex_002_no_token_whitespace'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'LEX-003'
+case_id = 'lex_003_no_nested_comments'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-004'
+case_id = 'lex_004_case_sensitivity'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-005'
+case_id = 'lex_005_reserved_keywords'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'LEX-006'
+case_id = 'lex_006_reserved_type_names'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'LEX-007'
+case_id = 'lex_007_quoted_distinct'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-007'
+case_id = 'lex_007_quoted_with_spaces'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-008'
+case_id = 'lex_008_string_concat_explicit'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'LEX-009'
+case_id = 'lex_009_semantic_parser_check'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'LEX-010'
+case_id = 'lex_010_float_range'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-011'
+case_id = 'lex_011_integer_range'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-012'
+case_id = 'lex_012_boolean_literals'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'LEX-013'
+case_id = 'lex_013_string_escapes'
+test_file = 'tests/lex_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'OPREC-001'
+case_id = 'oprec_001_encapsulated_operator_ok'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'OPREC-001'
+case_id = 'oprec_001_unencapsulated_operator_rejected'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'OPREC-002'
+case_id = 'oprec_002_single_output_ok'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'OPREC-002'
+case_id = 'oprec_002_multiple_outputs_rejected'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'OPREC-003'
+case_id = 'oprec_003_record_input_ok'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'OPREC-003'
+case_id = 'oprec_003_missing_record_input_rejected'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'OPREC-004'
+case_id = 'oprec_004_constructor_output_ok'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'OPREC-004'
+case_id = 'oprec_004_constructor_output_rejected'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'OPREC-008'
+case_id = 'oprec_008_zero_operator_single_zero_input_ok'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'OPREC-008'
+case_id = 'oprec_008_zero_operator_multiple_functions_rejected'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'OPREC-008'
+case_id = 'oprec_008_zero_operator_with_input_rejected'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'OPREC-010'
+case_id = 'oprec_010_string_output_ok'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'OPREC-010'
+case_id = 'oprec_010_non_string_output_rejected'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-001'
+case_id = 'pkg_001_no_duplicate_imports'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-002'
+case_id = 'pkg_002_import_basic'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'PKG-002'
+case_id = 'pkg_002_import_not_inherited_fails'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-003'
+case_id = 'pkg_003_import_from_package'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'PKG-003'
+case_id = 'pkg_nested_package'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'PKG-003'
+case_id = 'pkg_package_with_class'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'PKG-003'
+case_id = 'pkg_003_import_from_non_package_rejected'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-005'
+case_id = 'pkg_005_import_element_of_package'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'PKG-005'
+case_id = 'pkg_005_import_cannot_traverse_model_members'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-006'
+case_id = 'pkg_006_directory_requires_package_mo'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-007'
+case_id = 'pkg_007_duplicate_child_class_names_rejected'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-008'
+case_id = 'pkg_008_dir_and_file_conflict_rejected'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-009'
+case_id = 'pkg_009_non_top_level_file_requires_within'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-010'
+case_id = 'pkg_010_within_must_match_enclosing_package'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-011'
+case_id = 'pkg_011_qualified_import'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'PKG-012'
+case_id = 'pkg_012_import_clause_not_modifiable'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'PKG-002'
+case_id = 'pkg_wildcard_import'
+test_file = 'tests/pkg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-002'
+case_id = 'sim_002_initialization_fixed'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-003'
+case_id = 'sim_003_parameter_fixed_default'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-003'
+case_id = 'sim_003_parameter_missing_binding_not_standalone_simulatable'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-003'
+case_id = 'sim_003_parameter_with_binding_is_standalone_simulatable'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-003'
+case_id = 'sim_with_parameters'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-004'
+case_id = 'sim_004_non_parameter_variable_defaults_fixed_false'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-005'
+case_id = 'sim_005_discrete_solved_form_acyclic_dependency'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-005'
+case_id = 'sim_005_conditional_when_missing_branch_uses_pre_fallback'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-005'
+case_id = 'sim_005_discrete_solved_form_rejects_cycle'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_dae_has_algebraic_equations'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_dae_has_ode_equations'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_dae_structure_ode_and_algebraic'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_basic_integrator'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_spring_mass'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_with_when_clause'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_fc_relation_covers_if_and_when_conditions'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_fc_relation_ignores_noevent_conditions'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_sample_allowed_in_discrete_when_condition'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_runtime_metadata_consistent_for_hybrid_model'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_strict_solver_dae_rejects_unlowered_sample_in_fx'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_dynamic_clock_constructor_without_static_schedule_fails'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_unresolved_function_rejected_in_resolve'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'SIM-009'
+case_id = 'sim_009_unresolved_reference_rejected_in_resolve'
+test_file = 'tests/sim_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-001'
+case_id = 'strm_001_stream_prefix_inside_connector_ok'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-001'
+case_id = 'strm_001_stream_prefix_outside_connector_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-002'
+case_id = 'strm_002_stream_connector_with_single_flow_ok'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-002'
+case_id = 'strm_002_stream_connector_without_flow_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-002'
+case_id = 'strm_002_stream_connector_with_multiple_flows_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_stream_connector_flow_is_scalar_real_ok'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_stream_connector_flow_must_be_real_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-003'
+case_id = 'strm_003_stream_connector_flow_must_be_scalar_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-006'
+case_id = 'strm_006_instream_requires_stream_variable'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-006'
+case_id = 'strm_006_instream_accepts_stream_variable'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-010'
+case_id = 'strm_010_actualstream_requires_stream_variable'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'STRM-010'
+case_id = 'strm_010_actualstream_accepts_stream_variable'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-011'
+case_id = 'strm_011_nested_connector_same_level_flow_ok'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'STRM-011'
+case_id = 'strm_011_nested_connector_missing_same_level_flow_rejected'
+test_file = 'tests/strm_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'TYPE-005'
+case_id = 'type_005_class_component_mismatch'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'TYPE-009'
+case_id = 'type_009_variability_compatible'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-011'
+case_id = 'type_011_dimension_match'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-013'
+case_id = 'type_013_enumeration_basic'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-013'
+case_id = 'type_013_enumeration_mismatch_fails'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'TYPE-013'
+case_id = 'type_enumeration_usage'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-014'
+case_id = 'type_014_builtin_type_match'
+test_file = 'tests/type_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-028'
+case_id = 'type_028_record_mismatch_fails'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'TYPE-030'
+case_id = 'type_030_existing_modifier_target_is_allowed'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-030'
+case_id = 'type_030_missing_modifier_target_fails'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'TYPE-033'
+case_id = 'type_033_integer_to_real_coercion'
+test_file = 'tests/type_contracts.rs'
+kind = 'Balance'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-034'
+case_id = 'type_034_integer_division_real'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+

@@ -1,0 +1,3882 @@
+# Contract registry data — source of truth for SPEC_0022.
+# Regenerate with: cargo run -p rumoca-tool-dev -- dump-contracts
+
+[[contracts]]
+id = 'ALG-001'
+category = 'Algorithm'
+name = 'No equation syntax'
+mls_ref = '§11'
+requirement = 'Equation equality = shall not be used in an algorithm section'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-002'
+category = 'Algorithm'
+name = 'LHS component types'
+mls_ref = '§11.1'
+requirement = 'Only type, record, operator record, connector may appear as left-hand-side'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-003'
+category = 'Algorithm'
+name = 'For event evaluable'
+mls_ref = '§11.2'
+requirement = 'If for-statement contains event-generating expressions, index shall be evaluable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-004'
+category = 'Algorithm'
+name = 'For no array overwrite'
+mls_ref = '§11.2'
+requirement = 'No assignments to entire arrays subscripted with loop variable inside for'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-005'
+category = 'Algorithm'
+name = 'While scalar Boolean'
+mls_ref = '§11.2'
+requirement = 'Expression of while-statement shall be a scalar Boolean expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-006'
+category = 'Algorithm'
+name = 'While no events'
+mls_ref = '§11.2'
+requirement = 'Event-generating expressions not allowed in while condition or body'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-007'
+category = 'Algorithm'
+name = 'When not in function'
+mls_ref = '§11.2'
+requirement = 'When-statement shall not be used inside a function class'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-008'
+category = 'Algorithm'
+name = 'When not in initial'
+mls_ref = '§11.2'
+requirement = 'When-statement shall not occur inside an initial algorithm'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-009'
+category = 'Algorithm'
+name = 'When no nesting'
+mls_ref = '§11.2'
+requirement = 'When-statement cannot be nested inside another when-statement'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-010'
+category = 'Algorithm'
+name = 'When not in control'
+mls_ref = '§11.2'
+requirement = 'When-statements shall not occur inside while/for/if in algorithms'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-011'
+category = 'Algorithm'
+name = 'When discrete Boolean'
+mls_ref = '§11.2'
+requirement = 'Expression of when-statement shall be discrete-time Boolean'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-012'
+category = 'Algorithm'
+name = 'break scope'
+mls_ref = '§11.2'
+requirement = 'break can only be used in while or for loop'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-013'
+category = 'Algorithm'
+name = 'return scope'
+mls_ref = '§11.2'
+requirement = 'return can only be used inside functions'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-014'
+category = 'Algorithm'
+name = 'terminate not in function'
+mls_ref = '§11.2'
+requirement = 'terminate-statement shall not be used in functions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-015'
+category = 'Algorithm'
+name = 'Assert execution halt'
+mls_ref = '§11.2.8.1'
+requirement = 'A failed assert stops the execution of the current algorithm'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-016'
+category = 'Algorithm'
+name = 'For range fixed'
+mls_ref = '§11.2.2'
+requirement = 'For-statement range expressions are evaluated once before entering loop'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ALG-017'
+category = 'Algorithm'
+name = 'LHS initialization'
+mls_ref = '§11.1'
+requirement = 'Variables on the left-hand side of := must be initialized when algorithm is invoked'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-001'
+category = 'Annotation'
+name = 'Forbidden constructs'
+mls_ref = '§18.2'
+requirement = 'final, each, element-redeclaration, element-replaceable shall not be used in annotations'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-002'
+category = 'Annotation'
+name = 'No empty modification'
+mls_ref = '§18.2'
+requirement = 'element-modification without modification is deprecated'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-003'
+category = 'Annotation'
+name = 'Unit expression valid'
+mls_ref = '§18.5.2.2'
+requirement = 'Non-empty unit shall match unit-expression in chapter 19'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-004'
+category = 'Annotation'
+name = 'Plot result scalar'
+mls_ref = '§18.5.2.3'
+requirement = 'Error if x or y does not designate a scalar result'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-005'
+category = 'Annotation'
+name = 'Derivative limit'
+mls_ref = '§18.5.2.3'
+requirement = 'If x or y is der(v,n), then n must not exceed maximum differentiation applied to v'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-006'
+category = 'Annotation'
+name = 'Unit compatibility'
+mls_ref = '§18.5.2.3'
+requirement = 'Error if unit of x or y expression is incompatible with axis unit'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-007'
+category = 'Annotation'
+name = 'Figure identifier unique'
+mls_ref = '§18.5.2.1'
+requirement = 'Figure must be uniquely identified by its identifier'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-008'
+category = 'Annotation'
+name = 'Evaluate scope'
+mls_ref = '§18.6'
+requirement = 'Annotation Evaluate is only allowed for parameters and constants'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-009'
+category = 'Annotation'
+name = 'Evaluate non-evaluable warn'
+mls_ref = '§18.6'
+requirement = 'For non-evaluable parameter, Evaluate has no impact; issue warning'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-010'
+category = 'Annotation'
+name = 'StopTime simulation model'
+mls_ref = '§18.7'
+requirement = 'If StopTime is set in non-partial model, it is required to be a simulation model'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-011'
+category = 'Annotation'
+name = 'mustBeConnected error'
+mls_ref = '§18.8'
+requirement = 'Error if connector does not appear as inside connector in any connect-equation'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-012'
+category = 'Annotation'
+name = 'mayOnlyConnectOnce error'
+mls_ref = '§18.8'
+requirement = 'Error if connection set has more than two elements'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-013'
+category = 'Annotation'
+name = 'Annotation placement'
+mls_ref = '§18.1'
+requirement = 'Standard annotations shall only be used where their semantics is defined'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-014'
+category = 'Annotation'
+name = 'TestCase restriction'
+mls_ref = '§18.7'
+requirement = 'Class with TestCase annotation shall not be used in other models unless those also have TestCase'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ANN-015'
+category = 'Annotation'
+name = 'Extent coordinate order'
+mls_ref = '§18.9.1.1'
+requirement = 'Coordinates of first point shall be less than coordinates of second point'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-001'
+category = 'Array'
+name = 'Fixed dimensionality'
+mls_ref = '§10'
+requirement = 'Number of dimensions is fixed and cannot be changed at run-time'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-002'
+category = 'Array'
+name = 'Rectangular arrays'
+mls_ref = '§10'
+requirement = 'All dimensions must be uniform (no ragged arrays)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-003'
+category = 'Array'
+name = 'Size matching'
+mls_ref = '§10'
+requirement = 'Binary operations require matching sizes or scalar operands'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-004'
+category = 'Array'
+name = 'Slice uniformity'
+mls_ref = '§10'
+requirement = 'Member access slices valid only if component sizes match across elements'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-005'
+category = 'Array'
+name = 'Index bounds'
+mls_ref = '§10.5'
+requirement = 'Array dimension indexed by Integer has lower bound 1, upper bound = size'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-006'
+category = 'Array'
+name = 'Constructor non-empty'
+mls_ref = '§10.4'
+requirement = 'array() or {} is not defined; there must be at least one argument'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-007'
+category = 'Array'
+name = 'Concatenation dimensions'
+mls_ref = '§10.4'
+requirement = 'Arrays must have same number of dimensions for concatenation'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-008'
+category = 'Array'
+name = 'Concatenation size match'
+mls_ref = '§10.4'
+requirement = 'Arrays must have identical sizes except for concatenation dimension'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-009'
+category = 'Array'
+name = 'Integer to Real coercion'
+mls_ref = '§10.6.13'
+requirement = 'Integer expression automatically converted to Real in Real context'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-010'
+category = 'Array'
+name = 'promote n >= ndims'
+mls_ref = '§10.3'
+requirement = 'promote(A, n): n ≥ ndims(A) is required'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-011'
+category = 'Array'
+name = 'promote n constant'
+mls_ref = '§10.3'
+requirement = 'Argument n must be constant that can be evaluated during translation'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-012'
+category = 'Array'
+name = 'size i bounds'
+mls_ref = '§10.3.1'
+requirement = 'size(A, i): required that 1 ≤ i ≤ ndims(A)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-013'
+category = 'Array'
+name = 'size expandable decl'
+mls_ref = '§10.3.1'
+requirement = 'size(A) with expandable connector: component must be declared, must not use colon'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-014'
+category = 'Array'
+name = 'scalar all size 1'
+mls_ref = '§10.3.2'
+requirement = 'scalar(A): size(A, i) = 1 required for 1 ≤ i ≤ ndims(A)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-015'
+category = 'Array'
+name = 'vector at most one > 1'
+mls_ref = '§10.3.2'
+requirement = 'vector(A): at most one dimension size > 1'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-016'
+category = 'Array'
+name = 'matrix trailing size 1'
+mls_ref = '§10.3.2'
+requirement = 'matrix(A): size(A, i) = 1 required for 2 < i ≤ ndims(A)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-017'
+category = 'Array'
+name = 'zeros/ones non-empty'
+mls_ref = '§10.3.3'
+requirement = 'zeros/ones needs one or more arguments; zeros() is not legal'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-018'
+category = 'Array'
+name = 'fill at least two args'
+mls_ref = '§10.3.3'
+requirement = 'fill(s, n1, n2, ...) needs two or more arguments; fill(s) is not legal'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-019'
+category = 'Array'
+name = 'linspace n >= 2'
+mls_ref = '§10.3.3'
+requirement = 'linspace(x1, x2, n): required that n ≥ 2'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-020'
+category = 'Array'
+name = 'array type compatible'
+mls_ref = '§10.4'
+requirement = 'All arguments of array() must be type compatible expressions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-021'
+category = 'Array'
+name = 'cat k existing dim'
+mls_ref = '§10.4.2'
+requirement = 'cat(k, A, B, C): k must characterize existing dimension, 1 ≤ k ≤ ndims(A)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-022'
+category = 'Array'
+name = 'cat k parameter'
+mls_ref = '§10.4.2'
+requirement = 'k shall be a parameter expression of Integer type'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-023'
+category = 'Array'
+name = 'concat non-empty'
+mls_ref = '§10.4.2.1'
+requirement = 'Concatenation syntax: there must be at least one argument ([] is not defined)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-024'
+category = 'Array'
+name = 'Index bounds assertion'
+mls_ref = '§10.5'
+requirement = 'assert(1 <= i and i <= size(A, di), ...) is generated for index access'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-025'
+category = 'Array'
+name = 'Index type match'
+mls_ref = '§10.5.1'
+requirement = 'Type of index should correspond to type used for declaring dimension'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-026'
+category = 'Array'
+name = 'Slice subscript limit'
+mls_ref = '§10.6.9'
+requirement = 'Number of subscripts on m must not be greater than array dimension for m'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-027'
+category = 'Array'
+name = 'Equality same dimensions'
+mls_ref = '§10.6.1'
+requirement = 'Equality/assignment require both objects to have same number of dimensions and sizes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-028'
+category = 'Array'
+name = 'Equality type equivalent'
+mls_ref = '§10.6.1'
+requirement = 'The operands need to be type equivalent'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-029'
+category = 'Array'
+name = 'Add/sub same size'
+mls_ref = '§10.6.2'
+requirement = 'Addition/subtraction require size(a) = size(b) and numeric type'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-030'
+category = 'Array'
+name = 'Division by scalar'
+mls_ref = '§10.6.5'
+requirement = 'Division a / s: a is numeric scalar/vector/matrix/array, s is numeric scalar'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-031'
+category = 'Array'
+name = 'Power scalar Real'
+mls_ref = '§10.6.7'
+requirement = 'a .^ b: required that a and b are scalar Real or Integer expressions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-032'
+category = 'Array'
+name = 'Power exceptional illegal'
+mls_ref = '§10.6.7'
+requirement = 'Other exceptional situations are illegal'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-033'
+category = 'Array'
+name = 'Matrix power square'
+mls_ref = '§10.6.8'
+requirement = 'a ^ s: a is square numeric matrix, s is scalar Integer with s ≥ 0'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-034'
+category = 'Array'
+name = 'Reduction iterator vector'
+mls_ref = '§10.3.4.1'
+requirement = 'Expressions in iterators shall be vector expressions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-035'
+category = 'Array'
+name = 'Reduction event evaluable'
+mls_ref = '§10.3.4'
+requirement = 'If event-generating, expressions inside iterators shall be evaluable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-036'
+category = 'Array'
+name = 'Empty array size req'
+mls_ref = '§10.7'
+requirement = 'Size-requirements of operations must be fulfilled even if dimension is zero'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-037'
+category = 'Array'
+name = 'cross/skew 3-vector'
+mls_ref = '§10.3.5'
+requirement = 'cross(x,y) and skew(x) only defined for Real 3-vectors'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-038'
+category = 'Array'
+name = 'transpose 2D minimum'
+mls_ref = '§10.3.5'
+requirement = 'transpose(A): error if A does not have at least 2 dimensions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-039'
+category = 'Array'
+name = 'Reduction empty defaults'
+mls_ref = '§10.3.4'
+requirement = 'Empty array: sum returns zeros, product returns 1, min/max return type extrema'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-040'
+category = 'Array'
+name = 'min/max type restriction'
+mls_ref = '§10.3.4'
+requirement = 'min/max require scalar enumeration, Boolean, Integer, or Real types'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-001'
+category = 'Clock'
+name = 'Clock not in function'
+mls_ref = '§16.3'
+requirement = 'Clock constructors not allowed inside function classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-002'
+category = 'Clock'
+name = 'Clock prefix restrictions'
+mls_ref = '§16.3'
+requirement = 'Clock variables cannot have flow, stream, discrete, parameter, or constant prefix'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-003'
+category = 'Clock'
+name = 'Clock switch evaluable'
+mls_ref = '§16.3'
+requirement = 'Subscripts and conditions switching between clock variables must be evaluable expressions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-004'
+category = 'Clock'
+name = 'No cross-subclock equations'
+mls_ref = '§16.7.4'
+requirement = 'Systems of equations cannot involve different sub-clocks simultaneously'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-005'
+category = 'Clock'
+name = 'Unique clock association'
+mls_ref = '§16.2.1'
+requirement = 'Every clocked variable associates uniquely with exactly one clock'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-006'
+category = 'Clock'
+name = 'Clocked access restriction'
+mls_ref = '§16.2.1'
+requirement = 'Clocked variables can only be directly accessed when their associated clock is active'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-007'
+category = 'Clock'
+name = 'sample() continuous input'
+mls_ref = '§16.5.1'
+requirement = 'sample() input must be continuous-time with no variability restrictions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-008'
+category = 'Clock'
+name = 'hold() component input'
+mls_ref = '§16.5.1'
+requirement = 'hold() input must be a component expression or parameter expression'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-009'
+category = 'Clock'
+name = 'previous() component input'
+mls_ref = '§16.4'
+requirement = 'previous() input must be a component expression; parameter inputs return their value'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-010'
+category = 'Clock'
+name = 'superSample event clock'
+mls_ref = '§16.5.2'
+requirement = 'superSample() cannot be applied to event clocks to create faster clocks'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-011'
+category = 'Clock'
+name = 'shiftSample resolution'
+mls_ref = '§16.5.2'
+requirement = 'shiftSample() on event clocks cannot have resolution other than 1'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-012'
+category = 'Clock'
+name = 'backSample pre-start'
+mls_ref = '§16.5.2'
+requirement = 'backSample() cannot create clock ticks before the base-clock starts'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-013'
+category = 'Clock'
+name = 'No derivative on clock ops'
+mls_ref = '§16.5.2'
+requirement = 'Derivative on sample(), subSample(), superSample(), shiftSample(), backSample(), noClock() is forbidden'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-014'
+category = 'Clock'
+name = 'Clocked when no nest'
+mls_ref = '§16.6'
+requirement = 'Clocked when-clauses cannot nest and have no elsewhen parts'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-015'
+category = 'Clock'
+name = 'Clocked when not in alg'
+mls_ref = '§16.6'
+requirement = 'Clocked when-clauses cannot appear inside algorithms'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-016'
+category = 'Clock'
+name = 'Discretized partition'
+mls_ref = '§16.8.1'
+requirement = 'Partitions containing der(), delay(), or when-clauses with Boolean conditions are discretized'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-017'
+category = 'Clock'
+name = 'Sampling factor range'
+mls_ref = '§16.7.5'
+requirement = 'Accumulated sub- and supersampling factors in range 1 to 2⁶³ must be supported'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-018'
+category = 'Clock'
+name = 'Clock interval positive'
+mls_ref = '§16.3'
+requirement = 'Clock(interval): interval must be strictly positive (interval > 0)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-019'
+category = 'Clock'
+name = 'intervalCounter positive'
+mls_ref = '§16.3'
+requirement = 'Clock(intervalCounter, resolution): clocked component expression intervalCounter must be > 0'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CLK-020'
+category = 'Clock'
+name = 'Clock variable restrictions'
+mls_ref = '§16.3'
+requirement = 'Clock variables cannot have prefixes flow, stream, discrete, parameter, or constant'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-001'
+category = 'Connection'
+name = 'Homogeneity'
+mls_ref = '§9.2'
+requirement = 'Connection set shall contain either only flow or only non-flow variables'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-002'
+category = 'Connection'
+name = 'Type matching'
+mls_ref = '§9.2'
+requirement = 'Matched primitive components must have the same primitive types'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-003'
+category = 'Connection'
+name = 'Flow-to-flow'
+mls_ref = '§9.2'
+requirement = 'Flow variables may only connect to other flow variables'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-004'
+category = 'Connection'
+name = 'Single source'
+mls_ref = '§9.2'
+requirement = 'At most one inside output connector or one public outside input connector'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-005'
+category = 'Connection'
+name = 'Quantity matching'
+mls_ref = '§9.2'
+requirement = 'Variables with non-empty quantity attribute must match'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-006'
+category = 'Connection'
+name = 'No outer-to-outer'
+mls_ref = '§9.2'
+requirement = 'Cannot connect two connectors of outer elements'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-007'
+category = 'Connection'
+name = 'Connector not parameter'
+mls_ref = '§9.1'
+requirement = 'Connector component shall not be declared with parameter or constant'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-008'
+category = 'Connection'
+name = 'Same dimensions'
+mls_ref = '§9.2'
+requirement = 'Two connectors must have same named elements with same dimensions'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-009'
+category = 'Connection'
+name = 'Expandable no flow'
+mls_ref = '§9.1.3'
+requirement = 'Expandable connector shall not contain flow component'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-010'
+category = 'Connection'
+name = 'Expandable to expandable'
+mls_ref = '§9.1.3'
+requirement = 'Expandable connectors can only connect to other expandable connectors'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-011'
+category = 'Connection'
+name = 'Expandable declared'
+mls_ref = '§9.1.3'
+requirement = 'At least one connector must reference a declared component'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-012'
+category = 'Connection'
+name = 'Expandable input deduction'
+mls_ref = '§9.1.3'
+requirement = 'Multiple inputs in expandable connectors deduced as input is error'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-013'
+category = 'Connection'
+name = 'Overconstrained root'
+mls_ref = '§9.4'
+requirement = 'Every subgraph shall have at least one definite or potential root node'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-014'
+category = 'Connection'
+name = 'No spanning tree cycle'
+mls_ref = '§9.4'
+requirement = 'Cycle among required spanning-tree-edges is error'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-015'
+category = 'Connection'
+name = 'Two definite roots'
+mls_ref = '§9.4'
+requirement = 'Error if two definite root nodes connected through required spanning tree edges'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-016'
+category = 'Connection'
+name = 'Protected connector'
+mls_ref = '§9.2'
+requirement = 'Protected outside connector must connect to inside or public outside connector'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-017'
+category = 'Connection'
+name = 'Balance flow = potential'
+mls_ref = '§9.3.1'
+requirement = 'For non-partial non-simple non-expandable connector: number of flow = number of potential variables'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-018'
+category = 'Connection'
+name = 'Simple connector prefix'
+mls_ref = '§9.3.1'
+requirement = 'Simple connector components must be declared as input, output, or protected'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-019'
+category = 'Connection'
+name = 'Connect subscripts evaluable'
+mls_ref = '§9.3'
+requirement = 'Subscripts shall be evaluable expressions or special operator :'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-020'
+category = 'Connection'
+name = 'Expandable sizeless no use'
+mls_ref = '§9.1.3'
+requirement = 'Sizeless array component shall not be used without subscripts'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-021'
+category = 'Connection'
+name = 'Expandable input source'
+mls_ref = '§9.1.3'
+requirement = 'If variable appears as input in expandable, should appear as non-input in at least one other'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-022'
+category = 'Connection'
+name = 'Overdetermined no flow'
+mls_ref = '§9.4.1'
+requirement = 'Overdetermined type/record may not have flow components nor be used as type of flow components'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-023'
+category = 'Connection'
+name = 'Overconstrained not in function'
+mls_ref = '§9.4.1'
+requirement = 'None of these operators allowed inside function classes'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-024'
+category = 'Connection'
+name = 'equalityConstraint prototype'
+mls_ref = '§9.4.1'
+requirement = 'equalityConstraint function shall have specified prototype'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-025'
+category = 'Connection'
+name = 'equalityConstraint n constant'
+mls_ref = '§9.4.1'
+requirement = 'Array dimension n shall be constant Integer expression evaluable during translation, n ≥ 0'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-026'
+category = 'Connection'
+name = 'Flow sign convention'
+mls_ref = '§9.2'
+requirement = 'Flow sign is +1 for inside connectors and -1 for outside connectors'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-027'
+category = 'Connection'
+name = 'potentialRoot priority'
+mls_ref = '§9.4.1'
+requirement = 'Priority p for potentialRoot must be p ≥ 0'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-028'
+category = 'Connection'
+name = 'Parameter/constant variability'
+mls_ref = '§9.3'
+requirement = 'Primitive components may only connect parameter to parameter and constant to constant'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-029'
+category = 'Connection'
+name = 'Connect arguments are connectors'
+mls_ref = '§9.3'
+requirement = 'Both arguments of connect must be connector references'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-001'
+category = 'Declaration'
+name = 'Name uniqueness'
+mls_ref = '§4.4'
+requirement = 'Name shall not have the same name as any other element in its partially flattened enclosing class'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-002'
+category = 'Declaration'
+name = 'Block connector prefixes'
+mls_ref = '§4.6'
+requirement = 'Each public connector component of a block must have prefixes input and/or output'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-003'
+category = 'Declaration'
+name = 'Record public only'
+mls_ref = '§4.6'
+requirement = 'Only public sections are allowed in record definition'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-004'
+category = 'Declaration'
+name = 'Record no prefixes'
+mls_ref = '§4.6'
+requirement = 'Elements of a record shall not have prefixes input, output, inner, outer, stream, or flow'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-005'
+category = 'Declaration'
+name = 'Record component types'
+mls_ref = '§4.6'
+requirement = 'Components in a record may only be of specialized class record or type'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-006'
+category = 'Declaration'
+name = 'Connector public only'
+mls_ref = '§4.6'
+requirement = 'Only public sections are allowed in connector definition'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-007'
+category = 'Declaration'
+name = 'Connector no inner/outer'
+mls_ref = '§4.6'
+requirement = 'Elements of a connector shall not have prefixes inner or outer'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-008'
+category = 'Declaration'
+name = 'Operator record extends'
+mls_ref = '§4.6'
+requirement = 'Not legal to extend from an operator record except as short class definition'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-009'
+category = 'Declaration'
+name = 'Protected access'
+mls_ref = '§4.4'
+requirement = 'A protected element shall not be accessed via dot notation'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-010'
+category = 'Declaration'
+name = 'Type prefix scope'
+mls_ref = '§4.4'
+requirement = 'Type prefixes (flow, stream, etc.) only for type, record, operator record, connector'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-011'
+category = 'Declaration'
+name = 'Stream subtype'
+mls_ref = '§4.4'
+requirement = 'Variables with stream prefix shall be a subtype of Real'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-012'
+category = 'Declaration'
+name = 'Input not parameter'
+mls_ref = '§4.4'
+requirement = 'Variables with input prefix must not also have prefix parameter or constant'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-013'
+category = 'Declaration'
+name = 'Declaration equation scope'
+mls_ref = '§4.4'
+requirement = 'Only type, record, operator record, connector, ExternalObject may have declaration equations'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-014'
+category = 'Declaration'
+name = 'Partial class error'
+mls_ref = '§4.6'
+requirement = 'Error if the type is partial in a simulation model'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-015'
+category = 'Declaration'
+name = 'Component/class namespace'
+mls_ref = '§5.3'
+requirement = 'Component cannot have the same name as its class'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-016'
+category = 'Declaration'
+name = 'Flow primitive types'
+mls_ref = '§4.4.2.2'
+requirement = 'Primitive elements with flow prefix shall be subtype of Real, Integer, or operator record defining additive group'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-017'
+category = 'Declaration'
+name = 'Nested prefix restriction'
+mls_ref = '§4.4.2.2'
+requirement = 'When flow/input/output applied to structured component, no element may have these or stream prefix'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-018'
+category = 'Declaration'
+name = 'Array dim evaluable'
+mls_ref = '§4.4.2'
+requirement = 'Array dimensions shall be scalar non-negative evaluable expressions of type Integer or enumeration/Boolean'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-019'
+category = 'Declaration'
+name = 'Constant declaration eq'
+mls_ref = '§4.5.1'
+requirement = 'Constant variables shall have declaration equation with constant expression if used in simulation'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-020'
+category = 'Declaration'
+name = 'Discrete der forbidden'
+mls_ref = '§4.5.3'
+requirement = 'It is not allowed to apply der to discrete-time variables'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-021'
+category = 'Declaration'
+name = 'Discrete Real when-assign'
+mls_ref = '§4.5.3'
+requirement = 'Discrete Real variable must be assigned in when-clause, by assignment or equation'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-022'
+category = 'Declaration'
+name = 'Non-Real always discrete'
+mls_ref = '§4.5.3'
+requirement = 'Default variability for Integer/String/Boolean/enum is discrete-time; continuous prohibited'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-023'
+category = 'Declaration'
+name = 'Short partial inherit'
+mls_ref = '§4.6.1'
+requirement = 'Short class definition inheriting from partial class will be partial regardless of prefix'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-024'
+category = 'Declaration'
+name = 'Package contents'
+mls_ref = '§4.7'
+requirement = 'Package may only contain declarations of classes and constants'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-025'
+category = 'Declaration'
+name = 'Operator contents'
+mls_ref = '§4.7'
+requirement = 'Operator class may only contain declarations of functions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-026'
+category = 'Declaration'
+name = 'Operator placement'
+mls_ref = '§4.7'
+requirement = 'Operator may only be placed directly in an operator record'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-027'
+category = 'Declaration'
+name = 'Connector component types'
+mls_ref = '§4.7'
+requirement = 'Connector may only contain components of specialized class connector, record and type'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-028'
+category = 'Declaration'
+name = 'Operator record base'
+mls_ref = '§4.7'
+requirement = 'An operator record can only extend from an operator record'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-029'
+category = 'Declaration'
+name = 'No enclosing scope extends'
+mls_ref = '§4.7'
+requirement = 'Operator record cannot extend from any of its enclosing scopes'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-030'
+category = 'Declaration'
+name = 'Stream record members'
+mls_ref = '§4.4.2.2'
+requirement = 'Members of record with stream prefix may not have stream type prefix'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-031'
+category = 'Declaration'
+name = 'ExternalObject prefixes'
+mls_ref = '§4.4.2.2'
+requirement = 'ExternalObject instances may have type prefixes parameter and constant, in functions also input and output'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-032'
+category = 'Declaration'
+name = 'Globally balanced'
+mls_ref = '§4.8'
+requirement = 'Simulation models must be globally balanced, matching total unknowns to total equations across all components'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-033'
+category = 'Declaration'
+name = 'When-clause subcomponent'
+mls_ref = '§4.5.3'
+requirement = 'Variable assigned in when-clause shall not be defined in sub-component of model or block'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-034'
+category = 'Declaration'
+name = 'Array class extends'
+mls_ref = '§4.6.2'
+requirement = 'Not legal to combine equations/algorithms/components with extends from array class or simple type'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-035'
+category = 'Declaration'
+name = 'Local class flattenable'
+mls_ref = '§4.6.3'
+requirement = 'Local class should be statically flattenable with partially flattened enclosing class'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'DECL-036'
+category = 'Declaration'
+name = 'Type class contents'
+mls_ref = '§4.7'
+requirement = 'type – May only be predefined types, enumerations, array of type, or classes extending from type'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-001'
+category = 'Equation'
+name = 'Local balance'
+mls_ref = '§4.8'
+requirement = 'Local number of unknowns identical to local equation size'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-002'
+category = 'Equation'
+name = 'Input binding'
+mls_ref = '§4.8'
+requirement = 'All non-connector inputs of model/block must have binding equations'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-003'
+category = 'Equation'
+name = 'Algorithm atomicity'
+mls_ref = '§11'
+requirement = 'Algorithm section with N left-hand side variables = atomic N-dimensional vector-equation'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-004'
+category = 'Equation'
+name = 'If-equation balance'
+mls_ref = '§8.3.3'
+requirement = 'Same number of equations in each branch'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-005'
+category = 'Equation'
+name = 'When nesting'
+mls_ref = '§8.3.5'
+requirement = 'When-equations cannot be nested'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-006'
+category = 'Equation'
+name = 'When location'
+mls_ref = '§8.3.5'
+requirement = 'When-equations shall not occur inside initial equations'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-007'
+category = 'Equation'
+name = 'Discrete-valued solved form'
+mls_ref = 'App B'
+requirement = 'Discrete-valued equations must be in almost solved form'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-008'
+category = 'Equation'
+name = 'For-equation vector'
+mls_ref = '§8.3.2'
+requirement = 'Expression of a for-equation shall be a vector expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-009'
+category = 'Equation'
+name = 'For-equation evaluable'
+mls_ref = '§8.3.2'
+requirement = 'Expression of a for-equation shall be evaluable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-010'
+category = 'Equation'
+name = 'For-loop variable readonly'
+mls_ref = '§8.3.2'
+requirement = 'Loop-variable shall not be assigned to'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-011'
+category = 'Equation'
+name = 'If-equation scalar Boolean'
+mls_ref = '§8.3.3'
+requirement = 'Expression of if-clause must be a scalar Boolean expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-012'
+category = 'Equation'
+name = 'If-equation variable sets'
+mls_ref = '§8.3.3'
+requirement = 'All branches shall have same set of variables in non-Real equations'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-013'
+category = 'Equation'
+name = 'When branch variables'
+mls_ref = '§8.3.5'
+requirement = 'Different branches of when/elsewhen must have same set of left-hand side component references'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-014'
+category = 'Equation'
+name = 'When LHS evaluable indices'
+mls_ref = '§8.3.5'
+requirement = 'Any left hand side indices must be evaluable expressions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-015'
+category = 'Equation'
+name = 'reinit in when only'
+mls_ref = '§8.3.5'
+requirement = 'reinit can only be used in the body of a when-equation'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-016'
+category = 'Equation'
+name = 'reinit state variable'
+mls_ref = '§8.3.5'
+requirement = 'reinit x: x must be selected as a state'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-017'
+category = 'Equation'
+name = 'reinit single when'
+mls_ref = '§8.3.5'
+requirement = 'reinit for a variable can only be applied in one when-equation'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-018'
+category = 'Equation'
+name = 'reinit if branches'
+mls_ref = '§8.3.5'
+requirement = 'Multiple reinit in same when-clause must appear in different if branches'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-019'
+category = 'Equation'
+name = 'connect evaluable'
+mls_ref = '§8.3.6'
+requirement = 'connect in for/if only if indices/conditions are evaluable expressions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-020'
+category = 'Equation'
+name = 'When single-assign'
+mls_ref = '§8.3.5'
+requirement = 'Two when-equations shall not define the same variable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-021'
+category = 'Equation'
+name = 'Constants by declaration'
+mls_ref = '§8.6'
+requirement = 'Constants shall be determined by declaration equations'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-022'
+category = 'Equation'
+name = 'Constant fixed'
+mls_ref = '§8.6'
+requirement = 'fixed = false is not allowed for constants'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-023'
+category = 'Equation'
+name = 'When initial activation'
+mls_ref = '§8.6'
+requirement = 'When-clause equations active during initialization only if enabled with initial()'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-024'
+category = 'Equation'
+name = 'No statements in equations'
+mls_ref = '§8.3'
+requirement = 'No statements allowed in equation sections, including := operator'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-025'
+category = 'Equation'
+name = 'Equation type compatible'
+mls_ref = '§8.3.1'
+requirement = 'Types of left-hand-side and right-hand-side must be compatible'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-026'
+category = 'Equation'
+name = 'Connect evaluable conditions'
+mls_ref = '§8.3.3'
+requirement = 'Indices/conditions of for/if containing connect must be evaluable, not depend on cardinality/rooted'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-027'
+category = 'Equation'
+name = 'If-equation LHS component'
+mls_ref = '§8.3.4'
+requirement = 'Non-Real equations in non-evaluable if-equation shall have component-references as LHS'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-028'
+category = 'Equation'
+name = 'If-equation nested evaluable'
+mls_ref = '§8.3.4'
+requirement = 'Any for- and if-equations in if-equation branches shall have evaluable controlling conditions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-029'
+category = 'Equation'
+name = 'When expr type'
+mls_ref = '§8.3.5'
+requirement = 'Expression shall be discrete-time Boolean scalar or vector expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-030'
+category = 'Equation'
+name = 'When conditional scope'
+mls_ref = '§8.3.5.2'
+requirement = 'When-equations can only occur in if/for-equations if controlling expressions are evaluable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-031'
+category = 'Equation'
+name = 'reinit type compatible'
+mls_ref = '§8.3.6'
+requirement = 'Expr needs to be type-compatible with x'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-032'
+category = 'Equation'
+name = 'reinit implies stateSelect'
+mls_ref = '§8.3.6'
+requirement = 'Reinit on x implies stateSelect = StateSelect.always on x'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-033'
+category = 'Equation'
+name = 'Perfect matching'
+mls_ref = '§8.4'
+requirement = 'There must exist a perfect matching of variables to equations after flattening'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-034'
+category = 'Equation'
+name = 'Discrete persistence'
+mls_ref = '§8.4'
+requirement = 'Discrete-time variables keep their values until explicitly changed'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-035'
+category = 'Equation'
+name = 'Init pre equality'
+mls_ref = '§8.6'
+requirement = 'Before start of integration, for all variables v, v = pre(v) must be guaranteed'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-036'
+category = 'Equation'
+name = 'Assert evaluable level'
+mls_ref = '§8.3.7'
+requirement = 'assertionLevel is an optional evaluable expression'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-037'
+category = 'Equation'
+name = 'When not in initial eq'
+mls_ref = '§8.6'
+requirement = 'It is not allowed to use when-clauses in initial equation/algorithm sections'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EQN-038'
+category = 'Equation'
+name = 'Connections.branch scope'
+mls_ref = '§8.3.3'
+requirement = 'Connections.branch/root/potentialRoot same restrictions as connect in for/if-equations'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-001'
+category = 'Expression'
+name = 'Relational scalar only'
+mls_ref = '§3.5'
+requirement = 'Relational operators only defined for scalar operands of simple types'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-002'
+category = 'Expression'
+name = 'No Real equality'
+mls_ref = '§3.5'
+requirement = 'v1 == v2 or v1 <> v2: v1 or v2 shall not be subtype of Real (except in functions)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-003'
+category = 'Expression'
+name = 'der continuity'
+mls_ref = '§3.7'
+requirement = 'Expression must be continuous and semi-differentiable'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-004'
+category = 'Expression'
+name = 'der not in functions'
+mls_ref = '§3.7'
+requirement = 'der operator not allowed inside function classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-005'
+category = 'Expression'
+name = 'Overflow undefined'
+mls_ref = '§3.3'
+requirement = 'If a numeric operation overflows the result is undefined'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-006'
+category = 'Expression'
+name = 'delay parameter'
+mls_ref = '§3.7'
+requirement = 'delayMax shall be a parameter expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-007'
+category = 'Expression'
+name = 'delay bounds'
+mls_ref = '§3.7'
+requirement = '0 ≤ delayTime ≤ delayMax must hold'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-008'
+category = 'Expression'
+name = 'delay not in functions'
+mls_ref = '§3.7'
+requirement = 'delay operator not allowed inside function classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-009'
+category = 'Expression'
+name = 'cardinality restrictions'
+mls_ref = '§3.7'
+requirement = 'Shall not be applied to expandable connectors or arrays of connectors'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-010'
+category = 'Expression'
+name = 'spatialDistribution range'
+mls_ref = '§3.7'
+requirement = 'initialPoints array shall span entire range from 0 to 1'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-011'
+category = 'Expression'
+name = 'spatialDistribution sorted'
+mls_ref = '§3.7'
+requirement = 'initialPoints must be sorted in non-descending order'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-012'
+category = 'Expression'
+name = 'Variability assignment'
+mls_ref = '§3.8'
+requirement = 'Expression must not have higher variability than assigned component'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-013'
+category = 'Expression'
+name = 'end only in subscripts'
+mls_ref = '§10.5'
+requirement = "Expression 'end' may only appear inside array subscripts"
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-014'
+category = 'Expression'
+name = 'Non-associative chaining'
+mls_ref = '§3.2'
+requirement = 'Non-associative operators (^, :, relational, ?:) cannot be chained: 1 < 2 < 3 is invalid'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-015'
+category = 'Expression'
+name = 'Unary additive position'
+mls_ref = '§3.2'
+requirement = 'Additive unary expressions only allowed in first term of sum: 2*-2 is illegal'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-016'
+category = 'Expression'
+name = 'If-expr Boolean condition'
+mls_ref = '§3.6.5'
+requirement = 'First expression of if-expression must be Boolean expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-017'
+category = 'Expression'
+name = 'If-expr type compatible'
+mls_ref = '§3.6.5'
+requirement = 'The two branch expressions must be type compatible expressions (§6.7)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-018'
+category = 'Expression'
+name = 'abs argument type'
+mls_ref = '§3.7.1'
+requirement = 'Argument v of abs(v) needs to be Integer or Real expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-019'
+category = 'Expression'
+name = 'sign argument type'
+mls_ref = '§3.7.1'
+requirement = 'Argument v of sign(v) needs to be Integer or Real expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-020'
+category = 'Expression'
+name = 'nthRoot constraints'
+mls_ref = '§3.7.1'
+requirement = 'v shall be Real expression, n>0 shall be Integer; if n even, v must be non-negative'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-021'
+category = 'Expression'
+name = 'EnumTypeName error'
+mls_ref = '§3.7.1'
+requirement = 'Error to attempt to convert values of i that do not correspond to enumeration values'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-022'
+category = 'Expression'
+name = 'String no coercion'
+mls_ref = '§3.7.1'
+requirement = 'Standard type coercion shall not be applied for first argument of String()'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-023'
+category = 'Expression'
+name = 'String significantDigits'
+mls_ref = '§3.7.1'
+requirement = 'Specifying significantDigits is error when first argument of String is Integer'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-024'
+category = 'Expression'
+name = 'div/mod/rem types'
+mls_ref = '§3.7.2'
+requirement = 'Result and arguments shall have type Real or Integer'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-025'
+category = 'Expression'
+name = 'ceil/floor argument'
+mls_ref = '§3.7.2'
+requirement = 'Result and argument shall have type Real'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-026'
+category = 'Expression'
+name = 'integer argument'
+mls_ref = '§3.7.2'
+requirement = 'Argument shall have type Real, result has type Integer'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-027'
+category = 'Expression'
+name = 'delay expr type'
+mls_ref = '§3.7.2'
+requirement = 'Expression shall be subtype of Real, Integer, Boolean, or enumeration'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-028'
+category = 'Expression'
+name = 'delay time type'
+mls_ref = '§3.7.2'
+requirement = 'Time arguments shall be subtypes of Real'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-029'
+category = 'Expression'
+name = 'delay delayTime param'
+mls_ref = '§3.7.2'
+requirement = 'When delayMax not provided, delayTime ≥ 0 shall be parameter expression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-030'
+category = 'Expression'
+name = 'spatialDistribution params'
+mls_ref = '§3.7.4.1'
+requirement = 'initialPoints and initialValues shall be parameter expressions of equal size'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-031'
+category = 'Expression'
+name = 'spatialDistribution no vectorize'
+mls_ref = '§3.7.4.1'
+requirement = 'Operator cannot be vectorized according to §12.4.6'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-032'
+category = 'Expression'
+name = 'cardinality scope'
+mls_ref = '§3.7.4.2'
+requirement = 'Should only be used in condition of assert and if-statements without connect'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-033'
+category = 'Expression'
+name = 'cardinality not in function'
+mls_ref = '§3.7.4.2'
+requirement = 'cardinality operator not allowed inside function classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-034'
+category = 'Expression'
+name = 'homotopy types'
+mls_ref = '§3.7.4.3'
+requirement = 'Scalar expressions actual and simplified are subtypes of Real'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-035'
+category = 'Expression'
+name = 'inStream not in function'
+mls_ref = '§3.7.4'
+requirement = 'inStream operator not allowed inside function classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-036'
+category = 'Expression'
+name = 'actualStream not in function'
+mls_ref = '§3.7.4'
+requirement = 'actualStream operator not allowed inside function classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-037'
+category = 'Expression'
+name = 'pre not in function'
+mls_ref = '§3.7.5'
+requirement = 'pre operator is not allowed inside function classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-038'
+category = 'Expression'
+name = 'smooth differentiability'
+mls_ref = '§3.7.5'
+requirement = 'smooth(p, expr) treats expression as p times continuously differentiable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-039'
+category = 'Expression'
+name = 'noEvent event suppression'
+mls_ref = '§3.3'
+requirement = 'noEvent suppresses event generation for relational operators within its scope'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'EXPR-040'
+category = 'Expression'
+name = 'Event triggering operators'
+mls_ref = '§3.7.2'
+requirement = 'div, ceil, floor, integer can only change values at events and will trigger events as needed'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-001'
+category = 'Function'
+name = 'Input/output only'
+mls_ref = '§12.2'
+requirement = 'Each public component must have prefix input or output'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-002'
+category = 'Function'
+name = 'Input read-only'
+mls_ref = '§12.2'
+requirement = 'Input formal parameters are read-only after being bound'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-003'
+category = 'Function'
+name = 'Output assignment'
+mls_ref = '§12.2'
+requirement = 'Output variables must be assigned inside the function or have external function interface'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-004'
+category = 'Function'
+name = 'Impure restrictions'
+mls_ref = '§12.3'
+requirement = 'Error if impure function call is part of a system of equations'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-005'
+category = 'Function'
+name = 'Pure guarantee'
+mls_ref = '§12.3'
+requirement = 'Pure functions always give same output for same input'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-006'
+category = 'Function'
+name = 'No equations'
+mls_ref = '§12.2'
+requirement = 'Function shall not have equations, shall not have initial algorithms'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-007'
+category = 'Function'
+name = 'No when-statements'
+mls_ref = '§12.2'
+requirement = 'Function body shall not contain when-statements'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-008'
+category = 'Function'
+name = 'Variability constraint'
+mls_ref = '§3.8'
+requirement = 'Higher variability cannot assign to lower variability'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-009'
+category = 'Function'
+name = 'Array dimension'
+mls_ref = '§12.2'
+requirement = 'Array dimension sizes must be given by inputs, constants, or parameter expressions'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-010'
+category = 'Function'
+name = 'Forbidden operators'
+mls_ref = '§12.2'
+requirement = 'der, initial, terminal, sample, pre, edge, change, reinit, delay, cardinality, inStream, actualStream'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-011'
+category = 'Function'
+name = 'No Clock components'
+mls_ref = '§12.2'
+requirement = 'Function may not contain components of type Clock'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-012'
+category = 'Function'
+name = 'No inner/outer'
+mls_ref = '§12.2'
+requirement = 'Function elements shall not have prefixes inner or outer'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-013'
+category = 'Function'
+name = 'Non-partial for simulation'
+mls_ref = '§12'
+requirement = 'For simulation, function shall not be partial'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-014'
+category = 'Function'
+name = 'Single algorithm/external'
+mls_ref = '§12.2'
+requirement = 'Function can have at most one algorithm section or one external function interface'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-015'
+category = 'Function'
+name = 'Component types'
+mls_ref = '§12.2'
+requirement = 'Function must not contain model, block, operator, or connector components'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-016'
+category = 'Function'
+name = 'Not in connections'
+mls_ref = '§12.2'
+requirement = 'Functions shall not be used in connections'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-017'
+category = 'Function'
+name = 'Return in algorithm only'
+mls_ref = '§12.1.2'
+requirement = 'Return statement can only be used in an algorithm section of a function'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-018'
+category = 'Function'
+name = 'Input ordering significant'
+mls_ref = '§12.1.1'
+requirement = 'Relative ordering between input formal parameter declarations is significant'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-019'
+category = 'Function'
+name = 'Named arg slot error'
+mls_ref = '§12.4.1'
+requirement = 'Error if named argument slot is already filled'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-020'
+category = 'Function'
+name = 'Unfilled slots error'
+mls_ref = '§12.4.1'
+requirement = 'Error if any unfilled slots remain after argument processing'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-021'
+category = 'Function'
+name = 'Impure inheritance'
+mls_ref = '§12.3'
+requirement = 'If function declared impure, any extending function shall be declared impure'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-022'
+category = 'Function'
+name = 'Impure call scope'
+mls_ref = '§12.3'
+requirement = 'Impure only allowed from: impure function, when-equation/statement, pure(), initial equations/algorithms'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-023'
+category = 'Function'
+name = 'Binding no cycles'
+mls_ref = '§12.4.4'
+requirement = 'Binding execution order must not have cycles'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-024'
+category = 'Function'
+name = 'Uninitialized error'
+mls_ref = '§12.4.4'
+requirement = 'Error to use or return an uninitialized variable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-025'
+category = 'Function'
+name = 'LHS list output'
+mls_ref = '§12.4.3'
+requirement = 'Left-hand side references must agree with type of corresponding output component'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-026'
+category = 'Function'
+name = 'Vectorization non-replaceable'
+mls_ref = '§12.4.6'
+requirement = 'Only transitively non-replaceable functions support automatic vectorization'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-027'
+category = 'Function'
+name = 'Vectorization size match'
+mls_ref = '§12.4.6'
+requirement = 'Array arguments have to be the same size'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-028'
+category = 'Function'
+name = 'Record constructor scope'
+mls_ref = '§12.6'
+requirement = 'Record constructor can only reference records found in global scope'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-029'
+category = 'Function'
+name = 'Record cast conditional error'
+mls_ref = '§12.6.1'
+requirement = 'Conditional components in target record: it is an error'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-030'
+category = 'Function'
+name = 'Derivative outputs non-empty'
+mls_ref = '§12.7.1'
+requirement = 'Derivative output list shall not be empty'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-031'
+category = 'Function'
+name = 'zeroDerivative condition'
+mls_ref = '§12.7.1'
+requirement = 'zeroDerivative applies only if inputVar is independent of differentiation variables'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-032'
+category = 'Function'
+name = 'External purity deprecated'
+mls_ref = '§12.9'
+requirement = 'External function without explicit pure/impure declaration is deprecated'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-033'
+category = 'Function'
+name = 'Functional param type'
+mls_ref = '§12.4.2'
+requirement = 'Function type parameter cannot be type-specifier of record or enumeration'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-034'
+category = 'Function'
+name = 'Input default independence'
+mls_ref = '§12.4.1'
+requirement = 'Default values for inputs shall not depend on non-input variables in the function'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-035'
+category = 'Function'
+name = 'Derivative ordering'
+mls_ref = '§12.7.1'
+requirement = 'Most restrictive derivative annotations should be written first'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-001'
+category = 'Instantiation'
+name = 'Modification context'
+mls_ref = '§7.2'
+requirement = 'Modifier value found in the context in which the modifier occurs'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-002'
+category = 'Instantiation'
+name = 'Modification merging'
+mls_ref = '§7.2.3'
+requirement = 'Outer modifiers override inner modifiers'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-003'
+category = 'Instantiation'
+name = 'Single modification'
+mls_ref = '§7.2.4'
+requirement = 'Two arguments of a modification shall not modify the same element, attribute, or description-string'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-004'
+category = 'Instantiation'
+name = 'Unnamed extends nodes'
+mls_ref = '§5.6'
+requirement = 'Preserve declaration order in inheritance'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-005'
+category = 'Instantiation'
+name = 'Extends lookup stability'
+mls_ref = '§5.6'
+requirement = 'Extends classes looked up before and after handling; error if different'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-006'
+category = 'Instantiation'
+name = 'Name collision'
+mls_ref = '§7.1'
+requirement = 'Declaration elements of flattened base class shall either not exist or match exactly'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-007'
+category = 'Instantiation'
+name = 'Evaluable expressions'
+mls_ref = '§4.5'
+requirement = 'Structural parameters must be compile-time evaluable'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-008'
+category = 'Instantiation'
+name = 'Acyclic binding'
+mls_ref = '§4.4.4'
+requirement = 'Expression must not depend on the variable itself, directly or indirectly'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-009'
+category = 'Instantiation'
+name = 'Final inheritance'
+mls_ref = '§7.2.6'
+requirement = 'All elements of a final element are also final'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-010'
+category = 'Instantiation'
+name = 'Final immutability'
+mls_ref = '§7.2.6'
+requirement = 'Element defined as final cannot be modified by modification or redeclaration'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-011'
+category = 'Instantiation'
+name = 'Inner/outer subtype'
+mls_ref = '§5.4'
+requirement = 'Inner component must be subtype of corresponding outer'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-012'
+category = 'Instantiation'
+name = 'Outer no modifications'
+mls_ref = '§5.4'
+requirement = 'Outer component declarations shall not have modifications'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-013'
+category = 'Instantiation'
+name = 'Constant-only references'
+mls_ref = '§5.3'
+requirement = 'Enclosing class variables accessible only if declared constant'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-014'
+category = 'Instantiation'
+name = 'Redeclaration constraint'
+mls_ref = '§7.3.3'
+requirement = 'Only classes and components declared as replaceable can be redeclared with a new type'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-015'
+category = 'Instantiation'
+name = 'Transitively non-replaceable'
+mls_ref = '§7.1.4'
+requirement = 'Class name after extends for base classes must use a class reference considered transitively non-replaceable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-016'
+category = 'Instantiation'
+name = 'Conditional evaluable'
+mls_ref = '§4.5'
+requirement = 'Condition expression must be evaluable Boolean scalar'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-017'
+category = 'Instantiation'
+name = 'Conditional no redeclare'
+mls_ref = '§4.5'
+requirement = 'Redeclaration shall not include a condition attribute'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-018'
+category = 'Instantiation'
+name = 'Outer same class'
+mls_ref = '§5.4'
+requirement = 'Two outer declarations with same name but different classes is error'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-019'
+category = 'Instantiation'
+name = 'Outer partial error'
+mls_ref = '§5.4'
+requirement = 'Outer of partial class is error'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-020'
+category = 'Instantiation'
+name = 'Inner/outer connector'
+mls_ref = '§4.8'
+requirement = 'Inner/outer component shall not have top-level public connectors containing inputs'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-021'
+category = 'Instantiation'
+name = 'Lookup non-partial'
+mls_ref = '§5.3'
+requirement = 'Class looked inside shall not be partial in simulation model'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-022'
+category = 'Instantiation'
+name = 'Constant not redeclared'
+mls_ref = '§7.3.3'
+requirement = 'An element declared as constant cannot be redeclared'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-023'
+category = 'Instantiation'
+name = 'Protection not changed'
+mls_ref = '§7.3.3'
+requirement = 'Protected element cannot be redeclared as public, or public as protected'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-024'
+category = 'Instantiation'
+name = 'Extends kind compatibility'
+mls_ref = '§7.1.3'
+requirement = 'Only specialized classes in some sense compatible can inherit from each other'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-025'
+category = 'Instantiation'
+name = 'Equation syntactic equiv'
+mls_ref = '§7.1'
+requirement = 'Equations syntactically equivalent to equations in enclosing class are discarded'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-026'
+category = 'Instantiation'
+name = 'Class extends replaceable'
+mls_ref = '§7.3.1'
+requirement = 'Original class B should be replaceable in class extends'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-027'
+category = 'Instantiation'
+name = 'Constraining type auto-apply'
+mls_ref = '§7.3.2'
+requirement = 'Modifications following constraining type applied both for constraint and declaration'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-028'
+category = 'Instantiation'
+name = 'Break deselection order'
+mls_ref = '§7.4'
+requirement = 'Deselection break D is applied before any other non-selective modifications'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-029'
+category = 'Instantiation'
+name = 'Break must match'
+mls_ref = '§7.4'
+requirement = 'Deselection break D must match at least one element of B'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-030'
+category = 'Instantiation'
+name = 'Override final error'
+mls_ref = '§7.2.3'
+requirement = 'Error if value for entire non-simple component overrides a final prefix'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-031'
+category = 'Instantiation'
+name = 'Outer class short'
+mls_ref = '§5.4'
+requirement = 'Outer class declarations should be defined using short-class definitions without modifications'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-032'
+category = 'Instantiation'
+name = 'Outer disabled conditional'
+mls_ref = '§5.4'
+requirement = 'If outer component declaration is disabled conditional, also ignored for automatic inner creation'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-033'
+category = 'Instantiation'
+name = 'Global scope error'
+mls_ref = '§5.3.3'
+requirement = 'If there does not exist a class A in global scope this is an error'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-034'
+category = 'Instantiation'
+name = 'Encapsulated lookup stop'
+mls_ref = '§5.3.1'
+requirement = 'Lookup stops if enclosing class is encapsulated (except predefined types/operators)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-035'
+category = 'Instantiation'
+name = 'Record/enum lookup ignore'
+mls_ref = '§5.3'
+requirement = 'Names of record classes and enumeration types are ignored during function name lookup'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-036'
+category = 'Instantiation'
+name = 'Constructor lookup ignore'
+mls_ref = '§5.3'
+requirement = 'Implicitly defined names of record constructors and enum conversions ignored during type lookup'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-037'
+category = 'Instantiation'
+name = 'Identical children first kept'
+mls_ref = '§5.6.1.4'
+requirement = 'Children with same name must be identical; only first one kept, error if not identical'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-038'
+category = 'Instantiation'
+name = 'Inner/outer both modifies'
+mls_ref = '§5.5'
+requirement = 'Modifications of elements declared with both inner and outer only applied to inner declaration'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-039'
+category = 'Instantiation'
+name = 'Protected extends'
+mls_ref = '§7.1.2'
+requirement = 'If extends under protected heading, all elements of base class become protected'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-040'
+category = 'Instantiation'
+name = 'Each array required'
+mls_ref = '§7.2.5'
+requirement = 'Each keyword on modifier requires it is applied in array declaration/modification'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-041'
+category = 'Instantiation'
+name = 'Each size match'
+mls_ref = '§7.2.5'
+requirement = 'Sizes must match without each prefix or it is an error'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-042'
+category = 'Instantiation'
+name = 'Break removes expression'
+mls_ref = '§7.2.7'
+requirement = 'Remaining break modifications treated as if expression was missing'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-043'
+category = 'Instantiation'
+name = 'Implicit constraining type'
+mls_ref = '§7.3.2'
+requirement = 'If constraining-clause not present, type of declaration used as constraining type'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-044'
+category = 'Instantiation'
+name = 'Constraining subtype'
+mls_ref = '§7.3.2'
+requirement = 'Constraining type of replaceable redeclaration must be subtype of original constraining type'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-045'
+category = 'Instantiation'
+name = 'Dimension correspondence'
+mls_ref = '§7.3.2'
+requirement = 'Number of dimensions in constraining type should correspond to type-part'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-046'
+category = 'Instantiation'
+name = 'Array dim redeclaration'
+mls_ref = '§7.3.3'
+requirement = 'Array dimensions may be redeclared if sub-typing rules are satisfied'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-047'
+category = 'Instantiation'
+name = 'Component deselection types'
+mls_ref = '§7.4'
+requirement = 'Matched components for deselection must be models, blocks, or connectors'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-048'
+category = 'Instantiation'
+name = 'Conditional deselection'
+mls_ref = '§7.4'
+requirement = 'Conditionally declared components of B assumed declared for matching purposes'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-049'
+category = 'Instantiation'
+name = 'Partial deselection allowed'
+mls_ref = '§7.4'
+requirement = 'Deselected component may be of partial class even in simulation model'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-050'
+category = 'Instantiation'
+name = 'Unqualified import conflict'
+mls_ref = '§5.3.1'
+requirement = 'Error if multiple unqualified imports match same name'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-051'
+category = 'Instantiation'
+name = 'Constraining annotation conflict'
+mls_ref = '§7.3.2.1'
+requirement = 'Error if annotations appear on both definition and constraining clause'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-052'
+category = 'Instantiation'
+name = 'Redeclaration dimension match'
+mls_ref = '§7.3.2'
+requirement = 'Redeclaration must have same number of dimensions as original element'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'INST-053'
+category = 'Instantiation'
+name = 'Conditional component removal'
+mls_ref = '§5.6.2'
+requirement = 'Conditional components with false condition are removed and not part of simulation model'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-001'
+category = 'Lexical'
+name = 'ASCII identifiers'
+mls_ref = '§2.3'
+requirement = 'Restricted to Unicode characters corresponding to 7-bit ASCII for identifiers'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-002'
+category = 'Lexical'
+name = 'No token whitespace'
+mls_ref = '§2.2'
+requirement = 'Whitespace cannot occur inside tokens'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-003'
+category = 'Lexical'
+name = 'No nested comments'
+mls_ref = '§2.2'
+requirement = 'Delimited Modelica comments do not nest'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-004'
+category = 'Lexical'
+name = 'Case sensitivity'
+mls_ref = '§2.3'
+requirement = 'Case is significant, i.e., Inductor and inductor are different'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-005'
+category = 'Lexical'
+name = 'Reserved keywords'
+mls_ref = '§2.3.3'
+requirement = 'Keywords are reserved words that cannot be used where IDENT is expected'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-006'
+category = 'Lexical'
+name = 'Reserved type names'
+mls_ref = '§2.3.3'
+requirement = 'Not allowed to declare element or enumeration literal with reserved names'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-007'
+category = 'Lexical'
+name = 'Quoted distinct'
+mls_ref = '§2.3.1'
+requirement = "Single quotes are part of identifier: 'x' and x are distinct identifiers"
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-008'
+category = 'Lexical'
+name = 'String concat explicit'
+mls_ref = 'App A'
+requirement = 'Concatenation of string literals requires binary expression (+), no C-style adjacent literal concat'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-009'
+category = 'Lexical'
+name = 'Semantic parser check'
+mls_ref = 'App A'
+requirement = 'Parsers must implement semantic validation for equation-or-procedure beyond syntax'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-010'
+category = 'Lexical'
+name = 'Float range minimum'
+mls_ref = '§2.4.1'
+requirement = 'At least IEEE double precision range (1.797×10³⁰⁸ to 2.225×10⁻³⁰⁸)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-011'
+category = 'Lexical'
+name = 'Integer range minimum'
+mls_ref = '§2.4.2'
+requirement = 'Range at least large enough to represent largest positive IntegerType value'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-012'
+category = 'Lexical'
+name = 'Boolean literals only'
+mls_ref = '§2.4.3'
+requirement = 'Only true and false permitted as Boolean literals'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'LEX-013'
+category = 'Lexical'
+name = 'String escapes required'
+mls_ref = '§2.4.4'
+requirement = 'Backslash escape sequences required for quote, backslash, newline, tab, etc.'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-001'
+category = 'OperatorRecord'
+name = 'Encapsulated'
+mls_ref = '§14'
+requirement = 'Operator or operator function must be encapsulated'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-002'
+category = 'OperatorRecord'
+name = 'Single output'
+mls_ref = '§14'
+requirement = 'All operator functions shall return exactly one output'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-003'
+category = 'OperatorRecord'
+name = 'Record input'
+mls_ref = '§14'
+requirement = 'Must have at least one component of record class as input (except constructor)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-004'
+category = 'OperatorRecord'
+name = 'Constructor output'
+mls_ref = '§14'
+requirement = 'Constructor shall return one component of the operator record class'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-005'
+category = 'OperatorRecord'
+name = 'No multiple matches'
+mls_ref = '§14'
+requirement = 'For potential call, shall not exist multiple matches'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-006'
+category = 'OperatorRecord'
+name = 'Binary defaults'
+mls_ref = '§14'
+requirement = 'First two inputs no default values, rest must have defaults'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-007'
+category = 'OperatorRecord'
+name = 'Binary no ambiguity'
+mls_ref = '§14'
+requirement = 'Error if multiple functions match a binary operation'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-008'
+category = 'OperatorRecord'
+name = 'Zero operator single'
+mls_ref = '§14'
+requirement = "'0' operator can only contain one function with zero inputs"
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-009'
+category = 'OperatorRecord'
+name = 'Constructor mutual exclusion'
+mls_ref = '§14.3'
+requirement = "For pair of operator record classes C and D, at most one of C.'constructor'(d) and D.'constructor'(c) shall be legal"
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-010'
+category = 'OperatorRecord'
+name = 'String operator output'
+mls_ref = '§14.4'
+requirement = "operator A.'String' shall only contain functions declaring one output of String type"
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'OPREC-011'
+category = 'OperatorRecord'
+name = 'Zero inner dimension'
+mls_ref = '§14.5'
+requirement = "If inner dimension is zero for matrix*vector/matrix, uses '0' operator; error if '0' not defined"
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-001'
+category = 'Package'
+name = 'Unique import names'
+mls_ref = '§13.2.2'
+requirement = 'Multiple qualified import-clauses shall not have the same import name'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-002'
+category = 'Package'
+name = 'Import not inherited'
+mls_ref = '§13.2.2'
+requirement = 'Import clauses are not inherited'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-003'
+category = 'Package'
+name = 'Package-only imports'
+mls_ref = '§13.2.2'
+requirement = 'One can only import from packages, not from other kinds of classes'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-004'
+category = 'Package'
+name = 'MODELICAPATH search'
+mls_ref = '§13.2.1'
+requirement = 'Top-level names lookup starts lexically before searching MODELICAPATH'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-005'
+category = 'Package'
+name = 'Qualified import target'
+mls_ref = '§13.2.1'
+requirement = 'Qualified import-clauses may only refer to packages or elements of packages'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-006'
+category = 'Package'
+name = 'Directory package.mo'
+mls_ref = '§13.4.1'
+requirement = 'Each directory shall contain a node, the file package.mo'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-007'
+category = 'Package'
+name = 'No duplicate class names'
+mls_ref = '§13.4.1'
+requirement = 'Two sub-entities shall not define classes with identical names'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-008'
+category = 'Package'
+name = 'No dir and file conflict'
+mls_ref = '§13.4.1'
+requirement = 'A directory shall not contain both sub-directory A and file A.mo'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-009'
+category = 'Package'
+name = 'Within required'
+mls_ref = '§13.4.3'
+requirement = 'A non-top-level entity shall begin with a within-clause'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-010'
+category = 'Package'
+name = 'Within designates enclosing'
+mls_ref = '§13.4.3'
+requirement = 'The within-clause shall designate the class of the enclosing entity'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-011'
+category = 'Package'
+name = 'Import fully qualified'
+mls_ref = '§13.2.2'
+requirement = 'An imported package or definition should always be referred to by its fully qualified name'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'PKG-012'
+category = 'Package'
+name = 'Import not modifiable'
+mls_ref = '§13.2.2'
+requirement = 'Import-clauses are not named elements and cannot be modified or redeclared'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-001'
+category = 'Simulation'
+name = 'Event iteration'
+mls_ref = '§8.6/App B'
+requirement = 'Iterate solving equations until z == pre(z) and m == pre(m)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-002'
+category = 'Simulation'
+name = 'Initialization fixed'
+mls_ref = '§8.6'
+requirement = 'Continuous Real with fixed=true adds equation vc = startExpression'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-003'
+category = 'Simulation'
+name = 'Parameter fixed default'
+mls_ref = '§8.6'
+requirement = 'For parameters: fixed defaults to true'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-004'
+category = 'Simulation'
+name = 'Variable fixed default'
+mls_ref = '§8.6'
+requirement = 'For other variables: fixed defaults to false'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-005'
+category = 'Simulation'
+name = 'Discrete-valued solved form'
+mls_ref = 'App B'
+requirement = 'Discrete-valued variables must be solvable through sequence of assignments with no cyclic dependencies'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-006'
+category = 'Simulation'
+name = 'Integer solved form'
+mls_ref = 'App B'
+requirement = 'Solved variable must appear uniquely as term (no multiplicative factor) on either side'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-007'
+category = 'Simulation'
+name = 'Non-Integer flip form'
+mls_ref = 'App B'
+requirement = 'Non-Integer equations require at most flipping sides to obtain assignment form'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-008'
+category = 'Simulation'
+name = 'Discrete variable stability'
+mls_ref = 'App B'
+requirement = 'Values of conditions c, z, and m only changed at event instant, constant during continuous integration'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-009'
+category = 'Simulation'
+name = 'DAE structure'
+mls_ref = 'App B'
+requirement = 'System shall consist of differential equations, discrete equations, discrete-valued assignments, and condition equations'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-001'
+category = 'StateMachine'
+name = 'Same clock'
+mls_ref = '§17.1'
+requirement = 'All state machine components must have the same clock'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-002'
+category = 'StateMachine'
+name = 'Different priorities'
+mls_ref = '§17.1'
+requirement = 'All transitions leaving one state must have different priorities'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-003'
+category = 'StateMachine'
+name = 'Single initial state'
+mls_ref = '§17.1'
+requirement = 'One and only one instance in each state machine must be marked as initial'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-004'
+category = 'StateMachine'
+name = 'Priority minimum'
+mls_ref = '§17.1'
+requirement = 'Priority ≥ 1 required'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-005'
+category = 'StateMachine'
+name = 'Not in functions'
+mls_ref = '§17.1'
+requirement = 'None of these operators allowed inside function classes (transition, initialState, activeState, etc.)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-006'
+category = 'StateMachine'
+name = 'Equation context only'
+mls_ref = '§17.1'
+requirement = 'transition/initialState can only be used in equations, not in non-parameter if-equations or when-equations'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-007'
+category = 'StateMachine'
+name = 'activeState instance check'
+mls_ref = '§17.3.1'
+requirement = 'Error if the instance is not a state of a state machine'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'SM-008'
+category = 'StateMachine'
+name = 'Parallel assignment error'
+mls_ref = '§17'
+requirement = 'Error if parallel state machines assign to same variable at same clock tick'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-001'
+category = 'Stream'
+name = 'Stream prefix scope'
+mls_ref = '§15.1'
+requirement = 'The stream prefix can only be used in a connector declaration'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-002'
+category = 'Stream'
+name = 'Exactly one flow'
+mls_ref = '§15.1'
+requirement = 'A stream connector must have exactly one variable with the flow prefix'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-003'
+category = 'Stream'
+name = 'Flow scalar Real'
+mls_ref = '§15.1'
+requirement = 'Flow variable shall be a scalar that is a subtype of Real'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-004'
+category = 'Stream'
+name = 'Outside connector equations'
+mls_ref = '§15.1'
+requirement = 'For every outside connector, one equation is generated for every variable with stream prefix'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-005'
+category = 'Stream'
+name = 'Inside connector no equations'
+mls_ref = '§15.1'
+requirement = 'For inside connectors, variables with stream prefix do not lead to connection equations'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-006'
+category = 'Stream'
+name = 'inStream stream only'
+mls_ref = '§15.2'
+requirement = 'inStream(v) is only allowed on stream variables v'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-007'
+category = 'Stream'
+name = 'inStream vectorizable'
+mls_ref = '§15.2'
+requirement = 'If argument of inStream is array, implicit equation system holds elementwise'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-008'
+category = 'Stream'
+name = 'inStream continuity'
+mls_ref = '§15.2'
+requirement = 'Implementation must be continuous and differentiable given continuous inputs'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-009'
+category = 'Stream'
+name = 'No division by zero'
+mls_ref = '§15.2'
+requirement = 'Division by zero can no longer occur; result is always well-defined'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-010'
+category = 'Stream'
+name = 'actualStream argument'
+mls_ref = '§15.3'
+requirement = 'Only argument of actualStream needs to be a reference to a stream variable'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'STRM-011'
+category = 'Stream'
+name = 'Flow/stream same level'
+mls_ref = '§15.1'
+requirement = 'Flow variable must exist at same level as stream variable in connector hierarchy'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-001'
+category = 'Type'
+name = 'Subtype redeclaration'
+mls_ref = '§7.3.2'
+requirement = 'Class or type must be subtype of constraining type'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-002'
+category = 'Type'
+name = 'Plug-compatible modifier'
+mls_ref = '§6.5'
+requirement = 'Redeclarations must be plug-compatible with constraining interface'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-003'
+category = 'Type'
+name = 'Default-connectable'
+mls_ref = '§6.5'
+requirement = 'Additional public components must be default-connectable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-004'
+category = 'Type'
+name = 'Function compatibility'
+mls_ref = '§6.6'
+requirement = 'Inputs same order, outputs match, purity matches'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-005'
+category = 'Type'
+name = 'Class/component match'
+mls_ref = '§6.4'
+requirement = 'A is a class if and only if B is a class'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-006'
+category = 'Type'
+name = 'Operator record base'
+mls_ref = '§6.4'
+requirement = 'If A has operator record base class, B must have same one'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-007'
+category = 'Type'
+name = 'ExternalObject identity'
+mls_ref = '§6.4'
+requirement = 'If A derived from ExternalObject, B must also be and have same full name'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-008'
+category = 'Type'
+name = 'Replaceable constraint'
+mls_ref = '§6.4'
+requirement = 'If B is not replaceable then A shall not be replaceable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-009'
+category = 'Type'
+name = 'Variability ordering'
+mls_ref = '§6.4'
+requirement = 'A compatible with B only if declared variability in A ≤ variability in B'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-010'
+category = 'Type'
+name = 'Input/output match'
+mls_ref = '§6.4'
+requirement = 'Input and output prefixes must be matched'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-011'
+category = 'Type'
+name = 'Dimension count match'
+mls_ref = '§6.4'
+requirement = 'Number of array dimensions in A and B must be matched'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-012'
+category = 'Type'
+name = 'Conditional match'
+mls_ref = '§6.4'
+requirement = 'Conditional components are only compatible with conditional components'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-013'
+category = 'Type'
+name = 'Enumeration match'
+mls_ref = '§6.4'
+requirement = 'If B is enumeration type, A must also be and vice versa'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-014'
+category = 'Type'
+name = 'Built-in type match'
+mls_ref = '§6.4'
+requirement = 'If B is built-in type, A must be same built-in type'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-015'
+category = 'Type'
+name = 'Connector not input'
+mls_ref = '§6.5'
+requirement = 'Connector component must not be an input'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-016'
+category = 'Type'
+name = 'Not expandable'
+mls_ref = '§6.5'
+requirement = 'Connector component must not be of expandable connector class'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-017'
+category = 'Type'
+name = 'Binding required'
+mls_ref = '§6.5'
+requirement = 'Parameter/constant/non-connector input must have binding equations'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-018'
+category = 'Type'
+name = 'Func input order'
+mls_ref = '§6.6'
+requirement = 'All public input components of B have named inputs in A in same order'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-019'
+category = 'Type'
+name = 'Func output order'
+mls_ref = '§6.6'
+requirement = 'All public output components of B have named outputs in A in same order'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-020'
+category = 'Type'
+name = 'Func input binding'
+mls_ref = '§6.6'
+requirement = 'Public input component of A not present in B must have binding assignment'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-021'
+category = 'Type'
+name = 'Func impure propagate'
+mls_ref = '§6.6'
+requirement = 'If A is impure, then B must also be impure'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-022'
+category = 'Type'
+name = 'Transitively non-replaceable'
+mls_ref = '§6.4'
+requirement = 'If B is transitively non-replaceable then A must be transitively non-replaceable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-023'
+category = 'Type'
+name = 'No other elements'
+mls_ref = '§6.4'
+requirement = 'Interface of A shall not contain any other elements when B is transitively non-replaceable'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-024'
+category = 'Type'
+name = 'Flow/stream match'
+mls_ref = '§6.4'
+requirement = 'The flow or stream prefix should be matched for compatibility'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-025'
+category = 'Type'
+name = 'Inner/outer match'
+mls_ref = '§6.4'
+requirement = 'The inner and/or outer prefixes should be matched'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-026'
+category = 'Type'
+name = 'Final semantic match'
+mls_ref = '§6.4'
+requirement = 'If B is final, A must also be final and have same semantic contents'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-027'
+category = 'Type'
+name = 'Conditional contents'
+mls_ref = '§6.4'
+requirement = 'Conditional components: conditions must have equivalent contents'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-028'
+category = 'Type'
+name = 'Class kind match'
+mls_ref = '§6.4'
+requirement = 'Function only compatible with function, package with package, connector with connector, etc.'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-029'
+category = 'Type'
+name = 'Enum literals order'
+mls_ref = '§6.4'
+requirement = 'If B is enumeration not defined as (:), A must have same literals in same order'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-030'
+category = 'Type'
+name = 'Modifier element exists'
+mls_ref = '§6.4'
+requirement = 'Modified element should exist in element being modified'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-031'
+category = 'Type'
+name = 'Top-level redecl subtype'
+mls_ref = '§6.5'
+requirement = 'Redeclaration of inherited top-level component must be subtype of constraining interface'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-032'
+category = 'Type'
+name = 'Record expr compatible'
+mls_ref = '§6.7'
+requirement = 'If A is record expression, B must also be record expression with same named elements'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-033'
+category = 'Type'
+name = 'Real/Integer coercion'
+mls_ref = '§6.7'
+requirement = 'If A is Real expression, B must be Real or Integer; result is Real'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-034'
+category = 'Type'
+name = 'Integer division result'
+mls_ref = '§6.7'
+requirement = 'For Integer exponentiation and division, result type is Real even if both operands Integer'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'TYPE-035'
+category = 'Type'
+name = 'Operator record consistency'
+mls_ref = '§6.7'
+requirement = 'For array/if-expressions: if A has operator record base, B must have same one'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-001'
+category = 'Unit'
+name = 'Syntax match'
+mls_ref = '§19.1'
+requirement = 'Unit string shall match the unit-expression rule'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-002'
+category = 'Unit'
+name = 'No whitespace'
+mls_ref = '§19.1'
+requirement = 'Modelica unit string syntax allows neither comments nor white-space'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-003'
+category = 'Unit'
+name = 'No multiple divisors'
+mls_ref = '§19.1'
+requirement = 'SI standard does not allow multiple units right of division-symbol (ambiguous)'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-004'
+category = 'Unit'
+name = 'No exponent spacing'
+mls_ref = '§19.1'
+requirement = 'There must be no spacing between unit-operand and possible unit-exponent'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-005'
+category = 'Unit'
+name = 'No prefix spacing'
+mls_ref = '§19.1'
+requirement = 'There must be no spacing between unit-symbol and possible unit-prefix'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-006'
+category = 'Unit'
+name = 'Symbol first interpretation'
+mls_ref = '§19.1'
+requirement = 'Unit-operands should first be interpreted as unit-symbol, only then as prefixed operand'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-007'
+category = 'Unit'
+name = 'SI unit recognition'
+mls_ref = '§19.1'
+requirement = 'Tools shall recognize basic and derived units of the SI system'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-008'
+category = 'Unit'
+name = 'Non-SI unit recognition'
+mls_ref = '§19.1'
+requirement = 'Tools shall recognize: minute, hour, day, liter, electronvolt, degree, debye'
+status = 'NotImplemented'
+tier = 1
+
+[[contracts]]
+id = 'UNIT-009'
+category = 'Unit'
+name = 'Dot notation required'
+mls_ref = '§19.1'
+requirement = "Multiplication uses dot notation: 'N.m' for newton-meter, not 'Nm'"
+status = 'NotImplemented'
+tier = 1
+
