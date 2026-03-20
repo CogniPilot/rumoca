@@ -444,8 +444,14 @@ fn test_julia_mtk_template_with_state() {
     });
 
     let result = render_template(&dae, crate::templates::JULIA_MTK).unwrap();
-    assert!(result.contains("x(t)"), "state should be time-dependent: {result}");
-    assert!(result.contains("D(x) ~"), "should generate derivative equation: {result}");
+    assert!(
+        result.contains("x(t)"),
+        "state should be time-dependent: {result}"
+    );
+    assert!(
+        result.contains("D(x) ~"),
+        "should generate derivative equation: {result}"
+    );
 }
 
 #[test]
@@ -473,7 +479,16 @@ fn test_julia_mtk_template_with_params_and_constants() {
     );
 
     let result = render_template(&dae, crate::templates::JULIA_MTK).unwrap();
-    assert!(result.contains("@parameters"), "should have @parameters block: {result}");
-    assert!(result.contains("k = 2.5"), "parameter should have default: {result}");
-    assert!(result.contains("g = 9.81"), "constant should be assigned: {result}");
+    assert!(
+        result.contains("@parameters"),
+        "should have @parameters block: {result}"
+    );
+    assert!(
+        result.contains("k = 2.5"),
+        "parameter should have default: {result}"
+    );
+    assert!(
+        result.contains("g = 9.81"),
+        "constant should be assigned: {result}"
+    );
 }

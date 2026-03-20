@@ -187,7 +187,10 @@ pub(super) fn alg_rhs_for_var_function(
     // No matching equation found — emit warning so it's visible in generated code
     // Use Python-style comment when power is "**" (Python backends)
     if cfg.power == "**" {
-        Ok(format!("0.0  # WARNING: no equation found for {}", name_str))
+        Ok(format!(
+            "0.0  # WARNING: no equation found for {}",
+            name_str
+        ))
     } else {
         Ok(format!(
             "0.0 /* WARNING: no equation found for {} */",
@@ -238,9 +241,15 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
     }
     let (lhs, rhs_val) = if swapped {
         // -(A - B) = B - A: swap the operands
-        (get_field(&binary, "rhs").ok()?, get_field(&binary, "lhs").ok()?)
+        (
+            get_field(&binary, "rhs").ok()?,
+            get_field(&binary, "lhs").ok()?,
+        )
     } else {
-        (get_field(&binary, "lhs").ok()?, get_field(&binary, "rhs").ok()?)
+        (
+            get_field(&binary, "lhs").ok()?,
+            get_field(&binary, "rhs").ok()?,
+        )
     };
 
     // Case 1: 0 = der(x) - expr → der(x) = expr
@@ -306,9 +315,15 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
     // Also: 0 = expr - var → var = expr
     // With swap: 0 = -(A - B) → 0 = B - A
     let (lhs_side, rhs_side) = if swapped {
-        (get_field(&binary, "rhs").ok()?, get_field(&binary, "lhs").ok()?)
+        (
+            get_field(&binary, "rhs").ok()?,
+            get_field(&binary, "lhs").ok()?,
+        )
     } else {
-        (get_field(&binary, "lhs").ok()?, get_field(&binary, "rhs").ok()?)
+        (
+            get_field(&binary, "lhs").ok()?,
+            get_field(&binary, "rhs").ok()?,
+        )
     };
 
     // Case 1: 0 = var - expr → var = expr
@@ -408,6 +423,21 @@ fn is_sub_op(binary: &Value) -> bool {
 
 /// Check if an expression tree contains a `der()` call anywhere.
 /// Used to skip algebraic equations that are actually ODE equations.
+/// Check whether any element in a Value list satisfies a predicate.
+fn any_arg_matches(args: &Value, predicate: fn(&Value) -> bool) -> bool {
+    let Some(len) = args.len() else {
+        return false;
+    };
+    for i in 0..len {
+        if let Ok(arg) = args.get_item(&Value::from(i))
+            && predicate(&arg)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn contains_der(expr: &Value) -> bool {
     // Direct BuiltinCall with Der
     if let Ok(builtin) = get_field(expr, "BuiltinCall") {
@@ -417,39 +447,31 @@ fn contains_der(expr: &Value) -> bool {
                 return true;
             }
         }
-        // Check args
+        // Check args recursively
         if let Ok(args) = get_field(&builtin, "args") {
-            if let Some(len) = args.len() {
-                for i in 0..len {
-                    if let Ok(arg) = args.get_item(&Value::from(i)) {
-                        if contains_der(&arg) {
-                            return true;
-                        }
-                    }
-                }
-            }
+            return any_arg_matches(&args, contains_der);
         }
         return false;
     }
     // Binary
     if let Ok(binary) = get_field(expr, "Binary") {
-        if let Ok(lhs) = get_field(&binary, "lhs") {
-            if contains_der(&lhs) {
-                return true;
-            }
+        if let Ok(lhs) = get_field(&binary, "lhs")
+            && contains_der(&lhs)
+        {
+            return true;
         }
-        if let Ok(rhs) = get_field(&binary, "rhs") {
-            if contains_der(&rhs) {
-                return true;
-            }
+        if let Ok(rhs) = get_field(&binary, "rhs")
+            && contains_der(&rhs)
+        {
+            return true;
         }
         return false;
     }
     // Unary
-    if let Ok(unary) = get_field(expr, "Unary") {
-        if let Ok(inner) = get_field(&unary, "rhs") {
-            return contains_der(&inner);
-        }
+    if let Ok(unary) = get_field(expr, "Unary")
+        && let Ok(inner) = get_field(&unary, "rhs")
+    {
+        return contains_der(&inner);
     }
     false
 }
@@ -482,12 +504,11 @@ fn var_ref_full_name(var_ref: &Value) -> String {
     // Build subscript string (1-based Modelica convention)
     let mut sub_parts = Vec::new();
     for i in 0..len {
-        if let Ok(sub) = subs.get_item(&Value::from(i)) {
-            if let Ok(idx) = get_field(&sub, "Index") {
-                if let Some(val) = idx.as_i64() {
-                    sub_parts.push(val.to_string());
-                }
-            }
+        if let Ok(sub) = subs.get_item(&Value::from(i))
+            && let Ok(idx) = get_field(&sub, "Index")
+            && let Some(val) = idx.as_i64()
+        {
+            sub_parts.push(val.to_string());
         }
     }
     if sub_parts.is_empty() {

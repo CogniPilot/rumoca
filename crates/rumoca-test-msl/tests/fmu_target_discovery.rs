@@ -241,11 +241,62 @@ fn probe_model(
     }
 }
 
+/// Print summary table and write target JSON files for discovered FMU models.
+fn write_discovery_results(
+    targets: &[String],
+    fmi2_counts: &[usize; 5],
+    fmi3_counts: &[usize; 5],
+    mut fmi2_pass: Vec<String>,
+    mut fmi3_pass: Vec<String>,
+) {
+    let labels = [
+        "compile_fail",
+        "no_states",
+        "render_fail",
+        "c_compile_fail",
+        "pass",
+    ];
+    println!("\n{:=<70}", "");
+    println!("FMU Target Discovery Summary ({} models)", targets.len());
+    println!("{:=<70}", "");
+    println!("{:>20}  {:>6}  {:>6}", "stage", "FMI2", "FMI3");
+    for (i, label) in labels.iter().enumerate() {
+        println!(
+            "{:>20}  {:>6}  {:>6}",
+            label, fmi2_counts[i], fmi3_counts[i]
+        );
+    }
+    println!("{:=<70}\n", "");
+
+    fmi2_pass.sort();
+    fmi3_pass.sort();
+
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/msl_tests");
+    let fmi2_path = out_dir.join("fmi2_msl_targets.json");
+    let fmi3_path = out_dir.join("fmi3_msl_targets.json");
+
+    let fmi2_json = serde_json::to_string_pretty(&fmi2_pass).unwrap();
+    let fmi3_json = serde_json::to_string_pretty(&fmi3_pass).unwrap();
+
+    fs::write(&fmi2_path, format!("{fmi2_json}\n")).expect("write fmi2 targets");
+    fs::write(&fmi3_path, format!("{fmi3_json}\n")).expect("write fmi3 targets");
+
+    println!(
+        "FMI2 targets: {} models → {}",
+        fmi2_pass.len(),
+        fmi2_path.display()
+    );
+    println!(
+        "FMI3 targets: {} models → {}",
+        fmi3_pass.len(),
+        fmi3_path.display()
+    );
+}
+
 #[test]
 #[ignore]
 fn discover_fmu_targets() {
-    #[cfg(debug_assertions)]
-    {
+    if cfg!(debug_assertions) {
         panic!(
             "\n\nERROR: must be run in RELEASE mode!\n\
              cargo test --release --package rumoca-test-msl --test fmu_target_discovery -- --ignored --nocapture\n"
@@ -254,10 +305,7 @@ fn discover_fmu_targets() {
 
     use rumoca_phase_codegen::templates;
 
-    // 1. Download/cache MSL
     let msl_dir = ensure_msl_downloaded().expect("Failed to download MSL");
-
-    // 2. Parse and build library
     let mo_files = find_mo_files(&msl_dir);
     println!("Parsing {} MSL files...", mo_files.len());
     let (successes, failures) = parse_files_parallel_lenient(&mo_files);
@@ -265,14 +313,15 @@ fn discover_fmu_targets() {
     let library = CompiledLibrary::from_parsed_batch_tolerant(successes)
         .expect("failed to build library index");
 
-    // 3. Load targets
     let targets = load_target_models();
-    println!("Probing {} models through FMI2 and FMI3 pipelines\n", targets.len());
+    println!(
+        "Probing {} models through FMI2 and FMI3 pipelines\n",
+        targets.len()
+    );
 
     let mut fmi2_pass: Vec<String> = Vec::new();
     let mut fmi3_pass: Vec<String> = Vec::new();
-
-    let mut fmi2_counts = [0usize; 5]; // compile_fail, no_states, render_fail, c_compile_fail, pass
+    let mut fmi2_counts = [0usize; 5];
     let mut fmi3_counts = [0usize; 5];
 
     for (i, model_name) in targets.iter().enumerate() {
@@ -306,47 +355,39 @@ fn discover_fmu_targets() {
             fmi3_pass.push(model_name.clone());
         }
 
-        let f2_tag = if matches!(fmi2_stage, Stage::Pass) { "OK" } else { "  " };
-        let f3_tag = if matches!(fmi3_stage, Stage::Pass) { "OK" } else { "  " };
-
-        println!(
-            "[{:>3}/{}] FMI2={f2_tag} FMI3={f3_tag}  {model_name}",
-            i + 1,
-            targets.len()
-        );
-        if !matches!(fmi2_stage, Stage::Pass) {
-            println!("         FMI2: {fmi2_stage}");
-        }
-        if !matches!(fmi3_stage, Stage::Pass) && format!("{fmi3_stage}") != format!("{fmi2_stage}") {
-            println!("         FMI3: {fmi3_stage}");
-        }
+        print_probe_result(i, &targets, &fmi2_stage, &fmi3_stage, model_name);
     }
 
-    // 4. Summary
-    let labels = ["compile_fail", "no_states", "render_fail", "c_compile_fail", "pass"];
-    println!("\n{:=<70}", "");
-    println!("FMU Target Discovery Summary ({} models)", targets.len());
-    println!("{:=<70}", "");
-    println!("{:>20}  {:>6}  {:>6}", "stage", "FMI2", "FMI3");
-    for (i, label) in labels.iter().enumerate() {
-        println!("{:>20}  {:>6}  {:>6}", label, fmi2_counts[i], fmi3_counts[i]);
+    write_discovery_results(&targets, &fmi2_counts, &fmi3_counts, fmi2_pass, fmi3_pass);
+}
+
+fn print_probe_result(
+    i: usize,
+    targets: &[String],
+    fmi2_stage: &Stage,
+    fmi3_stage: &Stage,
+    model_name: &str,
+) {
+    let f2_tag = if matches!(fmi2_stage, Stage::Pass) {
+        "OK"
+    } else {
+        "  "
+    };
+    let f3_tag = if matches!(fmi3_stage, Stage::Pass) {
+        "OK"
+    } else {
+        "  "
+    };
+
+    println!(
+        "[{:>3}/{}] FMI2={f2_tag} FMI3={f3_tag}  {model_name}",
+        i + 1,
+        targets.len()
+    );
+    if !matches!(fmi2_stage, Stage::Pass) {
+        println!("         FMI2: {fmi2_stage}");
     }
-    println!("{:=<70}\n", "");
-
-    // 5. Write target list JSON files
-    fmi2_pass.sort();
-    fmi3_pass.sort();
-
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/msl_tests");
-    let fmi2_path = out_dir.join("fmi2_msl_targets.json");
-    let fmi3_path = out_dir.join("fmi3_msl_targets.json");
-
-    let fmi2_json = serde_json::to_string_pretty(&fmi2_pass).unwrap();
-    let fmi3_json = serde_json::to_string_pretty(&fmi3_pass).unwrap();
-
-    fs::write(&fmi2_path, format!("{fmi2_json}\n")).expect("write fmi2 targets");
-    fs::write(&fmi3_path, format!("{fmi3_json}\n")).expect("write fmi3 targets");
-
-    println!("FMI2 targets: {} models → {}", fmi2_pass.len(), fmi2_path.display());
-    println!("FMI3 targets: {} models → {}", fmi3_pass.len(), fmi3_path.display());
+    if !matches!(fmi3_stage, Stage::Pass) && format!("{fmi3_stage}") != format!("{fmi2_stage}") {
+        println!("         FMI3: {fmi3_stage}");
+    }
 }

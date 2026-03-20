@@ -8,7 +8,7 @@ using DifferentialEquations
 using IfElse: ifelse
 
 {# Configuration for render_expr - Julia style #}
-{% set cfg = {"prefix": "", "power": "^", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "true", "false_val": "false", "if_style": "function", "if_else_fn": "ifelse"} %}
+{% set cfg = {"prefix": "", "power": "^", "and_op": "&", "or_op": "|", "not_op": "!", "true_val": "true", "false_val": "false", "if_style": "function", "if_else_fn": "ifelse"} %}
 
 """Modelica pre() operator stub — returns current value during continuous integration."""
 pre(x) = x
@@ -39,6 +39,23 @@ end
 
 {% endif %}
 {% endfor %}
+
+# =========================================================================
+# Constants
+# =========================================================================
+{% for name, var in dae.constants | items %}
+{% if var.start %}
+{{ name | sanitize }} = {{ render_expr(var.start, cfg) }}
+{% else %}
+{{ name | sanitize }} = 0.0
+{% endif %}
+{% endfor %}
+{% if dae.enum_literal_ordinals | length > 0 %}
+# Enumeration literal ordinals (MLS §4.9.5)
+{% for name, ordinal in dae.enum_literal_ordinals | items %}
+{{ name | sanitize }} = {{ ordinal }}
+{% endfor %}
+{% endif %}
 
 function create_model()
     # Time variable and derivative operator
@@ -122,24 +139,6 @@ function create_model()
 {% endif %}
 {% endfor %}
     end
-{% endif %}
-
-    # =========================================================================
-    # Constants
-    # =========================================================================
-{% for name, var in dae.constants | items %}
-{% if var.start %}
-    {{ name | sanitize }} = {{ render_expr(var.start, cfg) }}
-{% else %}
-    {{ name | sanitize }} = 0.0
-{% endif %}
-{% endfor %}
-{% if dae.enum_literal_ordinals | length > 0 %}
-
-    # Enumeration literal ordinals (MLS §4.9.5)
-{% for name, ordinal in dae.enum_literal_ordinals | items %}
-    {{ name | sanitize }} = {{ ordinal }}
-{% endfor %}
 {% endif %}
 
     # =========================================================================
@@ -270,20 +269,22 @@ function simulate(;
     u0_dict = isnothing(x0) ? defaults.x0 : merge(defaults.x0, x0)
     p_dict = isnothing(p) ? defaults.p0 : merge(defaults.p0, p)
 
-    # Convert string keys to MTK symbolic pairs and merge into one Dict.
-    # After structural_simplify, some variables may be eliminated — skip those.
-    sym_pairs = Dict{Any,Any}()
-    all_syms = Set(Symbol.(string.(vcat(ModelingToolkit.unknowns(sys), ModelingToolkit.parameters(sys)))))
-    for (k, v) in u0_dict
-        sym = Symbol(replace(k, "." => "_"))
-        if sym in all_syms
-            sym_pairs[getproperty(sys, sym)] = v
-        end
+    # Map string keys to MTK symbolic variables on the simplified system.
+    # After structural_simplify, variable names may be prefixed (e.g., sys₊mass_s).
+    # Build a lookup from sanitized name → symbolic variable.
+    sym_lookup = Dict{String,Any}()
+    for s in vcat(ModelingToolkit.unknowns(sys), ModelingToolkit.parameters(sys))
+        name_str = string(s)
+        # Strip "(t)" suffix for time-dependent unknowns
+        clean = replace(name_str, "(t)" => "")
+        sym_lookup[clean] = s
     end
-    for (k, v) in p_dict
-        sym = Symbol(replace(k, "." => "_"))
-        if sym in all_syms
-            sym_pairs[getproperty(sys, sym)] = v
+
+    sym_pairs = Dict{Any,Any}()
+    for (k, v) in merge(u0_dict, p_dict)
+        sanitized = replace(k, "." => "_")
+        if haskey(sym_lookup, sanitized)
+            sym_pairs[sym_lookup[sanitized]] = v
         end
     end
 

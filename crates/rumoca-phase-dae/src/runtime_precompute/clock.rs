@@ -14,6 +14,15 @@ type ClockRuntimeMetadata = (
     Vec<dae::Expression>,
 );
 
+/// Extract the condition expression from `Clock(condition)` event-clock constructors.
+fn extract_event_clock_condition(expr: &dae::Expression) -> Option<dae::Expression> {
+    if let dae::Expression::FunctionCall { args, .. } = expr {
+        args.first().cloned()
+    } else {
+        None
+    }
+}
+
 pub(super) fn compute_clock_runtime_metadata(
     dae_model: &dae::Dae,
     compile_time_scalars: &HashMap<String, f64>,
@@ -51,18 +60,11 @@ pub(super) fn compute_clock_runtime_metadata(
                 &clock_sources,
             ) {
                 // Extract the condition expression from Clock(condition)
-                if let dae::Expression::FunctionCall { args, .. } = expr {
-                    if let Some(cond) = args.first() {
-                        triggered_clock_conditions.push(cond.clone());
-                    }
-                }
+                triggered_clock_conditions.extend(extract_event_clock_condition(expr));
                 continue;
             }
-            if is_non_static_inferred_clock_composition(
-                expr,
-                compile_time_scalars,
-                &clock_sources,
-            ) {
+            if is_non_static_inferred_clock_composition(expr, compile_time_scalars, &clock_sources)
+            {
                 continue;
             }
             unresolved_clock_exprs.push(format_unresolved_clock_expr(
