@@ -1425,7 +1425,19 @@ spec.loader.exec_module(mod)
 print(mod.simulate_csv())
 "#;
 
+fn python_has_jax() -> bool {
+    Command::new(python_command())
+        .args(["-c", "import jax; import diffrax; import numpy"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 fn jax_trace_test(source: &str, model_name: &str) {
+    if !python_has_jax() {
+        eprintln!("SKIP: jax/diffrax not available");
+        return;
+    }
     let rendered = render_template(source, model_name, templates::JAX);
     let csv = run_python(&rendered, JAX_CSV_DRIVER);
     let backend_traces = parse_csv_traces(&csv);
