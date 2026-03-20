@@ -145,8 +145,8 @@ enum ModelSource {
 }
 
 fn load_msl_targets() -> Vec<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/msl_tests/backend_stress_targets.json");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/msl_tests/backend_stress_targets.json");
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read target list {}: {e}", path.display()));
     let value: serde_json::Value =
@@ -340,6 +340,14 @@ fn julia_has_mtk() -> bool {
         .unwrap_or(false)
 }
 
+fn python_has_jax() -> bool {
+    Command::new("python3")
+        .args(["-c", "import jax; import diffrax; import numpy"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 // =============================================================================
 // DAE compilation for inline models
 // =============================================================================
@@ -347,10 +355,9 @@ fn julia_has_mtk() -> bool {
 fn compile_inline_model(source: &str, model_name: &str) -> Result<CompilationResult, String> {
     let parsed = rumoca_session::parsing::parse_source_to_ast(source, &format!("{model_name}.mo"))
         .map_err(|e| format!("parse: {e}"))?;
-    let library = CompiledLibrary::from_parsed_batch_tolerant(vec![
-        (format!("{model_name}.mo"), parsed),
-    ])
-    .map_err(|e| format!("library: {e}"))?;
+    let library =
+        CompiledLibrary::from_parsed_batch_tolerant(vec![(format!("{model_name}.mo"), parsed)])
+            .map_err(|e| format!("library: {e}"))?;
     let report = library.compile_model_strict_reachable_with_recovery(model_name);
     match report.requested_result {
         Some(PhaseResult::Success(boxed)) => Ok(*boxed),
@@ -599,8 +606,11 @@ fn run_julia_script(model_code: &str, driver: &str, args: &[&str]) -> Result<Str
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let lines: Vec<&str> = stderr.lines().collect();
-        let truncated = if lines.len() > 30 {
-            lines[lines.len() - 30..].join("\n")
+        let truncated = if lines.len() > 60 {
+            // Show first 10 lines (error message) + last 20 lines (stacktrace tail)
+            let head: Vec<&str> = lines[..10].to_vec();
+            let tail: Vec<&str> = lines[lines.len() - 20..].to_vec();
+            format!("{}\n  ... ({} lines omitted) ...\n{}", head.join("\n"), lines.len() - 30, tail.join("\n"))
         } else {
             stderr.to_string()
         };
@@ -717,9 +727,12 @@ fn embedded_c_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let rendered =
-        rumoca_phase_codegen::render_template_with_name(dae, rumoca_phase_codegen::templates::EMBEDDED_C, model_name)
-            .map_err(|e| format!("render: {e}"))?;
+    let rendered = rumoca_phase_codegen::render_template_with_name(
+        dae,
+        rumoca_phase_codegen::templates::EMBEDDED_C,
+        model_name,
+    )
+    .map_err(|e| format!("render: {e}"))?;
 
     let mut state_names: Vec<&str> = dae.states.keys().map(|k| k.as_str()).collect();
     state_names.sort();
@@ -873,10 +886,7 @@ for target, expr in solution.items():
 print(json.dumps({"state_names": state_names, "derivs_at_t0": deriv_vals}))
 "#;
 
-fn sympy_simulate(
-    dae: &rumoca_ir_dae::Dae,
-    model_name: &str,
-) -> Result<String, String> {
+fn sympy_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
     let code = rumoca_phase_codegen::render_template_with_name(
         dae,
         rumoca_phase_codegen::templates::SYMPY,
@@ -898,10 +908,7 @@ spec.loader.exec_module(mod)
 print(mod.simulate())
 "#;
 
-fn onnx_simulate(
-    dae: &rumoca_ir_dae::Dae,
-    model_name: &str,
-) -> Result<String, String> {
+fn onnx_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
     let code = rumoca_phase_codegen::render_template_with_name(
         dae,
         rumoca_phase_codegen::templates::ONNX,
@@ -909,6 +916,28 @@ fn onnx_simulate(
     )
     .map_err(|e| format!("render: {e}"))?;
     run_python_script(&code, ONNX_CSV_DRIVER, &[])
+}
+
+// --- JAX ---
+
+const JAX_CSV_DRIVER: &str = r#"
+import importlib.util, sys, os
+
+spec = importlib.util.spec_from_file_location("model", os.path.join(os.path.dirname(__file__), "model.py"))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+print(mod.simulate_csv())
+"#;
+
+fn jax_simulate(dae: &rumoca_ir_dae::Dae, model_name: &str) -> Result<String, String> {
+    let code = rumoca_phase_codegen::render_template_with_name(
+        dae,
+        rumoca_phase_codegen::templates::JAX,
+        model_name,
+    )
+    .map_err(|e| format!("render: {e}"))?;
+    run_python_script(&code, JAX_CSV_DRIVER, &[])
 }
 
 // --- Julia MTK ---
@@ -1076,6 +1105,7 @@ enum BackendKind {
     Fmi3,
     Sympy,
     Onnx,
+    Jax,
     JuliaMtk,
 }
 
@@ -1089,6 +1119,7 @@ impl BackendKind {
             BackendKind::Fmi3 => "FMI3",
             BackendKind::Sympy => "SymPy",
             BackendKind::Onnx => "ONNX",
+            BackendKind::Jax => "JAX",
             BackendKind::JuliaMtk => "Julia MTK",
         }
     }
@@ -1097,6 +1128,7 @@ impl BackendKind {
         match self {
             BackendKind::CasadiMx | BackendKind::CasadiSx => 0.01,
             BackendKind::Sympy => 0.10,
+            BackendKind::Jax => 0.02,
             BackendKind::JuliaMtk => 0.05,
             _ => 0.05,
         }
@@ -1139,61 +1171,64 @@ fn run_single_model(
 
     match backend {
         BackendKind::CasadiMx => {
-            match casadi_simulate(&dae, &model.name, rumoca_phase_codegen::templates::CASADI_MX, t_end) {
+            match casadi_simulate(
+                &dae,
+                &model.name,
+                rumoca_phase_codegen::templates::CASADI_MX,
+                t_end,
+            ) {
                 Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
                 Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
                 Err(e) => ModelOutcome::BackendFail(e),
             }
         }
         BackendKind::CasadiSx => {
-            match casadi_simulate(&dae, &model.name, rumoca_phase_codegen::templates::CASADI_SX, t_end) {
+            match casadi_simulate(
+                &dae,
+                &model.name,
+                rumoca_phase_codegen::templates::CASADI_SX,
+                t_end,
+            ) {
                 Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
                 Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
                 Err(e) => ModelOutcome::BackendFail(e),
             }
         }
-        BackendKind::EmbeddedC => {
-            match embedded_c_simulate(&dae, &model.name, t_end, dt) {
-                Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
-                Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
-                Err(e) => ModelOutcome::BackendFail(e),
-            }
-        }
-        BackendKind::Fmi2 => {
-            match fmi2_simulate(&dae, &model.name, t_end, dt) {
-                Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
-                Err(e) if e.contains("render") => ModelOutcome::RenderFail(e),
-                Err(e) => ModelOutcome::BackendFail(e),
-            }
-        }
-        BackendKind::Fmi3 => {
-            match fmi3_simulate(&dae, &model.name, t_end, dt) {
-                Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
-                Err(e) if e.contains("render") => ModelOutcome::RenderFail(e),
-                Err(e) => ModelOutcome::BackendFail(e),
-            }
-        }
-        BackendKind::Sympy => {
-            match sympy_simulate(&dae, &model.name) {
-                Ok(json) => compare_sympy_derivs(&json, &dae, &sim, tolerance),
-                Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
-                Err(e) => ModelOutcome::BackendFail(e),
-            }
-        }
-        BackendKind::Onnx => {
-            match onnx_simulate(&dae, &model.name) {
-                Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
-                Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
-                Err(e) => ModelOutcome::BackendFail(e),
-            }
-        }
-        BackendKind::JuliaMtk => {
-            match julia_mtk_simulate(&dae, &model.name, t_end) {
-                Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
-                Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
-                Err(e) => ModelOutcome::BackendFail(e),
-            }
-        }
+        BackendKind::EmbeddedC => match embedded_c_simulate(&dae, &model.name, t_end, dt) {
+            Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
+            Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
+            Err(e) => ModelOutcome::BackendFail(e),
+        },
+        BackendKind::Fmi2 => match fmi2_simulate(&dae, &model.name, t_end, dt) {
+            Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
+            Err(e) if e.contains("render") => ModelOutcome::RenderFail(e),
+            Err(e) => ModelOutcome::BackendFail(e),
+        },
+        BackendKind::Fmi3 => match fmi3_simulate(&dae, &model.name, t_end, dt) {
+            Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
+            Err(e) if e.contains("render") => ModelOutcome::RenderFail(e),
+            Err(e) => ModelOutcome::BackendFail(e),
+        },
+        BackendKind::Sympy => match sympy_simulate(&dae, &model.name) {
+            Ok(json) => compare_sympy_derivs(&json, &dae, &sim, tolerance),
+            Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
+            Err(e) => ModelOutcome::BackendFail(e),
+        },
+        BackendKind::Onnx => match onnx_simulate(&dae, &model.name) {
+            Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
+            Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
+            Err(e) => ModelOutcome::BackendFail(e),
+        },
+        BackendKind::Jax => match jax_simulate(&dae, &model.name) {
+            Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
+            Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
+            Err(e) => ModelOutcome::BackendFail(e),
+        },
+        BackendKind::JuliaMtk => match julia_mtk_simulate(&dae, &model.name, t_end) {
+            Ok(csv) => compare_csv_traces(&csv, &dae, &sim, tolerance),
+            Err(e) if e.contains("render:") => ModelOutcome::RenderFail(e),
+            Err(e) => ModelOutcome::BackendFail(e),
+        },
     }
 }
 
@@ -1266,9 +1301,7 @@ fn run_stress_test(backend: BackendKind) {
         }
     }
 
-    println!(
-        "\n{tested} models tested end-to-end ({pass} pass, {deviation} deviation)"
-    );
+    println!("\n{tested} models tested end-to-end ({pass} pass, {deviation} deviation)");
     println!("{:=<80}\n", "");
 
     assert!(
@@ -1343,6 +1376,15 @@ fn stress_test_onnx() {
         panic!("python3 with onnx/onnxruntime/numpy not available");
     }
     run_stress_test(BackendKind::Onnx);
+}
+
+#[test]
+#[ignore]
+fn stress_test_jax() {
+    if !python_has_jax() {
+        panic!("python3 with jax/diffrax/numpy not available");
+    }
+    run_stress_test(BackendKind::Jax);
 }
 
 #[test]

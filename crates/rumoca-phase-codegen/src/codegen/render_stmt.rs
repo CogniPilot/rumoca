@@ -380,7 +380,7 @@ fn render_if_branch(
         String::new()
     };
     if body.trim().is_empty() && matches!(cfg.if_style, IfStyle::Function) {
-        result.push_str(&format!("{next_indent}pass"));
+        result.push_str(&format!("{next_indent}pass\n"));
     } else {
         result.push_str(&body);
     }

@@ -4,48 +4,167 @@
 # Do not edit manually.
 #
 # Dependencies:
-#   pip install jax jaxlib diffrax
+#   pip install jax jaxlib diffrax numpy
+
+import os
+import math
+
+# Default to CPU backend if no platform is specified
+os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 
 import jax
 import jax.numpy as jnp
 from diffrax import diffeqsolve, ODETerm, Tsit5, SaveAt
 from typing import NamedTuple
 
+# Patch namespaces so render_expr's prefix works for builtins
+jnp.if_else = jnp.where
+jnp.fabs = jnp.abs
+jnp.fmin = jnp.minimum
+jnp.fmax = jnp.maximum
+jnp.sum1 = lambda x: jnp.sum(jnp.array(x))
+math.if_else = lambda c, t, e: t if c else e
+
 {# Configuration for render_expr - JAX/Python style #}
 {% set cfg = {"prefix": "jnp.", "power": "**", "if_style": "function"} %}
+{# Python-safe config for start value evaluation (no JAX) #}
+{% set init_cfg = {"prefix": "math.", "power": "**", "if_style": "function"} %}
+
+# Modelica enum values that may appear in start/parameter expressions
+StateSelect_never = 1
+StateSelect_avoid = 2
+StateSelect_default = 3
+StateSelect_prefer = 4
+StateSelect_always = 5
 
 
-class ModelParams(NamedTuple):
-    """Model parameters."""
+def if_else(cond, true_val, false_val):
+    """Conditional for use in start-value expressions and ode_fn."""
+    return jnp.where(cond, true_val, false_val)
+
+
+# =========================================================================
+# User-Defined Functions ({{ dae.functions | length }})
+# =========================================================================
+{% for func_name, func in dae.functions | items %}
+# Function: {{ func_name }} ({{ "pure" if func.pure else "impure" }})
+def {{ func_name | sanitize }}({% for p in func.inputs %}{{ p.name | sanitize }}{% if p.default %}={{ render_expr(p.default, cfg) }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %}):
+{% for p in func.locals %}
+    {{ p.name | sanitize }} = {% if p.default %}{{ render_expr(p.default, cfg) }}{% else %}0.0{% endif %}  # local
+{% endfor %}
+{% if func.outputs | length > 0 %}
+    {{ func.outputs[0].name | sanitize }} = 0.0  # output variable
+{% endif %}
+{% if func.body | length > 0 %}
+    # Function body ({{ func.body | length }} statements)
+{{ render_statements(func.body, cfg, "    ") }}
+{% endif %}
+{% if func.outputs | length > 0 %}
+    return {{ func.outputs[0].name | sanitize }}
+{% else %}
+    pass
+{% endif %}
+
+{% endfor %}
+
+# =========================================================================
+# Default values (evaluated without JAX for initialization)
+# =========================================================================
+
+def get_default_values():
+    """Compute default start values for all variables."""
+    _if_else = lambda c, t, e: t if c else e
+
+    # Forward-declare all variables so cross-references resolve
+    time = 0.0
+{% for name, var in dae.constants | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
 {% for name, var in dae.p | items %}
-    {{ name | sanitize }}: float = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}
-
+    {{ name | sanitize }} = 0.0
 {% endfor %}
-{% if dae.p | length == 0 %}
-    pass  # No parameters
-{% endif %}
-
-
-class ModelState(NamedTuple):
-    """Model state variables."""
+{% for name, var in dae.z | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
+{% for name, var in dae.m | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
 {% for name, var in dae.x | items %}
-    {{ name | sanitize }}: float = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %}
-
+    {{ name | sanitize }} = 0.0
 {% endfor %}
-{% if dae.x | length == 0 %}
-    pass  # No states
-{% endif %}
-
-
-class ModelInputs(NamedTuple):
-    """Model input variables."""
-{% for name, var in dae.u | items %}
-    {{ name | sanitize }}: float = 0.0
+{% for name, var in dae.y | items %}
+    {{ name | sanitize }} = 0.0
 {% endfor %}
-{% if dae.u | length == 0 %}
-    pass  # No inputs
-{% endif %}
+{% for name, var in dae.w | items %}
+    {{ name | sanitize }} = 0.0
+{% endfor %}
 
+    # Assign start values (may reference other variables; errors fall back to 0.0)
+{% for name, var in dae.constants | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.p | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.z | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.m | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+{% for name, var in dae.x | items %}
+{% if var.start %}
+    try:
+        {{ name | sanitize }} = float({{ render_expr(var.start, init_cfg) }})
+    except (ZeroDivisionError, ValueError, TypeError, NameError, OverflowError):
+        pass
+{% endif %}
+{% endfor %}
+
+    return {
+        'x0': [{% for name, var in dae.x | items %}{{ name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %}],
+        'p0': [{% for name, var in dae.p | items %}{{ name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %}],
+        'constants': {
+{% for name, var in dae.constants | items %}
+            '{{ name | sanitize }}': {{ name | sanitize }},
+{% endfor %}
+        },
+        'z0': {
+{% for name, var in dae.z | items %}
+            '{{ name | sanitize }}': {{ name | sanitize }},
+{% endfor %}
+        },
+        'm0': {
+{% for name, var in dae.m | items %}
+            '{{ name | sanitize }}': {{ name | sanitize }},
+{% endfor %}
+        },
+    }
+
+
+# =========================================================================
+# ODE right-hand side
+# =========================================================================
 
 def ode_fn(t, y, args):
     """ODE right-hand side: dy/dt = f(t, y, args).
@@ -53,12 +172,13 @@ def ode_fn(t, y, args):
     Args:
         t: Current time
         y: State vector as JAX array
-        args: Tuple of (params, inputs)
+        args: Tuple of (params, constants_and_discrete)
 
     Returns:
         State derivatives as JAX array
     """
-    params, inputs = args
+    params, cd = args
+    time = t
 
     # Unpack state variables
 {% for name, var in dae.x | items %}
@@ -67,31 +187,54 @@ def ode_fn(t, y, args):
 
     # Unpack parameters
 {% for name, var in dae.p | items %}
-    {{ name | sanitize }} = params.{{ name | sanitize }}
-{% endfor %}
-
-    # Unpack inputs
-{% for name, var in dae.u | items %}
-    {{ name | sanitize }} = inputs.{{ name | sanitize }}
+    {{ name | sanitize }} = params[{{ loop.index0 }}]
 {% endfor %}
 
     # Constants
 {% for name, var in dae.constants | items %}
+    {{ name | sanitize }} = cd['{{ name | sanitize }}']
+{% endfor %}
+
+    # Discrete variables (held constant)
+{% for name, var in dae.z | items %}
+    {{ name | sanitize }} = cd['{{ name | sanitize }}']
+{% endfor %}
+{% for name, var in dae.m | items %}
+    {{ name | sanitize }} = cd['{{ name | sanitize }}']
+{% endfor %}
+
+    # Algebraic variables
+{% for name, var in dae.y | items %}
 {% if var.start %}
     {{ name | sanitize }} = {{ render_expr(var.start, cfg) }}
 {% else %}
     {{ name | sanitize }} = 0.0
 {% endif %}
 {% endfor %}
+{% for name, var in dae.y | items %}
+    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }}
+{% endfor %}
+
+    # Output variables
+{% for name, var in dae.w | items %}
+{% if var.start %}
+    {{ name | sanitize }} = {{ render_expr(var.start, cfg) }}
+{% else %}
+    {{ name | sanitize }} = 0.0
+{% endif %}
+{% endfor %}
+{% for name, var in dae.w | items %}
+    {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }}
+{% endfor %}
 
     # Compute derivatives
-{% if dae.f_x | length > 0 %}
-{% for eq in dae.f_x %}
-    f_x_{{ loop.index0 }} = {{ render_expr(eq.rhs, cfg) }}  # {{ eq.origin }}
+{% if dae.x | length > 0 %}
+{% for name, var in dae.x | items %}
+    f_x_{{ loop.index0 }} = {{ ode_rhs_for_state(name, dae.f_x, cfg) }}  # der({{ name }})
 {% endfor %}
 
     return jnp.array([
-{% for eq in dae.f_x %}
+{% for name, var in dae.x | items %}
         f_x_{{ loop.index0 }}{{ "," if not loop.last else "" }}
 {% endfor %}
     ])
@@ -100,35 +243,39 @@ def ode_fn(t, y, args):
 {% endif %}
 
 
-@jax.jit
-def simulate(x0, t_span, params=None, inputs=None, dt=0.01, save_every=1):
+# =========================================================================
+# Simulation
+# =========================================================================
+
+def simulate(x0=None, t_span=(0.0, 1.0), dt=0.01):
     """Simulate the model.
 
     Args:
-        x0: Initial state (ModelState or array)
+        x0: Initial state as JAX array (uses defaults if None)
         t_span: Tuple of (t0, tf)
-        params: ModelParams (uses defaults if None)
-        inputs: ModelInputs (uses zeros if None)
         dt: Integration step size
-        save_every: Save every N steps
 
     Returns:
         Tuple of (times, states)
     """
-    if params is None:
-        params = ModelParams()
-    if inputs is None:
-        inputs = ModelInputs()
+    defaults = get_default_values()
 
-    # Convert state to array if needed
-    if isinstance(x0, ModelState):
-        y0 = jnp.array([{% for name, var in dae.x | items %}x0.{{ name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %}])
+    if x0 is None:
+        y0 = jnp.array(defaults['x0'])
     else:
         y0 = jnp.asarray(x0)
 
+    params = jnp.array(defaults['p0'])
+
+    # Merge constants and discrete vars into a single dict
+    cd = {}
+    cd.update(defaults['constants'])
+    cd.update(defaults['z0'])
+    cd.update(defaults['m0'])
+
     t0, tf = t_span
     n_steps = int((tf - t0) / dt)
-    save_at = SaveAt(ts=jnp.linspace(t0, tf, n_steps // save_every + 1))
+    save_at = SaveAt(ts=jnp.linspace(t0, tf, n_steps + 1))
 
     term = ODETerm(ode_fn)
     solver = Tsit5()
@@ -140,16 +287,31 @@ def simulate(x0, t_span, params=None, inputs=None, dt=0.01, save_every=1):
         t1=tf,
         dt0=dt,
         y0=y0,
-        args=(params, inputs),
+        args=(params, cd),
         saveat=save_at,
     )
 
     return sol.ts, sol.ys
 
 
+# =========================================================================
+# CSV output for testing
+# =========================================================================
+
 def get_state_names():
     """Get list of state variable names."""
     return [{% for name, var in dae.x | items %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
+
+
+def simulate_csv(t_end=1.0, dt=0.01):
+    """Run simulation and return CSV string."""
+    ts, ys = simulate(t_span=(0.0, t_end), dt=dt)
+    header = "time," + ",".join(get_state_names())
+    rows = [header]
+    for i in range(len(ts)):
+        row = [f"{float(ts[i]):.10g}"] + [f"{float(ys[i, j]):.10g}" for j in range(ys.shape[1])]
+        rows.append(",".join(row))
+    return "\n".join(rows)
 
 
 def get_param_names():
@@ -168,9 +330,5 @@ if __name__ == '__main__':
     print(f"Inputs ({{ dae.u | length }}): {get_input_names()}")
 
 {% if dae.x | length > 0 %}
-    # Example simulation
-    x0 = ModelState()
-    ts, ys = simulate(x0, (0.0, 10.0))
-    print(f"\nSimulation complete: {len(ts)} time steps")
-    print(f"Final state: {ys[-1]}")
+    print(simulate_csv())
 {% endif %}

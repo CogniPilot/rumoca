@@ -17,16 +17,18 @@ use minijinja::Value;
 /// for map-like Values even when `get_item` would succeed.
 pub(crate) fn get_field(value: &Value, name: &str) -> Result<Value, minijinja::Error> {
     // Try get_attr first
-    if let Ok(result) = value.get_attr(name) {
-        if !result.is_undefined() && !result.is_none() {
-            return Ok(result);
-        }
+    if let Ok(result) = value.get_attr(name)
+        && !result.is_undefined()
+        && !result.is_none()
+    {
+        return Ok(result);
     }
     // Fall back to get_item (maps, sequences)
-    if let Ok(result) = value.get_item(&Value::from(name)) {
-        if !result.is_undefined() && !result.is_none() {
-            return Ok(result);
-        }
+    if let Ok(result) = value.get_item(&Value::from(name))
+        && !result.is_undefined()
+        && !result.is_none()
+    {
+        return Ok(result);
     }
     Err(minijinja::Error::new(
         minijinja::ErrorKind::UndefinedError,
@@ -314,18 +316,14 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
     // Modelica `min({a,b,c})` → C `fmin(fmin(a,b),c)` (not `fmin((double[]){a,b,c})`)
     if matches!(func_name.as_str(), "Min" | "Max" | "Sum") {
         let args_val = get_field(builtin, "args")?;
-        if args_val.len() == Some(1) {
-            if let Ok(first_arg) = args_val.get_item(&Value::from(0)) {
-                if let Ok(array) = get_field(&first_arg, "Array") {
-                    if let Ok(elements) = get_field(&array, "elements") {
-                        let len = elements.len().unwrap_or(0);
-                        if len > 0 {
-                            return render_chained_minmaxsum(
-                                &func_name, &elements, len, cfg,
-                            );
-                        }
-                    }
-                }
+        if args_val.len() == Some(1)
+            && let Ok(first_arg) = args_val.get_item(&Value::from(0))
+            && let Ok(array) = get_field(&first_arg, "Array")
+            && let Ok(elements) = get_field(&array, "elements")
+        {
+            let len = elements.len().unwrap_or(0);
+            if len > 0 {
+                return render_chained_minmaxsum(&func_name, &elements, len, cfg);
             }
         }
     }
@@ -419,13 +417,13 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
             }
         }
         "Size" => {
-            // size(arr, dim) — not directly representable in C, emit as comment
-            format!("0 /* size({}) — array intrinsic not yet supported */", args)
+            // size(arr, dim) — not directly representable in Python, return 0
+            "0".to_string()
         }
         "Interval" => {
             // interval(u) — clocked partition intrinsic (MLS §16.10)
             // In continuous simulation, return the clock period if known
-            format!("0.0 /* interval({}) — clocked partition intrinsic */", args)
+            "0.0".to_string()
         }
         _ => format!("{}({})", func_name.to_lowercase(), args),
     }

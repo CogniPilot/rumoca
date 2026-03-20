@@ -725,10 +725,7 @@ int main(void) {
 }
 "#;
 
-    let csv = compile_and_run_c(
-        &[("model.c", &model_c), ("driver.c", driver_c)],
-        &[],
-    );
+    let csv = compile_and_run_c(&[("model.c", &model_c), ("driver.c", driver_c)], &[]);
     // If we get here without panic, the test passed (driver returns 0 on success)
     assert!(
         csv.contains("sensitivity="),
@@ -806,12 +803,11 @@ fn fmi3_native_array_runtime() {
     // der(x) = -x with x(0) = {1,2,3} → x(t) = x0*exp(-t)
     // At t=1: x[i] ≈ x0[i] * exp(-1) ≈ x0[i] * 0.3679
     for (col, x0) in [("x[1]", 1.0), ("x[2]", 2.0), ("x[3]", 3.0)] {
-        let trace = traces.get(col).unwrap_or_else(|| panic!("missing column {col}"));
+        let trace = traces
+            .get(col)
+            .unwrap_or_else(|| panic!("missing column {col}"));
         let (t_last, v_last) = *trace.last().expect("trace should not be empty");
-        assert!(
-            t_last >= 0.99,
-            "expected t_end >= 0.99, got {t_last}"
-        );
+        assert!(t_last >= 0.99, "expected t_end >= 0.99, got {t_last}");
         let expected = x0 * (-1.0f64).exp();
         let scale = expected.abs().max(1.0);
         let err = (v_last - expected).abs() / scale;
@@ -912,10 +908,7 @@ int main(void) {
 }
 "#;
 
-    let csv = compile_and_run_c(
-        &[("model.c", &model_c), ("driver.c", driver_c)],
-        &[],
-    );
+    let csv = compile_and_run_c(&[("model.c", &model_c), ("driver.c", driver_c)], &[]);
     assert!(
         csv.contains("sensitivity="),
         "expected sensitivity output:\n{csv}"
@@ -930,32 +923,8 @@ int main(void) {
 // again to t=1.0 — both runs should produce the same final value.
 // ============================================================================
 
-#[test]
-#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
-fn fmi3_fmu_state_serialization() {
-    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
-
-    let model_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
-            .expect("render FMI3 model");
-
-    // Verify XML advertises state capabilities
-    let xml = rumoca_phase_codegen::render_template_with_name(
-        &dae,
-        templates::FMI3_MODEL_DESCRIPTION,
-        "ParamDecay",
-    )
-    .expect("render FMI3 model description");
-    assert!(
-        xml.contains(r#"canGetAndSetFMUState="true""#),
-        "expected canGetAndSetFMUState in XML"
-    );
-    assert!(
-        xml.contains(r#"canSerializeFMUState="true""#),
-        "expected canSerializeFMUState in XML"
-    );
-
-    let driver_c = r#"
+/// C driver source for FMI 3.0 state serialization round-trip test.
+const FMI3_STATE_SERIALIZATION_DRIVER: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1093,8 +1062,36 @@ int main(void) {
 }
 "#;
 
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn fmi3_fmu_state_serialization() {
+    let dae = prepare_dae(PARAM_DECAY_SOURCE, "ParamDecay");
+
+    let model_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, "ParamDecay")
+            .expect("render FMI3 model");
+
+    // Verify XML advertises state capabilities
+    let xml = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::FMI3_MODEL_DESCRIPTION,
+        "ParamDecay",
+    )
+    .expect("render FMI3 model description");
+    assert!(
+        xml.contains(r#"canGetAndSetFMUState="true""#),
+        "expected canGetAndSetFMUState in XML"
+    );
+    assert!(
+        xml.contains(r#"canSerializeFMUState="true""#),
+        "expected canSerializeFMUState in XML"
+    );
+
     let csv = compile_and_run_c(
-        &[("model.c", &model_c), ("driver.c", driver_c)],
+        &[
+            ("model.c", &model_c),
+            ("driver.c", FMI3_STATE_SERIALIZATION_DRIVER),
+        ],
         &[],
     );
     assert!(
@@ -1186,14 +1183,8 @@ int main(void) {
 }
 "#;
 
-    let csv = compile_and_run_c(
-        &[("model.c", &model_c), ("driver.c", driver_c)],
-        &[],
-    );
-    assert!(
-        csv.contains("x_final="),
-        "expected x_final output:\n{csv}"
-    );
+    let csv = compile_and_run_c(&[("model.c", &model_c), ("driver.c", driver_c)], &[]);
+    assert!(csv.contains("x_final="), "expected x_final output:\n{csv}");
 }
 
 // ============================================================================
@@ -1413,4 +1404,49 @@ fn onnx_param_decay() {
 #[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
 fn onnx_oscillator() {
     onnx_trace_test(OSCILLATOR_SOURCE, "Oscillator");
+}
+
+// ============================================================================
+// JAX/Diffrax runtime tests
+//
+// JAX uses Diffrax's Tsit5 adaptive solver via jax.jit-compiled ODE function.
+// ============================================================================
+
+/// JAX uses Tsit5 (adaptive 5th-order), should be tight.
+const JAX_TOLERANCE: f64 = 0.02;
+
+const JAX_CSV_DRIVER: &str = r#"
+import importlib.util, sys, os
+
+spec = importlib.util.spec_from_file_location("model", os.path.join(os.path.dirname(__file__), "model.py"))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+print(mod.simulate_csv())
+"#;
+
+fn jax_trace_test(source: &str, model_name: &str) {
+    let rendered = render_template(source, model_name, templates::JAX);
+    let csv = run_python(&rendered, JAX_CSV_DRIVER);
+    let backend_traces = parse_csv_traces(&csv);
+    let (dae, sim) = reference_trace(source, model_name, 1.0);
+    assert_traces_match(&backend_traces, &dae, &sim, JAX_TOLERANCE, "JAX");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn jax_ball() {
+    jax_trace_test(BALL_SOURCE, "Ball");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn jax_param_decay() {
+    jax_trace_test(PARAM_DECAY_SOURCE, "ParamDecay");
+}
+
+#[test]
+#[ignore = "requires runtimes; run via `rum verify template-runtimes`"]
+fn jax_oscillator() {
+    jax_trace_test(OSCILLATOR_SOURCE, "Oscillator");
 }
