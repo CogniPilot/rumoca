@@ -978,7 +978,9 @@ pub(super) fn prepare_dae_for_template_codegen_only(
     // This ensures template backends get concrete values instead of symbolic
     // references to other parameters (e.g., G_T = G_T_ref → G_T = 300.15).
     trace_step("fold_start_values", &mut || {
-        run_timeout_step(budget, || rumoca_ir_dae::fold_start_values_to_literals(&mut dae))
+        run_timeout_step(budget, || {
+            rumoca_ir_dae::fold_start_values_to_literals(&mut dae)
+        })
     })?;
 
     Ok(dae)

@@ -34,11 +34,7 @@ pub fn fold_start_values_to_literals(dae: &mut Dae) {
         .chain(dae.discrete_valued.iter())
         .chain(dae.algebraics.iter())
         .chain(dae.outputs.iter())
-        .filter_map(|(name, var)| {
-            var.start
-                .as_ref()
-                .map(|expr| (name.clone(), expr.clone()))
-        })
+        .filter_map(|(name, var)| var.start.as_ref().map(|expr| (name.clone(), expr.clone())))
         .collect();
 
     // Fixed-point iteration: resolve chains like A = B, B = 3.14
@@ -116,8 +112,7 @@ fn eval_const_expr(expr: &Expression, env: &HashMap<String, f64>) -> Option<f64>
 
         Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
             env.get(name.as_str()).copied().or_else(|| {
-                crate::component_base_name(name.as_str())
-                    .and_then(|base| env.get(&base).copied())
+                crate::component_base_name(name.as_str()).and_then(|base| env.get(&base).copied())
             })
         }
 
@@ -152,19 +147,21 @@ fn eval_const_expr(expr: &Expression, env: &HashMap<String, f64>) -> Option<f64>
                 OpBinary::Ge(_) => Some(if l >= r { 1.0 } else { 0.0 }),
                 OpBinary::Eq(_) => Some(if (l - r).abs() < 1e-12 { 1.0 } else { 0.0 }),
                 OpBinary::Neq(_) => Some(if (l - r).abs() >= 1e-12 { 1.0 } else { 0.0 }),
-                OpBinary::And(_) => {
-                    Some(if l.abs() > 1e-12 && r.abs() > 1e-12 { 1.0 } else { 0.0 })
-                }
-                OpBinary::Or(_) => {
-                    Some(if l.abs() > 1e-12 || r.abs() > 1e-12 { 1.0 } else { 0.0 })
-                }
+                OpBinary::And(_) => Some(if l.abs() > 1e-12 && r.abs() > 1e-12 {
+                    1.0
+                } else {
+                    0.0
+                }),
+                OpBinary::Or(_) => Some(if l.abs() > 1e-12 || r.abs() > 1e-12 {
+                    1.0
+                } else {
+                    0.0
+                }),
                 _ => None,
             }
         }
 
-        Expression::BuiltinCall { function, args } => {
-            eval_builtin(*function, args, env)
-        }
+        Expression::BuiltinCall { function, args } => eval_builtin(*function, args, env),
 
         Expression::FunctionCall { name, args, .. } => {
             let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
@@ -188,7 +185,11 @@ fn eval_const_expr(expr: &Expression, env: &HashMap<String, f64>) -> Option<f64>
     }
 }
 
-fn eval_builtin(func: BuiltinFunction, args: &[Expression], env: &HashMap<String, f64>) -> Option<f64> {
+fn eval_builtin(
+    func: BuiltinFunction,
+    args: &[Expression],
+    env: &HashMap<String, f64>,
+) -> Option<f64> {
     let arg = |i: usize| args.get(i).and_then(|e| eval_const_expr(e, env));
 
     match func {
@@ -216,17 +217,29 @@ fn eval_builtin(func: BuiltinFunction, args: &[Expression], env: &HashMap<String
         BuiltinFunction::Div => {
             let a = arg(0)?;
             let b = arg(1)?;
-            if b.abs() < 1e-300 { None } else { Some((a / b).trunc()) }
+            if b.abs() < 1e-300 {
+                None
+            } else {
+                Some((a / b).trunc())
+            }
         }
         BuiltinFunction::Mod => {
             let a = arg(0)?;
             let b = arg(1)?;
-            if b.abs() < 1e-300 { None } else { Some(a - (a / b).floor() * b) }
+            if b.abs() < 1e-300 {
+                None
+            } else {
+                Some(a - (a / b).floor() * b)
+            }
         }
         BuiltinFunction::Rem => {
             let a = arg(0)?;
             let b = arg(1)?;
-            if b.abs() < 1e-300 { None } else { Some(a - (a / b).trunc() * b) }
+            if b.abs() < 1e-300 {
+                None
+            } else {
+                Some(a - (a / b).trunc() * b)
+            }
         }
         _ => None,
     }

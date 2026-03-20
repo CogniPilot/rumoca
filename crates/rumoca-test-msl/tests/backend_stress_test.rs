@@ -610,7 +610,12 @@ fn run_julia_script(model_code: &str, driver: &str, args: &[&str]) -> Result<Str
             // Show first 10 lines (error message) + last 20 lines (stacktrace tail)
             let head: Vec<&str> = lines[..10].to_vec();
             let tail: Vec<&str> = lines[lines.len() - 20..].to_vec();
-            format!("{}\n  ... ({} lines omitted) ...\n{}", head.join("\n"), lines.len() - 30, tail.join("\n"))
+            format!(
+                "{}\n  ... ({} lines omitted) ...\n{}",
+                head.join("\n"),
+                lines.len() - 30,
+                tail.join("\n")
+            )
         } else {
             stderr.to_string()
         };
