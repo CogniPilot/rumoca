@@ -561,6 +561,13 @@ pub(crate) fn create_dae_variable(
     .map(|expr| rewrite_start_expr_missing_refs(&expr, known_var_names))
     .map(|expr| flat_to_dae_expression(&expr));
 
+    // A parameter is tunable (changeable at runtime in FMI 3.0 ConfigurationMode)
+    // unless it is structural: evaluate=true or discrete-typed (Integer/Boolean
+    // used for array sizing).
+    let is_tunable = matches!(var.variability, Variability::Parameter(_))
+        && !var.evaluate
+        && !var.is_discrete_type;
+
     Variable {
         name: flat_to_dae_var_name(name),
         dims: var.dims.clone(),
@@ -572,6 +579,7 @@ pub(crate) fn create_dae_variable(
         unit: var.unit.clone(),
         state_select: var.state_select,
         description: None,
+        is_tunable,
     }
 }
 

@@ -1,0 +1,193 @@
+{#- FMI 3.0 Model Exchange modelDescription.xml template. -#}
+{#- Generates a conformant modelDescription.xml from DAE IR. -#}
+{#- Reference: FMI 3.0 specification, §§2.4, 3.2 -#}
+{%- set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} -%}
+{#- Macro: compute total scalar size of a variable map -#}
+{%- macro var_size(vars) -%}
+{%- set ns = namespace(total=0) -%}
+{%- for name, var in vars | items -%}
+{%- if var.dims -%}
+{%- set ns.total = ns.total + var.dims | product -%}
+{%- else -%}
+{%- set ns.total = ns.total + 1 -%}
+{%- endif -%}
+{%- endfor -%}
+{{ ns.total }}
+{%- endmacro -%}
+{#- Per-variable counts (one VR per variable, FMI 3.0 native arrays) -#}
+{%- set nvar_x = dae.x | length -%}
+{%- set nvar_y = dae.y | length -%}
+{%- set nvar_u = dae.u | length -%}
+{%- set nvar_w = dae.w | length -%}
+{%- set nvar_p = dae.p | length -%}
+{%- set nvar_z = dae.z | length -%}
+{%- set nvar_m = dae.m | length -%}
+{#-
+  FMI 3.0 Native Array VR layout (one VR per variable):
+    0              .. nvar_x-1          : states (x)
+    nvar_x         .. 2*nvar_x-1        : derivatives (xdot)
+    2*nvar_x       .. +nvar_y-1         : algebraics (y)
+    +nvar_y        .. +nvar_u-1         : inputs (u)
+    +nvar_u        .. +nvar_w-1         : outputs (w)
+    +nvar_w        .. +nvar_p-1         : parameters (p)
+    +nvar_p        .. +nvar_z-1         : discrete reals (z)
+    +nvar_z        .. +nvar_m-1         : discrete valued (m)
+    +nvar_m        .. +n_clocks-1       : clocks
+-#}
+{%- set vr_x     = 0 -%}
+{%- set vr_xdot  = nvar_x -%}
+{%- set vr_y     = 2 * nvar_x -%}
+{%- set vr_u     = vr_y + nvar_y -%}
+{%- set vr_w     = vr_u + nvar_u -%}
+{%- set vr_p     = vr_w + nvar_w -%}
+{%- set vr_z     = vr_p + nvar_p -%}
+{%- set vr_m     = vr_z + nvar_z -%}
+{%- set n_clocks = dae.clock_schedules | default([]) | length -%}
+{%- set vr_clk   = vr_m + nvar_m -%}
+{%- set n_total  = vr_clk + n_clocks -%}
+{#- Macro: XML-escape a string -#}
+{%- macro xml_escape(s) -%}
+{{ s | replace("&", "&amp;") | replace("<", "&lt;") | replace(">", "&gt;") | replace('"', "&quot;") }}
+{%- endmacro -%}
+{#- Macro: emit a scalar <Float64> variable element (FMI 3.0 style) -#}
+{%- macro float64_var(name, vr, causality, variability, var, initial) -%}
+    <Float64 name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}{% if var.start is not none %} start="{{ render_expr(var.start, cfg) }}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_expr(var.max, cfg) }}"{% endif %}/>
+{%- endmacro -%}
+{#- Macro: emit an array <Float64> variable with <Dimension> children (FMI 3.0 §2.4.3) -#}
+{%- macro float64_array_var(name, vr, causality, variability, var, initial) -%}
+    <Float64 name="{{ xml_escape(name) }}" valueReference="{{ vr }}" causality="{{ causality }}" variability="{{ variability }}"{% if var.description %} description="{{ xml_escape(var.description) }}"{% endif %}{% if initial %} initial="{{ initial }}"{% endif %}{% if var.start is not none %} start="{% for i in range(var.dims | product) %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% if not loop.last %} {% endif %}{% endfor %}"{% endif %}{% if var.unit %} unit="{{ var.unit }}"{% endif %}{% if var.nominal is not none %} nominal="{{ render_expr(var.nominal, cfg) }}"{% endif %}{% if var.min is not none %} min="{{ render_expr(var.min, cfg) }}"{% endif %}{% if var.max is not none %} max="{{ render_expr(var.max, cfg) }}"{% endif %}>
+{% for d in var.dims %}
+        <Dimension start="{{ d }}"/>
+{% endfor %}    </Float64>
+{%- endmacro -%}
+{#- Macro: emit a scalar or array variable -#}
+{%- macro emit_var(name, vr, causality, variability, var, initial) -%}
+{% if var.dims %}{{ float64_array_var(name, vr, causality, variability, var, initial) }}{% else %}{{ float64_var(name, vr, causality, variability, var, initial) }}{% endif %}
+{%- endmacro -%}
+{#- Macro: emit a <Float64> derivative (scalar or array) -#}
+{%- macro deriv_var(name, vr, state_vr, var) -%}
+{% if var.dims %}
+    <Float64 name="der({{ xml_escape(name) }})" valueReference="{{ vr }}" causality="local" variability="continuous" initial="calculated" derivative="{{ state_vr }}">
+{% for d in var.dims %}
+        <Dimension start="{{ d }}"/>
+{% endfor %}    </Float64>
+{%- else -%}
+    <Float64 name="der({{ xml_escape(name) }})" valueReference="{{ vr }}" causality="local" variability="continuous" initial="calculated" derivative="{{ state_vr }}"/>
+{%- endif -%}
+{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription
+    fmiVersion="3.0"
+    modelName="{{ model_name }}"
+    instantiationToken="{{ model_name }}-rumoca"
+{% if dae.model_description %}    description="{{ xml_escape(dae.model_description) }}"
+{% endif %}    generationTool="Rumoca">
+
+  <ModelExchange modelIdentifier="{{ model_name | sanitize }}" providesDirectionalDerivatives="true" providesAdjointDerivatives="true" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
+
+  <CoSimulation modelIdentifier="{{ model_name | sanitize }}" canHandleVariableCommunicationStepSize="true" canReturnEarlyAfterIntermediateUpdate="true" canGetAndSetFMUState="true" canSerializeFMUState="true"/>
+
+  <LogCategories>
+    <Category name="logAll"/>
+    <Category name="logError"/>
+    <Category name="logStatusWarning"/>
+  </LogCategories>
+
+  <BuildConfiguration>
+    <SourceFileSet>
+      <SourceFile name="{{ model_name | sanitize }}.c"/>
+    </SourceFileSet>
+  </BuildConfiguration>
+
+  <ModelVariables>
+{#- States (x) — one VR per variable -#}
+{% set ns_vr = namespace(offset=vr_x) %}
+{% for name, var in dae.x | items %}
+{{ emit_var(name, ns_vr.offset, "local", "continuous", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- Derivatives (xdot) — one VR per variable, matching states -#}
+{% set ns_vr = namespace(offset=vr_xdot) %}
+{% set ns_state_vr = namespace(offset=vr_x) %}
+{% for name, var in dae.x | items %}
+{{ deriv_var(name, ns_vr.offset, ns_state_vr.offset, var) }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% set ns_state_vr.offset = ns_state_vr.offset + 1 %}
+{% endfor %}
+{#- Algebraics (y) -#}
+{% set ns_vr = namespace(offset=vr_y) %}
+{% for name, var in dae.y | items %}
+{{ emit_var(name, ns_vr.offset, "local", "continuous", var, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- Inputs (u) -#}
+{% set ns_vr = namespace(offset=vr_u) %}
+{% for name, var in dae.u | items %}
+{{ emit_var(name, ns_vr.offset, "input", "continuous", var, none) }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- Outputs (w) -#}
+{% set ns_vr = namespace(offset=vr_w) %}
+{% for name, var in dae.w | items %}
+{{ emit_var(name, ns_vr.offset, "output", "continuous", var, "calculated") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- Parameters (p) — tunable params get variability="tunable",
+    non-tunable get causality="structuralParameter" variability="fixed" (FMI 3.0 §2.4.7) -#}
+{% set ns_vr = namespace(offset=vr_p) %}
+{% for name, var in dae.p | items %}
+{% if var.is_tunable %}
+{{ emit_var(name, ns_vr.offset, "parameter", "tunable", var, "exact") }}
+{% else %}
+{{ emit_var(name, ns_vr.offset, "structuralParameter", "fixed", var, "exact") }}
+{% endif %}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- Discrete Reals (z) -#}
+{% set ns_vr = namespace(offset=vr_z) %}
+{% for name, var in dae.z | items %}
+{{ emit_var(name, ns_vr.offset, "local", "discrete", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- Discrete Valued (m) -#}
+{% set ns_vr = namespace(offset=vr_m) %}
+{% for name, var in dae.m | items %}
+{{ emit_var(name, ns_vr.offset, "local", "discrete", var, "exact") }}
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- Clocks (FMI 3.0 §2.4.8 — periodic clocks from sample() calls) -#}
+{% for sched in dae.clock_schedules | default([]) %}
+    <Clock name="clock_{{ loop.index }}" valueReference="{{ vr_clk + loop.index0 }}" causality="local" variability="discrete" intervalVariability="fixed" intervalDecimal="{{ sched.period_seconds }}"{% if sched.phase_seconds != 0.0 %} shiftDecimal="{{ sched.phase_seconds }}"{% endif %}/>
+{% endfor %}
+{#- Triggered clocks (FMI 3.0 §2.4.8 — event-driven clocks) -#}
+{% set n_periodic = dae.clock_schedules | default([]) | length %}
+{% for cond in dae.triggered_clock_conditions | default([]) %}
+    <Clock name="triggered_clock_{{ loop.index }}" valueReference="{{ vr_clk + n_periodic + loop.index0 }}" causality="local" variability="discrete" intervalVariability="triggered"/>
+{% endfor %}
+  </ModelVariables>
+
+  <ModelStructure>
+{#- In FMI 3.0 with native arrays: one entry per variable -#}
+{% if nvar_w > 0 %}
+{% set ns_vr = namespace(offset=vr_w) %}
+{% for name, var in dae.w | items %}
+    <Output valueReference="{{ ns_vr.offset }}"/>
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{% endif %}
+{% set ns_vr = namespace(offset=vr_xdot) %}
+{% for name, var in dae.x | items %}
+    <ContinuousStateDerivative valueReference="{{ ns_vr.offset }}"/>
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+{#- InitialUnknowns: derivatives are calculated initial unknowns -#}
+{% set ns_vr = namespace(offset=vr_xdot) %}
+{% for name, var in dae.x | items %}
+    <InitialUnknown valueReference="{{ ns_vr.offset }}"/>
+{% set ns_vr.offset = ns_vr.offset + 1 %}
+{% endfor %}
+  </ModelStructure>
+
+  <Terminals/>
+
+</fmiModelDescription>

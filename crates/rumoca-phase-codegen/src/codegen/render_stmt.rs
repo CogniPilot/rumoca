@@ -380,7 +380,7 @@ fn render_if_branch(
         String::new()
     };
     if body.trim().is_empty() && matches!(cfg.if_style, IfStyle::Function) {
-        result.push_str(&format!("{next_indent}pass"));
+        result.push_str(&format!("{next_indent}pass\n"));
     } else {
         result.push_str(&body);
     }
@@ -655,7 +655,13 @@ pub(crate) fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderRes
         return render_ast_named_arg(&named, cfg);
     }
 
-    // Fallback: try to convert to string
+    // Fallback: try DAE IR expression renderer (function bodies may contain
+    // DAE-style expressions like VarRef, Literal, BuiltinCall, etc.)
+    if let Ok(result) = render_expression(expr, cfg) {
+        return Ok(result);
+    }
+
+    // Last resort: try to convert to string
     let s = expr.to_string();
     if s != "none" && !s.is_empty() {
         return Ok(s);
@@ -738,10 +744,13 @@ fn render_ast_if_expr(if_expr: &Value, cfg: &ExprConfig) -> RenderResult {
         .unwrap_or_else(|_| "0".to_string());
 
     Ok(match cfg.if_style {
-        IfStyle::Function => format!(
-            "{}if_else({}, {}, {})",
-            cfg.prefix, cond, then_expr, else_expr
-        ),
+        IfStyle::Function => {
+            let fn_name = cfg.if_else_fn.as_deref().unwrap_or("if_else");
+            format!(
+                "{}{}({}, {}, {})",
+                cfg.prefix, fn_name, cond, then_expr, else_expr
+            )
+        }
         IfStyle::Ternary => format!("({} ? {} : {})", cond, then_expr, else_expr),
         IfStyle::Modelica => {
             format!("(if {} then {} else {})", cond, then_expr, else_expr)

@@ -39,6 +39,13 @@ pub mod fmi2_templates {
     };
 }
 
+/// Built-in FMI 3.0 template sources, re-exported from the codegen crate.
+pub mod fmi3_templates {
+    pub use rumoca_phase_codegen::templates::{
+        FMI3_MODEL, FMI3_MODEL_DESCRIPTION, FMI3_TEST_DRIVER,
+    };
+}
+
 /// All built-in template sources, re-exported from the codegen crate.
 pub mod templates {
     pub use rumoca_phase_codegen::templates::*;
