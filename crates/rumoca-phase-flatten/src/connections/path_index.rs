@@ -2,7 +2,7 @@
 //!
 //! Keeps string/index normalization logic isolated from connection-set orchestration.
 
-use crate::path_utils::{parse_path_with_indices, strip_array_index};
+use crate::path_utils::{split_path_with_indices, strip_array_index};
 use rumoca_ir_flat as flat;
 
 pub(super) fn normalized_base_key_from_segments(segments: &[&str]) -> String {
@@ -91,8 +91,8 @@ pub(super) fn extract_suffix(full_name: &str, prefix: &str) -> Option<(String, S
     }
 
     // Try matching with array indices.
-    let prefix_segments = parse_path_with_indices(prefix);
-    let name_parts = parse_path_with_indices(full_name);
+    let prefix_segments = split_path_with_indices(prefix);
+    let name_parts = split_path_with_indices(full_name);
 
     if name_parts.len() <= prefix_segments.len() {
         return None;
@@ -147,8 +147,8 @@ pub(super) fn scalarize_collapsed_connector_element(
     if !flat.variables.contains_key(var) {
         return var.clone();
     }
-    let path_segments = parse_path_with_indices(path);
-    let var_parts = parse_path_with_indices(var.as_str());
+    let path_segments = split_path_with_indices(path);
+    let var_parts = split_path_with_indices(var.as_str());
     let upto = path_segments.len().min(var_parts.len());
     let mut missing_index: Option<String> = None;
     for i in 0..upto {
@@ -169,7 +169,7 @@ pub(super) fn scalarize_collapsed_connector_element(
 
 /// True when any segment in a connector path contains an explicit array index.
 pub(super) fn path_has_explicit_index(path: &str) -> bool {
-    parse_path_with_indices(path)
+    split_path_with_indices(path)
         .iter()
         .any(|segment| extract_array_index(segment).is_some())
 }
@@ -200,7 +200,7 @@ fn extract_index_groups(indices: &str) -> Vec<String> {
 /// - `indices="[1][2]"`, `path="s[1].p"` -> `"[2]"`
 /// - `indices="[1]"`, `path="resistor[1].p"` -> `""`
 pub(super) fn strip_explicit_path_indices(indices: &str, path: &str) -> String {
-    let explicit_count = parse_path_with_indices(path)
+    let explicit_count = split_path_with_indices(path)
         .into_iter()
         .filter(|segment| extract_array_index(segment).is_some())
         .count();
@@ -227,8 +227,8 @@ pub(super) fn strip_explicit_index_count(indices: &str, explicit_count: usize) -
 /// - full=`plug_p.pin[2].i`, prefix=`plug_p.pin` => true
 /// - full=`resistor[1].p.i`, prefix=`resistor.p` => false (missing index is not on last segment)
 pub(super) fn missing_index_on_last_prefix_segment(full_name: &str, prefix: &str) -> bool {
-    let prefix_segments = parse_path_with_indices(prefix);
-    let name_parts = parse_path_with_indices(full_name);
+    let prefix_segments = split_path_with_indices(prefix);
+    let name_parts = split_path_with_indices(full_name);
     if name_parts.len() <= prefix_segments.len() || prefix_segments.is_empty() {
         return false;
     }

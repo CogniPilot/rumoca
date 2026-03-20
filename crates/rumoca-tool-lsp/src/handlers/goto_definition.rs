@@ -7,7 +7,10 @@ use rumoca_session::compile::core::DefId;
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::ir_core as rumoca_ir_core;
 
-use crate::helpers::{get_word_at_position, resolve_at_position};
+use crate::helpers::{
+    get_qualified_class_name_at_position, get_word_at_position, imported_def_id,
+    resolve_at_position,
+};
 
 /// Handle go-to-definition request.
 pub fn handle_goto_definition(
@@ -19,6 +22,11 @@ pub fn handle_goto_definition(
     character: u32,
 ) -> Option<GotoDefinitionResponse> {
     let position = Position { line, character };
+    if let Some(tree) = tree
+        && let Some(response) = qualified_path_lookup(tree, source, position, uri)
+    {
+        return Some(response);
+    }
     let word = get_word_at_position(source, position)?;
 
     // Try resolved tree first for def_id-based lookup
@@ -33,6 +41,17 @@ pub fn handle_goto_definition(
 
     // Fallback: scan AST for matching declarations
     ast_lookup(ast, &word, uri)
+}
+
+fn qualified_path_lookup(
+    tree: &ast::ClassTree,
+    source: &str,
+    position: Position,
+    fallback_uri: &Url,
+) -> Option<GotoDefinitionResponse> {
+    let qualified_name = get_qualified_class_name_at_position(source, position)?;
+    let def_id = tree.get_def_id_by_name(&qualified_name)?;
+    goto_response_for_def_id(tree, def_id, fallback_uri)
 }
 
 fn def_id_lookup(
@@ -80,35 +99,6 @@ fn import_lookup_in_class(
         }
     }
     None
-}
-
-fn imported_def_id(import: &ast::Import, tree: &ast::ClassTree, name: &str) -> Option<DefId> {
-    match import {
-        ast::Import::Qualified { path, .. } => {
-            let last = path.name.last()?.text.as_ref();
-            if last == name {
-                tree.get_def_id_by_name(&path.to_string())
-            } else {
-                None
-            }
-        }
-        ast::Import::Renamed { alias, path, .. } => {
-            if alias.text.as_ref() == name {
-                tree.get_def_id_by_name(&path.to_string())
-            } else {
-                None
-            }
-        }
-        ast::Import::Unqualified { path, .. } => {
-            let qualified = format!("{}.{}", path, name);
-            tree.get_def_id_by_name(&qualified)
-        }
-        ast::Import::Selective { path, names, .. } => {
-            let matched = names.iter().find(|token| token.text.as_ref() == name)?;
-            let qualified = format!("{}.{}", path, matched.text);
-            tree.get_def_id_by_name(&qualified)
-        }
-    }
 }
 
 fn goto_response_for_def_id(
@@ -335,7 +325,7 @@ end Modelica;
         let doc = session
             .get_document(&ball_uri_path)
             .expect("main document present");
-        let ast = doc.parsed.as_ref().expect("main doc parsed");
+        let ast = doc.parsed().expect("main doc parsed");
         let uri = Url::from_file_path(&ball_path).expect("uri");
         let import_line = source.lines().nth(2).expect("import line");
         let char_pos = import_line.find("PID").expect("PID token") as u32 + 1;
@@ -351,6 +341,64 @@ end Modelica;
                     "unexpected target uri: {}",
                     location.uri
                 );
+            }
+            other => panic!("expected scalar goto response, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_definition_uses_navigation_tree_when_unrelated_doc_is_broken() {
+        let source = r#"model Ball
+  import Modelica.Blocks.Continuous.PID;
+  PID pid(k=100);
+equation
+  pid.u = 1;
+end Ball;
+"#;
+        let broken = "model Broken\n  Real x\nend Broken;\n";
+        let library = r#"package Modelica
+  package Blocks
+    package Continuous
+      block PID
+        Real u;
+        Real y;
+      equation
+        y = u;
+      end PID;
+    end Continuous;
+  end Blocks;
+end Modelica;
+"#;
+
+        let base = std::env::temp_dir().join("rumoca_lsp_goto_navigation_test");
+        let ball_path = base.join("ball.mo");
+        let modelica_path = base.join("Modelica.mo");
+        let ball_uri_path = ball_path.to_string_lossy().to_string();
+        let modelica_uri_path = modelica_path.to_string_lossy().to_string();
+
+        let mut session = rumoca_session::Session::default();
+        session.update_document(&ball_uri_path, source);
+        let parse_error = session.update_document("broken.mo", broken);
+        assert!(parse_error.is_some(), "broken document should stay invalid");
+        session.update_document(&modelica_uri_path, library);
+        let resolved = session
+            .resolved_for_semantic_navigation("Ball")
+            .expect("semantic navigation tree");
+        let ast = session
+            .get_document(&ball_uri_path)
+            .and_then(|doc| doc.parsed().cloned())
+            .expect("main doc parsed");
+        let uri = Url::from_file_path(&ball_path).expect("uri");
+        let import_line = source.lines().nth(1).expect("import line");
+        let char_pos = import_line.find("PID").expect("PID token") as u32 + 1;
+
+        let result = handle_goto_definition(&ast, Some(&resolved.0), source, &uri, 1, char_pos);
+        match result {
+            Some(GotoDefinitionResponse::Scalar(location)) => {
+                let expected = Url::from_file_path(&modelica_path)
+                    .expect("expected uri")
+                    .to_string();
+                assert_eq!(location.uri.to_string(), expected);
             }
             other => panic!("expected scalar goto response, got: {other:?}"),
         }

@@ -7,11 +7,16 @@ function escapeHtmlSafe(value) {
         .replace(/'/g, '&#39;');
 }
 
-export function createLibraryDocsController({ sendRequest, setTerminalOutput, isWorkerReady }) {
+export function createLibraryDocsController({
+    sendLanguageCommand,
+    sendWorkspaceCommand,
+    setTerminalOutput,
+    isWorkerReady,
+    projectFs,
+}) {
     let loadedLibraries = {};
     const loadedLibraryArchives = new Map();
     const libraryRowArchiveIds = new Map();
-    let activeLibraryLoadRow = null;
     let libraryRowCount = 1;
     let classTreeData = [];
     let classTreeFiltered = [];
@@ -77,6 +82,46 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
         for (const archive of loadedLibraryArchives.values()) {
             Object.assign(loadedLibraries, archive.files);
         }
+    }
+
+    function resetLibraryRowsUi() {
+        document.querySelectorAll('.library-row input[type="file"]').forEach(input => {
+            input.value = '';
+        });
+        document.querySelectorAll('.library-row').forEach(row => {
+            const status = row.querySelector('.library-status');
+            if (status) {
+                status.textContent = 'No file selected';
+                status.className = 'library-status pending';
+            }
+            hideLibraryProgress(row);
+        });
+    }
+
+    async function reloadWorkerLibraries(statusLabel, emptyLabel = 'No libraries loaded.') {
+        await sendWorkspaceCommand('rumoca.workspace.clearLibraryCache', {});
+        const fileCount = Object.keys(loadedLibraries).length;
+        if (fileCount === 0) {
+            setTerminalOutput(emptyLabel);
+            await refreshPackageViewer(true);
+            return {
+                parsedCount: 0,
+                fileCount: 0,
+            };
+        }
+
+        const resultJson = await sendWorkspaceCommand(
+            'rumoca.workspace.loadLibraries',
+            { libraries: JSON.stringify(loadedLibraries) },
+            300000,
+        );
+        const result = JSON.parse(resultJson);
+        setTerminalOutput(statusLabel(result.parsed_count, fileCount));
+        await refreshPackageViewer(true);
+        return {
+            parsedCount: result.parsed_count,
+            fileCount,
+        };
     }
 
     function updateLibraryCount(count) {
@@ -352,6 +397,7 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
         if (!loadedLibraryArchives.has(archiveId)) return;
 
         loadedLibraryArchives.delete(archiveId);
+        projectFs?.removeLibraryArchive(archiveId);
         for (const [rowIndex, mappedArchiveId] of libraryRowArchiveIds.entries()) {
             if (mappedArchiveId !== archiveId) continue;
             libraryRowArchiveIds.delete(rowIndex);
@@ -371,16 +417,10 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
 
         setTerminalOutput('Reloading library cache after archive removal...');
         try {
-            await sendRequest('clearLibraryCache', {});
-            const fileCount = Object.keys(loadedLibraries).length;
-            if (fileCount > 0) {
-                const resultJson = await sendRequest('loadLibraries', { libraries: JSON.stringify(loadedLibraries) }, 300000);
-                const result = JSON.parse(resultJson);
-                setTerminalOutput(`Reloaded ${result.parsed_count} files from ${loadedLibraryArchives.size} archive(s).`);
-            } else {
-                setTerminalOutput('No libraries loaded.');
-            }
-            await refreshPackageViewer(true);
+            await reloadWorkerLibraries(
+                (parsedCount) => `Reloaded ${parsedCount} files from ${loadedLibraryArchives.size} archive(s).`,
+                'No libraries loaded.',
+            );
         } catch (e) {
             setTerminalOutput(`Failed to reload libraries after removal: ${e.message || e}`);
         }
@@ -409,7 +449,7 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
 
         renderClassDocPlaceholder(`Loading ${qualifiedName}...`);
         try {
-            const json = await sendRequest('getClassInfo', { qualifiedName });
+            const json = await sendLanguageCommand('rumoca.language.getClassInfo', { qualifiedName });
             const info = JSON.parse(json);
             classInfoCache.set(qualifiedName, info);
             renderClassInfo(info);
@@ -436,7 +476,7 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
 
         panel.innerHTML = '<div class="class-tree-empty">Loading class tree...</div>';
         try {
-            const json = await sendRequest('listClasses', {});
+            const json = await sendLanguageCommand('rumoca.language.listClasses', {});
             const result = JSON.parse(json);
 
             classTreeData = Array.isArray(result.classes) ? result.classes : [];
@@ -496,26 +536,76 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
         updateLibraryCount();
     }
 
-    async function loadLibraryFile(index, input) {
-        const row = document.querySelector(`.library-row[data-index="${index}"]`);
-        if (!row) return;
-
-        const status = row.querySelector('.library-status');
-        const file = input.files[0];
-
-        if (!file) {
-            status.textContent = 'No file selected';
-            status.className = 'library-status pending';
-            hideLibraryProgress(row);
-            return;
+    async function importLoadedLibraries(row, fileName, fileCount) {
+        const status = row?.querySelector('.library-status') || null;
+        if (status) {
+            status.textContent = `Parsing ${fileCount}...`;
+            status.className = 'library-status loading';
+        }
+        if (row) {
+            setLibraryProgress(row, 0, `Parsing ${fileCount} files`, true);
         }
 
-        activeLibraryLoadRow = row;
+        setTerminalOutput(`Loaded ${fileCount} .mo files from ${fileName}\n\nParsing libraries with rayon...`);
+        const importStart = performance.now();
+        const librariesJson = JSON.stringify(loadedLibraries);
+        const resultJson = await sendWorkspaceCommand(
+            'rumoca.workspace.loadLibraries',
+            { libraries: librariesJson },
+            300000,
+        );
+        const result = JSON.parse(resultJson);
+        const libraryImportMs = Math.round(performance.now() - importStart);
+        const elapsed = (libraryImportMs / 1000).toFixed(1);
+
+        if (status) {
+            status.textContent = `${result.parsed_count} files parsed`;
+            status.className = 'library-status loaded';
+        }
+        if (row) {
+            setLibraryProgress(row, 100, 'Done', false);
+        }
+
+        let output = `Parsed ${result.parsed_count} files in ${elapsed}s.\nArchives loaded: ${loadedLibraryArchives.size}`;
+        if (result.skipped_files.length > 0) {
+            output += `\n\nSkipped ${result.skipped_files.length} files (already loaded):`;
+            result.skipped_files.slice(0, 5).forEach(f => {
+                output += `\n  - ${f}`;
+            });
+            if (result.skipped_files.length > 5) {
+                output += `\n  ... and ${result.skipped_files.length - 5} more`;
+            }
+        }
+        if (result.conflicts.length > 0) {
+            output += `\n\nWARNING: ${result.conflicts.length} library conflicts (replaced): ${result.conflicts.join(', ')}`;
+        }
+        output += '\n\nReady for compilation!';
+
+        setTerminalOutput(output);
+        renderLoadedLibraryList();
+        updateLibraryCount();
+        await refreshPackageViewer(true);
+
+        return {
+            libraryImportMs,
+            fileCount,
+            parsedCount: result.parsed_count,
+        };
+    }
+
+    async function loadLibraryArchive(index, row, file, options = {}) {
+        if (!row) return;
+
+        const { stageOnly = false } = options;
+        const status = row.querySelector('.library-status');
+        let archivePrepMs = 0;
+
         status.textContent = 'Loading...';
         status.className = 'library-status loading';
         setLibraryProgress(row, 0, 'Loading', true);
 
         try {
+            const prepStart = performance.now();
             setTerminalOutput(`Loading ${file.name}...`);
 
             const arrayBuffer = await file.arrayBuffer();
@@ -570,6 +660,7 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
             }
 
             const fileCount = Object.keys(data).length;
+            archivePrepMs = Math.round(performance.now() - prepStart);
             status.textContent = `Parsing ${fileCount}...`;
             status.className = 'library-status loading';
             setLibraryProgress(row, 0, `Parsing ${fileCount} files`, true);
@@ -583,49 +674,52 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
 
             if (previousArchiveId && previousArchiveId !== archiveId) {
                 loadedLibraryArchives.delete(previousArchiveId);
+                projectFs?.removeLibraryArchive(previousArchiveId);
             }
             loadedLibraryArchives.set(archiveId, {
                 file_name: file.name,
                 file_count: fileCount,
                 files: data,
             });
+            projectFs?.replaceLibraryArchive(archiveId, file.name, data);
             libraryRowArchiveIds.set(index, archiveId);
             rebuildLoadedLibrariesFromArchives();
 
-            try {
-                const startTime = performance.now();
-                const librariesJson = JSON.stringify(loadedLibraries);
-                const resultJson = await sendRequest('loadLibraries', { libraries: librariesJson }, 300000);
-                const result = JSON.parse(resultJson);
-                const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
-
-                status.textContent = `${result.parsed_count} files parsed`;
-                status.className = 'library-status loaded';
-                setLibraryProgress(row, 100, 'Done', false);
-
-                let output = `Parsed ${result.parsed_count} files in ${elapsed}s.\nArchives loaded: ${loadedLibraryArchives.size}`;
-                if (result.skipped_files.length > 0) {
-                    output += `\n\nSkipped ${result.skipped_files.length} files (already loaded):`;
-                    result.skipped_files.slice(0, 5).forEach(f => {
-                        output += `\n  - ${f}`;
-                    });
-                    if (result.skipped_files.length > 5) {
-                        output += `\n  ... and ${result.skipped_files.length - 5} more`;
-                    }
-                }
-                if (result.conflicts.length > 0) {
-                    output += `\n\nWARNING: ${result.conflicts.length} library conflicts (replaced): ${result.conflicts.join(', ')}`;
-                }
-                output += '\n\nReady for compilation!';
-
-                setTerminalOutput(output);
+            if (stageOnly) {
                 renderLoadedLibraryList();
                 updateLibraryCount();
-                await refreshPackageViewer(true);
+                status.textContent = `${fileCount} files staged`;
+                status.className = 'library-status loaded';
+                setLibraryProgress(row, 100, 'Staged', false);
+                setTerminalOutput(
+                    `Loaded ${fileCount} .mo files from ${file.name}\n\nReady to import on first library action.`,
+                );
+                return {
+                    archivePrepMs,
+                    libraryImportMs: 0,
+                    fileCount,
+                    parsedCount: 0,
+                };
+            }
+
+            try {
+                const imported = await importLoadedLibraries(row, file.name, fileCount);
+                return {
+                    archivePrepMs,
+                    libraryImportMs: imported.libraryImportMs,
+                    fileCount: imported.fileCount,
+                    parsedCount: imported.parsedCount,
+                };
             } catch (e) {
                 loadedLibraryArchives.delete(archiveId);
+                projectFs?.removeLibraryArchive(archiveId);
                 if (previousArchiveId && previousArchiveEntry) {
                     loadedLibraryArchives.set(previousArchiveId, previousArchiveEntry);
+                    projectFs?.replaceLibraryArchive(
+                        previousArchiveId,
+                        previousArchiveEntry.file_name,
+                        previousArchiveEntry.files,
+                    );
                     libraryRowArchiveIds.set(index, previousArchiveId);
                 } else {
                     libraryRowArchiveIds.delete(index);
@@ -645,32 +739,81 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
             setLibraryProgress(row, 100, 'Error', false);
             setTerminalOutput(`Failed to load library: ${e.message}`);
         } finally {
-            if (activeLibraryLoadRow === row) {
-                activeLibraryLoadRow = null;
-            }
+            status.classList.remove('loading');
         }
+    }
+
+    async function loadLibraryFile(index, input) {
+        const row = document.querySelector(`.library-row[data-index="${index}"]`);
+        if (!row) return;
+
+        const status = row.querySelector('.library-status');
+        const file = input.files[0];
+
+        if (!file) {
+            status.textContent = 'No file selected';
+            status.className = 'library-status pending';
+            hideLibraryProgress(row);
+            return;
+        }
+
+        await loadLibraryArchive(index, row, file);
+    }
+
+    async function loadLibraryArchiveFile(file) {
+        if (!file) {
+            throw new Error('No library archive provided');
+        }
+        let row = document.querySelector('.library-row:last-child');
+        if (!row) {
+            addLibraryRow();
+            row = document.querySelector('.library-row:last-child');
+        }
+        if (!row) {
+            throw new Error('Failed to create a library row for archive upload');
+        }
+        const index = Number(row.dataset.index);
+        return await loadLibraryArchive(index, row, file);
+    }
+
+    async function stageLibraryArchiveFile(file) {
+        if (!file) {
+            throw new Error('No library archive provided');
+        }
+        let row = document.querySelector('.library-row:last-child');
+        if (!row) {
+            addLibraryRow();
+            row = document.querySelector('.library-row:last-child');
+        }
+        if (!row) {
+            throw new Error('Failed to create a library row for archive upload');
+        }
+        const index = Number(row.dataset.index);
+        return await loadLibraryArchive(index, row, file, { stageOnly: true });
+    }
+
+    async function importLoadedLibrariesForSmoke() {
+        const fileCount = Object.keys(loadedLibraries).length;
+        if (fileCount === 0) {
+            return {
+                libraryImportMs: 0,
+                fileCount: 0,
+                parsedCount: 0,
+            };
+        }
+        const row = document.querySelector('.library-row:last-child') || null;
+        return await importLoadedLibraries(row, 'staged archive', fileCount);
     }
 
     async function clearLibraries() {
         loadedLibraries = {};
         loadedLibraryArchives.clear();
         libraryRowArchiveIds.clear();
-        activeLibraryLoadRow = null;
-
-        document.querySelectorAll('.library-row input[type="file"]').forEach(input => {
-            input.value = '';
-        });
-        document.querySelectorAll('.library-row').forEach(row => {
-            const status = row.querySelector('.library-status');
-            if (status) {
-                status.textContent = 'No file selected';
-                status.className = 'library-status pending';
-            }
-            hideLibraryProgress(row);
-        });
+        projectFs?.clearLibraries();
+        resetLibraryRowsUi();
 
         try {
-            await sendRequest('clearLibraryCache', {});
+            await sendWorkspaceCommand('rumoca.workspace.clearLibraryCache', {});
         } catch (e) {
             console.warn('Failed to clear library cache:', e);
         }
@@ -683,8 +826,39 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
         await refreshPackageViewer(true);
     }
 
+    async function restoreProjectLibraries() {
+        loadedLibraries = {};
+        loadedLibraryArchives.clear();
+        libraryRowArchiveIds.clear();
+        resetLibraryRowsUi();
+
+        const archives = projectFs?.listLibraryArchives?.() || [];
+        for (const archive of archives) {
+            loadedLibraryArchives.set(archive.archiveId, {
+                file_name: archive.fileName,
+                file_count: archive.fileCount,
+                files: projectFs.getArchiveFiles(archive.archiveId),
+            });
+        }
+        rebuildLoadedLibrariesFromArchives();
+        renderLoadedLibraryList();
+        updateLibraryCount();
+
+        classInfoCache.clear();
+        selectedClassQualifiedName = null;
+
+        try {
+            await reloadWorkerLibraries(
+                (parsedCount) => `Restored ${parsedCount} library files from project.`,
+                'Project has no libraries loaded.',
+            );
+        } catch (e) {
+            setTerminalOutput(`Failed to restore project libraries: ${e.message || e}`);
+        }
+    }
+
     function handleWorkerProgress({ current, total, percent }) {
-        const loadingRow = activeLibraryLoadRow || document.querySelector('.library-row .library-status.loading')?.closest('.library-row');
+        const loadingRow = document.querySelector('.library-row .library-status.loading')?.closest('.library-row');
         const libraryStatus = loadingRow ? loadingRow.querySelector('.library-status') : null;
         if (libraryStatus) {
             libraryStatus.textContent = `Parsing ${current}/${total} (${percent}%)`;
@@ -703,6 +877,9 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
         window.addLibraryRow = addLibraryRow;
         window.removeLibraryRow = removeLibraryRow;
         window.loadLibraryFile = loadLibraryFile;
+        window.loadLibraryArchiveFile = loadLibraryArchiveFile;
+        window.stageLibraryArchiveFile = stageLibraryArchiveFile;
+        window.importLoadedLibrariesForSmoke = importLoadedLibrariesForSmoke;
         window.clearLibraries = clearLibraries;
 
         const classDocPanel = document.getElementById('classDocPanel');
@@ -725,6 +902,7 @@ export function createLibraryDocsController({ sendRequest, setTerminalOutput, is
         clearLibraries,
         handleWorkerProgress,
         refreshPackageViewer,
+        restoreProjectLibraries,
         updateLibraryCount,
     };
 }

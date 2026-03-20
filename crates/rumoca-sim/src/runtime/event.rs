@@ -28,7 +28,7 @@ pub fn event_right_limit_time(t_start: f64, t_end: f64, t_event: f64) -> f64 {
     if !t_event.is_finite() {
         return t_event;
     }
-    let delta = (1.0e-9 * (1.0 + t_event.abs())).max(f64::EPSILON * (1.0 + t_event.abs()));
+    let delta = (1.0e-6 * (1.0 + t_event.abs())).max(f64::EPSILON * (1.0 + t_event.abs()));
     if integration_direction(t_start, t_end) >= 0.0 {
         t_event + delta
     } else {
@@ -351,6 +351,14 @@ mod tests {
         let t_restart = event_restart_time(0.0, 10.0, 2.0);
         assert!(t_restart > 2.0);
         assert!(t_restart <= 10.0);
+    }
+
+    #[test]
+    fn event_right_limit_time_uses_meaningful_forward_stride() {
+        let t_event = 0.5;
+        let t_right = event_right_limit_time(0.0, 1.0, t_event);
+        assert!(t_right > t_event);
+        assert!((t_right - t_event) >= 1.0e-6);
     }
 
     #[test]

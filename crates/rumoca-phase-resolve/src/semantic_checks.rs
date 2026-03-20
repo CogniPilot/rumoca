@@ -7,10 +7,7 @@
 use rumoca_core::{DefId, Diagnostic, PrimaryLabel, SourceId, SourceMap, Span};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::Visitor;
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 #[path = "semantic_checks_annotations.rs"]
 mod semantic_checks_annotations;
@@ -22,6 +19,8 @@ mod semantic_checks_clocks;
 mod semantic_checks_expr;
 #[path = "semantic_checks_functions.rs"]
 mod semantic_checks_functions;
+#[path = "semantic_checks_lookup.rs"]
+mod semantic_checks_lookup;
 #[path = "semantic_checks_operators.rs"]
 mod semantic_checks_operators;
 #[path = "semantic_checks_streams.rs"]
@@ -33,6 +32,7 @@ use semantic_checks_builtin_calls::*;
 use semantic_checks_clocks::*;
 use semantic_checks_expr::*;
 use semantic_checks_functions::*;
+use semantic_checks_lookup::*;
 use semantic_checks_operators::*;
 use semantic_checks_streams::*;
 use semantic_checks_type_roots::*;
@@ -267,27 +267,6 @@ impl CheckContext {
     }
 }
 
-thread_local! {
-    static ACTIVE_SEMANTIC_SOURCE_IDS: RefCell<Option<HashMap<String, SourceId>>> = const { RefCell::new(None) };
-}
-
-fn set_active_source_map(source_map: &SourceMap) {
-    ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
-        *slot.borrow_mut() = Some(source_map.source_ids());
-    })
-}
-
-fn source_id_for(file_name: &str) -> SourceId {
-    ACTIVE_SEMANTIC_SOURCE_IDS.with(|slot| {
-        let ids_ref = slot.borrow();
-        let ids = ids_ref
-            .as_ref()
-            .unwrap_or_else(|| panic!("semantic source ids are not initialized"));
-        *ids.get(file_name)
-            .unwrap_or_else(|| panic!("missing semantic source id for file '{file_name}'"))
-    })
-}
-
 fn span_from_location(location: &Location) -> Option<Span> {
     if location.file_name.is_empty() {
         return None;
@@ -295,7 +274,7 @@ fn span_from_location(location: &Location) -> Option<Span> {
     let start = location.start as usize;
     let end = (location.end as usize).max(start.saturating_add(1));
     Some(Span::from_offsets(
-        source_id_for(&location.file_name),
+        source_id_for(&location.file_name)?,
         start,
         end,
     ))
@@ -314,12 +293,10 @@ fn label_from_token(token: &Token, context: &str, message: impl Into<String>) ->
     let _ = context;
     let start = token.location.start as usize;
     let end = (token.location.end as usize).max(start.saturating_add(1));
-    PrimaryLabel::new(Span::from_offsets(
-        source_id_for(&token.location.file_name),
-        start,
-        end,
-    ))
-    .with_message(message)
+    let span = source_id_for(&token.location.file_name)
+        .map(|source_id| Span::from_offsets(source_id, start, end))
+        .unwrap_or(Span::DUMMY);
+    PrimaryLabel::new(span).with_message(message)
 }
 
 fn label_from_expression(
@@ -370,13 +347,13 @@ fn semantic_error(
 
 /// Run all semantic checks on a StoredDefinition and collect diagnostics.
 pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    set_active_source_map(source_map);
+    let _context = activate_semantic_context(def, source_map);
     run_semantic_checks(def)
 }
 
 /// Run all semantic check batches with a single active source-map setup.
 pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    set_active_source_map(source_map);
+    let _context = activate_semantic_context(def, source_map);
     let mut diags = run_semantic_checks(def);
     diags.extend(run_chained_relational_checks(def));
     diags.extend(run_clock_expression_semantic_checks(def));
@@ -950,43 +927,6 @@ fn check_selective_import_dupes(
 // Cross-class checks (need access to full StoredDefinition)
 // ============================================================================
 
-/// Look up a class by type name in the StoredDefinition.
-fn find_class_by_name<'a>(def: &'a StoredDefinition, type_name: &str) -> Option<&'a ClassDef> {
-    if type_name.contains('.') {
-        return find_class_by_qualified_name(def, type_name);
-    }
-
-    if let Some(cls) = def.classes.get(type_name) {
-        return Some(cls);
-    }
-
-    let mut stack: Vec<&ClassDef> = def
-        .classes
-        .values()
-        .flat_map(|class| class.classes.values())
-        .collect();
-    while let Some(class) = stack.pop() {
-        if class.name.text.as_ref() == type_name {
-            return Some(class);
-        }
-        stack.extend(class.classes.values());
-    }
-
-    None
-}
-
-fn find_class_by_def_id(def: &StoredDefinition, target_def_id: DefId) -> Option<&ClassDef> {
-    let mut stack: Vec<&ClassDef> = def.classes.values().collect();
-    while let Some(class) = stack.pop() {
-        if class.def_id == Some(target_def_id) {
-            return Some(class);
-        }
-        stack.extend(class.classes.values());
-    }
-
-    None
-}
-
 struct ResolvedComponentTarget<'a> {
     component: &'a ast::Component,
     type_class: Option<&'a ClassDef>,
@@ -1030,17 +970,6 @@ fn resolve_component_reference_target<'a>(
         type_class,
         token,
     })
-}
-
-fn find_class_by_qualified_name<'a>(
-    def: &'a StoredDefinition,
-    type_name: &str,
-) -> Option<&'a ClassDef> {
-    let mut current = def.classes.get(type_name.split('.').next()?)?;
-    for part in type_name.split('.').skip(1) {
-        current = current.classes.get(part)?;
-    }
-    Some(current)
 }
 
 /// Cross-class checks that need to look up type classes.
@@ -1916,12 +1845,12 @@ pub fn check_chained_relationals(
     def: &StoredDefinition,
     source_map: &SourceMap,
 ) -> Vec<Diagnostic> {
-    set_active_source_map(source_map);
+    let _context = activate_semantic_context(def, source_map);
     run_chained_relational_checks(def)
 }
 
 /// EXPR-004: Check for der() in function algorithm sections.
 pub fn check_der_in_functions(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    set_active_source_map(source_map);
+    let _context = activate_semantic_context(def, source_map);
     run_der_in_function_checks(def)
 }

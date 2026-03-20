@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_core::OptionalTimer;
 
 fn trace_step_failure_diagnostics(dae: &Dae, y: &[f64], t: f64, param_values: &[f64]) {
     if !sim_trace_enabled() {
@@ -248,7 +249,7 @@ pub(super) fn trace_bdf_progress(
     ctx: BdfTraceCtx,
     snap: BdfProgressSnapshot,
     t_limit: f64,
-    last_log: &mut Option<Instant>,
+    last_log: &mut OptionalTimer,
 ) {
     crate::trace_runtime_progress(ctx, snap, t_limit, last_log);
 }
@@ -847,6 +848,36 @@ pub(crate) fn event_restart_time(opts: &SimOptions, t_event: f64) -> f64 {
     crate::event_restart_time(opts.t_start, opts.t_end, t_event)
 }
 
+const SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT: usize = 32;
+
+fn synthetic_root_restart_clearance(atol: f64) -> f64 {
+    atol.abs().clamp(1.0e-6, 1.0e-4)
+}
+
+fn next_restart_time_if_synthetic_roots_still_armed(
+    dae: &Dae,
+    y: &[f64],
+    param_values: &[f64],
+    opts: &SimOptions,
+    restart_t: f64,
+    atol: f64,
+) -> Option<f64> {
+    if dae.synthetic_root_conditions.is_empty() {
+        return None;
+    }
+    let env = build_env(dae, y, param_values, restart_t);
+    let clearance = synthetic_root_restart_clearance(atol);
+    let armed = dae.synthetic_root_conditions.iter().any(|condition| {
+        let root = rumoca_eval_dae::runtime::eval_condition_as_root(condition, &env);
+        root.is_finite() && root.abs() <= clearance
+    });
+    if !armed {
+        return None;
+    }
+    let next_restart_t = event_restart_time(opts, restart_t);
+    (!time_match_with_tol(next_restart_t, restart_t)).then_some(next_restart_t)
+}
+
 fn profile_startup_step_hint(opts: &SimOptions, profile: SolverStartupProfile) -> Option<f64> {
     let span = (opts.t_end - opts.t_start).abs();
     let mut hint = if span.is_finite() && span > 0.0 {
@@ -1032,19 +1063,24 @@ where
     Eqn::V: VectorHost<T = f64>,
     S: OdeSolverMethod<'a, Eqn>,
 {
-    let mut y_at_event = solver_interpolate_to_vec::<Eqn, S>(
-        solver,
-        t_event,
-        ctx.budget,
-        "interpolate(event update)",
-    )?;
+    let current_t = solver.state().t;
+    let current_y = solver.state().y.as_slice().to_vec();
+    let mut y_at_event =
+        sample_state_at_stop(current_t, t_event, current_y.as_slice(), |t_sample| {
+            solver_interpolate_to_vec::<Eqn, S>(
+                solver,
+                t_sample,
+                ctx.budget,
+                "interpolate(event update)",
+            )
+        })?;
     refresh_pre_values_from_state(
         ctx.dae,
         y_at_event.as_slice(),
         ctx.param_values.as_slice(),
         t_event,
     );
-    let restart_t = event_restart_time(ctx.opts, t_event);
+    let mut restart_t = event_restart_time(ctx.opts, t_event);
     let event_env = settle_runtime_event_updates(
         ctx.dae,
         y_at_event.as_mut_slice(),
@@ -1054,7 +1090,7 @@ where
         ctx.discrete_event_ctx.as_ref(),
     );
     eval::seed_pre_values_from_env(&event_env);
-    y_at_event = maybe_project_scheduled_event_state(
+    let mut projected = maybe_project_scheduled_event_state(
         ctx.dae,
         y_at_event.as_slice(),
         ctx.n_x,
@@ -1062,6 +1098,37 @@ where
         ctx.opts.atol,
         ctx.budget,
     )?;
+    // SPEC_0022 SIM-001/SIM-008 (MLS App B): event updates must settle before
+    // continuous integration resumes, so keep nudging the right-limit restart
+    // if a synthetic root is still numerically on the zero surface.
+    for _ in 0..SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT {
+        let Some(next_restart_t) = next_restart_time_if_synthetic_roots_still_armed(
+            ctx.dae,
+            projected.as_slice(),
+            ctx.param_values.as_slice(),
+            ctx.opts,
+            restart_t,
+            ctx.opts.atol,
+        ) else {
+            break;
+        };
+        if sim_trace_enabled() {
+            eprintln!(
+                "[sim-trace] event restart synthetic-root clearance: t={} -> {}",
+                restart_t, next_restart_t
+            );
+        }
+        restart_t = next_restart_t;
+        projected = maybe_project_scheduled_event_state(
+            ctx.dae,
+            y_at_event.as_slice(),
+            ctx.n_x,
+            restart_t,
+            ctx.opts.atol,
+            ctx.budget,
+        )?;
+    }
+    y_at_event = projected;
     overwrite_solver_state::<Eqn, S>(
         solver,
         SolverStateOverwriteInput {
@@ -1094,7 +1161,7 @@ where
     output: IntegrationOutput,
     ctx: SolverLoopContext<'a>,
     bdf_trace: Option<BdfTraceCtx>,
-    bdf_last_log: Option<Instant>,
+    bdf_last_log: OptionalTimer,
     steps: usize,
     root_hits: usize,
     stalled_output_steps: usize,
@@ -1574,3 +1641,63 @@ pub(crate) use fallback::{
     integrate_with_fallbacks, panic_on_expired_solver_deadline, run_timeout_result,
     solve_initial_conditions,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_ir_dae as ir_dae;
+
+    fn time_lt_expr(rhs: f64) -> ir_dae::Expression {
+        ir_dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Lt(Default::default()),
+            lhs: Box::new(ir_dae::Expression::VarRef {
+                name: ir_dae::VarName::new("time"),
+                subscripts: Vec::new(),
+            }),
+            rhs: Box::new(ir_dae::Expression::Literal(ir_dae::Literal::Real(rhs))),
+        }
+    }
+
+    #[test]
+    fn next_restart_time_if_synthetic_roots_still_armed_advances_time_root_surface() {
+        let mut dae = Dae::new();
+        dae.synthetic_root_conditions.push(time_lt_expr(1.0e-6));
+        let opts = SimOptions::default();
+        let restart_t = event_restart_time(&opts, 0.0);
+        let next_restart_t = next_restart_time_if_synthetic_roots_still_armed(
+            &dae,
+            &[],
+            &[],
+            &opts,
+            restart_t,
+            opts.atol,
+        )
+        .expect("restart should advance when synthetic root remains armed");
+        assert!(
+            next_restart_t > restart_t,
+            "expected restart time to advance beyond the synthetic root surface, got restart_t={} next_restart_t={}",
+            restart_t,
+            next_restart_t
+        );
+    }
+
+    #[test]
+    fn next_restart_time_if_synthetic_roots_still_armed_keeps_cleared_root() {
+        let mut dae = Dae::new();
+        dae.synthetic_root_conditions.push(time_lt_expr(-1.0));
+        let opts = SimOptions::default();
+        let restart_t = event_restart_time(&opts, 0.0);
+        assert!(
+            next_restart_time_if_synthetic_roots_still_armed(
+                &dae,
+                &[],
+                &[],
+                &opts,
+                restart_t,
+                opts.atol
+            )
+            .is_none(),
+            "restart time should stay put when synthetic roots are already cleared"
+        );
+    }
+}

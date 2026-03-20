@@ -1253,7 +1253,7 @@ fn find_array_ref_in_component(
     results: &mut Vec<(String, Vec<i64>)>,
 ) {
     let qualified = build_qualified_name(prefix, cr);
-    let parts = crate::path_utils::parse_path_with_indices(&qualified);
+    let parts = crate::path_utils::split_path_with_indices(&qualified);
     let prefix_part_count = prefix.parts.len();
 
     for i in 1..=parts.len() {

@@ -42,6 +42,11 @@ pub mod integer_binary;
 pub use integer_binary::{IntegerBinaryOperator, eval_integer_binary};
 pub mod integer_division;
 pub use integer_division::{eval_integer_div_builtin, eval_integer_slash};
+pub mod timing;
+pub use timing::{
+    OptionalTimer, maybe_elapsed_duration, maybe_elapsed_ms, maybe_elapsed_seconds,
+    maybe_start_timer, maybe_start_timer_if,
+};
 
 /// Resolve the workspace root from a crate manifest directory.
 ///
@@ -68,6 +73,70 @@ pub fn msl_cache_dir_from_manifest(manifest_dir: &str) -> PathBuf {
             }
         })
         .unwrap_or_else(|| workspace_root.join("target/msl"))
+}
+
+// =============================================================================
+// Path Utilities (shared across compiler phases)
+// =============================================================================
+
+/// Split a dotted path while preserving dots inside bracket expressions.
+///
+/// For `bus[data.medium].pin.v`, returns `["bus[data.medium]", "pin", "v"]`.
+pub fn split_path_with_indices(path: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut bracket_depth = 0usize;
+    for (idx, ch) in path.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '.' if bracket_depth == 0 => {
+                if start < idx {
+                    parts.push(&path[start..idx]);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < path.len() {
+        parts.push(&path[start..]);
+    }
+    parts
+}
+
+/// Return the byte index of the last top-level `.` in `path`.
+///
+/// Dots inside bracketed subscripts (e.g. `a[b.c]`) are ignored.
+pub fn find_last_top_level_dot(path: &str) -> Option<usize> {
+    let mut bracket_depth = 0usize;
+    let mut last_dot = None;
+    for (idx, byte) in path.bytes().enumerate() {
+        match byte {
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'.' if bracket_depth == 0 => last_dot = Some(idx),
+            _ => {}
+        }
+    }
+    last_dot
+}
+
+/// True when `path` has at least one top-level `.`.
+pub fn has_top_level_dot(path: &str) -> bool {
+    find_last_top_level_dot(path).is_some()
+}
+
+/// Return the final top-level segment of `path`.
+pub fn top_level_last_segment(path: &str) -> &str {
+    find_last_top_level_dot(path)
+        .map(|dot_idx| &path[dot_idx + 1..])
+        .unwrap_or(path)
+}
+
+/// Return the parent scope prefix of `path` (before the last top-level `.`).
+pub fn parent_scope(path: &str) -> Option<&str> {
+    find_last_top_level_dot(path).map(|dot_idx| &path[..dot_idx])
 }
 
 /// A unique identifier for a definition (class, component, etc.).

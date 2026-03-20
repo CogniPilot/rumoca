@@ -55,12 +55,8 @@ pub(super) fn sim_timeout_secs() -> f64 {
     sim_timeout_override_secs().unwrap_or(SIM_TIMEOUT_SECS)
 }
 
-pub(super) fn sim_worker_wall_timeout_secs(solver_timeout_secs: f64, strict_budget: bool) -> f64 {
-    if strict_budget {
-        solver_timeout_secs
-    } else {
-        solver_timeout_secs + SIM_WORKER_TIMEOUT_GRACE_SECS
-    }
+pub(super) fn sim_worker_wall_timeout_secs(solver_timeout_secs: f64) -> f64 {
+    solver_timeout_secs + SIM_WORKER_TIMEOUT_GRACE_SECS
 }
 
 pub(super) fn sim_worker_memory_limit_mb() -> Option<usize> {
@@ -392,6 +388,16 @@ pub(super) struct SimExecutionSettings {
     pub(super) timeout_seconds: Option<f64>,
 }
 
+pub(super) fn gate_simulation_settings_by_compile_budget(
+    settings: SimExecutionSettings,
+    remaining_budget_secs: Option<f64>,
+) -> Result<SimExecutionSettings, f64> {
+    match remaining_budget_secs {
+        Some(budget_secs) if budget_secs <= 0.0 => Err(budget_secs),
+        _ => Ok(settings),
+    }
+}
+
 pub(super) struct PreparedSimulationRun {
     model_name: String,
     n_states: usize,
@@ -650,10 +656,7 @@ pub(super) fn run_prepared_simulation(run: PreparedSimulationRun) -> MslSimModel
         .timeout_seconds
         .filter(|secs| secs.is_finite() && *secs > 0.0)
         .unwrap_or_else(sim_timeout_secs);
-    let strict_budget = settings
-        .timeout_seconds
-        .is_some_and(|secs| secs.is_finite() && secs > 0.0);
-    let process_timeout_secs = sim_worker_wall_timeout_secs(solver_timeout_secs, strict_budget);
+    let process_timeout_secs = sim_worker_wall_timeout_secs(solver_timeout_secs);
 
     let mut child = match spawn_sim_worker_process(
         worker_exe,
@@ -845,6 +848,32 @@ mod tests {
 
         assert!(output_path.ends_with("sim_worker/sim_7.json"));
         assert!(trace_path.ends_with("sim_traces/rumoca/Demo.Model.json"));
+    }
+
+    #[test]
+    fn sim_worker_wall_timeout_always_includes_parent_grace() {
+        assert_eq!(
+            sim_worker_wall_timeout_secs(10.0),
+            10.0 + SIM_WORKER_TIMEOUT_GRACE_SECS
+        );
+    }
+
+    #[test]
+    fn gate_simulation_settings_by_compile_budget_preserves_timeout_settings() {
+        let settings = SimExecutionSettings {
+            t_start: 0.0,
+            t_end: 1.0,
+            dt: Some(0.01),
+            rtol: Some(1e-6),
+            atol: Some(1e-6),
+            solver: "auto".to_string(),
+            timeout_seconds: None,
+        };
+
+        let gated = gate_simulation_settings_by_compile_budget(settings, Some(10.0))
+            .expect("positive compile budget should allow simulation");
+
+        assert_eq!(gated.timeout_seconds, None);
     }
 
     #[test]

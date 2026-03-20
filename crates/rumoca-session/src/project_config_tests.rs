@@ -100,6 +100,21 @@ fn validates_unknown_top_level_keys() {
 }
 
 #[test]
+fn flags_legacy_viewer3d_top_level_section() {
+    let value: toml::Value = toml::from_str(
+        r#"
+version = 1
+
+[viewer3d]
+"#,
+    )
+    .expect("parse");
+    let diagnostics = validate_top_level_keys(&value);
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("viewer3d"));
+}
+
+#[test]
 fn save_writes_uuid_sidecars_and_keeps_root_compact() {
     let temp = tempfile::tempdir().expect("tempdir");
     let workspace_root = temp.path();

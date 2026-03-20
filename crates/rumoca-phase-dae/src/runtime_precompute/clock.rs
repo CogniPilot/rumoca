@@ -221,8 +221,14 @@ fn collect_unique_clock_var_refs(
 }
 
 pub(super) fn dedupe_expressions_in_place(expressions: &mut Vec<dae::Expression>) {
-    let mut seen = HashSet::new();
-    expressions.retain(|expr| seen.insert(format!("{expr:?}")));
+    let mut deduped = Vec::with_capacity(expressions.len());
+    for expr in expressions.drain(..) {
+        if deduped.contains(&expr) {
+            continue;
+        }
+        deduped.push(expr);
+    }
+    *expressions = deduped;
 }
 
 fn is_relational_condition(expr: &dae::Expression) -> bool {

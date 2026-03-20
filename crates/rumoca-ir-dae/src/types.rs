@@ -1,4 +1,9 @@
 use rumoca_core::{DefId, Span};
+pub use rumoca_ir_core::BuiltinFunction;
+pub use rumoca_ir_core::DerivativeAnnotation;
+pub use rumoca_ir_core::ExternalFunction;
+pub use rumoca_ir_core::Literal;
+pub use rumoca_ir_core::VarName;
 use rumoca_ir_core::{OpBinary, OpUnary};
 use serde::{Deserialize, Serialize};
 
@@ -46,38 +51,6 @@ pub fn component_base_name(name: &str) -> Option<String> {
     }
     parts.push(base.to_string());
     Some(parts.join("."))
-}
-
-/// A globally unique variable name.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VarName(pub String);
-
-impl VarName {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for VarName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<&str> for VarName {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl From<String> for VarName {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,191 +111,6 @@ pub enum Expression {
     Empty,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BuiltinFunction {
-    Der,
-    Pre,
-    Abs,
-    Sign,
-    Sqrt,
-    Div,
-    Mod,
-    Rem,
-    Floor,
-    Ceil,
-    Min,
-    Max,
-    Sin,
-    Cos,
-    Tan,
-    Asin,
-    Acos,
-    Atan,
-    Atan2,
-    Sinh,
-    Cosh,
-    Tanh,
-    Exp,
-    Log,
-    Log10,
-    Edge,
-    Change,
-    Reinit,
-    Sample,
-    Initial,
-    Terminal,
-    NoEvent,
-    Smooth,
-    Homotopy,
-    SemiLinear,
-    Delay,
-    Integer,
-    Sum,
-    Product,
-    Ndims,
-    Size,
-    Scalar,
-    Vector,
-    Matrix,
-    Identity,
-    Diagonal,
-    Zeros,
-    Ones,
-    Fill,
-    Linspace,
-    Transpose,
-    OuterProduct,
-    Symmetric,
-    Cross,
-    Skew,
-    Cat,
-}
-
-impl BuiltinFunction {
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "der" => Some(Self::Der),
-            "pre" => Some(Self::Pre),
-            "abs" => Some(Self::Abs),
-            "sign" => Some(Self::Sign),
-            "sqrt" => Some(Self::Sqrt),
-            "div" => Some(Self::Div),
-            "mod" => Some(Self::Mod),
-            "rem" => Some(Self::Rem),
-            "floor" => Some(Self::Floor),
-            "ceil" => Some(Self::Ceil),
-            "min" => Some(Self::Min),
-            "max" => Some(Self::Max),
-            "sin" => Some(Self::Sin),
-            "cos" => Some(Self::Cos),
-            "tan" => Some(Self::Tan),
-            "asin" => Some(Self::Asin),
-            "acos" => Some(Self::Acos),
-            "atan" => Some(Self::Atan),
-            "atan2" => Some(Self::Atan2),
-            "sinh" => Some(Self::Sinh),
-            "cosh" => Some(Self::Cosh),
-            "tanh" => Some(Self::Tanh),
-            "exp" => Some(Self::Exp),
-            "log" => Some(Self::Log),
-            "log10" => Some(Self::Log10),
-            "edge" => Some(Self::Edge),
-            "change" => Some(Self::Change),
-            "reinit" => Some(Self::Reinit),
-            "sample" => Some(Self::Sample),
-            "initial" => Some(Self::Initial),
-            "terminal" => Some(Self::Terminal),
-            "noEvent" => Some(Self::NoEvent),
-            "smooth" => Some(Self::Smooth),
-            "homotopy" => Some(Self::Homotopy),
-            "semiLinear" => Some(Self::SemiLinear),
-            "delay" => Some(Self::Delay),
-            "integer" => Some(Self::Integer),
-            "sum" => Some(Self::Sum),
-            "product" => Some(Self::Product),
-            "ndims" => Some(Self::Ndims),
-            "size" => Some(Self::Size),
-            "scalar" => Some(Self::Scalar),
-            "vector" => Some(Self::Vector),
-            "matrix" => Some(Self::Matrix),
-            "identity" => Some(Self::Identity),
-            "diagonal" => Some(Self::Diagonal),
-            "zeros" => Some(Self::Zeros),
-            "ones" => Some(Self::Ones),
-            "fill" => Some(Self::Fill),
-            "linspace" => Some(Self::Linspace),
-            "transpose" => Some(Self::Transpose),
-            "outerProduct" => Some(Self::OuterProduct),
-            "symmetric" => Some(Self::Symmetric),
-            "cross" => Some(Self::Cross),
-            "skew" => Some(Self::Skew),
-            "cat" => Some(Self::Cat),
-            _ => None,
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Der => "der",
-            Self::Pre => "pre",
-            Self::Abs => "abs",
-            Self::Sign => "sign",
-            Self::Sqrt => "sqrt",
-            Self::Div => "div",
-            Self::Mod => "mod",
-            Self::Rem => "rem",
-            Self::Floor => "floor",
-            Self::Ceil => "ceil",
-            Self::Min => "min",
-            Self::Max => "max",
-            Self::Sin => "sin",
-            Self::Cos => "cos",
-            Self::Tan => "tan",
-            Self::Asin => "asin",
-            Self::Acos => "acos",
-            Self::Atan => "atan",
-            Self::Atan2 => "atan2",
-            Self::Sinh => "sinh",
-            Self::Cosh => "cosh",
-            Self::Tanh => "tanh",
-            Self::Exp => "exp",
-            Self::Log => "log",
-            Self::Log10 => "log10",
-            Self::Edge => "edge",
-            Self::Change => "change",
-            Self::Reinit => "reinit",
-            Self::Sample => "sample",
-            Self::Initial => "initial",
-            Self::Terminal => "terminal",
-            Self::NoEvent => "noEvent",
-            Self::Smooth => "smooth",
-            Self::Homotopy => "homotopy",
-            Self::SemiLinear => "semiLinear",
-            Self::Delay => "delay",
-            Self::Integer => "integer",
-            Self::Sum => "sum",
-            Self::Product => "product",
-            Self::Ndims => "ndims",
-            Self::Size => "size",
-            Self::Scalar => "scalar",
-            Self::Vector => "vector",
-            Self::Matrix => "matrix",
-            Self::Identity => "identity",
-            Self::Diagonal => "diagonal",
-            Self::Zeros => "zeros",
-            Self::Ones => "ones",
-            Self::Fill => "fill",
-            Self::Linspace => "linspace",
-            Self::Transpose => "transpose",
-            Self::OuterProduct => "outerProduct",
-            Self::Symmetric => "symmetric",
-            Self::Cross => "cross",
-            Self::Skew => "skew",
-            Self::Cat => "cat",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Subscript {
     Index(i64),
@@ -334,25 +122,6 @@ pub enum Subscript {
 pub struct ComprehensionIndex {
     pub name: String,
     pub range: Expression,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Literal {
-    Real(f64),
-    Integer(i64),
-    Boolean(bool),
-    String(String),
-}
-
-impl std::fmt::Display for Literal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Literal::Real(v) => write!(f, "{}", v),
-            Literal::Integer(v) => write!(f, "{}", v),
-            Literal::Boolean(v) => write!(f, "{}", v),
-            Literal::String(v) => write!(f, "\"{}\"", v),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -450,22 +219,6 @@ pub fn extract_algorithm_outputs(statements: &[Statement]) -> Vec<VarName> {
 pub(crate) fn component_ref_to_base_var_name(comp: &ComponentReference) -> VarName {
     let parts: Vec<String> = comp.parts.iter().map(|p| p.ident.to_string()).collect();
     VarName::new(parts.join("."))
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ExternalFunction {
-    pub language: String,
-    pub function_name: Option<String>,
-    pub output_name: Option<String>,
-    pub arg_names: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct DerivativeAnnotation {
-    pub derivative_function: String,
-    pub order: u32,
-    pub zero_derivative: Vec<String>,
-    pub no_derivative: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -443,6 +443,32 @@ mod tests {
         assert_eq!(out, vec![1.0]);
     }
 
+    #[test]
+    fn compile_root_conditions_disables_runtime_discrete_binding_rows() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .discrete_valued
+            .insert(dae::VarName::new("count"), scalar_var("count"));
+        dae_model
+            .parameters
+            .insert(dae::VarName::new("nperiod"), scalar_var("nperiod"));
+        dae_model
+            .synthetic_root_conditions
+            .push(dae::Expression::Binary {
+                op: rumoca_ir_core::OpBinary::Ge(Default::default()),
+                lhs: Box::new(expr_var("count")),
+                rhs: Box::new(expr_var("nperiod")),
+            });
+
+        let compiled =
+            compile_root_conditions(&dae_model, Backend::Cranelift).expect("compile roots");
+        let mut out = vec![0.0; compiled.rows()];
+        compiled
+            .call(&[2.0], &[3.0], 0.0, &mut out)
+            .expect("call compiled roots");
+        assert_eq!(out, vec![1.0]);
+    }
+
     #[cfg(feature = "wasm")]
     #[test]
     fn compile_residual_wasm_backend_produces_module_bytes() {

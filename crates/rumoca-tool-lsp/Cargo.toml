@@ -29,5 +29,8 @@ tokio = { workspace = true, optional = true }
 default = ["server"]
 server = ["dep:tower-lsp", "dep:tokio"]
 
+[dev-dependencies]
+futures-util = { workspace = true }
+
 [lints]
 workspace = true

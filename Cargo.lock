@@ -2946,6 +2946,7 @@ dependencies = [
  "rumoca-phase-solve",
  "rumoca-phase-typecheck",
  "rumoca-session",
+ "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
@@ -2976,10 +2977,13 @@ dependencies = [
 name = "rumoca-bind-wasm"
 version = "0.8.9"
 dependencies = [
+ "bincode",
  "console_error_panic_hook",
  "getrandom 0.3.4",
+ "js-sys",
  "lsp-types",
  "rumoca-session",
+ "rumoca-sim",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
@@ -2997,6 +3001,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -3204,6 +3209,7 @@ name = "rumoca-session"
 version = "0.8.9"
 dependencies = [
  "anyhow",
+ "bincode",
  "blake3",
  "indexmap",
  "miette",
@@ -3287,10 +3293,12 @@ name = "rumoca-tool-dev"
 version = "0.8.9"
 dependencies = [
  "anyhow",
+ "bincode",
  "clap",
  "clap_complete",
  "dirs",
  "flate2",
+ "lsp-types",
  "mimalloc",
  "rayon",
  "rumoca-session",
@@ -3302,6 +3310,7 @@ dependencies = [
  "toml",
  "ureq",
  "walkdir",
+ "zip",
 ]
 
 [[package]]
@@ -3332,6 +3341,7 @@ version = "0.8.9"
 dependencies = [
  "anyhow",
  "clap",
+ "futures-util",
  "lsp-types",
  "rumoca-session",
  "rumoca-tool-fmt",

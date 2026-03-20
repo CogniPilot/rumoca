@@ -884,25 +884,25 @@ fn test_validate_type_compatibility_alias_root_allowed() {
 // =============================================================================
 
 #[test]
-fn test_parse_path_with_indices() {
+fn test_split_path_with_indices() {
     // Simple path
-    assert_eq!(parse_path_with_indices("a.b.c"), vec!["a", "b", "c"]);
+    assert_eq!(split_path_with_indices("a.b.c"), vec!["a", "b", "c"]);
 
     // Path with array indices
     assert_eq!(
-        parse_path_with_indices("resistor[1].p.v"),
+        split_path_with_indices("resistor[1].p.v"),
         vec!["resistor[1]", "p", "v"]
     );
 
     // Multiple array indices
     assert_eq!(
-        parse_path_with_indices("plug_p.pin[2].v"),
+        split_path_with_indices("plug_p.pin[2].v"),
         vec!["plug_p", "pin[2]", "v"]
     );
 
     // Complex indices
     assert_eq!(
-        parse_path_with_indices("a[1,2].b[3].c"),
+        split_path_with_indices("a[1,2].b[3].c"),
         vec!["a[1,2]", "b[3]", "c"]
     );
 }
@@ -1039,7 +1039,7 @@ fn test_is_flow_variable_subscripted_with_unknown_dims() {
 #[test]
 fn test_matches_with_array_indices() {
     let matches = |name: &str, segments: &[&str]| {
-        let parsed = parse_path_with_indices(name)
+        let parsed = split_path_with_indices(name)
             .into_iter()
             .map(std::borrow::ToOwned::to_owned)
             .collect::<Vec<_>>();

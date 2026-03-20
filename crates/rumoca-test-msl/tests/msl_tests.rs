@@ -452,6 +452,8 @@ struct MslModelResult {
     #[serde(default)]
     initial_balance_ok: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    compile_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_error: Option<String>,
@@ -471,6 +473,12 @@ struct MslPhaseTimings {
     session_build_seconds: f64,
     frontend_compile_seconds: f64,
     compile_seconds: f64,
+    #[serde(default)]
+    compile_batch_size: usize,
+    #[serde(default)]
+    compile_chunk_count: usize,
+    #[serde(default)]
+    worker_threads: usize,
     #[serde(default)]
     compile_instantiate_seconds: f64,
     #[serde(default)]

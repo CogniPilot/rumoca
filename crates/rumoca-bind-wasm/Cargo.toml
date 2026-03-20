@@ -11,15 +11,18 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+rumoca-sim = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-tool-lint = { workspace = true }
 rumoca-tool-lsp = { workspace = true }
+bincode = { workspace = true }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 wasm-bindgen = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 lsp-types = { workspace = true }
 serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
 console_error_panic_hook = { version = "0.1", optional = true }
 
 [features]

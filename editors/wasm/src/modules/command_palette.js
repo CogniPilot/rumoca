@@ -184,6 +184,46 @@ export function setupCommandPalette(options = {}) {
 
     state.commands = [
         {
+            label: 'Project: New',
+            description: 'Create a new in-browser project workspace',
+            tags: ['project', 'workspace', 'new'],
+            run: () => {
+                if (typeof window.newProject === 'function') {
+                    void window.newProject();
+                }
+            },
+        },
+        {
+            label: 'Project: Download',
+            description: 'Download the current in-browser project as a zip archive',
+            tags: ['project', 'workspace', 'download', 'zip'],
+            run: () => {
+                if (typeof window.downloadProject === 'function') {
+                    void window.downloadProject();
+                }
+            },
+        },
+        {
+            label: 'Project: Load Archive',
+            description: 'Load a project zip archive into the in-browser workspace',
+            tags: ['project', 'workspace', 'load', 'zip'],
+            run: () => {
+                if (typeof window.loadProject === 'function') {
+                    window.loadProject();
+                }
+            },
+        },
+        {
+            label: 'Project: Import Folder',
+            description: 'Import a project folder into the in-browser workspace',
+            tags: ['project', 'workspace', 'folder', 'import'],
+            run: () => {
+                if (typeof window.loadProjectFolder === 'function') {
+                    void window.loadProjectFolder();
+                }
+            },
+        },
+        {
             label: 'Compile: Run Live Checks Now',
             description: 'Force immediate diagnostics and compile pass',
             shortcut: 'Ctrl+Enter',

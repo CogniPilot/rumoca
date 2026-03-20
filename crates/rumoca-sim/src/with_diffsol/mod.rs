@@ -12,7 +12,6 @@ mod prepare;
 pub mod problem;
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use diffsol::{
     FaerSparseLU, OdeEquations, OdeSolverMethod, OdeSolverProblem, OdeSolverStopReason, VectorHost,
@@ -32,6 +31,10 @@ use rumoca_core::Span;
 pub(crate) use crate::simulation::dae_prepare::*;
 use crate::{
     SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, is_solver_timeout_panic, timeline,
+};
+pub(crate) use rumoca_core::{
+    maybe_elapsed_seconds as trace_timer_elapsed_seconds,
+    maybe_start_timer_if as trace_timer_start_if,
 };
 pub(crate) use rumoca_eval_dae::runtime::{self as eval, build_env, eval_expr};
 
@@ -147,26 +150,6 @@ pub struct SimVariableMeta {
     pub nominal: Option<String>,
     pub fixed: Option<bool>,
     pub description: Option<String>,
-}
-
-#[inline]
-pub(crate) fn trace_timer_start_if(enabled: bool) -> Option<Instant> {
-    if !enabled {
-        return None;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Some(Instant::now())
-    }
-}
-
-#[inline]
-pub(crate) fn trace_timer_elapsed_seconds(start: Option<Instant>) -> f64 {
-    start.map_or(0.0, |t0| t0.elapsed().as_secs_f64())
 }
 
 #[derive(Debug, thiserror::Error)]

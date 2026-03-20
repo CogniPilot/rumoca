@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+pub(crate) use rumoca_core::{has_top_level_dot, split_path_with_indices};
 use rumoca_ir_flat as flat;
 
 /// Extract the top-level prefix from a variable path.
@@ -12,56 +13,11 @@ pub(crate) fn get_top_level_prefix(path: &str) -> Option<String> {
     Some(normalize_top_level_segment(first_segment).to_string())
 }
 
-/// Split a dotted path while preserving dots inside bracket expressions.
-///
-/// For "bus[data.medium].pin.v", returns ["bus[data.medium]", "pin", "v"].
-pub(crate) fn split_path_with_indices(path: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut depth = 0i32;
-
-    for (idx, ch) in path.char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => depth -= 1,
-            '.' if depth == 0 => {
-                if start < idx {
-                    parts.push(&path[start..idx]);
-                }
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-
-    if start < path.len() {
-        parts.push(&path[start..]);
-    }
-
-    parts
-}
-
 /// Return the top-level path segment, preserving any index expression.
 ///
 /// For "bus[data.medium].pin.v", returns "bus[data.medium]".
 pub(crate) fn top_level_segment(path: &str) -> Option<&str> {
     first_path_segment(path)
-}
-
-/// Return true when a path has a top-level `.` separator.
-///
-/// Dots inside bracket expressions are ignored.
-pub(crate) fn has_top_level_dot(path: &str) -> bool {
-    let mut depth = 0i32;
-    for ch in path.chars() {
-        match ch {
-            '[' => depth += 1,
-            ']' => depth -= 1,
-            '.' if depth == 0 => return true,
-            _ => {}
-        }
-    }
-    false
 }
 
 /// Return the first path segment, splitting on dots that are outside subscript brackets.
@@ -237,20 +193,6 @@ mod tests {
             top_level_segment("bus[data.medium].pin"),
             Some("bus[data.medium]")
         );
-    }
-
-    #[test]
-    fn test_split_path_with_indices_preserves_dot_inside_brackets() {
-        assert_eq!(
-            split_path_with_indices("bus[data.medium].pin.v"),
-            vec!["bus[data.medium]", "pin", "v"]
-        );
-    }
-
-    #[test]
-    fn test_has_top_level_dot_ignores_dot_inside_subscript_expression() {
-        assert!(!has_top_level_dot("plug[data.medium]"));
-        assert!(has_top_level_dot("plug[data.medium].pin"));
     }
 
     #[test]

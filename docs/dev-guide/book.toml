@@ -1,0 +1,13 @@
+[book]
+title = "Rumoca Internals"
+authors = ["Rumoca Contributors"]
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/jgoppert/rumoca"
+edit-url-template = "https://github.com/jgoppert/rumoca/edit/main/docs/dev-guide/{path}"

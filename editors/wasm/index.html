@@ -192,6 +192,60 @@
         .right-tab-content.active {
             display: flex;
         }
+        .toolbar-icon {
+            width: 28px;
+            height: 28px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            font-size: 15px;
+            line-height: 1;
+        }
+        .modal-shell[hidden] {
+            display: none;
+        }
+        .modal-shell {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: flex;
+            align-items: stretch;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.55);
+            padding: 24px;
+        }
+        .modal-dialog {
+            width: min(980px, 100%);
+            height: min(820px, 100%);
+            display: flex;
+            flex-direction: column;
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 10px;
+            box-shadow: 0 18px 56px rgba(0, 0, 0, 0.4);
+            overflow: hidden;
+        }
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 14px;
+            background: #252526;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .modal-header h3 {
+            margin: 0;
+            font-size: 14px;
+            color: #9cdcfe;
+        }
+        .modal-frame {
+            flex: 1;
+            width: 100%;
+            border: 0;
+            background: #1e1e1e;
+        }
 
         /* Bottom panel - Diagnostics & Libraries */
         .bottom-panel {
@@ -837,6 +891,10 @@
                     <span id="sourceBreadcrumbs" style="font-size: 11px; color: #9aa0a6;" title="Current model/section/symbol"></span>
                     <div class="editor-toolbar-right">
                         <button class="small" onclick="saveFile()" title="Save Modelica source to a .mo file">Save .mo</button>
+                        <button class="small" onclick="newProject()" title="Start a new in-browser project">New Project</button>
+                        <button class="small" onclick="downloadProject()" title="Download the current project as a zip archive">Download Project</button>
+                        <button class="small" onclick="loadProject()" title="Load a project zip archive into the in-browser workspace">Load Project</button>
+                        <button class="small" onclick="loadProjectFolder()" title="Import a project folder into the in-browser workspace">Import Folder</button>
                     </div>
                 </div>
                 <div id="editor"></div>
@@ -922,24 +980,17 @@
                     <select id="modelSelect" onchange="updateSelectedModel()" style="min-width: 100px; padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="Select which model to display">
                         <option value="">-- No models --</option>
                     </select>
+                    <button class="small toolbar-icon" id="simSettingsBtn" onclick="openSimulationSettingsModal()" title="Simulation settings">⚙</button>
                 </div>
             </div>
             <div class="panel-content-right">
                 <!-- Simulate Tab -->
                 <div class="right-tab-content active" id="simTab">
                     <div style="display: flex; align-items: center; gap: 8px; padding: 6px 0; flex-shrink: 0;">
-                        <label style="font-size: 11px; color: #888;">t_end:</label>
-                        <input type="text" id="simTEnd" value="10.0" style="width: 60px;" title="Simulation end time">
-                        <label style="font-size: 11px; color: #888;">dt:</label>
-                        <input type="text" id="simDt" value="0" style="width: 60px;" title="Output time step (0 = auto)">
                         <button class="small" onclick="runSimulation()" id="simRunBtn" title="Run simulation">Simulate</button>
                         <span id="simStatus" style="font-size: 11px; color: #888;"></span>
-                        <span id="simHover" style="font-size: 11px; color: #888;"></span>
                     </div>
-                    <div style="display: flex; flex: 1; min-height: 0; overflow: hidden;">
-                        <div id="simPlot" style="flex: 1; min-height: 200px; overflow: visible;"></div>
-                        <div id="simVarTree" style="width: 180px; min-width: 120px; max-width: 300px; overflow-y: auto; border-left: 1px solid #3c3c3c; padding: 4px 0; font-size: 12px; flex-shrink: 0;"></div>
-                    </div>
+                    <div id="simPlot" style="flex: 1; min-height: 200px; overflow: hidden;"></div>
                 </div>
 
                 <!-- DAE Tab -->
@@ -973,6 +1024,8 @@
         <div class="status-bar-spacer"></div>
         <button class="status-bar-item status-bar-item-button" id="statusBarLibraries" onclick="switchBottomTab('libraries')" title="Open Libraries tab">Libraries: 0</button>
     </div>
+    <input id="projectArchiveInput" type="file" accept=".zip" onchange="loadProjectArchive(this)" hidden>
+    <input id="projectFolderInput" type="file" multiple webkitdirectory onchange="loadProjectFolderInput(this)" hidden>
 
     <div id="commandPaletteOverlay" class="command-palette-overlay" hidden>
         <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command Palette">
@@ -981,10 +1034,24 @@
         </div>
     </div>
 
+    <div id="simulationSettingsModal" class="modal-shell" hidden>
+        <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="simulationSettingsTitle">
+            <div class="modal-header">
+                <h3 id="simulationSettingsTitle">Simulation Settings</h3>
+                <button class="small toolbar-icon" id="simulationSettingsCloseBtn" title="Close settings">✕</button>
+            </div>
+            <iframe id="simulationSettingsFrame" class="modal-frame" title="Simulation Settings"></iframe>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="../../crates/rumoca-sim/web/results_app.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
     <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+    <script src="../../crates/rumoca-sim/web/visualization_shared.js"></script>
+    <script src="../../crates/rumoca-sim/web/results_app.js"></script>
     <script type="module" src="./src/main.js"></script>
 </body>
 </html>

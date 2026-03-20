@@ -1,5 +1,11 @@
 use indexmap::{IndexMap, IndexSet};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReachableModelClosure {
+    pub(crate) reachable_classes: Vec<String>,
+    pub(crate) compile_targets: Vec<String>,
+}
+
 /// Reachability planner for strict target compilation.
 ///
 /// The planner traverses class dependency edges starting from the requested
@@ -49,6 +55,13 @@ impl<'a> ReachabilityPlanner<'a> {
             vec![requested]
         } else {
             Vec::new()
+        }
+    }
+
+    pub(crate) fn model_closure(&self, requested_model: &str) -> ReachableModelClosure {
+        ReachableModelClosure {
+            reachable_classes: self.reachable_classes(requested_model),
+            compile_targets: self.compile_targets(requested_model),
         }
     }
 }

@@ -106,7 +106,7 @@ impl TypeChecker {
             let name = instance_data.qualified_name.to_flat_string();
 
             // Get the parent scope for parameter lookup
-            let scope = crate::path_utils::parent_scope(&name).unwrap_or("");
+            let scope = parent_scope(&name).unwrap_or("");
 
             // Try to evaluate each dimension expression using scope-aware lookup
             let evaluated: Option<Vec<i64>> = instance_data
@@ -157,8 +157,7 @@ impl TypeChecker {
     pub(crate) fn build_type_scope_hints(overlay: &InstanceOverlay) -> HashMap<String, String> {
         let mut hints = HashMap::new();
         for (_def_id, instance_data) in &overlay.components {
-            let Some(pos) = crate::path_utils::find_last_top_level_dot(&instance_data.type_name)
-            else {
+            let Some(pos) = find_last_top_level_dot(&instance_data.type_name) else {
                 continue;
             };
             let component_name = instance_data.qualified_name.to_flat_string();
@@ -191,7 +190,7 @@ impl TypeChecker {
             {
                 return Some(v);
             }
-            if let Some(parent_scope) = crate::path_utils::parent_scope(current) {
+            if let Some(parent_scope) = parent_scope(current) {
                 current = parent_scope;
             } else {
                 break;
@@ -208,7 +207,7 @@ impl TypeChecker {
 
         for (_def_id, instance_data) in &overlay.components {
             let name = instance_data.qualified_name.to_flat_string();
-            let scope = crate::path_utils::parent_scope(&name).unwrap_or("");
+            let scope = parent_scope(&name).unwrap_or("");
 
             // Recompute from the most specific declaration source each pass.
             // MLS §10.1 dependency chains can reveal better values in later passes;
@@ -249,7 +248,7 @@ impl TypeChecker {
 
         for (_def_id, instance_data) in &overlay.components {
             let name = instance_data.qualified_name.to_flat_string();
-            let scope = crate::path_utils::parent_scope(&name).unwrap_or("");
+            let scope = parent_scope(&name).unwrap_or("");
 
             if !self.eval_ctx.booleans.contains_key(&name) {
                 progress |= self.try_eval_boolean(instance_data, &name, scope);
@@ -351,7 +350,7 @@ impl TypeChecker {
         // Compute scope: parent component path for resolving relative references
         // For "combiTimeTable.table", scope is "combiTimeTable" which is empty at top level
         // For nested components, we strip the last component to get the parent scope
-        let scope = crate::path_utils::parent_scope(&name).unwrap_or("");
+        let scope = parent_scope(&name).unwrap_or("");
 
         // Try to infer from binding first
         if let Some(ref binding) = instance_data.binding
@@ -1538,7 +1537,7 @@ impl TypeChecker {
 
         // Last resort: unique short-name lookup.
         // Keep this as a compatibility fallback for mixed qualification styles.
-        let short_name = crate::path_utils::top_level_last_segment(name);
+        let short_name = top_level_last_segment(name);
         if let Some(type_id) = self.type_suffix_index.get(short_name).copied().flatten() {
             return type_id;
         }
@@ -1552,7 +1551,7 @@ impl TypeChecker {
         name: &str,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        if crate::path_utils::has_top_level_dot(name)
+        if has_top_level_dot(name)
             && let Some(type_id) = self.resolve_dotted_type_from_anchor(def_id, name, type_table)
         {
             return Some(type_id);

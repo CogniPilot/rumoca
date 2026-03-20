@@ -27,7 +27,6 @@
 
 mod compiler;
 mod error;
-pub mod sim_report;
 
 pub use compiler::{CompilationResult, Compiler};
 pub use error::CompilerError;

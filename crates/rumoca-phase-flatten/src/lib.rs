@@ -52,10 +52,10 @@ mod when_equations;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use indexmap::IndexMap;
-use rumoca_core::Span;
+use rumoca_core::{OptionalTimer, Span, maybe_elapsed_duration, maybe_start_timer};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -159,28 +159,16 @@ pub(crate) fn record_eval_fallback_timing(duration: Duration) {
 }
 
 #[inline]
-pub(crate) fn maybe_start_timer() -> Option<Instant> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Some(Instant::now())
+pub(crate) fn maybe_record_connections_timing(start: OptionalTimer) {
+    if let Some(elapsed) = maybe_elapsed_duration(start) {
+        record_connections_timing(elapsed);
     }
 }
 
 #[inline]
-pub(crate) fn maybe_record_connections_timing(start: Option<Instant>) {
-    if let Some(start) = start {
-        record_connections_timing(start.elapsed());
-    }
-}
-
-#[inline]
-pub(crate) fn maybe_record_eval_fallback_timing(start: Option<Instant>) {
-    if let Some(start) = start {
-        record_eval_fallback_timing(start.elapsed());
+pub(crate) fn maybe_record_eval_fallback_timing(start: OptionalTimer) {
+    if let Some(elapsed) = maybe_elapsed_duration(start) {
+        record_eval_fallback_timing(elapsed);
     }
 }
 
@@ -207,7 +195,7 @@ fn is_in_disabled_component(
 ) -> bool {
     let parts: Vec<&str> = qn.parts.iter().map(|(name, _)| name.as_str()).collect();
     for disabled in disabled_components {
-        let disabled_parts = crate::path_utils::parse_path_with_indices(disabled);
+        let disabled_parts = crate::path_utils::split_path_with_indices(disabled);
         if parts.len() >= disabled_parts.len()
             && parts[..disabled_parts.len()] == disabled_parts[..]
         {
@@ -594,7 +582,7 @@ fn find_synthetic_alias(
     prefix: &str,
     aliases: &rustc_hash::FxHashMap<String, String>,
 ) -> Option<String> {
-    let prefix_parts = crate::path_utils::parse_path_with_indices(prefix);
+    let prefix_parts = crate::path_utils::split_path_with_indices(prefix);
     find_parent_alias(&prefix_parts, aliases)
 }
 
@@ -602,7 +590,7 @@ fn find_synthetic_alias(
 fn synthesize_intermediate_aliases(aliases: &mut rustc_hash::FxHashMap<String, String>) {
     let mut synthetic: Vec<(String, String)> = Vec::new();
     for target in aliases.values() {
-        let parts = crate::path_utils::parse_path_with_indices(target);
+        let parts = crate::path_utils::split_path_with_indices(target);
         for i in (2..parts.len()).rev() {
             let prefix = parts[..i].join(".");
             let already_exists =
@@ -625,7 +613,7 @@ fn resolve_through_prefix(
     source: &str,
     aliases: &rustc_hash::FxHashMap<String, String>,
 ) -> Option<String> {
-    let parts = crate::path_utils::parse_path_with_indices(current);
+    let parts = crate::path_utils::split_path_with_indices(current);
     for i in (1..parts.len()).rev() {
         let prefix = parts[..i].join(".");
         if let Some(alias_target) = aliases.get(&prefix) {
@@ -1668,7 +1656,7 @@ fn extract_single_constant_with_prefix(
 /// - `plug_p.pin[1]` → false (only the last segment has subscripts)
 /// - `l1sigma.inductor[1].v[2]` → true (parent has subscripts)
 fn has_embedded_array_subscript_in_parent(name: &str) -> bool {
-    let segments = crate::path_utils::parse_path_with_indices(name);
+    let segments = crate::path_utils::split_path_with_indices(name);
     // Check all segments EXCEPT the last one
     segments[..segments.len().saturating_sub(1)]
         .iter()
