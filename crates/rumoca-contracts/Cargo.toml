@@ -12,6 +12,7 @@ indexmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+toml = { workspace = true }
 
 # Session facade provides parsing/compile/runtime contract APIs
 rumoca-session = { workspace = true }

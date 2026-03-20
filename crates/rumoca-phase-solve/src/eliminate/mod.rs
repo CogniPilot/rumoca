@@ -12,8 +12,8 @@
 //! better-conditioned system for the numerical solver.
 
 use std::collections::HashSet;
-use std::time::Instant;
 
+use rumoca_core::{maybe_elapsed_seconds, maybe_start_timer_if};
 use rumoca_ir_dae as dae;
 
 use crate::{BltBlock, EquationRef, UnknownId, sort_dae};
@@ -59,15 +59,15 @@ pub struct EliminationResult {
 /// base variable names (not expanded scalar names).
 pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
     let trace = eliminate_trace_enabled();
-    let t_total = trace_timer_start_if(trace);
+    let t_total = maybe_start_timer_if(trace);
 
     // Phase A: resolve boundary equations to make the system non-singular.
-    let t_boundary = trace_timer_start_if(trace);
+    let t_boundary = maybe_start_timer_if(trace);
     let mut result = resolve_boundary_equations(dae);
     if trace {
         eprintln!(
             "[sim-trace] eliminate_trivial boundary elapsed={:.3}s eliminated_eqs={}",
-            trace_timer_elapsed_seconds(t_boundary),
+            maybe_elapsed_seconds(t_boundary),
             result.n_eliminated
         );
     }
@@ -80,12 +80,12 @@ pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
     };
     if let Some(blocks) = blocks {
         let state_names: Vec<VarName> = dae.states.keys().cloned().collect();
-        let t_blt = trace_timer_start_if(trace);
+        let t_blt = maybe_start_timer_if(trace);
         let blt_result = eliminate_via_blt(dae, &blocks, &state_names);
         if trace {
             eprintln!(
                 "[sim-trace] eliminate_trivial blt elapsed={:.3}s eliminated_eqs={}",
-                trace_timer_elapsed_seconds(t_blt),
+                maybe_elapsed_seconds(t_blt),
                 blt_result.n_eliminated
             );
         }
@@ -95,7 +95,7 @@ pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
     if trace {
         eprintln!(
             "[sim-trace] eliminate_trivial total elapsed={:.3}s eliminated_eqs={}",
-            trace_timer_elapsed_seconds(t_total),
+            maybe_elapsed_seconds(t_total),
             result.n_eliminated
         );
     }
@@ -105,26 +105,6 @@ pub fn eliminate_trivial(dae: &mut Dae) -> EliminationResult {
 
 fn eliminate_trace_enabled() -> bool {
     std::env::var("RUMOCA_SIM_TRACE").is_ok() || std::env::var("RUMOCA_SIM_INTROSPECT").is_ok()
-}
-
-#[inline]
-fn trace_timer_start_if(trace: bool) -> Option<Instant> {
-    if !trace {
-        return None;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Some(Instant::now())
-    }
-}
-
-#[inline]
-fn trace_timer_elapsed_seconds(start: Option<Instant>) -> f64 {
-    start.map_or(0.0, |t0| t0.elapsed().as_secs_f64())
 }
 
 // ── Phase A: Boundary Resolution ────────────────────────────────────────

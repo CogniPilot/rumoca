@@ -16,6 +16,38 @@ A consistent PR review process ensures:
 
 ## Review Checklist
 
+### 0. Code Size Budget (Required)
+
+Every PR must include an explicit size statement in the PR body:
+
+- `production_lines_added`: lines added to implementation code
+- `production_lines_deleted`: lines removed from implementation code
+- `test_lines_added`: lines added to tests
+- `test_lines_deleted`: lines removed from tests
+- `net_added_lines`: production + test net lines
+- `files_touched`: changed files count
+- `public_items_added`: `pub` item count increase
+- `public_items_removed`: `pub` item count decrease
+
+Recommended line-diff command (for file/line deltas):
+
+```bash
+git diff --numstat origin/main...HEAD
+```
+
+Public API item deltas (`public_items_added` / `public_items_removed`) should be
+reported with a separate tool or script (e.g., public API comparison in CI or a
+manual check) and included with the PR body.
+
+If `net_added_lines > 0`, the PR must include a justification and compression plan:
+
+- why each added major block was not removable,
+- which alternatives were evaluated,
+- what duplicate or legacy code was removed or replaced,
+- the planned follow-up cleanup if any lines remain uncompacted.
+
+PRs for refactors or compatibility updates should target net-negative or near-zero net lines unless a migration rationale is written in review notes.
+
 ### 1. Specification Compliance
 
 All changes MUST comply with existing specifications in `spec/`:
@@ -127,7 +159,34 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 - Are there too many parameters (consider a struct)?
 - Does the change comply with `SPEC_0021` module decomposition rules (no `include!(...)` complexity/file-size bypass)?
 
-#### 4.3 Code Clarity
+#### 4.3 Code Size Compression (mandatory for AI-assisted work)
+
+For each feature branch, reviewers must verify a compression pass happened after initial implementation.
+
+- any newly added abstraction is removing measurable duplication or replacing a wider block of code,
+- prefer fewer modules and fewer public exported concepts,
+- do not add abstraction layers unless they encode a real invariant or remove duplication,
+- prefer fewer modules and fewer exported concepts where possible,
+- avoid retaining compatibility code or legacy branches unless behind an explicit migration plan,
+- collapse duplicated adapters and helper wrappers when possible,
+- no one-time helper/ wrapper functions unless they materially improve correctness,
+- no trait/new typeclass added unless there are at least 2 real implementations,
+- no unit test for trivial pass-through behavior,
+- no speculative future-proofing or "extensibility" hooks,
+- no old/new code paths kept side-by-side without an explicit deprecation/removal policy,
+- dead code is removed at first pass, not left for later.
+
+Review questions:
+
+- Can this be done with fewer modules and fewer exported concepts?
+- Can this helper be deleted or merged into an existing path?
+- Can this be done by deleting/merging code in existing modules instead of adding new concepts?
+- Can this helper be inlined because it is single-use and not correctness-critical?
+- Can two newly introduced abstraction points be collapsed into one?
+- Are tests mostly regression and behavior-focused rather than pass-through assertions?
+- If a new public API is introduced, was reducing public surface considered first?
+
+#### 4.4 Code Clarity
 
 **Required:**
 - Clear, descriptive function names
@@ -249,6 +308,7 @@ Before requesting review:
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
 - [ ] `cargo test --workspace` passes
+- [ ] PR size budget submitted (`production_lines_added/deleted`, `test_lines_added/deleted`, `net_added_lines`)
 - [ ] MSL balance test shows no regression (for compiler changes)
 - [ ] For compiler/simulator behavior changes: ran `balance_pipeline::balance_pipeline_core::test_msl_all`
 - [ ] For compiler/simulator behavior changes: `target/msl/results/msl_results.json` `git_commit` matches `git rev-parse HEAD`
@@ -258,12 +318,22 @@ Before requesting review:
 - [ ] For compiler/simulator behavior changes: if baseline changed, promoted with `rum repo msl promote-quality-baseline`
 - [ ] For coverage-trim or coverage-gate changes: followed `spec/SPEC_0030_COVERAGE_TRIM_PROCESS.md` (run, report, gate, and explicit promotion/rollback policy)
 - [ ] MSL metrics are compared against `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json`
+
+### 2. Reviewer Checklist
+
+#### 2.1 Code Size Reviewer Checklist
+
+- [ ] PR body contains all required size-budget fields.
+- [ ] If `net_added_lines` is positive, reviewer accepted justification and explicit compression follow-up.
+- [ ] New abstraction or helper usage is justified by measurable duplication reduction.
+- [ ] Old behavior paths were removed when equivalent new paths exist.
+- [ ] Test additions align with user-facing behavior, regression, or parser/semantic correctness.
 - [ ] No unattributed copied code is introduced
 - [ ] Any external material is attributed and verified Apache-2.0 compatible
 - [ ] Self-review completed
 - [ ] CHANGELOG updated (if applicable)
 
-### 2. Reviewer Checklist
+### 3. Reviewer's General Checklist
 
 During review:
 - [ ] Specification compliance verified
@@ -280,7 +350,7 @@ During review:
 - [ ] Reviewed for unattributed copied code or unclear provenance
 - [ ] External material (if any) is attributed and Apache-2.0 compatible
 
-### 3. Merge Requirements
+### 4. Merge Requirements
 
 - At least one approving review
 - All CI checks passing
@@ -288,7 +358,7 @@ During review:
 - Branch is up-to-date with target
 - Provenance and Apache-2.0 license compliance confirmed
 
-### 4. Git Commit Guidelines
+### 5. Git Commit Guidelines
 
 **Signed-off-by Requirement:**
 - All commits MUST be signed off using `git commit -s`

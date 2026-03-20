@@ -13,7 +13,7 @@ use rumoca_ir_flat as flat;
 
 use crate::Context;
 use crate::equations::build_qualified_name;
-use crate::path_utils::{find_last_top_level_dot, normalize_path_without_indices};
+use crate::path_utils::{find_last_top_level_dot, split_path_with_indices, strip_array_index};
 
 /// Result of the VCG spanning tree computation.
 pub(crate) struct VcgResult {
@@ -335,21 +335,11 @@ fn collect_vcg_node_set<'a>(
 /// Fast lookup index for VCG node path resolution.
 struct VcgNodeIndex<'a> {
     exact: FxHashSet<&'a str>,
-    by_normalized: FxHashMap<String, Vec<&'a str>>,
 }
 
 fn build_vcg_node_index<'a>(vcg_nodes: &FxHashSet<&'a str>) -> VcgNodeIndex<'a> {
-    let mut by_normalized: FxHashMap<String, Vec<&'a str>> = FxHashMap::default();
-    for &node in vcg_nodes {
-        by_normalized
-            .entry(normalize_vcg_path(node))
-            .or_default()
-            .push(node);
-    }
-
     VcgNodeIndex {
         exact: vcg_nodes.iter().copied().collect(),
-        by_normalized,
     }
 }
 
@@ -471,12 +461,13 @@ fn resolve_vcg_nodes_for_endpoint(endpoint: &str, node_index: &VcgNodeIndex<'_>)
         return vec![endpoint.to_string()];
     }
 
-    let normalized = normalize_vcg_path(endpoint);
     node_index
-        .by_normalized
-        .get(&normalized)
-        .map(|nodes| nodes.iter().map(|node| (*node).to_string()).collect())
-        .unwrap_or_default()
+        .exact
+        .iter()
+        .copied()
+        .filter(|candidate| vcg_endpoint_matches_node(endpoint, candidate))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Return an undirected edge key for deduplicating optional edges.
@@ -488,9 +479,23 @@ fn normalize_edge_key(a: &str, b: &str) -> (String, String) {
     }
 }
 
-/// Normalize a path by removing bracket indices (`[i]`, `[1]`, ...).
-fn normalize_vcg_path(path: &str) -> String {
-    normalize_path_without_indices(path)
+/// MLS §9.4: VCG nodes are connector-instance specific. Fallback endpoint
+/// resolution may wildcard omitted array indices, but it must preserve any
+/// indices explicitly named in the connect/root/branch endpoint.
+fn vcg_endpoint_matches_node(endpoint: &str, candidate: &str) -> bool {
+    let endpoint_parts = split_path_with_indices(endpoint);
+    let candidate_parts = split_path_with_indices(candidate);
+    if endpoint_parts.len() != candidate_parts.len() {
+        return false;
+    }
+
+    endpoint_parts
+        .into_iter()
+        .zip(candidate_parts)
+        .all(|(endpoint_part, candidate_part)| {
+            strip_array_index(endpoint_part) == strip_array_index(candidate_part)
+                && (!endpoint_part.contains('[') || endpoint_part == candidate_part)
+        })
 }
 
 /// Extract bracket index signature from a path: `a[1].b[2].R` -> `1|2`.
@@ -896,6 +901,30 @@ mod tests {
             "source[2].pin_p.reference".to_string(),
             "resistor[2].pin_p.reference".to_string()
         )));
+    }
+
+    #[test]
+    fn test_resolve_vcg_nodes_for_endpoint_preserves_explicit_indices() {
+        let vcg_nodes: FxHashSet<&str> = [
+            "adapter[1].pin[1].reference",
+            "adapter[1].pin[2].reference",
+            "adapter[2].pin[1].reference",
+            "adapter[2].pin[2].reference",
+        ]
+        .into_iter()
+        .collect();
+        let node_index = build_vcg_node_index(&vcg_nodes);
+
+        let mut resolved = resolve_vcg_nodes_for_endpoint("adapter[1].pin.reference", &node_index);
+        resolved.sort();
+
+        assert_eq!(
+            resolved,
+            vec![
+                "adapter[1].pin[1].reference".to_string(),
+                "adapter[1].pin[2].reference".to_string(),
+            ]
+        );
     }
 
     #[test]

@@ -115,9 +115,12 @@ pub(super) fn maybe_run_simulation(
         return None;
     }
     ctx.sim_attempted.fetch_add(1, Ordering::Relaxed);
-    let mut settings = simulation_settings_from_result(result);
-    if let Some(budget_secs) = remaining_budget_secs {
-        if budget_secs <= 0.0 {
+    let settings = match gate_simulation_settings_by_compile_budget(
+        simulation_settings_from_result(result),
+        remaining_budget_secs,
+    ) {
+        Ok(settings) => settings,
+        Err(_) => {
             return Some(MslSimModelResult {
                 name: name.to_string(),
                 status: SimStatus::Timeout,
@@ -132,8 +135,7 @@ pub(super) fn maybe_run_simulation(
                 sim_trace_error: None,
             });
         }
-        settings.timeout_seconds = Some(budget_secs);
-    }
+    };
     Some(try_simulate_dae_with_settings(&result.dae, name, &settings))
 }
 
@@ -185,6 +187,7 @@ pub(super) fn convert_compile_result_entry(
         model_name: name,
         compile_outcome,
         remaining_budget_secs,
+        compile_seconds,
     } = entry;
 
     let sim_result = if let Some(result) = compile_outcome.success_result() {
@@ -196,6 +199,7 @@ pub(super) fn convert_compile_result_entry(
     };
 
     let mut model_result = convert_compile_outcome(name, compile_outcome);
+    model_result.compile_seconds = Some(compile_seconds);
     if let Some(sim) = sim_result {
         let done = ctx.sim_completed.fetch_add(1, Ordering::Relaxed) + 1;
         update_live_sim_status(&sim, ctx);

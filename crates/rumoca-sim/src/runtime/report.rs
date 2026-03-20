@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use rumoca_core::{OptionalTimer, maybe_elapsed_seconds, maybe_start_timer_if};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeTraceContext {
@@ -6,7 +8,7 @@ pub struct RuntimeTraceContext {
     pub solver: &'static str,
     pub regularization: f64,
     pub profile: &'static str,
-    start: Option<Instant>,
+    start: OptionalTimer,
 }
 
 impl RuntimeTraceContext {
@@ -21,27 +23,12 @@ impl RuntimeTraceContext {
             solver,
             regularization,
             profile,
-            start: trace_instant_now_if(enabled),
+            start: maybe_start_timer_if(enabled),
         }
     }
 
     pub fn elapsed_secs(self) -> f64 {
-        self.start.map_or(0.0, |t0| t0.elapsed().as_secs_f64())
-    }
-}
-
-#[inline]
-fn trace_instant_now_if(enabled: bool) -> Option<Instant> {
-    if !enabled {
-        return None;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Some(Instant::now())
+        maybe_elapsed_seconds(self.start)
     }
 }
 
@@ -120,7 +107,7 @@ pub fn trace_runtime_progress(
     ctx: RuntimeTraceContext,
     snap: RuntimeProgressSnapshot,
     t_limit: f64,
-    last_log: &mut Option<Instant>,
+    last_log: &mut OptionalTimer,
 ) {
     if !ctx.enabled {
         return;
@@ -145,7 +132,7 @@ pub fn trace_runtime_progress(
         snap.output_idx,
         snap.output_len
     );
-    *last_log = trace_instant_now_if(true);
+    *last_log = maybe_start_timer_if(true);
 }
 
 pub fn trace_runtime_done(ctx: RuntimeTraceContext, steps: usize, root_hits: usize, final_t: f64) {

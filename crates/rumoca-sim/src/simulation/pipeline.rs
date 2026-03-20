@@ -1,5 +1,4 @@
-use std::time::Instant;
-
+use rumoca_core::{maybe_elapsed_seconds, maybe_start_timer_if};
 use rumoca_ir_dae as dae;
 
 pub type MassMatrix = Vec<Vec<f64>>;
@@ -19,33 +18,13 @@ where
     if trace {
         eprintln!("[sim-trace] prepare phase start: {name}");
     }
-    let t0 = trace_timer_start_if(trace);
+    let t0 = maybe_start_timer_if(trace);
     let result = step();
     if trace {
         eprintln!(
             "[sim-trace] prepare phase done: {name} elapsed={:.3}s",
-            trace_timer_elapsed_seconds(t0)
+            maybe_elapsed_seconds(t0)
         );
     }
     result
-}
-
-#[inline]
-fn trace_timer_start_if(trace: bool) -> Option<Instant> {
-    if !trace {
-        return None;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Some(Instant::now())
-    }
-}
-
-#[inline]
-fn trace_timer_elapsed_seconds(start: Option<Instant>) -> f64 {
-    start.map_or(0.0, |t0| t0.elapsed().as_secs_f64())
 }

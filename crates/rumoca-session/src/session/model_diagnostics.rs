@@ -24,6 +24,18 @@ pub(super) fn model_diagnostics_for_tree(
     }
 }
 
+pub(super) fn merge_model_diagnostics(
+    mut lhs: ModelDiagnostics,
+    rhs: ModelDiagnostics,
+) -> ModelDiagnostics {
+    lhs.diagnostics.extend(rhs.diagnostics);
+    lhs.global_resolution_failure |= rhs.global_resolution_failure;
+    if lhs.source_map.is_none() {
+        lhs.source_map = rhs.source_map;
+    }
+    lhs
+}
+
 pub(super) fn synthesized_inner_warning(
     synthesized_inners: &[String],
     primary_label: PrimaryLabel,

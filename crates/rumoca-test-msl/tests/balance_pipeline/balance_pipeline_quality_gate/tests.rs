@@ -2,6 +2,7 @@ use super::*;
 use serde_json::Value;
 use serde_json::json;
 use std::any::Any;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -208,6 +209,16 @@ fn trace_accuracy_regressed() -> MslTraceAccuracyStatsBaseline {
     }
 }
 
+fn trace_accuracy_small_channel_drift() -> MslTraceAccuracyStatsBaseline {
+    MslTraceAccuracyStatsBaseline {
+        bad_channels_total: Some(5),
+        severe_channels_total: Some(1),
+        bad_channels_percent: Some(8.9),
+        severe_channels_percent: Some(0.4),
+        ..trace_accuracy_baseline()
+    }
+}
+
 #[test]
 fn runtime_ratio_regression_reason_triggers_on_large_drop() {
     let baseline = MslQualityBaseline {
@@ -307,14 +318,43 @@ fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_excee
     assert!(
         reasons
             .iter()
-            .any(|reason| reason.contains("trace bad channel count regressed")),
-        "expected bad-channel regression reason, got: {reasons:?}"
+            .any(|reason| reason.contains("trace bad channel share regressed")),
+        "expected bad-channel share regression reason, got: {reasons:?}"
     );
     assert!(
         reasons
             .iter()
-            .any(|reason| reason.contains("trace severe channel count regressed")),
-        "expected severe-channel regression reason, got: {reasons:?}"
+            .any(|reason| reason.contains("trace severe channel share regressed")),
+        "expected severe-channel share regression reason, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn trace_channel_share_tolerances_allow_small_runner_drift() {
+    let baseline = MslQualityBaseline {
+        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: Some(trace_accuracy_small_channel_drift()),
+    };
+
+    let mut reasons = Vec::new();
+    push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons
+            .iter()
+            .all(|reason| !reason.contains("trace bad channel")),
+        "unexpected bad-channel regression reason: {reasons:?}"
+    );
+    assert!(
+        reasons
+            .iter()
+            .all(|reason| !reason.contains("trace severe channel")),
+        "unexpected severe-channel regression reason: {reasons:?}"
     );
 }
 
@@ -381,6 +421,133 @@ fn simulation_parity_cache_requires_runtime_and_trace_metrics() {
 }
 
 #[test]
+fn sanitize_simulation_parity_cache_payload_strips_rumoca_metrics() {
+    let payload = json!({
+        "runtime_comparison": {
+            "ratio_stats": {
+                "system_ratio_both_success": { "sample_count": 5 },
+                "wall_ratio_both_success": { "sample_count": 5 }
+            }
+        },
+        "trace_comparison": {
+            "models_compared": 7
+        },
+        "models": {
+            "A": {
+                "status": "success",
+                "trace_file": "sim_traces/omc/A.json",
+                "rumoca_status": "sim_ok",
+                "rumoca_sim_seconds": 1.0,
+                "rumoca_sim_wall_seconds": 1.1,
+                "rumoca_trace_file": "sim_traces/rumoca/A.json",
+                "rumoca_trace_error": null
+            }
+        }
+    });
+
+    let sanitized = sanitize_simulation_parity_cache_payload(payload);
+    assert!(
+        sanitized.get("runtime_comparison").is_none(),
+        "simulation parity cache should not preserve runtime comparison stats"
+    );
+    assert!(
+        sanitized.get("trace_comparison").is_none(),
+        "simulation parity cache should not preserve trace comparison stats"
+    );
+    let model = sanitized
+        .get("models")
+        .and_then(Value::as_object)
+        .and_then(|models| models.get("A"))
+        .and_then(Value::as_object)
+        .expect("sanitized cache should preserve OMC model entry");
+    assert_eq!(model.get("status").and_then(Value::as_str), Some("success"));
+    assert_eq!(
+        model.get("trace_file").and_then(Value::as_str),
+        Some("sim_traces/omc/A.json")
+    );
+    assert!(
+        model.get("rumoca_status").is_none(),
+        "cache should strip Rumoca status"
+    );
+    assert!(
+        model.get("rumoca_sim_seconds").is_none(),
+        "cache should strip Rumoca runtime"
+    );
+    assert!(
+        model.get("rumoca_sim_wall_seconds").is_none(),
+        "cache should strip Rumoca wall runtime"
+    );
+    assert!(
+        model.get("rumoca_trace_file").is_none(),
+        "cache should strip Rumoca trace file"
+    );
+    assert!(
+        model.get("rumoca_trace_error").is_none(),
+        "cache should strip Rumoca trace error"
+    );
+}
+
+#[test]
+fn materialize_simulation_parity_cache_entry_strips_stale_rumoca_metrics() {
+    let temp = tempdir().expect("tempdir");
+    let cache_path = temp.path().join("cache.json");
+    let active_path = temp.path().join("active.json");
+    fs::write(
+        &cache_path,
+        serde_json::to_vec_pretty(&json!({
+            "runtime_comparison": {
+                "ratio_stats": {
+                    "system_ratio_both_success": { "sample_count": 5 },
+                    "wall_ratio_both_success": { "sample_count": 5 }
+                }
+            },
+            "trace_comparison": {
+                "models_compared": 7
+            },
+            "models": {
+                "A": {
+                    "status": "success",
+                    "trace_file": "sim_traces/omc/A.json",
+                    "rumoca_status": "sim_ok",
+                    "rumoca_trace_file": "sim_traces/rumoca/A.json"
+                }
+            }
+        }))
+        .expect("serialize cache payload"),
+    )
+    .expect("write cache payload");
+
+    materialize_simulation_parity_cache_entry(&cache_path, &active_path)
+        .expect("materialize sanitized cache");
+
+    let active: Value = serde_json::from_slice(&fs::read(&active_path).expect("read active"))
+        .expect("parse active payload");
+    assert!(
+        active.get("runtime_comparison").is_none(),
+        "active simulation reference should not inherit cached runtime comparison"
+    );
+    assert!(
+        active.get("trace_comparison").is_none(),
+        "active simulation reference should not inherit cached trace comparison"
+    );
+    let model = active
+        .get("models")
+        .and_then(Value::as_object)
+        .and_then(|models| models.get("A"))
+        .and_then(Value::as_object)
+        .expect("materialized active payload should preserve model entry");
+    assert_eq!(model.get("status").and_then(Value::as_str), Some("success"));
+    assert!(
+        model.get("rumoca_status").is_none(),
+        "active simulation reference should drop cached Rumoca status"
+    );
+    assert!(
+        model.get("rumoca_trace_file").is_none(),
+        "active simulation reference should drop cached Rumoca trace path"
+    );
+}
+
+#[test]
 fn parity_total_models_guard_checks_stale_and_matching_counts() {
     let path = PathBuf::from("/tmp/omc_simulation_reference.json");
     let stale = MslParityGateInput {
@@ -440,4 +607,112 @@ fn parity_target_set_cache_key_changes_with_models_or_versions() {
     assert_ne!(base, diff_models);
     assert_ne!(base, diff_msl);
     assert_ne!(base, diff_omc);
+}
+
+#[test]
+fn simulation_parity_cache_key_changes_with_policy() {
+    let base = simulation_parity_cache_key(
+        &["A".to_string(), "B".to_string()],
+        "4.1.0",
+        "OpenModelica 1.26.1",
+        SimulationParityCachePolicy {
+            batch_timeout_seconds: 600,
+            use_experiment_stop_time: true,
+            stop_time_override: None,
+        },
+    );
+    let diff_timeout = simulation_parity_cache_key(
+        &["A".to_string(), "B".to_string()],
+        "4.1.0",
+        "OpenModelica 1.26.1",
+        SimulationParityCachePolicy {
+            batch_timeout_seconds: 900,
+            use_experiment_stop_time: true,
+            stop_time_override: None,
+        },
+    );
+    let diff_override = simulation_parity_cache_key(
+        &["A".to_string(), "B".to_string()],
+        "4.1.0",
+        "OpenModelica 1.26.1",
+        SimulationParityCachePolicy {
+            batch_timeout_seconds: 600,
+            use_experiment_stop_time: false,
+            stop_time_override: Some(30.0),
+        },
+    );
+    assert_ne!(base, diff_timeout);
+    assert_ne!(base, diff_override);
+}
+
+#[test]
+fn simulation_parity_cache_matches_rejects_mismatched_policy() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("omc_simulation_reference.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&json!({
+            "msl_version": "4.1.0",
+            "omc_version": "OpenModelica 1.26.1",
+            "stop_time": 10.0,
+            "use_experiment_stop_time": true,
+            "timing": {
+                "batch_timeout_seconds": 600
+            },
+            "models": {
+                "A": { "status": "success" },
+                "B": { "status": "success" }
+            }
+        }))
+        .expect("serialize cache payload"),
+    )
+    .expect("write cache payload");
+
+    let matching = SimulationParityCachePolicy {
+        batch_timeout_seconds: 600,
+        use_experiment_stop_time: true,
+        stop_time_override: None,
+    };
+    let mismatched_timeout = SimulationParityCachePolicy {
+        batch_timeout_seconds: 900,
+        ..matching
+    };
+    let mismatched_override = SimulationParityCachePolicy {
+        batch_timeout_seconds: 600,
+        use_experiment_stop_time: false,
+        stop_time_override: Some(30.0),
+    };
+    assert!(
+        simulation_parity_cache_matches(
+            &path,
+            &["A".to_string(), "B".to_string()],
+            "4.1.0",
+            "OpenModelica 1.26.1",
+            matching,
+        )
+        .expect("matching policy should parse"),
+        "matching simulation policy should reuse cache entry"
+    );
+    assert!(
+        !simulation_parity_cache_matches(
+            &path,
+            &["A".to_string(), "B".to_string()],
+            "4.1.0",
+            "OpenModelica 1.26.1",
+            mismatched_timeout,
+        )
+        .expect("mismatched timeout should parse"),
+        "batch-timeout drift should invalidate cache entry"
+    );
+    assert!(
+        !simulation_parity_cache_matches(
+            &path,
+            &["A".to_string(), "B".to_string()],
+            "4.1.0",
+            "OpenModelica 1.26.1",
+            mismatched_override,
+        )
+        .expect("mismatched override should parse"),
+        "stop-time policy drift should invalidate cache entry"
+    );
 }

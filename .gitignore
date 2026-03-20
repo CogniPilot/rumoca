@@ -13,9 +13,7 @@ _native.cpython*
 *.so
 .claude/
 .vscode/
-dev/*
-!dev/editor_lsp_efficiency_roadmap.md
-!dev/cli_streamlining_roadmap.md
+dev/
 pkg/
 perf.data*
 flamegraph.svg
@@ -35,3 +33,7 @@ examples/.rumoca/results
 
 # Working notes (not for commit)
 crates/rumoca/tests/CASADI_UPSTREAM_*.md
+.vscode-test
+editors/vscode/node_modules
+editors/vscode/media/vendor/
+editors/wasm/node_modules

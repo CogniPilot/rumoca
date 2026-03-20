@@ -2,7 +2,7 @@ use super::*;
 
 impl Context {
     fn top_level_suffix_candidates(reference: &str) -> Vec<String> {
-        let parts = crate::path_utils::parse_path_with_indices(reference);
+        let parts = crate::path_utils::split_path_with_indices(reference);
         (1..parts.len())
             .map(|start| parts[start..].join("."))
             .collect()
@@ -777,7 +777,7 @@ impl Context {
         // Check all possible prefixes from longest to shortest
         // We prefer prefix-based resolution over exact matches because field-level
         // exact matches may have incorrect targets (qualified with wrong parent).
-        let parts = crate::path_utils::parse_path_with_indices(name);
+        let parts = crate::path_utils::split_path_with_indices(name);
         for i in (1..parts.len()).rev() {
             let prefix = parts[..i].join(".");
             if let Some(alias_target) = self.record_aliases.get(&prefix) {

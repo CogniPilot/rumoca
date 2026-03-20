@@ -34,6 +34,10 @@ pub(super) const TRACE_NEAR_PERCENT_DROP_TOLERANCE_PP: f64 = 3.0;
 pub(super) const TRACE_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
 /// Hard guard for models that contain any deviation channel (absolute percentage points).
 pub(super) const TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 = 3.0;
+/// Allowed increase in bad-channel share (absolute percentage points).
+pub(super) const TRACE_BAD_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 1.0;
+/// Allowed increase in severe-channel share (absolute percentage points).
+pub(super) const TRACE_SEVERE_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 0.5;
 /// Allowed drop in compared trace-model count from baseline.
 pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
@@ -637,6 +641,60 @@ fn parity_target_set_cache_key(
     format!("{hash:016x}")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SimulationParityCachePolicy {
+    batch_timeout_seconds: u64,
+    use_experiment_stop_time: bool,
+    stop_time_override: Option<f64>,
+}
+
+fn simulation_stop_time_override() -> Option<f64> {
+    std::env::var("RUMOCA_MSL_SIM_STOP_TIME_OVERRIDE")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn current_simulation_parity_cache_policy() -> SimulationParityCachePolicy {
+    let stop_time_override = simulation_stop_time_override();
+    SimulationParityCachePolicy {
+        batch_timeout_seconds: OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS,
+        use_experiment_stop_time: stop_time_override.is_none(),
+        stop_time_override,
+    }
+}
+
+fn simulation_parity_cache_key(
+    target_models: &[String],
+    msl_version: &str,
+    omc_version: &str,
+    policy: SimulationParityCachePolicy,
+) -> String {
+    let normalized_models = normalize_model_names(target_models.to_vec());
+    let mut hash = 0_u64;
+    hash = fnv1a64_update(hash, canonical_msl_version(msl_version).as_bytes());
+    hash = fnv1a64_update(hash, &[0xff]);
+    hash = fnv1a64_update(hash, canonical_omc_version(omc_version).as_bytes());
+    hash = fnv1a64_update(hash, &[0xfe]);
+    hash = fnv1a64_update(hash, normalized_models.len().to_string().as_bytes());
+    hash = fnv1a64_update(hash, &[0xfd]);
+    for model in &normalized_models {
+        hash = fnv1a64_update(hash, model.as_bytes());
+        hash = fnv1a64_update(hash, &[0x00]);
+    }
+    hash = fnv1a64_update(hash, &[0xfc]);
+    hash = fnv1a64_update(hash, policy.batch_timeout_seconds.to_string().as_bytes());
+    hash = fnv1a64_update(hash, &[0xfb]);
+    hash = fnv1a64_update(hash, &[u8::from(policy.use_experiment_stop_time)]);
+    hash = fnv1a64_update(hash, &[0xfa]);
+    if let Some(stop_time_override) = policy.stop_time_override {
+        hash = fnv1a64_update(hash, stop_time_override.to_string().as_bytes());
+    } else {
+        hash = fnv1a64_update(hash, b"none");
+    }
+    format!("{hash:016x}")
+}
+
 fn parity_cache_entry_path(kind: &str, cache_key: &str) -> PathBuf {
     omc_parity_cache_dir()
         .join(kind)
@@ -665,6 +723,105 @@ fn materialize_parity_cache_entry(
         ))
     })?;
     Ok(())
+}
+
+fn materialize_simulation_parity_cache_entry(
+    cache_path: &Path,
+    active_path: &Path,
+) -> io::Result<()> {
+    if !cache_path.is_file() {
+        return Err(io::Error::other(format!(
+            "missing simulation parity cache entry '{}'",
+            cache_path.display()
+        )));
+    }
+    let payload: serde_json::Value =
+        serde_json::from_reader(File::open(cache_path)?).map_err(|error| {
+            io::Error::other(format!(
+                "failed to parse simulation parity cache '{}' for materialization: {error}",
+                cache_path.display()
+            ))
+        })?;
+    if let Some(parent) = active_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let sanitized = sanitize_simulation_parity_cache_payload(payload);
+    fs::write(
+        active_path,
+        serde_json::to_vec_pretty(&sanitized).map_err(|error| {
+            io::Error::other(format!(
+                "failed to serialize sanitized simulation parity cache '{}': {error}",
+                active_path.display()
+            ))
+        })?,
+    )
+    .map_err(|error| {
+        io::Error::other(format!(
+            "failed to materialize sanitized simulation parity cache '{}' -> '{}': {error}",
+            cache_path.display(),
+            active_path.display()
+        ))
+    })
+}
+
+fn sanitize_simulation_parity_cache_payload(mut payload: serde_json::Value) -> serde_json::Value {
+    let Some(root) = payload.as_object_mut() else {
+        return payload;
+    };
+    root.remove("runtime_comparison");
+    root.remove("trace_comparison");
+
+    let Some(models) = root
+        .get_mut("models")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return payload;
+    };
+
+    for model in models.values_mut() {
+        let Some(model) = model.as_object_mut() else {
+            continue;
+        };
+        model.remove("rumoca_status");
+        model.remove("rumoca_sim_seconds");
+        model.remove("rumoca_sim_wall_seconds");
+        model.remove("rumoca_trace_file");
+        model.remove("rumoca_trace_error");
+    }
+    payload
+}
+
+fn persist_simulation_parity_cache_entry(active_path: &Path, cache_path: &Path) -> io::Result<()> {
+    if !active_path.is_file() {
+        return Ok(());
+    }
+    let payload: serde_json::Value =
+        serde_json::from_reader(File::open(active_path)?).map_err(|error| {
+            io::Error::other(format!(
+                "failed to parse simulation parity reference '{}' for cache persistence: {error}",
+                active_path.display()
+            ))
+        })?;
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let sanitized = sanitize_simulation_parity_cache_payload(payload);
+    fs::write(
+        cache_path,
+        serde_json::to_vec_pretty(&sanitized).map_err(|error| {
+            io::Error::other(format!(
+                "failed to serialize sanitized simulation parity cache '{}': {error}",
+                cache_path.display()
+            ))
+        })?,
+    )
+    .map_err(|error| {
+        io::Error::other(format!(
+            "failed to persist simulation parity cache '{}' -> '{}': {error}",
+            active_path.display(),
+            cache_path.display()
+        ))
+    })
 }
 
 fn persist_parity_cache_entry(
@@ -746,6 +903,46 @@ pub(super) fn parity_cache_matches_targets_and_msl(
         return Ok(false);
     };
     Ok(cached_models == normalize_model_names(target_models.to_vec()))
+}
+
+fn simulation_parity_cache_matches(
+    path: &Path,
+    target_models: &[String],
+    msl_version: &str,
+    omc_version: &str,
+    policy: SimulationParityCachePolicy,
+) -> io::Result<bool> {
+    if !parity_cache_matches_targets_and_msl(path, target_models, msl_version, omc_version)? {
+        return Ok(false);
+    }
+    let payload: serde_json::Value =
+        serde_json::from_reader(File::open(path)?).map_err(|error| {
+            io::Error::other(format!(
+                "invalid simulation parity JSON ({}): {error}",
+                path.display()
+            ))
+        })?;
+    let batch_timeout_seconds = payload
+        .get("timing")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|timing| timing.get("batch_timeout_seconds"))
+        .and_then(serde_json::Value::as_u64);
+    if batch_timeout_seconds != Some(policy.batch_timeout_seconds) {
+        return Ok(false);
+    }
+    let use_experiment_stop_time = payload
+        .get("use_experiment_stop_time")
+        .and_then(serde_json::Value::as_bool);
+    if use_experiment_stop_time != Some(policy.use_experiment_stop_time) {
+        return Ok(false);
+    }
+    let Some(stop_time_override) = policy.stop_time_override else {
+        return Ok(true);
+    };
+    let stop_time = payload.get("stop_time").and_then(serde_json::Value::as_f64);
+    Ok(stop_time.is_some_and(|value| {
+        (value - stop_time_override).abs() <= f64::EPSILON.max(stop_time_override.abs() * 1e-12)
+    }))
 }
 
 pub(super) fn run_msl_tool_command<I, S>(exe: &Path, args: I) -> io::Result<()>
@@ -934,43 +1131,42 @@ fn ensure_simulation_parity_reference(
         "RUMOCA_MSL_STAGE_TIMEOUT_PARITY_SIM_REF_SECS",
         1800,
     );
+    let sim_policy = current_simulation_parity_cache_policy();
     let omc_simulation_reference = omc_simulation_reference_path();
-    let sim_cache_key =
-        parity_target_set_cache_key(sim_targets, &summary.msl_version, &context.omc_version);
+    let sim_cache_key = simulation_parity_cache_key(
+        sim_targets,
+        &summary.msl_version,
+        &context.omc_version,
+        sim_policy,
+    );
     let sim_cache_entry = parity_cache_entry_path("simulation", &sim_cache_key);
 
-    let keyed_cache_matches = parity_cache_matches_targets_and_msl(
+    let keyed_cache_matches = simulation_parity_cache_matches(
         &sim_cache_entry,
         sim_targets,
         &summary.msl_version,
         &context.omc_version,
-    )? && simulation_parity_cache_has_required_metrics(&sim_cache_entry)?;
+        sim_policy,
+    )?;
     if !force_refresh && keyed_cache_matches {
-        materialize_parity_cache_entry(
-            &sim_cache_entry,
-            &omc_simulation_reference,
-            "simulation reference",
-        )?;
+        materialize_simulation_parity_cache_entry(&sim_cache_entry, &omc_simulation_reference)?;
         println!(
             "MSL parity cache hit: reusing {} via keyed cache {} (refreshing Rumoca trace comparison via --resume)",
             omc_simulation_reference.display(),
             sim_cache_entry.display()
         );
         run_simulation_parity_reference_command(context, sim_targets_path, true)?;
-        persist_parity_cache_entry(
-            &omc_simulation_reference,
-            &sim_cache_entry,
-            "simulation reference",
-        )?;
+        persist_simulation_parity_cache_entry(&omc_simulation_reference, &sim_cache_entry)?;
         return Ok(());
     }
 
     let canonical_cache_matches =
-        parity_cache_matches_targets_and_msl(
+        simulation_parity_cache_matches(
             &omc_simulation_reference,
             sim_targets,
             &summary.msl_version,
             &context.omc_version,
+            sim_policy,
         )? && simulation_parity_cache_has_required_metrics(&omc_simulation_reference)?;
     if force_refresh || !canonical_cache_matches {
         println!(
@@ -985,11 +1181,7 @@ fn ensure_simulation_parity_reference(
         );
         run_simulation_parity_reference_command(context, sim_targets_path, true)?;
     }
-    persist_parity_cache_entry(
-        &omc_simulation_reference,
-        &sim_cache_entry,
-        "simulation reference",
-    )?;
+    persist_simulation_parity_cache_entry(&omc_simulation_reference, &sim_cache_entry)?;
     Ok(())
 }
 
@@ -1360,8 +1552,16 @@ fn trace_bad_channels_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<usi
     stats.bad_channels_total
 }
 
+fn trace_bad_channels_percent(stats: &MslTraceAccuracyStatsBaseline) -> Option<f64> {
+    stats.bad_channels_percent
+}
+
 fn trace_severe_channels_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<usize> {
     stats.severe_channels_total
+}
+
+fn trace_severe_channels_percent(stats: &MslTraceAccuracyStatsBaseline) -> Option<f64> {
+    stats.severe_channels_percent
 }
 
 fn trace_violation_mass_total(stats: &MslTraceAccuracyStatsBaseline) -> Option<f64> {
@@ -1434,27 +1634,25 @@ pub(super) fn push_trace_regression_reasons(
             }
         }
 
-        if let (Some(current_bad), Some(baseline_bad)) = (
+        push_trace_channel_regression_reason(
+            reasons,
+            "bad",
+            trace_bad_channels_percent(current_trace),
+            trace_bad_channels_percent(baseline_trace),
+            TRACE_BAD_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP,
             trace_bad_channels_total(current_trace),
             trace_bad_channels_total(baseline_trace),
-        ) && current_bad > baseline_bad
-        {
-            reasons.push(format!(
-                "trace bad channel count regressed: current={} > baseline={}",
-                current_bad, baseline_bad
-            ));
-        }
+        );
 
-        if let (Some(current_severe), Some(baseline_severe)) = (
+        push_trace_channel_regression_reason(
+            reasons,
+            "severe",
+            trace_severe_channels_percent(current_trace),
+            trace_severe_channels_percent(baseline_trace),
+            TRACE_SEVERE_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP,
             trace_severe_channels_total(current_trace),
             trace_severe_channels_total(baseline_trace),
-        ) && current_severe > baseline_severe
-        {
-            reasons.push(format!(
-                "trace severe channel count regressed: current={} > baseline={}",
-                current_severe, baseline_severe
-            ));
-        }
+        );
 
         if current_trace.models_compared + TRACE_MODELS_COMPARED_ALLOWED_DROP
             < baseline_trace.models_compared
@@ -1466,6 +1664,34 @@ pub(super) fn push_trace_regression_reasons(
                 TRACE_MODELS_COMPARED_ALLOWED_DROP
             ));
         }
+    }
+}
+
+fn push_trace_channel_regression_reason(
+    reasons: &mut Vec<String>,
+    channel_label: &str,
+    current_percent: Option<f64>,
+    baseline_percent: Option<f64>,
+    percent_tolerance_pp: f64,
+    current_total: Option<usize>,
+    baseline_total: Option<usize>,
+) {
+    if let (Some(current), Some(baseline)) = (current_percent, baseline_percent) {
+        let ceiling = (baseline + percent_tolerance_pp).min(100.0);
+        if current > ceiling + SIM_RATE_GATE_EPSILON {
+            reasons.push(format!(
+                "trace {channel_label} channel share regressed: current={current:.2}% > ceiling={ceiling:.2}% (baseline={baseline:.2}%, tolerance={percent_tolerance_pp:.2}pp)"
+            ));
+        }
+        return;
+    }
+
+    if let (Some(current), Some(baseline)) = (current_total, baseline_total)
+        && current > baseline
+    {
+        reasons.push(format!(
+            "trace {channel_label} channel count regressed: current={current} > baseline={baseline}"
+        ));
     }
 }
 

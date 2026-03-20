@@ -98,7 +98,7 @@ fn contract_case_manifest_is_well_formed() {
 
     for case in implemented_contract_cases() {
         assert!(
-            is_contract_id(case.contract_id),
+            is_contract_id(case.contract_id.as_str()),
             "Invalid contract_id format in manifest: {}",
             case.contract_id
         );
@@ -113,7 +113,7 @@ fn contract_case_manifest_is_well_formed() {
             case.case_id
         );
 
-        let test_path = tests_root.join(case.test_file);
+        let test_path = tests_root.join(&case.test_file);
         assert!(
             test_path.exists(),
             "Manifest case {} references missing test file: {}",
@@ -147,7 +147,7 @@ fn every_implemented_contract_has_explicit_cases() {
     let mut counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new(); // (accept, reject)
 
     for case in implemented_contract_cases() {
-        let entry = counts.entry(case.contract_id).or_insert((0, 0));
+        let entry = counts.entry(case.contract_id.as_str()).or_insert((0, 0));
         match case.outcome {
             ContractCaseOutcome::Accept => entry.0 += 1,
             ContractCaseOutcome::Reject => entry.1 += 1,
@@ -170,7 +170,7 @@ fn every_implemented_contract_has_explicit_cases() {
 fn strict_dual_case_contracts_keep_accept_and_reject_coverage() {
     let mut counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new(); // (accept, reject)
     for case in implemented_contract_cases() {
-        let entry = counts.entry(case.contract_id).or_insert((0, 0));
+        let entry = counts.entry(case.contract_id.as_str()).or_insert((0, 0));
         match case.outcome {
             ContractCaseOutcome::Accept => entry.0 += 1,
             ContractCaseOutcome::Reject => entry.1 += 1,
@@ -217,7 +217,7 @@ fn parse_only_coverage_is_limited_to_lex_contracts() {
         if matches!(case.kind, ContractCaseKind::Parse) {
             let is_lex = case.contract_id.starts_with("LEX-");
             let is_parse_enforced_non_lex =
-                PARSE_ENFORCED_NON_LEX_CONTRACT_IDS.contains(&case.contract_id);
+                PARSE_ENFORCED_NON_LEX_CONTRACT_IDS.contains(&case.contract_id.as_str());
             assert!(
                 is_lex || is_parse_enforced_non_lex,
                 "Parse-only coverage must be lexical or explicitly parse-enforced; {} uses parse case {}",

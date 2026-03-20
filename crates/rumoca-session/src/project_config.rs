@@ -37,8 +37,6 @@ pub struct ProjectConfigFile {
     pub libraries: LibrariesConfig,
     pub simulation: SimulationConfig,
     pub plot: PlotConfig,
-    #[serde(rename = "viewer3d")]
-    pub viewer_3d: Viewer3dConfig,
 }
 
 impl Default for ProjectConfigFile {
@@ -49,7 +47,6 @@ impl Default for ProjectConfigFile {
             libraries: LibrariesConfig::default(),
             simulation: SimulationConfig::default(),
             plot: PlotConfig::default(),
-            viewer_3d: Viewer3dConfig::default(),
         }
     }
 }
@@ -162,16 +159,7 @@ pub struct PlotViewConfig {
     pub x: Option<String>,
     pub y: Vec<String>,
     pub script: Option<String>,
-    #[serde(alias = "scriptPath")]
     pub script_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Viewer3dConfig {
-    pub include: Vec<String>,
-    pub defaults: BTreeMap<String, toml::Value>,
-    pub models: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -480,12 +468,10 @@ impl ProjectConfig {
             .unwrap_or_else(|| workspace_root.join(".rumoca"));
 
         let merged_plot = merge_plot_includes(&rumoca_dir, &data.plot, &mut diagnostics);
-        let merged_viewer = merge_viewer_includes(&rumoca_dir, &data.viewer_3d, &mut diagnostics);
         // Only UUID sidecars under `.rumoca/models/by-id` are authoritative.
         data.simulation.models.clear();
         data.plot.models.clear();
         data.plot = merged_plot;
-        data.viewer_3d = merged_viewer;
         let model_identities = load_model_scoped_configs(&rumoca_dir, &mut data, &mut diagnostics)?;
 
         Ok(Self {
@@ -1711,45 +1697,6 @@ fn merge_plot_section(base: &mut PlotConfig, fragment: PlotConfig) {
     }
 }
 
-fn merge_viewer_includes(
-    base_dir: &Path,
-    root: &Viewer3dConfig,
-    diagnostics: &mut Vec<String>,
-) -> Viewer3dConfig {
-    let mut merged = Viewer3dConfig::default();
-    let mut include_paths = root.include.clone();
-    include_paths.sort();
-    for include in include_paths {
-        let include_path = base_dir.join(&include);
-        match fs::read_to_string(&include_path) {
-            Ok(text) => match toml::from_str::<Viewer3dConfig>(&text) {
-                Ok(fragment) => merge_viewer_section(&mut merged, fragment),
-                Err(error) => diagnostics.push(format!(
-                    "Failed to parse 3D include '{}': {}",
-                    include_path.display(),
-                    error
-                )),
-            },
-            Err(error) => diagnostics.push(format!(
-                "Failed to read 3D include '{}': {}",
-                include_path.display(),
-                error
-            )),
-        }
-    }
-    merge_viewer_section(&mut merged, root.clone());
-    merged
-}
-
-fn merge_viewer_section(base: &mut Viewer3dConfig, fragment: Viewer3dConfig) {
-    for (key, value) in fragment.defaults {
-        base.defaults.insert(key, value);
-    }
-    for (model, value) in fragment.models {
-        base.models.insert(model, value);
-    }
-}
-
 fn normalize_solver(raw: Option<&str>) -> Option<&'static str> {
     let lowered = raw?.trim().to_ascii_lowercase();
     match lowered.as_str() {
@@ -1783,14 +1730,8 @@ fn normalize_dt_opt(raw: Option<f64>) -> Option<f64> {
 }
 
 fn validate_top_level_keys(value: &toml::Value) -> Vec<String> {
-    let allowed: HashSet<&'static str> = HashSet::from([
-        "version",
-        "project",
-        "libraries",
-        "simulation",
-        "plot",
-        "viewer3d",
-    ]);
+    let allowed: HashSet<&'static str> =
+        HashSet::from(["version", "project", "libraries", "simulation", "plot"]);
     let mut diagnostics = Vec::new();
     let Some(table) = value.as_table() else {
         diagnostics.push("Expected TOML table at top-level in .rumoca/project.toml".to_string());

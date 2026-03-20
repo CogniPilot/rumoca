@@ -43,14 +43,21 @@ function assert(condition, message) {
 
 function parseSimulationJson(raw) {
   const parsed = JSON.parse(raw);
-  assert(Array.isArray(parsed.times), "simulate_model: times must be an array");
-  assert(Array.isArray(parsed.names), "simulate_model: names must be an array");
-  assert(Array.isArray(parsed.data), "simulate_model: data must be an array");
+  const payload = parsed?.payload ?? parsed;
+  assert(Array.isArray(payload.names), "simulate_model: names must be an array");
+  assert(Array.isArray(payload.allData), "simulate_model: allData must be an array");
+  assert(Array.isArray(payload.allData[0]), "simulate_model: allData[0] must be the time column");
   assert(
-    parsed.data.length === parsed.names.length,
-    "simulate_model: data row count must match names count",
+    payload.allData.length === payload.names.length + 1,
+    "simulate_model: allData must contain one time column plus one data column per name",
   );
-  return parsed;
+  return {
+    payload,
+    times: payload.allData[0],
+    names: payload.names,
+    data: payload.allData.slice(1),
+    nStates: payload.nStates,
+  };
 }
 
 function seriesByName(parsed, name) {
@@ -66,7 +73,7 @@ function seriesByName(parsed, name) {
 }
 
 function runLinearSmoke() {
-  const raw = simulate_model(SOURCE, "WasmSmoke", 0.2, 0.05);
+  const raw = simulate_model(SOURCE, "WasmSmoke", 0.2, 0.05, "auto");
   const parsed = parseSimulationJson(raw);
 
   assert(parsed.times.length >= 2, "simulate_model: expected at least 2 time samples");
@@ -77,7 +84,7 @@ function runLinearSmoke() {
 }
 
 function runBouncingBallSmoke() {
-  const raw = simulate_model(BALL_SOURCE, "BallWasmSmoke", 1.5, 0.01);
+  const raw = simulate_model(BALL_SOURCE, "BallWasmSmoke", 1.5, 0.01, "auto");
   const parsed = parseSimulationJson(raw);
   assert(
     parsed.times.length >= 20,
@@ -109,7 +116,7 @@ function runBouncingBallSmoke() {
 }
 
 function runRootCrossingSmoke() {
-  const raw = simulate_model(ROOT_CROSS_SOURCE, "RootCrossWasmSmoke", 1.0, 0.05);
+  const raw = simulate_model(ROOT_CROSS_SOURCE, "RootCrossWasmSmoke", 1.0, 0.05, "auto");
   const parsed = parseSimulationJson(raw);
   const x = seriesByName(parsed, "x");
   const s = seriesByName(parsed, "s");
@@ -131,7 +138,7 @@ function runRootCrossingSmoke() {
 
 async function run() {
   const wasmBytes = await readFile(new URL("../../../pkg/rumoca_bg.wasm", import.meta.url));
-  await init(wasmBytes);
+  await init({ module_or_path: wasmBytes });
   runLinearSmoke();
   runBouncingBallSmoke();
   runRootCrossingSmoke();

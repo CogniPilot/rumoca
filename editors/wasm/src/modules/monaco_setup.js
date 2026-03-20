@@ -1,4 +1,4 @@
-export function setupMonacoWorkspace({ monaco, sendRequest, layoutAllEditors }) {
+export function setupMonacoWorkspace({ monaco, sendLanguageCommand, layoutAllEditors }) {
     let editor;
 monaco.languages.register({ id: 'modelica' });
 monaco.languages.register({ id: 'jinja2' });
@@ -337,7 +337,7 @@ function normalizeSemanticTokens(payload) {
 
 async function loadSemanticLegend() {
     try {
-        const legendJson = await sendRequest('semanticTokenLegend', {});
+        const legendJson = await sendLanguageCommand('rumoca.language.semanticTokenLegend', {});
         const parsed = JSON.parse(legendJson);
         const legend = normalizeSemanticLegend(parsed);
         if (legend) {
@@ -361,7 +361,7 @@ async function requestSemanticTokens(model) {
 
     const pending = (async () => {
         try {
-            const json = await sendRequest('semanticTokens', { source: model.getValue() });
+            const json = await sendLanguageCommand('rumoca.language.semanticTokens', { source: model.getValue() });
             const parsed = JSON.parse(json);
             return normalizeSemanticTokens(parsed);
         } catch (e) {
@@ -410,7 +410,7 @@ monaco.languages.registerHoverProvider('modelica', {
     provideHover: async (model, position) => {
         try {
             const source = model.getValue();
-            const json = await sendRequest('hover', {
+            const json = await sendLanguageCommand('rumoca.language.hover', {
                 source,
                 line: position.lineNumber - 1,
                 character: position.column - 1
@@ -432,7 +432,7 @@ monaco.languages.registerCompletionItemProvider('modelica', {
     provideCompletionItems: async (model, position) => {
         try {
             const source = model.getValue();
-            const json = await sendRequest('completion', {
+            const json = await sendLanguageCommand('rumoca.language.completion', {
                 source,
                 line: position.lineNumber - 1,
                 character: position.column - 1
@@ -618,7 +618,7 @@ monaco.languages.registerDefinitionProvider('modelica', {
     provideDefinition: async (model, position) => {
         try {
             const source = model.getValue();
-            const json = await sendRequest('definition', {
+            const json = await sendLanguageCommand('rumoca.language.definition', {
                 source,
                 line: position.lineNumber - 1,
                 character: position.column - 1
@@ -641,7 +641,7 @@ monaco.languages.registerCodeActionProvider('modelica', {
             .map(markerToLspDiagnostic)
             .filter(Boolean);
         try {
-            const json = await sendRequest('codeActions', {
+            const json = await sendLanguageCommand('rumoca.language.codeActions', {
                 source: model.getValue(),
                 rangeStartLine: Math.max(0, range.startLineNumber - 1),
                 rangeStartCharacter: Math.max(0, range.startColumn - 1),
@@ -817,46 +817,69 @@ document.addEventListener('mouseup', () => {
 const codeLensEmitter = new monaco.Emitter();
 window.refreshCodeLens = () => codeLensEmitter.fire();
 
+function provideModelicaCodeLenses(model) {
+    const lenses = [];
+    const text = model.getValue();
+    const lines = text.split('\n');
+    const classRegex = /^(model|class|block|connector|record)\s+(\w+)/;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        const match = classRegex.exec(line);
+        if (!match) continue;
+
+        const modelName = match[2];
+        const compiled = window.compiledModels?.[modelName];
+
+        if (compiled?.balance) {
+            const b = compiled.balance;
+            const statusIcon = b.is_balanced ? '\u2713' : (b.status === 'Partial' ? '~' : '\u2717');
+            const statusText = typeof b.status === 'string' ? b.status.toLowerCase() :
+                (b.status?.CompileError ? 'error' : 'unknown');
+            lenses.push({
+                range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+                command: {
+                    id: 'showBalance',
+                    title: `[${statusIcon}] ${modelName}: ${b.num_equations} eqs / ${b.num_unknowns} unknowns (${statusText})`
+                }
+            });
+            continue;
+        }
+
+        if (compiled?.error) {
+            lenses.push({
+                range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+                command: {
+                    id: 'showBalance',
+                    title: `[\u2717] ${modelName}: compile error`
+                }
+            });
+            continue;
+        }
+
+        lenses.push({
+            range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+            command: {
+                id: 'showBalance',
+                title: `[\u2026] ${modelName}: ready`
+            }
+        });
+    }
+
+    return { lenses, dispose: () => {} };
+}
+
+window.provideModelicaCodeLensesForSmoke = () => {
+    const model = window.editor?.getModel();
+    if (!model) {
+        return { lenses: [], dispose: () => {} };
+    }
+    return provideModelicaCodeLenses(model);
+};
+
 monaco.languages.registerCodeLensProvider('modelica', {
     onDidChange: codeLensEmitter.event,
-    provideCodeLenses: (model) => {
-        const lenses = [];
-        const text = model.getValue();
-        const lines = text.split('\n');
-        const classRegex = /^(model|class|block|connector|record)\s+(\w+)/;
-
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            const match = classRegex.exec(line);
-            if (match) {
-                const modelName = match[2];
-                const compiled = window.compiledModels?.[modelName];
-
-                if (compiled?.balance) {
-                    const b = compiled.balance;
-                    const statusIcon = b.is_balanced ? '\u2713' : (b.status === 'Partial' ? '~' : '\u2717');
-                    const statusText = typeof b.status === 'string' ? b.status.toLowerCase() :
-                        (b.status?.CompileError ? 'error' : 'unknown');
-                    lenses.push({
-                        range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
-                        command: {
-                            id: 'showBalance',
-                            title: `[${statusIcon}] ${modelName}: ${b.num_equations} eqs / ${b.num_unknowns} unknowns (${statusText})`
-                        }
-                    });
-                } else if (compiled?.error) {
-                    lenses.push({
-                        range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
-                        command: {
-                            id: 'showBalance',
-                            title: `[\u2717] ${modelName}: compile error`
-                        }
-                    });
-                }
-            }
-        }
-        return { lenses, dispose: () => {} };
-    }
+    provideCodeLenses: provideModelicaCodeLenses
 });
 
     return { editor, templateEditor, outputEditor, codegenOutputEditor };

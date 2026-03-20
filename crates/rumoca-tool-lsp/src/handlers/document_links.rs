@@ -31,7 +31,9 @@ fn collect_url_links(line: &str, line_u32: u32, links: &mut Vec<DocumentLink>) {
         let raw = &tail[..end_rel];
         let token = raw.trim_end_matches(['.', ',', ';', ':', '!', '?']);
         if token.is_empty() {
-            cursor = start + end_rel + 1;
+            cursor = start
+                .saturating_add(end_rel.saturating_add(1))
+                .min(line.len());
             continue;
         }
         if let Ok(target) = Url::parse(token) {
@@ -53,11 +55,16 @@ fn collect_url_links(line: &str, line_u32: u32, links: &mut Vec<DocumentLink>) {
                 data: None,
             });
         }
-        cursor = start + end_rel + 1;
+        cursor = start
+            .saturating_add(end_rel.saturating_add(1))
+            .min(line.len());
     }
 }
 
 fn find_next_url_start(line: &str, from: usize) -> Option<usize> {
+    if from >= line.len() {
+        return None;
+    }
     let http = line[from..].find("http://").map(|i| from + i);
     let https = line[from..].find("https://").map(|i| from + i);
     match (http, https) {
@@ -234,6 +241,21 @@ end M;
                     .is_some_and(|t| t.as_str() == expected_local)
             }),
             "missing file link: {links:?}"
+        );
+    }
+
+    #[test]
+    fn detects_plain_comment_url_without_panicking() {
+        let source = "// https://example.com/docs\n";
+        let uri = Url::from_file_path(std::env::temp_dir().join("comment-links.mo")).expect("uri");
+        let links = handle_document_links(source, &uri);
+        assert_eq!(links.len(), 1, "expected one link from the comment URL");
+        assert!(
+            links[0]
+                .target
+                .as_ref()
+                .is_some_and(|target| target.as_str().starts_with("https://example.com/docs")),
+            "comment URL should become a document link: {links:?}"
         );
     }
 }

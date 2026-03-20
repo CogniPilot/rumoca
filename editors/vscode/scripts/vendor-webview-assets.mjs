@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = process.cwd();
+const repoRoot = process.env.RUMOCA_REPO_ROOT
+  ? path.resolve(process.env.RUMOCA_REPO_ROOT)
+  : path.resolve(root, '..', '..');
 const outDir = path.join(root, 'media', 'vendor');
 
 const assets = [
@@ -17,6 +20,18 @@ const assets = [
   {
     src: path.join(root, 'node_modules', 'three', 'build', 'three.min.js'),
     dst: path.join(outDir, 'three.min.js'),
+  },
+  {
+    src: path.join(repoRoot, 'crates', 'rumoca-sim', 'web', 'visualization_shared.js'),
+    dst: path.join(outDir, 'visualization_shared.js'),
+  },
+  {
+    src: path.join(repoRoot, 'crates', 'rumoca-sim', 'web', 'results_app.js'),
+    dst: path.join(outDir, 'results_app.js'),
+  },
+  {
+    src: path.join(repoRoot, 'crates', 'rumoca-sim', 'web', 'results_app.css'),
+    dst: path.join(outDir, 'results_app.css'),
   },
 ];
 

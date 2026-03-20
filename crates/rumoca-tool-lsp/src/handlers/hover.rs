@@ -5,12 +5,17 @@ use rumoca_session::compile::core as rumoca_core;
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::ir_core as rumoca_ir_core;
 
-use crate::helpers::{find_class_at_position, find_component_at_position, get_word_at_position};
+use crate::helpers::{
+    find_class_at_position, find_component_at_position, find_enclosing_class,
+    get_qualified_class_name_at_position, get_word_at_position, imported_def_id,
+    parsed_class_by_qualified_name, resolve_at_position,
+};
 
 /// Handle hover request - returns type/keyword/component info at position.
 pub fn handle_hover(
     source: &str,
     ast: Option<&ast::StoredDefinition>,
+    tree: Option<&ast::ClassTree>,
     line: u32,
     character: u32,
 ) -> Option<Hover> {
@@ -22,18 +27,35 @@ pub fn handle_hover(
         return Some(hover);
     }
 
+    if let Some(hover) = ast.and_then(|a| imported_class_hover(source, a, line, &word)) {
+        return Some(hover);
+    }
+
+    if let Some(hover) = ast.and_then(|a| {
+        qualified_class_hover(source, a, tree, position)
+            .or_else(|| qualified_class_ast_hover(source, a, position))
+    }) {
+        return Some(hover);
+    }
+
     // Try class hover
     if let Some(hover) = ast.and_then(|a| class_hover(a, &word)) {
         return Some(hover);
     }
 
-    // Try builtin function hover
-    if let Some(hover) = builtin_hover(&word) {
+    if let Some(hover) = ast.and_then(|a| tree.and_then(|t| resolved_class_hover(a, t, &word))) {
         return Some(hover);
     }
 
-    // Fall back to keyword hover
-    let info = get_keyword_info(&word)?;
+    builtin_or_keyword_hover(&word)
+}
+
+fn hover_for_qualified_class_name(
+    ast: &ast::StoredDefinition,
+    qualified_name: &str,
+) -> Option<Hover> {
+    let class = parsed_class_by_qualified_name(ast, qualified_name)?;
+    let info = format_class_info(class.name.text.as_ref(), class);
     Some(make_hover(&info))
 }
 
@@ -45,6 +67,14 @@ fn make_hover(value: &str) -> Hover {
         }),
         range: None,
     }
+}
+
+pub(crate) fn builtin_or_keyword_hover(word: &str) -> Option<Hover> {
+    if let Some(hover) = builtin_hover(word) {
+        return Some(hover);
+    }
+    let info = get_keyword_info(word)?;
+    Some(make_hover(&info))
 }
 
 fn component_hover(ast: &ast::StoredDefinition, name: &str) -> Option<Hover> {
@@ -90,6 +120,131 @@ fn class_hover(ast: &ast::StoredDefinition, name: &str) -> Option<Hover> {
     let class = find_class_at_position(ast, name)?;
     let info = format_class_info(name, class);
     Some(make_hover(&info))
+}
+
+fn imported_class_hover(
+    source: &str,
+    ast: &ast::StoredDefinition,
+    line: u32,
+    name: &str,
+) -> Option<Hover> {
+    if !is_import_line_for_name(source, line, name) {
+        return None;
+    }
+
+    let class = find_enclosing_class(ast, line)?;
+    let imported = class
+        .imports
+        .iter()
+        .find_map(|import| imported_class_in_ast(ast, import, name))?;
+    let info = format_class_info(imported.name.text.as_ref(), imported);
+    Some(make_hover(&info))
+}
+
+fn qualified_class_ast_hover(
+    source: &str,
+    ast: &ast::StoredDefinition,
+    position: Position,
+) -> Option<Hover> {
+    let qualified_name = get_qualified_class_name_at_position(source, position)?;
+    hover_for_qualified_class_name(ast, &qualified_name)
+}
+
+fn qualified_class_hover(
+    source: &str,
+    ast: &ast::StoredDefinition,
+    tree: Option<&ast::ClassTree>,
+    position: Position,
+) -> Option<Hover> {
+    let qualified_name = get_qualified_class_name_at_position(source, position)?;
+    let tree = tree?;
+    let def_id = tree.get_def_id_by_name(&qualified_name)?;
+    let class = tree
+        .get_class_by_def_id(def_id)
+        .or_else(|| parsed_class_by_qualified_name(ast, &qualified_name))?;
+    let info = format_class_info(class.name.text.as_ref(), class);
+    Some(make_hover(&info))
+}
+
+fn is_import_line_for_name(source: &str, line: u32, name: &str) -> bool {
+    source
+        .lines()
+        .nth(line as usize)
+        .map(str::trim_start)
+        .is_some_and(|line_text| line_text.starts_with("import ") && line_text.contains(name))
+}
+
+fn imported_class_in_ast<'a>(
+    ast: &'a ast::StoredDefinition,
+    import: &ast::Import,
+    name: &str,
+) -> Option<&'a ast::ClassDef> {
+    let qualified_name = match import {
+        ast::Import::Qualified { path, .. } => {
+            let last = path.name.last()?.text.as_ref();
+            if last != name {
+                return None;
+            }
+            path.to_string()
+        }
+        ast::Import::Renamed { alias, path, .. } => {
+            if alias.text.as_ref() != name {
+                return None;
+            }
+            path.to_string()
+        }
+        ast::Import::Unqualified { path, .. } => format!("{}.{}", path, name),
+        ast::Import::Selective { path, names, .. } => {
+            if !names.iter().any(|token| token.text.as_ref() == name) {
+                return None;
+            }
+            format!("{}.{}", path, name)
+        }
+    };
+    parsed_class_by_qualified_name(ast, &qualified_name)
+}
+
+fn resolved_class_hover(
+    ast: &ast::StoredDefinition,
+    tree: &ast::ClassTree,
+    name: &str,
+) -> Option<Hover> {
+    let def_id =
+        resolve_at_position(ast, tree, name).or_else(|| imported_class_def_id(ast, tree, name))?;
+    let class = tree.get_class_by_def_id(def_id)?;
+    let info = format_class_info(class.name.text.as_ref(), class);
+    Some(make_hover(&info))
+}
+
+fn imported_class_def_id(
+    ast: &ast::StoredDefinition,
+    tree: &ast::ClassTree,
+    name: &str,
+) -> Option<rumoca_core::DefId> {
+    for class in ast.classes.values() {
+        if let Some(def_id) = imported_class_def_id_in_class(class, tree, name) {
+            return Some(def_id);
+        }
+    }
+    None
+}
+
+fn imported_class_def_id_in_class(
+    class: &ast::ClassDef,
+    tree: &ast::ClassTree,
+    name: &str,
+) -> Option<rumoca_core::DefId> {
+    for import in &class.imports {
+        if let Some(def_id) = imported_def_id(import, tree, name) {
+            return Some(def_id);
+        }
+    }
+    for nested in class.classes.values() {
+        if let Some(def_id) = imported_class_def_id_in_class(nested, tree, name) {
+            return Some(def_id);
+        }
+    }
+    None
 }
 
 fn format_class_info(name: &str, class: &ast::ClassDef) -> String {
@@ -183,4 +338,94 @@ fn get_keyword_info(word: &str) -> Option<String> {
         _ => return None,
     };
     Some(info.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lsp_types::HoverContents;
+
+    #[test]
+    fn hover_resolves_imported_class_from_navigation_tree() {
+        let source = r#"model Ball
+  import Modelica.Blocks.Continuous.PID;
+  PID pid;
+end Ball;
+"#;
+        let broken = "model Broken\n  Real x\nend Broken;\n";
+        let library = r#"package Modelica
+  package Blocks
+    package Continuous
+      block PID
+        Real u;
+        Real y;
+      equation
+        y = u;
+      end PID;
+    end Continuous;
+  end Blocks;
+end Modelica;
+"#;
+
+        let mut session = rumoca_session::Session::default();
+        session.update_document("ball.mo", source);
+        let parse_error = session.update_document("broken.mo", broken);
+        assert!(parse_error.is_some(), "broken document should stay invalid");
+        session.update_document("Modelica.mo", library);
+
+        let ast = session
+            .get_document("ball.mo")
+            .and_then(|doc| doc.parsed().cloned())
+            .expect("ball AST");
+        let resolved = session
+            .resolved_for_semantic_navigation("Ball")
+            .expect("semantic navigation tree");
+        let import_line = source.lines().nth(1).expect("import line");
+        let char_pos = import_line.find("PID").expect("PID token") as u32 + 1;
+        let hover = handle_hover(source, Some(&ast), Some(&resolved.0), 1, char_pos)
+            .expect("hover should resolve imported class");
+
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            contents.value.contains("block PID"),
+            "expected imported class hover, got: {}",
+            contents.value
+        );
+    }
+
+    #[test]
+    fn hover_resolves_imported_alias_from_ast() {
+        let source = r#"package Lib
+  block Target
+    Real y;
+  equation
+    y = 1;
+  end Target;
+end Lib;
+
+model M
+  import Alias = Lib.Target;
+  Alias a;
+equation
+  a.y = 1;
+end M;
+"#;
+        let ast = rumoca_session::parsing::parse_source_to_ast(source, "input.mo")
+            .expect("parse should succeed");
+        let import_line = source.lines().nth(9).expect("import line");
+        let char_pos = import_line.find("Alias").expect("Alias token") as u32 + 1;
+        let hover = handle_hover(source, Some(&ast), None, 9, char_pos)
+            .expect("hover should resolve imported alias from AST");
+
+        let HoverContents::Markup(contents) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            contents.value.contains("block Target"),
+            "expected imported alias hover, got: {}",
+            contents.value
+        );
+    }
 }

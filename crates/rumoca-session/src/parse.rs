@@ -2,13 +2,20 @@
 //!
 //! This module provides efficient parallel parsing of Modelica files using rayon.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rayon::prelude::*;
 use rumoca_ir_ast as ast;
 use std::path::Path;
 use std::sync::Once;
 
 use crate::merge::merge_stored_definitions;
+#[cfg(test)]
+use crate::parsed_artifact_cache::{
+    ParsedArtifactCacheStatus, parse_file_with_artifact_cache_status,
+};
+use crate::parsed_artifact_cache::{
+    parse_file_with_artifact_cache, resolve_parsed_artifact_cache_dir,
+};
 
 static RAYON_INIT: Once = Once::new();
 
@@ -42,10 +49,17 @@ pub type LenientParseResult = (Vec<ParseSuccess>, Vec<ParseFailure>);
 
 /// Structured parse errors surfaced by the parser phase.
 pub use rumoca_phase_parse::ParseError;
+/// Recoverable syntax artifact surfaced by the parser phase.
+pub(crate) use rumoca_phase_parse::SyntaxFile;
 
 /// Parse a single Modelica source string into AST.
 pub fn parse_source_to_ast(source: &str, file_name: &str) -> Result<ast::StoredDefinition> {
     rumoca_phase_parse::parse_to_ast(source, file_name)
+}
+
+/// Parse a single Modelica source string into a recoverable syntax artifact.
+pub(crate) fn parse_source_to_syntax(source: &str, file_name: &str) -> SyntaxFile {
+    rumoca_phase_parse::parse_to_syntax(source, file_name)
 }
 
 /// Parse a single Modelica source with structured parse errors.
@@ -77,18 +91,30 @@ pub fn validate_source_syntax(source: &str, file_name: &str) -> Result<()> {
 pub fn parse_files_parallel<P: AsRef<Path> + Sync>(
     paths: &[P],
 ) -> Result<Vec<(String, ast::StoredDefinition)>> {
+    let cache_dir = resolve_parsed_artifact_cache_dir();
+    parse_files_parallel_with_cache_dir(paths, cache_dir.as_deref())
+}
+
+pub(crate) fn parse_files_parallel_with_cache_dir<P: AsRef<Path> + Sync>(
+    paths: &[P],
+    cache_dir: Option<&Path>,
+) -> Result<Vec<(String, ast::StoredDefinition)>> {
     init_rayon_pool();
     paths
         .par_iter()
-        .map(|path| {
-            let path = path.as_ref();
-            let source = std::fs::read_to_string(path)
-                .with_context(|| format!("Failed to read file: {}", path.display()))?;
-            let file_name = path.to_string_lossy().to_string();
-            let def = rumoca_phase_parse::parse_to_ast(&source, &file_name)
-                .with_context(|| format!("Failed to parse file: {}", path.display()))?;
-            Ok((file_name, def))
-        })
+        .map(|path| parse_file_with_artifact_cache(path.as_ref(), cache_dir))
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn parse_files_parallel_with_cache_statuses<P: AsRef<Path> + Sync>(
+    paths: &[P],
+    cache_dir: Option<&Path>,
+) -> Result<Vec<(String, ast::StoredDefinition, ParsedArtifactCacheStatus)>> {
+    init_rayon_pool();
+    paths
+        .par_iter()
+        .map(|path| parse_file_with_artifact_cache_status(path.as_ref(), cache_dir))
         .collect()
 }
 
@@ -107,18 +133,23 @@ pub fn parse_files_parallel<P: AsRef<Path> + Sync>(
 /// - Vector of [`ParseSuccess`] for successful parses
 /// - Vector of [`ParseFailure`] for failed parses
 pub fn parse_files_parallel_lenient<P: AsRef<Path> + Sync>(paths: &[P]) -> LenientParseResult {
+    let cache_dir = resolve_parsed_artifact_cache_dir();
+    parse_files_parallel_lenient_with_cache_dir(paths, cache_dir.as_deref())
+}
+
+pub(crate) fn parse_files_parallel_lenient_with_cache_dir<P: AsRef<Path> + Sync>(
+    paths: &[P],
+    cache_dir: Option<&Path>,
+) -> LenientParseResult {
     init_rayon_pool();
     let results: Vec<_> = paths
         .par_iter()
         .map(|path| {
             let path = path.as_ref();
             let file_name = path.to_string_lossy().to_string();
-            match std::fs::read_to_string(path) {
-                Ok(source) => match rumoca_phase_parse::parse_to_ast(&source, &file_name) {
-                    Ok(def) => Ok((file_name, def)),
-                    Err(e) => Err((file_name, format!("Parse error: {}", e))),
-                },
-                Err(e) => Err((file_name, format!("Read error: {}", e))),
+            match parse_file_with_artifact_cache(path, cache_dir) {
+                Ok(success) => Ok(success),
+                Err(error) => Err((file_name, error.to_string())),
             }
         })
         .collect();
@@ -184,5 +215,68 @@ mod tests {
 
         assert_eq!(successes.len(), 1);
         assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn parse_files_parallel_reuses_cached_artifacts_for_unchanged_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = temp.path().join("cache");
+        let file = temp.path().join("Model.mo");
+        std::fs::write(&file, "model M\n  Real x;\nend M;\n").expect("write model");
+
+        let first = parse_files_parallel_with_cache_statuses(&[file.as_path()], Some(&cache_dir))
+            .expect("first parse");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].2, ParsedArtifactCacheStatus::Miss);
+
+        let second = parse_files_parallel_with_cache_statuses(&[file.as_path()], Some(&cache_dir))
+            .expect("second parse");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].2, ParsedArtifactCacheStatus::Hit);
+    }
+
+    #[test]
+    fn parse_files_parallel_only_reparses_changed_workspace_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = temp.path().join("cache");
+        let left = temp.path().join("Left.mo");
+        let right = temp.path().join("Right.mo");
+        std::fs::write(&left, "model Left\n  Real x;\nend Left;\n").expect("write left");
+        std::fs::write(&right, "model Right\n  Real y;\nend Right;\n").expect("write right");
+
+        let first = parse_files_parallel_with_cache_statuses(
+            &[left.as_path(), right.as_path()],
+            Some(&cache_dir),
+        )
+        .expect("initial parse");
+        assert_eq!(
+            first
+                .iter()
+                .map(|(_, _, status)| *status)
+                .collect::<Vec<_>>(),
+            vec![
+                ParsedArtifactCacheStatus::Miss,
+                ParsedArtifactCacheStatus::Miss
+            ]
+        );
+        std::fs::write(&right, "model Right\n  Real y;\n  Real z;\nend Right;\n")
+            .expect("update right");
+        let second = parse_files_parallel_with_cache_statuses(
+            &[left.as_path(), right.as_path()],
+            Some(&cache_dir),
+        )
+        .expect("second parse");
+        assert_eq!(second.len(), 2);
+        assert_eq!(
+            second
+                .iter()
+                .map(|(_, _, status)| *status)
+                .collect::<Vec<_>>(),
+            vec![
+                ParsedArtifactCacheStatus::Hit,
+                ParsedArtifactCacheStatus::Miss
+            ],
+            "only the changed file should be reparsed on the second pass"
+        );
     }
 }

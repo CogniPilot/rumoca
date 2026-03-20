@@ -4,8 +4,73 @@ import { createLibraryDocsController } from './modules/library_docs.js';
 import { createDiagnosticsController } from './modules/diagnostics_panel.js';
 import { installFileActions } from './modules/file_actions.js';
 import { setupMonacoWorkspace } from './modules/monaco_setup.js';
+import { createProjectInterface } from './modules/project_interface.js';
+import {
+    buildProjectVisualizationViewStorage,
+    createResultsPanelController,
+} from './modules/results_panel.js';
+import {
+    createProjectFilesystem,
+    inferModelicaFileName,
+} from './modules/project_fs.js';
 
 let editor;
+const projectFs = createProjectFilesystem();
+const projectInterface = createProjectInterface({
+    projectFs,
+    runtimeBridge: {
+        request(action, payload = {}, timeoutMs) {
+            return sendRequest(action, payload, timeoutMs);
+        },
+    },
+});
+let simResultsPanelState = { activeViewId: null };
+let suspendWorkspaceObservers = false;
+let defaultProjectSeed = null;
+const simulationSettingsModal = document.getElementById('simulationSettingsModal');
+const simulationSettingsFrame = document.getElementById('simulationSettingsFrame');
+const simulationSettingsCloseBtn = document.getElementById('simulationSettingsCloseBtn');
+const projectVisualizationStorage = buildProjectVisualizationViewStorage({ projectFs });
+
+function trimMaybeString(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function sharedVisualization() {
+    const shared = globalThis.RumocaVisualizationShared;
+    if (!shared) {
+        throw new Error('RumocaVisualizationShared not loaded');
+    }
+    return shared;
+}
+
+const resultsPanelController = createResultsPanelController({
+    root: document.getElementById('simPlot'),
+    projectFs,
+    projectInterface,
+    onStatus(message, tone) {
+        const statusEl = document.getElementById('simStatus');
+        if (!statusEl) return;
+        statusEl.textContent = String(message || '');
+        if (tone === 'error') {
+            statusEl.style.color = '#c9184a';
+        } else if (tone === 'ok') {
+            statusEl.style.color = '#2d6a4f';
+        } else {
+            statusEl.style.color = '#888';
+        }
+    },
+    readPanelState() {
+        return simResultsPanelState;
+    },
+    writePanelState(nextState) {
+        simResultsPanelState = {
+            ...simResultsPanelState,
+            ...(nextState || {}),
+        };
+    },
+});
+void resultsPanelController.renderModel('');
 
 // Panel references
 const resizeHandleH = document.getElementById('resizeHandleH');
@@ -91,6 +156,18 @@ resizeHandleV.addEventListener('mousedown', (e) => {
 
 // Active right tab state
 window.activeRightTab = 'simulate';
+window.activeBottomTab = 'output';
+
+function normalizeTabName(tabName, allowed, fallback) {
+    return allowed.includes(tabName) ? tabName : fallback;
+}
+
+function setBottomPanelCollapsed(collapsed) {
+    bottomPanel.classList.toggle('collapsed', Boolean(collapsed));
+    const arrow = document.getElementById('bottomArrow');
+    if (!arrow) return;
+    arrow.innerHTML = bottomPanel.classList.contains('collapsed') ? '&#9650;' : '&#9660;';
+}
 
 // Switch between right panel tabs (Simulate / DAE / Codegen)
 window.switchRightTab = function(tabName) {
@@ -115,27 +192,21 @@ window.switchRightTab = function(tabName) {
                 displayCodegenOutput(modelName);
             }
         }
-        // Rebuild sim plot if switching to simulate
-        if (tabName === 'simulate' && window.simData) {
-            rebuildSimPlot();
+        if (tabName === 'simulate') {
+            void resultsPanelController.renderModel(window.selectedModel || '');
         }
     }, 0);
 };
 
 // Toggle bottom panel collapse/expand (collapses down)
 window.toggleBottomPanel = function() {
-    bottomPanel.classList.toggle('collapsed');
-    const arrow = document.getElementById('bottomArrow');
-    if (bottomPanel.classList.contains('collapsed')) {
-        arrow.innerHTML = '&#9650;'; // Up arrow when collapsed
-    } else {
-        arrow.innerHTML = '&#9660;'; // Down arrow when expanded
-    }
+    setBottomPanelCollapsed(!bottomPanel.classList.contains('collapsed'));
     if (window.editor) window.editor.layout();
 };
 
 // Switch between bottom panel tabs
 window.switchBottomTab = function(tabName) {
+    window.activeBottomTab = tabName;
     // Update tab buttons (only within bottom panel)
     document.querySelectorAll('.panel-header-bottom .bottom-tab').forEach(tab => {
         tab.classList.toggle('active', tab.dataset.tab === tabName);
@@ -149,6 +220,305 @@ window.switchBottomTab = function(tabName) {
         window.refreshPackageViewer();
     }
 };
+
+function collectProjectEditorState() {
+    return {
+        rightTab: String(window.activeRightTab || 'simulate'),
+        bottomTab: String(window.activeBottomTab || 'output'),
+        bottomPanelCollapsed: bottomPanel.classList.contains('collapsed'),
+        template: window.templateEditor?.getValue?.() || '',
+        simResultsActiveViewId: trimMaybeString(simResultsPanelState.activeViewId) || null,
+    };
+}
+
+function applyProjectEditorState(editorState) {
+    const fallbackState = defaultProjectSeed?.editorState || {
+        rightTab: 'simulate',
+        bottomTab: 'output',
+        bottomPanelCollapsed: false,
+        template: '',
+    };
+    const nextState = editorState && typeof editorState === 'object'
+        ? {
+            ...fallbackState,
+            ...editorState,
+        }
+        : fallbackState;
+    const rightTab = normalizeTabName(
+        String(nextState.rightTab || fallbackState.rightTab),
+        ['simulate', 'dae', 'codegen'],
+        'simulate',
+    );
+    const bottomTab = normalizeTabName(
+        String(nextState.bottomTab || fallbackState.bottomTab),
+        ['output', 'errors', 'libraries', 'packages'],
+        'output',
+    );
+
+    if (window.templateEditor?.setValue) {
+        const template = String(nextState.template || fallbackState.template || '');
+        if (window.templateEditor.getValue() !== template) {
+            window.templateEditor.setValue(template);
+        }
+    }
+
+    simResultsPanelState = {
+        activeViewId: trimMaybeString(nextState.simResultsActiveViewId)
+            || trimMaybeString(fallbackState.simResultsActiveViewId)
+            || null,
+    };
+
+    setBottomPanelCollapsed(Boolean(nextState.bottomPanelCollapsed));
+    window.switchRightTab(rightTab);
+    window.switchBottomTab(bottomTab);
+}
+
+function buildNewProjectState() {
+    const seed = defaultProjectSeed || {
+        activeDocumentPath: 'Main.mo',
+        activeDocumentContent: 'model Main\nend Main;\n',
+        editorState: {
+            rightTab: 'simulate',
+            bottomTab: 'output',
+            bottomPanelCollapsed: false,
+            template: '',
+            simResultsActiveViewId: null,
+        },
+    };
+    projectFs.clearProject();
+    projectFs.setActiveDocument(seed.activeDocumentPath, seed.activeDocumentContent);
+    projectFs.setEditorState(seed.editorState);
+    return {
+        activeDocumentPath: projectFs.getActiveDocumentPath(),
+        activeDocumentContent: projectFs.getActiveDocumentContent(),
+        editorState: projectFs.getEditorState(),
+        libraryArchives: [],
+        fileCount: projectFs.listFiles().length,
+    };
+}
+
+function projectSimulationFallback() {
+    return {
+        solver: 'auto',
+        tEnd: 10.0,
+        dt: null,
+        outputDir: '',
+        modelicaPath: [],
+    };
+}
+
+async function getSimulationModelState(source, defaultModel = '') {
+    const state = await projectInterface.execute('rumoca.project.getSimulationModels', {
+        source,
+        defaultModel,
+    });
+    if (!state || state.ok === false) {
+        return {
+            ok: false,
+            models: [],
+            selectedModel: null,
+            error: state?.error || 'Failed to discover simulation models',
+        };
+    }
+    return state;
+}
+
+function listSimulationModels() {
+    const modelSelect = document.getElementById('modelSelect');
+    if (!modelSelect) {
+        return [];
+    }
+    return Array.from(modelSelect.options)
+        .map((option) => trimMaybeString(option.value))
+        .filter(Boolean);
+}
+
+function currentSimulationModel() {
+    return trimMaybeString(document.getElementById('modelSelect')?.value || '');
+}
+
+function simulationSettingsFeatures() {
+    return {
+        addLibraryPath: false,
+        prepareModels: false,
+        resyncSidecars: false,
+        workspaceSettings: false,
+        userSettings: false,
+        openViewScript: false,
+    };
+}
+
+function simulationViewsForModel(model) {
+    const config = projectInterface.execute('rumoca.project.getVisualizationConfig', { model });
+    return Array.isArray(config?.views) ? config.views : [];
+}
+
+function buildSimulationSettingsDocument(model) {
+    const config = projectInterface.execute('rumoca.project.getSimulationConfig', {
+        model,
+        fallback: projectSimulationFallback(),
+    });
+    return sharedVisualization().buildHostedSimulationSettingsDocument(
+        sharedVisualization().buildHostedSimulationSettingsState({
+            activeModel: model,
+            availableModels: listSimulationModels(),
+            current: config?.effective,
+            fallbackCurrent: projectSimulationFallback(),
+            views: simulationViewsForModel(model),
+            defaultViews: [],
+            features: simulationSettingsFeatures(),
+        }),
+    );
+}
+
+function isSimulationSettingsModalOpen() {
+    return Boolean(simulationSettingsModal) && !simulationSettingsModal.hidden;
+}
+
+async function renderSimulationSettingsModal(preferredModel = '') {
+    if (!simulationSettingsFrame) {
+        return;
+    }
+    const model = trimMaybeString(preferredModel)
+        || currentSimulationModel()
+        || listSimulationModels()[0]
+        || 'Model';
+    simulationSettingsFrame.srcdoc = buildSimulationSettingsDocument(model);
+}
+
+function refreshSimulationSettingsModalIfOpen() {
+    if (!isSimulationSettingsModalOpen()) {
+        return;
+    }
+    void renderSimulationSettingsModal();
+}
+
+async function saveSimulationSettingsForModel(model, preset, views) {
+    return await sharedVisualization().saveHostedProjectSimulationSettings({
+        model,
+        preset,
+        views,
+        loadViews: ({ model: nextModel }) => simulationViewsForModel(nextModel),
+        persistViews: async ({ model: nextModel, views: nextViews }) =>
+            await projectVisualizationStorage.persistViews({
+                views: nextViews,
+                model: nextModel,
+            }),
+        removeStaleViews: async ({ previousViews, nextViews }) =>
+            await projectVisualizationStorage.removeStaleViews({
+                previousViews,
+                nextViews,
+            }),
+        writeViews: ({ model: nextModel, views: nextViews }) => {
+            projectInterface.execute('rumoca.project.setVisualizationConfig', {
+                model: nextModel,
+                views: nextViews,
+            });
+            return true;
+        },
+        writePreset: ({ model: nextModel, preset: nextPreset }) => {
+            projectInterface.execute('rumoca.project.setSimulationPreset', {
+                model: nextModel,
+                preset: nextPreset,
+            });
+            return true;
+        },
+        afterSave: async () => {
+            await resultsPanelController.renderModel(window.selectedModel || '');
+        },
+    });
+}
+
+async function resetSimulationSettingsForModel(model) {
+    return await sharedVisualization().resetHostedProjectSimulationSettings({
+        model,
+        loadViews: ({ model: nextModel }) => simulationViewsForModel(nextModel),
+        removeViews: async ({ views }) =>
+            await projectVisualizationStorage.removeViews({
+                views,
+            }),
+        resetPreset: ({ model: nextModel }) => {
+            projectInterface.execute('rumoca.project.resetSimulationPreset', { model: nextModel });
+            return true;
+        },
+        writeViews: ({ model: nextModel, views }) => {
+            projectInterface.execute('rumoca.project.setVisualizationConfig', {
+                model: nextModel,
+                views,
+            });
+            return true;
+        },
+        readCurrent: ({ model: nextModel }) =>
+            projectInterface.execute('rumoca.project.getSimulationConfig', {
+                model: nextModel,
+                fallback: projectSimulationFallback(),
+            })?.effective,
+        readViews: () => [],
+        afterReset: async () => {
+            await resultsPanelController.renderModel(window.selectedModel || '');
+        },
+    });
+}
+
+function openSimulationSettingsModal() {
+    if (!simulationSettingsModal) {
+        return;
+    }
+    simulationSettingsModal.hidden = false;
+    void renderSimulationSettingsModal();
+}
+
+function closeSimulationSettingsModal() {
+    if (!simulationSettingsModal) {
+        return;
+    }
+    simulationSettingsModal.hidden = true;
+    if (simulationSettingsFrame) {
+        simulationSettingsFrame.srcdoc = 'about:blank';
+    }
+}
+
+window.openSimulationSettingsModal = openSimulationSettingsModal;
+
+const simulationSettingsHandlers = sharedVisualization().buildHostedSimulationSettingsHandlers({
+    getActiveModel: () => currentSimulationModel() || listSimulationModels()[0] || 'Model',
+    save: async ({ model, preset, views }) =>
+        await saveSimulationSettingsForModel(model, preset, views),
+    reset: async ({ model }) =>
+        await resetSimulationSettingsForModel(model),
+    selectModel: async ({ model }) => {
+        const modelSelect = document.getElementById('modelSelect');
+        if (modelSelect) {
+            modelSelect.value = model;
+        }
+        if (typeof window.updateSelectedModel === 'function') {
+            window.updateSelectedModel();
+        }
+        return { model };
+    },
+    afterOpenModel: async ({ model }) => {
+        await renderSimulationSettingsModal(model);
+    },
+});
+
+globalThis.RumocaSimulationSettingsHost = {
+    async request(method, payload = {}) {
+        const handler = simulationSettingsHandlers[method];
+        if (typeof handler !== 'function') {
+            throw new Error(`Unsupported settings request: ${method}`);
+        }
+        return await handler({ method, payload });
+    },
+};
+
+simulationSettingsCloseBtn?.addEventListener('click', () => {
+    closeSimulationSettingsModal();
+});
+simulationSettingsModal?.addEventListener('click', (event) => {
+    if (event.target === simulationSettingsModal) {
+        closeSimulationSettingsModal();
+    }
+});
 
 function parseBadgeNumber(text) {
     const match = String(text || '').match(/\d+/);
@@ -214,174 +584,48 @@ window.updateDaeFormat = function() {
     }
 };
 
-// --- Simulation state ---
-window.simPlot = null;
-window.simData = null;
-
-const simPalette = [
-    '#4ec9b0','#569cd6','#ce9178','#dcdcaa','#c586c0',
-    '#9cdcfe','#d7ba7d','#608b4e','#d16969','#b5cea8',
-    '#6a9955','#c8c8c8','#e8c87a','#7fdbca','#f07178'
-];
-
-function formatNum(v) {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return String(v);
-    if (Math.abs(n) >= 1000 || (Math.abs(n) > 0 && Math.abs(n) < 0.001)) return n.toExponential(3);
-    return n.toFixed(4).replace(/\.?0+$/, '');
-}
-
 window.runSimulation = async function() {
     const modelName = document.getElementById('modelSelect').value;
-    if (!modelName) { document.getElementById('simStatus').textContent = 'No model selected'; return; }
-    const tEnd = parseFloat(document.getElementById('simTEnd').value) || 1.0;
-    const dt = parseFloat(document.getElementById('simDt').value) || 0;
+    if (!modelName) {
+        document.getElementById('simStatus').textContent = 'No model selected';
+        return;
+    }
+    const simulationConfig = projectInterface.execute('rumoca.project.getSimulationConfig', {
+        model: modelName,
+        fallback: projectSimulationFallback(),
+    });
+    const tEnd = Number(simulationConfig.effective?.tEnd) || 1.0;
+    const dt = Number(simulationConfig.effective?.dt) || 0;
     const source = window.editor ? window.editor.getValue() : '';
     const btn = document.getElementById('simRunBtn');
     const status = document.getElementById('simStatus');
-    const hover = document.getElementById('simHover');
 
     btn.disabled = true;
     status.textContent = 'Simulating...';
     status.style.color = '#9a6700';
-    if (hover) hover.textContent = '';
 
     try {
-        const t0 = performance.now();
-        const json = await sendRequest('simulate', { source, modelName, tEnd, dt }, 60000);
-        const result = JSON.parse(json);
-        const elapsed = (performance.now() - t0).toFixed(0);
-        window.simData = result;
-        status.textContent = `${result.times.length} pts, ${result.names.length} vars (${elapsed}ms)`;
+        const result = await projectInterface.execute('rumoca.project.startSimulation', {
+            source,
+            model: modelName,
+            fallback: projectSimulationFallback(),
+            timeoutMs: 60000,
+        });
+        const simulateMs = Math.round((Number(result.metrics?.simulateSeconds) || 0) * 1000);
+        status.textContent =
+            `${result.metrics?.points ?? 0} pts, ${result.metrics?.variables ?? 0} vars (${simulateMs}ms)`;
         status.style.color = '#2d6a4f';
-        if (hover) hover.textContent = 'Hover plot for values';
-        buildSimCheckboxes(result);
-        rebuildSimPlot();
+        await resultsPanelController.setSimulationRun(modelName, {
+            payload: result.payload,
+            ...(result.metrics ? { metrics: result.metrics } : {}),
+        });
     } catch (e) {
         status.textContent = e.message || 'Simulation failed';
         status.style.color = '#c9184a';
-        if (hover) hover.textContent = '';
     } finally {
         btn.disabled = false;
     }
 };
-
-function buildSimCheckboxes(result) {
-    const el = document.getElementById('simVarTree');
-    // Group variables by dot-separated prefix into a tree
-    const tree = {};
-    for (let i = 0; i < result.names.length; i++) {
-        const name = result.names[i];
-        const parts = name.split('.');
-        let node = tree;
-        for (let p = 0; p < parts.length - 1; p++) {
-            const key = parts[p];
-            if (!node[key]) node[key] = { _children: {} };
-            node = node[key]._children;
-        }
-        const leaf = parts[parts.length - 1];
-        if (!node[leaf]) node[leaf] = {};
-        node[leaf]._idx = i;
-        node[leaf]._checked = i < result.n_states;
-    }
-
-    function renderNode(obj, depth) {
-        let html = '';
-        // Separate groups (have _children) from leaves (have _idx)
-        const keys = Object.keys(obj).filter(k => k !== '_children' && k !== '_idx' && k !== '_checked');
-        for (const key of keys) {
-            const item = obj[key];
-            const pad = (depth * 12) + 4;
-            if (item._idx !== undefined) {
-                // Leaf variable
-                const c = simPalette[item._idx % simPalette.length];
-                const chk = item._checked ? 'checked' : '';
-                html += `<label class="sim-var-leaf" style="padding-left:${pad}px">` +
-                    `<input type="checkbox" data-idx="${item._idx}" ${chk}>` +
-                    `<span style="color:${c}">\u25CF</span> ${key}</label>`;
-            }
-            if (item._children && Object.keys(item._children).length > 0) {
-                // Group node
-                html += `<div class="sim-var-group" style="padding-left:${pad}px">` +
-                    `<span class="sim-var-toggle" onclick="this.parentElement.classList.toggle('collapsed')">` +
-                    `${key}</span></div>`;
-                html += `<div class="sim-var-group-body">` +
-                    renderNode(item._children, depth + 1) + `</div>`;
-            }
-        }
-        return html;
-    }
-
-    el.innerHTML = renderNode(tree, 0);
-    el.querySelectorAll('input[type=checkbox]').forEach(cb => cb.addEventListener('change', rebuildSimPlot));
-}
-
-function rebuildSimPlot() {
-    const result = window.simData;
-    if (!result) return;
-    const el = document.getElementById('simPlot');
-    const treeEl = document.getElementById('simVarTree');
-    const hoverEl = document.getElementById('simHover');
-
-    const active = [];
-    treeEl.querySelectorAll('input:checked').forEach(cb => active.push(parseInt(cb.dataset.idx, 10)));
-
-    if (window.simPlot) { window.simPlot.destroy(); window.simPlot = null; }
-    if (active.length === 0) {
-        if (hoverEl) hoverEl.textContent = '';
-        el.innerHTML = '<p style="padding:20px;color:#888">Select variables to plot</p>';
-        return;
-    }
-
-    const data = [result.times];
-    const series = [{}];
-    const activeSeriesIdx = [...active];
-    activeSeriesIdx.forEach(idx => {
-        data.push(result.data[idx]);
-        series.push({ label: result.names[idx], stroke: simPalette[idx % simPalette.length], width: 1.5 });
-    });
-
-    window.simPlot = new uPlot({
-        width: el.clientWidth,
-        height: Math.max((el.clientHeight || 400) - 30, 200),
-        padding: [8, 8, 28, 8],
-        scales: { x: { time: false } },
-        axes: [
-            { stroke: '#888', grid: { stroke: '#333' }, label: 'time', labelGap: 2, size: 36, font: '11px monospace', labelFont: '12px monospace' },
-            { stroke: '#888', grid: { stroke: '#333' }, font: '11px monospace' }
-        ],
-        series,
-        cursor: { drag: { x: true, y: true } },
-        hooks: {
-            setCursor: [function(u) {
-                if (!hoverEl) return;
-                const idx = u.cursor.idx;
-                if (idx == null || idx < 0 || idx >= result.times.length) {
-                    hoverEl.textContent = 'Hover plot for values';
-                    return;
-                }
-                const parts = [`t=${formatNum(Number(result.times[idx]))}`];
-                for (let i = 0; i < activeSeriesIdx.length; i++) {
-                    const sIdx = activeSeriesIdx[i];
-                    const col = result.data[sIdx] || [];
-                    if (idx < col.length) {
-                        parts.push(`${result.names[sIdx]}=${formatNum(Number(col[idx]))}`);
-                    }
-                }
-                hoverEl.textContent = parts.join(' | ');
-            }]
-        },
-        legend: { show: false }
-    }, data, el);
-}
-
-// Resize sim plot on window resize
-window.addEventListener('resize', function() {
-    if (window.simPlot) {
-        const el = document.getElementById('simPlot');
-        window.simPlot.setSize({ width: el.clientWidth, height: Math.max((el.clientHeight || 400) - 30, 200) });
-    }
-});
 
 // Display output for the active tab
 function displayModelOutput(modelName) {
@@ -431,7 +675,10 @@ async function displayCodegenOutput(modelName) {
     }
     try {
         const daeJson = JSON.stringify(result.dae_native);
-        const rendered = await sendRequest('renderTemplate', { daeJson, template });
+        const rendered = await sendWorkspaceCommand('rumoca.workspace.renderTemplate', {
+            daeJson,
+            template,
+        });
         setCodegenOutput(rendered);
         clearTemplateErrors();
     } catch (e) {
@@ -774,26 +1021,86 @@ function prettyPrintDae(dae) {
 }
 
 const libraryDocsController = createLibraryDocsController({
-    sendRequest,
+    sendLanguageCommand,
+    sendWorkspaceCommand,
     setTerminalOutput,
     isWorkerReady: () => workerReady,
+    projectFs,
 });
 libraryDocsController.bindWindowApi();
 
 // Store compiled results for all models: { modelName: { dae, balance } }
 window.compiledModels = {};
 window.selectedModel = null;
+
+function resetCompiledWorkspaceState() {
+    window.compiledModels = {};
+    window.selectedModel = null;
+    window.currentDaeForCompletions = null;
+    simResultsPanelState = { activeViewId: null };
+    resultsPanelController.clear();
+    const modelSelect = document.getElementById('modelSelect');
+    if (modelSelect) {
+        modelSelect.innerHTML = '<option value="">-- No models --</option>';
+        modelSelect.value = '';
+    }
+    projectInterface.execute('rumoca.project.setSelectedSimulationModel', { model: '' });
+    const statusSpan = document.getElementById('autoCompileStatus');
+    if (statusSpan) {
+        statusSpan.textContent = '';
+        statusSpan.style.color = '#888';
+    }
+    setDaeOutput('No model selected');
+    displayCodegenOutput('');
+    void resultsPanelController.renderModel('');
+}
+
+async function applyImportedProject(projectState) {
+    resetCompiledWorkspaceState();
+    suspendWorkspaceObservers = true;
+    try {
+        if (editor?.setValue) {
+            editor.setValue(projectState.activeDocumentContent || '');
+        }
+        applyProjectEditorState(projectState.editorState);
+        projectFs.updateActiveDocumentContent(editor?.getValue?.() || projectState.activeDocumentContent || '');
+    } finally {
+        suspendWorkspaceObservers = false;
+    }
+    await libraryDocsController.restoreProjectLibraries();
+    updateSourceBreadcrumbs();
+    updateGlobalStatusBar();
+    await resultsPanelController.renderModel(window.selectedModel || '');
+    refreshSimulationSettingsModalIfOpen();
+    if (!isRumocaSmokeMode() && typeof window.triggerCompileNow === 'function') {
+        window.triggerCompileNow();
+    }
+}
+
 installFileActions({
     getEditor: () => window.editor,
     getCompiledModels: () => window.compiledModels,
     getDaeFormat: () => window.daeFormat,
     getCodegenOutputEditor: () => window.codegenOutputEditor,
+    projectFs,
+    setTerminalOutput,
+    beforeProjectExport: async () => {
+        projectFs.setEditorState(collectProjectEditorState());
+    },
+    onCreateNewProject: async () => {
+        await applyImportedProject(buildNewProjectState());
+    },
+    onProjectLoaded: async (projectState) => {
+        await applyImportedProject(projectState);
+    },
 });
 
 // Update display when model selection changes
 window.updateSelectedModel = function() {
     const modelName = document.getElementById('modelSelect').value;
     window.selectedModel = modelName;
+    projectInterface.execute('rumoca.project.setSelectedSimulationModel', { model: modelName });
+    void resultsPanelController.renderModel(modelName || '');
     if (modelName && window.compiledModels[modelName]) {
         const result = window.compiledModels[modelName];
         // Refresh the active tab's output
@@ -818,30 +1125,8 @@ window.updateSelectedModel = function() {
     }
     updateSourceBreadcrumbs();
     updateGlobalStatusBar();
+    refreshSimulationSettingsModalIfOpen();
 };
-
-// Detect model/class definitions in source code
-function detectModels(source) {
-    // Heuristic extractor for compilable roots (model/block/class).
-    // Restrict matching to declaration-like lines and ignore comments so text
-    // like "block form" in comments does not create fake models.
-    const lineRegex = /^\s*(?:final\s+)?(?:encapsulated\s+)?(?:partial\s+)?(?:model|block|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b/;
-    const blockCommentsStripped = source.replace(/\/\*[\s\S]*?\*\//g, '');
-    const models = [];
-    const seen = new Set();
-
-    for (const rawLine of blockCommentsStripped.split(/\r?\n/)) {
-        const line = rawLine.replace(/\/\/.*$/, '');
-        const match = line.match(lineRegex);
-        if (!match) continue;
-        const name = match[1];
-        if (seen.has(name)) continue;
-        seen.add(name);
-        models.push(name);
-    }
-
-    return models;
-}
 
 const sourceBreadcrumbs = createSourceBreadcrumbs();
 
@@ -877,7 +1162,7 @@ worker.onmessage = (e) => {
                 window.refreshModelicaSemanticTokens();
             }
             // Fetch version and show welcome message
-            sendRequest('getVersion', {}).then(version => {
+            sendWorkspaceCommand('rumoca.workspace.getVersion', {}).then(version => {
                 setTerminalOutput(`Rumoca v${version} - Modelica Compiler\nHover over tabs/buttons for help.`);
             }).catch(() => {
                 setTerminalOutput('WASM initialized! Edit code to compile.');
@@ -926,6 +1211,492 @@ function sendRequest(action, params = {}, timeout = 30000) {
         });
         worker.postMessage({ id, action, ...params });
     });
+}
+
+function sendLanguageCommand(command, payload = {}, timeout = 30000) {
+    return sendRequest(
+        'languageCommand',
+        {
+            command,
+            payload,
+        },
+        timeout,
+    );
+}
+
+function sendWorkspaceCommand(command, payload = {}, timeout = 30000) {
+    return sendRequest(
+        'workspaceCommand',
+        {
+            command,
+            payload,
+        },
+        timeout,
+    );
+}
+
+function readRumocaSmokeConfig() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('rumoca_smoke') !== '1') {
+        return null;
+    }
+    return {
+        modelName: params.get('smoke_model') || '',
+        sourceUrl: params.get('smoke_source_url') || '',
+        libraryZipUrl: params.get('smoke_library_zip_url') || '',
+        callbackPort: Number.parseInt(params.get('smoke_callback_port') || '0', 10),
+        readyTimeoutMs: Number.parseInt(params.get('smoke_ready_timeout_ms') || '20000', 10),
+        compileTimeoutMs: Number.parseInt(params.get('smoke_compile_timeout_ms') || '60000', 10),
+        completionTimeoutMs: Number.parseInt(params.get('smoke_completion_timeout_ms') || '20000', 10),
+    };
+}
+
+function isRumocaSmokeMode() {
+    return new URLSearchParams(window.location.search).get('rumoca_smoke') === '1';
+}
+
+function ensureRumocaSmokeResultNode() {
+    let node = document.getElementById('rumocaSmokeResult');
+    if (node) {
+        return node;
+    }
+    node = document.createElement('pre');
+    node.id = 'rumocaSmokeResult';
+    node.hidden = true;
+    document.body.appendChild(node);
+    return node;
+}
+
+function setRumocaSmokeResult(status, payload) {
+    document.body.dataset.rumocaSmokeStatus = status;
+    ensureRumocaSmokeResultNode().textContent = JSON.stringify(payload, null, 2);
+}
+
+async function notifyRumocaSmokeDone(config, status, payload) {
+    if (!Number.isFinite(config.callbackPort) || config.callbackPort <= 0) {
+        return;
+    }
+    try {
+        await fetch(`http://127.0.0.1:${config.callbackPort}/smoke-done`, {
+            method: 'POST',
+            mode: 'no-cors',
+            keepalive: true,
+            body: JSON.stringify({ status, payload }),
+        });
+    } catch (error) {
+        console.warn('[rumoca-smoke] failed to notify callback', error);
+    }
+}
+
+async function waitForRumocaSmoke(label, predicate, timeoutMs) {
+    const started = performance.now();
+    while ((performance.now() - started) < timeoutMs) {
+        const value = await predicate();
+        if (value) {
+            return value;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error(`${label} timed out after ${timeoutMs}ms`);
+}
+
+async function loadRumocaSmokeLibraryArchive(libraryZipUrl) {
+    const response = await fetch(libraryZipUrl, { cache: 'no-store' });
+    if (!response.ok) {
+        throw new Error(`Failed to fetch smoke library archive: ${response.status} ${response.statusText}`);
+    }
+    const bytes = await response.arrayBuffer();
+    const fileName = libraryZipUrl.split('/').pop() || 'smoke-library.zip';
+    const file = new File([bytes], fileName, { type: 'application/zip' });
+    if (typeof window.stageLibraryArchiveFile !== 'function') {
+        throw new Error('library staging unavailable for smoke archive load');
+    }
+    rumocaSmokeLibrariesImported = false;
+    return await window.stageLibraryArchiveFile(file);
+}
+
+function normalizeCompletionItems(rawCompletion) {
+    const items = rawCompletion?.items || rawCompletion || [];
+    return Array.isArray(items) ? items : [];
+}
+
+const EXPECTED_MSL_COMPLETION_LABEL = 'Electrical';
+const EXPECTED_MSL_NAVIGATION_LABEL = 'Ground';
+const ACTIVE_WASM_URI = 'file:///input.mo';
+let rumocaSmokeLibrariesImported = false;
+
+function completionLabel(item) {
+    if (typeof item?.label === 'string') {
+        return item.label;
+    }
+    if (item?.label && typeof item.label.label === 'string') {
+        return item.label.label;
+    }
+    return String(item?.label ?? '');
+}
+
+function hoverContentsParts(contents) {
+    if (typeof contents === 'string') {
+        return [contents];
+    }
+    if (Array.isArray(contents)) {
+        return contents.flatMap(part => hoverContentsParts(part));
+    }
+    if (contents && typeof contents === 'object' && typeof contents.value === 'string') {
+        return [contents.value];
+    }
+    return [];
+}
+
+function normalizeUri(value) {
+    if (typeof value === 'string') {
+        return value;
+    }
+    if (value && typeof value === 'object' && typeof value.toString === 'function') {
+        const rendered = value.toString();
+        if (rendered && rendered !== '[object Object]') {
+            return rendered;
+        }
+    }
+    return null;
+}
+
+function findRumocaSmokeNavigationProbe(source) {
+    const preferredPath = 'Modelica.Electrical.Analog.Basic.Ground';
+    const preferredOffset = source.indexOf(preferredPath);
+    if (preferredOffset >= 0) {
+        return {
+            label: EXPECTED_MSL_NAVIGATION_LABEL,
+            offset: preferredOffset + preferredPath.lastIndexOf(EXPECTED_MSL_NAVIGATION_LABEL),
+        };
+    }
+
+    const fallback = source.match(/\bModelica(?:\.[A-Z][A-Za-z0-9_]*)+\b/);
+    if (!fallback?.[0]) {
+        throw new Error('smoke source missing a qualified Modelica symbol for navigation');
+    }
+    const label = fallback[0].split('.').at(-1);
+    if (!label) {
+        throw new Error('qualified Modelica navigation probe is missing a terminal label');
+    }
+    return {
+        label,
+        offset: fallback.index + fallback[0].lastIndexOf(label),
+    };
+}
+
+async function measureRumocaSmokeHover(source, timeoutMs) {
+    const navigationProbe = findRumocaSmokeNavigationProbe(source);
+    const model = window.editor?.getModel();
+    if (!model) {
+        throw new Error('editor unavailable for smoke hover measurement');
+    }
+    const position = model.getPositionAt(navigationProbe.offset);
+    const started = performance.now();
+    const rawHover = await sendLanguageCommand(
+        'rumoca.language.hover',
+        {
+            source,
+            line: position.lineNumber - 1,
+            character: position.column - 1,
+        },
+        timeoutMs,
+    );
+    const hoverMs = Math.round(performance.now() - started);
+    const hover = JSON.parse(rawHover);
+    const hoverText = hoverContentsParts(hover?.contents).join('\n');
+    return {
+        hoverMs,
+        hoverCount: hover ? 1 : 0,
+        expectedHoverPresent: hoverText.includes(navigationProbe.label),
+    };
+}
+
+async function measureRumocaSmokeDefinition(source, timeoutMs) {
+    const navigationProbe = findRumocaSmokeNavigationProbe(source);
+    const model = window.editor?.getModel();
+    if (!model) {
+        throw new Error('editor unavailable for smoke definition measurement');
+    }
+    const position = model.getPositionAt(navigationProbe.offset);
+    const started = performance.now();
+    const rawDefinition = await sendLanguageCommand(
+        'rumoca.language.definition',
+        {
+            source,
+            line: position.lineNumber - 1,
+            character: position.column - 1,
+        },
+        timeoutMs,
+    );
+    const definitionMs = Math.round(performance.now() - started);
+    const parsedDefinition = JSON.parse(rawDefinition);
+    const definitionEntries = Array.isArray(parsedDefinition)
+        ? parsedDefinition
+        : parsedDefinition
+            ? [parsedDefinition]
+            : [];
+    const definitionUris = definitionEntries
+        .map(item => normalizeUri(item?.targetUri ?? item?.uri ?? null))
+        .filter(Boolean);
+    return {
+        definitionMs,
+        definitionCount: definitionUris.length,
+        expectedDefinitionPresent: definitionUris.length > 0,
+        crossFileDefinitionPresent: definitionUris.some(uri => uri !== ACTIVE_WASM_URI),
+    };
+}
+
+async function measureRumocaSmokeCompletion(source, timeoutMs, options = {}) {
+    const { ensureLibraryImport = false } = options;
+    if (!window.editor || !window.editor.getModel) {
+        throw new Error('editor unavailable for smoke completion measurement');
+    }
+
+    if (window.editor.getValue() !== source) {
+        window.editor.setValue(source);
+    }
+    const model = window.editor.getModel();
+    const preferredProbe = 'Modelica.Electrical.Analog.Basic.Ground';
+    const preferredOffset = source.indexOf(preferredProbe);
+    const probe = 'Modelica.';
+    const offset = preferredOffset >= 0 ? preferredOffset : source.indexOf(probe);
+    if (offset < 0) {
+        throw new Error(`completion probe source missing '${probe}'`);
+    }
+    const position = model.getPositionAt(offset + probe.length);
+    window.editor.focus();
+    window.editor.setPosition(position);
+    window.editor.revealPositionInCenter(position);
+
+    const started = performance.now();
+    let libraryImportMs = 0;
+    if (ensureLibraryImport && !rumocaSmokeLibrariesImported) {
+        if (typeof window.importLoadedLibrariesForSmoke !== 'function') {
+            throw new Error('library import unavailable for smoke completion measurement');
+        }
+        const imported = await window.importLoadedLibrariesForSmoke();
+        libraryImportMs = Math.max(0, Number(imported?.libraryImportMs) || 0);
+        rumocaSmokeLibrariesImported = true;
+    }
+    const rawCompletion = await sendLanguageCommand(
+        'rumoca.language.completionWithTiming',
+        {
+            source,
+            line: position.lineNumber - 1,
+            character: position.column - 1,
+        },
+        timeoutMs,
+    );
+    const completionMs = Math.round(performance.now() - started);
+    const parsedCompletion = JSON.parse(rawCompletion);
+    const items = normalizeCompletionItems(parsedCompletion?.items || parsedCompletion);
+    return {
+        completionMs,
+        libraryImportMs,
+        completionCount: items.length,
+        expectedCompletionPresent: items.some(
+            item => completionLabel(item) === EXPECTED_MSL_COMPLETION_LABEL,
+        ),
+        stageTimings: parsedCompletion?.timing || null,
+    };
+}
+
+async function measureRumocaSmokeCodeLenses() {
+    if (typeof window.provideModelicaCodeLensesForSmoke !== 'function') {
+        throw new Error('code lens provider unavailable for smoke measurement');
+    }
+    const started = performance.now();
+    const provided = await Promise.resolve(window.provideModelicaCodeLensesForSmoke());
+    const codeLensMs = Math.round(performance.now() - started);
+    const lenses = Array.isArray(provided?.lenses) ? provided.lenses : [];
+    return {
+        codeLensMs,
+        codeLensCount: lenses.length,
+    };
+}
+
+async function runRumocaBrowserSmoke(config) {
+    const result = {
+        modelName: config.modelName || null,
+        libraryCount: 0,
+        statusText: '',
+    };
+    setRumocaSmokeResult('running', result);
+
+    try {
+        await waitForRumocaSmoke(
+            'worker ready',
+            () => workerReady && window.editor && window.loadLibraryArchiveFile,
+            config.readyTimeoutMs,
+        );
+
+        if (config.libraryZipUrl) {
+            const stagedArchive = await loadRumocaSmokeLibraryArchive(config.libraryZipUrl);
+            result.archiveLoadMs = Math.max(0, Number(stagedArchive?.archivePrepMs) || 0);
+            result.libraryCount = await waitForRumocaSmoke(
+                'loaded library count',
+                () => {
+                    const count = parseBadgeNumber(document.getElementById('libCount')?.textContent || '0');
+                    return count > 0 ? count : null;
+                },
+                config.readyTimeoutMs,
+            );
+        }
+
+        let sourceText = window.editor.getValue();
+        let discoveredModels = null;
+        if (config.sourceUrl) {
+            const response = await fetch(config.sourceUrl, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`Failed to fetch smoke source: ${response.status} ${response.statusText}`);
+            }
+            sourceText = await response.text();
+            const openStart = performance.now();
+            window.compiledModels = {};
+            window.editor.setValue(sourceText);
+            discoveredModels = await waitForRumocaSmoke(
+                'smoke source model discovery',
+                async () => {
+                    const state = await getSimulationModelState(window.editor.getValue(), config.modelName || '');
+                    const models = Array.isArray(state.models) ? state.models : [];
+                    if (!config.modelName) {
+                        return models.length > 0 ? models : null;
+                    }
+                    return models.includes(config.modelName) ? models : null;
+                },
+                config.readyTimeoutMs,
+            );
+            result.openMs = Math.round(performance.now() - openStart);
+        }
+
+        if (!discoveredModels) {
+            discoveredModels = await waitForRumocaSmoke(
+                'smoke source model discovery',
+                async () => {
+                    const state = await getSimulationModelState(window.editor.getValue(), config.modelName || '');
+                    const models = Array.isArray(state.models) ? state.models : [];
+                    if (!config.modelName) {
+                        return models.length > 0 ? models : null;
+                    }
+                    return models.includes(config.modelName) ? models : null;
+                },
+                config.readyTimeoutMs,
+            );
+            result.openMs = result.openMs ?? 0;
+        }
+
+        const smokeModelName = config.modelName || discoveredModels[0];
+        const completionProbeSource = sourceText;
+        const codeLenses = await measureRumocaSmokeCodeLenses();
+        result.codeLensMs = codeLenses.codeLensMs;
+        result.codeLensCount = codeLenses.codeLensCount;
+        const libraryLoad = await measureRumocaSmokeCompletion(
+            completionProbeSource,
+            config.completionTimeoutMs,
+            { ensureLibraryImport: true },
+        );
+        result.libraryLoadMs = libraryLoad.completionMs;
+        result.libraryLoadCompletionCount = libraryLoad.completionCount;
+        result.libraryExpectedCompletionPresent = libraryLoad.expectedCompletionPresent;
+        result.libraryStageTimings = libraryLoad.stageTimings;
+        if (!result.libraryExpectedCompletionPresent) {
+            throw new Error(
+                `Initial smoke completion items did not include Modelica.${EXPECTED_MSL_COMPLETION_LABEL}`,
+            );
+        }
+
+        const firstCompletion = await measureRumocaSmokeCompletion(
+            completionProbeSource,
+            config.completionTimeoutMs,
+        );
+        const warmCompletion = await measureRumocaSmokeCompletion(
+            completionProbeSource,
+            config.completionTimeoutMs,
+        );
+        result.completionMs = firstCompletion.completionMs;
+        result.completionCount = firstCompletion.completionCount;
+        result.expectedCompletionPresent = firstCompletion.expectedCompletionPresent;
+        result.coldStageTimings = firstCompletion.stageTimings;
+        result.warmCompletionMs = warmCompletion.completionMs;
+        result.warmCompletionCount = warmCompletion.completionCount;
+        result.warmExpectedCompletionPresent = warmCompletion.expectedCompletionPresent;
+        result.warmStageTimings = warmCompletion.stageTimings;
+        if (!result.expectedCompletionPresent) {
+            throw new Error(
+                `Smoke completion items did not include Modelica.${EXPECTED_MSL_COMPLETION_LABEL}`,
+            );
+        }
+        if (!result.warmExpectedCompletionPresent) {
+            throw new Error(
+                `Warm smoke completion items did not include Modelica.${EXPECTED_MSL_COMPLETION_LABEL}`,
+            );
+        }
+
+        const hover = await measureRumocaSmokeHover(
+            completionProbeSource,
+            config.completionTimeoutMs,
+        );
+        result.hoverMs = hover.hoverMs;
+        result.hoverCount = hover.hoverCount;
+        result.expectedHoverPresent = hover.expectedHoverPresent;
+        if (!result.expectedHoverPresent) {
+            throw new Error(`Smoke hover did not include ${EXPECTED_MSL_NAVIGATION_LABEL}`);
+        }
+
+        const definition = await measureRumocaSmokeDefinition(
+            completionProbeSource,
+            config.completionTimeoutMs,
+        );
+        result.definitionMs = definition.definitionMs;
+        result.definitionCount = definition.definitionCount;
+        result.expectedDefinitionPresent = definition.expectedDefinitionPresent;
+        result.crossFileDefinitionPresent = definition.crossFileDefinitionPresent;
+        if (!result.expectedDefinitionPresent) {
+            throw new Error(`Smoke definition did not resolve ${EXPECTED_MSL_NAVIGATION_LABEL}`);
+        }
+        if (!result.crossFileDefinitionPresent) {
+            throw new Error(`Smoke definition did not leave the active document for ${EXPECTED_MSL_NAVIGATION_LABEL}`);
+        }
+
+        const compileStart = performance.now();
+        const compileJson = await sendWorkspaceCommand(
+            result.libraryCount > 0
+                ? 'rumoca.workspace.compileWithLibraries'
+                : 'rumoca.workspace.compile',
+            {
+                source: window.editor.getValue(),
+                modelName: smokeModelName,
+                libraries: '{}',
+            },
+            config.compileTimeoutMs,
+        );
+        const compileResult = JSON.parse(compileJson);
+        result.compileMs = Math.round(performance.now() - compileStart);
+        result.modelName = smokeModelName;
+        result.libraryCount = parseBadgeNumber(document.getElementById('libCount')?.textContent || '0');
+        result.statusText = String(document.getElementById('autoCompileStatus')?.textContent || '');
+        window.compiledModels = window.compiledModels || {};
+        window.compiledModels[smokeModelName] = {
+            dae: compileResult.dae,
+            dae_native: compileResult.dae_native,
+            balance: compileResult.balance,
+            pretty: compileResult.pretty,
+            error: null,
+        };
+
+        if (compileResult.balance?.is_balanced !== true) {
+            throw new Error(`Smoke model did not balance: ${JSON.stringify(compileResult.balance ?? null)}`);
+        }
+
+        setRumocaSmokeResult('pass', result);
+        await notifyRumocaSmokeDone(config, 'pass', result);
+    } catch (error) {
+        result.error = String(error?.message || error);
+        setRumocaSmokeResult('fail', result);
+        await notifyRumocaSmokeDone(config, 'fail', result);
+        throw error;
+    }
 }
 
 function jumpToModelicaLocation(lineNumber, column) {
@@ -989,7 +1760,7 @@ async function buildQuickOpenItems() {
     if (!workerReady) return items;
 
     try {
-        const json = await sendRequest('listClasses', {});
+        const json = await sendLanguageCommand('rumoca.language.listClasses', {});
         const parsed = JSON.parse(json);
         const classNodes = flattenClassTreeNodes(parsed?.classes, []);
         for (const node of classNodes) {
@@ -1083,7 +1854,7 @@ async function buildDocumentSymbolItems() {
     if (!editor || !workerReady) return [];
     try {
         const source = editor.getValue();
-        const json = await sendRequest('documentSymbols', { source });
+        const json = await sendLanguageCommand('rumoca.language.documentSymbols', { source });
         const parsed = JSON.parse(json);
         const symbols = normalizeDocumentSymbols(parsed);
         const items = [];
@@ -1104,9 +1875,18 @@ setupCommandPalette({
 // Monaco Editor
 require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' }});
 require(['vs/editor/editor.main'], function() {
-    const monacoState = setupMonacoWorkspace({ monaco, sendRequest, layoutAllEditors });
+    const monacoState = setupMonacoWorkspace({ monaco, sendLanguageCommand, layoutAllEditors });
     editor = monacoState.editor;
     const templateEditor = monacoState.templateEditor;
+    projectFs.setActiveDocument(
+        inferModelicaFileName(editor.getValue(), 'Ball.mo'),
+        editor.getValue(),
+    );
+    defaultProjectSeed = {
+        activeDocumentPath: projectFs.getActiveDocumentPath(),
+        activeDocumentContent: editor.getValue(),
+        editorState: collectProjectEditorState(),
+    };
     window.triggerQuickFixAtCursor = async function() {
         if (!editor) return;
         const position = editor.getPosition ? editor.getPosition() : null;
@@ -1151,7 +1931,7 @@ require(['vs/editor/editor.main'], function() {
         let diagnostics = [];
         // Run diagnostics
         try {
-            const diagJson = await sendRequest('diagnostics', { source });
+            const diagJson = await sendLanguageCommand('rumoca.language.diagnostics', { source });
             if (isStaleRun()) return;
             diagnostics = normalizeDiagnosticsPayload(JSON.parse(diagJson), source);
             if (isStaleRun()) return;
@@ -1164,22 +1944,14 @@ require(['vs/editor/editor.main'], function() {
             diagnostics = [];
         }
 
-        // Detect all models in source
-        const models = detectModels(source);
-        if (isStaleRun()) return;
-
-        // Update dropdown
         const previousSelection = modelSelect.value;
+        const modelState = await getSimulationModelState(source, previousSelection);
+        if (isStaleRun()) return;
+        const models = Array.isArray(modelState.models) ? modelState.models : [];
         modelSelect.innerHTML = models.length === 0
             ? '<option value="">-- No models --</option>'
-            : models.map(m => `<option value="${m}">${m}</option>`).join('');
-
-        // Restore selection if possible, otherwise select first
-        if (models.includes(previousSelection)) {
-            modelSelect.value = previousSelection;
-        } else if (models.length > 0) {
-            modelSelect.value = models[0];
-        }
+            : models.map((model) => `<option value="${model}">${model}</option>`).join('');
+        modelSelect.value = modelState.selectedModel || '';
         if (isStaleRun()) return;
 
         // Clear old compiled results
@@ -1219,7 +1991,7 @@ require(['vs/editor/editor.main'], function() {
 
         // Compile all models
         let cachedCount = 0;
-        try { cachedCount = await sendRequest('getLibraryCount', {}); } catch (e) {}
+        try { cachedCount = await sendLanguageCommand('rumoca.language.getLibraryCount', {}); } catch (e) {}
 
         let successCount = 0;
         const compileErrors = [];
@@ -1230,9 +2002,16 @@ require(['vs/editor/editor.main'], function() {
                 let json;
                 console.log('[compile] compiling model:', modelName);
                 if (cachedCount > 0) {
-                    json = await sendRequest('compileWithLibraries', { source, modelName, libraries: '{}' });
+                    json = await sendWorkspaceCommand('rumoca.workspace.compileWithLibraries', {
+                        source,
+                        modelName,
+                        libraries: '{}',
+                    });
                 } else {
-                    json = await sendRequest('compile', { source, modelName });
+                    json = await sendWorkspaceCommand('rumoca.workspace.compile', {
+                        source,
+                        modelName,
+                    });
                 }
                 if (isStaleRun()) return;
                 const result = JSON.parse(json);
@@ -1316,6 +2095,7 @@ require(['vs/editor/editor.main'], function() {
         if (document.getElementById('packagesSection').classList.contains('active')) {
             libraryDocsController.refreshPackageViewer(true);
         }
+        refreshSimulationSettingsModalIfOpen();
         } catch (unexpectedError) {
             if (isStaleRun()) return;
             // Catch any unexpected errors to ensure status is always updated
@@ -1332,10 +2112,14 @@ require(['vs/editor/editor.main'], function() {
     };
 
     editor.onDidChangeModelContent(() => {
+        projectFs.updateActiveDocumentContent(editor.getValue());
         if (window.refreshModelicaSemanticTokens) window.refreshModelicaSemanticTokens();
         updateSourceBreadcrumbs();
+        if (suspendWorkspaceObservers) return;
+        if (isRumocaSmokeMode()) return;
         runLiveChecks();
     });
+
     editor.onDidChangeCursorPosition(() => {
         updateSourceBreadcrumbs();
     });
@@ -1361,12 +2145,14 @@ require(['vs/editor/editor.main'], function() {
 
     setTimeout(() => {
         updateSourceBreadcrumbs();
+        if (isRumocaSmokeMode()) return;
         runLiveChecks();
     }, 1000);
 
     // Template editor change listener - re-render when template changes (if codegen tab is active)
     let templateDebounceTimer = null;
     templateEditor.onDidChangeModelContent(() => {
+        if (suspendWorkspaceObservers) return;
         if (window.activeRightTab !== 'codegen') return;
         if (templateDebounceTimer) clearTimeout(templateDebounceTimer);
         templateDebounceTimer = setTimeout(() => {
@@ -1376,4 +2162,11 @@ require(['vs/editor/editor.main'], function() {
             }
         }, 300);
     });
+
+    const smokeConfig = readRumocaSmokeConfig();
+    if (smokeConfig) {
+        void runRumocaBrowserSmoke(smokeConfig).catch(error => {
+            console.error('[rumoca-smoke] browser smoke failed:', error);
+        });
+    }
 });

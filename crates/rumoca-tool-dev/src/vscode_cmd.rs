@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -9,11 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
+use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use crate::{
-    VscodeBuildArgs, VscodeHostArgs, VscodePackageArgs, exe_name, newest_prefixed_file, repo_root,
-    run_status,
+    VscodeBuildArgs, VscodeHostArgs, VscodePackageArgs, exe_name, newest_prefixed_file,
+    repo_cli_cmd, repo_root, run_status, run_status_quiet,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +35,16 @@ enum VscodeNpmInstallPlan {
 pub(crate) enum VscodePackageTarget {
     LinuxX64,
     LinuxArm64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct VscodeSmokeOptions {
+    pub(crate) install_prereqs: bool,
+}
+
+struct PreparedVscodeSmokeCommand {
+    command: Command,
+    _stage_dir: TempDir,
 }
 
 impl VscodePackageTarget {
@@ -57,6 +69,100 @@ impl VscodePackageTarget {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct VscodeStageCacheDeltaSummary {
+    #[serde(alias = "fileItemIndexQueryHits")]
+    pub(crate) file_item_index_query_hits: Option<u64>,
+    #[serde(alias = "fileItemIndexQueryMisses")]
+    pub(crate) file_item_index_query_misses: Option<u64>,
+    #[serde(alias = "declarationIndexQueryHits")]
+    pub(crate) declaration_index_query_hits: Option<u64>,
+    #[serde(alias = "declarationIndexQueryMisses")]
+    pub(crate) declaration_index_query_misses: Option<u64>,
+    #[serde(alias = "scopeQueryHits")]
+    pub(crate) scope_query_hits: Option<u64>,
+    #[serde(alias = "scopeQueryMisses")]
+    pub(crate) scope_query_misses: Option<u64>,
+    #[serde(alias = "sourceSetPackageMembershipQueryHits")]
+    pub(crate) source_set_package_membership_query_hits: Option<u64>,
+    #[serde(alias = "sourceSetPackageMembershipQueryMisses")]
+    pub(crate) source_set_package_membership_query_misses: Option<u64>,
+    #[serde(alias = "orphanPackageMembershipQueryHits")]
+    pub(crate) orphan_package_membership_query_hits: Option<u64>,
+    #[serde(alias = "orphanPackageMembershipQueryMisses")]
+    pub(crate) orphan_package_membership_query_misses: Option<u64>,
+    #[serde(alias = "libraryCompletionCacheHits")]
+    pub(crate) library_completion_cache_hits: Option<u64>,
+    #[serde(alias = "libraryCompletionCacheMisses")]
+    pub(crate) library_completion_cache_misses: Option<u64>,
+    #[serde(alias = "libraryFilesParsed")]
+    pub(crate) library_files_parsed: Option<u64>,
+    #[serde(alias = "standardResolvedBuilds")]
+    pub(crate) standard_resolved_builds: Option<u64>,
+    #[serde(alias = "semanticNavigationBuilds")]
+    pub(crate) semantic_navigation_builds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VscodeStageTimingSummary {
+    pub(crate) uri: Option<String>,
+    pub(crate) source_library_load_ms: Option<u64>,
+    pub(crate) completion_library_load_ms: Option<u64>,
+    pub(crate) library_completion_prime_ms: Option<u64>,
+    pub(crate) needs_resolved_session: Option<bool>,
+    pub(crate) ast_fast_path_matched: Option<bool>,
+    pub(crate) query_fast_path_check_ms: Option<u64>,
+    pub(crate) query_fast_path_matched: Option<bool>,
+    pub(crate) resolved_build_ms: Option<u64>,
+    pub(crate) completion_handler_ms: Option<u64>,
+    pub(crate) total_ms: Option<u64>,
+    pub(crate) built_resolved_tree: Option<bool>,
+    pub(crate) namespace_index_query_hits: Option<u64>,
+    pub(crate) namespace_index_query_misses: Option<u64>,
+    pub(crate) file_item_index_query_hits: Option<u64>,
+    pub(crate) file_item_index_query_misses: Option<u64>,
+    pub(crate) declaration_index_query_hits: Option<u64>,
+    pub(crate) declaration_index_query_misses: Option<u64>,
+    pub(crate) scope_query_hits: Option<u64>,
+    pub(crate) scope_query_misses: Option<u64>,
+    pub(crate) source_set_package_membership_query_hits: Option<u64>,
+    pub(crate) source_set_package_membership_query_misses: Option<u64>,
+    pub(crate) orphan_package_membership_query_hits: Option<u64>,
+    pub(crate) orphan_package_membership_query_misses: Option<u64>,
+    pub(crate) class_name_count_after_ensure: Option<u64>,
+    pub(crate) session_cache_delta: Option<VscodeStageCacheDeltaSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VscodeMslSmokeSummary {
+    pub(crate) activate_ms: Option<u64>,
+    pub(crate) open_ms: Option<u64>,
+    pub(crate) code_lens_ms: Option<u64>,
+    pub(crate) code_lens_count: Option<u64>,
+    pub(crate) library_load_ms: Option<u64>,
+    pub(crate) library_load_completion_count: Option<u64>,
+    pub(crate) library_expected_completion_present: Option<bool>,
+    pub(crate) library_stage_timings: Option<VscodeStageTimingSummary>,
+    pub(crate) completion_ms: Option<u64>,
+    pub(crate) completion_count: Option<u64>,
+    pub(crate) expected_completion_present: Option<bool>,
+    pub(crate) warm_completion_ms: Option<u64>,
+    pub(crate) warm_completion_count: Option<u64>,
+    pub(crate) warm_expected_completion_present: Option<bool>,
+    pub(crate) hover_ms: Option<u64>,
+    pub(crate) hover_count: Option<u64>,
+    pub(crate) expected_hover_present: Option<bool>,
+    pub(crate) definition_ms: Option<u64>,
+    pub(crate) definition_count: Option<u64>,
+    pub(crate) expected_definition_present: Option<bool>,
+    pub(crate) cross_file_definition_present: Option<bool>,
+    pub(crate) cold_stage_timings: Option<VscodeStageTimingSummary>,
+    pub(crate) warm_stage_timings: Option<VscodeStageTimingSummary>,
+    pub(crate) latest_stage_timings: Option<VscodeStageTimingSummary>,
+}
+
 pub(crate) fn build_vscode_ext(args: VscodeBuildArgs) -> Result<()> {
     let root = repo_root();
     let vscode_dir = resolve_vscode_dir(&root)?;
@@ -65,7 +171,12 @@ pub(crate) fn build_vscode_ext(args: VscodeBuildArgs) -> Result<()> {
         build_and_stage_vscode_lsp(&root, &vscode_dir, true)?;
     }
 
-    ensure_vscode_npm_dependencies(&vscode_dir, VscodeNpmDependencyMode::IfMissing, false)?;
+    ensure_vscode_npm_dependencies(
+        &vscode_dir,
+        VscodeNpmDependencyMode::IfMissing,
+        false,
+        false,
+    )?;
 
     println!("Compiling extension TypeScript...");
     let mut npm_esbuild = Command::new("npm");
@@ -104,7 +215,12 @@ pub(crate) fn package_vscode_ext(args: VscodePackageArgs) -> Result<()> {
     let root = repo_root();
     let vscode_dir = resolve_vscode_dir(&root)?;
 
-    ensure_vscode_npm_dependencies(&vscode_dir, VscodeNpmDependencyMode::IfMissing, false)?;
+    ensure_vscode_npm_dependencies(
+        &vscode_dir,
+        VscodeNpmDependencyMode::IfMissing,
+        false,
+        false,
+    )?;
     ensure_vscode_package_target_prereqs(args.target, args.install_musl_tools)?;
     build_vscode_release_binaries(&root, args.target)?;
     stage_vscode_release_binaries(&root, &vscode_dir, args.target)?;
@@ -116,7 +232,12 @@ pub(crate) fn run_vscode_ci(root: &Path) -> Result<()> {
     // Keep the local and hosted gates aligned. We intentionally skip install scripts everywhere
     // because the esbuild postinstall validation fails under the Node 24 toolchain on this repo,
     // while the bundled binary still works for test/lint/bundle verification.
-    ensure_vscode_npm_dependencies(&vscode_dir, VscodeNpmDependencyMode::RefreshLocked, true)?;
+    ensure_vscode_npm_dependencies(
+        &vscode_dir,
+        VscodeNpmDependencyMode::RefreshLocked,
+        true,
+        false,
+    )?;
 
     println!("Running VSCode extension tests...");
     let mut npm_test = Command::new("npm");
@@ -137,6 +258,221 @@ pub(crate) fn run_vscode_ci(root: &Path) -> Result<()> {
     run_status(npm_esbuild)
 }
 
+pub(crate) fn run_vscode_msl_smoke(
+    root: &Path,
+    msl_root: &Path,
+    install_prereqs: bool,
+) -> Result<()> {
+    let output_dir = root.join("target/editor-msl-smoke");
+    let _ = run_vscode_msl_smoke_report(
+        root,
+        msl_root,
+        &output_dir,
+        VscodeSmokeOptions { install_prereqs },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn can_launch_vscode_msl_smoke() -> bool {
+    let environment = current_vscode_smoke_environment();
+    command_available("node")
+        && command_available("npm")
+        && select_vscode_smoke_launch_mode(environment).is_ok()
+}
+
+pub(crate) fn run_vscode_msl_smoke_report(
+    root: &Path,
+    msl_root: &Path,
+    output_dir: &Path,
+    options: VscodeSmokeOptions,
+) -> Result<VscodeMslSmokeSummary> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let summary_path = output_dir.join("vscode-msl-smoke-summary.json");
+    let timing_path = output_dir.join("vscode-msl-completion-timings.jsonl");
+    let PreparedVscodeSmokeCommand {
+        command: smoke,
+        _stage_dir,
+    } = prepare_vscode_msl_smoke_command(
+        root,
+        msl_root,
+        Some(&summary_path),
+        Some(&timing_path),
+        options,
+    )?;
+    run_status_quiet(smoke)?;
+    let raw = fs::read_to_string(&summary_path)
+        .with_context(|| format!("failed to read {}", summary_path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", summary_path.display()))
+}
+
+fn prepare_vscode_msl_smoke_command(
+    root: &Path,
+    msl_root: &Path,
+    summary_output_path: Option<&Path>,
+    timing_output_path: Option<&Path>,
+    options: VscodeSmokeOptions,
+) -> Result<PreparedVscodeSmokeCommand> {
+    let source_vscode_dir = resolve_vscode_dir(root)?;
+    let smoke_stage = stage_vscode_smoke_workspace(&source_vscode_dir)?;
+    let staged_vscode_dir = smoke_stage.path();
+    mirror_cached_vscode_smoke_install(&source_vscode_dir, staged_vscode_dir)?;
+
+    // SPEC_0025: smoke verification must not mutate the live extension tree or
+    // interfere with a concurrent local watch session under editors/vscode.
+    build_and_stage_vscode_lsp(root, staged_vscode_dir, false)?;
+    ensure_vscode_npm_dependencies(
+        staged_vscode_dir,
+        VscodeNpmDependencyMode::RefreshLocked,
+        true,
+        true,
+    )?;
+
+    println!("Bundling VSCode extension for MSL smoke...");
+    let mut npm_esbuild = Command::new("npm");
+    npm_esbuild
+        .arg("run")
+        .arg("esbuild")
+        .env("RUMOCA_REPO_ROOT", root)
+        .current_dir(staged_vscode_dir);
+    run_status_quiet(npm_esbuild)?;
+
+    let mut smoke = new_vscode_smoke_command("node", options)?;
+    smoke
+        .arg("tests/run_msl_extension_smoke.mjs")
+        .env("RUMOCA_VSCODE_MSL_ROOT", msl_root)
+        .current_dir(staged_vscode_dir);
+    if let Some(path) = summary_output_path {
+        smoke.env("RUMOCA_VSCODE_SMOKE_SUMMARY_OUT", path);
+        smoke.env("RUMOCA_VSCODE_SMOKE_ARTIFACT_RESULT", path);
+    }
+    if let Some(path) = timing_output_path {
+        smoke.env("RUMOCA_VSCODE_SMOKE_ARTIFACT_TIMINGS", path);
+    }
+    Ok(PreparedVscodeSmokeCommand {
+        command: smoke,
+        _stage_dir: smoke_stage,
+    })
+}
+
+fn stage_vscode_smoke_workspace(source_vscode_dir: &Path) -> Result<TempDir> {
+    let stage_dir = tempfile::Builder::new()
+        .prefix("rumoca-vscode-smoke-stage-")
+        .tempdir()
+        .context("failed to create VSCode smoke staging dir")?;
+    copy_vscode_smoke_workspace(source_vscode_dir, stage_dir.path())?;
+    Ok(stage_dir)
+}
+
+fn mirror_cached_vscode_smoke_install(
+    source_vscode_dir: &Path,
+    staged_vscode_dir: &Path,
+) -> Result<()> {
+    let source_cache = source_vscode_dir.join(".vscode-test");
+    if !source_cache.is_dir() {
+        return Ok(());
+    }
+
+    let staged_cache = staged_vscode_dir.join(".vscode-test");
+    fs::create_dir_all(&staged_cache)
+        .with_context(|| format!("failed to create {}", staged_cache.display()))?;
+    for entry in fs::read_dir(&source_cache)
+        .with_context(|| format!("failed to read {}", source_cache.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read {}", source_cache.display()))?;
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("vscode-") {
+            continue;
+        }
+        mirror_vscode_smoke_install_dir(&entry.path(), &staged_cache.join(file_name))?;
+    }
+    Ok(())
+}
+
+fn copy_vscode_smoke_workspace(source: &Path, destination: &Path) -> Result<()> {
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read {}", source.display()))?;
+        let file_name = entry.file_name();
+        if !should_copy_vscode_smoke_root_entry(&file_name) {
+            continue;
+        }
+        copy_vscode_smoke_entry(&entry.path(), &destination.join(file_name))?;
+    }
+    Ok(())
+}
+
+fn should_copy_vscode_smoke_root_entry(file_name: &std::ffi::OsStr) -> bool {
+    match file_name.to_str() {
+        Some("bin" | "node_modules" | "out" | ".vscode-test") => false,
+        Some(_) | None => true,
+    }
+}
+
+fn copy_vscode_smoke_entry(source: &Path, destination: &Path) -> Result<()> {
+    let file_type = fs::symlink_metadata(source)
+        .with_context(|| format!("failed to stat {}", source.display()))?
+        .file_type();
+    if file_type.is_dir() {
+        fs::create_dir_all(destination)
+            .with_context(|| format!("failed to create {}", destination.display()))?;
+        for entry in
+            fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
+        {
+            let entry = entry.with_context(|| format!("failed to read {}", source.display()))?;
+            copy_vscode_smoke_entry(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(source, destination).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn mirror_vscode_smoke_install_dir(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        return Ok(());
+    }
+    if try_symlink_dir(source, destination).is_ok() {
+        return Ok(());
+    }
+    copy_vscode_smoke_entry(source, destination)
+}
+
+fn try_symlink_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, destination)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(source, destination)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (source, destination);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "directory symlinks unsupported on this platform",
+        ))
+    }
+}
+
 pub(crate) fn vscode_dev(args: VscodeHostArgs) -> Result<()> {
     let root = repo_root();
     let vscode_dir = resolve_vscode_dir(&root)?;
@@ -145,7 +481,12 @@ pub(crate) fn vscode_dev(args: VscodeHostArgs) -> Result<()> {
     if !args.skip_lsp_build {
         build_and_stage_vscode_lsp(&root, &vscode_dir, false)?;
     }
-    ensure_vscode_npm_dependencies(&vscode_dir, VscodeNpmDependencyMode::IfMissing, false)?;
+    ensure_vscode_npm_dependencies(
+        &vscode_dir,
+        VscodeNpmDependencyMode::IfMissing,
+        false,
+        false,
+    )?;
 
     let mut rust_watch_stop: Option<Arc<AtomicBool>> = None;
     let mut rust_watch_handle: Option<thread::JoinHandle<()>> = None;
@@ -323,14 +664,103 @@ fn resolve_workspace_dir(root: &Path, requested: Option<&Path>) -> Result<PathBu
     Ok(resolved)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VscodeSmokeLaunchMode {
+    Direct,
+    Xvfb,
+}
+
+fn new_vscode_smoke_command(program: &str, options: VscodeSmokeOptions) -> Result<Command> {
+    let mut environment = current_vscode_smoke_environment();
+    maybe_install_vscode_smoke_prereqs(&mut environment, options)?;
+    match select_vscode_smoke_launch_mode(environment)? {
+        VscodeSmokeLaunchMode::Direct => Ok(Command::new(program)),
+        VscodeSmokeLaunchMode::Xvfb => {
+            let mut cmd = Command::new("xvfb-run");
+            cmd.arg("-a").arg(program);
+            Ok(cmd)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VscodeSmokeEnvironment {
+    is_linux: bool,
+    has_display: bool,
+    has_xvfb_run: bool,
+    has_xauth: bool,
+}
+
+fn current_vscode_smoke_environment() -> VscodeSmokeEnvironment {
+    VscodeSmokeEnvironment {
+        is_linux: cfg!(target_os = "linux"),
+        has_display: std::env::var_os("DISPLAY").is_some(),
+        has_xvfb_run: command_in_path("xvfb-run"),
+        has_xauth: command_in_path("xauth"),
+    }
+}
+
+fn maybe_install_vscode_smoke_prereqs(
+    environment: &mut VscodeSmokeEnvironment,
+    options: VscodeSmokeOptions,
+) -> Result<()> {
+    if !should_install_vscode_smoke_prereqs(*environment, options) {
+        return Ok(());
+    }
+    println!("Installing headless VS Code smoke prerequisites.");
+    repo_cli_cmd::install_ubuntu_vscode_smoke_prereqs(false)?;
+    environment.has_xvfb_run = command_in_path("xvfb-run");
+    environment.has_xauth = command_in_path("xauth");
+    Ok(())
+}
+
+fn should_install_vscode_smoke_prereqs(
+    environment: VscodeSmokeEnvironment,
+    options: VscodeSmokeOptions,
+) -> bool {
+    environment.is_linux
+        && options.install_prereqs
+        && !(environment.has_xvfb_run && environment.has_xauth)
+}
+
+fn select_vscode_smoke_launch_mode(
+    environment: VscodeSmokeEnvironment,
+) -> Result<VscodeSmokeLaunchMode> {
+    if !environment.is_linux {
+        return Ok(VscodeSmokeLaunchMode::Direct);
+    }
+
+    if environment.has_xvfb_run && environment.has_xauth {
+        return Ok(VscodeSmokeLaunchMode::Xvfb);
+    }
+
+    let missing = missing_headless_vscode_smoke_prereqs(environment);
+
+    anyhow::bail!(
+        "VS Code desktop smoke always runs under xvfb on Linux. Missing {}. Run `rum repo ubuntu install-vscode-smoke-prereqs`, pass `--install-prereqs`, or install xvfb/xauth manually with `sudo apt-get install -y xvfb xauth`.",
+        missing.join(", ")
+    );
+}
+
+fn missing_headless_vscode_smoke_prereqs(environment: VscodeSmokeEnvironment) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !environment.has_xvfb_run {
+        missing.push("xvfb-run");
+    }
+    if !environment.has_xauth {
+        missing.push("xauth");
+    }
+    missing
+}
+
 fn resolve_vscode_npm_install_plan(
     has_lockfile: bool,
     node_modules_present: bool,
-    esbuild_present: bool,
+    npm_toolchain_present: bool,
     mode: VscodeNpmDependencyMode,
 ) -> VscodeNpmInstallPlan {
     match mode {
-        VscodeNpmDependencyMode::IfMissing if node_modules_present && esbuild_present => {
+        VscodeNpmDependencyMode::IfMissing if node_modules_present && npm_toolchain_present => {
             VscodeNpmInstallPlan::Skip
         }
         VscodeNpmDependencyMode::IfMissing | VscodeNpmDependencyMode::RefreshLocked
@@ -348,18 +778,25 @@ fn ensure_vscode_npm_dependencies(
     vscode_dir: &Path,
     mode: VscodeNpmDependencyMode,
     ignore_scripts: bool,
+    quiet: bool,
 ) -> Result<()> {
     let node_modules = vscode_dir.join("node_modules");
+    let bin_dir = node_modules.join(".bin");
     let esbuild_bin = if cfg!(windows) {
-        node_modules.join(".bin").join("esbuild.cmd")
+        bin_dir.join("esbuild.cmd")
     } else {
-        node_modules.join(".bin").join("esbuild")
+        bin_dir.join("esbuild")
+    };
+    let eslint_bin = if cfg!(windows) {
+        bin_dir.join("eslint.cmd")
+    } else {
+        bin_dir.join("eslint")
     };
     let has_lockfile = vscode_dir.join("package-lock.json").is_file();
     let plan = resolve_vscode_npm_install_plan(
         has_lockfile,
         node_modules.is_dir(),
-        esbuild_bin.is_file(),
+        esbuild_bin.is_file() && eslint_bin.is_file(),
         mode,
     );
 
@@ -370,8 +807,9 @@ fn ensure_vscode_npm_dependencies(
         }
         VscodeNpmInstallPlan::Install if node_modules.is_dir() => {
             println!(
-                "Reinstalling npm dependencies (missing toolchain at {})...",
-                esbuild_bin.display()
+                "Reinstalling npm dependencies (missing toolchain at {} or {})...",
+                esbuild_bin.display(),
+                eslint_bin.display()
             );
         }
         VscodeNpmInstallPlan::Install => {
@@ -393,7 +831,42 @@ fn ensure_vscode_npm_dependencies(
         npm_install.arg("--ignore-scripts");
     }
     npm_install.current_dir(vscode_dir);
-    run_status(npm_install)
+    let install_result = if quiet {
+        run_status_quiet(npm_install)
+    } else {
+        run_status(npm_install)
+    };
+    if install_result.is_ok() {
+        return Ok(());
+    }
+    if plan == VscodeNpmInstallPlan::Ci
+        && node_modules.is_dir()
+        && should_retry_vscode_npm_ci_after_clean(install_result.as_ref().err())
+    {
+        println!("npm ci left a dirty node_modules tree; clearing and retrying once...");
+        fs::remove_dir_all(&node_modules)
+            .with_context(|| format!("failed to remove {}", node_modules.display()))?;
+        let mut retry = Command::new("npm");
+        retry.arg("ci");
+        if ignore_scripts {
+            retry.arg("--ignore-scripts");
+        }
+        retry.current_dir(vscode_dir);
+        return if quiet {
+            run_status_quiet(retry)
+        } else {
+            run_status(retry)
+        };
+    }
+    install_result
+}
+
+fn should_retry_vscode_npm_ci_after_clean(error: Option<&anyhow::Error>) -> bool {
+    let Some(error) = error else {
+        return false;
+    };
+    let message = error.to_string();
+    message.contains("ENOTEMPTY") || message.contains("EBUSY")
 }
 
 fn build_and_stage_vscode_lsp(root: &Path, vscode_dir: &Path, release: bool) -> Result<()> {
@@ -419,7 +892,7 @@ fn build_and_stage_vscode_lsp(root: &Path, vscode_dir: &Path, release: bool) -> 
     let stage_bin = |name: &str| -> Result<()> {
         let source = root.join("target").join(profile_name).join(exe_name(name));
         let target = bin_dir.join(exe_name(name));
-        fs::copy(&source, &target).with_context(|| {
+        replace_staged_binary(&source, &target).with_context(|| {
             format!(
                 "failed to copy {name} from {} to {}",
                 source.display(),
@@ -432,6 +905,51 @@ fn build_and_stage_vscode_lsp(root: &Path, vscode_dir: &Path, release: bool) -> 
     stage_bin("rumoca-lsp")?;
     stage_bin("rumoca")?;
     Ok(())
+}
+
+fn replace_staged_binary(source: &Path, target: &Path) -> Result<()> {
+    let temp_target = staged_temp_path(target);
+    fs::copy(source, &temp_target).with_context(|| {
+        format!(
+            "failed to copy staged binary from {} to {}",
+            source.display(),
+            temp_target.display()
+        )
+    })?;
+    if let Err(error) = fs::rename(&temp_target, target) {
+        #[cfg(windows)]
+        {
+            if target.exists() {
+                fs::remove_file(target)
+                    .with_context(|| format!("failed to remove {}", target.display()))?;
+                fs::rename(&temp_target, target).with_context(|| {
+                    format!(
+                        "failed to replace staged binary {} with {}",
+                        temp_target.display(),
+                        target.display()
+                    )
+                })?;
+                return Ok(());
+            }
+        }
+        let _ = fs::remove_file(&temp_target);
+        return Err(error).with_context(|| {
+            format!(
+                "failed to replace staged binary {} with {}",
+                temp_target.display(),
+                target.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+fn staged_temp_path(target: &Path) -> PathBuf {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("rumoca-stage");
+    target.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()))
 }
 
 fn launch_vscode_extension_host(vscode_dir: &Path, workspace_dir: &Path) -> Result<()> {
@@ -580,7 +1098,7 @@ fn stage_named_binary(
         "missing bundled binary: {}",
         source.display()
     );
-    fs::copy(&source, &target).with_context(|| {
+    replace_staged_binary(&source, &target).with_context(|| {
         format!(
             "failed to copy bundled binary from {} to {}",
             source.display(),
@@ -638,6 +1156,18 @@ fn command_available(program: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn command_in_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                return true;
+            }
+            cfg!(windows) && dir.join(format!("{program}.exe")).is_file()
+        })
+    })
+}
+
 fn cargo_target_linker_env_suffix(target: &str) -> String {
     target.to_ascii_uppercase().replace('-', "_")
 }
@@ -649,10 +1179,30 @@ fn cargo_target_cc_env_suffix(target: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        VscodeNpmDependencyMode, VscodeNpmInstallPlan, VscodePackageTarget,
+        VscodeMslSmokeSummary, VscodeNpmDependencyMode, VscodeNpmInstallPlan, VscodePackageTarget,
+        VscodeSmokeEnvironment, VscodeSmokeLaunchMode, VscodeSmokeOptions,
         cargo_target_cc_env_suffix, cargo_target_linker_env_suffix,
-        resolve_vscode_npm_install_plan,
+        mirror_cached_vscode_smoke_install, replace_staged_binary, resolve_vscode_npm_install_plan,
+        select_vscode_smoke_launch_mode, should_copy_vscode_smoke_root_entry,
+        should_install_vscode_smoke_prereqs, should_retry_vscode_npm_ci_after_clean,
+        stage_vscode_smoke_workspace,
     };
+    use anyhow::anyhow;
+    use serde_json::json;
+
+    fn smoke_environment(
+        is_linux: bool,
+        has_display: bool,
+        has_xvfb_run: bool,
+        has_xauth: bool,
+    ) -> VscodeSmokeEnvironment {
+        VscodeSmokeEnvironment {
+            is_linux,
+            has_display,
+            has_xvfb_run,
+            has_xauth,
+        }
+    }
 
     #[test]
     fn if_missing_mode_skips_when_toolchain_is_present() {
@@ -691,6 +1241,98 @@ mod tests {
     }
 
     #[test]
+    fn npm_ci_retry_detector_recovers_from_directory_busy_errors() {
+        assert!(should_retry_vscode_npm_ci_after_clean(Some(&anyhow!(
+            "npm error ENOTEMPTY: directory not empty"
+        ))));
+        assert!(should_retry_vscode_npm_ci_after_clean(Some(&anyhow!(
+            "npm error EBUSY: resource busy or locked"
+        ))));
+        assert!(!should_retry_vscode_npm_ci_after_clean(Some(&anyhow!(
+            "npm error EACCES: permission denied"
+        ))));
+        assert!(!should_retry_vscode_npm_ci_after_clean(None));
+    }
+
+    #[test]
+    fn vscode_smoke_staging_skips_mutable_build_artifacts() {
+        let source = tempfile::tempdir().expect("source tempdir");
+        let staged = source.path().join("editors").join("vscode");
+        std::fs::create_dir_all(&staged).expect("create source tree");
+        std::fs::write(staged.join("package.json"), "{}").expect("write package");
+        std::fs::create_dir_all(staged.join("src")).expect("create src");
+        std::fs::write(staged.join("src/extension.ts"), "export {}").expect("write source");
+        std::fs::create_dir_all(staged.join("node_modules")).expect("create node_modules");
+        std::fs::write(staged.join("node_modules/keep.txt"), "ignore").expect("write dep");
+        std::fs::create_dir_all(staged.join("out")).expect("create out");
+        std::fs::write(staged.join("out/extension.js"), "ignore").expect("write out");
+        std::fs::create_dir_all(staged.join("bin")).expect("create bin");
+        std::fs::write(staged.join("bin/rumoca-lsp"), "ignore").expect("write bin");
+        std::fs::create_dir_all(staged.join(".vscode-test")).expect("create cache");
+        std::fs::write(staged.join(".vscode-test/code"), "ignore").expect("write cache");
+
+        let temp = stage_vscode_smoke_workspace(&staged).expect("stage workspace");
+        let copied = temp.path();
+
+        assert!(copied.join("package.json").is_file());
+        assert!(copied.join("src/extension.ts").is_file());
+        assert!(!copied.join("node_modules").exists());
+        assert!(!copied.join("out").exists());
+        assert!(!copied.join("bin").exists());
+        assert!(!copied.join(".vscode-test").exists());
+    }
+
+    #[test]
+    fn vscode_smoke_staging_filter_excludes_live_dependency_dirs() {
+        assert!(should_copy_vscode_smoke_root_entry(std::ffi::OsStr::new(
+            "src"
+        )));
+        assert!(!should_copy_vscode_smoke_root_entry(std::ffi::OsStr::new(
+            "node_modules"
+        )));
+        assert!(!should_copy_vscode_smoke_root_entry(std::ffi::OsStr::new(
+            "out"
+        )));
+        assert!(!should_copy_vscode_smoke_root_entry(std::ffi::OsStr::new(
+            "bin"
+        )));
+        assert!(!should_copy_vscode_smoke_root_entry(std::ffi::OsStr::new(
+            ".vscode-test"
+        )));
+    }
+
+    #[test]
+    fn mirror_cached_vscode_smoke_install_links_only_downloaded_editor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_vscode_dir = temp.path().join("source");
+        let staged_vscode_dir = temp.path().join("stage");
+        let cached_dir = source_vscode_dir
+            .join(".vscode-test")
+            .join("vscode-linux-x64-1.111.0");
+        std::fs::create_dir_all(&cached_dir).expect("create cached dir");
+        std::fs::write(cached_dir.join("code"), "").expect("write cached executable");
+        std::fs::create_dir_all(source_vscode_dir.join(".vscode-test").join("user-data"))
+            .expect("create user-data");
+        std::fs::create_dir_all(&staged_vscode_dir).expect("create staged dir");
+
+        mirror_cached_vscode_smoke_install(&source_vscode_dir, &staged_vscode_dir)
+            .expect("mirror cached install");
+
+        assert!(
+            staged_vscode_dir
+                .join(".vscode-test")
+                .join("vscode-linux-x64-1.111.0")
+                .exists()
+        );
+        assert!(
+            !staged_vscode_dir
+                .join(".vscode-test")
+                .join("user-data")
+                .exists()
+        );
+    }
+
+    #[test]
     fn vscode_package_target_linux_x64_maps_to_expected_release_targets() {
         assert_eq!(VscodePackageTarget::LinuxX64.vsce_target(), "linux-x64");
         assert_eq!(
@@ -709,6 +1351,52 @@ mod tests {
     }
 
     #[test]
+    fn replace_staged_binary_overwrites_existing_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source = temp.path().join("source-bin");
+        let target = temp.path().join("target-bin");
+        std::fs::write(&source, b"new").expect("write source");
+        std::fs::write(&target, b"old").expect("write target");
+
+        replace_staged_binary(&source, &target).expect("replace staged binary");
+
+        let contents = std::fs::read(&target).expect("read target");
+        assert_eq!(contents, b"new");
+    }
+
+    #[test]
+    fn vscode_smoke_summary_parses_snake_case_cache_delta() {
+        let summary: VscodeMslSmokeSummary = serde_json::from_value(json!({
+            "warmStageTimings": {
+                "sourceLibraryLoadMs": 38,
+                "completionLibraryLoadMs": 37,
+                "resolvedBuildMs": null,
+                "completionHandlerMs": 0,
+                "totalMs": 20,
+                "sessionCacheDelta": {
+                    "library_completion_cache_hits": 1,
+                    "library_completion_cache_misses": 0,
+                    "library_files_parsed": 0
+                }
+            }
+        }))
+        .expect("summary should parse");
+
+        let warm = summary
+            .warm_stage_timings
+            .expect("warm stage timings should be present");
+        assert_eq!(warm.source_library_load_ms, Some(38));
+        assert_eq!(warm.completion_library_load_ms, Some(37));
+        assert_eq!(warm.completion_handler_ms, Some(0));
+        let delta = warm
+            .session_cache_delta
+            .expect("session cache delta should be present");
+        assert_eq!(delta.library_completion_cache_hits, Some(1));
+        assert_eq!(delta.library_completion_cache_misses, Some(0));
+        assert_eq!(delta.library_files_parsed, Some(0));
+    }
+
+    #[test]
     fn cargo_target_env_suffixes_match_cargo_conventions() {
         assert_eq!(
             cargo_target_cc_env_suffix("x86_64-unknown-linux-musl"),
@@ -718,5 +1406,68 @@ mod tests {
             cargo_target_linker_env_suffix("x86_64-unknown-linux-musl"),
             "X86_64_UNKNOWN_LINUX_MUSL"
         );
+    }
+
+    #[test]
+    fn vscode_smoke_uses_xvfb_on_linux_even_with_display() {
+        let mode = select_vscode_smoke_launch_mode(smoke_environment(true, true, true, true))
+            .expect("Linux smoke should always use xvfb");
+        assert_eq!(mode, VscodeSmokeLaunchMode::Xvfb);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vscode_smoke_uses_xvfb_when_linux_has_no_display() {
+        let mode = select_vscode_smoke_launch_mode(smoke_environment(true, false, true, true))
+            .expect("xvfb should satisfy Linux headless smoke");
+        assert_eq!(mode, VscodeSmokeLaunchMode::Xvfb);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vscode_smoke_errors_when_linux_has_no_display_or_xauth() {
+        let error = select_vscode_smoke_launch_mode(smoke_environment(true, false, true, false))
+            .expect_err("Linux headless smoke should fail without xvfb");
+        assert!(
+            error.to_string().contains("Missing xauth"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn vscode_smoke_runs_direct_off_linux_without_display() {
+        let mode = select_vscode_smoke_launch_mode(smoke_environment(false, false, false, false))
+            .expect("non-Linux smoke should launch directly");
+        assert_eq!(mode, VscodeSmokeLaunchMode::Direct);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn install_prereqs_flag_only_applies_to_linux_missing_tools() {
+        assert!(should_install_vscode_smoke_prereqs(
+            smoke_environment(true, true, true, false),
+            VscodeSmokeOptions {
+                install_prereqs: true
+            }
+        ));
+        assert!(!should_install_vscode_smoke_prereqs(
+            smoke_environment(true, false, true, true),
+            VscodeSmokeOptions {
+                install_prereqs: true
+            }
+        ));
+        assert!(should_install_vscode_smoke_prereqs(
+            smoke_environment(true, true, false, false),
+            VscodeSmokeOptions {
+                install_prereqs: true
+            }
+        ));
+        assert!(!should_install_vscode_smoke_prereqs(
+            smoke_environment(true, false, false, false),
+            VscodeSmokeOptions {
+                install_prereqs: false
+            }
+        ));
     }
 }

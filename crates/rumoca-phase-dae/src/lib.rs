@@ -62,7 +62,10 @@ use indexmap::{IndexMap, IndexSet};
 use path_utils::strip_subscript;
 use path_utils::subscript_fallback_chain;
 use reference_validation::{validate_dae_constructor_field_projections, validate_dae_references};
-use rumoca_core::Span;
+use rumoca_core::{
+    Span,
+    timing::{maybe_elapsed_seconds, maybe_start_timer_if},
+};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use runtime_precompute::populate_runtime_precompute;
@@ -101,6 +104,17 @@ type StatementBlock = flat::StatementBlock;
 type Subscript = flat::Subscript;
 type VarName = flat::VarName;
 type Variability = rumoca_ir_core::Variability;
+
+fn todae_subphase_timing_enabled() -> bool {
+    std::env::var("RUMOCA_TODAE_PROFILE").is_ok()
+}
+
+fn log_todae_subphase(label: &str, start: rumoca_core::timing::OptionalTimer) {
+    if start.is_some() {
+        let elapsed = maybe_elapsed_seconds(start);
+        eprintln!("ToDae subphase {label}: {elapsed:.3}s");
+    }
+}
 
 /// Options controlling ToDAE conversion strictness.
 #[derive(Debug, Clone, Copy)]
@@ -223,8 +237,13 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
     // before A so that code generators can evaluate start values sequentially.
     sort_parameters_by_start_dependency(&mut dae);
 
+    let todae_subphase_timing = todae_subphase_timing_enabled();
+    let runtime_precompute_start = maybe_start_timer_if(todae_subphase_timing);
     populate_runtime_precompute(&mut dae)?;
+    log_todae_subphase("runtime_precompute", runtime_precompute_start);
+    let appendix_b_start = maybe_start_timer_if(todae_subphase_timing);
     appendix_b_validation::validate_appendix_b_invariants(&dae)?;
+    log_todae_subphase("appendix_b_validation", appendix_b_start);
 
     // MLS §4.7: Count interface flow variables (flows in top-level connectors)
     // These count toward the equation size, not as unknowns, because they'll
@@ -247,13 +266,20 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
 
     // Final compile-phase safety check on the generated DAE catches unresolved
     // constructor field projections introduced during ToDae conversion.
+    let constructor_projection_start = maybe_start_timer_if(todae_subphase_timing);
     validate_dae_constructor_field_projections(&dae)?;
+    log_todae_subphase(
+        "constructor_projection_validation",
+        constructor_projection_start,
+    );
     let known_flat_var_names: HashSet<String> = flat
         .variables
         .keys()
         .map(|name| name.as_str().to_string())
         .collect();
+    let reference_validation_start = maybe_start_timer_if(todae_subphase_timing);
     validate_dae_references(&dae, &known_flat_var_names)?;
+    log_todae_subphase("reference_validation", reference_validation_start);
 
     if options.error_on_unbalanced
         && !dae.is_partial

@@ -273,6 +273,7 @@ pub(crate) fn run(args: Args) -> Result<()> {
         &mut state.all_results,
     )?;
     run_pending_batches(&args, workers, &paths.sim_work_dir, &mut state)?;
+    ensure_omc_trace_artifacts(&paths, &mut state.all_results);
     attach_rumoca_runtime(&paths, &mut state.all_results)?;
     let trace_exclusions = load_trace_exclusions(&args, &paths)?;
     let trace_report = quantify_trace_differences(&paths, &state.all_results, &trace_exclusions)?;
@@ -969,7 +970,7 @@ fn attach_omc_record_metrics(
 
 fn attach_omc_traces(paths: &MslPaths, results: &mut BTreeMap<String, SimModelResult>) {
     for (model_name, result) in results {
-        if result.status != "success" {
+        if !omc_result_can_produce_trace(result) {
             continue;
         }
         let (trace_file, trace_error) =
@@ -977,6 +978,47 @@ fn attach_omc_traces(paths: &MslPaths, results: &mut BTreeMap<String, SimModelRe
         result.trace_file = trace_file;
         result.trace_error = trace_error;
     }
+}
+
+fn ensure_omc_trace_artifacts(paths: &MslPaths, results: &mut BTreeMap<String, SimModelResult>) {
+    for (model_name, result) in results {
+        if !omc_result_can_produce_trace(result)
+            || omc_trace_artifact_exists(paths, model_name, result)
+        {
+            continue;
+        }
+        let (trace_file, trace_error) =
+            write_omc_trace_artifact(paths, model_name, result.result_file.as_deref());
+        result.trace_file = trace_file;
+        result.trace_error = trace_error;
+    }
+}
+
+fn omc_trace_artifact_exists(paths: &MslPaths, model_name: &str, result: &SimModelResult) -> bool {
+    resolve_declared_omc_trace_path(paths, model_name, result).is_some_and(|path| path.is_file())
+}
+
+fn omc_result_can_produce_trace(result: &SimModelResult) -> bool {
+    result.status == "success" || result.result_file.is_some() || result.trace_file.is_some()
+}
+
+fn omc_model_is_trace_candidate(result: &SimModelResult) -> bool {
+    result.rumoca_status.as_deref() == Some("sim_ok") && omc_result_can_produce_trace(result)
+}
+
+fn resolve_declared_omc_trace_path(
+    paths: &MslPaths,
+    model_name: &str,
+    model: &SimModelResult,
+) -> Option<PathBuf> {
+    if let Some(trace_file) = model.trace_file.as_ref() {
+        let path = PathBuf::from(trace_file);
+        if path.is_absolute() {
+            return Some(path);
+        }
+        return Some(paths.results_dir.join(path));
+    }
+    Some(paths.omc_trace_dir.join(format!("{model_name}.json")))
 }
 
 fn write_omc_trace_artifact(
@@ -997,7 +1039,7 @@ fn write_omc_trace_artifact(
     if let Err(error) = write_pretty_json(&trace_path, &trace) {
         return (None, Some(format!("failed to write trace JSON: {error}")));
     }
-    (Some(relative.display().to_string()), None)
+    (Some(relative.to_string_lossy().replace('\\', "/")), None)
 }
 
 fn resolve_result_file_path(
@@ -1307,10 +1349,7 @@ fn quantify_trace_differences(
 ) -> Result<TraceQuantification> {
     let mut report = TraceQuantification::default();
     for (model_name, omc_model) in all_results {
-        if omc_model.status != "success" {
-            continue;
-        }
-        if omc_model.rumoca_status.as_deref() != Some("sim_ok") {
+        if !omc_model_is_trace_candidate(omc_model) {
             continue;
         }
         if let Some(reason) = trace_exclusions.get(model_name) {
@@ -1400,19 +1439,7 @@ fn resolve_omc_trace_path(
     model_name: &str,
     model: &SimModelResult,
 ) -> Option<PathBuf> {
-    if let Some(trace_file) = model.trace_file.as_ref() {
-        let path = PathBuf::from(trace_file);
-        if path.is_absolute() {
-            return Some(path);
-        }
-        return Some(paths.results_dir.join(path));
-    }
-    let fallback = paths.omc_trace_dir.join(format!("{model_name}.json"));
-    if fallback.is_file() {
-        Some(fallback)
-    } else {
-        None
-    }
+    resolve_declared_omc_trace_path(paths, model_name, model).filter(|path| path.is_file())
 }
 
 fn metric_distribution(values: impl Iterator<Item = f64>) -> Option<(f64, f64, f64, f64)> {

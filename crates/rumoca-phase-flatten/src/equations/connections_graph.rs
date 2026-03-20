@@ -165,7 +165,7 @@ mod tests {
     fn cref(path: &str) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
-            parts: crate::path_utils::parse_path_with_indices(path)
+            parts: crate::path_utils::split_path_with_indices(path)
                 .into_iter()
                 .map(|part| ast::ComponentRefPart {
                     ident: rumoca_ir_core::Token {

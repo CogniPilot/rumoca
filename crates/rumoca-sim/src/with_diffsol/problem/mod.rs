@@ -509,11 +509,74 @@ fn populate_parameter_values_into_env(dae: &dae::Dae, env: &mut VarEnv<f64>, par
     }
 }
 
-fn expression_refs_available_in_env(expr: &dae::Expression, env: &VarEnv<f64>) -> bool {
+fn expression_refs_available_in_env<T: SimFloat>(expr: &dae::Expression, env: &VarEnv<T>) -> bool {
     let mut refs = HashSet::new();
     expr.collect_var_refs(&mut refs);
     refs.into_iter()
         .all(|name| env.vars.contains_key(name.as_str()))
+}
+
+fn should_skip_missing_direct_assignment_target(
+    dae: &dae::Dae,
+    target: &str,
+    solution: &dae::Expression,
+    stats: &HashMap<String, crate::runtime::assignment::DirectAssignmentTargetStats>,
+    env: &VarEnv<impl SimFloat>,
+) -> bool {
+    if env.vars.contains_key(target) {
+        return true;
+    }
+
+    let target_stats = stats.get(target).copied().unwrap_or_default();
+    if target_stats.total > 1 && target_stats.non_alias != 1 {
+        return true;
+    }
+    target_stats.total > 1
+        && target_stats.non_alias == 1
+        && crate::runtime::assignment::assignment_solution_is_alias_varref(dae, solution)
+}
+
+pub(crate) fn populate_missing_direct_assignment_targets_in_env<T: SimFloat>(
+    dae: &dae::Dae,
+    env: &mut VarEnv<T>,
+    n_x: usize,
+) {
+    if dae.f_x.len() <= n_x {
+        return;
+    }
+
+    let stats = crate::runtime::assignment::collect_direct_assignment_target_stats(dae, n_x, false);
+    let max_passes = dae.f_x.len().max(4);
+    for _ in 0..max_passes {
+        let mut changed = false;
+        for eq in dae.f_x.iter().skip(n_x) {
+            if eq.origin == "orphaned_variable_pin" {
+                continue;
+            }
+            let Some((target, solution)) =
+                crate::runtime::assignment::direct_assignment_from_equation(eq)
+            else {
+                continue;
+            };
+            if should_skip_missing_direct_assignment_target(
+                dae,
+                target.as_str(),
+                solution,
+                &stats,
+                env,
+            ) || !expression_refs_available_in_env(solution, env)
+            {
+                continue;
+            }
+
+            let value = eval_expr::<T>(solution, env);
+            env.set(target.as_str(), value);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 fn assignment_from_initial_equation(eq: &dae::Equation) -> Option<(String, &dae::Expression)> {
@@ -764,7 +827,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static RHS_SIGNAL_DEBUG_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn eval_rhs_generic<S: SimFloat>(dae: &dae::Dae, env: &VarEnv<S>, n_x: usize, out: &mut [S]) {
-    let env = env.clone();
+    let mut env = env.clone();
+    populate_missing_direct_assignment_targets_in_env(dae, &mut env, n_x);
     if std::env::var("RUMOCA_SIM_INTROSPECT").is_ok()
         && env.vars.contains_key("vIn.signalSource.T_start")
         && env.vars.contains_key("vIn.signalSource.count")
