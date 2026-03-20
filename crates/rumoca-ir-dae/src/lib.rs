@@ -23,8 +23,10 @@ use indexmap::{IndexMap, IndexSet};
 use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
+mod fold_start_values;
 mod types;
 pub mod visitor;
+pub use fold_start_values::fold_start_values_to_literals;
 pub use types::{
     BuiltinFunction, ComponentRefPart, ComponentReference, ComprehensionIndex,
     DerivativeAnnotation, Expression, ExternalFunction, ForIndex, Function, FunctionParam, Literal,
@@ -197,6 +199,11 @@ pub struct Dae {
     /// Lowered periodic clock schedules.
     /// This is canonical runtime metadata (always present in DAE schema).
     pub clock_schedules: Vec<ClockSchedule>,
+    /// Triggered clock conditions — boolean expressions from non-static Clock()
+    /// constructors that cannot be resolved to periodic schedules at compile time.
+    /// These conditions must be evaluated at runtime to determine clock ticks.
+    #[serde(default)]
+    pub triggered_clock_conditions: Vec<Expression>,
     /// Per-variable effective clock interval (seconds) for clocked variables.
     ///
     /// Keys use canonical flattened variable names (e.g. `pulse.simTime`).
@@ -325,6 +332,11 @@ pub struct Variable {
     pub state_select: rumoca_ir_core::StateSelect,
     /// Description string.
     pub description: Option<String>,
+    /// True if this parameter is tunable at runtime (FMI 3.0 ConfigurationMode).
+    /// Structural parameters (evaluate=true, Integer/Boolean used for sizing)
+    /// remain fixed; all other parameters are tunable.
+    #[serde(default)]
+    pub is_tunable: bool,
 }
 
 impl Variable {

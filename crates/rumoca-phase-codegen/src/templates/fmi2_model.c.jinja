@@ -13,13 +13,25 @@
 #include <stdio.h>
 
 {# Configuration for render_expr - C style #}
-{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}"} %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true} %}
 
 /* pre(x) macro: maps pre(varname) to the pre_varname local alias */
 #define pre(x) pre_##x
 
 /* der(x) macro: maps der(varname) to the der_varname local alias */
 #define der(x) der_##x
+
+/* edge(x): true when x just became true (MLS §3.7.3.1) */
+#define edge(x) ((x) && !pre(x))
+
+/* change(x): true when x changed value */
+#define change(x) ((x) != pre(x))
+
+/* initial(): true only during initialization (always false in continuous mode) */
+#define initial() 0
+
+/* terminal(): true only at end of simulation (always false in continuous mode) */
+#define terminal() 0
 
 /* Complex number support — Modelica Complex record projected to real part.
  * Full Complex support requires IR-level record decomposition. This stub
@@ -34,11 +46,92 @@ static inline double __rumoca_sum_d(const double* arr, int n) {
     return s;
 }
 
+/* Modelica builtin stubs for array operations (scalar fallbacks) */
+static inline double zeros(int n) { (void)n; return 0.0; }
+static inline double ones(int n) { (void)n; return 1.0; }
+static inline double fill(double val, int n) { (void)n; return val; }
+static inline int size(const double* arr, int dim) { (void)arr; (void)dim; return 0; }
+
+/* Modelica interval() builtin — clocked partition intrinsic (MLS §16.10).
+ * Returns 0 when no clock schedule is known. */
+static inline double interval(double u) { (void)u; return 0.0; }
+
+/* =========================================================================
+ * ModelicaStandardTables stubs — allow compilation without the external
+ * ModelicaStandardTables C library. Functions return 0/NaN and print a
+ * warning at runtime. For correct table interpolation, link the real library.
+ * ========================================================================= */
+static double ModelicaStandardTables_CombiTable1D_getValue(double tableID, int icol, double u) {
+    (void)tableID; (void)icol; (void)u; return 0.0;
+}
+static double ModelicaStandardTables_CombiTable1D_maximumAbscissa(double tableID) {
+    (void)tableID; return 1.0;
+}
+static double ModelicaStandardTables_CombiTable1D_minimumAbscissa(double tableID) {
+    (void)tableID; return 0.0;
+}
+static double ModelicaStandardTables_CombiTimeTable_getValue(double tableID, int icol, double timeIn, double nextTimeEvent, double pre_nextTimeEvent) {
+    (void)tableID; (void)icol; (void)timeIn; (void)nextTimeEvent; (void)pre_nextTimeEvent; return 0.0;
+}
+static double ModelicaStandardTables_CombiTimeTable_nextTimeEvent(double tableID, double timeIn) {
+    (void)tableID; (void)timeIn; return 1.0e100;
+}
+static double ModelicaStandardTables_CombiTimeTable_maximumTime(double tableID) {
+    (void)tableID; return 1.0e100;
+}
+static double ModelicaStandardTables_CombiTimeTable_minimumTime(double tableID) {
+    (void)tableID; return 0.0;
+}
+
+/* ModelicaStrings stubs — all parameters are doubles in generated code
+ * (string variables are not yet lowered to const char*). */
+static int ModelicaStrings_skipWhiteSpace(double string, int startIndex) {
+    (void)string; return startIndex;
+}
+static int ModelicaStrings_compare(double s1, double s2, int caseSensitive) {
+    (void)s1; (void)s2; (void)caseSensitive; return 0;
+}
+static int ModelicaStrings_length(double string) {
+    (void)string; return 0;
+}
+static int ModelicaStrings_find(double string, double searchString, int startIndex) {
+    (void)string; (void)searchString; (void)startIndex; return 0;
+}
+static double ModelicaStrings_substring(double string, int startIndex, int endIndex) {
+    (void)string; (void)startIndex; (void)endIndex; return 0.0;
+}
+static int ModelicaStrings_scanReal(double string, int startIndex, int unsignedFlag, double* number) {
+    (void)string; (void)startIndex; (void)unsignedFlag; *number = 0.0; return startIndex;
+}
+static int ModelicaStrings_scanInteger(double string, int startIndex, int unsignedFlag, int* number) {
+    (void)string; (void)startIndex; (void)unsignedFlag; *number = 0; return startIndex;
+}
+
+/* ExternalCombiTable constructor stub — returns dummy table ID */
+static double Modelica_Blocks_Types_ExternalCombiTable1D() { return 0.0; }
+static double Modelica_Blocks_Types_ExternalCombiTimeTable() { return 0.0; }
+
+/* Named argument passthrough macros — the __rumoca_named_arg__ prefix is
+ * generated for named arguments in external function calls. Strip the prefix
+ * so the value passes through to the function. */
+#define __rumoca_named_arg___tableName(x) (x)
+#define __rumoca_named_arg___fileName(x) (x)
+#define __rumoca_named_arg___table(x) (x)
+#define __rumoca_named_arg___columns(x) (x)
+#define __rumoca_named_arg___extrapolation(x) (x)
+#define __rumoca_named_arg___verboseRead(x) (x)
+#define __rumoca_named_arg___verboseExtrapolation(x) (x)
+
 /* =========================================================================
  * Enumeration literal constants
  * ========================================================================= */
 {% for name, ordinal in dae.enum_literal_ordinals | items %}
 #define {{ name | sanitize }} {{ ordinal }}
+{% endfor %}
+
+/* Enumeration type constructors — identity macros for enum type casts */
+{% for type_name in dae.enum_type_names | default([]) %}
+#define {{ type_name | sanitize }}(x) (x)
 {% endfor %}
 
 {#- Macro: compute total scalar size of a variable map -#}
@@ -61,12 +154,15 @@ static inline double __rumoca_sum_d(const double* arr, int n) {
       mutable    - if true, emit "double" instead of "const double"
       pre_array  - if set, also emit const pre_ aliases from this array (e.g., "m->pre_z")
       der_prefix - if true, emit der_ aliases from m->xdot (for derivative aliases)
+    Also emits pointer aliases for array variables so Index expressions
+    (base[subscript] style) can access them via pointer.
 -#}
 {% macro unpack_vars(vars, array, mutable=false, pre_array="", der_prefix=false) -%}
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in vars | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
+{% set arr_base_offset = ns_idx.offset %}
 {% for i in range(sz) %}
     {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }}_{{ i + 1 }} = {{ array }}[{{ ns_idx.offset }}];
 {% if pre_array %}
@@ -74,6 +170,7 @@ static inline double __rumoca_sum_d(const double* arr, int n) {
 {% endif %}
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
+    {% if mutable %}double{% else %}const double{% endif %}* {{ name | sanitize }} = &{{ array }}[{{ arr_base_offset }}];
 {% else %}
     {% if mutable %}double{% else %}const double{% endif %} {{ name | sanitize }} = {{ array }}[{{ ns_idx.offset }}];
 {% if pre_array %}
@@ -283,6 +380,17 @@ static void initialize_defaults(ModelInstance* m) {
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
+    /* Array parameter pointer aliases (for function calls that use the base name) */
+{% set ns_idx = namespace(offset=0) %}
+{% for name, var in dae.p | items %}
+{% if var.dims %}
+{% set sz = var.dims | product %}
+    double* {{ name | sanitize }} = &m->p[{{ ns_idx.offset }}];
+{% set ns_idx.offset = ns_idx.offset + sz %}
+{% else %}
+{% set ns_idx.offset = ns_idx.offset + 1 %}
+{% endif %}
+{% endfor %}
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.u | items %}
 {% if var.dims %}
@@ -328,7 +436,7 @@ static void initialize_defaults(ModelInstance* m) {
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.constants | items %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->constants[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
@@ -338,12 +446,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -354,11 +462,11 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    m->x[{{ ns_idx.offset }}] = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
+    m->x[{{ ns_idx.offset }}] = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
 {% endfor %}
@@ -368,12 +476,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->u[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -384,12 +492,12 @@ static void initialize_defaults(ModelInstance* m) {
 {% if var.dims %}
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
-    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }}_{{ i + 1 }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endfor %}
 {% else %}
-    {{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
+    {{ name | sanitize }} = {% if var.start and is_string_literal(var.start) != "yes" %}{{ render_expr(var.start, cfg) }}{% else %}0.0{% endif %};
     m->z[{{ ns_idx.offset }}] = {{ name | sanitize }};  /* {{ name }} */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
 {% endif %}
@@ -407,10 +515,10 @@ static void compute_algebraics(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-    /* Unpack states + derivative aliases */
-{{ unpack_vars(dae.x, "m->x", der_prefix=true) }}
+    /* Unpack states + derivative aliases (pre_ = current value for continuous vars) */
+{{ unpack_vars(dae.x, "m->x", der_prefix=true, pre_array="m->x") }}
     /* Unpack inputs */
-{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
     /* Unpack parameters */
 {{ unpack_vars(dae.p, "m->p") }}
     /* Unpack constants */
@@ -420,9 +528,9 @@ static void compute_algebraics(ModelInstance* m) {
     /* Unpack discrete valued (with pre-values for pre() macro) */
 {{ unpack_vars(dae.m, "m->m", pre_array="m->pre_m") }}
     /* Mutable local aliases for algebraic variables (evaluation order matters) */
-{{ unpack_vars(dae.y, "m->y", mutable=true) }}
+{{ unpack_vars(dae.y, "m->y", mutable=true, pre_array="m->y") }}
     /* Mutable local aliases for output variables */
-{{ unpack_vars(dae.w, "m->w", mutable=true) }}
+{{ unpack_vars(dae.w, "m->w", mutable=true, pre_array="m->w") }}
 
     /* Evaluate output variables first (algebraics may depend on them) */
 {% set ns_out = namespace(offset=0) %}
@@ -474,9 +582,9 @@ static void compute_derivatives(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-{{ unpack_vars(dae.x, "m->x") }}
-{{ unpack_vars(dae.y, "m->y") }}
-{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
 {{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
@@ -512,9 +620,9 @@ static void compute_outputs(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-{{ unpack_vars(dae.x, "m->x") }}
-{{ unpack_vars(dae.y, "m->y") }}
-{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
 {{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
@@ -551,10 +659,10 @@ static void compute_discrete_updates(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-{#- Unpack all variables needed for discrete equations -#}
-{{ unpack_vars(dae.x, "m->x") }}
-{{ unpack_vars(dae.y, "m->y") }}
-{{ unpack_vars(dae.u, "m->u") }}
+{#- Unpack all variables needed for discrete equations (pre_ = current value for continuous vars) -#}
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
 {{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
@@ -583,9 +691,9 @@ static void compute_event_indicators(ModelInstance* m) {
     const double time = m->time;
     (void)t; (void)time;
 
-{{ unpack_vars(dae.x, "m->x") }}
-{{ unpack_vars(dae.y, "m->y") }}
-{{ unpack_vars(dae.u, "m->u") }}
+{{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
+{{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
 {{ unpack_vars(dae.z, "m->z", pre_array="m->pre_z") }}
@@ -990,8 +1098,13 @@ FMI2_EXPORT fmi2Status fmi2GetNominalsOfContinuousStates(
     fmi2Component c,
     fmi2Real x_nominal[], size_t nx)
 {
-    (void)c;
+    ModelInstance* m = (ModelInstance*)c;
+    (void)m;
     if (nx != N_STATES) return fmi2Error;
+
+    /* Unpack parameters and constants so nominal expressions can reference them */
+{{ unpack_vars(dae.p, "m->p") }}
+{{ unpack_vars(dae.constants, "m->constants") }}
 
 {% set ns_idx = namespace(offset=0) %}
 {% for name, var in dae.x | items %}

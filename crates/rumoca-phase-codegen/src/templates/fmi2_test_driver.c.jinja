@@ -4,7 +4,7 @@
     Compile together with the FMI2 model C source:
       cc -o test model.c test_driver.c -lm && ./test > trace.csv
 -#}
-{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary"} %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "subscript_underscore": true} %}
 {#- Macro: compute total scalar size of a variable map -#}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}

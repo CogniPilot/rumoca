@@ -406,3 +406,89 @@ fn test_template_missing_assignment_target_fails_fast() {
         "expected strict assignment error, got: {msg}"
     );
 }
+
+#[test]
+fn test_julia_mtk_template_empty_dae() {
+    let dae = dae::Dae::new();
+    let result = render_template(&dae, crate::templates::JULIA_MTK).unwrap();
+    assert!(result.contains("using ModelingToolkit"));
+    assert!(result.contains("using DifferentialEquations"));
+    assert!(result.contains("@independent_variables t"));
+    assert!(result.contains("D = Differential(t)"));
+    assert!(result.contains("@named sys = ODESystem(eqs, t)"));
+    assert!(result.contains("structural_simplify(sys)"));
+}
+
+#[test]
+fn test_julia_mtk_template_with_state() {
+    let mut dae = dae::Dae::new();
+    dae.states.insert(
+        "x".into(),
+        rumoca_ir_dae::Variable {
+            name: "x".into(),
+            start: Some(rumoca_ir_dae::Expression::Literal(
+                rumoca_ir_dae::Literal::Real(1.0),
+            )),
+            ..Default::default()
+        },
+    );
+    dae.f_x.push(rumoca_ir_dae::Equation {
+        lhs: Some("x".into()),
+        rhs: rumoca_ir_dae::Expression::VarRef {
+            name: "x".into(),
+            subscripts: vec![],
+        },
+        span: Default::default(),
+        origin: "test".into(),
+        scalar_count: 1,
+    });
+
+    let result = render_template(&dae, crate::templates::JULIA_MTK).unwrap();
+    assert!(
+        result.contains("x(t)"),
+        "state should be time-dependent: {result}"
+    );
+    assert!(
+        result.contains("D(x) ~"),
+        "should generate derivative equation: {result}"
+    );
+}
+
+#[test]
+fn test_julia_mtk_template_with_params_and_constants() {
+    let mut dae = dae::Dae::new();
+    dae.parameters.insert(
+        "k".into(),
+        rumoca_ir_dae::Variable {
+            name: "k".into(),
+            start: Some(rumoca_ir_dae::Expression::Literal(
+                rumoca_ir_dae::Literal::Real(2.5),
+            )),
+            ..Default::default()
+        },
+    );
+    dae.constants.insert(
+        "g".into(),
+        rumoca_ir_dae::Variable {
+            name: "g".into(),
+            start: Some(rumoca_ir_dae::Expression::Literal(
+                rumoca_ir_dae::Literal::Real(9.81),
+            )),
+            ..Default::default()
+        },
+    );
+
+    let result = render_template(&dae, crate::templates::JULIA_MTK).unwrap();
+    assert!(
+        result.contains("@parameters"),
+        "should have @parameters block: {result}"
+    );
+    assert!(
+        result.contains("k = 2.5"),
+        "parameter should have default: {result}"
+    );
+    assert!(
+        result.contains("g = 9.81"),
+        "constant should be assigned: {result}"
+    );
+}

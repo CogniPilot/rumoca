@@ -57,7 +57,7 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     }
 
     let clock_metadata_start = maybe_start_timer_if(profile);
-    let (clock_constructor_exprs, clock_schedules, clock_intervals) =
+    let (clock_constructor_exprs, clock_schedules, clock_intervals, triggered_clock_conditions) =
         clock::compute_clock_runtime_metadata(dae_model, &compile_time_scalars)?;
     if clock_metadata_start.is_some() {
         eprintln!(
@@ -79,6 +79,7 @@ pub(crate) fn populate_runtime_precompute(dae_model: &mut dae::Dae) -> Result<()
     dae_model.clock_constructor_exprs = clock_constructor_exprs;
     dae_model.clock_schedules = clock_schedules;
     dae_model.clock_intervals = clock_intervals;
+    dae_model.triggered_clock_conditions = triggered_clock_conditions;
     Ok(())
 }
 
