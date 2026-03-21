@@ -219,8 +219,8 @@ pub(super) fn ensure_live_diagnostics_fast_path(
             "{request} entry {idx} should not be marked stale"
         );
         ensure!(
-            !entry.requested_library_load,
-            "{request} entry {idx} should not request library loading"
+            !entry.requested_source_root_load,
+            "{request} entry {idx} should not request source-root loading"
         );
         ensure!(
             !entry.ran_compile,
@@ -285,8 +285,8 @@ pub(super) fn ensure_save_diagnostics_compile_path(
             "{request} entry {idx} should not be marked stale"
         );
         ensure!(
-            entry.requested_library_load,
-            "{request} entry {idx} should request library loading"
+            entry.requested_source_root_load,
+            "{request} entry {idx} should request source-root loading"
         );
         ensure!(
             entry.ran_compile,

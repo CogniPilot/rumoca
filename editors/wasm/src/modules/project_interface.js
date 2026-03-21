@@ -54,13 +54,13 @@ export function preferredViewerScriptPathForModel(model, viewId) {
     return sharedVisualization().preferredViewerScriptPathForModel(model, viewId);
 }
 
-export function createProjectInterface({ projectFs, runtimeBridge = null }) {
+export function createProjectInterface({ projectFs, runtimeBridge = null, onProjectMutation = null }) {
     function readSelectedSimulationModel() {
         return trimMaybeString(projectFs.getEditorState()?.selectedSimulationModel);
     }
 
     function executeHostedProjectSidecarCommand(command, payload = {}) {
-        return applyHostedProjectPatch(
+        const result = applyHostedProjectPatch(
             projectFs,
             sharedVisualization().executeHostedProjectSidecarCommand(
                 command,
@@ -68,6 +68,8 @@ export function createProjectInterface({ projectFs, runtimeBridge = null }) {
                 payload,
             ),
         );
+        onProjectMutation?.();
+        return result;
     }
 
     async function requestRuntime(action, payload = {}, timeoutMs) {
@@ -113,7 +115,7 @@ export function createProjectInterface({ projectFs, runtimeBridge = null }) {
         };
     }
 
-    async function startSimulation({ source, model, fallback, timeoutMs }) {
+    async function startSimulation({ source, model, fallback, timeoutMs, projectSources = '{}' }) {
         const selectedModel = trimMaybeString(model) || readSelectedSimulationModel();
         if (!selectedModel) {
             throw new Error('No simulation model selected');
@@ -134,6 +136,7 @@ export function createProjectInterface({ projectFs, runtimeBridge = null }) {
             {
                 source,
                 modelName: selectedModel,
+                projectSources,
                 solver: trimMaybeString(effective?.solver) || 'auto',
                 tEnd: Number(effective?.tEnd) || 1.0,
                 dt: Number(effective?.dt) || 0,

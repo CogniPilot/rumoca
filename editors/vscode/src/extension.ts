@@ -10,8 +10,8 @@ import {
     TransportKind
 } from 'vscode-languageclient/node';
 import {
-    ModelicaPathSources,
-    resolveModelicaPathSources as resolveModelicaPathSourcesForEntries,
+    SourceRootPathSources,
+    resolveSourceRootPaths as resolveSourceRootPathsForEntries,
 } from './modelica_paths';
 import {
     resolvePreferredViewerScriptPath,
@@ -516,7 +516,7 @@ interface SimulationExecutionSettings {
     dt?: number;
     solver: 'auto' | 'bdf' | 'rk-like';
     outputDir: string;
-    modelicaPath: string[];
+    sourceRootPaths: string[];
 }
 
 interface SimulationSettings extends SimulationExecutionSettings {
@@ -528,7 +528,7 @@ interface ModelSimulationPreset {
     dt?: number;
     solver: 'auto' | 'bdf' | 'rk-like';
     outputDir: string;
-    libraryOverrides: string[];
+    sourceRootOverrides: string[];
 }
 
 interface CompilePhaseSeconds {
@@ -596,7 +596,7 @@ interface VisualizationSharedModule {
             tEnd: number;
             dt?: number | null;
             outputDir?: string;
-            libraryOverrides: string[];
+            sourceRootOverrides: string[];
         };
         views: unknown;
     }): string;
@@ -612,7 +612,7 @@ interface VisualizationSharedModule {
             tEnd: number;
             dt: number | null;
             outputDir: string;
-            libraryOverrides: string[];
+            sourceRootOverrides: string[];
         };
         views: VisualizationView[];
     };
@@ -680,7 +680,7 @@ interface VisualizationSharedModule {
             tEnd: number;
             dt: number | null;
             outputDir: string;
-            libraryOverrides: string[];
+            sourceRootOverrides: string[];
         };
         views: VisualizationView[];
     };
@@ -713,7 +713,7 @@ interface VisualizationSharedModule {
                 tEnd: number;
                 dt?: number | null;
                 outputDir?: string;
-                modelicaPath: string[];
+                sourceRootPaths: string[];
             };
             views: VisualizationView[];
         }) => Promise<void> | void;
@@ -726,7 +726,7 @@ interface VisualizationSharedModule {
             tEnd: number;
             dt?: number | null;
             outputDir?: string;
-            modelicaPath: string[];
+            sourceRootPaths: string[];
         };
         views: VisualizationView[];
     }>;
@@ -1090,9 +1090,9 @@ async function setSelectedSimulationModel(
     return normalizeSimulationModelState(response);
 }
 
-function resolveModelicaPathSources(config: vscode.WorkspaceConfiguration): ModelicaPathSources {
-    return resolveModelicaPathSourcesForEntries(
-        config.get<string[]>('modelicaPath') ?? [],
+function resolveSourceRootPaths(config: vscode.WorkspaceConfiguration): SourceRootPathSources {
+    return resolveSourceRootPathsForEntries(
+        config.get<string[]>('sourceRootPaths') ?? [],
         process.env,
     );
 }
@@ -1102,14 +1102,14 @@ function getSimulationSettings(config: vscode.WorkspaceConfiguration): Simulatio
     const dt = Number.isFinite(dtRaw) && (dtRaw ?? 0) > 0 ? dtRaw : undefined;
     const solverRaw = (config.get<string>('simulation.solver') ?? 'auto').toLowerCase();
     const solver = solverRaw === 'bdf' || solverRaw === 'rk-like' ? solverRaw : 'auto';
-    const modelicaPathSources = resolveModelicaPathSources(config);
+    const sourceRootPaths = resolveSourceRootPaths(config);
     return {
         model: (config.get<string>('simulation.model') ?? '').trim(),
         tEnd: config.get<number>('simulation.tEnd') ?? 10.0,
         dt,
         solver,
         outputDir: (config.get<string>('simulation.outputDir') ?? '').trim(),
-        modelicaPath: modelicaPathSources.mergedPaths,
+        sourceRootPaths: sourceRootPaths.mergedPaths,
     };
 }
 
@@ -1492,7 +1492,7 @@ async function runRumocaSimulation(
             solver: settings.solver,
             tEnd: settings.tEnd,
             dt: settings.dt ?? null,
-            modelicaPath: settings.modelicaPath ?? [],
+            sourceRootPaths: settings.sourceRootPaths ?? [],
         },
     });
 
@@ -1560,7 +1560,7 @@ async function prepareRumocaSimulationModels(
                 solver: settings.solver,
                 tEnd: settings.tEnd,
                 dt: settings.dt ?? null,
-                modelicaPath: settings.modelicaPath ?? [],
+                sourceRootPaths: settings.sourceRootPaths ?? [],
             },
         },
     );
@@ -1649,7 +1649,7 @@ async function showSimulationSettingsPanel(
             tEnd: defaults.tEnd,
             dt: defaults.dt,
             outputDir: defaults.outputDir,
-            modelicaPath: [...defaults.modelicaPath],
+            sourceRootPaths: [...defaults.sourceRootPaths],
         },
         views: configuredViews,
         defaultViews: defaultVisualizationViews(),
@@ -1716,12 +1716,12 @@ async function showSimulationSettingsPanel(
                 writeViewsError:
                     'Failed to reset results-panel configuration via LSP project config endpoint.',
             }),
-        pickLibraryPath: async () => {
+        pickSourceRootPath: async () => {
             const picked = await vscode.window.showOpenDialog({
                 canSelectFiles: false,
                 canSelectFolders: true,
                 canSelectMany: false,
-                openLabel: 'Select Library Folder',
+                openLabel: 'Select Source Root Folder',
             });
             return picked && picked.length > 0 ? picked[0].fsPath : undefined;
         },
@@ -1946,7 +1946,7 @@ async function executeModelicaCell(
             // Build rumoca arguments
             const args = ['--json', '--model', magic.model];
 
-            // Add library paths (cell-specific + global config)
+            // Add source-root paths (cell-specific + global config)
             const allLibs = [...magic.libs, ...globalLibPaths];
             for (const lib of allLibs) {
                 args.push('-L', lib);
@@ -2325,15 +2325,12 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         debugLog(`[${elapsed()}] Starting language server: ${usableServerPath}`);
-        const modelicaPathSources = resolveModelicaPathSources(currentConfig);
-        if (modelicaPathSources.configuredPaths.length > 0) {
-            debugLog(`[${elapsed()}] Configured modelicaPath: ${modelicaPathSources.configuredPaths.join(', ')}`);
+        const sourceRootPaths = resolveSourceRootPaths(currentConfig);
+        if (sourceRootPaths.configuredPaths.length > 0) {
+            debugLog(`[${elapsed()}] Configured sourceRootPaths: ${sourceRootPaths.configuredPaths.join(', ')}`);
         }
-        if (modelicaPathSources.environmentPaths.length > 0) {
-            debugLog(`[${elapsed()}] Environment MODELICAPATH: ${modelicaPathSources.environmentPaths.join(', ')}`);
-        }
-        if (modelicaPathSources.usedLegacyAlias) {
-            log('Warning: MODELICPATH is deprecated; use MODELICAPATH instead.');
+        if (sourceRootPaths.environmentPaths.length > 0) {
+            debugLog(`[${elapsed()}] Environment MODELICAPATH: ${sourceRootPaths.environmentPaths.join(', ')}`);
         }
 
         const nextClient = new LanguageClient(
@@ -2352,7 +2349,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 outputChannelName: 'Rumoca LSP',
                 initializationOptions: {
                     debug: debug,
-                    modelicaPath: modelicaPathSources.mergedPaths
+                    sourceRootPaths: sourceRootPaths.mergedPaths
                 }
             } satisfies LanguageClientOptions
         );
@@ -2920,7 +2917,7 @@ export async function activate(context: vscode.ExtensionContext) {
         createNotebookController: () => createNotebookController(
             context,
             getNotebookRumocaExecutable,
-            () => resolveModelicaPathSources(vscode.workspace.getConfiguration('rumoca')).mergedPaths,
+            () => resolveSourceRootPaths(vscode.workspace.getConfiguration('rumoca')).mergedPaths,
             log
         ),
         debugLog,

@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::completion_metrics::extract_library_completion_prefix;
+use crate::completion_metrics::extract_namespace_completion_prefix;
 use rumoca_session::compile::{
     PhaseResult, SessionCacheStatsSnapshot, SessionSnapshot, StrictCompileReport,
     session_cache_stats,
@@ -16,9 +16,9 @@ use super::{
 pub(super) struct CompletionPreparation {
     pub(super) request_was_stale: bool,
     pub(super) completion_prefix: Option<String>,
-    pub(super) source_library_load_ms: u64,
-    pub(super) completion_library_load_ms: u64,
-    pub(super) library_completion_prime_ms: u64,
+    pub(super) source_root_load_ms: u64,
+    pub(super) completion_source_root_load_ms: u64,
+    pub(super) namespace_completion_prime_ms: u64,
     pub(super) needs_resolved_session: bool,
     pub(super) ast_fast_path_matched: bool,
     pub(super) query_fast_path_check_ms: u64,
@@ -30,20 +30,20 @@ pub(super) struct CompletionPreparation {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct CompletionStageTimings {
-    source_library_load_ms: u64,
-    completion_library_load_ms: u64,
-    library_completion_prime_ms: u64,
+    source_root_load_ms: u64,
+    completion_source_root_load_ms: u64,
+    namespace_completion_prime_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
-struct CompletionLibraryPreparation {
+struct CompletionSourceRootPreparation {
     request_was_stale: bool,
     completion_prefix: Option<String>,
     timings: CompletionStageTimings,
 }
 
 #[derive(Debug, Clone, Default)]
-struct LibraryCompletionPrimeResult {
+struct NamespaceCompletionPrimeResult {
     elapsed_ms: u64,
     detail: Option<String>,
 }
@@ -115,9 +115,9 @@ impl CompletionPreparation {
         Self {
             request_was_stale: true,
             completion_prefix,
-            source_library_load_ms: timings.source_library_load_ms,
-            completion_library_load_ms: timings.completion_library_load_ms,
-            library_completion_prime_ms: timings.library_completion_prime_ms,
+            source_root_load_ms: timings.source_root_load_ms,
+            completion_source_root_load_ms: timings.completion_source_root_load_ms,
+            namespace_completion_prime_ms: timings.namespace_completion_prime_ms,
             needs_resolved_session: false,
             ast_fast_path_matched: false,
             query_fast_path_check_ms: 0,
@@ -132,9 +132,9 @@ impl CompletionPreparation {
         Self {
             request_was_stale: false,
             completion_prefix,
-            source_library_load_ms: timings.source_library_load_ms,
-            completion_library_load_ms: timings.completion_library_load_ms,
-            library_completion_prime_ms: timings.library_completion_prime_ms,
+            source_root_load_ms: timings.source_root_load_ms,
+            completion_source_root_load_ms: timings.completion_source_root_load_ms,
+            namespace_completion_prime_ms: timings.namespace_completion_prime_ms,
             needs_resolved_session: false,
             ast_fast_path_matched: false,
             query_fast_path_check_ms: 0,
@@ -155,9 +155,9 @@ pub(super) fn build_completion_timing_summary(
         request_was_stale: preparation.request_was_stale,
         uri: context.uri,
         semantic_layer: context.semantic_layer,
-        source_library_load_ms: preparation.source_library_load_ms,
-        completion_library_load_ms: preparation.completion_library_load_ms,
-        library_completion_prime_ms: preparation.library_completion_prime_ms,
+        source_root_load_ms: preparation.source_root_load_ms,
+        completion_source_root_load_ms: preparation.completion_source_root_load_ms,
+        namespace_completion_prime_ms: preparation.namespace_completion_prime_ms,
         needs_resolved_session: preparation.needs_resolved_session,
         ast_fast_path_matched: preparation.ast_fast_path_matched,
         query_fast_path_check_ms: preparation.query_fast_path_check_ms,
@@ -192,7 +192,7 @@ pub(super) fn build_completion_timing_summary(
     }
 }
 
-impl CompletionLibraryPreparation {
+impl CompletionSourceRootPreparation {
     fn stale(self) -> CompletionPreparation {
         CompletionPreparation::stale(self.completion_prefix, self.timings)
     }
@@ -214,37 +214,47 @@ impl ModelicaLanguageServer {
         };
         if self.completion_request_is_stale(request_edit_epoch) {
             return CompletionPreparation::stale(
-                extract_library_completion_prefix(source, pos),
+                extract_namespace_completion_prefix(source, pos),
                 CompletionStageTimings::default(),
             );
         }
 
-        let library = self
-            .prepare_completion_libraries(source, pos, request_edit_epoch, progress)
+        let source_roots = self
+            .prepare_completion_source_roots(source, pos, request_edit_epoch, progress)
             .await;
-        if library.request_was_stale {
-            return library.stale();
+        if source_roots.request_was_stale {
+            return source_roots.stale();
         }
         if self.completion_request_is_stale(request_edit_epoch) {
-            return CompletionPreparation::stale(library.completion_prefix, library.timings);
+            return CompletionPreparation::stale(
+                source_roots.completion_prefix,
+                source_roots.timings,
+            );
         }
 
-        CompletionPreparation::ready(library.completion_prefix, library.timings)
+        CompletionPreparation::ready(source_roots.completion_prefix, source_roots.timings)
     }
 
-    async fn maybe_prime_library_completion_cache(
+    async fn maybe_prime_namespace_completion_cache(
         &self,
-        has_library_prefix: bool,
-    ) -> LibraryCompletionPrimeResult {
-        if !has_library_prefix {
-            return LibraryCompletionPrimeResult::default();
+        has_namespace_prefix: bool,
+    ) -> NamespaceCompletionPrimeResult {
+        if !has_namespace_prefix {
+            return NamespaceCompletionPrimeResult::default();
         }
-        self.wait_for_namespace_prewarm_if_pending().await;
+        self.wait_for_source_root_read_prewarm_if_pending().await;
         let started = Instant::now();
         let stats_before = session_cache_stats();
-        let _prewarm_guard = self.namespace_prewarm_lane.lock().await;
+        let _indexing_guard = self.work_lanes.indexing.lock().await;
         let snapshot = self.session_snapshot().await;
-        if let Err(error) = snapshot.namespace_index_query("") {
+        let prime = tokio::task::spawn_blocking(move || snapshot.namespace_index_query("")).await;
+        if let Err(error) = prime {
+            maybe_log_completion_debug(
+                &self.client,
+                format!("namespace completion worker failed: {error}"),
+            )
+            .await;
+        } else if let Ok(Err(error)) = prime {
             maybe_log_completion_debug(
                 &self.client,
                 format!("failed to build namespace completion cache: {error}"),
@@ -253,70 +263,71 @@ impl ModelicaLanguageServer {
         }
         let stats_after = session_cache_stats();
         let stats_delta = stats_after.delta_since(stats_before);
-        LibraryCompletionPrimeResult {
+        NamespaceCompletionPrimeResult {
             elapsed_ms: started.elapsed().as_millis() as u64,
-            detail: Some(library_completion_prime_detail(stats_delta)),
+            detail: Some(namespace_completion_prime_detail(stats_delta)),
         }
     }
 
-    async fn prepare_completion_libraries(
+    async fn prepare_completion_source_roots(
         &self,
         source: &str,
         pos: Position,
         request_edit_epoch: u64,
         progress: CompletionProgressContext<'_>,
-    ) -> CompletionLibraryPreparation {
-        let mut library = CompletionLibraryPreparation::default();
-        let completion_prefix = extract_library_completion_prefix(source, pos);
+    ) -> CompletionSourceRootPreparation {
+        let mut source_roots = CompletionSourceRootPreparation::default();
+        let completion_prefix = extract_namespace_completion_prefix(source, pos);
 
-        progress.log("source_library_load", "start", None, None, None);
-        let source_library_load_started = Instant::now();
-        self.ensure_source_libraries_loaded(source, progress.uri_path)
+        progress.log("source_root_load", "start", None, None, None);
+        let source_root_load_started = Instant::now();
+        let source_root_paths = self.source_root_paths.read().await.clone();
+        self.ensure_source_roots_loaded_with_paths(source, progress.uri_path, &source_root_paths)
             .await;
-        library.timings.source_library_load_ms =
-            source_library_load_started.elapsed().as_millis() as u64;
-        progress.log("source_library_load", "end", None, None, None);
+        source_roots.timings.source_root_load_ms =
+            source_root_load_started.elapsed().as_millis() as u64;
+        progress.log("source_root_load", "end", None, None, None);
         if self.completion_request_is_stale(request_edit_epoch) {
-            library.request_was_stale = true;
-            library.completion_prefix = completion_prefix;
-            return library;
+            source_roots.request_was_stale = true;
+            source_roots.completion_prefix = completion_prefix;
+            return source_roots;
         }
 
-        progress.log("completion_library_load", "start", None, None, None);
-        let completion_library_load_started = Instant::now();
-        self.ensure_completion_libraries(source, pos, progress.uri_path)
+        progress.log("completion_source_root_load", "start", None, None, None);
+        let completion_source_root_load_started = Instant::now();
+        self.ensure_completion_source_roots(source, pos, progress.uri_path)
             .await;
-        library.timings.completion_library_load_ms =
-            completion_library_load_started.elapsed().as_millis() as u64;
-        progress.log("completion_library_load", "end", None, None, None);
+        source_roots.timings.completion_source_root_load_ms =
+            completion_source_root_load_started.elapsed().as_millis() as u64;
+        progress.log("completion_source_root_load", "end", None, None, None);
         if self.completion_request_is_stale(request_edit_epoch) {
-            library.request_was_stale = true;
-            library.completion_prefix = completion_prefix;
-            return library;
+            source_roots.request_was_stale = true;
+            source_roots.completion_prefix = completion_prefix;
+            return source_roots;
         }
 
-        library.completion_prefix = completion_prefix;
+        source_roots.completion_prefix = completion_prefix;
         progress.log(
-            "library_completion_prime",
+            "namespace_completion_prime",
             "start",
-            library.completion_prefix.as_deref(),
+            source_roots.completion_prefix.as_deref(),
             None,
             None,
         );
         let prime = self
-            .maybe_prime_library_completion_cache(library.completion_prefix.is_some())
+            .maybe_prime_namespace_completion_cache(source_roots.completion_prefix.is_some())
             .await;
-        library.timings.library_completion_prime_ms = prime.elapsed_ms;
+        source_roots.timings.namespace_completion_prime_ms = prime.elapsed_ms;
         progress.log_with_detail(
-            "library_completion_prime",
+            "namespace_completion_prime",
             "end",
-            library.completion_prefix.as_deref(),
+            source_roots.completion_prefix.as_deref(),
             None,
             None,
             prime.detail.as_deref(),
         );
-        library.request_was_stale = self.completion_request_is_stale(request_edit_epoch);
-        library
+        source_roots.request_was_stale = self.completion_request_is_stale(request_edit_epoch);
+        source_roots
     }
 
     pub(super) fn cached_completion_class_name_count(
@@ -324,18 +335,18 @@ impl ModelicaLanguageServer {
         completion_prefix: Option<&str>,
     ) -> usize {
         if completion_prefix.is_none() {
-            return snapshot.all_library_class_names_cached().len();
+            return snapshot.namespace_class_names_cached().len();
         }
-        let library_names = cached_library_class_names(snapshot);
-        if library_names.is_empty() {
-            snapshot.all_library_class_names_cached().len()
+        let namespace_class_names = cached_namespace_class_names(snapshot);
+        if namespace_class_names.is_empty() {
+            snapshot.namespace_class_names_cached().len()
         } else {
-            library_names.len()
+            namespace_class_names.len()
         }
     }
 }
 
-fn library_completion_prime_detail(delta: SessionCacheStatsSnapshot) -> String {
+fn namespace_completion_prime_detail(delta: SessionCacheStatsSnapshot) -> String {
     format!(
         "decl={}/{} scope={}/{} pkg={}/{} orphan={}/{} ns={}/{} libCache={}/{} nsCollectMs={} nsBuildMs={} nsFinalizeMs={}",
         delta.declaration_index_query_hits,
@@ -348,15 +359,15 @@ fn library_completion_prime_detail(delta: SessionCacheStatsSnapshot) -> String {
         delta.orphan_package_membership_query_misses,
         delta.namespace_index_query_hits,
         delta.namespace_index_query_misses,
-        delta.library_completion_cache_hits,
-        delta.library_completion_cache_misses,
-        delta.library_namespace_refresh_collect_ms,
-        delta.library_namespace_refresh_build_ms,
-        delta.library_namespace_refresh_finalize_ms,
+        delta.namespace_completion_cache_hits,
+        delta.namespace_completion_cache_misses,
+        delta.namespace_refresh_collect_ms,
+        delta.namespace_refresh_build_ms,
+        delta.namespace_refresh_finalize_ms,
     )
 }
 
-fn cached_library_class_names(snapshot: &SessionSnapshot) -> Vec<String> {
+fn cached_namespace_class_names(snapshot: &SessionSnapshot) -> Vec<String> {
     let class_names = snapshot
         .namespace_index_query("")
         .ok()
@@ -367,7 +378,7 @@ fn cached_library_class_names(snapshot: &SessionSnapshot) -> Vec<String> {
         return class_names;
     }
 
-    snapshot.all_library_class_names_cached()
+    snapshot.namespace_class_names_cached()
 }
 
 pub(super) fn code_lens_title_from_strict_report(mut report: StrictCompileReport) -> String {

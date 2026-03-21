@@ -119,10 +119,10 @@ struct ModelInputArgs {
     #[arg(short, long)]
     model: Option<String>,
 
-    /// Library path (file or directory). Can be specified multiple times.
-    /// Example: -l ./libs/MSL -l helper.mo
-    #[arg(short = 'l', long = "library", action = ArgAction::Append)]
-    libraries: Vec<String>,
+    /// Source root path (file or directory). Can be specified multiple times.
+    /// Example: --source-root ./packages/MSL --source-root helper.mo
+    #[arg(long = "source-root", action = ArgAction::Append)]
+    source_roots: Vec<String>,
 
     /// Verbose output
     #[arg(short, long)]
@@ -1061,15 +1061,12 @@ fn compile_with_inferred_model(args: &ModelInputArgs) -> Result<(CompilationResu
         None => infer_model_name(&args.model_file)?,
     };
 
-    let (libraries, used_legacy_modelica_path_alias) = merged_library_paths(&args.libraries);
-    if used_legacy_modelica_path_alias && args.verbose {
-        eprintln!("[rumoca] MODELICPATH is deprecated; prefer MODELICAPATH.");
-    }
+    let source_roots = merged_source_root_paths(&args.source_roots);
 
     let compiler = Compiler::new()
         .model(&model)
         .verbose(args.verbose)
-        .libraries(&libraries);
+        .source_roots(&source_roots);
     let result = compiler.compile_file(&args.model_file)?;
     Ok((result, model))
 }
@@ -1084,26 +1081,18 @@ fn split_path_list(raw: Option<OsString>) -> Vec<String> {
         .collect()
 }
 
-fn merged_library_paths(cli_paths: &[String]) -> (Vec<String>, bool) {
+fn merged_source_root_paths(cli_paths: &[String]) -> Vec<String> {
     let env_modelica_paths = split_path_list(std::env::var_os("MODELICAPATH"));
-    let env_legacy_paths = split_path_list(std::env::var_os("MODELICPATH"));
-    merge_library_path_sources(cli_paths, &env_modelica_paths, &env_legacy_paths)
+    merge_source_root_path_sources(cli_paths, &env_modelica_paths)
 }
 
-fn merge_library_path_sources(
+fn merge_source_root_path_sources(
     cli_paths: &[String],
     env_modelica_paths: &[String],
-    env_legacy_paths: &[String],
-) -> (Vec<String>, bool) {
-    let used_legacy_alias = !env_legacy_paths.is_empty();
-
+) -> Vec<String> {
     let mut merged = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for path in env_modelica_paths
-        .iter()
-        .chain(env_legacy_paths.iter())
-        .chain(cli_paths.iter())
-    {
+    for path in env_modelica_paths.iter().chain(cli_paths.iter()) {
         let trimmed = path.trim();
         if trimmed.is_empty() {
             continue;
@@ -1117,7 +1106,7 @@ fn merge_library_path_sources(
             merged.push(trimmed.to_string());
         }
     }
-    (merged, used_legacy_alias)
+    merged
 }
 
 fn infer_model_name(model_file: &str) -> Result<String> {
@@ -1393,10 +1382,10 @@ fn discover_workspace_root_for_model_file(model_file: &str) -> Option<PathBuf> {
 fn completion_script(shell: CompletionShell) -> String {
     let top = "compile simulate check export-fmu completions --help -h --version -V";
     let compile_opts =
-        "--model --library --json --template-file --template-prepared --verbose --debug";
-    let simulate_opts = "--model --library --t-end --dt --solver --output --verbose --debug";
-    let check_opts = "--model --library --verbose --debug";
-    let export_fmu_opts = "--model --library --output --no-build --verbose --debug";
+        "--model --source-root --json --template-file --template-prepared --verbose --debug";
+    let simulate_opts = "--model --source-root --t-end --dt --solver --output --verbose --debug";
+    let check_opts = "--model --source-root --verbose --debug";
+    let export_fmu_opts = "--model --source-root --output --no-build --verbose --debug";
     let completion_opts = "bash zsh fish powershell";
     match shell {
         CompletionShell::Bash => format!(
@@ -1451,10 +1440,10 @@ compdef _rumoca rumoca
             "complete -c rumoca -n '__fish_use_subcommand' -a 'check' -d 'Compile and print summary'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'export-fmu' -d 'Export FMI 2.0 FMU'",
             "complete -c rumoca -n '__fish_use_subcommand' -a 'completions' -d 'Print completion script'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --library --json --template-file --template-prepared --verbose --debug'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --library --t-end --output --verbose --debug'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --library --verbose --debug'",
-            "complete -c rumoca -n '__fish_seen_subcommand_from export-fmu' -a '--model --library --output --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from compile' -a '--model --source-root --json --template-file --template-prepared --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from simulate' -a '--model --source-root --t-end --output --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from check' -a '--model --source-root --verbose --debug'",
+            "complete -c rumoca -n '__fish_seen_subcommand_from export-fmu' -a '--model --source-root --output --verbose --debug'",
             "complete -c rumoca -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'",
         ]
         .join("\n")
@@ -1564,20 +1553,13 @@ mod tests {
     }
 
     #[test]
-    fn merged_library_paths_prefers_cli_and_dedups() {
-        let cli = vec!["/tmp/libA".to_string(), "/tmp/libA".to_string()];
-        let env_modelica = vec!["/tmp/libB".to_string()];
-        let env_legacy = vec!["/tmp/libA".to_string(), "/tmp/libC".to_string()];
-        let (merged, used_legacy_alias) =
-            merge_library_path_sources(&cli, &env_modelica, &env_legacy);
-        assert!(used_legacy_alias);
+    fn merged_source_root_paths_prefers_env_then_cli_and_dedups() {
+        let cli = vec!["/tmp/rootA".to_string(), "/tmp/rootA".to_string()];
+        let env_modelica = vec!["/tmp/rootB".to_string(), "/tmp/rootA".to_string()];
+        let merged = merge_source_root_path_sources(&cli, &env_modelica);
         assert_eq!(
             merged,
-            vec![
-                "/tmp/libB".to_string(),
-                "/tmp/libA".to_string(),
-                "/tmp/libC".to_string()
-            ]
+            vec!["/tmp/rootB".to_string(), "/tmp/rootA".to_string()]
         );
     }
 

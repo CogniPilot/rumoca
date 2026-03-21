@@ -244,7 +244,7 @@ fn navigation_query_tracks_class_targets_across_files() {
             "lib.mo",
             "package Lib\n  block Target\n    Real y;\n  equation\n    y = 1;\n  end Target;\nend Lib;\n",
         )
-        .expect("library source should parse");
+        .expect("source-root source should parse");
     session
         .add_document(
             "active.mo",
@@ -264,7 +264,7 @@ fn navigation_query_tracks_class_targets_across_files() {
         references
             .iter()
             .any(|(uri, location)| uri == "lib.mo" && location.start_line == 2),
-        "references should include the library declaration"
+        "references should include the source-root declaration"
     );
     assert!(
         references
@@ -309,7 +309,7 @@ fn navigation_class_target_query_resolves_imported_and_qualified_paths() {
             "lib.mo",
             "package Lib\n  block Target \"test target\"\n    Real y;\n  equation\n    y = 1;\n  end Target;\nend Lib;\n",
         )
-        .expect("library source should parse");
+        .expect("source-root source should parse");
     session
         .add_document(
             "active.mo",

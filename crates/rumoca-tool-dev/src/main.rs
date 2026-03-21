@@ -1599,7 +1599,7 @@ pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
     ensure_wasm_deps(root)?;
     build_wasm(root)?;
     run_wasm_simulation_smoke(root)?;
-    run_wasm_library_smoke(root)?;
+    run_wasm_source_root_smoke(root)?;
     Ok(())
 }
 
@@ -1611,10 +1611,10 @@ fn run_wasm_simulation_smoke(root: &Path) -> Result<()> {
     run_status(wasm_smoke)
 }
 
-fn run_wasm_library_smoke(root: &Path) -> Result<()> {
+fn run_wasm_source_root_smoke(root: &Path) -> Result<()> {
     let mut wasm_smoke = Command::new("node");
     wasm_smoke
-        .arg("editors/wasm/tests/library_smoke.mjs")
+        .arg("editors/wasm/tests/source_root_smoke.mjs")
         .current_dir(root);
     run_status(wasm_smoke)
 }

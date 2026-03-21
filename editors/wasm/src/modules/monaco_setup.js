@@ -1,5 +1,31 @@
 export function setupMonacoWorkspace({ monaco, sendLanguageCommand, layoutAllEditors }) {
     let editor;
+    const sourceEditorOptions = {
+        value: `model Ball
+  Real x(start=10);
+  Real v(start=1);
+  parameter Real g = 9.81;
+equation
+  der(x) = v;
+  der(v) = -g;
+  when x < 0 then
+    reinit(v, -0.8*pre(v));
+  end when;
+end Ball;`,
+        language: 'modelica',
+        theme: 'rumoca-dark',
+        minimap: { enabled: false },
+        fontSize: 14,
+        lineNumbers: 'on',
+        lineNumbersMinChars: 3,
+        automaticLayout: true,
+        quickSuggestions: true,
+        suggestOnTriggerCharacters: true,
+        glyphMargin: false,
+        folding: true,
+        semanticHighlighting: true,
+        'semanticHighlighting.enabled': true
+    };
 monaco.languages.register({ id: 'modelica' });
 monaco.languages.register({ id: 'jinja2' });
 
@@ -687,137 +713,59 @@ monaco.editor.defineTheme('rumoca-dark', {
     colors: {}
 });
 
-editor = monaco.editor.create(document.getElementById('editor'), {
-    value: `model Ball
-  Real x(start=10);
-  Real v(start=1);
-  parameter Real g = 9.81;
-equation
-  der(x) = v;
-  der(v) = -g;
-  when x < 0 then
-    reinit(v, -0.8*pre(v));
-  end when;
-end Ball;`,
-    language: 'modelica',
-    theme: 'rumoca-dark',
-    minimap: { enabled: false },
-    fontSize: 14,
-    lineNumbers: 'on',
-    lineNumbersMinChars: 3,
-    automaticLayout: true,
-    quickSuggestions: true,
-    suggestOnTriggerCharacters: true,
-    glyphMargin: false,
-    folding: true,
-    semanticHighlighting: true,
-    'semanticHighlighting.enabled': true
-});
+editor = monaco.editor.create(document.getElementById('editor'), sourceEditorOptions);
 
 window.editor = editor;
 
-// Create template editor with Jinja2 highlighting.
-const defaultTemplate = `# Hello from Rumoca
-{% for item in dae.x %}
-state: {{ item }}
-{% endfor %}
-`;
+function createReadOnlyEditor(elementId) {
+    const element = document.getElementById(elementId);
+    if (!element) {
+        return null;
+    }
+    return monaco.editor.create(element, {
+        value: '',
+        language: 'plaintext',
+        theme: 'vs-dark',
+        readOnly: true,
+        minimap: { enabled: false },
+        fontSize: 13,
+        lineNumbers: 'on',
+        lineNumbersMinChars: 3,
+        automaticLayout: true,
+        wordWrap: 'on',
+        folding: true,
+        scrollBeyondLastLine: false,
+        renderLineHighlight: 'none',
+        occurrencesHighlight: 'off',
+        selectionHighlight: false
+    });
+}
 
-const templateEditor = monaco.editor.create(document.getElementById('templateEditor'), {
-    value: defaultTemplate,
-    language: 'jinja2',
-    theme: 'vs-dark',
-    minimap: { enabled: false },
-    fontSize: 13,
-    lineNumbers: 'on',
-    lineNumbersMinChars: 3,
-    automaticLayout: true,
-    quickSuggestions: true,
-    suggestOnTriggerCharacters: true,
-    wordWrap: 'on',
-    folding: true
-});
-
-window.templateEditor = templateEditor;
-
-// Create read-only output editor with JSON/text highlighting
-const outputEditor = monaco.editor.create(document.getElementById('outputEditor'), {
-    value: '',
-    language: 'plaintext',
-    theme: 'vs-dark',
-    readOnly: true,
-    minimap: { enabled: false },
-    fontSize: 13,
-    lineNumbers: 'on',
-    lineNumbersMinChars: 3,
-    automaticLayout: true,
-    wordWrap: 'on',
-    folding: true,
-    scrollBeyondLastLine: false,
-    renderLineHighlight: 'none',
-    occurrencesHighlight: 'off',
-    selectionHighlight: false
-});
-
+const outputEditor = createReadOnlyEditor('outputEditor');
 window.outputEditor = outputEditor;
 
-// Create read-only codegen output editor
-const codegenOutputEditor = monaco.editor.create(document.getElementById('codegenOutputEditor'), {
-    value: '',
-    language: 'plaintext',
-    theme: 'vs-dark',
-    readOnly: true,
-    minimap: { enabled: false },
-    fontSize: 13,
-    lineNumbers: 'on',
-    lineNumbersMinChars: 3,
-    automaticLayout: true,
-    wordWrap: 'on',
-    folding: true,
-    scrollBeyondLastLine: false,
-    renderLineHighlight: 'none',
-    occurrencesHighlight: 'off',
-    selectionHighlight: false
-});
-
+const codegenOutputEditor = createReadOnlyEditor('codegenOutputEditor');
 window.codegenOutputEditor = codegenOutputEditor;
 
-// Codegen tab vertical resize between template and output
-const resizeHandleCodegen = document.getElementById('resizeHandleCodegen');
-let isResizingCodegen = false;
-resizeHandleCodegen.addEventListener('mousedown', (e) => {
-    isResizingCodegen = true;
-    document.body.style.cursor = 'ns-resize';
-    document.body.style.userSelect = 'none';
-    e.preventDefault();
-});
-document.addEventListener('mousemove', (e) => {
-    if (!isResizingCodegen) return;
-    const codegenTab = document.getElementById('codegenTab');
-    const tabRect = codegenTab.getBoundingClientRect();
-    const templateEl = document.getElementById('templateEditor');
-    const codegenEl = document.getElementById('codegenOutputEditor');
-    const relY = e.clientY - tabRect.top;
-    const totalH = tabRect.height;
-    const ratio = Math.max(0.15, Math.min(0.85, relY / totalH));
-    templateEl.style.flex = ratio.toString();
-    codegenEl.style.flex = (1 - ratio).toString();
-    layoutAllEditors();
-});
-document.addEventListener('mouseup', () => {
-    if (isResizingCodegen) {
-        isResizingCodegen = false;
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        layoutAllEditors();
+function createSourceEditor(elementId) {
+    const element = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
+    if (!element) {
+        return null;
     }
-});
+    return monaco.editor.create(element, {
+        ...sourceEditorOptions,
+        value: '',
+    });
+}
 
 // CodeLens event emitter for triggering refresh
 const codeLensEmitter = new monaco.Emitter();
 window.refreshCodeLens = () => codeLensEmitter.fire();
 
 function provideModelicaCodeLenses(model) {
+    if (!model || typeof model.getLanguageId !== 'function' || model.getLanguageId() !== 'modelica') {
+        return { lenses: [], dispose: () => {} };
+    }
     const lenses = [];
     const text = model.getValue();
     const lines = text.split('\n');
@@ -861,7 +809,7 @@ function provideModelicaCodeLenses(model) {
             range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
             command: {
                 id: 'showBalance',
-                title: `[\u2026] ${modelName}: ready`
+                title: `[\u2026] ${modelName}: idle`
             }
         });
     }
@@ -882,5 +830,5 @@ monaco.languages.registerCodeLensProvider('modelica', {
     provideCodeLenses: provideModelicaCodeLenses
 });
 
-    return { editor, templateEditor, outputEditor, codegenOutputEditor };
+    return { editor, templateEditor: null, outputEditor, codegenOutputEditor, createSourceEditor };
 }

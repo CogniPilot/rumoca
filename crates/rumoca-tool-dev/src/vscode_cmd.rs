@@ -92,11 +92,11 @@ pub(crate) struct VscodeStageCacheDeltaSummary {
     #[serde(alias = "orphanPackageMembershipQueryMisses")]
     pub(crate) orphan_package_membership_query_misses: Option<u64>,
     #[serde(alias = "libraryCompletionCacheHits")]
-    pub(crate) library_completion_cache_hits: Option<u64>,
+    pub(crate) namespace_completion_cache_hits: Option<u64>,
     #[serde(alias = "libraryCompletionCacheMisses")]
-    pub(crate) library_completion_cache_misses: Option<u64>,
+    pub(crate) namespace_completion_cache_misses: Option<u64>,
     #[serde(alias = "libraryFilesParsed")]
-    pub(crate) library_files_parsed: Option<u64>,
+    pub(crate) source_root_files_parsed: Option<u64>,
     #[serde(alias = "standardResolvedBuilds")]
     pub(crate) standard_resolved_builds: Option<u64>,
     #[serde(alias = "semanticNavigationBuilds")]
@@ -107,9 +107,9 @@ pub(crate) struct VscodeStageCacheDeltaSummary {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VscodeStageTimingSummary {
     pub(crate) uri: Option<String>,
-    pub(crate) source_library_load_ms: Option<u64>,
-    pub(crate) completion_library_load_ms: Option<u64>,
-    pub(crate) library_completion_prime_ms: Option<u64>,
+    pub(crate) source_root_load_ms: Option<u64>,
+    pub(crate) completion_source_root_load_ms: Option<u64>,
+    pub(crate) namespace_completion_prime_ms: Option<u64>,
     pub(crate) needs_resolved_session: Option<bool>,
     pub(crate) ast_fast_path_matched: Option<bool>,
     pub(crate) query_fast_path_check_ms: Option<u64>,
@@ -141,10 +141,10 @@ pub(crate) struct VscodeMslSmokeSummary {
     pub(crate) open_ms: Option<u64>,
     pub(crate) code_lens_ms: Option<u64>,
     pub(crate) code_lens_count: Option<u64>,
-    pub(crate) library_load_ms: Option<u64>,
-    pub(crate) library_load_completion_count: Option<u64>,
-    pub(crate) library_expected_completion_present: Option<bool>,
-    pub(crate) library_stage_timings: Option<VscodeStageTimingSummary>,
+    pub(crate) source_root_load_ms: Option<u64>,
+    pub(crate) source_root_load_completion_count: Option<u64>,
+    pub(crate) source_root_expected_completion_present: Option<bool>,
+    pub(crate) source_root_stage_timings: Option<VscodeStageTimingSummary>,
     pub(crate) completion_ms: Option<u64>,
     pub(crate) completion_count: Option<u64>,
     pub(crate) expected_completion_present: Option<bool>,
@@ -1368,15 +1368,15 @@ mod tests {
     fn vscode_smoke_summary_parses_snake_case_cache_delta() {
         let summary: VscodeMslSmokeSummary = serde_json::from_value(json!({
             "warmStageTimings": {
-                "sourceLibraryLoadMs": 38,
-                "completionLibraryLoadMs": 37,
+                "sourceRootLoadMs": 38,
+                "completionSourceRootLoadMs": 37,
                 "resolvedBuildMs": null,
                 "completionHandlerMs": 0,
                 "totalMs": 20,
                 "sessionCacheDelta": {
-                    "library_completion_cache_hits": 1,
-                    "library_completion_cache_misses": 0,
-                    "library_files_parsed": 0
+                    "namespace_completion_cache_hits": 1,
+                    "namespace_completion_cache_misses": 0,
+                    "source_root_files_parsed": 0
                 }
             }
         }))
@@ -1385,15 +1385,15 @@ mod tests {
         let warm = summary
             .warm_stage_timings
             .expect("warm stage timings should be present");
-        assert_eq!(warm.source_library_load_ms, Some(38));
-        assert_eq!(warm.completion_library_load_ms, Some(37));
+        assert_eq!(warm.source_root_load_ms, Some(38));
+        assert_eq!(warm.completion_source_root_load_ms, Some(37));
         assert_eq!(warm.completion_handler_ms, Some(0));
         let delta = warm
             .session_cache_delta
             .expect("session cache delta should be present");
-        assert_eq!(delta.library_completion_cache_hits, Some(1));
-        assert_eq!(delta.library_completion_cache_misses, Some(0));
-        assert_eq!(delta.library_files_parsed, Some(0));
+        assert_eq!(delta.namespace_completion_cache_hits, Some(1));
+        assert_eq!(delta.namespace_completion_cache_misses, Some(0));
+        assert_eq!(delta.source_root_files_parsed, Some(0));
     }
 
     #[test]

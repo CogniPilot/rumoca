@@ -58,10 +58,10 @@ fn test_replace_parsed_source_set_excludes_active_document() {
     let mut session = Session::default();
 
     let lib_src = "package Lib model M Real x; equation der(x)=1; end M; end Lib;";
-    let parsed = rumoca_phase_parse::parse_to_ast(lib_src, "lib.mo").expect("parse library");
+    let parsed = rumoca_phase_parse::parse_to_ast(lib_src, "lib.mo").expect("parse source root");
     let inserted = session.replace_parsed_source_set(
-        "library::lib",
-        SourceRootKind::Library,
+        "external::lib",
+        SourceRootKind::External,
         vec![("lib.mo".to_string(), parsed)],
         Some("lib.mo"),
     );
@@ -108,59 +108,6 @@ fn workspace_symbol_name_uris(session: &mut Session) -> Vec<(String, String)> {
         .collect()
 }
 
-fn assert_namespace_source_set_signature(
-    session: &Session,
-    source_set_id: SourceSetId,
-    expected_signature: &SourceSetQuerySignature,
-) {
-    let cache = session
-        .query_state
-        .ast
-        .library_namespace_cache
-        .as_ref()
-        .expect("library namespace cache should be present");
-    let membership = &session.query_state.ast.package_def_map;
-
-    assert_eq!(
-        &membership
-            .source_set_caches
-            .get(&source_set_id)
-            .expect("source-set membership cache should exist")
-            .signature,
-        expected_signature,
-        "source-set membership cache should retain the expected signature"
-    );
-    assert_eq!(
-        cache
-            .merged_source_set_signatures
-            .get(&source_set_id)
-            .expect("merged source-set signature should exist"),
-        expected_signature,
-        "merged source-set signature should retain the expected value"
-    );
-}
-
-fn assert_namespace_source_set_invalidated(session: &Session, source_set_id: SourceSetId) {
-    let cache = session
-        .query_state
-        .ast
-        .library_namespace_cache
-        .as_ref()
-        .expect("library namespace cache should be present");
-    let membership = &session.query_state.ast.package_def_map;
-
-    assert!(
-        !membership.source_set_caches.contains_key(&source_set_id),
-        "source-set membership cache should be invalidated"
-    );
-    assert!(
-        !cache
-            .merged_source_set_signatures
-            .contains_key(&source_set_id),
-        "merged source-set signature should be invalidated"
-    );
-}
-
 fn file_summary_cache_fingerprints(
     session: &Session,
     file_id: FileId,
@@ -189,22 +136,6 @@ fn file_summary_cache_fingerprints(
     (declaration, class_interface, file_item)
 }
 
-fn library_source_set_signature(
-    session: &Session,
-    source_set_id: SourceSetId,
-) -> SourceSetQuerySignature {
-    session
-        .query_state
-        .ast
-        .library_namespace_cache
-        .as_ref()
-        .expect("library namespace cache should be initialized")
-        .merged_source_set_signatures
-        .get(&source_set_id)
-        .cloned()
-        .expect("merged source-set signature should be present")
-}
-
 fn workspace_symbol_signature(session: &Session) -> SessionQuerySignature {
     session
         .query_state
@@ -216,48 +147,8 @@ fn workspace_symbol_signature(session: &Session) -> SessionQuerySignature {
         .clone()
 }
 
-fn load_two_library_source_sets(
-    session: &mut Session,
-) -> (
-    SourceSetId,
-    SourceSetId,
-    SourceSetQuerySignature,
-    SourceSetQuerySignature,
-) {
-    let package_a = parse_definition("package A\n  model MA\n  end MA;\nend A;\n", "A/package.mo");
-    let package_b = parse_definition("package B\n  model MB\n  end MB;\nend B;\n", "B/package.mo");
-
-    session.replace_parsed_source_set(
-        "library::A",
-        SourceRootKind::Library,
-        vec![("A/package.mo".to_string(), package_a)],
-        None,
-    );
-    session.replace_parsed_source_set(
-        "library::B",
-        SourceRootKind::Library,
-        vec![("B/package.mo".to_string(), package_b)],
-        None,
-    );
-
-    session
-        .namespace_index_query("")
-        .expect("build namespace cache");
-
-    let source_set_a_id = session
-        .source_set_id("library::A")
-        .expect("A source set should exist");
-    let source_set_b_id = session
-        .source_set_id("library::B")
-        .expect("B source set should exist");
-    let signature_a = library_source_set_signature(session, source_set_a_id);
-    let signature_b = library_source_set_signature(session, source_set_b_id);
-
-    (source_set_a_id, source_set_b_id, signature_a, signature_b)
-}
-
 #[test]
-fn library_completion_cache_survives_local_document_edits() {
+fn source_root_completion_cache_survives_local_document_edits() {
     let mut session = Session::default();
 
     let lib_src = r#"
@@ -273,15 +164,15 @@ fn library_completion_cache_survives_local_document_edits() {
           end Electrical;
         end Modelica;
     "#;
-    let parsed =
-        rumoca_phase_parse::parse_to_ast(lib_src, "Modelica/package.mo").expect("parse library");
+    let parsed = rumoca_phase_parse::parse_to_ast(lib_src, "Modelica/package.mo")
+        .expect("parse source root");
     let inserted = session.replace_parsed_source_set(
-        "library::Modelica",
-        SourceRootKind::Library,
+        "external::Modelica",
+        SourceRootKind::External,
         vec![("Modelica/package.mo".to_string(), parsed)],
         None,
     );
-    assert_eq!(inserted, 1, "library source-set should be inserted");
+    assert_eq!(inserted, 1, "external source-root should be inserted");
 
     session
         .add_document("local.mo", "model Local\n  import Modelica;\nend Local;\n")
@@ -292,17 +183,21 @@ fn library_completion_cache_survives_local_document_edits() {
         first
             .iter()
             .any(|name| name == "Modelica.Electrical.Analog.Resistor"),
-        "library completion cache should include nested library classes"
+        "source-root completion cache should include nested source-root classes"
     );
     assert!(
-        session.query_state.ast.library_namespace_cache.is_some(),
-        "library completion cache should be populated"
+        session
+            .query_state
+            .ast
+            .source_root_namespace_cache
+            .is_some(),
+        "source-root completion cache should be populated"
     );
     let namespace_before = session
         .namespace_index_query("Modelica.")
         .expect("cache namespace children");
     let fingerprint_before = session
-        .library_namespace_fingerprint_cached("Modelica.")
+        .namespace_fingerprint_cached("Modelica.")
         .expect("namespace fingerprint should be cached");
 
     session.update_document(
@@ -311,13 +206,17 @@ fn library_completion_cache_survives_local_document_edits() {
     );
 
     assert!(
-        session.query_state.ast.library_namespace_cache.is_some(),
-        "editing a local document should not invalidate library completion cache"
+        session
+            .query_state
+            .ast
+            .source_root_namespace_cache
+            .is_some(),
+        "editing a local document should not invalidate source-root completion cache"
     );
     let second = namespace_class_names(&mut session);
     assert_eq!(
         first, second,
-        "library completion cache should survive local document edits"
+        "source-root completion cache should survive local document edits"
     );
     assert_eq!(
         namespace_before,
@@ -328,13 +227,13 @@ fn library_completion_cache_survives_local_document_edits() {
     );
     assert_eq!(
         Some(fingerprint_before),
-        session.library_namespace_fingerprint_cached("Modelica."),
+        session.namespace_fingerprint_cached("Modelica."),
         "namespace closure fingerprint should be stable across unrelated local edits"
     );
 }
 
 #[test]
-fn library_completion_cache_collects_from_parsed_library_docs() {
+fn source_root_completion_cache_collects_from_parsed_source_root_docs() {
     let mut session = Session::default();
 
     let package_src = r#"
@@ -349,7 +248,7 @@ fn library_completion_cache_collects_from_parsed_library_docs() {
         end Modelica;
     "#;
     let package_parsed = rumoca_phase_parse::parse_to_ast(package_src, "Modelica/package.mo")
-        .expect("parse library package");
+        .expect("parse source-root package");
     let complex_src = r#"
         record Complex
           Real re;
@@ -360,15 +259,15 @@ fn library_completion_cache_collects_from_parsed_library_docs() {
         rumoca_phase_parse::parse_to_ast(complex_src, "Complex.mo").expect("parse Complex");
 
     let inserted = session.replace_parsed_source_set(
-        "library::Modelica",
-        SourceRootKind::Library,
+        "external::Modelica",
+        SourceRootKind::External,
         vec![
             ("Modelica/package.mo".to_string(), package_parsed),
             ("Complex.mo".to_string(), complex_parsed),
         ],
         None,
     );
-    assert_eq!(inserted, 2, "library source-set should be inserted");
+    assert_eq!(inserted, 2, "external source-root should be inserted");
 
     let class_names = namespace_class_names(&mut session);
     assert!(
@@ -379,15 +278,19 @@ fn library_completion_cache_collects_from_parsed_library_docs() {
     );
     assert!(
         class_names.iter().any(|name| name == "Complex"),
-        "expected standalone library record in completion cache: {class_names:?}"
+        "expected standalone source-root record in completion cache: {class_names:?}"
     );
     assert!(
-        session.query_state.ast.library_namespace_cache.is_some(),
-        "library completion cache should be populated"
+        session
+            .query_state
+            .ast
+            .source_root_namespace_cache
+            .is_some(),
+        "source-root completion cache should be populated"
     );
     assert!(
         session.query_state.ast.declaration_index_cache.is_empty(),
-        "library namespace priming should not eagerly build full declaration indexes"
+        "source-root namespace priming should not eagerly build full declaration indexes"
     );
     let namespace_children = session
         .namespace_index_query("Modelica.Blocks.")
@@ -404,7 +307,7 @@ fn library_completion_cache_collects_from_parsed_library_docs() {
 }
 
 #[test]
-fn library_completion_cache_collects_names_from_split_within_documents() {
+fn source_root_completion_cache_collects_names_from_split_within_documents() {
     let mut session = Session::default();
 
     let package_src = r#"
@@ -416,7 +319,7 @@ fn library_completion_cache_collects_names_from_split_within_documents() {
         end Modelica;
     "#;
     let package_parsed = rumoca_phase_parse::parse_to_ast(package_src, "Modelica/package.mo")
-        .expect("parse library package");
+        .expect("parse source-root package");
     let pid_src = r#"
         within Modelica.Blocks.Continuous;
         block PID
@@ -424,18 +327,18 @@ fn library_completion_cache_collects_names_from_split_within_documents() {
         end PID;
     "#;
     let pid_parsed = rumoca_phase_parse::parse_to_ast(pid_src, "Modelica/Blocks/Continuous/PID.mo")
-        .expect("parse split library document");
+        .expect("parse split source-root document");
 
     let inserted = session.replace_parsed_source_set(
-        "library::Modelica",
-        SourceRootKind::Library,
+        "external::Modelica",
+        SourceRootKind::External,
         vec![
             ("Modelica/package.mo".to_string(), package_parsed),
             ("Modelica/Blocks/Continuous/PID.mo".to_string(), pid_parsed),
         ],
         None,
     );
-    assert_eq!(inserted, 2, "library source-set should be inserted");
+    assert_eq!(inserted, 2, "external source-root should be inserted");
 
     let class_names = namespace_class_names(&mut session);
     assert!(
@@ -561,7 +464,7 @@ fn model_key_query_uses_class_interface_index_without_warming_declaration_index(
 }
 
 #[test]
-fn add_document_invalidates_library_completion_cache_for_library_backed_uri() {
+fn add_document_invalidates_source_root_completion_cache_for_source_root_backed_uri() {
     let mut session = Session::default();
 
     let lib_src = r#"
@@ -573,27 +476,31 @@ fn add_document_invalidates_library_completion_cache_for_library_backed_uri() {
           end Resistor;
         end Modelica;
     "#;
-    let parsed =
-        rumoca_phase_parse::parse_to_ast(lib_src, "Modelica/package.mo").expect("parse library");
+    let parsed = rumoca_phase_parse::parse_to_ast(lib_src, "Modelica/package.mo")
+        .expect("parse source root");
     let inserted = session.replace_parsed_source_set(
-        "library::Modelica",
-        SourceRootKind::Library,
+        "external::Modelica",
+        SourceRootKind::External,
         vec![("Modelica/package.mo".to_string(), parsed)],
         None,
     );
-    assert_eq!(inserted, 1, "library source-set should be inserted");
+    assert_eq!(inserted, 1, "external source-root should be inserted");
 
     let class_names = namespace_class_names(&mut session);
     assert!(
         class_names.iter().any(|name| name == "Modelica.Resistor"),
-        "expected library class in completion cache: {class_names:?}"
+        "expected source-root class in completion cache: {class_names:?}"
     );
     assert!(
-        session.query_state.ast.library_namespace_cache.is_some(),
-        "library completion cache should be populated"
+        session
+            .query_state
+            .ast
+            .source_root_namespace_cache
+            .is_some(),
+        "source-root completion cache should be populated"
     );
     let fingerprint_before = session
-        .library_namespace_fingerprint_cached("Modelica.")
+        .namespace_fingerprint_cached("Modelica.")
         .expect("Modelica namespace fingerprint should be cached");
 
     session
@@ -601,186 +508,34 @@ fn add_document_invalidates_library_completion_cache_for_library_backed_uri() {
             "Modelica/package.mo",
             "package Modelica\n  model Local\n  end Local;\nend Modelica;\n",
         )
-        .expect("replace library-backed uri with editor document");
+        .expect("replace source-root-backed uri with editor document");
 
-    assert!(
-        session.query_state.ast.library_namespace_cache.is_some(),
-        "opening a library-backed uri should keep the namespace cache resident until the next query"
-    );
-    let updated_names = namespace_class_names(&mut session);
-    assert!(
-        updated_names.iter().all(|name| name != "Modelica.Resistor"),
-        "the rebuilt namespace cache should drop the replaced library class"
-    );
-    assert_ne!(
-        session.library_namespace_fingerprint_cached("Modelica."),
-        Some(fingerprint_before),
-        "the namespace fingerprint should change after replacing the live library document"
-    );
-    assert!(
-        updated_names.iter().all(|name| name != "Modelica.Local"),
-        "detached live library documents should not be treated as library namespace members"
-    );
-}
-
-#[test]
-fn library_namespace_fingerprint_ignores_unrelated_library_root_changes() {
-    let mut session = Session::default();
-
-    let lib_src = r#"
-        package Lib
-          package Electrical
-            model Resistor
-              Real v;
-            equation
-              der(v) = 1;
-            end Resistor;
-          end Electrical;
-        end Lib;
-    "#;
-    let other_v1 = r#"
-        package Other
-          model A
-          end A;
-        end Other;
-    "#;
-    let other_v2 = r#"
-        package Other
-          model B
-          end B;
-        end Other;
-    "#;
-    let lib_parsed =
-        rumoca_phase_parse::parse_to_ast(lib_src, "Lib/package.mo").expect("parse Lib");
-    let other_parsed_v1 =
-        rumoca_phase_parse::parse_to_ast(other_v1, "Other/package.mo").expect("parse Other v1");
-    let other_parsed_v2 =
-        rumoca_phase_parse::parse_to_ast(other_v2, "Other/package.mo").expect("parse Other v2");
-
-    assert_eq!(
-        session.replace_parsed_source_set(
-            "library::Lib",
-            SourceRootKind::Library,
-            vec![("Lib/package.mo".to_string(), lib_parsed)],
-            None,
-        ),
-        1
-    );
-    assert_eq!(
-        session.replace_parsed_source_set(
-            "library::Other",
-            SourceRootKind::Library,
-            vec![("Other/package.mo".to_string(), other_parsed_v1)],
-            None,
-        ),
-        1
-    );
-
-    session
-        .namespace_index_query("")
-        .expect("prime namespace cache");
-    let before = session
-        .library_namespace_fingerprint_cached("Lib.")
-        .expect("Lib namespace fingerprint");
-
-    assert_eq!(
-        session.replace_parsed_source_set(
-            "library::Other",
-            SourceRootKind::Library,
-            vec![("Other/package.mo".to_string(), other_parsed_v2)],
-            None,
-        ),
-        1
-    );
-    session
-        .namespace_index_query("")
-        .expect("rebuild namespace cache");
-    let after = session
-        .library_namespace_fingerprint_cached("Lib.")
-        .expect("Lib namespace fingerprint after rebuild");
-
-    assert_eq!(
-        before, after,
-        "unrelated library root changes should not perturb Lib namespace closure fingerprint"
-    );
-}
-
-#[test]
-fn source_set_scoped_invalidation_keeps_other_namespace_cache_entries_warm() {
-    let mut session = Session::default();
-    let (source_set_a, source_set_b, a_signature_before, b_signature_before) =
-        load_two_library_source_sets(&mut session);
-    let parsed_b_v2 = parse_definition(
-        "package B\n  model MB\n  end MB;\n  model MB2\n  end MB2;\nend B;\n",
-        "B/package.mo",
-    );
-    let replaced = session.replace_parsed_source_set(
-        "library::B",
-        SourceRootKind::Library,
-        vec![("B/package.mo".to_string(), parsed_b_v2)],
-        None,
-    );
-    let cache_after_replace = session
-        .query_state
-        .ast
-        .library_namespace_cache
-        .as_ref()
-        .expect("cache should remain after scoped invalidation");
-
-    assert_eq!(replaced, 1, "B replacement should update one document");
-    assert_namespace_source_set_signature(&session, source_set_a, &a_signature_before);
-    assert_namespace_source_set_invalidated(&session, source_set_b);
-    assert!(
-        cache_after_replace.merged_cache.is_none(),
-        "merged cache must rebuild lazily"
-    );
-
-    let class_names = namespace_class_names(&mut session);
-    assert!(
-        class_names.contains(&"B.MB2".to_string()),
-        "updated B cache should include MB2"
-    );
-
-    let cache_after_rebuild = session
-        .query_state
-        .ast
-        .library_namespace_cache
-        .as_ref()
-        .expect("library namespace cache should be present");
-
-    assert_namespace_source_set_signature(&session, source_set_a, &a_signature_before);
     assert!(
         session
             .query_state
             .ast
-            .package_def_map
-            .source_set_caches
-            .get(&source_set_b)
-            .is_some_and(|entry| entry.signature != b_signature_before),
-        "B source-set membership cache should be rebuilt"
+            .source_root_namespace_cache
+            .is_some(),
+        "opening a source-root-backed uri should keep the namespace cache resident until the next query"
+    );
+    let updated_names = namespace_class_names(&mut session);
+    assert!(
+        updated_names.iter().all(|name| name != "Modelica.Resistor"),
+        "the rebuilt namespace cache should drop the replaced source-root class"
+    );
+    assert_ne!(
+        session.namespace_fingerprint_cached("Modelica."),
+        Some(fingerprint_before),
+        "the namespace fingerprint should change after replacing the live source-root document"
     );
     assert!(
-        cache_after_rebuild
-            .merged_source_set_signatures
-            .get(&source_set_a)
-            .is_some_and(|signature| *signature == a_signature_before),
-        "A merged source-set signature should be reused"
-    );
-    assert!(
-        cache_after_rebuild
-            .merged_source_set_signatures
-            .get(&source_set_b)
-            .is_some_and(|signature| *signature != b_signature_before),
-        "B merged source-set signature should be rebuilt"
-    );
-    assert!(
-        cache_after_rebuild.merged_cache.is_some(),
-        "merged cache should be rebuilt"
+        updated_names.iter().any(|name| name == "Modelica.Local"),
+        "detached live source-root documents should replace source-root namespace membership from the live class graph"
     );
 }
 
 #[test]
-fn test_index_library_tolerant_loads_valid_library_source_set() {
+fn test_load_source_root_tolerant_loads_valid_external_source_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let lib_dir = temp.path().join("lib");
     std::fs::create_dir_all(&lib_dir).expect("mkdir");
@@ -791,15 +546,19 @@ fn test_index_library_tolerant_loads_valid_library_source_set() {
     .expect("write package");
 
     let mut session = Session::default();
-    let report =
-        session.index_library_tolerant("library::lib", SourceRootKind::Library, &lib_dir, None);
+    let report = session.load_source_root_tolerant(
+        "external::lib",
+        SourceRootKind::External,
+        &lib_dir,
+        None,
+    );
     assert!(
         report.diagnostics.is_empty(),
-        "valid library indexing should not emit diagnostics: {:?}",
+        "valid source-root indexing should not emit diagnostics: {:?}",
         report.diagnostics
     );
-    assert_eq!(report.source_set_id, "library::lib");
-    assert_eq!(report.indexed_file_count, 1);
+    assert_eq!(report.source_set_id, "external::lib");
+    assert_eq!(report.parsed_file_count, 1);
     assert_eq!(report.inserted_file_count, 1);
     assert!(
         report.cache_status.is_some(),
@@ -809,7 +568,7 @@ fn test_index_library_tolerant_loads_valid_library_source_set() {
 }
 
 #[test]
-fn test_index_library_tolerant_reports_parse_failure_without_inserting_docs() {
+fn test_load_source_root_tolerant_reports_parse_failure_without_inserting_docs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let lib_dir = temp.path().join("lib");
     std::fs::create_dir_all(&lib_dir).expect("mkdir");
@@ -817,10 +576,14 @@ fn test_index_library_tolerant_reports_parse_failure_without_inserting_docs() {
         .expect("write broken file");
 
     let mut session = Session::default();
-    let report =
-        session.index_library_tolerant("library::broken", SourceRootKind::Library, &lib_dir, None);
-    assert_eq!(report.source_set_id, "library::broken");
-    assert_eq!(report.indexed_file_count, 0);
+    let report = session.load_source_root_tolerant(
+        "external::broken",
+        SourceRootKind::External,
+        &lib_dir,
+        None,
+    );
+    assert_eq!(report.source_set_id, "external::broken");
+    assert_eq!(report.parsed_file_count, 0);
     assert_eq!(report.inserted_file_count, 0);
     assert!(
         !report.diagnostics.is_empty(),

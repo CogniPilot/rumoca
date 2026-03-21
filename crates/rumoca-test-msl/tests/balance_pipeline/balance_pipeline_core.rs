@@ -13,7 +13,7 @@ trait FocusedClosureCompiler {
     fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport;
 }
 
-impl FocusedClosureCompiler for CompiledLibrary {
+impl FocusedClosureCompiler for CompiledSourceRoot {
     fn strict_compile_for_focused_model(&self, model_name: &str) -> StrictCompileReport {
         self.compile_model_strict_reachable_uncached_with_recovery(model_name)
     }
@@ -301,7 +301,7 @@ fn finalize_compile_entry(
 }
 
 fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send>(
-    library: &std::sync::Arc<T>,
+    source_root: &std::sync::Arc<T>,
     model_name: &str,
     budget_secs: f64,
 ) -> ModelCompileEntry {
@@ -313,7 +313,7 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send>(
     // detached-thread timeout path could not actually cancel compile work, so
     // timed-out models kept consuming memory in the background.
     let compile_outcome =
-        ModelCompileOutcome::StrictReport(library.strict_compile_for_focused_model(model_name));
+        ModelCompileOutcome::StrictReport(source_root.strict_compile_for_focused_model(model_name));
     let elapsed_secs = start.elapsed().as_secs_f64();
     if let (Some(threshold_secs), Some(before_compile), Some(before_flatten)) = (
         slow_log_threshold,
@@ -331,13 +331,13 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send>(
 }
 
 fn compile_chunk_with_model_budgets<T: FocusedClosureCompiler + Sync + Send>(
-    library: &std::sync::Arc<T>,
+    source_root: &std::sync::Arc<T>,
     names_chunk: &[String],
     compile_threads: usize,
     budget_secs: f64,
 ) -> Vec<ModelCompileEntry> {
     let compile_worker =
-        |name: &String| compile_model_with_budget_timeout(library, name, budget_secs);
+        |name: &String| compile_model_with_budget_timeout(source_root, name, budget_secs);
     match rayon::ThreadPoolBuilder::new()
         .num_threads(compile_threads.max(1))
         .build()
@@ -581,7 +581,7 @@ fn streaming_simulation_worker_loop(
 }
 
 fn run_streaming_compile_and_render_chunk<T: FocusedClosureCompiler + Sync + Send>(
-    library: &std::sync::Arc<T>,
+    source_root: &std::sync::Arc<T>,
     context: &RenderSimContext<'_>,
     plan: StreamingChunkPlan<'_>,
 ) -> StreamingChunkOutput {
@@ -636,7 +636,7 @@ fn run_streaming_compile_and_render_chunk<T: FocusedClosureCompiler + Sync + Sen
         );
         for (result_idx, model_name) in names_chunk.iter().enumerate() {
             let entry = prepare_streaming_compile_result_entry(
-                compile_model_with_budget_timeout(library, model_name, model_budget_secs),
+                compile_model_with_budget_timeout(source_root, model_name, model_budget_secs),
                 context,
             );
             if compile_tx.send((result_idx, entry)).is_err() {
@@ -671,12 +671,12 @@ fn run_streaming_compile_and_render_chunk<T: FocusedClosureCompiler + Sync + Sen
 }
 
 fn run_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
-    library: &std::sync::Arc<T>,
+    source_root: &std::sync::Arc<T>,
     context: &RenderSimContext<'_>,
     plan: StreamingChunkPlan<'_>,
 ) -> StreamingChunkOutput {
     if plan.names_chunk.len() > 1 {
-        return run_parallel_simulation_chunk(library, context, plan);
+        return run_parallel_simulation_chunk(source_root, context, plan);
     }
     let StreamingChunkPlan {
         names_chunk,
@@ -692,7 +692,7 @@ fn run_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
         300,
     );
     run_streaming_compile_and_render_chunk(
-        library,
+        source_root,
         context,
         StreamingChunkPlan {
             names_chunk,
@@ -706,7 +706,7 @@ fn run_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
 }
 
 fn run_parallel_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
-    library: &std::sync::Arc<T>,
+    source_root: &std::sync::Arc<T>,
     context: &RenderSimContext<'_>,
     plan: StreamingChunkPlan<'_>,
 ) -> StreamingChunkOutput {
@@ -738,7 +738,7 @@ fn run_parallel_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
             300,
         );
         compile_chunk_with_model_budgets(
-            library,
+            source_root,
             names_chunk,
             simulation_threads,
             model_budget_secs,
@@ -766,7 +766,7 @@ fn run_parallel_simulation_chunk<T: FocusedClosureCompiler + Sync + Send>(
 }
 
 fn run_compile_only_chunk<T: FocusedClosureCompiler + Sync + Send>(
-    library: &std::sync::Arc<T>,
+    source_root: &std::sync::Arc<T>,
     context: &RenderSimContext<'_>,
     plan: StreamingChunkPlan<'_>,
 ) -> StreamingChunkOutput {
@@ -798,7 +798,7 @@ fn run_compile_only_chunk<T: FocusedClosureCompiler + Sync + Send>(
             300,
         );
         compile_chunk_with_model_budgets(
-            library,
+            source_root,
             names_chunk,
             simulation_threads,
             model_budget_secs,
@@ -826,7 +826,7 @@ fn run_compile_only_chunk<T: FocusedClosureCompiler + Sync + Send>(
 }
 
 fn run_chunked_compile_and_render<T: FocusedClosureCompiler + Sync + Send>(
-    library: &std::sync::Arc<T>,
+    source_root: &std::sync::Arc<T>,
     compile_names: &[String],
     run_simulation: bool,
     context: &RenderSimContext<'_>,
@@ -855,7 +855,7 @@ fn run_chunked_compile_and_render<T: FocusedClosureCompiler + Sync + Send>(
         );
         if run_simulation {
             let mut chunk_output = run_simulation_chunk(
-                library,
+                source_root,
                 context,
                 StreamingChunkPlan {
                     names_chunk,
@@ -886,7 +886,7 @@ fn run_chunked_compile_and_render<T: FocusedClosureCompiler + Sync + Send>(
         }
 
         let mut chunk_output = run_compile_only_chunk(
-            library,
+            source_root,
             context,
             StreamingChunkPlan {
                 names_chunk,
@@ -942,31 +942,31 @@ fn simulation_threads_for_run(run_simulation: bool) -> usize {
     }
 }
 
-struct PreparedLibrary {
-    library: std::sync::Arc<CompiledLibrary>,
+struct PreparedSourceRoot {
+    source_root: std::sync::Arc<CompiledSourceRoot>,
     model_names: Vec<String>,
     class_type_counts: HashMap<String, usize>,
 }
 
-fn prepare_compiled_library(
+fn prepare_compiled_source_root(
     parsed_successes: Vec<(String, rumoca_ir_ast::StoredDefinition)>,
     total_mo_files: usize,
     parse_errors: usize,
     timings: &mut MslPhaseTimings,
     frontend_compile_start: Instant,
     core_start: Instant,
-) -> Result<PreparedLibrary, Box<MslSummary>> {
-    println!("Building tolerant library index...");
+) -> Result<PreparedSourceRoot, Box<MslSummary>> {
+    println!("Building tolerant source-root index...");
     let session_start = Instant::now();
     let _session_watchdog = StageAbortWatchdog::new(
         "session_build",
         "RUMOCA_MSL_STAGE_TIMEOUT_SESSION_BUILD_SECS",
         300,
     );
-    let library = match CompiledLibrary::from_parsed_batch_tolerant(parsed_successes) {
-        Ok(library) => std::sync::Arc::new(library),
+    let source_root = match CompiledSourceRoot::from_parsed_batch_tolerant(parsed_successes) {
+        Ok(source_root) => std::sync::Arc::new(source_root),
         Err(error) => {
-            println!("Failed to build tolerant library index: {error}");
+            println!("Failed to build tolerant source-root index: {error}");
             let mut summary = empty_summary(total_mo_files, parse_errors);
             summary.resolve_errors = 1;
             timings.session_build_seconds = session_start.elapsed().as_secs_f64();
@@ -978,15 +978,15 @@ fn prepare_compiled_library(
             )));
         }
     };
-    let model_names = library.model_names().to_vec();
-    let class_type_counts = library.class_type_counts().clone();
+    let model_names = source_root.model_names().to_vec();
+    let class_type_counts = source_root.class_type_counts().clone();
     timings.session_build_seconds = session_start.elapsed().as_secs_f64();
     println!(
-        "Built tolerant library index + model discovery in {:.2}s",
+        "Built tolerant source-root index + model discovery in {:.2}s",
         timings.session_build_seconds
     );
-    Ok(PreparedLibrary {
-        library,
+    Ok(PreparedSourceRoot {
+        source_root,
         model_names,
         class_type_counts,
     })
@@ -1013,7 +1013,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         );
     }
 
-    let prepared = match prepare_compiled_library(
+    let prepared = match prepare_compiled_source_root(
         parsed.successes,
         parsed.total_mo_files,
         parsed.parse_errors,
@@ -1025,8 +1025,8 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         Err(summary) => return *summary,
     };
 
-    let PreparedLibrary {
-        library,
+    let PreparedSourceRoot {
+        source_root,
         model_names,
         class_type_counts,
     } = prepared;
@@ -1044,7 +1044,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
     let simulation_threads = simulation_threads_for_run(run_simulation);
 
     let chunked_output = run_chunked_compile_and_render(
-        &library,
+        &source_root,
         &selection.compile_names,
         run_simulation,
         &context,
@@ -1066,7 +1066,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         timings.render_and_write_seconds
     );
     // Free the typed-tree/session memory before render+simulation.
-    drop(library);
+    drop(source_root);
 
     let summary_inputs = MslSummaryInputs {
         total_mo_files: parsed.total_mo_files,

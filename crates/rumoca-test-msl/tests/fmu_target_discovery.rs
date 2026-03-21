@@ -10,7 +10,7 @@
 //! ```
 
 use flate2::read::GzDecoder;
-use rumoca_session::compile::{CompilationResult, CompiledLibrary, PhaseResult};
+use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
 use std::fs;
 use std::io::Read;
@@ -208,13 +208,13 @@ impl std::fmt::Display for Stage {
 }
 
 fn probe_model(
-    library: &CompiledLibrary,
+    source_root: &CompiledSourceRoot,
     model_name: &str,
     model_template: &str,
     driver_template: &str,
 ) -> Stage {
     // 1. Compile
-    let report = library.compile_model_strict_reachable_with_recovery(model_name);
+    let report = source_root.compile_model_strict_reachable_with_recovery(model_name);
     let result: CompilationResult = match report.requested_result {
         Some(PhaseResult::Success(boxed)) => *boxed,
         Some(PhaseResult::Failed { error, .. }) => return Stage::CompileFail(error),
@@ -310,8 +310,8 @@ fn discover_fmu_targets() {
     println!("Parsing {} MSL files...", mo_files.len());
     let (successes, failures) = parse_files_parallel_lenient(&mo_files);
     println!("Parsed {} OK, {} failures", successes.len(), failures.len());
-    let library = CompiledLibrary::from_parsed_batch_tolerant(successes)
-        .expect("failed to build library index");
+    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(successes)
+        .expect("failed to build source-root index");
 
     let targets = load_target_models();
     println!(
@@ -326,13 +326,13 @@ fn discover_fmu_targets() {
 
     for (i, model_name) in targets.iter().enumerate() {
         let fmi2_stage = probe_model(
-            &library,
+            &source_root,
             model_name,
             templates::FMI2_MODEL,
             templates::FMI2_TEST_DRIVER,
         );
         let fmi3_stage = probe_model(
-            &library,
+            &source_root,
             model_name,
             templates::FMI3_MODEL,
             templates::FMI3_TEST_DRIVER,

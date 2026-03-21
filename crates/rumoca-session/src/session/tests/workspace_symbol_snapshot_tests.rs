@@ -1,5 +1,34 @@
 use super::*;
 
+fn write_source_root_file(path: &std::path::Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("mkdirs");
+    }
+    std::fs::write(path, contents).expect("write source-root file");
+}
+
+fn write_two_file_source_root(root: &std::path::Path) {
+    write_source_root_file(&root.join("package.mo"), "package Lib\nend Lib;\n");
+    write_source_root_file(
+        &root.join("M.mo"),
+        "within Lib;\nmodel M\n  Real x;\nend M;\n",
+    );
+}
+
+fn index_source_root_with_cache(
+    session: &mut Session,
+    cache_dir: &std::path::Path,
+    source_root_dir: &std::path::Path,
+) -> SourceRootLoadReport {
+    session.load_source_root_tolerant_with_cache_dir_for_tests(
+        "external::Lib",
+        SourceRootKind::External,
+        source_root_dir,
+        None,
+        Some(cache_dir),
+    )
+}
+
 fn source_set_workspace_symbol_cache(
     snapshot: &SessionSnapshot,
     source_set_id: SourceSetId,
@@ -112,11 +141,11 @@ fn assert_workspace_symbol_rebuild_snapshot_is_trimmed(snapshot: &SessionSnapsho
 }
 
 #[test]
-fn session_workspace_symbols_keep_durable_library_roots_warm_across_local_summary_edits() {
+fn session_workspace_symbols_keep_durable_external_roots_warm_across_local_summary_edits() {
     let mut session = Session::default();
     session.replace_parsed_source_set(
         "Modelica",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         vec![(
             "Modelica/package.mo".to_string(),
             parse_definition(
@@ -134,7 +163,7 @@ fn session_workspace_symbols_keep_durable_library_roots_warm_across_local_summar
     let first = first_snapshot.workspace_symbol_query("");
     assert!(
         first.iter().any(|symbol| symbol.name == "Resistor"),
-        "initial workspace symbol query should include the durable library class"
+        "initial workspace symbol query should include the durable external root class"
     );
     assert!(
         first.iter().any(|symbol| symbol.name == "LocalA"),
@@ -147,13 +176,13 @@ fn session_workspace_symbols_keep_durable_library_roots_warm_across_local_summar
     );
     let durable_file_id = session
         .file_id_for_uri("Modelica/package.mo")
-        .expect("durable library file id should exist");
+        .expect("durable external root file id should exist");
     let durable_file_item_fingerprint = session
         .query_state
         .ast
         .file_item_index_cache
         .get(&durable_file_id)
-        .expect("durable library file item cache should exist")
+        .expect("durable external root file item cache should exist")
         .fingerprint;
     let first_detached_cache = session_detached_workspace_symbol_cache(&session);
 
@@ -177,7 +206,7 @@ fn session_workspace_symbols_keep_durable_library_roots_warm_across_local_summar
     let second = second_snapshot.workspace_symbol_query("");
     assert!(
         second.iter().any(|symbol| symbol.name == "Resistor"),
-        "durable library symbols should remain available after local edits"
+        "durable external root symbols should remain available after local edits"
     );
     assert!(
         second.iter().any(|symbol| symbol.name == "LocalB"),
@@ -191,7 +220,7 @@ fn session_workspace_symbols_keep_durable_library_roots_warm_across_local_summar
             .file_item_index_cache
             .get(&durable_file_id)
             .is_some_and(|cache| cache.fingerprint == durable_file_item_fingerprint),
-        "local summary edits should keep the durable library file-item cache warm"
+        "local summary edits should keep the durable external root file-item cache warm"
     );
     assert!(
         !Arc::ptr_eq(&first_detached_cache, &second_detached_cache),
@@ -204,7 +233,7 @@ fn workspace_symbol_snapshot_rebuilds_source_set_slices_without_full_snapshot() 
     let mut session = Session::default();
     session.replace_parsed_source_set(
         "Modelica",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         vec![(
             "Modelica/package.mo".to_string(),
             parse_definition(
@@ -229,7 +258,7 @@ fn workspace_symbol_snapshot_rebuilds_source_set_slices_without_full_snapshot() 
     let symbols = snapshot.workspace_symbol_query("Resistor");
     assert!(
         symbols.iter().any(|symbol| symbol.name == "Resistor"),
-        "source-set rebuild snapshots should still answer durable library workspace symbols"
+        "source-set rebuild snapshots should still answer durable external root workspace symbols"
     );
 }
 
@@ -238,7 +267,7 @@ fn workspace_symbol_snapshot_prewarm_populates_source_set_symbol_slices() {
     let mut session = Session::default();
     session.replace_parsed_source_set(
         "Modelica",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         vec![(
             "Modelica/package.mo".to_string(),
             parse_definition(
@@ -250,7 +279,7 @@ fn workspace_symbol_snapshot_prewarm_populates_source_set_symbol_slices() {
     );
 
     let prewarmed = session.workspace_symbol_snapshot();
-    prewarmed.prewarm_workspace_symbol_queries();
+    prewarmed.prewarm_source_root_read_queries();
     let source_set_id = session
         .source_sets
         .get("Modelica")
@@ -265,15 +294,15 @@ fn workspace_symbol_snapshot_prewarm_populates_source_set_symbol_slices() {
 
     assert!(
         symbols.iter().any(|symbol| symbol.name == "Resistor"),
-        "prewarmed workspace symbol snapshots should still answer durable library symbols"
+        "prewarmed workspace symbol snapshots should still answer durable external root symbols"
     );
     assert!(
         Arc::ptr_eq(&prewarmed_cache, &cache_before_query),
-        "prewarmed snapshots should reuse the warmed durable library symbol slice"
+        "prewarmed snapshots should reuse the warmed durable external root symbol slice"
     );
     assert!(
         Arc::ptr_eq(&cache_before_query, &cache_after_query),
-        "prewarmed workspace symbol queries should not rebuild the durable library symbol slice"
+        "prewarmed workspace symbol queries should not rebuild the durable external root symbol slice"
     );
 }
 
@@ -282,7 +311,7 @@ fn workspace_symbol_snapshot_prewarm_survives_detached_document_revisions() {
     let mut session = Session::default();
     session.replace_parsed_source_set(
         "Modelica",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         vec![(
             "Modelica/package.mo".to_string(),
             parse_definition(
@@ -294,7 +323,7 @@ fn workspace_symbol_snapshot_prewarm_survives_detached_document_revisions() {
     );
 
     let prewarmed = session.workspace_symbol_snapshot();
-    prewarmed.prewarm_workspace_symbol_queries();
+    prewarmed.prewarm_source_root_read_queries();
 
     session
         .add_document("test.mo", "model LocalA\n  Real x;\nend LocalA;\n")
@@ -309,6 +338,69 @@ fn workspace_symbol_snapshot_prewarm_survives_detached_document_revisions() {
     let symbols = snapshot.workspace_symbol_query("Resistor");
     assert!(
         symbols.iter().any(|symbol| symbol.name == "Resistor"),
-        "promoted workspace symbol caches should still answer durable library symbols"
+        "promoted workspace symbol caches should still answer durable external root symbols"
+    );
+}
+
+#[test]
+fn warm_source_root_restore_keeps_workspace_symbol_slices_on_restored_aggregate_path() {
+    let _guard = session_stats_test_guard();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_root_dir = temp.path().join("Lib");
+    let cache_dir = temp.path().join("cache");
+    write_two_file_source_root(&source_root_dir);
+
+    let mut first = Session::default();
+    let first_report = index_source_root_with_cache(&mut first, &cache_dir, &source_root_dir);
+    assert_eq!(
+        first_report.cache_status,
+        Some(crate::source_roots::SourceRootCacheStatus::Miss),
+        "initial load should populate the source-root cache",
+    );
+
+    let mut second = Session::default();
+    let second_report = index_source_root_with_cache(&mut second, &cache_dir, &source_root_dir);
+    assert_eq!(
+        second_report.cache_status,
+        Some(crate::source_roots::SourceRootCacheStatus::Hit),
+        "warm reopen should reuse the outer parsed source-root snapshot",
+    );
+
+    let source_set_id = second
+        .source_set_id("external::Lib")
+        .expect("source-set id should exist after warm reopen");
+    assert!(
+        second
+            .query_state
+            .ast
+            .workspace_symbol_query_cache
+            .as_ref()
+            .and_then(|cache| cache.source_set_caches.get(&source_set_id))
+            .is_some(),
+        "warm reopen should hydrate the source-root workspace-symbol slice before the first snapshot"
+    );
+
+    crate::compile::reset_session_cache_stats();
+    let (snapshot, timing) = second.workspace_symbol_snapshot_with_timing();
+    let before = crate::compile::session_cache_stats();
+    let symbols = snapshot.workspace_symbol_query("M");
+    let delta = crate::compile::session_cache_stats().delta_since(before);
+
+    assert!(
+        !timing.used_source_set_rebuild_snapshot,
+        "warm workspace-symbol snapshots should stay on the restored aggregate path after reopen"
+    );
+    assert_workspace_symbol_snapshot_is_narrow(&snapshot);
+    assert!(
+        symbols.iter().any(|symbol| symbol.name == "M"),
+        "warm workspace-symbol snapshots should still answer restored source-root symbols"
+    );
+    assert_eq!(
+        delta.file_item_index_query_misses, 0,
+        "warm workspace-symbol slices should not rebuild per-file symbol indexes on the first query after reopen"
+    );
+    assert_eq!(
+        delta.source_root_files_parsed, 0,
+        "warm workspace-symbol snapshots should not reparse source-root files on the first query after reopen"
     );
 }

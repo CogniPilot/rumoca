@@ -1,6 +1,6 @@
 //! Test for for-equation parameter lookup in array components.
 
-use rumoca_session::compile::{CompiledLibrary, PhaseResult};
+use rumoca_session::compile::{CompiledSourceRoot, PhaseResult};
 
 /// Test with MSL-style imports and SISO.
 #[test]
@@ -79,11 +79,11 @@ end TestPkg;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
     // Test Dimmer
     println!("\n=== Compiling TestPkg.Dimmer ===");
-    match library.compile_model_phases("TestPkg.Dimmer") {
+    match source_root.compile_model_phases("TestPkg.Dimmer") {
         PhaseResult::Success(result) => {
             println!("Success!");
             let balance = rumoca_eval_dae::analysis::balance(&result.dae);

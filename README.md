@@ -11,9 +11,9 @@
 
 Rumoca is a modern **Modelica compiler and symbolic interoperability platform** written in Rust.
 
-Rumoca’s goal is not only to compile and simulate Modelica models, but to turn **real Modelica libraries** into high-quality symbolic systems that can be used across modern scientific computing, optimization, machine learning, and code generation workflows.
+Rumoca’s goal is not only to compile and simulate Modelica models, but to turn **real Modelica package trees** into high-quality symbolic systems that can be used across modern scientific computing, optimization, machine learning, and code generation workflows.
 
-> **Rumoca turns Modelica libraries into modern symbolic systems.**
+> **Rumoca turns Modelica package trees into modern symbolic systems.**
 
 > **Project status:** Rumoca is in active development. You should expect bugs and rough edges; please file issues at https://github.com/cognipilot/rumoca/issues.
 
@@ -65,11 +65,11 @@ Rumoca starts from a different place:
 
 That gives Rumoca a different set of strengths:
 
-- compatibility with actual Modelica libraries
+- compatibility with actual Modelica packages
 - stronger frontend semantics
 - a narrower and more analyzable modeling surface
 - a better foundation for predictable structural analysis and compilation
-- a path to unlock existing engineering libraries for downstream symbolic ecosystems
+- a path to unlock existing engineering packages for downstream symbolic ecosystems
 
 Rumoca complements tools like ModelingToolkit rather than merely competing with them:
 
@@ -106,7 +106,7 @@ Rumoca focuses on five things:
 
 ## What Rumoca Enables
 
-Rumoca is designed so that a model library can be authored once and then used across multiple communities.
+Rumoca is designed so that a model package tree can be authored once and then used across multiple communities.
 
 For example, the same Modelica model can be compiled into forms suitable for:
 
@@ -116,7 +116,7 @@ For example, the same Modelica model can be compiled into forms suitable for:
 - embedded code generation targets
 - browser-based tools via WASM
 
-The goal is to make model libraries belong to the **models themselves**, not to a single language ecosystem.
+The goal is to make model package trees belong to the **models themselves**, not to a single language ecosystem.
 
 ## Quick Start
 
@@ -172,7 +172,7 @@ curl -L -o /tmp/ModelicaStandardLibrary-4.1.0.zip https://github.com/modelica/Mo
 printf 'model MslResistorExample\n  import Complex;\n  import ModelicaServices;\n  extends Modelica.Electrical.Analog.Examples.Resistor;\nend MslResistorExample;\n' > /tmp/MslResistorExample.mo
 
 # convert into standalone html
-cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExample --library /tmp/ModelicaStandardLibrary-4.1.0/Modelica --library /tmp/ModelicaStandardLibrary-4.1.0/ModelicaServices --library /tmp/ModelicaStandardLibrary-4.1.0/Complex.mo --template-file examples/templates/standalone_html.jinja --template-prepared > MslResistorExample_standalone.html
+cargo run -p rumoca -- compile /tmp/MslResistorExample.mo --model MslResistorExample --source-root /tmp/ModelicaStandardLibrary-4.1.0/Modelica --source-root /tmp/ModelicaStandardLibrary-4.1.0/ModelicaServices --source-root /tmp/ModelicaStandardLibrary-4.1.0/Complex.mo --template-file examples/templates/standalone_html.jinja --template-prepared > MslResistorExample_standalone.html
 ```
 
 ### Installation

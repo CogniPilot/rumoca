@@ -109,7 +109,7 @@ pub(super) fn is_simulatable_class_type(class_type: &ast::ClassType) -> bool {
     )
 }
 
-fn is_library_tree(tree: &ast::ClassTree) -> bool {
+fn has_multiple_top_level_classes(tree: &ast::ClassTree) -> bool {
     tree.definitions.classes.len() > 1
 }
 
@@ -127,14 +127,14 @@ fn summarize_typecheck_error_code(diags: &CommonDiagnostics) -> Option<String> {
 
 pub(super) fn todae_options_for_tree(tree: &ast::ClassTree) -> ToDaeOptions {
     ToDaeOptions {
-        error_on_unbalanced: !is_library_tree(tree),
+        error_on_unbalanced: !has_multiple_top_level_classes(tree),
     }
 }
 
 pub(super) fn flatten_options_for_tree() -> FlattenOptions {
     // Connection compatibility is model-local at flatten time (overlay-scoped),
     // so strict validation should always be enabled for compiled models even
-    // when the source tree contains many library classes.
+    // when the source tree contains many external source-root classes.
     FlattenOptions {
         strict_connection_validation: true,
     }

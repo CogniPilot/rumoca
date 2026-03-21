@@ -21,27 +21,123 @@
             flex-direction: column;
             overflow: hidden;
         }
-        .header {
+        .titlebar {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            padding: 10px 20px;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 8px 12px;
             flex-wrap: wrap;
-            gap: 10px;
             flex-shrink: 0;
-            border-bottom: 1px solid #3c3c3c;
+            background: #181818;
+            border-bottom: 1px solid #2b2b2b;
         }
-        h1 { color: #569cd6; margin: 0; font-size: clamp(1.2rem, 3vw, 1.5rem); }
+        .titlebar-left,
+        .titlebar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+        .titlebar-right {
+            margin-left: auto;
+        }
+        .brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            color: #cccccc;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .brand:hover {
+            color: #ffffff;
+        }
         .logo {
-            width: 36px;
-            height: 36px;
-            border-radius: 6px;
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
             object-fit: contain;
             flex-shrink: 0;
         }
+        .titlebar-actions {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            min-width: 220px;
+            display: none;
+            flex-direction: column;
+            gap: 2px;
+            padding: 6px;
+            background: #252526;
+            border: 1px solid #2f2f2f;
+            border-radius: 6px;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+            z-index: 1200;
+        }
+        .titlebar-actions.open {
+            display: flex;
+        }
+        .titlebar-action {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 34px;
+            background: transparent;
+            color: #cccccc;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            padding: 7px 10px;
+            font-size: 13px;
+        }
+        .titlebar-action:hover {
+            background: #2a2d2e;
+            border-color: #2a2d2e;
+        }
+        .titlebar-menu-button::after {
+            content: '▾';
+            margin-left: 6px;
+            font-size: 10px;
+            color: #8c8c8c;
+        }
+        .titlebar-caption {
+            color: #8c8c8c;
+            font-size: 11px;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
         .main-container {
             display: flex;
-            flex-direction: row;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+            position: relative;
+        }
+        .mobile-appbar {
+            display: none;
+        }
+        .sidebar-backdrop[hidden] {
+            display: none;
+        }
+        .sidebar-backdrop {
+            position: fixed;
+            inset: 48px 0 0 0;
+            z-index: 39;
+            background: rgba(0, 0, 0, 0.45);
+        }
+        .workbench-main {
+            display: flex;
+            flex: 1;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .workbench-top {
+            display: flex;
             flex: 1;
             min-height: 0;
             overflow: hidden;
@@ -50,10 +146,106 @@
             .main-container {
                 flex-direction: column;
             }
+            .mobile-appbar {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                min-height: 48px;
+                padding: 6px 8px;
+                background: #181818;
+                border-bottom: 1px solid #2b2b2b;
+                flex-shrink: 0;
+            }
+            .mobile-appbar-title {
+                min-width: 0;
+                flex: 1;
+                color: #d4d4d4;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .mobile-appbar-spacer {
+                flex: 1;
+                min-width: 0;
+            }
+            .mobile-appbar-button {
+                width: 36px;
+                min-width: 36px;
+                height: 36px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border: none;
+                border-radius: 8px;
+                background: transparent;
+                color: #c8c8c8;
+                font-size: 16px;
+                cursor: pointer;
+            }
+            .mobile-appbar-button:hover,
+            .mobile-appbar-button.active {
+                background: #2a2d2e;
+                color: #ffffff;
+            }
+            .workbench-top {
+                flex-direction: column;
+            }
             .left-area {
                 min-width: 0;
                 width: 100% !important;
                 flex: 1 1 auto;
+            }
+            .editor-workbench {
+                flex-direction: column;
+            }
+            .workbench-sidepanel {
+                position: absolute;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                z-index: 40;
+                width: min(84vw, 340px);
+                min-width: 0;
+                max-height: none;
+                flex-direction: column;
+                border-right: 1px solid #2b2b2b;
+                border-bottom: none;
+                background: #181818;
+                box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
+                transform: translateX(0);
+                transition: transform 0.16s ease;
+            }
+            .workbench-sidepanel.collapsed {
+                transform: translateX(-100%);
+            }
+            .activity-rail {
+                width: auto;
+                min-height: 48px;
+                flex-direction: row;
+                justify-content: flex-start;
+                gap: 6px;
+                padding: 7px 8px;
+                border-bottom: 1px solid #2b2b2b;
+            }
+            .activity-brand {
+                width: 30px;
+                height: 30px;
+                margin-bottom: 0;
+            }
+            .resize-handle-sidebar,
+            .resize-handle-sidebar-v {
+                display: none;
+            }
+            .workbench-sidebar {
+                width: auto;
+                flex: 1;
+                min-width: 0;
+                border-right: none;
+            }
+            .sidebar-section {
+                min-height: 110px;
             }
             .resize-handle-h {
                 display: none;
@@ -66,6 +258,37 @@
                 border-left: none;
                 border-top: 1px solid #3c3c3c;
             }
+            .titlebar-action,
+            .sidebar-section-header button,
+            .activity-button,
+            .toolbar-icon,
+            .right-tab,
+            .bottom-tab,
+            .results-run-close {
+                min-height: 40px;
+            }
+            .activity-button,
+            .toolbar-icon,
+            .results-run-close {
+                min-width: 40px;
+                width: 40px;
+                height: 40px;
+            }
+            .sidebar-tree-toggle {
+                min-width: 116px;
+                min-height: 40px;
+                padding: 8px 12px;
+                font-size: 13px;
+            }
+            .project-sidebar-action {
+                min-height: 42px;
+                padding: 10px 12px;
+                font-size: 13px;
+            }
+            .sidebar-row {
+                min-height: 38px;
+                font-size: 13px;
+            }
         }
         .left-area {
             display: flex;
@@ -74,6 +297,629 @@
             min-width: 200px;
             overflow: hidden;
         }
+        .pane-hidden {
+            display: none !important;
+        }
+        .editor-workbench {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .workbench-sidepanel {
+            display: flex;
+            flex-shrink: 0;
+            min-width: 48px;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .workbench-sidepanel.collapsed .workbench-sidebar {
+            display: none;
+        }
+        .activity-rail {
+            width: 48px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 0;
+            background: #181818;
+            border-right: 1px solid #2b2b2b;
+            position: relative;
+        }
+        .activity-brand {
+            width: 34px;
+            height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 2px;
+            border-radius: 8px;
+            background: transparent;
+        }
+        .activity-brand img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+        .activity-button {
+            width: 34px;
+            height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: #8c8c8c;
+            cursor: pointer;
+            font-size: 17px;
+            line-height: 1;
+        }
+        .activity-button:hover {
+            background: #2a2d2e;
+            color: #d4d4d4;
+        }
+        .activity-button.active {
+            background: #094771;
+            color: #ffffff;
+        }
+        .activity-menu {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .activity-menu .titlebar-actions {
+            top: 0;
+            left: calc(100% + 10px);
+        }
+        .activity-file-button {
+            font-size: 18px;
+        }
+        .workbench-sidebar {
+            width: 250px;
+            min-width: 210px;
+            display: flex;
+            flex-direction: column;
+            background: #181818;
+            border-right: 1px solid #2b2b2b;
+            overflow: hidden;
+        }
+        .sidebar-panel {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .sidebar-section {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 0;
+            min-height: 140px;
+            border-bottom: 1px solid #2b2b2b;
+        }
+        .sidebar-section:last-child {
+            border-bottom: none;
+            flex: 1 1 0;
+        }
+        .sidebar-section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px 5px;
+            color: #9da5b4;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            background: #202020;
+            border-bottom: 1px solid #2b2b2b;
+        }
+        .sidebar-section-header button {
+            border: none;
+            background: transparent;
+            color: #7f8692;
+            min-width: 28px;
+            min-height: 28px;
+            font-size: 12px;
+            padding: 4px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .sidebar-section-header button:hover {
+            background: #2a2d2e;
+            color: #d4d4d4;
+        }
+        .sidebar-section-title {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            border: none;
+            background: transparent;
+            color: inherit;
+            padding: 0;
+            font: inherit;
+            letter-spacing: inherit;
+            text-transform: inherit;
+            cursor: pointer;
+        }
+        .sidebar-section-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .sidebar-section-arrow {
+            flex: 0 0 auto;
+            width: 12px;
+            color: #7f8692;
+            font-size: 10px;
+            text-align: center;
+        }
+        .sidebar-section-spacer {
+            margin-left: auto;
+        }
+        .sidebar-section-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+        }
+        .sidebar-icon-button {
+            width: 22px;
+            min-width: 22px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: transparent;
+            color: #8d96a3;
+            font-size: 0;
+            line-height: 1;
+            cursor: pointer;
+        }
+        .sidebar-icon-button::before,
+        .sidebar-tree-toggle::before,
+        .sidebar-row .icon::before {
+            content: '';
+            display: block;
+            width: 14px;
+            height: 14px;
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: contain;
+            opacity: 0.92;
+        }
+        .sidebar-icon-button.file-icon::before {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 1.75h4.9L12.75 5.6V14.25H4z' stroke='%23cfd6e4' stroke-width='1.2' stroke-linejoin='round'/%3E%3Cpath d='M8.75 1.75v3.1h3.1' stroke='%23cfd6e4' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        }
+        .sidebar-icon-button.folder-icon::before {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M1.75 4.5h4.1l1.2 1.35h7.2v6.9H1.75z' stroke='%23e0b34f' stroke-width='1.2' stroke-linejoin='round'/%3E%3Cpath d='M1.75 4.5V3.25h3.6l1.05 1.25' stroke='%23e0b34f' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        }
+        .sidebar-icon-button:hover:not(:disabled) {
+            background: #2a2d2e;
+            color: #ffffff;
+        }
+        .sidebar-icon-button:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+        .sidebar-tree-toggle {
+            width: 22px;
+            min-width: 22px;
+            min-height: 22px;
+            padding: 0;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: transparent;
+            color: #8d96a3;
+            font-size: 0;
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .sidebar-tree-toggle[data-mode="collapse"]::before {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Crect x='2.25' y='2.25' width='11.5' height='11.5' rx='1.75' stroke='%23cfd6e4' stroke-width='1.2'/%3E%3Cpath d='M5 8h6' stroke='%23cfd6e4' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
+        }
+        .sidebar-tree-toggle[data-mode="expand"]::before {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Crect x='2.25' y='2.25' width='11.5' height='11.5' rx='1.75' stroke='%23cfd6e4' stroke-width='1.2'/%3E%3Cpath d='M5 8h6M8 5v6' stroke='%23cfd6e4' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
+        }
+        .sidebar-tree-toggle:hover:not(:disabled) {
+            background: #2a2d2e;
+            color: #ffffff;
+        }
+        .sidebar-tree-toggle:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+        .sidebar-section.collapsed .sidebar-tree {
+            display: none;
+        }
+        .sidebar-tree {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            padding: 3px 0;
+            background: #181818;
+        }
+        .sidebar-empty {
+            padding: 6px 10px;
+            color: #7b8592;
+            font-size: 11px;
+        }
+        .sidebar-row-shell {
+            display: flex;
+            align-items: stretch;
+            gap: 2px;
+            padding-right: 4px;
+        }
+        .sidebar-row-shell[hidden] {
+            display: none;
+        }
+        .sidebar-row-shell.active {
+            background: #094771;
+        }
+        .sidebar-row {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 24px;
+            padding: 3px 10px;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+            color: #d4d4d4;
+            font-size: 12px;
+            text-align: left;
+            cursor: pointer;
+        }
+        .sidebar-row-shell:hover {
+            background: #252526;
+        }
+        .sidebar-row-shell.active:hover {
+            background: #094771;
+        }
+        .sidebar-row:hover {
+            background: #252526;
+        }
+        .sidebar-row.active {
+            background: #094771;
+            color: #ffffff;
+        }
+        .sidebar-row.active:hover {
+            background: #094771;
+            color: #ffffff;
+        }
+        .sidebar-row.dir {
+            color: #c8c8c8;
+        }
+        .sidebar-row.file.package-archive {
+            color: #b8c6d9;
+        }
+        .sidebar-row.dir.package-archive {
+            color: #c6d8ff;
+        }
+        .sidebar-row.dir:hover {
+            background: #252526;
+        }
+        .sidebar-row .icon {
+            flex: 0 0 auto;
+            width: 14px;
+            color: #8c8c8c;
+            text-align: center;
+        }
+        .sidebar-row.dir .icon::before {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M1.75 4.5h4.1l1.2 1.35h7.2v6.9H1.75z' stroke='%23dcb65d' stroke-width='1.15' stroke-linejoin='round'/%3E%3Cpath d='M1.75 4.5V3.25h3.6l1.05 1.25' stroke='%23dcb65d' stroke-width='1.15' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        }
+        .sidebar-row.file .icon::before {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 1.75h4.9L12.75 5.6V14.25H4z' stroke='%23b8c2d1' stroke-width='1.15' stroke-linejoin='round'/%3E%3Cpath d='M8.75 1.75v3.1h3.1' stroke='%23b8c2d1' stroke-width='1.15' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        }
+        .sidebar-row .expander {
+            flex: 0 0 auto;
+            width: 12px;
+            color: #7f8692;
+            text-align: center;
+            font-size: 10px;
+        }
+        .sidebar-row .label {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .sidebar-row .meta {
+            margin-left: auto;
+            color: #6f7680;
+            font-size: 10px;
+        }
+        .sidebar-row .source-badge {
+            margin-left: auto;
+            color: #6f7680;
+            font-size: 9px;
+            text-transform: uppercase;
+        }
+        .sidebar-row-action {
+            flex: 0 0 auto;
+            align-self: center;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            min-width: 20px;
+            height: 20px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: transparent;
+            color: #798391;
+            font-size: 12px;
+            line-height: 1;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+        }
+        .sidebar-row-shell:hover .sidebar-row-action,
+        .sidebar-row-shell.active .sidebar-row-action {
+            opacity: 1;
+        }
+        .sidebar-row-shell.active .sidebar-row-action {
+            opacity: 0.72;
+        }
+        .sidebar-row-action:hover {
+            background: #2a2d2e;
+            color: #ffffff;
+        }
+        .sidebar-row-action:focus-visible {
+            opacity: 1;
+            outline: 1px solid #569cd6;
+            outline-offset: 1px;
+        }
+        .sidebar-row-action.locked {
+            color: #a5aab3;
+            border-color: rgba(74, 78, 84, 0.4);
+        }
+        .sidebar-row-action.unlocked {
+            color: #57ade3;
+            border-color: rgba(17, 119, 187, 0.26);
+        }
+        .sidebar-row-action.unlocked:hover {
+            background: rgba(17, 119, 187, 0.14);
+            border-color: rgba(21, 144, 227, 0.55);
+        }
+        .sidebar-context-menu {
+            position: fixed;
+            z-index: 2500;
+            display: none;
+            min-width: 180px;
+            padding: 6px;
+            background: #252526;
+            border: 1px solid #2f2f2f;
+            border-radius: 6px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.42);
+        }
+        .sidebar-context-menu.open {
+            display: block;
+        }
+        .sidebar-context-item {
+            width: 100%;
+            border: none;
+            background: transparent;
+            color: #d4d4d4;
+            text-align: left;
+            min-height: 34px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .sidebar-context-item:hover {
+            background: #2a2d2e;
+        }
+        .sidebar-context-item.danger {
+            color: #ff8aa0;
+        }
+        .sidebar-context-item.danger:hover {
+            background: rgba(201, 24, 74, 0.18);
+        }
+        .project-sidebar-panel {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            background: #181818;
+        }
+        .project-sidebar-body {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            gap: 12px;
+            padding: 12px;
+            overflow: auto;
+            background: #181818;
+        }
+        .project-sidebar-hint {
+            color: #8d96a3;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+        .project-sidebar-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+            gap: 10px;
+        }
+        .project-sidebar-action {
+            min-height: 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 12px;
+            border: 1px solid #3a3d41;
+            border-radius: 8px;
+            background: #252526;
+            color: #d4d4d4;
+            font-size: 12px;
+            font-weight: 600;
+            text-align: center;
+            cursor: pointer;
+        }
+        .project-sidebar-action:hover {
+            background: #2a2d2e;
+            border-color: #4f5359;
+        }
+        .project-sidebar-note {
+            color: #6f7680;
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .editor-workbench {
+            position: relative;
+        }
+        .editor-pane-area {
+            display: flex;
+            flex: 1;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .editor-pane-area[data-split="single"],
+        .editor-pane-area[data-split="vertical"] {
+            flex-direction: row;
+        }
+        .editor-pane-area[data-split="horizontal"] {
+            flex-direction: column;
+        }
+        .editor-stack {
+            display: flex;
+            flex: 1;
+            min-width: 0;
+            min-height: 0;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .editor-stack.active {
+            background: #1e1e1e;
+        }
+        .editor-stack.empty .editor-panel {
+            align-items: center;
+            justify-content: center;
+        }
+        .editor-pane-empty {
+            color: #7b8592;
+            font-size: 12px;
+            padding: 12px;
+        }
+        .editor-chrome {
+            display: flex;
+            align-items: stretch;
+            min-height: 36px;
+            background: #1f1f1f;
+            border-bottom: 1px solid #2b2b2b;
+            flex-shrink: 0;
+        }
+        .editor-tabs {
+            display: flex;
+            align-items: stretch;
+            flex: 1;
+            min-width: 0;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+        .editor-tab {
+            min-width: 0;
+            max-width: 220px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 0 6px 0 0;
+            border: none;
+            border-right: 1px solid #2b2b2b;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+            background: #252526;
+            color: #9da5b4;
+            font-size: 12px;
+        }
+        .editor-tab:hover {
+            background: #2a2d2e;
+            color: #d4d4d4;
+        }
+        .editor-tab.active {
+            background: #1e1e1e;
+            color: #ffffff;
+            border-bottom-color: transparent;
+            box-shadow: inset 0 2px 0 #0e639c;
+        }
+        .editor-tab.dragging {
+            opacity: 0.45;
+        }
+        .editor-tab-button {
+            min-width: 0;
+            flex: 1;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 8px 0 12px;
+            height: 100%;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+        }
+        .editor-tab-button:hover {
+            background: transparent;
+        }
+        .editor-tab .tab-name {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .editor-tab .tab-path {
+            color: #6f7680;
+            font-size: 11px;
+        }
+        .editor-tab-close {
+            width: 22px;
+            min-width: 22px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            margin-right: 2px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: transparent;
+            color: #8c8c8c;
+            font-size: 12px;
+            line-height: 1;
+            opacity: 0;
+            transition: opacity 120ms ease;
+        }
+        .editor-tab:hover .editor-tab-close,
+        .editor-tab.active .editor-tab-close {
+            opacity: 1;
+        }
+        .editor-tab-close:hover {
+            background: #3a3d41;
+            color: #ffffff;
+        }
+        .editor-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-left: 1px solid #2b2b2b;
+            background: #1f1f1f;
+        }
         .editor-panel {
             display: flex;
             flex-direction: column;
@@ -81,25 +927,130 @@
             flex: 1;
             overflow: hidden;
         }
-        .editor-toolbar {
+        .editor-split-handle {
+            flex: 0 0 auto;
+            width: 6px;
+            background: #3c3c3c;
+            cursor: ew-resize;
+            position: relative;
+        }
+        .editor-pane-area[data-split="horizontal"] .editor-split-handle {
+            width: 100%;
+            height: 6px;
+            cursor: ns-resize;
+        }
+        .editor-split-handle::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 2px;
+            right: 2px;
+            height: 28px;
+            transform: translateY(-50%);
+            background: rgba(255, 255, 255, 0.18);
+            border-radius: 999px;
+        }
+        .editor-pane-area[data-split="horizontal"] .editor-split-handle::after {
+            top: 2px;
+            bottom: 2px;
+            left: 50%;
+            right: auto;
+            width: 28px;
+            height: auto;
+            transform: translateX(-50%);
+        }
+        .editor-split-handle:hover {
+            background: #569cd6;
+        }
+        .editor-drop-overlay[hidden] {
+            display: none;
+        }
+        .editor-drop-overlay {
+            position: absolute;
+            inset: 12px;
+            z-index: 25;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 10px;
+            pointer-events: none;
+        }
+        .editor-drop-zone {
             display: flex;
             align-items: center;
-            padding: 8px 15px;
-            gap: 10px;
-            flex-wrap: wrap;
-            background: #252526;
-            border-bottom: 1px solid #3c3c3c;
+            justify-content: center;
+            border: 1px dashed rgba(86, 156, 214, 0.7);
+            border-radius: 10px;
+            background: rgba(14, 99, 156, 0.18);
+            color: #d4e9ff;
+            font-size: 12px;
+            font-weight: 600;
+            pointer-events: auto;
+        }
+        .editor-drop-zone.active,
+        .editor-drop-zone:hover {
+            background: rgba(14, 99, 156, 0.3);
+            border-color: rgba(86, 156, 214, 0.95);
+        }
+        .editor-drop-zone[data-drop-position="left"] {
+            grid-column: 1;
+            grid-row: 1 / span 2;
+        }
+        .editor-drop-zone[data-drop-position="right"] {
+            grid-column: 2;
+            grid-row: 1 / span 2;
+        }
+        .editor-drop-zone[data-drop-position="bottom"] {
+            grid-column: 1 / span 2;
+            grid-row: 2;
+            margin: 0 18%;
+        }
+        .resize-handle-sidebar {
+            width: 6px;
             flex-shrink: 0;
-        }
-        .editor-toolbar h3 { margin: 0; color: #9cdcfe; font-size: 13px; white-space: nowrap; }
-        .editor-toolbar-right {
             display: flex;
             align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-left: auto;
+            justify-content: center;
+            background: #222;
+            cursor: ew-resize;
         }
-        #editor { flex: 1; min-height: 0; }
+        .resize-handle-sidebar:hover {
+            background: #569cd6;
+        }
+        .resize-handle-sidebar::after {
+            content: '';
+            width: 2px;
+            height: 36px;
+            background: #666;
+        }
+        .resize-handle-sidebar:hover::after {
+            background: #fff;
+        }
+        .resize-handle-sidebar-v {
+            height: 6px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #202020;
+            cursor: ns-resize;
+            border-top: 1px solid #2b2b2b;
+            border-bottom: 1px solid #2b2b2b;
+        }
+        .resize-handle-sidebar-v:hover {
+            background: #569cd6;
+        }
+        .resize-handle-sidebar-v::after {
+            content: '';
+            width: 40px;
+            height: 2px;
+            background: #666;
+        }
+        .resize-handle-sidebar-v:hover::after {
+            background: #fff;
+        }
+        #editor,
+        #secondaryEditor { flex: 1; min-height: 0; }
 
         /* Horizontal resize handle (for right panel) */
         .resize-handle-h {
@@ -141,7 +1092,7 @@
         }
         .resize-handle-v:hover::after { background: #fff; }
 
-        /* Right panel - Tabbed output */
+        /* Right-side panes */
         .right-panel {
             display: flex;
             flex-direction: column;
@@ -151,56 +1102,183 @@
             overflow: hidden;
             border-left: 1px solid #3c3c3c;
         }
+        .workbench-top[data-layout="editor"] .left-area {
+            flex: 1 1 auto !important;
+            width: auto !important;
+            min-width: 0;
+        }
+        .workbench-top[data-layout="output"] .right-panel {
+            flex: 1 1 auto !important;
+            width: auto !important;
+            min-width: 0;
+            border-left: none;
+        }
+        .workbench-top[data-layout="empty"] {
+            background: #1e1e1e;
+        }
+        .output-pane {
+            display: flex;
+            flex: 1 1 0;
+            min-width: 0;
+            min-height: 0;
+            flex-direction: column;
+            overflow: hidden;
+            border-left: 1px solid #2b2b2b;
+        }
+        .output-pane:first-child {
+            border-left: none;
+        }
+        .right-panel[data-layout="results"] #resultsPane,
+        .right-panel[data-layout="codegen"] #codegenPane {
+            border-left: none;
+        }
         .panel-content-right {
             flex: 1;
             overflow: hidden;
             min-height: 0;
             display: flex;
             flex-direction: column;
-        }
-
-        /* Right panel tab bar */
-        .right-tab-bar {
-            display: flex;
-            align-items: center;
-            padding: 0 8px;
-            background: #252526;
-            border-bottom: 1px solid #3c3c3c;
-            flex-shrink: 0;
-            gap: 0;
-        }
-        .right-tab {
-            padding: 8px 14px;
-            background: transparent;
-            border: none;
-            border-bottom: 2px solid transparent;
-            cursor: pointer;
-            color: #888;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        .right-tab:hover { color: #d4d4d4; background: #2d2d2d; }
-        .right-tab.active { color: #569cd6; border-bottom-color: #569cd6; }
-        .right-tab-content {
-            display: none;
-            flex: 1;
-            flex-direction: column;
-            overflow: hidden;
             padding: 10px 12px;
-            min-height: 0;
         }
-        .right-tab-content.active {
+        .output-chrome {
+            border-bottom: 1px solid #2b2b2b;
+        }
+        .output-tab-strip {
             display: flex;
+            align-items: stretch;
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+        }
+        .output-tab-strip .results-run-bar {
+            display: none;
+        }
+        .output-tab-strip[data-active-pane="simulate"] #simRunTabs,
+        .output-tab-strip[data-active-pane="codegen"] #codegenRunTabs {
+            display: flex;
+        }
+        .results-run-bar {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            flex: 1 1 auto;
+            min-width: 0;
+            justify-content: flex-start;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding: 0;
+            margin: 0;
+            background: transparent;
+        }
+        .results-run-empty {
+            display: inline-flex;
+            align-items: center;
+            min-height: 36px;
+            padding: 0 12px;
+            font-size: 11px;
+            color: #888;
+            white-space: nowrap;
+        }
+        .results-run-tab-shell {
+            display: inline-flex;
+            align-items: stretch;
+            gap: 0;
+            min-width: 0;
+            background: #252526;
+            border-right: 1px solid #2b2b2b;
+        }
+        .results-run-tab-shell.active {
+            background: #1e1e1e;
+        }
+        .results-run-tab {
+            min-width: 0;
+            max-width: 320px;
+            padding: 0 12px;
+            border: none;
+            background: transparent;
+            color: #d4d4d4;
+            font-size: 12px;
+            text-align: left;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            border-bottom: 2px solid transparent;
+        }
+        .results-run-tab.active {
+            color: #ffffff;
+            border-bottom-color: #0e639c;
+        }
+        .results-run-close {
+            width: 32px;
+            height: 36px;
+            border: none;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .results-run-close:hover {
+            color: #fff;
+            background: #3c3c3c;
         }
         .toolbar-icon {
-            width: 28px;
-            height: 28px;
+            width: 36px;
+            height: 36px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             padding: 0;
-            font-size: 15px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: transparent;
+            color: #c5cbd3;
+            font-size: 18px;
             line-height: 1;
+        }
+        .toolbar-icon:hover {
+            background: #2a2d2e;
+            color: #ffffff;
+        }
+        .toolbar-icon.close {
+            font-size: 18px;
+            line-height: 1;
+        }
+        [data-editor-settings-btn],
+        [data-editor-codegen-btn] {
+            font-size: 22px;
+        }
+        .codegen-template-summary {
+            font-size: 11px;
+            color: #9aa0a6;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .sim-status-line {
+            font-size: 11px;
+            color: #888;
+            min-height: 18px;
+            margin-bottom: 6px;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .right-tab-content {
+            display: none;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+            flex-direction: column;
+        }
+        .right-tab-content.active {
+            display: flex;
+        }
+        #simPlot .rumoca-results-header {
+            display: none;
         }
         .modal-shell[hidden] {
             display: none;
@@ -246,6 +1324,48 @@
             border: 0;
             background: #1e1e1e;
         }
+        .settings-form {
+            display: grid;
+            gap: 14px;
+            padding: 18px;
+        }
+        .settings-field {
+            display: grid;
+            gap: 6px;
+        }
+        .settings-field label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #d4d4d4;
+        }
+        .settings-field select,
+        .settings-field input[type="text"] {
+            width: 100%;
+            min-height: 38px;
+            padding: 8px 10px;
+            background: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            color: #d4d4d4;
+            font-size: 13px;
+        }
+        .settings-field-hint {
+            font-size: 11px;
+            color: #9aa0a6;
+            line-height: 1.5;
+        }
+        .settings-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            padding: 0 18px 18px;
+        }
+        .settings-actions button {
+            min-width: 96px;
+        }
+        .settings-field[hidden] {
+            display: none;
+        }
 
         /* Bottom panel - Diagnostics & Libraries */
         .bottom-panel {
@@ -280,7 +1400,8 @@
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 4px 10px;
+            min-height: 34px;
+            padding: 5px 10px;
             background: transparent;
             border: none;
             border-radius: 3px;
@@ -347,9 +1468,18 @@
         }
         button:hover { background: #1177bb; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        button.small { padding: 4px 10px; font-size: 11px; }
+        button.small { padding: 6px 12px; font-size: 12px; }
         button.danger { background: #c9184a; }
         button.danger:hover { background: #e02050; }
+        button.titlebar-action {
+            background: transparent;
+            color: #cccccc;
+            border: 1px solid transparent;
+        }
+        button.titlebar-action:hover {
+            background: #2a2d2e;
+            border-color: #2a2d2e;
+        }
 
         /* Status */
         .status {
@@ -361,41 +1491,42 @@
         .status.loading { background: #9a6700; }
         .status.error { background: #c9184a; }
 
-        /* Global status bar (VS Code-like) */
-        .status-bar {
-            height: 24px;
-            background: #007acc;
-            color: #ffffff;
-            display: flex;
+        #outputRuntimeStatus,
+        #outputCompileStatus {
+            display: inline-flex;
             align-items: center;
-            gap: 10px;
-            padding: 0 10px;
+            margin: 0 0 8px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.18);
+            color: #d4d4d4;
             font-size: 11px;
-            border-top: 1px solid #0569a6;
-            flex-shrink: 0;
+            width: fit-content;
         }
-        .status-bar-item {
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 40%;
-            opacity: 0.95;
+        #outputStatusRow {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
         }
-        .status-bar-item-button {
-            background: transparent;
-            border: none;
-            color: inherit;
-            cursor: pointer;
-            padding: 0;
-            font-size: inherit;
-            line-height: 1;
+        #outputRuntimeStatus[data-tone="ready"] {
+            background: #2d6a4f;
         }
-        .status-bar-item-button:hover {
-            text-decoration: underline;
-            background: transparent;
+        #outputRuntimeStatus[data-tone="loading"] {
+            background: #9a6700;
         }
-        .status-bar-spacer {
-            flex: 1;
+        #outputRuntimeStatus[data-tone="error"] {
+            background: #c9184a;
+        }
+        #outputCompileStatus[data-tone="ready"] {
+            background: #2d6a4f;
+        }
+        #outputCompileStatus[data-tone="loading"] {
+            background: #9a6700;
+        }
+        #outputCompileStatus[data-tone="error"] {
+            background: #c9184a;
         }
 
         /* Simulation variable tree */
@@ -452,10 +1583,15 @@
 
         /* Diagnostics */
         .diagnostic-item {
-            padding: 6px 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 10px;
             margin: 4px 0;
             border-radius: 3px;
             font-size: 12px;
+            line-height: 1.3;
+            overflow: hidden;
         }
         .diagnostic-group {
             margin: 10px 0;
@@ -473,37 +1609,23 @@
             border-bottom: 1px solid #2f2f2f;
             background: #252526;
         }
-        details.diagnostic-item summary {
-            list-style: none;
-            cursor: pointer;
-            outline: none;
-        }
-        details.diagnostic-item summary::-webkit-details-marker {
-            display: none;
-        }
-        .diagnostic-full {
-            margin: 8px 0 0 0;
-            padding: 8px;
-            background: #1a1a1a;
-            border-radius: 3px;
-            border: 1px solid #2f2f2f;
-            white-space: pre-wrap;
-            word-break: break-word;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 11px;
-            line-height: 1.35;
+        .diagnostic-actions {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 56px;
         }
         .diagnostic-link {
             background: none;
             border: none;
             padding: 0;
             margin: 0;
-            color: #9cdcfe;
-            text-decoration: underline;
-            text-underline-offset: 2px;
+            color: #c5e1ff;
             cursor: pointer;
             font: inherit;
             font-weight: 600;
+            white-space: nowrap;
         }
         .diagnostic-link:hover { color: #6cb6ff; }
         .diagnostic-link:focus-visible {
@@ -511,39 +1633,44 @@
             outline-offset: 2px;
             border-radius: 2px;
         }
-        .diagnostic-quick-fix {
-            margin-left: 8px;
-            padding: 1px 7px;
-            border-radius: 3px;
-            border: 1px solid #0e639c;
-            background: #0e639c;
-            color: #fff;
+        .diagnostic-item-main {
+            min-width: 0;
+            flex: 1 1 auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
+        }
+        .diagnostic-context,
+        .diagnostic-code {
+            flex: 0 0 auto;
+            color: #b9c0c8;
+            white-space: nowrap;
+        }
+        .diagnostic-code {
+            font-family: 'Consolas', 'Monaco', monospace;
             font-size: 11px;
-            cursor: pointer;
         }
-        .diagnostic-quick-fix:hover {
-            background: #1177bb;
-            border-color: #1177bb;
-        }
-        .diagnostic-quick-fix:disabled,
-        .diagnostic-quick-fix.running {
-            cursor: progress;
-            opacity: 0.75;
+        .diagnostic-message {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .diagnostic-error { background: rgba(255, 0, 0, 0.15); border-left: 3px solid #f44336; }
         .diagnostic-warning { background: rgba(255, 193, 7, 0.15); border-left: 3px solid #ffc107; }
         .diagnostic-info { background: rgba(3, 169, 244, 0.15); border-left: 3px solid #03a9f4; }
         .diagnostic-hint { background: rgba(76, 175, 80, 0.15); border-left: 3px solid #4caf50; }
 
-        /* Libraries */
-        .library-row {
+        /* Package Archives */
+        .package-archive-row {
             display: flex;
             gap: 8px;
             margin-bottom: 8px;
             align-items: center;
             flex-wrap: wrap;
         }
-        .library-row input[type="file"] {
+        .package-archive-row input[type="file"] {
             flex: 1;
             min-width: 200px;
             padding: 4px;
@@ -554,7 +1681,7 @@
             font-size: 12px;
             cursor: pointer;
         }
-        .library-row input[type="file"]::-webkit-file-upload-button {
+        .package-archive-row input[type="file"]::-webkit-file-upload-button {
             background: #0e639c;
             color: white;
             border: none;
@@ -563,32 +1690,32 @@
             cursor: pointer;
             margin-right: 8px;
         }
-        .library-row input[type="file"]::-webkit-file-upload-button:hover {
+        .package-archive-row input[type="file"]::-webkit-file-upload-button:hover {
             background: #1177bb;
         }
-        .library-status {
+        .package-archive-status {
             font-size: 11px;
             padding: 3px 6px;
             border-radius: 3px;
             min-width: 70px;
             text-align: center;
         }
-        .library-status.loaded { background: #2d6a4f; }
-        .library-status.loading { background: #9a6700; }
-        .library-status.error { background: #c9184a; }
-        .library-status.pending { background: #3c3c3c; }
-        .library-info { font-size: 11px; color: #888; margin-top: 10px; }
-        .library-buttons { margin-top: 10px; display: flex; gap: 8px; }
-        .library-progress {
+        .package-archive-status.loaded { background: #2d6a4f; }
+        .package-archive-status.loading { background: #9a6700; }
+        .package-archive-status.error { background: #c9184a; }
+        .package-archive-status.pending { background: #3c3c3c; }
+        .package-archive-info { font-size: 11px; color: #888; margin-top: 10px; }
+        .package-archive-buttons { margin-top: 10px; display: flex; gap: 8px; }
+        .package-archive-progress {
             flex: 1 0 100%;
             display: flex;
             align-items: center;
             gap: 8px;
         }
-        .library-progress[hidden] {
+        .package-archive-progress[hidden] {
             display: none;
         }
-        .library-progress-track {
+        .package-archive-progress-track {
             flex: 1;
             height: 8px;
             border-radius: 999px;
@@ -597,33 +1724,33 @@
             overflow: hidden;
             position: relative;
         }
-        .library-progress-fill {
+        .package-archive-progress-fill {
             height: 100%;
             width: 0%;
             background: linear-gradient(90deg, #0e639c, #4ec9b0);
             transition: width 120ms ease-out;
         }
-        .library-progress.indeterminate .library-progress-fill {
+        .package-archive-progress.indeterminate .package-archive-progress-fill {
             width: 35%;
-            animation: library-progress-indeterminate 1.2s ease-in-out infinite;
+            animation: package-archive-progress-indeterminate 1.2s ease-in-out infinite;
         }
-        @keyframes library-progress-indeterminate {
+        @keyframes package-archive-progress-indeterminate {
             0% { transform: translateX(-120%); }
             100% { transform: translateX(320%); }
         }
-        .library-progress-text {
+        .package-archive-progress-text {
             font-size: 11px;
             color: #b0b0b0;
             min-width: 92px;
             text-align: right;
         }
-        .library-loaded-list {
+        .package-archive-loaded-list {
             margin-top: 10px;
             display: flex;
             flex-direction: column;
             gap: 6px;
         }
-        .library-loaded-item {
+        .package-archive-loaded-item {
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -634,7 +1761,7 @@
             padding: 6px 8px;
             font-size: 11px;
         }
-        .library-loaded-meta {
+        .package-archive-loaded-meta {
             color: #b0b0b0;
             white-space: nowrap;
         }
@@ -871,37 +1998,240 @@
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Rumoca WASM Editor</h1>
-        <div style="display: flex; align-items: center; gap: 12px;">
-            <span>Status: <span id="status" class="status loading">Loading...</span></span>
-            <a href="https://github.com/cognipilot/rumoca" target="_blank" title="Rumoca on GitHub">
-                <img src="rumoca.png" alt="Rumoca" class="logo">
-            </a>
-        </div>
+    <div class="mobile-appbar" id="mobileAppbar">
+        <button
+            class="mobile-appbar-button"
+            id="mobileSidebarBtn"
+            type="button"
+            title="Open Explorer drawer"
+            aria-label="Open Explorer drawer"
+        >≡</button>
+        <button
+            class="mobile-appbar-button"
+            id="mobileProjectBtn"
+            type="button"
+            title="Open Project drawer"
+            aria-label="Open Project drawer"
+        >⋯</button>
+        <div class="mobile-appbar-title" id="mobileAppbarTitle">Rumoca</div>
     </div>
-
+    <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
     <div class="main-container">
-        <div class="left-area">
-            <div class="editor-panel">
-                <div class="editor-toolbar">
-                    <h3 title="Write Modelica code. Auto-compiles as you type. Hover over symbols for type info.">Modelica Source</h3>
-                    <span id="autoCompileStatus" style="font-size: 11px; color: #888;"></span>
-                    <span id="problemStatus" style="font-size: 11px; color: #888;" title="Problems: next/previous with F8 / Shift+F8"></span>
-                    <span id="sourceBreadcrumbs" style="font-size: 11px; color: #9aa0a6;" title="Current model/section/symbol"></span>
-                    <div class="editor-toolbar-right">
-                        <button class="small" onclick="saveFile()" title="Save Modelica source to a .mo file">Save .mo</button>
-                        <button class="small" onclick="newProject()" title="Start a new in-browser project">New Project</button>
-                        <button class="small" onclick="downloadProject()" title="Download the current project as a zip archive">Download Project</button>
-                        <button class="small" onclick="loadProject()" title="Load a project zip archive into the in-browser workspace">Load Project</button>
-                        <button class="small" onclick="loadProjectFolder()" title="Import a project folder into the in-browser workspace">Import Folder</button>
+        <div class="workbench-sidepanel" id="workbenchSidepanel">
+            <div class="activity-rail" aria-label="Sidebar">
+                <div class="activity-brand" title="Rumoca">
+                    <img src="rumoca.png" alt="Rumoca">
+                </div>
+                <button
+                    class="activity-button active"
+                    id="sidebarExplorerBtn"
+                    type="button"
+                    title="Toggle Explorer sidebar"
+                    aria-label="Toggle Explorer sidebar"
+                    aria-expanded="true"
+                >≡</button>
+                <button
+                    class="activity-button"
+                    id="sidebarProjectBtn"
+                    type="button"
+                    title="Toggle project actions sidebar"
+                    aria-label="Toggle project actions sidebar"
+                    aria-pressed="false"
+                >⋯</button>
+                <button
+                    class="activity-button active"
+                    id="sidebarEditorPaneBtn"
+                    type="button"
+                    title="Toggle editor pane"
+                    aria-label="Toggle editor pane"
+                    aria-pressed="true"
+                >◫</button>
+                <button
+                    class="activity-button active"
+                    id="sidebarResultsPaneBtn"
+                    type="button"
+                    title="Toggle results pane"
+                    aria-label="Toggle results pane"
+                    aria-pressed="true"
+                >📈</button>
+                <button
+                    class="activity-button"
+                    id="sidebarCodegenPaneBtn"
+                    type="button"
+                    title="Toggle code generation pane"
+                    aria-label="Toggle code generation pane"
+                    aria-pressed="false"
+                >⚡</button>
+            </div>
+            <aside class="workbench-sidebar" id="workbenchSidebar" aria-label="Workspace Navigation" data-mode="explorer">
+                <div class="sidebar-panel" id="explorerSidebarPanel">
+                <section class="sidebar-section" id="explorerSection">
+                    <div class="sidebar-section-header">
+                        <button
+                            class="sidebar-section-title"
+                            id="explorerSectionToggle"
+                            type="button"
+                            title="Toggle Explorer section"
+                            aria-expanded="true"
+                        >
+                            <span class="sidebar-section-arrow" id="explorerSectionArrow">▾</span>
+                            <span class="sidebar-section-label">Explorer</span>
+                        </button>
+                        <span class="sidebar-section-spacer"></span>
+                        <div class="sidebar-section-actions">
+                            <button id="explorerNewFileBtn" class="sidebar-icon-button file-icon" type="button" title="New file" aria-label="New file"></button>
+                            <button id="explorerNewFolderBtn" class="sidebar-icon-button folder-icon" type="button" title="New folder" aria-label="New folder"></button>
+                            <button
+                                id="explorerTreeToggleBtn"
+                                class="sidebar-tree-toggle"
+                                type="button"
+                                title="Collapse all Explorer folders"
+                                aria-label="Collapse all Explorer folders"
+                            ></button>
+                        </div>
+                    </div>
+                    <div id="explorerTree" class="sidebar-tree">
+                        <div class="sidebar-empty">Project files will appear here.</div>
+                    </div>
+                </section>
+                <div class="resize-handle-sidebar-v" id="resizeHandleSidebarV" title="Resize Explorer and Outline" aria-hidden="true"></div>
+                <section class="sidebar-section" id="outlineSection">
+                    <div class="sidebar-section-header">
+                        <button
+                            class="sidebar-section-title"
+                            id="outlineSectionToggle"
+                            type="button"
+                            title="Toggle Outline section"
+                            aria-expanded="true"
+                        >
+                            <span class="sidebar-section-arrow" id="outlineSectionArrow">▾</span>
+                            <span class="sidebar-section-label">Outline</span>
+                        </button>
+                        <span class="sidebar-section-spacer"></span>
+                        <div class="sidebar-section-actions">
+                            <button
+                                id="outlineTreeToggleBtn"
+                                class="sidebar-tree-toggle"
+                                type="button"
+                                title="Collapse all Outline nodes"
+                                aria-label="Collapse all Outline nodes"
+                            ></button>
+                        </div>
+                    </div>
+                    <div id="outlineTree" class="sidebar-tree">
+                        <div class="sidebar-empty">Open a Modelica file to view symbols.</div>
+                    </div>
+                </section>
+                </div>
+                <div class="sidebar-panel pane-hidden project-sidebar-panel" id="projectSidebarPanel">
+                    <section class="sidebar-section" style="border-bottom: none;">
+                        <div class="sidebar-section-header">
+                            <span class="sidebar-section-label">Project</span>
+                        </div>
+                        <div class="project-sidebar-body">
+                            <div class="project-sidebar-hint">
+                                Save, load, download, and import workspace content here.
+                            </div>
+                            <div class="project-sidebar-grid">
+                                <button class="project-sidebar-action" type="button" onclick="saveFile()" title="Save Modelica source to a .mo file">Save .mo</button>
+                                <button class="project-sidebar-action" type="button" onclick="newProject()" title="Start a new in-browser project">New Project</button>
+                                <button class="project-sidebar-action" type="button" onclick="downloadProject()" title="Download the current project as a zip archive">Download Project</button>
+                                <button class="project-sidebar-action" type="button" onclick="loadProject()" title="Load a project zip archive into the in-browser workspace">Load Project</button>
+                                <button class="project-sidebar-action" type="button" onclick="loadProjectFolder()" title="Import a project folder into the in-browser workspace">Import Folder</button>
+                                <button class="project-sidebar-action" type="button" onclick="openPackageArchivePicker()" title="Import a ZIP archive into the workspace">Import Zip</button>
+                            </div>
+                            <div class="project-sidebar-note">
+                                Downloaded projects include Modelica source and Rumoca project settings only.
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </aside>
+            <div class="resize-handle-sidebar" id="resizeHandleSidebar" title="Resize Explorer sidebar" aria-hidden="true"></div>
+        </div>
+            <div class="workbench-main">
+            <div class="workbench-top" data-layout="editor">
+                <div class="left-area">
+                    <div class="editor-workbench" id="editorWorkbench">
+                        <div class="editor-drop-overlay" id="editorDropOverlay" hidden>
+                            <div class="editor-drop-zone" data-drop-position="left">Split Left</div>
+                            <div class="editor-drop-zone" data-drop-position="right">Split Right</div>
+                            <div class="editor-drop-zone" data-drop-position="bottom">Split Down</div>
+                        </div>
+                        <div class="editor-pane-area" id="editorPaneArea" data-split="single">
+                        <div class="editor-stack active" id="primaryEditorStack" data-pane-id="primary">
+                            <div class="editor-chrome">
+                                <div id="editorTabs" class="editor-tabs" role="tablist" aria-label="Open files"></div>
+                                <div class="editor-actions">
+                                    <button class="small toolbar-icon" id="editorRunBtn" data-editor-run-btn data-pane-id="primary" onclick="runSimulationForPane('primary')" title="Run simulation for the selected model">▶</button>
+                                    <button class="small toolbar-icon" id="editorCodegenBtn" data-editor-codegen-btn data-pane-id="primary" onclick="openCodegenTabForPane('primary')" title="Render code generation output">⚡</button>
+                                    <button class="small toolbar-icon" id="editorSimSettingsBtn" data-editor-settings-btn data-pane-id="primary" onclick="openFileRunSettingsForPane('primary')" title="File run settings">⚙</button>
+                                </div>
+                            </div>
+                            <div class="editor-panel">
+                                <div class="editor-pane-empty" id="primaryEditorEmpty" hidden>No open file in this editor group.</div>
+                                <div id="editor"></div>
+                            </div>
+                        </div>
+                        <div class="editor-split-handle pane-hidden" id="editorSplitHandle" aria-hidden="true"></div>
+                        <div class="editor-stack pane-hidden" id="secondaryEditorStack" data-pane-id="secondary">
+                            <div class="editor-chrome">
+                                <div id="secondaryEditorTabs" class="editor-tabs" role="tablist" aria-label="Open files in secondary group"></div>
+                                <div class="editor-actions">
+                                    <button class="small toolbar-icon" data-editor-run-btn data-pane-id="secondary" onclick="runSimulationForPane('secondary')" title="Run simulation for the selected model">▶</button>
+                                    <button class="small toolbar-icon" data-editor-codegen-btn data-pane-id="secondary" onclick="openCodegenTabForPane('secondary')" title="Render code generation output">⚡</button>
+                                    <button class="small toolbar-icon" data-editor-settings-btn data-pane-id="secondary" onclick="openFileRunSettingsForPane('secondary')" title="File run settings">⚙</button>
+                                </div>
+                            </div>
+                            <div class="editor-panel">
+                                <div class="editor-pane-empty" id="secondaryEditorEmpty" hidden>No open file in this editor group.</div>
+                                <div id="secondaryEditor"></div>
+                            </div>
+                        </div>
+                        </div>
                     </div>
                 </div>
-                <div id="editor"></div>
-            </div>
+                <div class="resize-handle-h" id="resizeHandleH"></div>
 
-            <!-- Bottom Panel - Diagnostics & Libraries -->
-            <div class="resize-handle-v" id="resizeHandleV"></div>
+                <!-- Right Panel - Tabbed Output -->
+                <div class="right-panel pane-hidden" id="rightPanel">
+                    <div class="editor-chrome output-chrome">
+                        <div id="outputTabs" class="output-tab-strip" data-active-pane="simulate" role="tablist" aria-label="Output panes">
+                            <div id="simRunTabs" class="results-run-bar" role="presentation">
+                                <div class="results-run-empty">Run a simulation to open results tabs.</div>
+                            </div>
+                            <div id="codegenRunTabs" class="results-run-bar" role="presentation"></div>
+                        </div>
+                        <div class="editor-actions">
+                            <button class="small toolbar-icon" id="resultsSettingsBtn" onclick="openActiveResultsSettings()" title="Visualization settings">⚙</button>
+                            <button class="small toolbar-icon close" id="resultsCloseBtn" onclick="closeActiveResultsRun()" title="Close active output tab" aria-label="Close active output tab">✕</button>
+                        </div>
+                    </div>
+                    <div style="display:none;">
+                        <select id="modelSelect" onchange="updateSelectedModel()">
+                            <option value="">-- No models --</option>
+                        </select>
+                    </div>
+                    <div class="panel-content-right">
+                        <!-- Simulate Tab -->
+                        <div class="right-tab-content" id="simTab">
+                            <div id="simStatus" class="sim-status-line"></div>
+                            <div id="simPlot" style="flex: 1; min-height: 200px; overflow: hidden; position: relative;"></div>
+                        </div>
+
+                        <!-- Codegen Tab -->
+                        <div class="right-tab-content" id="codegenTab">
+                            <div style="flex-shrink: 0; display: flex; align-items: center; margin-bottom: 8px; gap: 8px;">
+                                <button class="small" onclick="saveCodegenOutput()" title="Save rendered codegen output to a file">Save</button>
+                                <span id="codegenTemplateSummary" class="codegen-template-summary">Loading built-in templates...</span>
+                            </div>
+                            <div id="codegenOutputEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Bottom Panel - Output & Problems -->
+                <div class="resize-handle-v" id="resizeHandleV"></div>
             <div class="bottom-panel" id="bottomPanel">
                 <div class="panel-header-bottom">
                     <button class="collapse-btn" onclick="toggleBottomPanel()" title="Collapse">
@@ -914,122 +2244,33 @@
                         <span>Errors</span>
                         <span class="section-badge" id="diagnosticsCount"></span>
                     </button>
-                    <button class="bottom-tab" data-tab="libraries" onclick="switchBottomTab('libraries')" title="Load Modelica libraries from ZIP files (e.g., MSL)">
-                        <span>Libraries</span>
-                        <span class="section-badge" id="libCount">(0)</span>
-                    </button>
-                    <button class="bottom-tab" data-tab="packages" onclick="switchBottomTab('packages')" title="Browse loaded packages/classes and documentation">
-                        <span>Documentation</span>
-                    </button>
                 </div>
                 <div class="bottom-sections">
                     <div class="bottom-section active" id="outputSection">
+                        <div id="outputStatusRow">
+                            <div id="outputRuntimeStatus" data-tone="loading">Runtime: Loading...</div>
+                            <div id="outputCompileStatus" data-tone="loading">Compile: Waiting...</div>
+                        </div>
                         <pre id="terminalOutput">Initializing WASM worker...</pre>
                     </div>
                     <div class="bottom-section" id="errorsSection">
                         <div id="diagnosticsPanel"></div>
                     </div>
-                    <div class="bottom-section" id="librariesSection">
-                        <div id="libraryList">
-                            <div class="library-row" data-index="0">
-                                <input type="file" accept=".zip" onchange="loadLibraryFile(0, this)" title="Select a ZIP file containing .mo library files">
-                                <span class="library-status pending">No file selected</span>
-                                <div class="library-progress" hidden>
-                                    <div class="library-progress-track"><div class="library-progress-fill"></div></div>
-                                    <span class="library-progress-text">0%</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="library-buttons">
-                            <button class="small" onclick="addLibraryRow()" title="Add another library ZIP file">+ Add Library</button>
-                            <button class="small danger" onclick="clearLibraries()" title="Remove all loaded libraries">Clear All</button>
-                        </div>
-                        <div id="loadedLibraryList" class="library-loaded-list"></div>
-                        <div class="library-info">
-                            Load ZIP archives containing .mo files (e.g., <a href="https://github.com/modelica/ModelicaStandardLibrary/releases" target="_blank">MSL releases</a>).
-                        </div>
-                    </div>
-                    <div class="bottom-section" id="packagesSection">
-                        <div class="packages-toolbar">
-                            <input type="text" id="classSearchInput" placeholder="Filter classes (e.g., Modelica.Fluid)" oninput="filterClassTree()" title="Filter package/class names">
-                            <button class="small" onclick="refreshPackageViewer(true)" title="Refresh package/class tree">Refresh</button>
-                        </div>
-                        <div class="packages-browser">
-                            <div id="classTreePanel" class="packages-tree">
-                                <div class="class-tree-empty">No classes loaded.</div>
-                            </div>
-                            <div id="classDocPanel" class="packages-doc">
-                                <div class="class-tree-empty">Select a class to view documentation.</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="resize-handle-h" id="resizeHandleH"></div>
-
-        <!-- Right Panel - Tabbed Output -->
-        <div class="right-panel" id="rightPanel">
-            <div class="right-tab-bar">
-                <button class="right-tab active" data-tab="simulate" onclick="switchRightTab('simulate')" title="Simulate and plot results">Simulate</button>
-                <button class="right-tab" data-tab="dae" onclick="switchRightTab('dae')" title="DAE model output">DAE</button>
-                <button class="right-tab" data-tab="codegen" onclick="switchRightTab('codegen')" title="Code generation with Jinja2 templates">Codegen</button>
-                <div style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
-                    <label style="font-size: 11px; color: #888;">Model:</label>
-                    <select id="modelSelect" onchange="updateSelectedModel()" style="min-width: 100px; padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="Select which model to display">
-                        <option value="">-- No models --</option>
-                    </select>
-                    <button class="small toolbar-icon" id="simSettingsBtn" onclick="openSimulationSettingsModal()" title="Simulation settings">⚙</button>
-                </div>
-            </div>
-            <div class="panel-content-right">
-                <!-- Simulate Tab -->
-                <div class="right-tab-content active" id="simTab">
-                    <div style="display: flex; align-items: center; gap: 8px; padding: 6px 0; flex-shrink: 0;">
-                        <button class="small" onclick="runSimulation()" id="simRunBtn" title="Run simulation">Simulate</button>
-                        <span id="simStatus" style="font-size: 11px; color: #888;"></span>
-                    </div>
-                    <div id="simPlot" style="flex: 1; min-height: 200px; overflow: hidden;"></div>
-                </div>
-
-                <!-- DAE Tab -->
-                <div class="right-tab-content" id="daeTab">
-                    <div style="flex-shrink: 0; display: flex; align-items: center; margin-bottom: 8px; gap: 8px;">
-                        <select id="daeFormatSelect" onchange="updateDaeFormat()" style="padding: 4px 8px; background: #3c3c3c; border: 1px solid #555; border-radius: 4px; color: #d4d4d4; font-size: 12px;" title="DAE output format">
-                            <option value="pretty" title="Human-readable DAE summary">Pretty</option>
-                            <option value="json" title="Full DAE in JSON format">JSON</option>
-                        </select>
-                        <button class="small" onclick="saveOutput()" title="Save DAE output to a file">Save</button>
-                    </div>
-                    <div id="outputEditor" style="flex: 1; min-height: 200px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
-                </div>
-
-                <!-- Codegen Tab -->
-                <div class="right-tab-content" id="codegenTab">
-                    <div style="flex-shrink: 0; display: flex; align-items: center; margin-bottom: 8px; gap: 8px;">
-                        <button class="small" onclick="saveCodegenOutput()" title="Save rendered codegen output to a file">Save</button>
-                    </div>
-                    <div id="templateEditor" style="flex: 1; min-height: 100px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
-                    <div class="resize-handle-v" id="resizeHandleCodegen" style="margin: 0 -12px; padding: 0 12px;"></div>
-                    <div id="codegenOutputEditor" style="flex: 1; min-height: 100px; border: 1px solid #3c3c3c; border-radius: 4px;"></div>
                 </div>
             </div>
         </div>
     </div>
-    <div class="status-bar" id="statusBar">
-        <span class="status-bar-item" id="statusBarModel" title="Currently selected model">Model: --</span>
-        <button class="status-bar-item status-bar-item-button" id="statusBarProblems" onclick="switchBottomTab('errors')" title="Open Problems tab">Problems: 0</button>
-        <span class="status-bar-item" id="statusBarCompile" title="Current compile/live-check state">Compile: idle</span>
-        <div class="status-bar-spacer"></div>
-        <button class="status-bar-item status-bar-item-button" id="statusBarLibraries" onclick="switchBottomTab('libraries')" title="Open Libraries tab">Libraries: 0</button>
-    </div>
+    <span id="packageArchiveCount" hidden>(0)</span>
     <input id="projectArchiveInput" type="file" accept=".zip" onchange="loadProjectArchive(this)" hidden>
     <input id="projectFolderInput" type="file" multiple webkitdirectory onchange="loadProjectFolderInput(this)" hidden>
+    <input id="packageArchiveInput" type="file" accept=".zip" onchange="loadPackageArchiveInput(this)" hidden>
+    <div id="sidebarContextMenu" class="sidebar-context-menu" role="menu" aria-label="Explorer actions">
+        <button id="sidebarContextActionBtn" class="sidebar-context-item danger" type="button"></button>
+    </div>
 
     <div id="commandPaletteOverlay" class="command-palette-overlay" hidden>
         <div class="command-palette" role="dialog" aria-modal="true" aria-label="Command Palette">
-            <input id="commandPaletteInput" type="text" placeholder="Type a command (e.g., compile, simulate, library)" autocomplete="off" spellcheck="false">
+            <input id="commandPaletteInput" type="text" placeholder="Type a command (e.g., compile, simulate, package archive)" autocomplete="off" spellcheck="false">
             <div id="commandPaletteList" class="command-palette-list"></div>
         </div>
     </div>
@@ -1044,14 +2285,46 @@
         </div>
     </div>
 
-    <link rel="stylesheet" href="../../crates/rumoca-sim/web/results_app.css">
+    <div id="codegenSettingsModal" class="modal-shell" hidden>
+        <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="codegenSettingsTitle" style="width: min(640px, 100%); height: auto; max-height: min(560px, 100%);">
+            <div class="modal-header">
+                <h3 id="codegenSettingsTitle">Codegen Template Settings</h3>
+                <button class="small toolbar-icon" id="codegenSettingsCloseBtn" title="Close settings">✕</button>
+            </div>
+            <div class="settings-form">
+                <div class="settings-field">
+                    <label for="codegenTemplateModeSelect">Template Source</label>
+                    <select id="codegenTemplateModeSelect">
+                        <option value="builtin">Built-in</option>
+                        <option value="custom">Custom file</option>
+                    </select>
+                    <div class="settings-field-hint">Use a bundled template, or point codegen at a template file in the current workspace.</div>
+                </div>
+                <div class="settings-field" id="codegenBuiltinTemplateField">
+                    <label for="codegenBuiltinTemplateSelect">Built-in Template</label>
+                    <select id="codegenBuiltinTemplateSelect"></select>
+                </div>
+                <div class="settings-field" id="codegenCustomTemplateField" hidden>
+                    <label for="codegenCustomTemplatePathInput">Custom Template File</label>
+                    <input id="codegenCustomTemplatePathInput" type="text" placeholder="templates/my_template.py.jinja" spellcheck="false" autocomplete="off">
+                    <div class="settings-field-hint">Enter a workspace-relative file path. The file must already exist and contain template text.</div>
+                </div>
+            </div>
+            <div class="settings-actions">
+                <button class="small" type="button" id="codegenSettingsCancelBtn">Cancel</button>
+                <button class="small" type="button" id="codegenSettingsApplyBtn">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="./vendor/results_app.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
     <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
-    <script src="../../crates/rumoca-sim/web/visualization_shared.js"></script>
-    <script src="../../crates/rumoca-sim/web/results_app.js"></script>
+    <script src="./vendor/visualization_shared.js"></script>
+    <script src="./vendor/results_app.js"></script>
     <script type="module" src="./src/main.js"></script>
 </body>
 </html>

@@ -59,7 +59,7 @@ export function collectDocumentCompletionTimings(rawTimings, documentPath) {
 
   const summary = {};
   if (timings.length >= 3) {
-    summary.libraryStageTimings = timings[0];
+    summary.sourceRootStageTimings = timings[0];
     summary.coldStageTimings = timings[1];
     summary.warmStageTimings = timings[2];
   } else if (timings.length >= 2) {
@@ -93,7 +93,7 @@ export function collectDefinitionUris(definitions) {
 }
 
 export function assertMslCompletionCacheProof(summary, documentPath) {
-  const libraryLoad = summary.libraryStageTimings;
+  const sourceRootLoad = summary.sourceRootStageTimings;
   const cold = summary.coldStageTimings;
   const warm = summary.warmStageTimings;
   if (!cold || !warm) {
@@ -102,45 +102,45 @@ export function assertMslCompletionCacheProof(summary, documentPath) {
   if (
     cold.uri !== documentPath ||
     warm.uri !== documentPath ||
-    (libraryLoad && libraryLoad.uri !== documentPath)
+    (sourceRootLoad && sourceRootLoad.uri !== documentPath)
   ) {
     throw new Error("timing entries should match the probed document");
   }
 
-  const load = libraryLoad ?? cold;
+  const load = sourceRootLoad ?? cold;
   const loadDelta = cacheDelta(load);
   const coldDelta = cacheDelta(cold);
   const warmDelta = cacheDelta(warm);
   if ((load.classNameCountAfterEnsure ?? 0) <= 0) {
-    throw new Error("library load should populate cached class names");
+    throw new Error("source-root load should populate cached class names");
   }
-  if ((loadDelta.library_completion_cache_hits ?? 0) < 1) {
-    throw new Error("library load should hit the library completion cache");
+  if ((loadDelta.namespace_completion_cache_hits ?? 0) < 1) {
+    throw new Error("source-root load should hit the namespace completion cache");
   }
-  if ((loadDelta.library_completion_cache_misses ?? 0) !== 0) {
-    throw new Error("library load should not miss the library completion cache");
+  if ((loadDelta.namespace_completion_cache_misses ?? 0) !== 0) {
+    throw new Error("source-root load should not miss the namespace completion cache");
   }
   if (load.builtResolvedTree) {
-    throw new Error("MSL namespace completion should not build a resolved tree on library load");
+    throw new Error("MSL namespace completion should not build a resolved tree on source-root load");
   }
   if ((loadDelta.standard_resolved_builds ?? 0) !== 0) {
-    throw new Error("library load should avoid standard resolved builds");
+    throw new Error("source-root load should avoid standard resolved builds");
   }
   if ((loadDelta.semantic_navigation_builds ?? 0) !== 0) {
-    throw new Error("library load should avoid semantic navigation builds");
+    throw new Error("source-root load should avoid semantic navigation builds");
   }
 
   if ((cold.classNameCountAfterEnsure ?? 0) <= 0) {
     throw new Error("cold completion should keep cached class names available");
   }
-  if ((coldDelta.library_completion_cache_hits ?? 0) < 1) {
-    throw new Error("cold completion should hit the library completion cache");
+  if ((coldDelta.namespace_completion_cache_hits ?? 0) < 1) {
+    throw new Error("cold completion should hit the namespace completion cache");
   }
-  if ((coldDelta.library_completion_cache_misses ?? 0) !== 0) {
-    throw new Error("cold completion should not miss the library completion cache");
+  if ((coldDelta.namespace_completion_cache_misses ?? 0) !== 0) {
+    throw new Error("cold completion should not miss the namespace completion cache");
   }
-  if ((coldDelta.library_files_parsed ?? 0) !== 0) {
-    throw new Error("cold completion should not reparse library files");
+  if ((coldDelta.source_root_files_parsed ?? 0) !== 0) {
+    throw new Error("cold completion should not reparse source-root files");
   }
   if (cold.builtResolvedTree) {
     throw new Error("cold MSL namespace completion should not build a resolved tree");
@@ -155,14 +155,14 @@ export function assertMslCompletionCacheProof(summary, documentPath) {
   if ((warm.classNameCountAfterEnsure ?? 0) <= 0) {
     throw new Error("warm completion should keep cached class names available");
   }
-  if ((warmDelta.library_completion_cache_hits ?? 0) < 1) {
-    throw new Error("warm completion should hit the library completion cache");
+  if ((warmDelta.namespace_completion_cache_hits ?? 0) < 1) {
+    throw new Error("warm completion should hit the namespace completion cache");
   }
-  if ((warmDelta.library_completion_cache_misses ?? 0) !== 0) {
-    throw new Error("warm completion should not miss the library completion cache");
+  if ((warmDelta.namespace_completion_cache_misses ?? 0) !== 0) {
+    throw new Error("warm completion should not miss the namespace completion cache");
   }
-  if ((warmDelta.library_files_parsed ?? 0) !== 0) {
-    throw new Error("warm completion should not reparse library files");
+  if ((warmDelta.source_root_files_parsed ?? 0) !== 0) {
+    throw new Error("warm completion should not reparse source-root files");
   }
   if (warm.builtResolvedTree) {
     throw new Error("warm MSL namespace completion should not build a resolved tree");

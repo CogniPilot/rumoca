@@ -297,7 +297,7 @@ equation
   pid.u = 1;
 end Ball;
 "#;
-        let library = r#"
+        let source_root = r#"
 package Modelica
   package Blocks
     package Continuous
@@ -320,7 +320,7 @@ end Modelica;
 
         let mut session = rumoca_session::Session::default();
         session.update_document(&ball_uri_path, source);
-        session.update_document(&modelica_uri_path, library);
+        session.update_document(&modelica_uri_path, source_root);
         let resolved = session.resolved().expect("resolved");
         let doc = session
             .get_document(&ball_uri_path)
@@ -356,7 +356,7 @@ equation
 end Ball;
 "#;
         let broken = "model Broken\n  Real x\nend Broken;\n";
-        let library = r#"package Modelica
+        let source_root = r#"package Modelica
   package Blocks
     package Continuous
       block PID
@@ -380,7 +380,7 @@ end Modelica;
         session.update_document(&ball_uri_path, source);
         let parse_error = session.update_document("broken.mo", broken);
         assert!(parse_error.is_some(), "broken document should stay invalid");
-        session.update_document(&modelica_uri_path, library);
+        session.update_document(&modelica_uri_path, source_root);
         let resolved = session
             .resolved_for_semantic_navigation("Ball")
             .expect("semantic navigation tree");

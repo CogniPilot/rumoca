@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 pub(super) struct ServerWorkLanes {
     pub(super) interactive: Mutex<()>,
     pub(super) strict: Mutex<()>,
+    pub(super) indexing: Mutex<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +51,7 @@ fn compile_model_in_isolated_session(
     model: &str,
 ) -> std::result::Result<Box<DaeCompilationResult>, String> {
     // The LSP server already owns a simulation compile cache keyed by model,
-    // source fingerprint, and library epoch, so the isolated strict path
+    // source fingerprint, and source-root epoch, so the isolated strict path
     // should reuse lower-stage query artifacts and return only the DAE-stage
     // result that simulation needs.
     isolated_session.compile_model_dae_strict_reachable_uncached_with_recovery(model)

@@ -1,18 +1,18 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import init, {
-  clear_library_cache,
+  clear_source_root_cache,
   compile,
-  compile_with_libraries,
-  get_library_count,
+  compile_with_source_roots,
+  get_source_root_document_count,
   lsp_completion,
   lsp_definition,
   lsp_diagnostics,
   lsp_hover,
-  load_libraries,
+  load_source_roots,
 } from "../../../pkg/rumoca.js";
 
-const MINI_MODELICA_LIBRARY = `
+const MINI_MODELICA_SOURCE_ROOT = `
 within ;
 package Modelica
   package Blocks
@@ -50,9 +50,9 @@ function assert(condition, message) {
   }
 }
 
-function miniLibraryJson() {
+function miniSourceRootJson() {
   return JSON.stringify({
-    "Modelica/package.mo": MINI_MODELICA_LIBRARY,
+    "Modelica/package.mo": MINI_MODELICA_SOURCE_ROOT,
   });
 }
 
@@ -86,8 +86,8 @@ function completionLabels(raw) {
 }
 
 function runLspSmoke() {
-  clear_library_cache();
-  load_libraries(miniLibraryJson());
+  clear_source_root_cache();
+  load_source_roots(miniSourceRootJson());
 
   const namespaceSource = "model UsesModelica\n  Modelica.\nend UsesModelica;\n";
   const namespaceLabels = completionLabels(
@@ -119,7 +119,7 @@ end UsesModelica;
   const definition = JSON.parse(lsp_definition(importedSource, 2, importChar));
   assert(
     definition && definition.uri && String(definition.uri).includes("Modelica/package.mo"),
-    `lsp_definition: expected library definition location, got ${JSON.stringify(definition)}`,
+    `lsp_definition: expected source-root definition location, got ${JSON.stringify(definition)}`,
   );
 
   const diagnostics = JSON.parse(lsp_diagnostics(importedSource));
@@ -129,36 +129,36 @@ end UsesModelica;
   );
 }
 
-function runLoadLibrariesSmoke() {
-  clear_library_cache();
+function runLoadSourceRootsSmoke() {
+  clear_source_root_cache();
 
-  const result = JSON.parse(load_libraries(miniLibraryJson()));
+  const result = JSON.parse(load_source_roots(miniSourceRootJson()));
   assert(
     result.parsed_count === 1,
-    `load_libraries: expected parsed_count=1, got ${JSON.stringify(result)}`,
+    `load_source_roots: expected parsed_count=1, got ${JSON.stringify(result)}`,
   );
   assert(
     result.error_count === 0,
-    `load_libraries: expected error_count=0, got ${JSON.stringify(result)}`,
+    `load_source_roots: expected error_count=0, got ${JSON.stringify(result)}`,
   );
-  assert(get_library_count() >= 1, "load_libraries: expected cached library documents");
+  assert(get_source_root_document_count() >= 1, "load_source_roots: expected cached source-root documents");
 
   const raw = compile(USES_MODELICA_SOURCE, "UsesModelica");
-  assertBalancedCompilation(raw, "compile after load_libraries");
+  assertBalancedCompilation(raw, "compile after load_source_roots");
 }
 
-function runCompileWithLibrariesSmoke() {
-  clear_library_cache();
+function runCompileWithSourceRootsSmoke() {
+  clear_source_root_cache();
 
-  const raw = compile_with_libraries(
+  const raw = compile_with_source_roots(
     USES_MODELICA_SOURCE,
     "UsesModelica",
-    miniLibraryJson(),
+    miniSourceRootJson(),
   );
-  assertBalancedCompilation(raw, "compile_with_libraries");
+  assertBalancedCompilation(raw, "compile_with_source_roots");
   assert(
-    get_library_count() >= 1,
-    "compile_with_libraries: expected supplied libraries to populate cache",
+    get_source_root_document_count() >= 1,
+    "compile_with_source_roots: expected supplied source roots to populate cache",
   );
 }
 
@@ -167,10 +167,10 @@ async function runRealMslSliceSmoke() {
     return;
   }
 
-  clear_library_cache();
+  clear_source_root_cache();
 
   const librariesJson = await realMslSliceJson();
-  const result = JSON.parse(load_libraries(librariesJson));
+  const result = JSON.parse(load_source_roots(librariesJson));
   assert(
     result.parsed_count === 2,
     `real MSL slice: expected parsed_count=2, got ${JSON.stringify(result)}`,
@@ -180,8 +180,8 @@ async function runRealMslSliceSmoke() {
     `real MSL slice: expected error_count=0, got ${JSON.stringify(result)}`,
   );
   assert(
-    get_library_count() >= 2,
-    "real MSL slice: expected cached library documents",
+    get_source_root_document_count() >= 2,
+    "real MSL slice: expected cached source-root documents",
   );
 
   const raw = compile(USES_REAL_MSL_SOURCE, "UsesRealMsl");
@@ -191,15 +191,15 @@ async function runRealMslSliceSmoke() {
 async function run() {
   const wasmBytes = await readFile(new URL("../../../pkg/rumoca_bg.wasm", import.meta.url));
   await init({ module_or_path: wasmBytes });
-  runLoadLibrariesSmoke();
-  runCompileWithLibrariesSmoke();
+  runLoadSourceRootsSmoke();
+  runCompileWithSourceRootsSmoke();
   runLspSmoke();
   await runRealMslSliceSmoke();
-  clear_library_cache();
+  clear_source_root_cache();
 }
 
 run().catch((error) => {
-  console.error("[wasm-smoke] library smoke test failed:");
+  console.error("[wasm-smoke] source-root smoke test failed:");
   console.error(error);
   process.exit(1);
 });

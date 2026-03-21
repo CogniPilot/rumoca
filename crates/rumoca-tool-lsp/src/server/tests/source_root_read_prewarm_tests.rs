@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-fn workspace_document_mutations_do_not_reschedule_namespace_prewarm() {
+fn workspace_document_mutations_do_not_reschedule_source_root_read_prewarm() {
     run_async_test(async {
         let workspace_root = new_temp_dir("workspace-no-namespace-prewarm");
-        let library_root = write_test_library(&workspace_root, "InitLib");
+        let source_root_dir = write_test_source_root(&workspace_root, "InitLib");
         let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
         let service = new_test_service();
         let server = service.inner();
@@ -13,15 +13,20 @@ fn workspace_document_mutations_do_not_reschedule_namespace_prewarm() {
             .initialize(InitializeParams {
                 root_uri: Some(workspace_uri),
                 initialization_options: Some(serde_json::json!({
-                    "modelicaPath": [library_root.to_string_lossy().to_string()]
+                    "sourceRootPaths": [source_root_dir.to_string_lossy().to_string()]
                 })),
                 ..InitializeParams::default()
             })
             .await
             .expect("initialize should succeed");
-        server.wait_for_namespace_prewarm_if_pending().await;
+        server.wait_for_source_root_read_prewarm_if_pending().await;
+        let current_revision = server.current_analysis_revision().await;
         assert!(
-            server.namespace_prewarm_state.read().await.is_none(),
+            !server
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision),
             "startup durable-root prewarm should finish before the workspace edit probe"
         );
 
@@ -37,9 +42,14 @@ fn workspace_document_mutations_do_not_reschedule_namespace_prewarm() {
                 },
             })
             .await;
+        let current_revision = server.current_analysis_revision().await;
         assert!(
-            server.namespace_prewarm_state.read().await.is_none(),
-            "workspace did_open should not reschedule durable-library namespace prewarm"
+            !server
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision),
+            "workspace did_open should not reschedule durable source-root read prewarm"
         );
 
         server
@@ -55,9 +65,14 @@ fn workspace_document_mutations_do_not_reschedule_namespace_prewarm() {
                 }],
             })
             .await;
+        let current_revision = server.current_analysis_revision().await;
         assert!(
-            server.namespace_prewarm_state.read().await.is_none(),
-            "workspace did_change should not reschedule durable-library namespace prewarm"
+            !server
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision),
+            "workspace did_change should not reschedule durable source-root read prewarm"
         );
 
         server
@@ -65,15 +80,20 @@ fn workspace_document_mutations_do_not_reschedule_namespace_prewarm() {
                 text_document: TextDocumentIdentifier { uri: document_uri },
             })
             .await;
+        let current_revision = server.current_analysis_revision().await;
         assert!(
-            server.namespace_prewarm_state.read().await.is_none(),
-            "workspace did_close should not reschedule durable-library namespace prewarm"
+            !server
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision),
+            "workspace did_close should not reschedule durable source-root read prewarm"
         );
     });
 }
 
 #[test]
-fn workspace_did_change_does_not_wait_for_pending_namespace_prewarm() {
+fn workspace_did_change_does_not_wait_for_pending_source_root_read_prewarm() {
     run_async_test(async {
         let workspace_root = new_temp_dir("workspace-no-prewarm-wait");
         let document_path = workspace_root.join("active.mo");
@@ -92,12 +112,12 @@ fn workspace_did_change_does_not_wait_for_pending_namespace_prewarm() {
             })
             .await;
 
-        let pending = NamespacePrewarmState {
-            session_revision: server.current_analysis_revision().await,
-            done: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            finished: std::sync::Arc::new(tokio::sync::Notify::new()),
-        };
-        *server.namespace_prewarm_state.write().await = Some(pending);
+        let session_revision = server.current_analysis_revision().await;
+        server
+            .session
+            .write()
+            .await
+            .begin_source_root_read_prewarm(session_revision);
 
         let changed = tokio::time::timeout(
             std::time::Duration::from_millis(50),
@@ -116,16 +136,16 @@ fn workspace_did_change_does_not_wait_for_pending_namespace_prewarm() {
         .await;
         assert!(
             changed.is_ok(),
-            "workspace did_change should not wait for unrelated namespace prewarm"
+            "workspace did_change should not wait for unrelated source-root read prewarm"
         );
     });
 }
 
 #[test]
-fn opening_loaded_library_document_does_not_reschedule_namespace_prewarm() {
+fn opening_loaded_source_root_document_does_not_leave_source_root_read_prewarm_pending() {
     run_async_test(async {
-        let workspace_root = new_temp_dir("library-open-no-namespace-prewarm");
-        let library_root = write_test_library(&workspace_root, "InitLib");
+        let workspace_root = new_temp_dir("source-root-open-no-namespace-prewarm");
+        let source_root_dir = write_test_source_root(&workspace_root, "InitLib");
         let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
         let service = new_test_service();
         let server = service.inner();
@@ -134,35 +154,46 @@ fn opening_loaded_library_document_does_not_reschedule_namespace_prewarm() {
             .initialize(InitializeParams {
                 root_uri: Some(workspace_uri),
                 initialization_options: Some(serde_json::json!({
-                    "modelicaPath": [library_root.to_string_lossy().to_string()]
+                    "sourceRootPaths": [source_root_dir.to_string_lossy().to_string()]
                 })),
                 ..InitializeParams::default()
             })
             .await
             .expect("initialize should succeed");
-        server.wait_for_namespace_prewarm_if_pending().await;
+        server.wait_for_source_root_read_prewarm_if_pending().await;
+        let current_revision = server.current_analysis_revision().await;
         assert!(
-            server.namespace_prewarm_state.read().await.is_none(),
-            "startup durable-root prewarm should finish before opening the library document"
+            !server
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision),
+            "startup durable-root prewarm should finish before opening the source-root document"
         );
 
-        let library_document_path = library_root.join("package.mo");
-        let library_document_uri = Url::from_file_path(&library_document_path).expect("file uri");
-        let library_source =
-            std::fs::read_to_string(&library_document_path).expect("read cached library source");
+        let source_root_document_path = source_root_dir.join("package.mo");
+        let source_root_document_uri =
+            Url::from_file_path(&source_root_document_path).expect("file uri");
+        let source_root_source = std::fs::read_to_string(&source_root_document_path)
+            .expect("read cached source-root source");
         server
             .did_open(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
-                    uri: library_document_uri,
+                    uri: source_root_document_uri,
                     language_id: "modelica".to_string(),
                     version: 1,
-                    text: library_source,
+                    text: source_root_source,
                 },
             })
             .await;
+        let current_revision = server.current_analysis_revision().await;
         assert!(
-            server.namespace_prewarm_state.read().await.is_none(),
-            "opening a loaded library document with current text should not reschedule namespace prewarm"
+            !server
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision),
+            "opening a loaded source-root document with current text should finish any rescheduled source-root read prewarm before did_open returns"
         );
     });
 }

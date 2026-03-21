@@ -11,14 +11,14 @@ impl Session {
 
     /// Query namespace completion cache for a namespace prefix.
     pub fn namespace_index_query(&mut self, prefix: &str) -> Result<Vec<(String, String, bool)>> {
-        let rebuilt = self.refresh_library_namespace_cache();
+        let rebuilt = self.refresh_source_root_namespace_cache();
         if rebuilt {
             record_namespace_index_query_miss();
         } else {
             record_namespace_index_query_hit();
         }
 
-        Ok(self.library_namespace_children_cached(prefix))
+        Ok(self.namespace_children_cached(prefix))
     }
 
     /// Return the stable file id for a URI if it exists in this session.
@@ -115,11 +115,8 @@ impl Session {
         self.detached_document_uris.shift_remove(uri);
     }
 
-    pub(super) fn is_library_backed_uri(&self, uri: &str) -> bool {
-        self.documents
-            .get(uri)
-            .is_some_and(|doc| doc.content.is_empty())
-            || !self.library_source_root_keys_for_uri(uri).is_empty()
+    pub(super) fn is_source_root_backed_uri(&self, uri: &str) -> bool {
+        !self.source_root_backing_keys_for_uri(uri).is_empty()
     }
 
     /// Add or update a document in the session.
@@ -127,7 +124,7 @@ impl Session {
     /// Returns an error if parsing fails. For LSP use where you want to store
     /// documents even on parse failure, use [`Session::update_document`] instead.
     pub fn add_document(&mut self, uri: &str, content: &str) -> Result<()> {
-        let was_library_document = self.is_library_backed_uri(uri);
+        let was_source_root_backed_document = self.is_source_root_backed_uri(uri);
         let revision = self.bump_revision();
         record_document_parse();
         let parse_started = maybe_start_timer();
@@ -144,7 +141,7 @@ impl Session {
         if let Some(elapsed) = maybe_elapsed_duration(parse_started) {
             record_document_parse_duration(elapsed);
         }
-        self.detach_uri_from_source_sets(uri, revision, was_library_document);
+        self.detach_uri_from_source_sets(uri, revision, was_source_root_backed_document);
         self.insert_document(
             Document::new(
                 uri.to_string(),
@@ -189,12 +186,12 @@ impl Session {
         );
         // Invalidate cached state
         self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
-        self.invalidate_library_completion_state(CacheInvalidationCause::SourceSetMutation);
+        self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
     }
 
     /// Add multiple pre-parsed definitions to the session.
     ///
-    /// This is the most efficient way to load a large library like MSL.
+    /// This is the most efficient way to load a large source root like MSL.
     pub fn add_parsed_batch(&mut self, definitions: Vec<(String, ast::StoredDefinition)>) {
         let revision = self.bump_revision();
         for (uri, parsed) in definitions {
@@ -209,7 +206,7 @@ impl Session {
             );
         }
         self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
-        self.invalidate_library_completion_state(CacheInvalidationCause::SourceSetMutation);
+        self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
     }
 
     /// Remove all parsed documents previously loaded for a source-set id.
@@ -463,7 +460,7 @@ impl Session {
     /// Get all qualified class names from a completion-tolerant resolved tree.
     ///
     /// Unlike [`Session::all_class_names`], this uses the strict-compile recovery
-    /// resolve mode so unrelated library diagnostics do not block editor
+    /// resolve mode so unrelated source-root diagnostics do not block editor
     /// namespace completion. Only declared classes are returned; components,
     /// loop indices, and other non-class definitions are excluded.
     pub fn all_class_names_for_completion(&mut self) -> Result<Vec<String>> {
@@ -473,75 +470,28 @@ impl Session {
         Ok(collect_qualified_class_names(&resolved.0.definitions))
     }
 
-    /// Get all qualified class names from library source-sets only.
+    /// Get all qualified class names from indexed source-sets.
     ///
     /// This cache is used for editor namespace completion such as `Modelica.`
-    /// and `import Modelica`. Local document edits do not invalidate it, but
-    /// changing library source-sets does.
-    fn build_library_namespace_cache(
-        &mut self,
-        source_set_records: &[SourceSetId],
-        orphan_signature: &SummarySignature,
-        orphan_uris: &[String],
-    ) -> NamespaceCompletionCache {
-        let mut merged_cache = NamespaceCompletionCache::default();
-        let build_started = maybe_start_timer();
-        for source_set_id in source_set_records {
-            self.extend_library_namespace_cache_for_source_set(&mut merged_cache, *source_set_id);
-        }
-        self.extend_library_namespace_cache_for_orphans(
-            &mut merged_cache,
-            orphan_signature,
-            orphan_uris,
-        );
-        if let Some(elapsed) = maybe_elapsed_duration(build_started) {
-            record_library_namespace_refresh_build(elapsed);
-        }
-        let finalize_started = maybe_start_timer();
-        let merged_cache = merged_cache.finalize();
-        if let Some(elapsed) = maybe_elapsed_duration(finalize_started) {
-            record_library_namespace_refresh_finalize(elapsed);
-        }
-        merged_cache
-    }
-
-    fn extend_library_namespace_cache_for_source_set(
-        &mut self,
-        merged_cache: &mut NamespaceCompletionCache,
-        source_set_id: SourceSetId,
+    /// and `import NewFolder.Test`. Workspace source-sets participate here so
+    /// project packages complete the same way as source-root packages.
+    fn collect_namespace_refresh_inputs(
+        &self,
+    ) -> (
+        Vec<SourceSetId>,
+        IndexMap<SourceSetId, SourceSetClassGraphSignature>,
+        SummarySignature,
+        Vec<String>,
     ) {
-        if let Some(def_map) = self.source_set_package_def_map_query(source_set_id) {
-            merged_cache.extend_from_package_def_map(def_map);
-        }
-    }
-
-    fn extend_library_namespace_cache_for_orphans(
-        &mut self,
-        merged_cache: &mut NamespaceCompletionCache,
-        orphan_signature: &SummarySignature,
-        orphan_uris: &[String],
-    ) {
-        if let Some(orphan_def_map) =
-            self.orphan_package_def_map_query(orphan_signature, orphan_uris)
-        {
-            merged_cache.extend_from_package_def_map(orphan_def_map);
-        }
-    }
-
-    fn refresh_library_namespace_cache(&mut self) -> bool {
-        let collect_started = maybe_start_timer();
-        let source_set_ids: Vec<SourceSetId> = self
-            .source_sets
-            .values()
-            .filter(|record| record.kind.is_library())
-            .map(|record| record.id)
+        let source_set_ids: Vec<SourceSetId> =
+            self.source_sets.values().map(|record| record.id).collect();
+        let source_set_signatures = source_set_ids
+            .iter()
+            .filter_map(|source_set_id| {
+                self.source_set_class_graph_signature(*source_set_id)
+                    .map(|signature| (*source_set_id, signature))
+            })
             .collect();
-        let mut source_set_signatures = IndexMap::new();
-        for source_set_id in &source_set_ids {
-            if let Some(signature) = self.source_set_query_signature(*source_set_id) {
-                source_set_signatures.insert(*source_set_id, signature);
-            }
-        }
 
         let mut orphan_signature = SummarySignature::new();
         let mut orphan_uris = Vec::new();
@@ -554,14 +504,95 @@ impl Session {
                 orphan_uris.push(uri.to_string());
             }
         }
+
+        (
+            source_set_ids,
+            source_set_signatures,
+            orphan_signature,
+            orphan_uris,
+        )
+    }
+
+    fn refresh_source_set_namespace_entries(
+        &mut self,
+        cache_state: &mut SourceRootNamespaceCache,
+        source_set_signatures: &IndexMap<SourceSetId, SourceSetClassGraphSignature>,
+    ) {
+        for (source_set_id, signature) in source_set_signatures {
+            let is_hit = cache_state
+                .source_set_caches
+                .get(source_set_id)
+                .is_some_and(|entry| entry.signature == *signature);
+            if is_hit {
+                continue;
+            }
+            let Some(def_map) = self
+                .source_set_package_def_map_query(*source_set_id)
+                .cloned()
+            else {
+                cache_state.source_set_caches.shift_remove(source_set_id);
+                continue;
+            };
+            let mut cache = NamespaceCompletionCache::default();
+            cache.extend_from_package_def_map(&def_map);
+            cache_state.source_set_caches.insert(
+                *source_set_id,
+                SourceSetNamespaceQueryCache {
+                    signature: signature.clone(),
+                    cache: cache.finalize(),
+                },
+            );
+        }
+    }
+
+    fn refresh_orphan_namespace_entry(
+        &mut self,
+        cache_state: &mut SourceRootNamespaceCache,
+        orphan_signature: &SummarySignature,
+        orphan_uris: &[String],
+    ) -> bool {
+        if orphan_uris.is_empty() {
+            cache_state.orphan_cache = None;
+            return true;
+        }
+
+        let is_hit = cache_state
+            .orphan_cache
+            .as_ref()
+            .is_some_and(|entry| entry.signature == *orphan_signature);
+        if is_hit {
+            return true;
+        }
+
+        let Some(orphan_def_map) = self
+            .orphan_package_def_map_query(orphan_signature, orphan_uris)
+            .cloned()
+        else {
+            cache_state.orphan_cache = None;
+            return false;
+        };
+
+        let mut cache = NamespaceCompletionCache::default();
+        cache.extend_from_package_def_map(&orphan_def_map);
+        cache_state.orphan_cache = Some(OrphanNamespaceQueryCache {
+            signature: orphan_signature.clone(),
+            cache: cache.finalize(),
+        });
+        true
+    }
+
+    pub(crate) fn refresh_source_root_namespace_cache(&mut self) -> bool {
+        let collect_started = maybe_start_timer();
+        let (source_set_ids, source_set_signatures, orphan_signature, orphan_uris) =
+            self.collect_namespace_refresh_inputs();
         if let Some(elapsed) = maybe_elapsed_duration(collect_started) {
-            record_library_namespace_refresh_collect(elapsed);
+            record_namespace_refresh_collect(elapsed);
         }
 
         if self
             .query_state
             .ast
-            .library_namespace_cache
+            .source_root_namespace_cache
             .as_ref()
             .is_some_and(|cache| {
                 cache.merged_cache.is_some()
@@ -569,54 +600,79 @@ impl Session {
                     && cache.orphan_signature == orphan_signature
             })
         {
-            record_library_completion_cache_hit();
+            record_namespace_completion_cache_hit();
             return false;
         }
 
         let mut cache_state = self
             .query_state
             .ast
-            .library_namespace_cache
+            .source_root_namespace_cache
             .take()
             .unwrap_or_default();
+        cache_state
+            .source_set_caches
+            .retain(|source_set_id, _| source_set_signatures.contains_key(source_set_id));
 
-        cache_state.store_merged_cache(
-            self.build_library_namespace_cache(&source_set_ids, &orphan_signature, &orphan_uris),
-            source_set_signatures,
-            orphan_signature,
-        );
-        record_library_completion_cache_miss();
-        self.query_state.ast.library_namespace_cache = Some(cache_state);
+        let build_started = maybe_start_timer();
+        self.refresh_source_set_namespace_entries(&mut cache_state, &source_set_signatures);
+        if !self.refresh_orphan_namespace_entry(&mut cache_state, &orphan_signature, &orphan_uris) {
+            self.query_state.ast.source_root_namespace_cache = Some(cache_state);
+            record_namespace_completion_cache_miss();
+            return true;
+        }
+        if let Some(elapsed) = maybe_elapsed_duration(build_started) {
+            record_namespace_refresh_build(elapsed);
+        }
+
+        let finalize_started = maybe_start_timer();
+        let mut merged_cache = NamespaceCompletionCache::default();
+        for source_set_id in &source_set_ids {
+            if let Some(entry) = cache_state.source_set_caches.get(source_set_id) {
+                merged_cache.extend_from_namespace_cache(&entry.cache);
+            }
+        }
+        if let Some(orphan_cache) = &cache_state.orphan_cache {
+            merged_cache.extend_from_namespace_cache(&orphan_cache.cache);
+        }
+        let merged_cache = merged_cache.finalize();
+        if let Some(elapsed) = maybe_elapsed_duration(finalize_started) {
+            record_namespace_refresh_finalize(elapsed);
+        }
+
+        cache_state.store_merged_cache(merged_cache, source_set_signatures, orphan_signature);
+        record_namespace_completion_cache_miss();
+        self.query_state.ast.source_root_namespace_cache = Some(cache_state);
         true
     }
 
-    pub fn all_library_class_names_for_completion(&mut self) -> Result<Vec<String>> {
-        self.refresh_library_namespace_cache();
+    pub fn namespace_class_names_for_completion(&mut self) -> Result<Vec<String>> {
+        self.refresh_source_root_namespace_cache();
         Ok(self
             .query_state
             .ast
-            .library_namespace_cache
+            .source_root_namespace_cache
             .as_ref()
             .and_then(|cache| cache.merged_cache.as_ref())
             .map(|cache| cache.class_names().to_vec())
             .unwrap_or_default())
     }
 
-    /// Get cached immediate namespace children for a library completion prefix.
+    /// Get cached immediate namespace children for a completion prefix.
     ///
     /// Prefixes use the editor completion form (`""`, `Modelica.`, `Modelica.Blocks.`).
-    pub fn library_namespace_children_for_completion(
+    pub fn namespace_children_for_completion(
         &mut self,
         prefix: &str,
     ) -> Result<Vec<(String, String, bool)>> {
         self.namespace_index_query(prefix)
     }
 
-    /// Get cached library namespace children without triggering a rebuild.
-    pub fn library_namespace_children_cached(&self, prefix: &str) -> Vec<(String, String, bool)> {
+    /// Get cached namespace children without triggering a rebuild.
+    pub fn namespace_children_cached(&self, prefix: &str) -> Vec<(String, String, bool)> {
         self.query_state
             .ast
-            .library_namespace_cache
+            .source_root_namespace_cache
             .as_ref()
             .and_then(|cache| cache.merged_cache.as_ref())
             .map(|cache| cache.children(prefix))
@@ -624,20 +680,20 @@ impl Session {
     }
 
     /// Get the cached namespace closure fingerprint for a completion prefix.
-    pub fn library_namespace_fingerprint_cached(&self, prefix: &str) -> Option<String> {
+    pub fn namespace_fingerprint_cached(&self, prefix: &str) -> Option<String> {
         self.query_state
             .ast
-            .library_namespace_cache
+            .source_root_namespace_cache
             .as_ref()
             .and_then(|cache| cache.merged_cache.as_ref())
             .and_then(|cache| cache.fingerprint_hex(prefix))
     }
 
-    /// Get cached library class names without triggering a rebuild.
-    pub fn all_library_class_names_cached(&self) -> Vec<String> {
+    /// Get cached namespace class names without triggering a rebuild.
+    pub fn namespace_class_names_cached(&self) -> Vec<String> {
         self.query_state
             .ast
-            .library_namespace_cache
+            .source_root_namespace_cache
             .as_ref()
             .and_then(|cache| cache.merged_cache.as_ref())
             .map(|cache| cache.class_names().to_vec())
@@ -970,8 +1026,8 @@ impl Session {
     /// Compile the requested model using strict-reachable semantics with
     /// internal recovery while bypassing the session compile cache.
     ///
-    /// This is intended for focused editor-style compiles where library AST and
-    /// resolved state should be reused, but per-model phase results should not
+    /// This is intended for focused editor-style compiles where source-root AST
+    /// and resolved state should be reused, but per-model phase results should not
     /// accumulate across unrelated requests.
     pub fn compile_model_strict_reachable_uncached_with_recovery(
         &mut self,

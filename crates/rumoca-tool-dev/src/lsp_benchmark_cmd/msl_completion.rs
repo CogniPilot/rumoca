@@ -6,7 +6,7 @@ pub(crate) fn run_lsp_msl_completion_timings(
     install_vscode_prereqs: bool,
 ) -> Result<()> {
     let lsp_binary = build_lsp_binary(root)?;
-    let modelica_paths = msl_library_paths(msl_archive_root)?;
+    let modelica_paths = msl_source_root_paths(msl_archive_root)?;
     let report_dir = root.join("target/lsp-msl-benchmark");
     fs::create_dir_all(&report_dir)
         .with_context(|| format!("failed to create {}", report_dir.display()))?;
@@ -138,7 +138,7 @@ fn build_lsp_binary(root: &Path) -> Result<PathBuf> {
     Ok(lsp_binary)
 }
 
-fn msl_library_paths(msl_archive_root: &Path) -> Result<Vec<String>> {
+fn msl_source_root_paths(msl_archive_root: &Path) -> Result<Vec<String>> {
     let mut paths = Vec::new();
     for path in [
         msl_archive_root.join("Modelica 4.1.0"),

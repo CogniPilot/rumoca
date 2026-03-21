@@ -11,7 +11,7 @@ use crate::instrumentation::{
     record_parsed_file_artifact_cache_hit, record_parsed_file_artifact_cache_miss,
     record_parsed_file_parse, record_parsed_file_parse_duration,
 };
-use crate::library_cache::{cache_compiler_version, resolve_library_cache_dir};
+use crate::source_root_cache::{resolve_source_root_cache_dir, source_root_cache_compiler_version};
 
 const PARSED_ARTIFACT_CACHE_SCHEMA_VERSION: u32 = 2;
 const PARSED_ARTIFACT_CACHE_DIR: &str = "parsed-files";
@@ -37,7 +37,7 @@ fn content_hash(source: &str) -> String {
 fn artifact_cache_key(file_name: &str, source_hash: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(format!("schema={PARSED_ARTIFACT_CACHE_SCHEMA_VERSION}\n").as_bytes());
-    hasher.update(format!("compiler={}\n", cache_compiler_version()).as_bytes());
+    hasher.update(format!("compiler={}\n", source_root_cache_compiler_version()).as_bytes());
     hasher.update(file_name.as_bytes());
     hasher.update(b"\n");
     hasher.update(source_hash.as_bytes());
@@ -103,7 +103,7 @@ pub(crate) fn resolve_parsed_artifact_cache_dir_from_root(root: Option<&Path>) -
 }
 
 pub(crate) fn resolve_parsed_artifact_cache_dir() -> Option<PathBuf> {
-    let root = resolve_library_cache_dir();
+    let root = resolve_source_root_cache_dir();
     resolve_parsed_artifact_cache_dir_from_root(root.as_deref())
 }
 

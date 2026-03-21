@@ -3,17 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use rumoca_session::compile::{
-    CompilePhaseTimingSnapshot, Document, PhaseResult, Session, SessionCacheStatsSnapshot,
-    SessionChange, SessionConfig, SessionSnapshot, SourceRootKind, compile_phase_timing_stats,
-    session_cache_stats,
-};
-use rumoca_session::libraries::{
-    LibraryCacheStatus, LibraryCacheTiming, PackageLayoutError, infer_library_roots,
-    parse_library_with_cache, should_load_library_for_source,
+    CompilePhaseTimingSnapshot, Document, ParsedSourceRootLoad, PhaseResult, Session,
+    SessionCacheStatsSnapshot, SessionChange, SessionConfig, SessionSnapshot, SourceRootKind,
+    compile_phase_timing_stats, session_cache_stats,
 };
 use rumoca_session::parsing::{
     ast, collect_compile_unit_source_files, collect_model_names, merge_stored_definitions,
@@ -29,6 +25,13 @@ use rumoca_session::project::{
 use rumoca_session::runtime::{
     SimOptions, SimResult, SimSolverMode, dae_balance, dae_balance_detail, simulate_dae,
 };
+use rumoca_session::source_roots::{
+    PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,
+    classify_configured_source_root_kind, merge_source_root_paths, parse_source_root_with_cache,
+    plan_source_root_loads, render_source_root_indexing_failed_message,
+    render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
+    render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -38,7 +41,7 @@ use tower_lsp::{Client, LanguageServer};
 
 #[cfg(test)]
 use crate::completion_metrics::extract_import_completion_prefix;
-use crate::completion_metrics::extract_library_completion_prefix;
+use crate::completion_metrics::extract_namespace_completion_prefix;
 use crate::handlers;
 use crate::helpers::get_word_at_position;
 mod completion;
@@ -48,6 +51,7 @@ mod navigation;
 mod preview;
 mod project_commands;
 mod simulation_jobs;
+mod source_root_runtime;
 mod support;
 use completion::*;
 use lanes::*;
@@ -64,15 +68,12 @@ pub struct ModelicaLanguageServer {
     client: Client,
     session: Arc<RwLock<Session>>,
     work_lanes: Arc<ServerWorkLanes>,
-    initial_library_paths: Arc<RwLock<Vec<String>>>,
-    library_paths: Arc<RwLock<Vec<String>>>,
-    loaded_libraries: Arc<RwLock<HashSet<String>>>,
+    initial_source_root_paths: Arc<RwLock<Vec<String>>>,
+    source_root_paths: Arc<RwLock<Vec<String>>>,
     document_versions: Arc<RwLock<HashMap<String, i32>>>,
     completion_mutation_epoch: Arc<AtomicU64>,
-    library_load_diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
-    library_load_diagnostic_uris: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    loading_libraries: Arc<RwLock<HashMap<String, u64>>>,
-    library_state_epoch: Arc<AtomicU64>,
+    source_root_load_diagnostics: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
+    source_root_load_diagnostic_uris: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
     project_config: Arc<RwLock<Option<ProjectConfig>>>,
     completion_timing_path: Arc<RwLock<Option<PathBuf>>>,
@@ -85,8 +86,7 @@ pub struct ModelicaLanguageServer {
         Arc<RwLock<HashMap<SimulationPrewarmKey, Arc<SimulationPrewarmState>>>>,
     selected_simulation_models: Arc<RwLock<HashMap<String, String>>>,
     background_request_sequence: Arc<AtomicU64>,
-    namespace_prewarm_lane: Arc<tokio::sync::Mutex<()>>,
-    namespace_prewarm_state: Arc<RwLock<Option<NamespacePrewarmState>>>,
+    source_root_read_prewarm_finished: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,15 +102,12 @@ impl ModelicaLanguageServer {
             client,
             session: Arc::new(RwLock::new(Session::new(SessionConfig::default()))),
             work_lanes: Arc::new(ServerWorkLanes::default()),
-            initial_library_paths: Arc::new(RwLock::new(Vec::new())),
-            library_paths: Arc::new(RwLock::new(Vec::new())),
-            loaded_libraries: Arc::new(RwLock::new(HashSet::new())),
+            initial_source_root_paths: Arc::new(RwLock::new(Vec::new())),
+            source_root_paths: Arc::new(RwLock::new(Vec::new())),
             document_versions: Arc::new(RwLock::new(HashMap::new())),
             completion_mutation_epoch: Arc::new(AtomicU64::new(0)),
-            library_load_diagnostics: Arc::new(RwLock::new(HashMap::new())),
-            library_load_diagnostic_uris: Arc::new(RwLock::new(HashMap::new())),
-            loading_libraries: Arc::new(RwLock::new(HashMap::new())),
-            library_state_epoch: Arc::new(AtomicU64::new(0)),
+            source_root_load_diagnostics: Arc::new(RwLock::new(HashMap::new())),
+            source_root_load_diagnostic_uris: Arc::new(RwLock::new(HashMap::new())),
             workspace_root: Arc::new(RwLock::new(None)),
             project_config: Arc::new(RwLock::new(None)),
             completion_timing_path: Arc::new(RwLock::new(None)),
@@ -121,8 +118,7 @@ impl ModelicaLanguageServer {
             simulation_prewarm_state: Arc::new(RwLock::new(HashMap::new())),
             selected_simulation_models: Arc::new(RwLock::new(HashMap::new())),
             background_request_sequence: Arc::new(AtomicU64::new(0)),
-            namespace_prewarm_lane: Arc::new(tokio::sync::Mutex::new(())),
-            namespace_prewarm_state: Arc::new(RwLock::new(None)),
+            source_root_read_prewarm_finished: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -222,154 +218,73 @@ impl ModelicaLanguageServer {
             || self.current_analysis_revision().await != token.session_revision
     }
 
-    async fn finish_namespace_prewarm(&self, state: &NamespacePrewarmState) {
-        state.done.store(true, Ordering::Release);
-        state.finished.notify_waiters();
-        let mut pending = self.namespace_prewarm_state.write().await;
-        if pending
-            .as_ref()
-            .is_some_and(|current| current.session_revision == state.session_revision)
-        {
-            *pending = None;
-        }
-    }
-
-    async fn wait_for_namespace_prewarm_if_pending(&self) {
-        let current_revision = self.current_analysis_revision().await;
-        let pending = self.namespace_prewarm_state.read().await.clone();
-        let Some(state) = pending else {
-            return;
-        };
-        if state.session_revision != current_revision || state.done.load(Ordering::Acquire) {
-            return;
-        }
-        let notified = state.finished.notified();
-        if state.done.load(Ordering::Acquire) {
-            return;
-        }
-        notified.await;
-    }
-
-    async fn is_loaded_library_document(&self, uri_path: &str) -> bool {
+    async fn finish_source_root_read_prewarm(&self, session_revision: u64) {
         self.session
+            .write()
+            .await
+            .finish_source_root_read_prewarm(session_revision);
+        self.source_root_read_prewarm_finished.notify_waiters();
+    }
+
+    async fn wait_for_source_root_read_prewarm_if_pending(&self) {
+        loop {
+            let notified = self.source_root_read_prewarm_finished.notified();
+            let current_revision = self.current_analysis_revision().await;
+            let pending = self
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision);
+            if !pending {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    async fn wait_for_document_source_root_read_prewarm(&self, uri_path: &str) {
+        if !self
+            .session
             .read()
             .await
-            .is_loaded_library_document(uri_path)
-    }
-
-    async fn wait_for_namespace_prewarm_for_loaded_library_document(&self, uri_path: &str) {
-        if !self.is_loaded_library_document(uri_path).await {
+            .document_needs_source_root_read_prewarm(uri_path)
+        {
             return;
         }
-        self.wait_for_namespace_prewarm_if_pending().await;
+        self.wait_for_source_root_read_prewarm_if_pending().await;
     }
 
-    async fn spawn_background_namespace_prewarm_for_loaded_library_document(&self, uri_path: &str) {
-        if !self.is_loaded_library_document(uri_path).await {
+    async fn spawn_background_document_source_root_read_prewarm(&self, uri_path: &str) {
+        if !self
+            .session
+            .read()
+            .await
+            .document_needs_source_root_read_prewarm(uri_path)
+        {
             return;
         }
-        self.spawn_background_namespace_prewarm().await;
+        self.spawn_background_source_root_read_prewarm().await;
     }
 
-    async fn prewarm_namespace_cache_for_loaded_library_document(&self, uri_path: &str) {
-        if !self.is_loaded_library_document(uri_path).await {
-            return;
-        }
-        let mut session = self.session.write().await;
-        let _ = session.namespace_index_query("");
-    }
-
-    async fn prewarm_workspace_symbols_for_loaded_library_document(&self, uri_path: &str) {
-        if !self.is_loaded_library_document(uri_path).await {
-            return;
-        }
-        self.prewarm_workspace_symbol_queries().await;
-    }
-
-    async fn run_namespace_prewarm_snapshot(
+    async fn run_source_root_read_prewarm_snapshot(
         &self,
         snapshot: SessionSnapshot,
         session_revision: u64,
     ) {
-        let _prewarm_guard = self.namespace_prewarm_lane.lock().await;
-        if self.namespace_prewarm_is_stale(session_revision).await {
+        let _indexing_guard = self.work_lanes.indexing.lock().await;
+        if self.current_analysis_revision().await != session_revision {
             return;
         }
-        let _ = snapshot.namespace_index_query("");
-    }
-
-    async fn prewarm_workspace_symbol_queries(&self) {
-        if self.initial_library_paths.read().await.is_empty() {
-            return;
+        let prewarm =
+            tokio::task::spawn_blocking(move || snapshot.prewarm_source_root_read_queries()).await;
+        if let Err(error) = prewarm {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("[rumoca] source-root read prewarm worker failed: {error}"),
+                )
+                .await;
         }
-        let snapshot = self.session.read().await.workspace_symbol_snapshot();
-        snapshot.prewarm_workspace_symbol_queries();
-    }
-
-    fn library_path_keys(paths: &[String]) -> Vec<String> {
-        paths.iter().map(|path| canonical_path_key(path)).collect()
-    }
-
-    async fn resolved_library_paths(&self) -> Vec<String> {
-        let initial = self.initial_library_paths.read().await.clone();
-        let project_paths = self
-            .project_config
-            .read()
-            .await
-            .as_ref()
-            .map(|cfg| cfg.resolve_all_library_paths())
-            .unwrap_or_default();
-        let mut seen = HashSet::new();
-        let mut merged = Vec::new();
-        for path in project_paths.into_iter().chain(initial) {
-            let key = canonical_path_key(&path);
-            if seen.insert(key) {
-                merged.push(path);
-            }
-        }
-        merged
-    }
-
-    async fn library_source_root_kind(&self, library_path: &str) -> SourceRootKind {
-        let library_path_key = canonical_path_key(library_path);
-        let initial_library_paths = self.initial_library_paths.read().await.clone();
-        if initial_library_paths
-            .iter()
-            .any(|path| canonical_path_key(path) == library_path_key)
-        {
-            return SourceRootKind::DurableLibrary;
-        }
-        SourceRootKind::Library
-    }
-
-    async fn reset_session_and_loaded_libraries(&self) {
-        self.library_state_epoch.fetch_add(1, Ordering::AcqRel);
-        *self.namespace_prewarm_state.write().await = None;
-        self.clear_simulation_compile_cache().await;
-        let docs = {
-            let session = self.session.read().await;
-            session
-                .document_uris()
-                .into_iter()
-                .filter_map(|uri| session.get_document(uri))
-                .filter(|doc| !doc.content.is_empty())
-                .map(|doc| (doc.uri.clone(), doc.content.clone()))
-                .collect::<Vec<_>>()
-        };
-
-        let mut rebuilt = Session::new(SessionConfig::default());
-        let mut change = SessionChange::default();
-        for (uri, content) in docs {
-            change.set_file_text(uri, content);
-        }
-        if !change.is_empty() {
-            rebuilt.apply_change(change);
-        }
-        *self.session.write().await = rebuilt;
-        let mut loaded = self.loaded_libraries.write().await;
-        let mut loading = self.loading_libraries.write().await;
-        loaded.clear();
-        loading.clear();
     }
 
     async fn record_open_document_version(&self, uri_path: &str, version: i32) {
@@ -415,59 +330,13 @@ impl ModelicaLanguageServer {
     }
 
     async fn prewarm_document_semantic_queries(&self, uri_path: &str) {
-        if self.is_loaded_library_document(uri_path).await {
-            return;
-        }
         let Some(snapshot) = self.document_lightweight_snapshot(uri_path).await else {
             return;
         };
+        if snapshot.document_needs_source_root_read_prewarm(uri_path) {
+            return;
+        }
         snapshot.prewarm_document_ide_queries(uri_path);
-    }
-
-    async fn stored_library_load_diagnostics(&self, uri_path: &str) -> Vec<Diagnostic> {
-        self.library_load_diagnostics
-            .read()
-            .await
-            .get(&canonical_path_key(uri_path))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    async fn replace_library_load_diagnostics(
-        &self,
-        lib_path: &str,
-        diagnostics_by_uri: HashMap<String, Vec<Diagnostic>>,
-    ) {
-        let path_key = canonical_path_key(lib_path);
-        let new_keys: HashSet<String> = diagnostics_by_uri.keys().cloned().collect();
-        let old_keys = {
-            let mut stored = self.library_load_diagnostics.write().await;
-            let mut owners = self.library_load_diagnostic_uris.write().await;
-            let old_keys = owners.remove(&path_key).unwrap_or_default();
-            for uri in &old_keys {
-                stored.remove(uri);
-            }
-            for (uri, diagnostics) in &diagnostics_by_uri {
-                stored.insert(uri.clone(), diagnostics.clone());
-            }
-            if !new_keys.is_empty() {
-                owners.insert(path_key, new_keys.clone());
-            }
-            old_keys
-        };
-
-        for (uri_path, diagnostics) in diagnostics_by_uri {
-            if let Ok(uri) = Url::from_file_path(&uri_path) {
-                self.client
-                    .publish_diagnostics(uri, diagnostics, None)
-                    .await;
-            }
-        }
-        for cleared in old_keys.difference(&new_keys) {
-            if let Ok(uri) = Url::from_file_path(cleared) {
-                self.client.publish_diagnostics(uri, Vec::new(), None).await;
-            }
-        }
     }
 
     async fn write_workspace_symbol_timing(
@@ -503,406 +372,6 @@ impl ModelicaLanguageServer {
             },
             navigation_timing_path.as_deref(),
         );
-    }
-
-    async fn publish_package_layout_diagnostics(&self, lib_path: &str, err: &PackageLayoutError) {
-        self.replace_library_load_diagnostics(
-            lib_path,
-            library_load_diagnostics_for_package_layout_error(err),
-        )
-        .await;
-    }
-
-    async fn maybe_publish_package_layout_diagnostics(&self, lib_path: &str, err: &anyhow::Error) {
-        let Some(layout) = err.downcast_ref::<PackageLayoutError>() else {
-            return;
-        };
-        self.publish_package_layout_diagnostics(lib_path, layout)
-            .await;
-    }
-
-    async fn rebuild_dirty_libraries_before_compile(
-        &self,
-        current_document_path: &str,
-    ) -> std::result::Result<(), String> {
-        let dirty_roots = {
-            let session = self.session.read().await;
-            session.dirty_library_source_root_keys()
-        };
-        if dirty_roots.is_empty() {
-            return Ok(());
-        }
-
-        for source_set_key in &dirty_roots {
-            let Some(library_root) = library_source_root_path(source_set_key) else {
-                continue;
-            };
-            notify_library_indexing_started(
-                &self.client,
-                &library_root,
-                LibraryIndexingReason::SimulationCompile,
-            )
-            .await;
-            let parsed = match parse_library_with_cache(Path::new(&library_root)) {
-                Ok(parsed) => parsed,
-                Err(err) => {
-                    let error_message = library_load_error_message(&library_root, &err);
-                    notify_library_indexing_failed(
-                        &self.client,
-                        &library_root,
-                        LibraryIndexingReason::SimulationCompile,
-                        &error_message,
-                    )
-                    .await;
-                    self.maybe_publish_package_layout_diagnostics(&library_root, &err)
-                        .await;
-                    return Err(error_message);
-                }
-            };
-            self.replace_library_load_diagnostics(&library_root, HashMap::new())
-                .await;
-            let source_root_kind = self.library_source_root_kind(&library_root).await;
-            let inserted_count = {
-                let mut session = self.session.write().await;
-                session.replace_parsed_source_set(
-                    source_set_key,
-                    source_root_kind,
-                    parsed.documents,
-                    Some(current_document_path),
-                )
-            };
-            self.library_state_epoch.fetch_add(1, Ordering::AcqRel);
-            self.clear_simulation_compile_cache().await;
-            notify_library_indexing_finished(
-                &self.client,
-                &library_root,
-                LibraryIndexingReason::SimulationCompile.label(),
-                false,
-                parsed.file_count,
-                inserted_count,
-                parsed.cache_status,
-            )
-            .await;
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!(
-                        "[rumoca] Rebuilt dirty library {} ({:?}) — {} files inserted",
-                        library_root, parsed.cache_status, inserted_count
-                    ),
-                )
-                .await;
-        }
-        Ok(())
-    }
-
-    fn current_library_state_epoch(&self) -> u64 {
-        self.library_state_epoch.load(Ordering::Acquire)
-    }
-
-    async fn namespace_prewarm_is_stale(&self, session_revision: u64) -> bool {
-        self.current_analysis_revision().await != session_revision
-    }
-
-    async fn reserve_library_load(&self, path_key: &str, expected_epoch: u64) -> bool {
-        let loaded = self.loaded_libraries.write().await;
-        let mut loading = self.loading_libraries.write().await;
-        let current_epoch = self.current_library_state_epoch();
-        if !should_reserve_library_load(&loaded, &loading, path_key, expected_epoch, current_epoch)
-        {
-            return false;
-        }
-        loading.insert(path_key.to_string(), expected_epoch);
-        true
-    }
-
-    async fn cancel_library_load(&self, path_key: &str, reservation_epoch: u64) {
-        let mut loading = self.loading_libraries.write().await;
-        if should_clear_library_load(&loading, path_key, reservation_epoch) {
-            loading.remove(path_key);
-        }
-    }
-
-    async fn apply_parsed_library_if_current(
-        &self,
-        source_set_id: &str,
-        source_root_kind: SourceRootKind,
-        path_key: &str,
-        current_document_path: Option<&str>,
-        documents: Vec<(String, ast::StoredDefinition)>,
-        expected_epoch: u64,
-    ) -> Option<AppliedLibraryLoad> {
-        let mut session = self.session.write().await;
-        let mut loaded = self.loaded_libraries.write().await;
-        let mut loading = self.loading_libraries.write().await;
-        let current_epoch = self.current_library_state_epoch();
-        if !should_apply_library_load(&loaded, path_key, expected_epoch, current_epoch) {
-            if should_clear_library_load(&loading, path_key, expected_epoch) {
-                loading.remove(path_key);
-            }
-            return None;
-        }
-        let apply_started = Instant::now();
-        let inserted = session.replace_parsed_source_set(
-            source_set_id,
-            source_root_kind,
-            documents,
-            current_document_path,
-        );
-        loaded.insert(path_key.to_string());
-        if should_clear_library_load(&loading, path_key, expected_epoch) {
-            loading.remove(path_key);
-        }
-        drop(loading);
-        drop(loaded);
-        drop(session);
-        self.library_state_epoch.fetch_add(1, Ordering::AcqRel);
-        self.clear_simulation_compile_cache().await;
-        Some(AppliedLibraryLoad {
-            inserted_file_count: inserted,
-            apply_ms: apply_started.elapsed().as_millis() as u64,
-        })
-    }
-
-    async fn load_library_source_set_if_current(
-        &self,
-        lib_path: &str,
-        path_key: &str,
-        source_set_id: &str,
-        current_document_path: Option<&str>,
-        expected_epoch: u64,
-        reason: LibraryIndexingReason,
-    ) -> std::result::Result<Option<LibraryLoadOutcome>, String> {
-        if !self.reserve_library_load(path_key, expected_epoch).await {
-            return Ok(None);
-        }
-
-        notify_library_indexing_started(&self.client, lib_path, reason).await;
-
-        let parsed = match parse_library_with_cache(Path::new(lib_path)) {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                self.cancel_library_load(path_key, expected_epoch).await;
-                let error_message = library_load_error_message(lib_path, &err);
-                notify_library_indexing_failed(&self.client, lib_path, reason, &error_message)
-                    .await;
-                self.maybe_publish_package_layout_diagnostics(lib_path, &err)
-                    .await;
-                return Err(error_message);
-            }
-        };
-        self.replace_library_load_diagnostics(lib_path, HashMap::new())
-            .await;
-
-        let cache_status = parsed.cache_status;
-        let cache_key = parsed.cache_key.clone();
-        let cache_timing = parsed.timing;
-        let source_root_kind = self.library_source_root_kind(lib_path).await;
-        let cache_path = parsed
-            .cache_file
-            .as_deref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string());
-        let indexed_file_count = parsed.file_count;
-        let Some(applied) = self
-            .apply_parsed_library_if_current(
-                source_set_id,
-                source_root_kind,
-                path_key,
-                current_document_path,
-                parsed.documents,
-                expected_epoch,
-            )
-            .await
-        else {
-            notify_library_indexing_finished(
-                &self.client,
-                lib_path,
-                reason.stale_label(),
-                reason == LibraryIndexingReason::StartupDurablePrewarm,
-                indexed_file_count,
-                0,
-                cache_status,
-            )
-            .await;
-            return Ok(None);
-        };
-
-        notify_library_indexing_finished(
-            &self.client,
-            lib_path,
-            reason.label(),
-            reason == LibraryIndexingReason::StartupDurablePrewarm,
-            indexed_file_count,
-            applied.inserted_file_count,
-            cache_status,
-        )
-        .await;
-
-        Ok(Some(LibraryLoadOutcome {
-            cache_status,
-            indexed_file_count,
-            inserted_file_count: applied.inserted_file_count,
-            cache_key,
-            cache_path,
-            timing: DurableLibraryLoadTiming {
-                cache: cache_timing,
-                apply_ms: applied.apply_ms,
-            },
-        }))
-    }
-
-    async fn reload_project_config(&self) {
-        let _ = self.reload_project_config_with_timing().await;
-    }
-
-    async fn reload_project_config_with_timing(&self) -> ProjectReloadTiming {
-        let reload_started = Instant::now();
-        let previous_paths = self.library_paths.read().await.clone();
-        let workspace_root = self.workspace_root.read().await.clone();
-        let mut timing = ProjectReloadTiming::default();
-        let next_paths = if let Some(workspace_root) = workspace_root {
-            let discover_started = Instant::now();
-            match ProjectConfig::discover(&workspace_root) {
-                Ok(config) => {
-                    self.log_project_diagnostics(
-                        config
-                            .as_ref()
-                            .map_or(&[], |cfg| cfg.diagnostics.as_slice()),
-                    )
-                    .await;
-                    *self.project_config.write().await = config;
-                }
-                Err(error) => {
-                    *self.project_config.write().await = None;
-                    self.client
-                        .log_message(
-                            MessageType::WARNING,
-                            format!("[rumoca] failed to load .rumoca/project.toml: {error}"),
-                        )
-                        .await;
-                }
-            }
-            timing.project_discover_ms = discover_started.elapsed().as_millis() as u64;
-            let resolve_started = Instant::now();
-            let next_paths = self.resolved_library_paths().await;
-            timing.resolve_library_paths_ms = resolve_started.elapsed().as_millis() as u64;
-            next_paths
-        } else {
-            *self.project_config.write().await = None;
-            let resolve_started = Instant::now();
-            let next_paths = self.resolved_library_paths().await;
-            timing.resolve_library_paths_ms = resolve_started.elapsed().as_millis() as u64;
-            next_paths
-        };
-
-        let should_reset =
-            Self::library_path_keys(&previous_paths) != Self::library_path_keys(&next_paths);
-        timing.library_paths_changed = should_reset;
-        *self.library_paths.write().await = next_paths;
-        if should_reset {
-            let reset_started = Instant::now();
-            self.reset_session_and_loaded_libraries().await;
-            timing.reset_session_ms = reset_started.elapsed().as_millis() as u64;
-            let initial_startup =
-                previous_paths.is_empty() && self.session.read().await.document_uris().is_empty();
-
-            let durable_started = Instant::now();
-            let durable_timing = self.prewarm_durable_libraries().await;
-            timing.durable_prewarm_ms = durable_started.elapsed().as_millis() as u64;
-            timing.durable_collect_files_ms = durable_timing.durable_collect_files_ms;
-            timing.durable_hash_inputs_ms = durable_timing.durable_hash_inputs_ms;
-            timing.durable_cache_lookup_ms = durable_timing.durable_cache_lookup_ms;
-            timing.durable_cache_deserialize_ms = durable_timing.durable_cache_deserialize_ms;
-            timing.durable_parse_files_ms = durable_timing.durable_parse_files_ms;
-            timing.durable_validate_layout_ms = durable_timing.durable_validate_layout_ms;
-            timing.durable_cache_write_ms = durable_timing.durable_cache_write_ms;
-            timing.durable_apply_ms = durable_timing.durable_apply_ms;
-
-            if !initial_startup {
-                let workspace_symbol_started = Instant::now();
-                self.prewarm_workspace_symbol_queries().await;
-                timing.workspace_symbol_prewarm_ms =
-                    workspace_symbol_started.elapsed().as_millis() as u64;
-            }
-
-            let namespace_started = Instant::now();
-            self.spawn_background_namespace_prewarm().await;
-            timing.namespace_prewarm_spawn_ms = namespace_started.elapsed().as_millis() as u64;
-        }
-        timing.total_ms = reload_started.elapsed().as_millis() as u64;
-        timing
-    }
-
-    async fn prewarm_durable_libraries(&self) -> ProjectReloadTiming {
-        let durable_library_paths = self.initial_library_paths.read().await.clone();
-        let already_loaded = self.loaded_libraries.read().await.clone();
-        let (mut seen_library_paths, mut claimed_roots) =
-            existing_library_root_claims(&already_loaded);
-        let mut library_state_epoch = self.current_library_state_epoch();
-        let mut timing = ProjectReloadTiming::default();
-
-        for lib_path in durable_library_paths {
-            let path_key = canonical_path_key(&lib_path);
-            if !seen_library_paths.insert(path_key.clone()) || already_loaded.contains(&path_key) {
-                continue;
-            }
-            let inferred_roots = infer_library_roots(Path::new(&lib_path)).unwrap_or_default();
-            if duplicate_root_provider(&inferred_roots, &claimed_roots).is_some() {
-                continue;
-            }
-            let source_set_id = library_source_set_id(&lib_path);
-            let Ok(Some(outcome)) = self
-                .load_library_source_set_if_current(
-                    &lib_path,
-                    &path_key,
-                    &source_set_id,
-                    None,
-                    library_state_epoch,
-                    LibraryIndexingReason::StartupDurablePrewarm,
-                )
-                .await
-            else {
-                continue;
-            };
-            outcome.timing.accumulate_into(&mut timing);
-            claim_roots(&mut claimed_roots, inferred_roots, &lib_path);
-            library_state_epoch = self.current_library_state_epoch();
-        }
-        timing
-    }
-
-    async fn spawn_background_namespace_prewarm(&self) {
-        if self.initial_library_paths.read().await.is_empty() {
-            return;
-        }
-
-        let session_revision = self.current_analysis_revision().await;
-        let snapshot = self.session_snapshot().await;
-
-        {
-            let pending = self.namespace_prewarm_state.read().await;
-            if pending
-                .as_ref()
-                .is_some_and(|state| state.session_revision == session_revision)
-            {
-                return;
-            }
-        }
-
-        let state = NamespacePrewarmState {
-            session_revision,
-            done: Arc::new(AtomicBool::new(false)),
-            finished: Arc::new(tokio::sync::Notify::new()),
-        };
-        *self.namespace_prewarm_state.write().await = Some(state.clone());
-        let server = self.clone();
-        tokio::spawn(async move {
-            server
-                .run_namespace_prewarm_snapshot(snapshot, session_revision)
-                .await;
-            server.finish_namespace_prewarm(&state).await;
-        });
     }
 
     fn simulation_options_from_settings(
@@ -1072,7 +541,6 @@ impl ModelicaLanguageServer {
         params: Option<Value>,
         request_token: Option<AnalysisRequestToken>,
     ) -> Option<Value> {
-        let _strict_lane = self.work_lanes.strict.lock().await;
         let mut request_token = request_token.unwrap_or(self.begin_analysis_request().await);
         let params_value = params?;
         let obj = params_value.as_object()?;
@@ -1100,24 +568,26 @@ impl ModelicaLanguageServer {
             request_token = self.refresh_analysis_request_revision(request_token).await;
         }
 
-        let loaded_libraries = if settings.library_paths.is_empty() {
-            self.ensure_source_libraries_loaded(&source, &uri_path)
+        let loaded_source_roots = if settings.source_root_paths.is_empty() {
+            let source_root_paths = self.source_root_paths.read().await.clone();
+            self.ensure_source_roots_loaded_with_paths(&source, &uri_path, &source_root_paths)
                 .await
         } else {
-            self.ensure_source_libraries_loaded_with_paths(
+            self.ensure_source_roots_loaded_with_paths(
                 &source,
                 &uri_path,
-                &settings.library_paths,
+                &settings.source_root_paths,
             )
             .await
         };
-        if loaded_libraries {
+        if loaded_source_roots {
             request_token = self.refresh_analysis_request_revision(request_token).await;
         }
         if let Some(response) = self.stale_simulation_response(request_token).await {
             return Some(response);
         }
 
+        let _strict_lane = self.work_lanes.strict.lock().await;
         let compile_start = std::time::Instant::now();
         let compile_before = compile_phase_timing_stats();
         let stats_before = session_cache_stats();
@@ -1174,105 +644,164 @@ impl ModelicaLanguageServer {
         Some(Self::simulation_success_value(payload, metrics))
     }
 
-    async fn ensure_completion_libraries(
+    async fn ensure_completion_source_roots(
         &self,
         source: &str,
         position: Position,
         current_document_path: &str,
     ) {
-        let Some(mut context) =
-            build_completion_library_context(self, source, position, current_document_path).await
-        else {
-            maybe_log_completion_debug(&self.client, "no library completion prefix detected").await;
+        let Some(completion_prefix) = extract_namespace_completion_prefix(source, position) else {
+            maybe_log_completion_debug(&self.client, "no namespace completion prefix detected")
+                .await;
             return;
         };
+        maybe_log_completion_debug(
+            &self.client,
+            format!("completion prefix={completion_prefix} doc={current_document_path}"),
+        )
+        .await;
+        let source_root_paths = self.source_root_paths.read().await.clone();
+        maybe_log_completion_debug(
+            &self.client,
+            format!(
+                "configured source root paths={}",
+                source_root_paths.join(" | ")
+            ),
+        )
+        .await;
+        let (progress_messages, load_errors) = self
+            .load_completion_source_roots(&source_root_paths, current_document_path)
+            .await;
+        for message in progress_messages {
+            self.client.log_message(MessageType::INFO, message).await;
+        }
+        for err in load_errors {
+            self.client.log_message(MessageType::WARNING, err).await;
+        }
+    }
 
-        let mut progress_messages = Vec::new();
-        let mut load_errors = Vec::new();
-        for lib_path in &context.library_paths {
-            let path_key = canonical_path_key(lib_path);
-            if !context.seen_library_paths.insert(path_key.clone()) {
-                continue;
-            }
-            if context.already_loaded.contains(&path_key) {
-                continue;
-            }
-            let inferred_roots = infer_library_roots(Path::new(lib_path)).unwrap_or_default();
-            if let Some((root, provider)) =
-                duplicate_root_provider(&inferred_roots, &context.claimed_roots)
-            {
-                progress_messages.push(format!(
-                    "[rumoca] Skipping library {} (duplicate root '{}' already loaded from {})",
-                    lib_path, root, provider
-                ));
-                continue;
-            }
-            if !should_eager_load_library_for_completion_prefix(
-                lib_path,
-                &context.completion_prefix,
-            ) {
-                maybe_log_completion_debug(
-                    &self.client,
-                    format!(
-                        "skip eager load for {lib_path} and prefix {}",
-                        context.completion_prefix
-                    ),
+    async fn load_completion_source_roots(
+        &self,
+        source_root_paths: &[String],
+        current_document_path: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        let (already_loaded, mut source_root_state_epoch) = {
+            let session = self.session.read().await;
+            (
+                session.loaded_source_root_path_keys(),
+                session.source_root_state_epoch(),
+            )
+        };
+        let load_plan = plan_source_root_loads(source_root_paths, &already_loaded);
+        let mut progress_messages = load_plan
+            .duplicate_root_skips
+            .iter()
+            .map(|skipped| {
+                format!(
+                    "[rumoca] Skipping source root {} (duplicate root '{}' already loaded from {})",
+                    skipped.source_root_path, skipped.root_name, skipped.provider_path
                 )
-                .await;
-                continue;
-            }
+            })
+            .collect::<Vec<_>>();
+        let mut load_errors = Vec::new();
 
-            maybe_log_completion_debug(&self.client, format!("loading {lib_path}")).await;
-            progress_messages.push(format!(
-                "[rumoca] Loading library for import completion: {lib_path}"
-            ));
-            let source_set_id = library_source_set_id(lib_path);
-            let loaded = match self
-                .load_library_source_set_if_current(
-                    lib_path,
-                    &path_key,
-                    &source_set_id,
-                    Some(current_document_path),
-                    context.library_state_epoch,
-                    LibraryIndexingReason::CompletionImports,
+        for source_root_path in &load_plan.load_paths {
+            if let Some(message) = self
+                .load_completion_source_root(
+                    source_root_path,
+                    current_document_path,
+                    &mut source_root_state_epoch,
+                    &mut load_errors,
                 )
                 .await
             {
-                Ok(Some(loaded)) => loaded,
-                Ok(None) => {
-                    maybe_log_completion_debug(
-                        &self.client,
-                        format!("load for {lib_path} returned no-op"),
-                    )
-                    .await;
-                    continue;
-                }
-                Err(err) => {
-                    maybe_log_completion_debug(
-                        &self.client,
-                        format!("load for {lib_path} failed: {err}"),
-                    )
-                    .await;
-                    load_errors.push(err);
-                    continue;
-                }
-            };
-            maybe_log_completion_debug(
-                &self.client,
-                format!(
-                    "loaded {lib_path}: inserted={} indexed={} cache={:?}",
-                    loaded.inserted_file_count, loaded.indexed_file_count, loaded.cache_status
-                ),
-            )
-            .await;
-            let (progress_message, _) = completion_load_progress(lib_path, &loaded);
-            progress_messages.push(progress_message);
-            claim_roots(&mut context.claimed_roots, inferred_roots, lib_path);
-            context.library_state_epoch = self.current_library_state_epoch();
+                progress_messages.push(message);
+            }
         }
 
-        flush_completion_library_notifications(self, progress_messages, load_errors).await;
+        (progress_messages, load_errors)
     }
+
+    async fn load_completion_source_root(
+        &self,
+        source_root_path: &str,
+        current_document_path: &str,
+        source_root_state_epoch: &mut u64,
+        load_errors: &mut Vec<String>,
+    ) -> Option<String> {
+        let path_key = canonical_path_key(source_root_path);
+        maybe_log_completion_debug(&self.client, format!("loading {source_root_path}")).await;
+        let source_set_id = source_root_source_set_key(source_root_path);
+        let loaded = match self
+            .load_source_root_if_current(
+                source_root_path,
+                &path_key,
+                &source_set_id,
+                Some(current_document_path),
+                *source_root_state_epoch,
+                SourceRootIndexingReason::CompletionImports,
+            )
+            .await
+        {
+            Ok(Some(loaded)) => loaded,
+            Ok(None) => {
+                maybe_log_completion_debug(
+                    &self.client,
+                    format!("load for {source_root_path} returned no-op"),
+                )
+                .await;
+                return None;
+            }
+            Err(err) => {
+                maybe_log_completion_debug(
+                    &self.client,
+                    format!("load for {source_root_path} failed: {err}"),
+                )
+                .await;
+                load_errors.push(err);
+                return None;
+            }
+        };
+        maybe_log_completion_debug(
+            &self.client,
+            format!(
+                "loaded {source_root_path}: inserted={} indexed={} cache={:?}",
+                loaded.inserted_file_count, loaded.parsed_file_count, loaded.cache_status
+            ),
+        )
+        .await;
+        *source_root_state_epoch = self.session.read().await.source_root_state_epoch();
+        Some(completion_source_root_progress_message(
+            source_root_path,
+            &loaded,
+        ))
+    }
+}
+
+fn completion_source_root_progress_message(
+    source_root_path: &str,
+    loaded: &SourceRootLoadOutcome,
+) -> String {
+    loaded
+        .status
+        .as_ref()
+        .map(render_source_root_status_message)
+        .unwrap_or_else(|| {
+            let status = match loaded.cache_status {
+                SourceRootCacheStatus::Hit => "cache hit",
+                SourceRootCacheStatus::Miss => "cache miss",
+                SourceRootCacheStatus::Disabled => "cache disabled",
+            };
+            format!(
+                "[rumoca] Source root {} ({}) — {} files, {} inserted [key={}, cache={}]",
+                source_root_path,
+                status,
+                loaded.parsed_file_count,
+                loaded.inserted_file_count,
+                loaded.cache_key,
+                loaded.cache_path
+            )
+        })
 }
 
 #[tower_lsp::async_trait]
@@ -1283,7 +812,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let paths = params
             .initialization_options
             .as_ref()
-            .and_then(|value| value.get("modelicaPath"))
+            .and_then(|value| value.get("sourceRootPaths"))
             .and_then(|value| value.as_array())
             .map(|items| {
                 items
@@ -1294,8 +823,8 @@ impl LanguageServer for ModelicaLanguageServer {
             })
             .unwrap_or_default();
         let parse_init_options_ms = parse_init_started.elapsed().as_millis() as u64;
-        let initial_library_paths = paths.len();
-        *self.initial_library_paths.write().await = paths;
+        let initial_source_root_paths = paths.len();
+        *self.initial_source_root_paths.write().await = paths;
 
         let workspace_root_started = Instant::now();
         let workspace_root = params
@@ -1316,13 +845,13 @@ impl LanguageServer for ModelicaLanguageServer {
         let startup_timing_path = self.startup_timing_path.read().await.clone();
         write_startup_timing_summary(
             &StartupTimingSummary {
-                initial_library_paths,
-                library_paths_changed: reload_timing.library_paths_changed,
+                initial_source_root_paths,
+                source_root_paths_changed: reload_timing.source_root_paths_changed,
                 parse_init_options_ms,
                 workspace_root_ms,
                 reload_project_config_ms: reload_timing.total_ms,
                 project_discover_ms: reload_timing.project_discover_ms,
-                resolve_library_paths_ms: reload_timing.resolve_library_paths_ms,
+                resolve_source_root_paths_ms: reload_timing.resolve_source_root_paths_ms,
                 reset_session_ms: reload_timing.reset_session_ms,
                 durable_prewarm_ms: reload_timing.durable_prewarm_ms,
                 durable_collect_files_ms: reload_timing.durable_collect_files_ms,
@@ -1334,7 +863,7 @@ impl LanguageServer for ModelicaLanguageServer {
                 durable_cache_write_ms: reload_timing.durable_cache_write_ms,
                 durable_apply_ms: reload_timing.durable_apply_ms,
                 workspace_symbol_prewarm_ms: reload_timing.workspace_symbol_prewarm_ms,
-                namespace_prewarm_spawn_ms: reload_timing.namespace_prewarm_spawn_ms,
+                source_root_read_prewarm_spawn_ms: reload_timing.source_root_read_prewarm_spawn_ms,
                 total_ms,
             },
             startup_timing_path.as_deref(),
@@ -1378,16 +907,14 @@ impl LanguageServer for ModelicaLanguageServer {
         self.clear_simulation_compile_cache().await;
         self.completion_mutation_epoch
             .fetch_add(1, Ordering::AcqRel);
-        self.wait_for_namespace_prewarm_if_pending().await;
+        self.wait_for_source_root_read_prewarm_if_pending().await;
+        self.spawn_background_document_source_root_read_prewarm(&uri_path)
+            .await;
         self.publish_diagnostics(uri.clone(), &text, DiagnosticsTrigger::Live, stats_before)
             .await;
         self.prewarm_document_semantic_queries(&uri_path).await;
-        if self.is_loaded_library_document(&uri_path).await {
-            self.prewarm_namespace_cache_for_loaded_library_document(&uri_path)
-                .await;
-            self.prewarm_workspace_symbols_for_loaded_library_document(&uri_path)
-                .await;
-        }
+        self.wait_for_document_source_root_read_prewarm(&uri_path)
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -1403,7 +930,7 @@ impl LanguageServer for ModelicaLanguageServer {
             self.reload_project_config().await;
         }
         if let Some(change) = params.content_changes.into_iter().last() {
-            self.wait_for_namespace_prewarm_for_loaded_library_document(&uri_path)
+            self.wait_for_document_source_root_read_prewarm(&uri_path)
                 .await;
             let stats_before = session_cache_stats();
             {
@@ -1417,9 +944,9 @@ impl LanguageServer for ModelicaLanguageServer {
                 .await;
             self.completion_mutation_epoch
                 .fetch_add(1, Ordering::AcqRel);
-            self.spawn_background_namespace_prewarm_for_loaded_library_document(&uri_path)
+            self.spawn_background_document_source_root_read_prewarm(&uri_path)
                 .await;
-            self.wait_for_namespace_prewarm_for_loaded_library_document(&uri_path)
+            self.wait_for_document_source_root_read_prewarm(&uri_path)
                 .await;
         }
     }
@@ -1431,7 +958,7 @@ impl LanguageServer for ModelicaLanguageServer {
             .write()
             .await
             .remove(&uri_path);
-        self.wait_for_namespace_prewarm_for_loaded_library_document(&uri_path)
+        self.wait_for_document_source_root_read_prewarm(&uri_path)
             .await;
         let mut session = self.session.write().await;
         let mut change = SessionChange::default();
@@ -1547,7 +1074,6 @@ impl LanguageServer for ModelicaLanguageServer {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let _interactive_lane = self.work_lanes.interactive.lock().await;
         let completion_started = Instant::now();
         let mut request_token = self.begin_analysis_request().await;
         let uri = &params.text_document_position.text_document.uri;
@@ -1558,9 +1084,9 @@ impl LanguageServer for ModelicaLanguageServer {
             .as_ref()
             .map(|doc| doc.content.clone())
             .unwrap_or_default();
-        let has_library_prefix = extract_library_completion_prefix(&source, pos).is_some();
-        if has_library_prefix {
-            self.wait_for_namespace_prewarm_if_pending().await;
+        let has_namespace_prefix = extract_namespace_completion_prefix(&source, pos).is_some();
+        if has_namespace_prefix {
+            self.wait_for_source_root_read_prewarm_if_pending().await;
         }
         let stats_before = session_cache_stats();
         let ast = doc_snapshot.as_ref().and_then(|doc| doc.parsed());
@@ -1570,9 +1096,14 @@ impl LanguageServer for ModelicaLanguageServer {
 
         let mut session_snapshot = None;
         let mut class_name_count_after_ensure = 0usize;
+        let _interactive_lane = if preparation.request_was_stale {
+            None
+        } else {
+            Some(self.work_lanes.interactive.lock().await)
+        };
         if !preparation.request_was_stale {
             request_token = self.refresh_analysis_request_revision(request_token).await;
-            let snapshot = if has_library_prefix {
+            let snapshot = if has_namespace_prefix {
                 self.session_snapshot().await
             } else if let Some(snapshot) = self.document_lightweight_snapshot(&uri_path).await {
                 snapshot
@@ -1853,7 +1384,13 @@ impl LanguageServer for ModelicaLanguageServer {
             return Ok(None);
         };
         let source = doc_snapshot.content.clone();
-        if self.source_requires_unloaded_libraries(&source).await {
+        let source_root_paths = self.source_root_paths.read().await.clone();
+        let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
+        if rumoca_session::source_roots::source_requires_unloaded_source_roots(
+            &source,
+            &source_root_paths,
+            &loaded_source_roots,
+        ) {
             return Ok(None);
         }
 
@@ -1879,10 +1416,14 @@ impl LanguageServer for ModelicaLanguageServer {
         let Some(doc_snapshot) = self.document_snapshot(&uri_path).await else {
             return Ok(params);
         };
+        let source_root_paths = self.source_root_paths.read().await.clone();
+        let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
         if self.analysis_request_is_stale(request_token).await
-            || self
-                .source_requires_unloaded_libraries(&doc_snapshot.content)
-                .await
+            || rumoca_session::source_roots::source_requires_unloaded_source_roots(
+                &doc_snapshot.content,
+                &source_root_paths,
+                &loaded_source_roots,
+            )
         {
             return Ok(params);
         }

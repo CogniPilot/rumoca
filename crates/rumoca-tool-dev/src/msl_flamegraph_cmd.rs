@@ -33,7 +33,7 @@ pub(crate) struct MslFlamegraphArgs {
 
     /// Root directory of the extracted MSL release
     #[arg(long)]
-    pub(crate) library: Option<PathBuf>,
+    pub(crate) source_root: Option<PathBuf>,
 
     /// Output SVG path
     #[arg(long)]
@@ -62,7 +62,7 @@ fn sanitize_model_name(model: &str) -> String {
         .collect()
 }
 
-fn default_library_path() -> PathBuf {
+fn default_source_root_path() -> PathBuf {
     common::MslPaths::current().msl_dir
 }
 
@@ -96,7 +96,7 @@ fn profile_helper_binary_path(repo_root: &Path) -> PathBuf {
 fn build_flamegraph_command(
     repo_root: &Path,
     helper_bin: &Path,
-    library: &Path,
+    source_root: &Path,
     args: &MslFlamegraphArgs,
     output: &Path,
 ) -> Command {
@@ -114,8 +114,8 @@ fn build_flamegraph_command(
     flamegraph
         .arg("--")
         .arg(helper_bin)
-        .arg("--library")
-        .arg(library)
+        .arg("--source-root")
+        .arg(source_root)
         .arg("--model")
         .arg(&args.model)
         .arg("--mode")
@@ -132,11 +132,14 @@ pub(crate) fn run(args: MslFlamegraphArgs, repo_root: &Path) -> Result<()> {
         "flamegraph is not installed. Install cargo-flamegraph first."
     );
 
-    let library = args.library.clone().unwrap_or_else(default_library_path);
+    let source_root = args
+        .source_root
+        .clone()
+        .unwrap_or_else(default_source_root_path);
     ensure!(
-        library.is_dir(),
-        "MSL library directory does not exist: {}",
-        library.display()
+        source_root.is_dir(),
+        "MSL source-root directory does not exist: {}",
+        source_root.display()
     );
 
     let output = args
@@ -160,7 +163,7 @@ pub(crate) fn run(args: MslFlamegraphArgs, repo_root: &Path) -> Result<()> {
     run_status(build_flamegraph_command(
         repo_root,
         &profile_bin,
-        &library,
+        &source_root,
         &args,
         &output,
     ))?;
@@ -216,20 +219,20 @@ mod tests {
     fn build_flamegraph_command_passes_profile_helper_arguments() {
         let repo_root = Path::new("/tmp/rumoca");
         let helper = repo_root.join("target/release/rumoca-msl-profile");
-        let library = repo_root.join("target/msl/ModelicaStandardLibrary-4.1.0");
+        let source_root = repo_root.join("target/msl/ModelicaStandardLibrary-4.1.0");
         let output = PathBuf::from("/tmp/out.svg");
         let args = MslFlamegraphArgs {
             model: "Modelica.Electrical.Digital.Examples.DFFREG".to_string(),
             mode: MslFlamegraphMode::Simulate,
-            library: None,
+            source_root: None,
             output: None,
             freq: 49,
             no_inline: true,
             stop_time: Some(0.2),
         };
-        let command = build_flamegraph_command(repo_root, &helper, &library, &args, &output);
+        let command = build_flamegraph_command(repo_root, &helper, &source_root, &args, &output);
         let helper_arg = helper.to_string_lossy().to_string();
-        let library_arg = library.to_string_lossy().to_string();
+        let source_root_arg = source_root.to_string_lossy().to_string();
         assert_eq!(command.get_program(), "flamegraph");
         assert_eq!(
             args_to_strings(&command),
@@ -242,8 +245,8 @@ mod tests {
                 "--no-inline",
                 "--",
                 &helper_arg,
-                "--library",
-                &library_arg,
+                "--source-root",
+                &source_root_arg,
                 "--model",
                 "Modelica.Electrical.Digital.Examples.DFFREG",
                 "--mode",

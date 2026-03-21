@@ -31,7 +31,7 @@ const mslArchiveRoot = process.env.RUMOCA_VSCODE_MSL_ROOT
 const mslModelicaRoot = path.join(mslArchiveRoot, "Modelica 4.1.0");
 const mslServicesRoot = path.join(mslArchiveRoot, "ModelicaServices 4.1.0");
 const mslComplexFile = path.join(mslArchiveRoot, "Complex.mo");
-const mslLibraryPaths = [mslModelicaRoot, mslServicesRoot, mslComplexFile];
+const mslSourceRootPaths = [mslModelicaRoot, mslServicesRoot, mslComplexFile];
 const serverPath = process.env.RUMOCA_VSCODE_SMOKE_SERVER_PATH
   ? path.resolve(process.env.RUMOCA_VSCODE_SMOKE_SERVER_PATH)
   : path.resolve(vscodeDir, "bin", process.platform === "win32" ? "rumoca-lsp.exe" : "rumoca-lsp");
@@ -56,7 +56,7 @@ async function createWorkspaceFile(rootDir) {
         settings: {
           "rumoca.debug": smokeDebug,
           "rumoca.serverPath": serverPath,
-          "rumoca.modelicaPath": mslLibraryPaths,
+          "rumoca.sourceRootPaths": mslSourceRootPaths,
         },
       },
       null,
@@ -81,7 +81,7 @@ async function main() {
   process.env.RUMOCA_VSCODE_SMOKE_DOCUMENT = documentPath;
   process.env.RUMOCA_VSCODE_SMOKE_RESULT = resultPath;
   process.env.RUMOCA_LSP_COMPLETION_TIMING_FILE = completionTimingPath;
-  process.env.MODELICAPATH = mslLibraryPaths.join(path.delimiter);
+  process.env.MODELICAPATH = mslSourceRootPaths.join(path.delimiter);
   process.env.ELECTRON_DISABLE_SANDBOX = "1";
   process.env.RUMOCA_VSCODE_SMOKE_ACTIVATE_MAX_MS = String(
     envMs("RUMOCA_VSCODE_SMOKE_ACTIVATE_MAX_MS", 15000),

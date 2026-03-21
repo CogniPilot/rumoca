@@ -126,9 +126,49 @@ function extractRumocaCode(message) {
     return m ? m[1] : '';
 }
 
+function isMietteFrameLine(line) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed) return true;
+    return /^help:/i.test(trimmed)
+        || /^caused by:/i.test(trimmed)
+        || /^stack backtrace:/i.test(trimmed)
+        || /^\[.*:\d+:\d+\]$/.test(trimmed)
+        || /^[\d\s]*[│|].*$/.test(trimmed)
+        || /^[╭╰│┆┬└┌─├┤┼]+.*$/.test(trimmed)
+        || /^at\s+/.test(trimmed)
+        || /^unexpected end of input/i.test(trimmed);
+}
+
+function summarizeCompileError(message) {
+    const raw = String(message || '');
+    const lines = raw
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+    const code = extractRumocaCode(raw);
+    for (const line of lines) {
+        const withoutMarker = line.replace(/^[×x]\s+/, '').trim();
+        if (!withoutMarker || withoutMarker === code || isMietteFrameLine(withoutMarker)) {
+            continue;
+        }
+        if (/\bhelp: expected one of:/i.test(withoutMarker)) {
+            continue;
+        }
+        return {
+            code,
+            message: normalizeLegacyDiagnosticMessage(withoutMarker),
+        };
+    }
+    return {
+        code,
+        message: normalizeLegacyDiagnosticMessage(raw),
+    };
+}
+
 export function createDiagnosticsController({
     monaco,
     getModelEditor,
+    getModelPath,
     getTemplateEditor,
     switchToErrorsTab,
     triggerModelicaQuickFix,
@@ -381,35 +421,50 @@ export function createDiagnosticsController({
         </div>`;
     }
 
-    function diagnosticLocationButton(lineNumber, column, target = 'modelica') {
+    function baseNameFromPath(path, fallback) {
+        const text = String(path || '').trim();
+        if (!text) {
+            return fallback;
+        }
+        const parts = text.split('/').filter(Boolean);
+        return parts.at(-1) || fallback;
+    }
+
+    function diagnosticLocationButton(lineNumber, column, target = 'modelica', fileLabel = '') {
         const targetLabel = target === 'template' ? 'template' : 'source';
-        return `<button class="diagnostic-link" data-line="${lineNumber}" data-col="${column}" data-target="${target}" title="Jump to ${targetLabel} line ${lineNumber}, column ${column}">Line ${lineNumber}:${column}</button>`;
+        const prefix = String(fileLabel || '').trim();
+        const visibleLabel = prefix ? `${prefix}:${lineNumber}:${column}` : `${lineNumber}:${column}`;
+        return `<button class="diagnostic-link" data-line="${lineNumber}" data-col="${column}" data-target="${target}" title="Jump to ${targetLabel} ${visibleLabel}">${escapeHtml(visibleLabel)}</button>`;
     }
 
     function diagnosticQuickFixButton(lineNumber, column, target = 'modelica') {
-        if (target !== 'modelica') return '';
-        return `<button class="diagnostic-quick-fix" data-line="${lineNumber}" data-col="${column}" data-target="${target}" title="Request quick fixes from the language server">Quick Fix...</button>`;
+        return '';
     }
 
     function renderDiagnosticItem({ severity, locationLabel, code, message, contextLabel, quickFixButton }) {
         const normalizedSeverity = severity || 'info';
-        const shortMessageRaw = compactDiagnosticMessage(message || '', 120);
+        const shortMessageRaw = compactDiagnosticMessage(message || '', 140);
         const shortMessage = escapeHtml(shortMessageRaw);
         const fullMessageRaw = String(message || '');
-        const fullMessage = escapeHtml(fullMessageRaw);
-        const showDetails = fullMessageRaw.length > shortMessageRaw.length;
-        const codeSuffix = code ? ` [${escapeHtml(code)}]` : '';
-        const contextPrefix = contextLabel ? `<strong>${escapeHtml(contextLabel)}</strong> · ` : '';
-        const locationHtml = `<strong>${locationLabel || 'Model'}</strong>`;
-        const actionHtml = quickFixButton ? `${locationHtml} ${quickFixButton}` : locationHtml;
-        const summary = `${contextPrefix}${actionHtml}${codeSuffix} - ${shortMessage}`;
-        if (!showDetails) {
-            return `<div class="diagnostic-item diagnostic-${normalizedSeverity}">${summary}</div>`;
-        }
-        return `<details class="diagnostic-item diagnostic-${normalizedSeverity}">
-            <summary>${summary}</summary>
-            <div class="diagnostic-full">${fullMessage}</div>
-        </details>`;
+        const codeLabel = code ? `<span class="diagnostic-code">[${escapeHtml(code)}]</span>` : '';
+        const contextPrefix = contextLabel
+            ? `<span class="diagnostic-context">${escapeHtml(contextLabel)}</span>`
+            : '';
+        const actionsHtml = `
+            <span class="diagnostic-actions">
+                ${locationLabel || '<span class="diagnostic-context">Model</span>'}
+                ${quickFixButton || ''}
+            </span>
+        `;
+        const title = escapeHtml(fullMessageRaw || shortMessageRaw);
+        return `<div class="diagnostic-item diagnostic-${normalizedSeverity}" title="${title}">
+            ${actionsHtml}
+            <span class="diagnostic-item-main">
+                ${contextPrefix}
+                ${codeLabel}
+                <span class="diagnostic-message">${shortMessage}</span>
+            </span>
+        </div>`;
     }
 
     function updateProblemStatus() {
@@ -464,6 +519,7 @@ export function createDiagnosticsController({
         const modelEditor = getModelEditor();
         const model = modelEditor && modelEditor.getModel ? modelEditor.getModel() : null;
         const sourceText = model ? model.getValue() : '';
+        const modelFileLabel = baseNameFromPath(getModelPath?.(), 'Model.mo');
 
         const templateEditor = getTemplateEditor();
         const templateText = templateEditor && templateEditor.getValue
@@ -494,7 +550,7 @@ export function createDiagnosticsController({
         if (currentTemplateError) {
             const templateLineCol = extractBestLineColFromMessage(currentTemplateError, templateText);
             const templateLocation = templateLineCol
-                ? diagnosticLocationButton(templateLineCol.line, templateLineCol.col, 'template')
+                ? diagnosticLocationButton(templateLineCol.line, templateLineCol.col, 'template', 'Template')
                 : 'Template';
 
             if (templateLineCol) {
@@ -521,10 +577,10 @@ export function createDiagnosticsController({
 
         if (currentCompileErrors.length > 0) {
             const compileItems = currentCompileErrors.map(err => {
-                const modelName = String(err?.model || 'Model');
+                const summary = summarizeCompileError(err?.message || '');
                 const lineCol = extractBestLineColFromMessage(err?.message || '', sourceText);
                 const locationLabel = lineCol
-                    ? diagnosticLocationButton(lineCol.line, lineCol.col, 'modelica')
+                    ? diagnosticLocationButton(lineCol.line, lineCol.col, 'modelica', modelFileLabel)
                     : 'Model';
                 if (lineCol) {
                     navItems.push({
@@ -538,9 +594,9 @@ export function createDiagnosticsController({
                 return renderDiagnosticItem({
                     severity: 'error',
                     locationLabel,
-                    code: extractRumocaCode(err?.message || ''),
-                    message: err?.message || 'compile error',
-                    contextLabel: modelName,
+                    code: summary.code,
+                    message: summary.message || 'compile error',
+                    contextLabel: null,
                     quickFixButton: '',
                 });
             });
@@ -553,7 +609,7 @@ export function createDiagnosticsController({
                 const markerRange = effectiveMarkerRange(diagnostic, model);
                 const hasPreciseRange = hasPreciseDiagnosticRange(diagnostic) || !!unresolvedIdentifierRange(diagnostic, model);
                 const locationLabel = hasPreciseRange
-                    ? diagnosticLocationButton(markerRange.startLineNumber, markerRange.startColumn, 'modelica')
+                    ? diagnosticLocationButton(markerRange.startLineNumber, markerRange.startColumn, 'modelica', modelFileLabel)
                     : 'Model';
                 const quickFixButton = hasPreciseRange
                     ? diagnosticQuickFixButton(markerRange.startLineNumber, markerRange.startColumn, 'modelica')
@@ -572,7 +628,7 @@ export function createDiagnosticsController({
                     locationLabel,
                     code: diagnosticCodeString(diagnostic),
                     message: diagnostic.message || '',
-                    contextLabel: 'Modelica',
+                    contextLabel: null,
                     quickFixButton,
                 });
             });

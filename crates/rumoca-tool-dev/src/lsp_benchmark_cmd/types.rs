@@ -42,13 +42,13 @@ pub(crate) struct LspApiValidationEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StartupTimingEntry {
-    pub(crate) initial_library_paths: usize,
-    pub(crate) library_paths_changed: bool,
+    pub(crate) initial_source_root_paths: usize,
+    pub(crate) source_root_paths_changed: bool,
     pub(crate) parse_init_options_ms: u64,
     pub(crate) workspace_root_ms: u64,
     pub(crate) reload_project_config_ms: u64,
     pub(crate) project_discover_ms: u64,
-    pub(crate) resolve_library_paths_ms: u64,
+    pub(crate) resolve_source_root_paths_ms: u64,
     pub(crate) reset_session_ms: u64,
     pub(crate) durable_prewarm_ms: u64,
     #[serde(default)]
@@ -68,7 +68,7 @@ pub(crate) struct StartupTimingEntry {
     #[serde(default)]
     pub(crate) durable_apply_ms: u64,
     pub(crate) workspace_symbol_prewarm_ms: u64,
-    pub(crate) namespace_prewarm_spawn_ms: u64,
+    pub(crate) source_root_read_prewarm_spawn_ms: u64,
     pub(crate) total_ms: u64,
 }
 
@@ -154,10 +154,10 @@ pub(crate) struct CompletionTimingEntry {
     pub(crate) uri: String,
     #[serde(default)]
     pub(crate) semantic_layer: String,
-    pub(crate) source_library_load_ms: u64,
-    pub(crate) completion_library_load_ms: u64,
+    pub(crate) source_root_load_ms: u64,
+    pub(crate) completion_source_root_load_ms: u64,
     #[serde(default)]
-    pub(crate) library_completion_prime_ms: u64,
+    pub(crate) namespace_completion_prime_ms: u64,
     #[serde(default)]
     pub(crate) needs_resolved_session: bool,
     #[serde(default)]
@@ -227,8 +227,8 @@ pub(crate) struct DiagnosticsTimingEntry {
     pub(crate) trigger: String,
     #[serde(default)]
     pub(crate) semantic_layer: String,
-    pub(crate) requested_library_load: bool,
-    pub(crate) library_load_ms: u64,
+    pub(crate) requested_source_root_load: bool,
+    pub(crate) source_root_load_ms: u64,
     pub(crate) ran_compile: bool,
     pub(crate) diagnostics_compute_ms: u64,
     pub(crate) total_ms: u64,
@@ -308,10 +308,10 @@ pub(crate) struct CompletionSessionCacheDelta {
     pub(crate) semantic_navigation_cache_misses: u64,
     #[serde(alias = "semantic_navigation_builds")]
     pub(crate) semantic_navigation_builds: u64,
-    #[serde(alias = "library_completion_cache_hits")]
-    pub(crate) library_completion_cache_hits: u64,
-    #[serde(alias = "library_completion_cache_misses")]
-    pub(crate) library_completion_cache_misses: u64,
+    #[serde(alias = "namespace_completion_cache_hits")]
+    pub(crate) namespace_completion_cache_hits: u64,
+    #[serde(alias = "namespace_completion_cache_misses")]
+    pub(crate) namespace_completion_cache_misses: u64,
     #[serde(alias = "interface_semantic_diagnostics_cache_hits")]
     pub(crate) interface_semantic_diagnostics_cache_hits: u64,
     #[serde(alias = "interface_semantic_diagnostics_cache_misses")]

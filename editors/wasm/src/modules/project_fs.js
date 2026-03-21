@@ -128,7 +128,7 @@ function normalizeTextContent(content) {
     return typeof content === 'string' ? content : '';
 }
 
-function normalizePath(path) {
+export function normalizePath(path) {
     const trimmed = String(path || '')
         .replace(/\\/g, '/')
         .replace(/^\/+/, '')
@@ -199,16 +199,17 @@ function cloneJson(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-function serializeProjectMetadata(activeDocumentPath, libraryArchives) {
+function serializeProjectMetadata(activeDocumentPath, packageArchives) {
     return `${JSON.stringify({
         schemaVersion: PROJECT_SCHEMA_VERSION,
         activeDocument: activeDocumentPath,
-        libraries: libraryArchives.map((archive) => ({
+        packageArchives: packageArchives.map((archive) => ({
             archiveId: archive.archiveId,
             fileName: archive.fileName,
             fileCount: archive.fileCount,
             paths: archive.paths,
         })),
+        folders: [],
     }, null, 2)}\n`;
 }
 
@@ -254,12 +255,55 @@ function parseEditorState(raw) {
 
 export function createProjectFilesystem() {
     const files = new Map();
-    const libraryArchives = new Map();
+    const cacheFiles = new Map();
+    const packageArchives = new Map();
+    const folders = new Set();
     let activeDocumentPath = 'Main.mo';
     let editorState = null;
 
-    function listLibraryArchives() {
-        return Array.from(libraryArchives.values()).map((archive) => ({
+    function prunePackageArchivesForPaths(removedPaths) {
+        if (!Array.isArray(removedPaths) || removedPaths.length === 0) {
+            return;
+        }
+        const removed = new Set(
+            removedPaths
+                .map((path) => normalizePath(path))
+                .filter(Boolean),
+        );
+        for (const [archiveId, archive] of Array.from(packageArchives.entries())) {
+            const nextPaths = archive.paths.filter((path) => !removed.has(path));
+            if (nextPaths.length === archive.paths.length) {
+                continue;
+            }
+            if (nextPaths.length === 0) {
+                packageArchives.delete(archiveId);
+                continue;
+            }
+            packageArchives.set(archiveId, {
+                ...archive,
+                fileCount: nextPaths.length,
+                paths: nextPaths,
+            });
+        }
+    }
+
+    function ensureParentFolders(path) {
+        const parts = normalizePath(path).split('/').filter(Boolean);
+        let prefix = '';
+        for (let index = 0; index < Math.max(0, parts.length - 1); index += 1) {
+            prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
+            if (prefix && !isManagedProjectPath(prefix) && !isSidecarPath(prefix)) {
+                folders.add(prefix);
+            }
+        }
+    }
+
+    function listFolders() {
+        return Array.from(folders).sort((lhs, rhs) => lhs.localeCompare(rhs));
+    }
+
+    function listPackageArchives() {
+        return Array.from(packageArchives.values()).map((archive) => ({
             archiveId: archive.archiveId,
             fileName: archive.fileName,
             fileCount: archive.fileCount,
@@ -269,8 +313,27 @@ export function createProjectFilesystem() {
 
     function setActiveDocument(path, content) {
         const normalizedPath = normalizePath(path) || 'Main.mo';
+        const existing = files.get(normalizedPath);
         activeDocumentPath = normalizedPath;
-        files.set(normalizedPath, fileRecord(content, 'workspace'));
+        ensureParentFolders(normalizedPath);
+        files.set(
+            normalizedPath,
+            fileRecord(
+                content,
+                existing?.sourceKind || 'workspace',
+                existing?.archiveId || null,
+            ),
+        );
+        return normalizedPath;
+    }
+
+    function activateDocument(path) {
+        const normalizedPath = normalizePath(path) || 'Main.mo';
+        activeDocumentPath = normalizedPath;
+        if (!files.has(normalizedPath)) {
+            ensureParentFolders(normalizedPath);
+            files.set(normalizedPath, fileRecord('', 'workspace'));
+        }
         return normalizedPath;
     }
 
@@ -286,13 +349,13 @@ export function createProjectFilesystem() {
         updateActiveDocumentContent(source);
     }
 
-    function replaceLibraryArchive(archiveId, fileName, archiveFiles) {
+    function replacePackageArchive(archiveId, fileName, archiveFiles) {
         const normalizedArchiveId = String(archiveId || '').trim();
         if (!normalizedArchiveId) {
-            throw new Error('library archive id is required');
+            throw new Error('package archive id is required');
         }
 
-        removeLibraryArchive(normalizedArchiveId);
+        removePackageArchive(normalizedArchiveId);
 
         const normalizedEntries = Object.entries(archiveFiles || {})
             .map((
@@ -307,12 +370,12 @@ export function createProjectFilesystem() {
         for (const [path, content] of normalizedEntries) {
             files.set(
                 path,
-                fileRecord(content, 'library', normalizedArchiveId),
+                fileRecord(content, 'packageArchive', normalizedArchiveId),
             );
         }
         const paths = normalizedEntries.map(([path]) => path);
 
-        libraryArchives.set(normalizedArchiveId, {
+        packageArchives.set(normalizedArchiveId, {
             archiveId: normalizedArchiveId,
             fileName: String(fileName || normalizedArchiveId),
             fileCount: paths.length,
@@ -320,33 +383,60 @@ export function createProjectFilesystem() {
         });
     }
 
-    function removeLibraryArchive(archiveId) {
+    function removePackageArchive(archiveId) {
         const normalizedArchiveId = String(archiveId || '').trim();
         if (!normalizedArchiveId) return;
-        const archive = libraryArchives.get(normalizedArchiveId);
+        const archive = packageArchives.get(normalizedArchiveId);
         if (archive) {
             for (const path of archive.paths) {
                 files.delete(path);
             }
         }
-        libraryArchives.delete(normalizedArchiveId);
+        packageArchives.delete(normalizedArchiveId);
     }
 
-    function clearLibraries() {
-        for (const archiveId of Array.from(libraryArchives.keys())) {
-            removeLibraryArchive(archiveId);
+    function clearPackageArchives() {
+        for (const archiveId of Array.from(packageArchives.keys())) {
+            removePackageArchive(archiveId);
         }
     }
 
     function clearProject() {
         files.clear();
-        libraryArchives.clear();
+        cacheFiles.clear();
+        packageArchives.clear();
+        folders.clear();
         activeDocumentPath = 'Main.mo';
         editorState = null;
     }
 
-    function getArchiveFiles(archiveId) {
-        const archive = libraryArchives.get(String(archiveId || '').trim());
+    function setCacheFile(path, content) {
+        const normalizedPath = normalizePath(path);
+        if (!normalizedPath || !isCachePath(normalizedPath)) {
+            throw new Error('cache file path is required');
+        }
+        cacheFiles.set(normalizedPath, fileRecordContentFromRaw(content));
+        return normalizedPath;
+    }
+
+    function getCacheFile(path) {
+        const normalizedPath = normalizePath(path);
+        if (!normalizedPath || !isCachePath(normalizedPath)) {
+            return null;
+        }
+        return cacheFiles.get(normalizedPath) ?? null;
+    }
+
+    function removeCacheFile(path) {
+        const normalizedPath = normalizePath(path);
+        if (!normalizedPath || !isCachePath(normalizedPath)) {
+            return false;
+        }
+        return cacheFiles.delete(normalizedPath);
+    }
+
+    function getPackageArchiveFiles(archiveId) {
+        const archive = packageArchives.get(String(archiveId || '').trim());
         if (!archive) {
             return {};
         }
@@ -368,6 +458,7 @@ export function createProjectFilesystem() {
         if (isManagedProjectPath(normalizedPath)) {
             throw new Error(`cannot overwrite managed project file: ${normalizedPath}`);
         }
+        ensureParentFolders(normalizedPath);
         files.set(
             normalizedPath,
             fileRecord(content, isSidecarPath(normalizedPath) ? 'sidecar' : 'workspace'),
@@ -378,14 +469,78 @@ export function createProjectFilesystem() {
         return normalizedPath;
     }
 
+    function setFolder(path) {
+        const normalizedPath = normalizePath(path);
+        if (!normalizedPath) {
+            throw new Error('folder path is required');
+        }
+        if (isManagedProjectPath(normalizedPath) || isSidecarPath(normalizedPath)) {
+            throw new Error(`cannot create managed folder: ${normalizedPath}`);
+        }
+        const parts = normalizedPath.split('/');
+        let prefix = '';
+        for (const part of parts) {
+            prefix = prefix ? `${prefix}/${part}` : part;
+            folders.add(prefix);
+        }
+        return normalizedPath;
+    }
+
+    function chooseFallbackActiveDocument() {
+        const entries = Array.from(files.entries())
+            .filter(([, record]) => record.sourceKind === 'workspace');
+        return (
+            firstMatchingMo(entries)
+            || entries[0]?.[0]
+            || 'Main.mo'
+        );
+    }
+
+    function removeFolder(path) {
+        const normalizedPath = normalizePath(path);
+        if (!normalizedPath || isManagedProjectPath(normalizedPath)) {
+            return false;
+        }
+        const prefix = `${normalizedPath}/`;
+        let removed = false;
+        const removedPaths = [];
+        for (const filePath of Array.from(files.keys())) {
+            if (filePath === normalizedPath || filePath.startsWith(prefix)) {
+                files.delete(filePath);
+                removedPaths.push(filePath);
+                removed = true;
+            }
+        }
+        prunePackageArchivesForPaths(removedPaths);
+        for (const folderPath of Array.from(folders)) {
+            if (folderPath === normalizedPath || folderPath.startsWith(prefix)) {
+                folders.delete(folderPath);
+                removed = true;
+            }
+        }
+        if (activeDocumentPath === normalizedPath || activeDocumentPath.startsWith(prefix)) {
+            activeDocumentPath = chooseFallbackActiveDocument();
+            if (!files.has(activeDocumentPath)) {
+                files.set(activeDocumentPath, fileRecord('', 'workspace'));
+            }
+        }
+        return removed;
+    }
+
     function removeFile(path) {
         const normalizedPath = normalizePath(path);
         if (!normalizedPath || isManagedProjectPath(normalizedPath)) {
             return false;
         }
         const removed = files.delete(normalizedPath);
+        if (removed) {
+            prunePackageArchivesForPaths([normalizedPath]);
+        }
         if (normalizedPath === activeDocumentPath) {
-            activeDocumentPath = 'Main.mo';
+            activeDocumentPath = chooseFallbackActiveDocument();
+            if (!files.has(activeDocumentPath)) {
+                files.set(activeDocumentPath, fileRecord('', 'workspace'));
+            }
         }
         return removed;
     }
@@ -409,12 +564,56 @@ export function createProjectFilesystem() {
             }));
     }
 
-    function snapshotArchiveEntries() {
+    function getFileEntry(path) {
+        const normalizedPath = normalizePath(path);
+        if (!normalizedPath) {
+            return null;
+        }
+        const record = files.get(normalizedPath);
+        if (!record) {
+            return null;
+        }
+        return {
+            path: normalizedPath,
+            sourceKind: record.sourceKind,
+            archiveId: record.archiveId,
+            isText: typeof record.content === 'string',
+        };
+    }
+
+    function listFileEntries() {
+        return Array.from(files.entries())
+            .sort(([lhs], [rhs]) => lhs.localeCompare(rhs))
+            .map(([path, record]) => ({
+                path,
+                sourceKind: record.sourceKind,
+                archiveId: record.archiveId,
+                isText: typeof record.content === 'string',
+            }));
+    }
+
+    function snapshotArchiveEntries({ includeCacheFiles = false } = {}) {
         const entries = listFiles().map(({ path, content }) => ({ path, content }));
+        if (includeCacheFiles) {
+            for (const [path, content] of Array.from(cacheFiles.entries()).sort(([lhs], [rhs]) => lhs.localeCompare(rhs))) {
+                entries.push({ path, content });
+            }
+        }
         const serializedEditorState = serializeEditorState(editorState);
+        const metadataContent = JSON.stringify({
+            schemaVersion: PROJECT_SCHEMA_VERSION,
+            activeDocument: activeDocumentPath,
+            packageArchives: listPackageArchives().map((archive) => ({
+                archiveId: archive.archiveId,
+                fileName: archive.fileName,
+                fileCount: archive.fileCount,
+                paths: archive.paths,
+            })),
+            folders: listFolders(),
+        }, null, 2);
         entries.push({
             path: PROJECT_METADATA_PATH,
-            content: serializeProjectMetadata(activeDocumentPath, listLibraryArchives()),
+            content: `${metadataContent}\n`,
         });
         if (serializedEditorState) {
             entries.push({
@@ -432,7 +631,10 @@ export function createProjectFilesystem() {
         for (const entry of entries || []) {
             const normalizedPath = normalizePath(entry?.path);
             if (!normalizedPath) continue;
-            if (isCachePath(normalizedPath)) continue;
+            if (isCachePath(normalizedPath)) {
+                cacheFiles.set(normalizedPath, fileRecordContentFromRaw(entry?.content));
+                continue;
+            }
             const content = normalizeArchiveFileContent(normalizedPath, entry?.content);
             if (isProjectMetadataPath(normalizedPath)) {
                 metadata = parseProjectMetadata(content);
@@ -443,24 +645,36 @@ export function createProjectFilesystem() {
                 continue;
             }
             const sourceKind = isSidecarPath(normalizedPath) ? 'sidecar' : 'workspace';
+            if (sourceKind === 'workspace') {
+                ensureParentFolders(normalizedPath);
+            }
             files.set(normalizedPath, fileRecord(content, sourceKind));
         }
 
-        if (Array.isArray(metadata?.libraries)) {
-            for (const library of metadata.libraries) {
-                const archiveId = String(library?.archiveId || '').trim();
-                const paths = Array.isArray(library?.paths)
-                    ? library.paths.map((path) => normalizePath(path)).filter(Boolean)
+        if (Array.isArray(metadata?.folders)) {
+            for (const folderPath of metadata.folders) {
+                const normalizedFolderPath = normalizePath(folderPath);
+                if (normalizedFolderPath && !isManagedProjectPath(normalizedFolderPath)) {
+                    folders.add(normalizedFolderPath);
+                }
+            }
+        }
+
+        if (Array.isArray(metadata?.packageArchives)) {
+            for (const packageArchive of metadata.packageArchives) {
+                const archiveId = String(packageArchive?.archiveId || '').trim();
+                const paths = Array.isArray(packageArchive?.paths)
+                    ? packageArchive.paths.map((path) => normalizePath(path)).filter(Boolean)
                     : [];
                 if (!archiveId || paths.length === 0) continue;
                 for (const path of paths) {
                     const existing = files.get(path);
                     if (!existing) continue;
-                    files.set(path, fileRecord(existing.content, 'library', archiveId));
+                    files.set(path, fileRecord(existing.content, 'packageArchive', archiveId));
                 }
-                libraryArchives.set(archiveId, {
+                packageArchives.set(archiveId, {
                     archiveId,
-                    fileName: String(library?.fileName || archiveId),
+                    fileName: String(packageArchive?.fileName || archiveId),
                     fileCount: paths.length,
                     paths,
                 });
@@ -468,7 +682,7 @@ export function createProjectFilesystem() {
         }
 
         const excludedPaths = new Set(
-            listLibraryArchives().flatMap((archive) => archive.paths),
+            listPackageArchives().flatMap((archive) => archive.paths),
         );
         const preferredActive = normalizePath(metadata?.activeDocument);
         if (preferredActive && files.has(preferredActive)) {
@@ -493,7 +707,7 @@ export function createProjectFilesystem() {
                 files.get(activeDocumentPath)?.content || '',
             ),
             editorState: cloneJson(editorState),
-            libraryArchives: listLibraryArchives(),
+            packageArchives: listPackageArchives(),
             fileCount: files.size,
         };
     }
@@ -520,20 +734,29 @@ export function createProjectFilesystem() {
 
     return {
         clearProject,
-        clearLibraries,
+        clearPackageArchives,
         ensureActiveDocumentFromSource,
         getActiveDocumentContent,
         getActiveDocumentPath,
+        getCacheFile,
+        getFileEntry,
         getFileContent,
-        getArchiveFiles,
+        getPackageArchiveFiles,
         getEditorState,
+        listFileEntries,
         listFiles,
-        listLibraryArchives,
+        listFolders,
+        listPackageArchives,
         loadArchiveEntries,
         loadFileEntries,
+        removeCacheFile,
+        removeFolder,
         removeFile,
-        removeLibraryArchive,
-        replaceLibraryArchive,
+        removePackageArchive,
+        replacePackageArchive,
+        activateDocument,
+        setCacheFile,
+        setFolder,
         setFile,
         setEditorState,
         setActiveDocument,
@@ -566,7 +789,7 @@ export async function buildProjectArchiveBlob(projectFs) {
         throw new Error('JSZip is not available in this environment');
     }
     const zip = new globalThis.JSZip();
-    for (const entry of projectFs.snapshotArchiveEntries()) {
+    for (const entry of projectFs.snapshotArchiveEntries({ includeCacheFiles: false })) {
         zip.file(entry.path, entry.content);
     }
     return await zip.generateAsync({

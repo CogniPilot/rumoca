@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const shared = require(path.resolve("media", "vendor", "visualization_shared.js"));
+const testDir = path.dirname(fileURLToPath(import.meta.url));
+const shared = require(path.join(testDir, "..", "media", "vendor", "visualization_shared.js"));
 
 test("normalizeVisualizationViews preserves scatter config and canonical scriptPath", () => {
   const views = shared.normalizeVisualizationViews([
@@ -39,6 +41,11 @@ test("shared visualization helpers expose the default 3d viewer script", () => {
   const script = shared.defaultThreeDimensionalViewerScript();
   assert.match(script, /ctx\.onInit/);
   assert.match(script, /ctx\.onFrame/);
+  assert.match(script, /selectedObjectName: "ball"/);
+  assert.match(script, /followSelected: true/);
+  assert.match(script, /api\.getValue\("x"/);
+  assert.doesNotMatch(script, /api\.getValue\("y"/);
+  assert.doesNotMatch(script, /api\.getValue\("z"/);
 });
 
 test("shared visualization helpers expose stable viewer and run artifact paths", () => {
@@ -50,9 +57,13 @@ test("shared visualization helpers expose stable viewer and run artifact paths",
     shared.simulationRunDocumentPath("run_123"),
     ".rumoca/results/runs/run_123.json",
   );
-  assert.notEqual(
-    shared.lastSimulationResultPath("A.B"),
-    shared.lastSimulationResultPath("A B"),
+  assert.equal(
+    shared.latestSimulationResultsIndexPath(),
+    ".rumoca/results/index.json",
+  );
+  assert.match(
+    shared.lastSimulationResultPath("Pkg.Ball"),
+    /^\.rumoca\/results\/[a-z0-9_]+_[0-9a-f]{8}\.json$/,
   );
 });
 
@@ -168,6 +179,14 @@ test("shared visualization helpers can persist and load hosted simulation runs",
   assert.equal(byRunId.runId, persisted.runId);
   assert.equal(byRunId.views[0].title, "States Hydrated");
   assert.equal(byModel.metrics.simulateSeconds, 0.25);
+  const indexDoc = JSON.parse(files.get(".rumoca/results/index.json"));
+  assert.deepEqual(indexDoc.latestRuns, [
+    {
+      model: "Pkg.Ball",
+      runId: persisted.runId,
+      savedAtUnixMs: persisted.savedAtUnixMs,
+    },
+  ]);
 });
 
 test("shared visualization helpers can persist and load hosted simulation runs with configured views", async () => {
@@ -425,11 +444,11 @@ test("shared simulation settings document supports browser hosts and hidden host
       tEnd: 10,
       dt: null,
       outputDir: "",
-      libraryOverrides: [],
+      sourceRootOverrides: [],
     },
     views: [],
     features: {
-      addLibraryPath: false,
+      addSourceRootPath: false,
       prepareModels: false,
       resyncSidecars: false,
       workspaceSettings: false,
@@ -439,9 +458,14 @@ test("shared simulation settings document supports browser hosts and hidden host
   });
 
   assert.match(html, /RumocaSimulationSettingsHost/);
-  assert.match(html, /id="addLib" class="ghost" style="display:none;"/);
+  assert.match(html, /id="addSourceRootPath" class="ghost" style="display:none;"/);
   assert.match(html, /id="prepareModels" class="secondary" style="display:none;"/);
   assert.match(html, /id="workspaceSettings" class="secondary" style="display:none;"/);
+  assert.match(html, /var\(--vscode-foreground, #d4d4d4\)/);
+  assert.match(html, /var\(--vscode-input-background, #313131\)/);
+  assert.match(html, /split\(\/\\r\?\\n\|,\/\)/);
+  assert.match(html, /split\(\/\\r\?\\n\/\)/);
+  assert.match(html, /join\('\\n'\)/);
 });
 
 test("shared simulation settings helpers normalize state and build host handlers", async () => {
@@ -453,7 +477,7 @@ test("shared simulation settings helpers normalize state and build host handlers
       tEnd: "12.5",
       dt: "0.25",
       outputDir: "out",
-      modelicaPath: ["MSL"],
+      sourceRootPaths: ["MSL"],
     },
     views: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
   });
@@ -462,7 +486,7 @@ test("shared simulation settings helpers normalize state and build host handlers
     tEnd: 12.5,
     dt: 0.25,
     outputDir: "out",
-    libraryOverrides: ["MSL"],
+    sourceRootOverrides: ["MSL"],
   });
 
   const builtState = shared.buildHostedSimulationSettingsState({
@@ -474,7 +498,7 @@ test("shared simulation settings helpers normalize state and build host handlers
       tEnd: 10,
       dt: null,
       outputDir: "",
-      modelicaPath: ["Fallback"],
+      sourceRootPaths: ["Fallback"],
     },
     views: [],
     defaultViews: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
@@ -485,7 +509,7 @@ test("shared simulation settings helpers normalize state and build host handlers
     tEnd: 10,
     dt: null,
     outputDir: "",
-    libraryOverrides: ["Fallback"],
+    sourceRootOverrides: ["Fallback"],
   });
   assert.equal(builtState.views.length, 1);
 
@@ -502,7 +526,7 @@ test("shared simulation settings helpers normalize state and build host handlers
         tEnd: 10,
         dt: null,
         outputDir: "",
-        modelicaPath: ["MSL"],
+        sourceRootPaths: ["MSL"],
       },
       views: [],
     }),
@@ -515,7 +539,7 @@ test("shared simulation settings helpers normalize state and build host handlers
       tEnd: 12.5,
       dt: "0.25",
       outputDir: "out",
-      modelicaPath: ["MSL"],
+      sourceRootPaths: ["MSL"],
       views: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
     },
   });
@@ -526,7 +550,7 @@ test("shared simulation settings helpers normalize state and build host handlers
       tEnd: 12.5,
       dt: 0.25,
       outputDir: "out",
-      libraryOverrides: ["MSL"],
+      sourceRootOverrides: ["MSL"],
     },
     viewCount: 1,
   });
@@ -537,7 +561,7 @@ test("shared simulation settings helpers normalize state and build host handlers
     tEnd: 10,
     dt: null,
     outputDir: "",
-    modelicaPath: ["MSL"],
+    sourceRootPaths: ["MSL"],
     views: [],
   });
 
@@ -563,7 +587,7 @@ test("shared simulation settings helpers normalize state and build host handlers
 
   const actionHandlers = shared.buildHostedSimulationSettingsHandlers({
     getActiveModel: () => "Pkg.Ball",
-    pickLibraryPath: async () => "/tmp/MSL",
+    pickSourceRootPath: async () => "/tmp/MSL",
     resyncSidecars: async () => ({
       remapped_models: 3,
       parse_failures: 1,
@@ -576,7 +600,7 @@ test("shared simulation settings helpers normalize state and build host handlers
     openViewScript: async () => "scripts/viewer_3d.js",
   });
   assert.deepEqual(
-    await actionHandlers.pickLibraryPath({ method: "pickLibraryPath", payload: {} }),
+    await actionHandlers.pickSourceRootPath({ method: "pickSourceRootPath", payload: {} }),
     { path: "/tmp/MSL" },
   );
   assert.deepEqual(
@@ -783,7 +807,7 @@ test("shared project sidecar commands persist and reload simulation settings and
     snapshot,
     {
       model: "Ball",
-      fallback: { solver: "auto", tEnd: 10, dt: null, outputDir: "", modelicaPath: [] },
+      fallback: { solver: "auto", tEnd: 10, dt: null, outputDir: "", sourceRootPaths: [] },
     },
   ).result;
   assert.equal(simulation.effective.tEnd, 12.5);

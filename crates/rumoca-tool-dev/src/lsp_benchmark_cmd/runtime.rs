@@ -204,7 +204,7 @@ fn validate_full_msl_open_and_completion(
         client.wait_for_publish_diagnostics(&workspace.msl_uri, DIAGNOSTICS_TIMEOUT)?;
     let open_ms = opened.elapsed().as_millis() as u64;
     let completion_start = read_completion_timings(completion_timing_path)?.len();
-    let library_load_completion = client.completion(
+    let source_root_load_completion = client.completion(
         &workspace.msl_uri,
         ctx.completion_position,
         FULL_MSL_COMPLETION_PROBES[0].expected_completion_label,
@@ -220,8 +220,8 @@ fn validate_full_msl_open_and_completion(
         FULL_MSL_COMPLETION_PROBES[0].expected_completion_label,
     )?;
     ensure!(
-        library_load_completion.expected_completion_present,
-        "library-load completion probe missed expected label `{}`",
+        source_root_load_completion.expected_completion_present,
+        "source-root-load completion probe missed expected label `{}`",
         FULL_MSL_COMPLETION_PROBES[0].expected_completion_label
     );
     ensure!(
@@ -257,12 +257,12 @@ fn validate_full_msl_open_and_completion(
             ),
         ),
         ok_validation(
-            "library-load",
+            "source-root-load",
             "req",
-            Some(library_load_completion.client_ms),
+            Some(source_root_load_completion.client_ms),
             validation_completion_stage_detail(
                 "msl",
-                library_load_completion.completion_count,
+                source_root_load_completion.completion_count,
                 &completion_timings[0],
             ),
         ),
@@ -983,7 +983,7 @@ fn capture_warm_latency_snapshot(
     Ok(WarmLatencySnapshot {
         measurements: vec![
             capture_local_completion_snapshot(client, workspace, &synthetic_ctx, completion_path)?,
-            capture_library_completion_snapshot(client, workspace, &full_ctx, completion_path)?,
+            capture_source_root_completion_snapshot(client, workspace, &full_ctx, completion_path)?,
             capture_hover_snapshot(client, workspace, &full_ctx, navigation_path)?,
             capture_definition_snapshot(client, workspace, &full_ctx, navigation_path)?,
             capture_live_diagnostics_snapshot(client, workspace, diagnostics_path)?,
@@ -1036,7 +1036,7 @@ fn capture_local_completion_snapshot(
     )
 }
 
-fn capture_library_completion_snapshot(
+fn capture_source_root_completion_snapshot(
     client: &mut LspStdioClient,
     workspace: &ValidationWorkspace,
     ctx: &FullMslValidationContext,
@@ -1049,7 +1049,7 @@ fn capture_library_completion_snapshot(
     )?;
     ensure!(
         prime.expected_completion_present,
-        "warm library completion snapshot priming request missed expected label"
+        "warm source-root completion snapshot priming request missed expected label"
     );
     let start = read_completion_timings(completion_timing_path)?.len();
     let mut samples = Vec::with_capacity(WARM_LATENCY_SAMPLE_COUNT);
@@ -1061,25 +1061,25 @@ fn capture_library_completion_snapshot(
         )?;
         ensure!(
             completion.expected_completion_present,
-            "warm library completion snapshot missed expected label"
+            "warm source-root completion snapshot missed expected label"
         );
         samples.push(completion.client_ms);
     }
     let entries = completion_entries_since(completion_timing_path, start, &workspace.msl_uri)?;
     ensure_completion_entry_count(
-        "warm library completion",
+        "warm source-root completion",
         &entries,
         WARM_LATENCY_SAMPLE_COUNT,
     )?;
-    ensure_completion_entries_not_stale("warm library completion", &entries)?;
+    ensure_completion_entries_not_stale("warm source-root completion", &entries)?;
     ensure_completion_entries_have_semantic_layer(
-        "warm library completion",
+        "warm source-root completion",
         &entries,
         "package_def_map",
     )?;
     build_warm_latency_measurement(
-        "library completion",
-        LIBRARY_COMPLETION_TARGET_MS,
+        "source-root completion",
+        SOURCE_ROOT_COMPLETION_TARGET_MS,
         &samples,
         None,
         Some("package_def_map"),
@@ -1345,7 +1345,7 @@ fn validate_get_simulation_config_command(
         "dt": 0.1,
         "solver": "auto",
         "outputDir": "",
-        "modelicaPath": [],
+        "sourceRootPaths": [],
     });
     let workspace_root = workspace.workspace_root.display().to_string();
 
@@ -1382,7 +1382,7 @@ fn validate_set_reset_simulation_config_commands(
         "dt": 0.2,
         "solver": "bdf",
         "outputDir": "tmp",
-        "libraryOverrides": [],
+        "sourceRootOverrides": [],
     });
 
     let (set_sim_ms, set_sim_response) = execute_lsp_command(
@@ -1517,7 +1517,7 @@ fn validate_execute_simulate_command(
                 "dt": 0.1,
                 "solver": "auto",
                 "outputDir": "",
-                "libraryPaths": [],
+                "sourceRootPaths": [],
             }
         }),
     )?;
@@ -1615,7 +1615,7 @@ pub(crate) fn run_lsp_api_validation(
             "name": "lsp-api-validation",
         }],
         "initializationOptions": {
-            "modelicaPath": modelica_paths,
+            "sourceRootPaths": modelica_paths,
         }
     });
     let (initialize_ms, initialize_response) =
@@ -1770,7 +1770,7 @@ fn validate_initialize_response(
         timing.workspace_root_ms,
         timing.reload_project_config_ms,
         timing.project_discover_ms,
-        timing.resolve_library_paths_ms,
+        timing.resolve_source_root_paths_ms,
         timing.reset_session_ms,
         timing.durable_prewarm_ms,
         timing.durable_collect_files_ms,
@@ -1782,9 +1782,9 @@ fn validate_initialize_response(
         timing.durable_cache_write_ms,
         timing.durable_apply_ms,
         timing.workspace_symbol_prewarm_ms,
-        timing.namespace_prewarm_spawn_ms,
-        timing.initial_library_paths,
-        short_bool_label(timing.library_paths_changed),
+        timing.source_root_read_prewarm_spawn_ms,
+        timing.initial_source_root_paths,
+        short_bool_label(timing.source_root_paths_changed),
     ))
 }
 
@@ -1797,7 +1797,7 @@ fn ensure_required_lsp_validation_entries(entries: &[LspApiValidationEntry]) -> 
         "initialize",
         "initialized",
         "didOpen",
-        "library-load",
+        "source-root-load",
         "completion:cold",
         "completion:warm",
         "hover:cold",

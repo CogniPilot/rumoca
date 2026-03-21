@@ -1,7 +1,7 @@
 //! Diagnostic tests for understanding balance issues in MSL models.
 
 use rumoca_ir_dae::{Dae, VarName};
-use rumoca_session::compile::{CompiledLibrary, FailedPhase, PhaseResult};
+use rumoca_session::compile::{CompiledSourceRoot, FailedPhase, PhaseResult};
 
 /// Test a simple logical Not model to understand balance
 #[test]
@@ -16,9 +16,9 @@ end Not;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("Not") {
+    match source_root.compile_model_phases("Not") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Simple Not Model ===");
@@ -71,9 +71,9 @@ end Not;
         println!("BooleanOutput class causality: {:?}", bool_output.causality);
     }
 
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("Not") {
+    match source_root.compile_model_phases("Not") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Connector-Style Not Model ===");
@@ -116,9 +116,9 @@ end TestOutput;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("TestOutput") {
+    match source_root.compile_model_phases("TestOutput") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Output Equation Model ===");
@@ -157,9 +157,9 @@ end PartialModel;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("PartialModel") {
+    match source_root.compile_model_phases("PartialModel") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Partial Model ===");
@@ -233,9 +233,9 @@ end QuasiStatic;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("QuasiStatic.Ground") {
+    match source_root.compile_model_phases("QuasiStatic.Ground") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== QuasiStatic.Ground Model ===");
@@ -345,9 +345,9 @@ end QuasiStatic;
 #[test]
 fn test_quasistatic_voltage_source_balance() {
     let def = rumoca_phase_parse::parse_to_ast(QUASISTATIC_VOLTAGE_SOURCE, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("QuasiStatic.VoltageSource") {
+    match source_root.compile_model_phases("QuasiStatic.VoltageSource") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== QuasiStatic.VoltageSource ===");
@@ -412,9 +412,9 @@ end Gain;
 "#;
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("Gain") {
+    match source_root.compile_model_phases("Gain") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             println!("\n=== Gain Model (SISO inheritance) ===");
@@ -486,9 +486,9 @@ end TestEquationDefinedInput;
     // With promotion:    2 unknowns, 2 equations → balance = 0
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("TestEquationDefinedInput") {
+    match source_root.compile_model_phases("TestEquationDefinedInput") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             // medium.p appears only on the RHS of equation 1 (state_p = p).
@@ -551,9 +551,9 @@ end Volume;
     // IS promoted because equation 1 provides the intra-component alias.
 
     let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
-    let library = CompiledLibrary::from_stored_definition(def).unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
 
-    match library.compile_model_phases("Volume") {
+    match source_root.compile_model_phases("Volume") {
         PhaseResult::Success(result) => {
             let dae = &result.dae;
             // medium.p should be promoted via the intra-component alias

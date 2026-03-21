@@ -1,7 +1,7 @@
 use super::*;
 
 impl Session {
-    /// Replace a parsed source-set (e.g., a library) in one operation.
+    /// Replace a parsed source-set in one operation.
     ///
     /// Existing parsed docs in this source-set are removed first. Documents with
     /// non-empty content (workspace/open docs) are preserved.
@@ -85,93 +85,81 @@ impl Session {
             self.record_file_revision(&removed_uri, revision);
         }
 
-        let source_set_cache_id = self.source_set_id(source_set_id);
         self.update_source_set_record(source_set_id, kind, inserted_uris, revision);
         self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
-        if let Some(source_set_id) = source_set_cache_id {
-            self.invalidate_library_completion_state_for_source_set(
+        if let Some(source_set_id) = self.source_set_id(source_set_id) {
+            self.invalidate_source_root_resolved_aggregate_for_source_set(source_set_id);
+            self.invalidate_source_root_completion_state_for_source_set(
                 source_set_id,
                 CacheInvalidationCause::SourceSetMutation,
             );
         } else {
-            self.invalidate_library_completion_state(CacheInvalidationCause::SourceSetMutation);
+            self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
         }
+        self.mark_source_root_graph_changed();
         inserted_count
     }
 
-    /// Tolerantly index one library path into a parsed source-set.
+    /// Tolerantly load one source-root path into a parsed source-set.
     ///
-    /// Parsing/index/cache failures are reported in `diagnostics` and do not
+    /// Parsing/load/cache failures are reported in `diagnostics` and do not
     /// panic or abort the session.
-    pub fn index_library_tolerant(
+    pub fn load_source_root_tolerant(
         &mut self,
         source_set_id: &str,
         kind: SourceRootKind,
-        library_path: &Path,
+        source_root_path: &Path,
         exclude_uri: Option<&str>,
-    ) -> IndexingReport {
-        let cache_dir = resolve_library_cache_dir();
-        self.index_library_tolerant_with_cache_dir(
+    ) -> SourceRootLoadReport {
+        let cache_dir = resolve_source_root_cache_dir();
+        self.load_source_root_tolerant_with_cache_dir(
             source_set_id,
             kind,
-            library_path,
+            source_root_path,
             exclude_uri,
             cache_dir.as_deref(),
         )
     }
 
-    fn index_library_tolerant_with_cache_dir(
+    fn load_source_root_tolerant_with_cache_dir(
         &mut self,
         source_set_id: &str,
         kind: SourceRootKind,
-        library_path: &Path,
+        source_root_path: &Path,
         exclude_uri: Option<&str>,
         cache_dir: Option<&Path>,
-    ) -> IndexingReport {
-        let library_path_str = library_path.display().to_string();
-        let parsed = match parse_library_with_cache_in(library_path, cache_dir) {
+    ) -> SourceRootLoadReport {
+        let source_root_path_string = source_root_path.display().to_string();
+        let parsed = match parse_source_root_with_cache_in(source_root_path, cache_dir) {
             Ok(parsed) => parsed,
             Err(err) => {
-                return IndexingReport {
+                return SourceRootLoadReport {
                     source_set_id: source_set_id.to_string(),
-                    library_path: library_path_str,
-                    indexed_file_count: 0,
+                    source_root_path: source_root_path_string,
+                    parsed_file_count: 0,
                     inserted_file_count: 0,
                     cache_status: None,
                     cache_key: None,
                     cache_file: None,
                     diagnostics: vec![format!(
-                        "Failed to load library '{}': {}",
-                        library_path.display(),
+                        "Failed to load source root '{}': {}",
+                        source_root_path.display(),
                         err
                     )],
                 };
             }
         };
-        let summary_cache_dir = resolve_semantic_summary_cache_dir_from_root(cache_dir);
-        let semantic_summary = read_library_semantic_summary(
-            summary_cache_dir.as_deref(),
-            &parsed.cache_key,
-            &parsed.documents,
-        )
-        .unwrap_or_else(|| {
-            let summary = LibrarySemanticSummary::from_documents(&parsed.documents);
-            let _ = write_library_semantic_summary(
-                summary_cache_dir.as_deref(),
-                library_path,
-                &parsed.cache_key,
-                &summary,
-            );
-            summary
-        });
-
         let inserted_file_count =
             self.replace_parsed_source_set(source_set_id, kind, parsed.documents, exclude_uri);
-        self.hydrate_source_set_semantic_summary(source_set_id, &semantic_summary);
-        IndexingReport {
+        let _ = self.sync_source_root_semantic_summary_cache(
+            source_set_id,
+            source_root_path,
+            cache_dir,
+        );
+        SourceRootLoadReport {
             source_set_id: source_set_id.to_string(),
-            library_path: library_path_str,
-            indexed_file_count: parsed.file_count,
+            source_root_path: source_root_path_string,
+            parsed_file_count: parsed.file_count,
             inserted_file_count,
             cache_status: Some(parsed.cache_status),
             cache_key: Some(parsed.cache_key),
@@ -181,18 +169,18 @@ impl Session {
     }
 
     #[cfg(test)]
-    pub(crate) fn index_library_tolerant_with_cache_dir_for_tests(
+    pub(crate) fn load_source_root_tolerant_with_cache_dir_for_tests(
         &mut self,
         source_set_id: &str,
         kind: SourceRootKind,
-        library_path: &Path,
+        source_root_path: &Path,
         exclude_uri: Option<&str>,
         cache_dir: Option<&Path>,
-    ) -> IndexingReport {
-        self.index_library_tolerant_with_cache_dir(
+    ) -> SourceRootLoadReport {
+        self.load_source_root_tolerant_with_cache_dir(
             source_set_id,
             kind,
-            library_path,
+            source_root_path,
             exclude_uri,
             cache_dir,
         )
