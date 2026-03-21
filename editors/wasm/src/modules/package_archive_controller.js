@@ -7,17 +7,18 @@ function escapeHtmlSafe(value) {
         .replace(/'/g, '&#39;');
 }
 
-export function createLibraryDocsController({
+export function createPackageArchiveController({
     sendLanguageCommand,
     sendWorkspaceCommand,
     setTerminalOutput,
     isWorkerReady,
     projectFs,
+    onPackageArchivesChanged,
 }) {
-    let loadedLibraries = {};
-    const loadedLibraryArchives = new Map();
-    const libraryRowArchiveIds = new Map();
-    let libraryRowCount = 1;
+    let stagedSourceRoots = {};
+    const loadedPackageArchives = new Map();
+    const packageArchiveRowIds = new Map();
+    let packageArchiveRowCount = 1;
     let classTreeData = [];
     let classTreeFiltered = [];
     let classTreeExpanded = new Set();
@@ -25,34 +26,102 @@ export function createLibraryDocsController({
     const classInfoCache = new Map();
     let classSourceEditor = null;
 
+    function activeSourceRootActivity(status) {
+        return status?.current || status?.lastCompleted || null;
+    }
+
+    function sourceRootActivityLabel(activity) {
+        switch (activity?.kind) {
+            case 'ColdIndexBuild':
+                return 'cold index build';
+            case 'WarmCacheRestore':
+                return 'warm cache restore';
+            case 'SubtreeReindex':
+                return 'subtree reindex';
+            default:
+                return 'source root activity';
+        }
+    }
+
+    function sourceRootActivityPhase(activity) {
+        switch (activity?.phase) {
+            case 'Pending':
+                return 'pending';
+            case 'Running':
+                return 'running';
+            case 'Completed':
+                return 'completed';
+            default:
+                return 'idle';
+        }
+    }
+
+    function formatSourceRootStatus(status) {
+        const activity = activeSourceRootActivity(status);
+        if (!activity) {
+            return `${status.sourceRootKey || 'source root'}: idle`;
+        }
+        const scope = Array.isArray(activity.dirtyClassPrefixes) && activity.dirtyClassPrefixes.length > 0
+            ? ` for ${activity.dirtyClassPrefixes.join(', ')}`
+            : '';
+        return `${status.sourceRootKey || 'source root'}: ${sourceRootActivityLabel(activity)} ${sourceRootActivityPhase(activity)}${scope}`;
+    }
+
+    async function sourceRootStatusLines() {
+        try {
+            const resultJson = await sendWorkspaceCommand(
+                'rumoca.workspace.getSourceRootStatuses',
+                {},
+                30000,
+            );
+            const statuses = JSON.parse(resultJson || '[]');
+            if (!Array.isArray(statuses) || statuses.length === 0) {
+                return [];
+            }
+            return statuses.map(formatSourceRootStatus);
+        } catch (error) {
+            console.warn('Failed to read source root statuses:', error);
+            return [];
+        }
+    }
+
+    async function setTerminalOutputWithSourceRootStatuses(baseOutput) {
+        const lines = await sourceRootStatusLines();
+        if (lines.length === 0) {
+            setTerminalOutput(baseOutput);
+            return;
+        }
+        setTerminalOutput(`${baseOutput}\n\nSource roots:\n${lines.map(line => `  - ${line}`).join('\n')}`);
+    }
+
     function updateClassCountBadge(totalClasses) {
         const badge = document.getElementById('classCount');
         if (!badge) return;
         badge.textContent = `(${totalClasses || 0})`;
     }
 
-    function ensureLibraryProgress(row) {
-        let progress = row.querySelector('.library-progress');
+    function ensurePackageArchiveProgress(row) {
+        let progress = row.querySelector('.package-archive-progress');
         if (!progress) {
             progress = document.createElement('div');
-            progress.className = 'library-progress';
+            progress.className = 'package-archive-progress';
             progress.hidden = true;
             progress.innerHTML = `
-                <div class="library-progress-track"><div class="library-progress-fill"></div></div>
-                <span class="library-progress-text">0%</span>
+                <div class="package-archive-progress-track"><div class="package-archive-progress-fill"></div></div>
+                <span class="package-archive-progress-text">0%</span>
             `;
             row.appendChild(progress);
         }
         return {
             progress,
-            fill: progress.querySelector('.library-progress-fill'),
-            text: progress.querySelector('.library-progress-text'),
+            fill: progress.querySelector('.package-archive-progress-fill'),
+            text: progress.querySelector('.package-archive-progress-text'),
         };
     }
 
-    function setLibraryProgress(row, percent, label, indeterminate = false) {
+    function setPackageArchiveProgress(row, percent, label, indeterminate = false) {
         if (!row) return;
-        const { progress, fill, text } = ensureLibraryProgress(row);
+        const { progress, fill, text } = ensurePackageArchiveProgress(row);
         progress.hidden = false;
         progress.classList.toggle('indeterminate', !!indeterminate);
         if (fill) {
@@ -64,9 +133,9 @@ export function createLibraryDocsController({
         }
     }
 
-    function hideLibraryProgress(row) {
+    function hidePackageArchiveProgress(row) {
         if (!row) return;
-        const { progress, fill, text } = ensureLibraryProgress(row);
+        const { progress, fill, text } = ensurePackageArchiveProgress(row);
         progress.hidden = true;
         progress.classList.remove('indeterminate');
         if (fill) fill.style.width = '0%';
@@ -77,30 +146,77 @@ export function createLibraryDocsController({
         return `${file.name}:${file.size}:${file.lastModified || 0}`;
     }
 
-    function rebuildLoadedLibrariesFromArchives() {
-        loadedLibraries = {};
-        for (const archive of loadedLibraryArchives.values()) {
-            Object.assign(loadedLibraries, archive.files);
+    function packageArchiveCachePath(archiveId) {
+        return `.rumoca/cache/package-archives/${encodeURIComponent(String(archiveId || '').trim())}.bin`;
+    }
+
+    async function exportArchiveBinaryCache(archiveId) {
+        const normalizedArchiveId = String(archiveId || '').trim();
+        if (!normalizedArchiveId) {
+            return 0;
+        }
+        const archive = loadedPackageArchives.get(normalizedArchiveId);
+        const uris = archive ? Object.keys(archive.files || {}).sort((lhs, rhs) => lhs.localeCompare(rhs)) : [];
+        if (uris.length === 0) {
+            return 0;
+        }
+        const bytes = await sendWorkspaceCommand(
+            'rumoca.workspace.exportParsedSourceRootsBinary',
+            { urisJson: JSON.stringify(uris) },
+            300000,
+        );
+        if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+            return 0;
+        }
+        projectFs?.setCacheFile?.(packageArchiveCachePath(normalizedArchiveId), bytes);
+        return bytes.length;
+    }
+
+    async function restoreArchiveBinaryCache(archiveId) {
+        const normalizedArchiveId = String(archiveId || '').trim();
+        if (!normalizedArchiveId) {
+            return 0;
+        }
+        const bytes = projectFs?.getCacheFile?.(packageArchiveCachePath(normalizedArchiveId));
+        if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+            return 0;
+        }
+        const merged = await sendWorkspaceCommand(
+            'rumoca.workspace.mergeParsedSourceRootsBinary',
+            { bytes },
+            300000,
+        );
+        return Number(merged) || 0;
+    }
+
+    function rebuildStagedSourceRootsFromArchives() {
+        stagedSourceRoots = {};
+        for (const archive of loadedPackageArchives.values()) {
+            Object.assign(stagedSourceRoots, archive.files);
         }
     }
 
-    function resetLibraryRowsUi() {
-        document.querySelectorAll('.library-row input[type="file"]').forEach(input => {
+    function resetPackageArchiveRowsUi() {
+        document.querySelectorAll('.package-archive-row input[type="file"]').forEach(input => {
             input.value = '';
         });
-        document.querySelectorAll('.library-row').forEach(row => {
-            const status = row.querySelector('.library-status');
+        document.querySelectorAll('.package-archive-row').forEach(row => {
+            const status = row.querySelector('.package-archive-status');
             if (status) {
                 status.textContent = 'No file selected';
-                status.className = 'library-status pending';
+                status.className = 'package-archive-status pending';
             }
-            hideLibraryProgress(row);
+            hidePackageArchiveProgress(row);
         });
     }
 
-    async function reloadWorkerLibraries(statusLabel, emptyLabel = 'No libraries loaded.') {
-        await sendWorkspaceCommand('rumoca.workspace.clearLibraryCache', {});
-        const fileCount = Object.keys(loadedLibraries).length;
+    async function reloadWorkerSourceRootsFromArchives(statusLabel, emptyLabel = 'No package archives loaded.') {
+        await sendWorkspaceCommand('rumoca.workspace.clearSourceRootCache', {});
+        const archiveEntries = Array.from(loadedPackageArchives.entries());
+        const fileCount = archiveEntries.reduce(
+            (count, [, archive]) => count + Object.keys(archive.files || {}).length,
+            0,
+        );
         if (fileCount === 0) {
             setTerminalOutput(emptyLabel);
             await refreshPackageViewer(true);
@@ -110,47 +226,72 @@ export function createLibraryDocsController({
             };
         }
 
-        const resultJson = await sendWorkspaceCommand(
-            'rumoca.workspace.loadLibraries',
-            { libraries: JSON.stringify(loadedLibraries) },
-            300000,
-        );
-        const result = JSON.parse(resultJson);
-        setTerminalOutput(statusLabel(result.parsed_count, fileCount));
+        const uncachedSourceRoots = {};
+        let parsedCount = 0;
+        const uncachedArchiveIds = [];
+
+        for (const [archiveId, archive] of archiveEntries) {
+            const restoredCount = await restoreArchiveBinaryCache(archiveId);
+            if (restoredCount > 0) {
+                parsedCount += restoredCount;
+                continue;
+            }
+            uncachedArchiveIds.push(archiveId);
+            Object.assign(uncachedSourceRoots, archive.files || {});
+        }
+
+        if (Object.keys(uncachedSourceRoots).length > 0) {
+            const resultJson = await sendWorkspaceCommand(
+                'rumoca.workspace.loadSourceRoots',
+                { sourceRoots: JSON.stringify(uncachedSourceRoots) },
+                300000,
+            );
+            const result = JSON.parse(resultJson);
+            parsedCount += Number(result?.parsed_count) || 0;
+            for (const archiveId of uncachedArchiveIds) {
+                try {
+                    await exportArchiveBinaryCache(archiveId);
+                } catch (error) {
+                    console.warn('Failed to persist package-archive binary cache:', archiveId, error);
+                }
+            }
+        }
+
+        await setTerminalOutputWithSourceRootStatuses(statusLabel(parsedCount, fileCount));
         await refreshPackageViewer(true);
         return {
-            parsedCount: result.parsed_count,
+            parsedCount,
             fileCount,
         };
     }
 
-    function updateLibraryCount(count) {
-        const finalCount = count === undefined ? loadedLibraryArchives.size : count;
-        const badge = document.getElementById('libCount');
+    function updatePackageArchiveCount(count) {
+        const finalCount = count === undefined ? loadedPackageArchives.size : count;
+        const badge = document.getElementById('packageArchiveCount');
         if (badge) {
             badge.textContent = `(${finalCount})`;
         }
     }
 
-    function renderLoadedLibraryList() {
-        const container = document.getElementById('loadedLibraryList');
+    function renderLoadedPackageArchiveList() {
+        const container = document.getElementById('loadedPackageArchiveList');
         if (!container) return;
-        if (loadedLibraryArchives.size === 0) {
+        if (loadedPackageArchives.size === 0) {
             container.innerHTML = '';
             return;
         }
 
         const rows = [];
-        for (const [archiveId, archive] of loadedLibraryArchives.entries()) {
+        for (const [archiveId, archive] of loadedPackageArchives.entries()) {
             const escapedName = escapeHtmlSafe(archive.file_name);
             const escapedMeta = escapeHtmlSafe(`${archive.file_count} files`);
             rows.push(`
-                <div class="library-loaded-item">
+                <div class="package-archive-loaded-item">
                     <div>
                         <div>${escapedName}</div>
-                        <div class="library-loaded-meta">${escapedMeta}</div>
+                        <div class="package-archive-loaded-meta">${escapedMeta}</div>
                     </div>
-                    <button class="small danger" data-archive-id="${encodeURIComponent(archiveId)}" title="Unload this library archive">Remove</button>
+                    <button class="small danger" data-archive-id="${encodeURIComponent(archiveId)}" title="Unload this package archive">Remove</button>
                 </div>
             `);
         }
@@ -162,7 +303,7 @@ export function createLibraryDocsController({
                 if (!archiveId) return;
                 button.disabled = true;
                 try {
-                    await removeLoadedArchive(archiveId);
+                    await removeLoadedPackageArchive(archiveId);
                 } finally {
                     button.disabled = false;
                 }
@@ -393,36 +534,38 @@ export function createLibraryDocsController({
         return false;
     }
 
-    async function removeLoadedArchive(archiveId) {
-        if (!loadedLibraryArchives.has(archiveId)) return;
+    async function removeLoadedPackageArchive(archiveId) {
+        if (!loadedPackageArchives.has(archiveId)) return;
 
-        loadedLibraryArchives.delete(archiveId);
-        projectFs?.removeLibraryArchive(archiveId);
-        for (const [rowIndex, mappedArchiveId] of libraryRowArchiveIds.entries()) {
+        loadedPackageArchives.delete(archiveId);
+        projectFs?.removePackageArchive(archiveId);
+        projectFs?.removeCacheFile?.(packageArchiveCachePath(archiveId));
+        onPackageArchivesChanged?.();
+        for (const [rowIndex, mappedArchiveId] of packageArchiveRowIds.entries()) {
             if (mappedArchiveId !== archiveId) continue;
-            libraryRowArchiveIds.delete(rowIndex);
-            const row = document.querySelector(`.library-row[data-index="${rowIndex}"]`);
+            packageArchiveRowIds.delete(rowIndex);
+            const row = document.querySelector(`.package-archive-row[data-index="${rowIndex}"]`);
             if (!row) continue;
-            const status = row.querySelector('.library-status');
+            const status = row.querySelector('.package-archive-status');
             if (status) {
                 status.textContent = 'Removed';
-                status.className = 'library-status pending';
+                status.className = 'package-archive-status pending';
             }
-            hideLibraryProgress(row);
+            hidePackageArchiveProgress(row);
         }
 
-        rebuildLoadedLibrariesFromArchives();
-        renderLoadedLibraryList();
-        updateLibraryCount();
+        rebuildStagedSourceRootsFromArchives();
+        renderLoadedPackageArchiveList();
+        updatePackageArchiveCount();
 
-        setTerminalOutput('Reloading library cache after archive removal...');
+        setTerminalOutput('Reloading source-root cache after package-archive removal...');
         try {
-            await reloadWorkerLibraries(
-                (parsedCount) => `Reloaded ${parsedCount} files from ${loadedLibraryArchives.size} archive(s).`,
-                'No libraries loaded.',
+            await reloadWorkerSourceRootsFromArchives(
+                (parsedCount) => `Reloaded ${parsedCount} files from ${loadedPackageArchives.size} archive(s).`,
+                'No package archives loaded.',
             );
         } catch (e) {
-            setTerminalOutput(`Failed to reload libraries after removal: ${e.message || e}`);
+            setTerminalOutput(`Failed to reload package archives after removal: ${e.message || e}`);
         }
     }
 
@@ -505,68 +648,86 @@ export function createLibraryDocsController({
         }
     }
 
-    function addLibraryRow() {
-        const list = document.getElementById('libraryList');
+    function addPackageArchiveRow() {
+        const list = document.getElementById('packageArchiveList');
         if (!list) return;
 
-        const index = libraryRowCount++;
+        const index = packageArchiveRowCount++;
         const row = document.createElement('div');
-        row.className = 'library-row';
+        row.className = 'package-archive-row';
         row.dataset.index = index;
         row.innerHTML = `
-            <input type="file" accept=".zip" onchange="loadLibraryFile(${index}, this)" title="Select a ZIP file containing .mo library files">
-            <button class="small danger" onclick="removeLibraryRow(${index})" title="Remove this library">X</button>
-            <span class="library-status pending">No file selected</span>
-            <div class="library-progress" hidden>
-                <div class="library-progress-track"><div class="library-progress-fill"></div></div>
-                <span class="library-progress-text">0%</span>
+            <input type="file" accept=".zip" onchange="loadPackageArchiveRowFile(${index}, this)" title="Select a ZIP file containing .mo package files">
+            <button class="small danger" onclick="removePackageArchiveRow(${index})" title="Remove this package archive">X</button>
+            <span class="package-archive-status pending">No file selected</span>
+            <div class="package-archive-progress" hidden>
+                <div class="package-archive-progress-track"><div class="package-archive-progress-fill"></div></div>
+                <span class="package-archive-progress-text">0%</span>
             </div>
         `;
         list.appendChild(row);
     }
 
-    function removeLibraryRow(index) {
-        const archiveId = libraryRowArchiveIds.get(index);
+    function removePackageArchiveRow(index) {
+        const archiveId = packageArchiveRowIds.get(index);
         if (archiveId) {
-            libraryRowArchiveIds.delete(index);
-            void removeLoadedArchive(archiveId);
+            packageArchiveRowIds.delete(index);
+            void removeLoadedPackageArchive(archiveId);
         }
-        const row = document.querySelector(`.library-row[data-index="${index}"]`);
+        const row = document.querySelector(`.package-archive-row[data-index="${index}"]`);
         if (row) row.remove();
-        updateLibraryCount();
+        updatePackageArchiveCount();
     }
 
-    async function importLoadedLibraries(row, fileName, fileCount) {
-        const status = row?.querySelector('.library-status') || null;
+    function ensurePackageArchiveRow() {
+        let row = document.querySelector('.package-archive-row:last-child');
+        if (row) {
+            return row;
+        }
+        addPackageArchiveRow();
+        row = document.querySelector('.package-archive-row:last-child');
+        if (row) {
+            return row;
+        }
+        const virtualRow = document.createElement('div');
+        virtualRow.className = 'package-archive-row virtual';
+        const status = document.createElement('span');
+        status.className = 'package-archive-status pending';
+        virtualRow.appendChild(status);
+        return virtualRow;
+    }
+
+    async function importStagedSourceRoots(row, fileName, fileCount) {
+        const status = row?.querySelector('.package-archive-status') || null;
         if (status) {
             status.textContent = `Parsing ${fileCount}...`;
-            status.className = 'library-status loading';
+            status.className = 'package-archive-status loading';
         }
         if (row) {
-            setLibraryProgress(row, 0, `Parsing ${fileCount} files`, true);
+            setPackageArchiveProgress(row, 0, `Parsing ${fileCount} files`, true);
         }
 
-        setTerminalOutput(`Loaded ${fileCount} .mo files from ${fileName}\n\nParsing libraries with rayon...`);
+        setTerminalOutput(`Loaded ${fileCount} .mo files from ${fileName}\n\nParsing source roots with rayon...`);
         const importStart = performance.now();
-        const librariesJson = JSON.stringify(loadedLibraries);
+        const sourceRootsJson = JSON.stringify(stagedSourceRoots);
         const resultJson = await sendWorkspaceCommand(
-            'rumoca.workspace.loadLibraries',
-            { libraries: librariesJson },
+            'rumoca.workspace.loadSourceRoots',
+            { sourceRoots: sourceRootsJson },
             300000,
         );
         const result = JSON.parse(resultJson);
-        const libraryImportMs = Math.round(performance.now() - importStart);
-        const elapsed = (libraryImportMs / 1000).toFixed(1);
+        const sourceRootImportMs = Math.round(performance.now() - importStart);
+        const elapsed = (sourceRootImportMs / 1000).toFixed(1);
 
         if (status) {
             status.textContent = `${result.parsed_count} files parsed`;
-            status.className = 'library-status loaded';
+            status.className = 'package-archive-status loaded';
         }
         if (row) {
-            setLibraryProgress(row, 100, 'Done', false);
+            setPackageArchiveProgress(row, 100, 'Done', false);
         }
 
-        let output = `Parsed ${result.parsed_count} files in ${elapsed}s.\nArchives loaded: ${loadedLibraryArchives.size}`;
+        let output = `Parsed ${result.parsed_count} files in ${elapsed}s.\nArchives loaded: ${loadedPackageArchives.size}`;
         if (result.skipped_files.length > 0) {
             output += `\n\nSkipped ${result.skipped_files.length} files (already loaded):`;
             result.skipped_files.slice(0, 5).forEach(f => {
@@ -577,32 +738,39 @@ export function createLibraryDocsController({
             }
         }
         if (result.conflicts.length > 0) {
-            output += `\n\nWARNING: ${result.conflicts.length} library conflicts (replaced): ${result.conflicts.join(', ')}`;
+            output += `\n\nWARNING: ${result.conflicts.length} source-root conflicts (replaced): ${result.conflicts.join(', ')}`;
         }
         output += '\n\nReady for compilation!';
 
-        setTerminalOutput(output);
-        renderLoadedLibraryList();
-        updateLibraryCount();
+        await setTerminalOutputWithSourceRootStatuses(output);
+        renderLoadedPackageArchiveList();
+        updatePackageArchiveCount();
+        for (const archiveId of loadedPackageArchives.keys()) {
+            try {
+                await exportArchiveBinaryCache(archiveId);
+            } catch (error) {
+                console.warn('Failed to export package-archive binary cache:', archiveId, error);
+            }
+        }
         await refreshPackageViewer(true);
 
         return {
-            libraryImportMs,
+            sourceRootImportMs,
             fileCount,
             parsedCount: result.parsed_count,
         };
     }
 
-    async function loadLibraryArchive(index, row, file, options = {}) {
+    async function loadPackageArchive(index, row, file, options = {}) {
         if (!row) return;
 
         const { stageOnly = false } = options;
-        const status = row.querySelector('.library-status');
+        const status = row.querySelector('.package-archive-status');
         let archivePrepMs = 0;
 
         status.textContent = 'Loading...';
-        status.className = 'library-status loading';
-        setLibraryProgress(row, 0, 'Loading', true);
+        status.className = 'package-archive-status loading';
+        setPackageArchiveProgress(row, 0, 'Loading', true);
 
         try {
             const prepStart = performance.now();
@@ -630,7 +798,7 @@ export function createLibraryDocsController({
             if (moFiles.length === 0) {
                 throw new Error('No usable .mo files found in archive');
             }
-            setLibraryProgress(row, 0, `Extracting 0/${moFiles.length}`, false);
+            setPackageArchiveProgress(row, 0, `Extracting 0/${moFiles.length}`, false);
 
             for (const { path, file: zipFile } of moFiles) {
                 const content = await zipFile.async('string');
@@ -650,7 +818,7 @@ export function createLibraryDocsController({
                 if (processedCount % 50 === 0 || processedCount === moFiles.length) {
                     const extractPercent = (processedCount / moFiles.length) * 100;
                     status.textContent = `Extracting ${processedCount}/${moFiles.length}`;
-                    setLibraryProgress(
+                    setPackageArchiveProgress(
                         row,
                         extractPercent,
                         `Extracting ${processedCount}/${moFiles.length}`,
@@ -662,225 +830,220 @@ export function createLibraryDocsController({
             const fileCount = Object.keys(data).length;
             archivePrepMs = Math.round(performance.now() - prepStart);
             status.textContent = `Parsing ${fileCount}...`;
-            status.className = 'library-status loading';
-            setLibraryProgress(row, 0, `Parsing ${fileCount} files`, true);
+            status.className = 'package-archive-status loading';
+            setPackageArchiveProgress(row, 0, `Parsing ${fileCount} files`, true);
 
-            setTerminalOutput(`Loaded ${fileCount} .mo files from ${file.name}\n\nParsing libraries with rayon...`);
+            setTerminalOutput(`Loaded ${fileCount} .mo files from ${file.name}\n\nParsing source roots with rayon...`);
             const archiveId = archiveFingerprint(file);
-            const previousArchiveId = libraryRowArchiveIds.get(index) || null;
+            const previousArchiveId = packageArchiveRowIds.get(index) || null;
             const previousArchiveEntry = previousArchiveId
-                ? loadedLibraryArchives.get(previousArchiveId) || null
+                ? loadedPackageArchives.get(previousArchiveId) || null
                 : null;
 
             if (previousArchiveId && previousArchiveId !== archiveId) {
-                loadedLibraryArchives.delete(previousArchiveId);
-                projectFs?.removeLibraryArchive(previousArchiveId);
+                loadedPackageArchives.delete(previousArchiveId);
+                projectFs?.removePackageArchive(previousArchiveId);
+                projectFs?.removeCacheFile?.(packageArchiveCachePath(previousArchiveId));
             }
-            loadedLibraryArchives.set(archiveId, {
+            loadedPackageArchives.set(archiveId, {
                 file_name: file.name,
                 file_count: fileCount,
                 files: data,
             });
-            projectFs?.replaceLibraryArchive(archiveId, file.name, data);
-            libraryRowArchiveIds.set(index, archiveId);
-            rebuildLoadedLibrariesFromArchives();
+            projectFs?.replacePackageArchive(archiveId, file.name, data);
+            onPackageArchivesChanged?.();
+            packageArchiveRowIds.set(index, archiveId);
+            rebuildStagedSourceRootsFromArchives();
 
             if (stageOnly) {
-                renderLoadedLibraryList();
-                updateLibraryCount();
+                renderLoadedPackageArchiveList();
+                updatePackageArchiveCount();
                 status.textContent = `${fileCount} files staged`;
-                status.className = 'library-status loaded';
-                setLibraryProgress(row, 100, 'Staged', false);
+                status.className = 'package-archive-status loaded';
+                setPackageArchiveProgress(row, 100, 'Staged', false);
                 setTerminalOutput(
-                    `Loaded ${fileCount} .mo files from ${file.name}\n\nReady to import on first library action.`,
+                    `Loaded ${fileCount} .mo files from ${file.name}\n\nReady to import on first source-root request.`,
                 );
                 return {
                     archivePrepMs,
-                    libraryImportMs: 0,
+                    sourceRootImportMs: 0,
                     fileCount,
                     parsedCount: 0,
                 };
             }
 
             try {
-                const imported = await importLoadedLibraries(row, file.name, fileCount);
+                const imported = await importStagedSourceRoots(row, file.name, fileCount);
                 return {
                     archivePrepMs,
-                    libraryImportMs: imported.libraryImportMs,
+                    sourceRootImportMs: imported.sourceRootImportMs,
                     fileCount: imported.fileCount,
                     parsedCount: imported.parsedCount,
                 };
             } catch (e) {
-                loadedLibraryArchives.delete(archiveId);
-                projectFs?.removeLibraryArchive(archiveId);
+                loadedPackageArchives.delete(archiveId);
+                projectFs?.removePackageArchive(archiveId);
+                projectFs?.removeCacheFile?.(packageArchiveCachePath(archiveId));
                 if (previousArchiveId && previousArchiveEntry) {
-                    loadedLibraryArchives.set(previousArchiveId, previousArchiveEntry);
-                    projectFs?.replaceLibraryArchive(
+                    loadedPackageArchives.set(previousArchiveId, previousArchiveEntry);
+                    projectFs?.replacePackageArchive(
                         previousArchiveId,
                         previousArchiveEntry.file_name,
                         previousArchiveEntry.files,
                     );
-                    libraryRowArchiveIds.set(index, previousArchiveId);
+                    packageArchiveRowIds.set(index, previousArchiveId);
                 } else {
-                    libraryRowArchiveIds.delete(index);
+                    packageArchiveRowIds.delete(index);
                 }
-                rebuildLoadedLibrariesFromArchives();
-                renderLoadedLibraryList();
+                onPackageArchivesChanged?.();
+                rebuildStagedSourceRootsFromArchives();
+                renderLoadedPackageArchiveList();
 
                 status.textContent = 'Parse error';
-                status.className = 'library-status error';
-                setLibraryProgress(row, 100, 'Parse error', false);
+                status.className = 'package-archive-status error';
+                setPackageArchiveProgress(row, 100, 'Parse error', false);
                 setTerminalOutput(`Loaded ${fileCount} files but failed to parse: ${e.message}`);
-                updateLibraryCount();
+                updatePackageArchiveCount();
             }
         } catch (e) {
             status.textContent = 'Error';
-            status.className = 'library-status error';
-            setLibraryProgress(row, 100, 'Error', false);
-            setTerminalOutput(`Failed to load library: ${e.message}`);
+            status.className = 'package-archive-status error';
+            setPackageArchiveProgress(row, 100, 'Error', false);
+            setTerminalOutput(`Failed to load package archive: ${e.message}`);
         } finally {
             status.classList.remove('loading');
         }
     }
 
-    async function loadLibraryFile(index, input) {
-        const row = document.querySelector(`.library-row[data-index="${index}"]`);
+    async function loadPackageArchiveRowFile(index, input) {
+        const row = document.querySelector(`.package-archive-row[data-index="${index}"]`);
         if (!row) return;
 
-        const status = row.querySelector('.library-status');
+        const status = row.querySelector('.package-archive-status');
         const file = input.files[0];
 
         if (!file) {
             status.textContent = 'No file selected';
-            status.className = 'library-status pending';
-            hideLibraryProgress(row);
+            status.className = 'package-archive-status pending';
+            hidePackageArchiveProgress(row);
             return;
         }
 
-        await loadLibraryArchive(index, row, file);
+        await loadPackageArchive(index, row, file);
     }
 
-    async function loadLibraryArchiveFile(file) {
+    async function loadPackageArchiveFile(file) {
         if (!file) {
-            throw new Error('No library archive provided');
+            throw new Error('No package archive provided');
         }
-        let row = document.querySelector('.library-row:last-child');
-        if (!row) {
-            addLibraryRow();
-            row = document.querySelector('.library-row:last-child');
-        }
-        if (!row) {
-            throw new Error('Failed to create a library row for archive upload');
-        }
-        const index = Number(row.dataset.index);
-        return await loadLibraryArchive(index, row, file);
+        const row = ensurePackageArchiveRow();
+        const index = Number(row.dataset.index || packageArchiveRowCount++);
+        return await loadPackageArchive(index, row, file);
     }
 
-    async function stageLibraryArchiveFile(file) {
+    async function stagePackageArchiveFile(file) {
         if (!file) {
-            throw new Error('No library archive provided');
+            throw new Error('No package archive provided');
         }
-        let row = document.querySelector('.library-row:last-child');
-        if (!row) {
-            addLibraryRow();
-            row = document.querySelector('.library-row:last-child');
-        }
-        if (!row) {
-            throw new Error('Failed to create a library row for archive upload');
-        }
-        const index = Number(row.dataset.index);
-        return await loadLibraryArchive(index, row, file, { stageOnly: true });
+        const row = ensurePackageArchiveRow();
+        const index = Number(row.dataset.index || packageArchiveRowCount++);
+        return await loadPackageArchive(index, row, file, { stageOnly: true });
     }
 
-    async function importLoadedLibrariesForSmoke() {
-        const fileCount = Object.keys(loadedLibraries).length;
+    async function importLoadedPackageArchivesForSmoke() {
+        const fileCount = Object.keys(stagedSourceRoots).length;
         if (fileCount === 0) {
             return {
-                libraryImportMs: 0,
+                sourceRootImportMs: 0,
                 fileCount: 0,
                 parsedCount: 0,
             };
         }
-        const row = document.querySelector('.library-row:last-child') || null;
-        return await importLoadedLibraries(row, 'staged archive', fileCount);
+        const row = document.querySelector('.package-archive-row:last-child') || null;
+        return await importStagedSourceRoots(row, 'staged archive', fileCount);
     }
 
-    async function clearLibraries() {
-        loadedLibraries = {};
-        loadedLibraryArchives.clear();
-        libraryRowArchiveIds.clear();
-        projectFs?.clearLibraries();
-        resetLibraryRowsUi();
+    async function clearPackageArchives() {
+        for (const archiveId of loadedPackageArchives.keys()) {
+            projectFs?.removeCacheFile?.(packageArchiveCachePath(archiveId));
+        }
+        stagedSourceRoots = {};
+        loadedPackageArchives.clear();
+        packageArchiveRowIds.clear();
+        projectFs?.clearPackageArchives();
+        onPackageArchivesChanged?.();
+        resetPackageArchiveRowsUi();
 
         try {
-            await sendWorkspaceCommand('rumoca.workspace.clearLibraryCache', {});
+            await sendWorkspaceCommand('rumoca.workspace.clearSourceRootCache', {});
         } catch (e) {
-            console.warn('Failed to clear library cache:', e);
+            console.warn('Failed to clear package-archive cache:', e);
         }
 
-        renderLoadedLibraryList();
-        updateLibraryCount(0);
-        setTerminalOutput('Libraries cleared.');
+        renderLoadedPackageArchiveList();
+        updatePackageArchiveCount(0);
+        setTerminalOutput('Package archives cleared.');
         classInfoCache.clear();
         selectedClassQualifiedName = null;
         await refreshPackageViewer(true);
     }
 
-    async function restoreProjectLibraries() {
-        loadedLibraries = {};
-        loadedLibraryArchives.clear();
-        libraryRowArchiveIds.clear();
-        resetLibraryRowsUi();
+    async function restoreProjectPackageArchives() {
+        stagedSourceRoots = {};
+        loadedPackageArchives.clear();
+        packageArchiveRowIds.clear();
+        resetPackageArchiveRowsUi();
 
-        const archives = projectFs?.listLibraryArchives?.() || [];
+        const archives = projectFs?.listPackageArchives?.() || [];
         for (const archive of archives) {
-            loadedLibraryArchives.set(archive.archiveId, {
+            loadedPackageArchives.set(archive.archiveId, {
                 file_name: archive.fileName,
                 file_count: archive.fileCount,
-                files: projectFs.getArchiveFiles(archive.archiveId),
+                files: projectFs.getPackageArchiveFiles(archive.archiveId),
             });
         }
-        rebuildLoadedLibrariesFromArchives();
-        renderLoadedLibraryList();
-        updateLibraryCount();
+        onPackageArchivesChanged?.();
+        rebuildStagedSourceRootsFromArchives();
+        renderLoadedPackageArchiveList();
+        updatePackageArchiveCount();
 
         classInfoCache.clear();
         selectedClassQualifiedName = null;
 
         try {
-            await reloadWorkerLibraries(
-                (parsedCount) => `Restored ${parsedCount} library files from project.`,
-                'Project has no libraries loaded.',
+            await reloadWorkerSourceRootsFromArchives(
+                (parsedCount) => `Restored ${parsedCount} package-archive files from project.`,
+                'Project has no package archives loaded.',
             );
         } catch (e) {
-            setTerminalOutput(`Failed to restore project libraries: ${e.message || e}`);
+            setTerminalOutput(`Failed to restore project package archives: ${e.message || e}`);
         }
     }
 
     function handleWorkerProgress({ current, total, percent }) {
-        const loadingRow = document.querySelector('.library-row .library-status.loading')?.closest('.library-row');
-        const libraryStatus = loadingRow ? loadingRow.querySelector('.library-status') : null;
-        if (libraryStatus) {
-            libraryStatus.textContent = `Parsing ${current}/${total} (${percent}%)`;
+        const loadingRow = document.querySelector('.package-archive-row .package-archive-status.loading')?.closest('.package-archive-row');
+        const packageArchiveStatus = loadingRow ? loadingRow.querySelector('.package-archive-status') : null;
+        if (packageArchiveStatus) {
+            packageArchiveStatus.textContent = `Parsing ${current}/${total} (${percent}%)`;
         }
         if (loadingRow) {
-            setLibraryProgress(loadingRow, Number(percent) || 0, `Parsing ${current}/${total}`, false);
+            setPackageArchiveProgress(loadingRow, Number(percent) || 0, `Parsing ${current}/${total}`, false);
         }
     }
 
     function bindWindowApi() {
-        window.removeLoadedArchive = removeLoadedArchive;
+        window.removeLoadedPackageArchive = removeLoadedPackageArchive;
         window.toggleClassExpand = toggleClassExpand;
         window.selectClass = selectClass;
         window.filterClassTree = filterClassTree;
         window.refreshPackageViewer = refreshPackageViewer;
-        window.addLibraryRow = addLibraryRow;
-        window.removeLibraryRow = removeLibraryRow;
-        window.loadLibraryFile = loadLibraryFile;
-        window.loadLibraryArchiveFile = loadLibraryArchiveFile;
-        window.stageLibraryArchiveFile = stageLibraryArchiveFile;
-        window.importLoadedLibrariesForSmoke = importLoadedLibrariesForSmoke;
-        window.clearLibraries = clearLibraries;
+        window.addPackageArchiveRow = addPackageArchiveRow;
+        window.removePackageArchiveRow = removePackageArchiveRow;
+        window.loadPackageArchiveRowFile = loadPackageArchiveRowFile;
+        window.loadPackageArchiveFile = loadPackageArchiveFile;
+        window.stagePackageArchiveFile = stagePackageArchiveFile;
+        window.importLoadedPackageArchivesForSmoke = importLoadedPackageArchivesForSmoke;
+        window.clearPackageArchives = clearPackageArchives;
 
         const classDocPanel = document.getElementById('classDocPanel');
         if (classDocPanel && !classDocPanel.dataset.linksGuardBound) {
@@ -893,16 +1056,16 @@ export function createLibraryDocsController({
             classDocPanel.dataset.linksGuardBound = 'true';
         }
 
-        renderLoadedLibraryList();
-        updateLibraryCount(loadedLibraryArchives.size);
+        renderLoadedPackageArchiveList();
+        updatePackageArchiveCount(loadedPackageArchives.size);
     }
 
     return {
         bindWindowApi,
-        clearLibraries,
+        clearPackageArchives,
         handleWorkerProgress,
         refreshPackageViewer,
-        restoreProjectLibraries,
-        updateLibraryCount,
+        restoreProjectPackageArchives,
+        updatePackageArchiveCount,
     };
 }

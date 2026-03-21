@@ -1,13 +1,13 @@
 use super::*;
 
-/// Pre-compiled library for efficient multi-model compilation.
+/// Pre-compiled source root for efficient multi-model compilation.
 ///
 /// This is a convenience wrapper around [`Session`] that initializes from
-/// a [`ast::StoredDefinition`]. Use this when you've already parsed your library
+/// a [`ast::StoredDefinition`]. Use this when you've already parsed your source root
 /// (e.g., from parallel file parsing) and want to compile multiple models.
 ///
 /// For new code, consider using [`Session`] directly with [`Session::add_parsed_batch`].
-pub struct CompiledLibrary {
+pub struct CompiledSourceRoot {
     resolved: Arc<ast::ResolvedTree>,
     model_names: Vec<String>,
     class_type_counts: std::collections::HashMap<String, usize>,
@@ -16,7 +16,7 @@ pub struct CompiledLibrary {
     pub(super) compile_cache: Mutex<IndexMap<String, PhaseResult>>,
 }
 
-impl CompiledLibrary {
+impl CompiledSourceRoot {
     fn from_indexed_state(
         resolved: Arc<ast::ResolvedTree>,
         model_names: Vec<String>,
@@ -34,12 +34,12 @@ impl CompiledLibrary {
         }
     }
 
-    /// Create a compiled library from a ast::StoredDefinition.
+    /// Create a compiled source root from a ast::StoredDefinition.
     ///
     /// This resolves the AST once. Type checking happens after instantiation.
     pub fn from_stored_definition(def: ast::StoredDefinition) -> Result<Self> {
         let mut session = Session::new(SessionConfig::default());
-        session.add_parsed("library", def);
+        session.add_parsed("source_root", def);
         session.build_resolved()?;
         let resolved = session.ensure_resolved()?.clone();
         Ok(Self::from_indexed_state(
@@ -50,10 +50,10 @@ impl CompiledLibrary {
         ))
     }
 
-    /// Create a compiled library from a parsed batch, indexing it tolerantly.
+    /// Create a compiled source root from a parsed batch, indexing it tolerantly.
     ///
-    /// This preserves whole-library resolve diagnostics for later strict
-    /// target-closure compilation without requiring the entire library to
+    /// This preserves whole-source-root resolve diagnostics for later strict
+    /// target-closure compilation without requiring the entire source root to
     /// resolve cleanly up front.
     pub fn from_parsed_batch_tolerant(
         documents: Vec<(String, ast::StoredDefinition)>,
@@ -71,7 +71,7 @@ impl CompiledLibrary {
         ))
     }
 
-    /// Create a compiled library from an already-resolved tree.
+    /// Create a compiled source root from an already-resolved tree.
     ///
     /// This avoids re-running resolve and is intended for callers that already
     /// hold a validated resolved tree (e.g., MSL regression harness).
@@ -85,14 +85,14 @@ impl CompiledLibrary {
         )
     }
 
-    /// Get all model names in the library.
+    /// Get all model names in the source root.
     ///
     /// This is infallible after construction since build_resolved was called.
     pub fn model_names(&self) -> &[String] {
         &self.model_names
     }
 
-    /// Count all class types in the library.
+    /// Count all class types in the source root.
     pub fn class_type_counts(&self) -> &std::collections::HashMap<String, usize> {
         &self.class_type_counts
     }
@@ -113,7 +113,7 @@ impl CompiledLibrary {
         if let Some(result) = self
             .compile_cache
             .lock()
-            .expect("compiled library cache poisoned")
+            .expect("compiled source-root cache poisoned")
             .get(model_name)
             .cloned()
         {
@@ -123,7 +123,7 @@ impl CompiledLibrary {
         let result = compile_model_internal(&self.resolved_tree().0, model_name);
         self.compile_cache
             .lock()
-            .expect("compiled library cache poisoned")
+            .expect("compiled source-root cache poisoned")
             .entry(model_name.to_string())
             .or_insert_with(|| result.clone());
         result
@@ -147,7 +147,7 @@ impl CompiledLibrary {
             let cache = self
                 .compile_cache
                 .lock()
-                .expect("compiled library cache poisoned");
+                .expect("compiled source-root cache poisoned");
             split_cached_target_results(&cache, targets)
         };
 
@@ -161,7 +161,7 @@ impl CompiledLibrary {
             let mut cache = self
                 .compile_cache
                 .lock()
-                .expect("compiled library cache poisoned");
+                .expect("compiled source-root cache poisoned");
             for (name, result) in compiled_misses {
                 cache.entry(name.clone()).or_insert_with(|| result.clone());
                 results.insert(name, result);
@@ -179,7 +179,7 @@ impl CompiledLibrary {
     }
 
     /// Compile the requested model strictly against its reachable closure while
-    /// preserving unrelated library diagnostics outside that closure.
+    /// preserving unrelated source-root diagnostics outside that closure.
     pub fn compile_model_strict_reachable_with_recovery(
         &self,
         model_name: &str,
@@ -246,7 +246,7 @@ impl CompiledLibrary {
 
     /// Compile a model with phase-level tracking.
     ///
-    /// Returns PhaseResult directly (infallible for pre-built libraries).
+    /// Returns PhaseResult directly (infallible for pre-built source roots).
     pub fn compile_model_phases(&self, model_name: &str) -> PhaseResult {
         self.cached_phase_result(model_name)
     }

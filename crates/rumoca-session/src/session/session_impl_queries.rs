@@ -8,14 +8,10 @@ use super::session_impl::{
     collect_navigation_class_rename_locations_in_definition, navigation_location_contains_position,
     record_query_class_lookup_match,
 };
-use super::session_impl_symbols::*;
 use super::*;
 use crate::instrumentation::{
     record_declaration_index_query_hit, record_declaration_index_query_miss,
-    record_orphan_package_membership_query_hit, record_orphan_package_membership_query_miss,
     record_scope_query_hit, record_scope_query_miss,
-    record_source_set_package_membership_query_hit,
-    record_source_set_package_membership_query_miss,
 };
 
 #[derive(Debug, Clone)]
@@ -37,6 +33,12 @@ struct NavigationTargetSearch<'a> {
     class_bodies: &'a FileClassBodyIndex,
     line: u32,
     character: u32,
+}
+
+#[derive(Default)]
+struct HydratedSourceSetAstState {
+    summary_signature: SummarySignature,
+    workspace_symbols: Vec<WorkspaceSymbol>,
 }
 
 impl Session {
@@ -63,6 +65,7 @@ impl Session {
             next_source_set_id: 0,
             current_revision: RevisionId::default(),
             next_revision: 0,
+            source_root_indexing: SourceRootIndexingCoordinatorState::default(),
             snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
@@ -86,22 +89,25 @@ impl Session {
             .invalidate_diagnostics_inputs_for_mode(SemanticDiagnosticsMode::Save);
     }
 
-    pub(crate) fn invalidate_library_completion_state(&mut self, cause: CacheInvalidationCause) {
-        record_library_completion_state_invalidation(cause);
-        self.query_state.ast.library_namespace_cache = None;
+    pub(crate) fn invalidate_source_root_completion_state(
+        &mut self,
+        cause: CacheInvalidationCause,
+    ) {
+        record_namespace_completion_state_invalidation(cause);
+        self.query_state.ast.source_root_namespace_cache = None;
         self.query_state.ast.package_def_map.clear();
     }
 
-    pub(crate) fn invalidate_library_completion_state_for_source_set(
+    pub(crate) fn invalidate_source_root_completion_state_for_source_set(
         &mut self,
         source_set_id: SourceSetId,
         cause: CacheInvalidationCause,
     ) {
-        record_library_completion_state_invalidation(cause);
-        if let Some(cache) = self.query_state.ast.library_namespace_cache.as_mut() {
+        record_namespace_completion_state_invalidation(cause);
+        if let Some(cache) = self.query_state.ast.source_root_namespace_cache.as_mut() {
             cache.invalidate_source_set(source_set_id);
         } else {
-            self.query_state.ast.library_namespace_cache = None;
+            self.query_state.ast.source_root_namespace_cache = None;
         }
         self.query_state
             .ast
@@ -109,8 +115,18 @@ impl Session {
             .invalidate_source_set(source_set_id);
     }
 
+    pub(crate) fn invalidate_source_root_resolved_aggregate_for_source_set(
+        &mut self,
+        source_set_id: SourceSetId,
+    ) {
+        self.query_state
+            .resolved
+            .invalidate_source_set_aggregate(source_set_id);
+    }
+
     pub(crate) fn bump_revision(&mut self) -> RevisionId {
         self.sync_query_state_from_snapshots();
+        self.source_root_indexing.read_prewarm_session_revision = None;
         self.next_revision = self.next_revision.saturating_add(1);
         let revision = RevisionId::new(self.next_revision);
         self.current_revision = revision;
@@ -149,7 +165,7 @@ impl Session {
         self.documents.get(uri).map(|doc| doc.body_fingerprint())
     }
 
-    fn file_outline_fingerprint(&self, uri: &str) -> Option<Fingerprint> {
+    pub(super) fn file_outline_fingerprint(&self, uri: &str) -> Option<Fingerprint> {
         self.documents.get(uri).map(|doc| doc.outline_fingerprint())
     }
 
@@ -184,14 +200,9 @@ impl Session {
             .source_sets
             .values()
             .find(|record| record.id == source_set_id)?;
-        match record.durability {
-            SourceRootDurability::Volatile => Some(SourceSetQuerySignature::Summary(
-                self.summary_signature_for_uris(&record.uris.iter().cloned().collect::<Vec<_>>()),
-            )),
-            SourceRootDurability::Normal | SourceRootDurability::Durable => {
-                Some(SourceSetQuerySignature::Revision(record.revision))
-            }
-        }
+        Some(SourceSetQuerySignature::Summary(
+            self.summary_signature_for_uris(&record.uris.iter().cloned().collect::<Vec<_>>()),
+        ))
     }
 
     pub(super) fn detached_summary_signature(&self) -> (SummarySignature, Vec<String>) {
@@ -210,7 +221,7 @@ impl Session {
         (signature, uris)
     }
 
-    fn session_query_signature(&self) -> SessionQuerySignature {
+    pub(super) fn session_query_signature(&self) -> SessionQuerySignature {
         let source_sets = if self.source_set_signature_overrides.is_empty() {
             self.source_sets
                 .values()
@@ -227,7 +238,7 @@ impl Session {
         }
     }
 
-    fn source_set_uris_by_id(&self, source_set_id: SourceSetId) -> Vec<String> {
+    pub(super) fn source_set_uris_by_id(&self, source_set_id: SourceSetId) -> Vec<String> {
         self.source_sets
             .values()
             .find(|record| record.id == source_set_id)
@@ -235,106 +246,240 @@ impl Session {
             .unwrap_or_default()
     }
 
-    fn with_workspace_symbol_source_set_query<R>(
-        &mut self,
-        source_set_id: SourceSetId,
-        signature: SourceSetQuerySignature,
-        f: impl FnOnce(&SourceSetWorkspaceSymbolCache) -> R,
-    ) -> R {
-        let is_hit = self
-            .query_state
-            .ast
-            .workspace_symbol_query_cache
-            .as_ref()
-            .and_then(|cache| cache.source_set_caches.get(&source_set_id))
-            .is_some_and(|cache| cache.signature == signature);
-        if !is_hit {
-            let mut symbols = Vec::new();
-            for uri in self.source_set_uris_by_id(source_set_id) {
-                symbols.extend(self.file_item_index_query(&uri));
-            }
-            self.query_state
-                .ast
-                .workspace_symbol_query_cache
-                .get_or_insert_with(WorkspaceSymbolQueryCache::default)
-                .source_set_caches
-                .insert(
-                    source_set_id,
-                    Arc::new({
-                        let entries = symbols
-                            .into_iter()
-                            .map(WorkspaceSymbolSearchEntry::from_symbol)
-                            .collect::<Vec<_>>();
-                        let search_index = WorkspaceSymbolSearchIndex::from_entries(&entries);
-                        SourceSetWorkspaceSymbolCache {
-                            signature,
-                            entries,
-                            search_index,
-                        }
-                    }),
-                );
-        }
-
-        let cache = self
-            .query_state
-            .ast
-            .workspace_symbol_query_cache
-            .as_ref()
-            .and_then(|cache| cache.source_set_caches.get(&source_set_id))
-            .expect("workspace-symbol source-set cache should exist");
-        f(cache.as_ref())
+    pub(crate) fn source_root_parsed_documents(
+        &self,
+        source_set_key: &str,
+    ) -> Option<Vec<(String, ast::StoredDefinition)>> {
+        let record = self.source_sets.get(source_set_key)?;
+        record
+            .uris
+            .iter()
+            .map(|uri| {
+                let parsed = self.documents.get(uri)?.parsed()?.clone();
+                Some((uri.clone(), parsed))
+            })
+            .collect()
     }
 
-    fn with_detached_workspace_symbol_query<R>(
-        &mut self,
-        signature: SummarySignature,
-        uris: Vec<String>,
-        f: impl FnOnce(&DetachedWorkspaceSymbolCache) -> R,
-    ) -> R {
-        let is_hit = self
-            .query_state
-            .ast
-            .workspace_symbol_query_cache
-            .as_ref()
-            .and_then(|cache| cache.detached_cache.as_ref())
-            .is_some_and(|cache| cache.signature == signature);
-        if !is_hit {
-            let mut symbols = Vec::new();
-            for uri in uris {
-                symbols.extend(self.file_item_index_query(&uri));
+    pub(super) fn detached_source_root_summary_signature(
+        &self,
+        source_set_key: &str,
+    ) -> (SummarySignature, Vec<String>) {
+        let mut signature = SummarySignature::new();
+        let mut uris = Vec::new();
+        for (uri, document) in &self.documents {
+            if document.content.is_empty() || document.parsed().is_none() {
+                continue;
             }
-            self.query_state
-                .ast
-                .workspace_symbol_query_cache
-                .get_or_insert_with(WorkspaceSymbolQueryCache::default)
-                .detached_cache = Some(Arc::new({
-                let entries = symbols
-                    .into_iter()
-                    .map(WorkspaceSymbolSearchEntry::from_symbol)
-                    .collect::<Vec<_>>();
-                let search_index = WorkspaceSymbolSearchIndex::from_entries(&entries);
-                DetachedWorkspaceSymbolCache {
-                    signature,
-                    entries,
-                    search_index,
-                }
-            }));
+            if !self
+                .source_root_backing_keys_for_uri(uri)
+                .contains(source_set_key)
+            {
+                continue;
+            }
+            let Some(file_id) = self.file_id_for_uri(uri) else {
+                continue;
+            };
+            signature.insert(file_id, document.summary_fingerprint());
+            uris.push(uri.clone());
+        }
+        (signature, uris)
+    }
+
+    pub(super) fn rebuild_source_set_package_def_map(
+        &mut self,
+        uris: &[String],
+        detached_summaries: &[FileSummary],
+    ) -> PackageDefMap {
+        let mut def_map = PackageDefMap::default();
+        for uri in uris {
+            if let Some(summary) = self.file_summary_query(uri) {
+                def_map.extend_from_summary(summary);
+            }
+        }
+        for summary in detached_summaries {
+            def_map.extend_from_summary(summary);
+        }
+        def_map
+    }
+
+    pub(super) fn source_set_class_graph_signature(
+        &self,
+        source_set_id: SourceSetId,
+    ) -> Option<SourceSetClassGraphSignature> {
+        let source_set_key = self
+            .source_sets
+            .iter()
+            .find(|(_, record)| record.id == source_set_id)
+            .map(|(key, _)| key.as_str())?;
+        let source_set = self.source_set_query_signature(source_set_id)?;
+        let (detached, _) = self.detached_source_root_summary_signature(source_set_key);
+        Some(SourceSetClassGraphSignature {
+            source_set,
+            detached,
+        })
+    }
+
+    fn build_source_root_resolved_aggregate_from_documents(
+        documents: &[(String, ast::StoredDefinition)],
+    ) -> Option<SourceRootResolvedAggregate> {
+        let mut session = Session::default();
+        session.add_parsed_batch(documents.to_vec());
+        let (resolved, _) = session
+            .build_resolved_for_strict_compile_with_diagnostics()
+            .ok()?;
+        Some(SourceRootResolvedAggregate {
+            model_names: session.query_state.resolved.model_names.clone(),
+            dependency_fingerprints: DependencyFingerprintCache::from_tree(&resolved.0),
+        })
+    }
+
+    fn restore_resolved_inputs_from_source_root_aggregates(&mut self) -> bool {
+        if self.query_state.resolved.builds.any().is_some()
+            || !self.detached_document_uris.is_empty()
+            || !self.detached_source_root_documents.is_empty()
+        {
+            return false;
         }
 
-        let cache = self
-            .query_state
-            .ast
-            .workspace_symbol_query_cache
-            .as_ref()
-            .and_then(|cache| cache.detached_cache.as_ref())
-            .expect("workspace-symbol detached cache should exist");
-        f(cache.as_ref())
+        let source_set_ids = self
+            .source_sets
+            .values()
+            .filter(|record| !record.uris.is_empty())
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        if source_set_ids.is_empty() {
+            return false;
+        }
+
+        let mut merged_model_names = IndexSet::new();
+        let mut merged_dependency_fingerprints = DependencyFingerprintCache::default();
+        for source_set_id in source_set_ids {
+            let Some(signature) = self.source_set_query_signature(source_set_id) else {
+                return false;
+            };
+            let Some(entry) = self
+                .query_state
+                .resolved
+                .source_set_aggregates
+                .get(&source_set_id)
+            else {
+                return false;
+            };
+            if entry.signature != signature {
+                return false;
+            }
+
+            merged_model_names.extend(entry.aggregate.model_names.iter().cloned());
+            merged_dependency_fingerprints.merge_from(&entry.aggregate.dependency_fingerprints);
+        }
+
+        self.query_state.resolved.model_names = merged_model_names.into_iter().collect();
+        self.query_state
+            .resolved
+            .dependency_fingerprints
+            .set_all_from_cache(&merged_dependency_fingerprints);
+        true
+    }
+
+    pub(crate) fn read_source_root_semantic_summary_from_cache(
+        &self,
+        cache_dir: Option<&Path>,
+        source_set_key: &str,
+    ) -> Option<SourceRootSemanticSummary> {
+        let docs = self.source_root_parsed_documents(source_set_key)?;
+        let cache_key =
+            semantic_summary_cache::source_root_semantic_cache_key(source_set_key, &docs);
+        read_source_root_semantic_summary(cache_dir, source_set_key, &cache_key, &docs)
+    }
+
+    pub(crate) fn build_and_write_source_root_semantic_summary(
+        &mut self,
+        cache_dir: Option<&Path>,
+        source_set_key: &str,
+        source_root_path: &Path,
+    ) -> Option<SourceRootSemanticSummary> {
+        let docs = self.source_root_parsed_documents(source_set_key)?;
+        let cache_key =
+            semantic_summary_cache::source_root_semantic_cache_key(source_set_key, &docs);
+        let summary = SourceRootSemanticSummary::from_documents(&docs).with_resolved_aggregate(
+            Self::build_source_root_resolved_aggregate_from_documents(&docs),
+        );
+        let _ = write_source_root_semantic_summary(
+            cache_dir,
+            source_set_key,
+            source_root_path,
+            &cache_key,
+            &summary,
+        );
+        Some(summary)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hydrate_source_root_semantic_summary_from_cache(
+        &mut self,
+        cache_dir: Option<&Path>,
+        source_set_key: &str,
+    ) -> bool {
+        let Some(summary) =
+            self.read_source_root_semantic_summary_from_cache(cache_dir, source_set_key)
+        else {
+            return false;
+        };
+        self.hydrate_source_set_semantic_summary(source_set_key, &summary);
+        true
+    }
+
+    /// Hydrate or rebuild the persisted semantic summary for one source root.
+    pub fn sync_source_root_semantic_summary_cache(
+        &mut self,
+        source_set_key: &str,
+        source_root_path: &Path,
+        cache_root: Option<&Path>,
+    ) -> bool {
+        self.set_source_root_path(source_set_key, source_root_path);
+        let summary_cache_dir = resolve_semantic_summary_cache_dir_from_root(cache_root);
+        if let Some(summary) = self.read_source_root_semantic_summary_from_cache(
+            summary_cache_dir.as_deref(),
+            source_set_key,
+        ) {
+            self.set_source_root_activity_running(
+                source_set_key,
+                SourceRootActivityKind::WarmCacheRestore,
+            );
+            self.hydrate_source_set_semantic_summary(source_set_key, &summary);
+            self.complete_source_root_activity(
+                source_set_key,
+                SourceRootActivityKind::WarmCacheRestore,
+                IndexSet::new(),
+            );
+            return true;
+        }
+
+        self.set_source_root_activity_running(
+            source_set_key,
+            SourceRootActivityKind::ColdIndexBuild,
+        );
+        let Some(summary) = self.build_and_write_source_root_semantic_summary(
+            summary_cache_dir.as_deref(),
+            source_set_key,
+            source_root_path,
+        ) else {
+            return false;
+        };
+        self.hydrate_source_set_semantic_summary(source_set_key, &summary);
+        self.complete_source_root_activity(
+            source_set_key,
+            SourceRootActivityKind::ColdIndexBuild,
+            IndexSet::new(),
+        );
+        true
     }
 
     pub(crate) fn hydrate_source_set_semantic_summary(
         &mut self,
         source_set_key: &str,
-        summary: &LibrarySemanticSummary,
+        summary: &SourceRootSemanticSummary,
     ) {
         let Some((source_set_id, uris)) = self
             .source_sets
@@ -344,31 +489,111 @@ impl Session {
             return;
         };
 
-        let mut signature = SummarySignature::new();
+        let hydrated = self.hydrate_source_set_ast_state(&uris, summary);
+        let package_def_map = summary.package_def_map(|uri| self.file_id_for_uri(uri));
+        let mut namespace_cache = NamespaceCompletionCache::default();
+        namespace_cache.extend_from_package_def_map(&package_def_map);
+        let namespace_cache = namespace_cache.finalize();
+        let signature = self
+            .source_set_class_graph_signature(source_set_id)
+            .unwrap_or(SourceSetClassGraphSignature {
+                source_set: SourceSetQuerySignature::Summary(hydrated.summary_signature),
+                detached: SummarySignature::new(),
+            });
+
+        self.query_state
+            .ast
+            .package_def_map
+            .source_set_caches
+            .insert(
+                source_set_id,
+                PackageDefMapQueryCache {
+                    signature: signature.clone(),
+                    def_map: package_def_map,
+                },
+            );
+        self.query_state
+            .ast
+            .source_root_namespace_cache
+            .get_or_insert_default()
+            .insert_source_set_cache(
+                source_set_id,
+                SourceSetNamespaceQueryCache {
+                    signature,
+                    cache: namespace_cache,
+                },
+            );
+        if let Some(signature) = self.source_set_query_signature(source_set_id) {
+            let entries = hydrated
+                .workspace_symbols
+                .into_iter()
+                .map(WorkspaceSymbolSearchEntry::from_symbol)
+                .collect::<Vec<_>>();
+            let search_index = WorkspaceSymbolSearchIndex::from_entries(&entries);
+            self.query_state
+                .ast
+                .workspace_symbol_query_cache
+                .get_or_insert_with(WorkspaceSymbolQueryCache::default)
+                .source_set_caches
+                .insert(
+                    source_set_id,
+                    Arc::new(SourceSetWorkspaceSymbolCache {
+                        signature,
+                        entries,
+                        search_index,
+                    }),
+                );
+        }
+
+        if let Some(signature) = self.source_set_query_signature(source_set_id)
+            && let Some(resolved_aggregate) = summary.resolved_aggregate().cloned()
+        {
+            self.query_state.resolved.source_set_aggregates.insert(
+                source_set_id,
+                SourceSetResolvedAggregateQueryCache {
+                    signature,
+                    aggregate: resolved_aggregate,
+                },
+            );
+            let _ = self.restore_resolved_inputs_from_source_root_aggregates();
+        }
+    }
+
+    fn hydrate_source_set_ast_state(
+        &mut self,
+        uris: &[String],
+        summary: &SourceRootSemanticSummary,
+    ) -> HydratedSourceSetAstState {
+        let mut hydrated = HydratedSourceSetAstState::default();
+
         for uri in uris {
-            let Some(file_id) = self.file_id_for_uri(&uri) else {
+            let Some(file_id) = self.file_id_for_uri(uri) else {
                 continue;
             };
             let Some(file_fingerprint) = summary
-                .summary_fingerprint_for_uri(&uri)
-                .or_else(|| self.file_summary_fingerprint(&uri))
+                .summary_fingerprint_for_uri(uri)
+                .or_else(|| self.file_summary_fingerprint(uri))
             else {
                 continue;
             };
-            let Some(file_summary) = summary.file_summary_for_uri(&uri, file_id) else {
+            let Some(file_summary) = summary.file_summary_for_uri(uri, file_id) else {
                 continue;
             };
-            let Some(index) = summary.declaration_index_for_uri(&uri, file_id) else {
+            let Some(index) = summary.declaration_index_for_uri(uri, file_id) else {
                 continue;
             };
-            signature.insert(file_id, file_fingerprint);
-            let workspace_symbols = index.workspace_symbols(&uri);
-            let class_interface_index = FileClassInterfaceIndex::from_summary(&file_summary);
+
+            hydrated.summary_signature.insert(file_id, file_fingerprint);
+            let workspace_symbols = index.workspace_symbols(uri);
+            hydrated
+                .workspace_symbols
+                .extend(workspace_symbols.iter().cloned());
+
             self.query_state.ast.file_summary_cache.insert(
                 file_id,
                 FileSummaryQueryCache {
                     fingerprint: file_fingerprint,
-                    summary: file_summary,
+                    summary: file_summary.clone(),
                 },
             );
             self.query_state.ast.declaration_index_cache.insert(
@@ -389,25 +614,12 @@ impl Session {
                 file_id,
                 ClassInterfaceQueryCache {
                     fingerprint: file_fingerprint,
-                    index: class_interface_index,
+                    index: FileClassInterfaceIndex::from_summary(&file_summary),
                 },
             );
         }
-        let package_def_map = summary.package_def_map(|uri| self.file_id_for_uri(uri));
 
-        self.query_state
-            .ast
-            .package_def_map
-            .source_set_caches
-            .insert(
-                source_set_id,
-                PackageDefMapQueryCache {
-                    signature: self
-                        .source_set_query_signature(source_set_id)
-                        .unwrap_or(SourceSetQuerySignature::Summary(signature)),
-                    def_map: package_def_map,
-                },
-            );
+        hydrated
     }
 
     /// Get the cached parsed AST for a URI, or `None` if unavailable.
@@ -1545,256 +1757,6 @@ impl Session {
         for document_uri in document_uris {
             let _ = self.class_interface_index_query(document_uri);
             let _ = self.class_body_semantics_query(document_uri);
-        }
-    }
-
-    pub(crate) fn source_set_package_def_map_query(
-        &mut self,
-        source_set_id: SourceSetId,
-    ) -> Option<&PackageDefMap> {
-        let signature = self.source_set_query_signature(source_set_id)?;
-        let is_hit = self
-            .query_state
-            .ast
-            .package_def_map
-            .source_set_caches
-            .get(&source_set_id)
-            .is_some_and(|entry| entry.signature == signature);
-        if is_hit {
-            record_source_set_package_membership_query_hit();
-            return self
-                .query_state
-                .ast
-                .package_def_map
-                .source_set_caches
-                .get(&source_set_id)
-                .map(|entry| &entry.def_map);
-        }
-
-        let uris = self
-            .source_sets
-            .values()
-            .find(|record| record.id == source_set_id)
-            .map(|record| record.uris.iter().cloned().collect::<Vec<_>>())?;
-
-        let mut def_map = PackageDefMap::default();
-        for uri in uris {
-            let Some(summary) = self.file_summary_query(&uri) else {
-                continue;
-            };
-            def_map.extend_from_summary(summary);
-        }
-        record_source_set_package_membership_query_miss();
-        self.query_state
-            .ast
-            .package_def_map
-            .source_set_caches
-            .insert(
-                source_set_id,
-                PackageDefMapQueryCache { signature, def_map },
-            );
-        self.query_state
-            .ast
-            .package_def_map
-            .source_set_caches
-            .get(&source_set_id)
-            .map(|entry| &entry.def_map)
-    }
-
-    pub(crate) fn orphan_package_def_map_query(
-        &mut self,
-        orphan_signature: &SummarySignature,
-        orphan_uris: &[String],
-    ) -> Option<&PackageDefMap> {
-        if orphan_uris.is_empty() {
-            self.query_state.ast.package_def_map.orphan_cache = None;
-            return None;
-        }
-        if self
-            .query_state
-            .ast
-            .package_def_map
-            .orphan_cache
-            .as_ref()
-            .is_some_and(|entry| entry.signature == *orphan_signature)
-        {
-            record_orphan_package_membership_query_hit();
-            return self
-                .query_state
-                .ast
-                .package_def_map
-                .orphan_cache
-                .as_ref()
-                .map(|entry| &entry.def_map);
-        }
-
-        let mut def_map = PackageDefMap::default();
-        for uri in orphan_uris {
-            let Some(summary) = self.file_summary_query(uri) else {
-                continue;
-            };
-            def_map.extend_from_summary(summary);
-        }
-        record_orphan_package_membership_query_miss();
-        self.query_state.ast.package_def_map.orphan_cache = Some(OrphanPackageDefMapQueryCache {
-            signature: orphan_signature.clone(),
-            def_map,
-        });
-        self.query_state
-            .ast
-            .package_def_map
-            .orphan_cache
-            .as_ref()
-            .map(|entry| &entry.def_map)
-    }
-
-    /// Query cached document outline symbols for one file.
-    pub fn document_symbol_query(&mut self, uri: &str) -> Option<Vec<DocumentSymbol>> {
-        let file_id = self.file_id_for_uri(uri)?;
-        let fingerprint = self.file_outline_fingerprint(uri)?;
-        if let Some(cached) = self
-            .query_state
-            .ast
-            .file_outline_cache
-            .get(&file_id)
-            .filter(|entry| entry.fingerprint == fingerprint)
-        {
-            record_document_symbol_query_hit();
-            return Some(cached.outline.document_symbols().to_vec());
-        }
-
-        record_document_symbol_query_miss();
-        let outline = self.file_outline_query(uri)?;
-        Some(outline.document_symbols().to_vec())
-    }
-
-    /// Query workspace symbols by name using per-file symbol indexes.
-    pub fn workspace_symbol_query(&mut self, query: &str) -> Vec<WorkspaceSymbol> {
-        let current_signature = self.session_query_signature();
-        let is_hit = self
-            .query_state
-            .ast
-            .workspace_symbol_query_cache
-            .as_ref()
-            .is_some_and(|cache| cache.signature == current_signature);
-        if is_hit {
-            record_workspace_symbol_query_hit();
-        } else {
-            record_workspace_symbol_query_miss();
-        }
-
-        let query_lower = query.to_lowercase();
-        let mut matched = Vec::new();
-        let source_set_signatures = current_signature.source_sets.clone();
-        for (source_set_id, signature) in source_set_signatures {
-            self.with_workspace_symbol_source_set_query(source_set_id, signature, |cache| {
-                extend_workspace_symbol_matches(
-                    &mut matched,
-                    cache.entries.as_slice(),
-                    &cache.search_index,
-                    &query_lower,
-                );
-            });
-        }
-        let (detached_signature, detached_uris) = self.detached_summary_signature();
-        self.with_detached_workspace_symbol_query(detached_signature, detached_uris, |cache| {
-            extend_workspace_symbol_matches(
-                &mut matched,
-                cache.entries.as_slice(),
-                &cache.search_index,
-                &query_lower,
-            );
-        });
-
-        let cache = self
-            .query_state
-            .ast
-            .workspace_symbol_query_cache
-            .get_or_insert_with(WorkspaceSymbolQueryCache::default);
-        cache.signature = current_signature;
-        let active_source_sets = cache
-            .signature
-            .source_sets
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        cache
-            .source_set_caches
-            .retain(|source_set_id, _| active_source_sets.contains(source_set_id));
-        if cache.signature.detached.is_empty() {
-            cache.detached_cache = None;
-        }
-
-        if query.is_empty() {
-            return matched;
-        }
-
-        matched.sort_by(|left, right| {
-            let left_score = workspace_symbol_query_match_score(&left.name, &query_lower);
-            let right_score = workspace_symbol_query_match_score(&right.name, &query_lower);
-            left_score.cmp(&right_score)
-        });
-        matched
-    }
-
-    pub(crate) fn prewarm_workspace_symbol_query_caches(&mut self) {
-        let current_signature = self.session_query_signature();
-        for (source_set_id, signature) in current_signature.source_sets.clone() {
-            self.with_workspace_symbol_source_set_query(source_set_id, signature, |_| {});
-        }
-        let (detached_signature, detached_uris) = self.detached_summary_signature();
-        self.with_detached_workspace_symbol_query(detached_signature, detached_uris, |_| {});
-
-        let cache = self
-            .query_state
-            .ast
-            .workspace_symbol_query_cache
-            .get_or_insert_with(WorkspaceSymbolQueryCache::default);
-        cache.signature = current_signature;
-        let active_source_sets = cache
-            .signature
-            .source_sets
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        cache
-            .source_set_caches
-            .retain(|source_set_id, _| active_source_sets.contains(source_set_id));
-        if cache.signature.detached.is_empty() {
-            cache.detached_cache = None;
-        }
-    }
-}
-
-fn extend_workspace_symbol_matches(
-    matched: &mut Vec<WorkspaceSymbol>,
-    entries: &[WorkspaceSymbolSearchEntry],
-    search_index: &WorkspaceSymbolSearchIndex,
-    query_lower: &str,
-) {
-    if query_lower.is_empty() {
-        matched.extend(entries.iter().map(|entry| entry.symbol.clone()));
-        return;
-    }
-
-    let candidate_indices = search_index.candidate_indices(query_lower);
-    match candidate_indices {
-        Some(indices) => {
-            matched.extend(indices.into_iter().filter_map(|index| {
-                let entry = entries.get(index)?;
-                entry
-                    .name_lower
-                    .contains(query_lower)
-                    .then(|| entry.symbol.clone())
-            }));
-        }
-        None => {
-            matched.extend(
-                entries
-                    .iter()
-                    .filter(|entry| entry.name_lower.contains(query_lower))
-                    .map(|entry| entry.symbol.clone()),
-            );
         }
     }
 }

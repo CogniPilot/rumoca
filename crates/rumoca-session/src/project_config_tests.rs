@@ -14,7 +14,7 @@ fn discovers_project_and_resolves_model_override() {
         r#"
 version = 1
 
-[libraries]
+[source_roots]
 paths = ["libs/msl"]
 
 [simulation.defaults]
@@ -39,7 +39,7 @@ class_name = "Ball"
 solver = "bdf"
 t_end = 12.0
 dt = 0.01
-library_overrides = ["libs/custom"]
+source_root_overrides = ["libs/custom"]
 "#,
     )
     .expect("write simulation");
@@ -53,31 +53,31 @@ library_overrides = ["libs/custom"]
         t_end: 5.0,
         dt: None,
         output_dir: String::new(),
-        library_paths: vec!["fallback".to_string()],
+        source_root_paths: vec!["fallback".to_string()],
     };
     let effective = config.effective_for_model("Ball", &fallback);
     assert_eq!(effective.solver, "bdf");
     assert_eq!(effective.t_end, 12.0);
     assert_eq!(effective.dt, Some(0.01));
-    assert_eq!(effective.library_paths.len(), 2);
+    assert_eq!(effective.source_root_paths.len(), 2);
     assert!(
         effective
-            .library_paths
+            .source_root_paths
             .iter()
             .any(|path| path.ends_with("libs/msl")),
         "resolved paths: {:?}",
-        effective.library_paths
+        effective.source_root_paths
     );
     assert!(
         effective
-            .library_paths
+            .source_root_paths
             .iter()
             .any(|path| path.ends_with("libs/custom")),
         "resolved paths: {:?}",
-        effective.library_paths
+        effective.source_root_paths
     );
 
-    let all_paths = config.resolve_all_library_paths();
+    let all_paths = config.resolve_all_source_root_paths();
     assert_eq!(all_paths.len(), 2);
     assert!(all_paths.iter().any(|path| path.ends_with("libs/msl")));
     assert!(all_paths.iter().any(|path| path.ends_with("libs/custom")));
@@ -115,12 +115,28 @@ version = 1
 }
 
 #[test]
+fn flags_legacy_libraries_top_level_section() {
+    let value: toml::Value = toml::from_str(
+        r#"
+version = 1
+
+[libraries]
+paths = ["Modelica"]
+"#,
+    )
+    .expect("parse");
+    let diagnostics = validate_top_level_keys(&value);
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("libraries"));
+}
+
+#[test]
 fn save_writes_uuid_sidecars_and_keeps_root_compact() {
     let temp = tempfile::tempdir().expect("tempdir");
     let workspace_root = temp.path();
 
     let mut config = ProjectConfig::load_or_default(workspace_root).expect("load_or_default");
-    config.data.libraries.paths.push("libs/msl".to_string());
+    config.data.source_roots.paths.push("libs/msl".to_string());
     config.set_model_override(
         "Ball",
         SimulationModelOverride {
@@ -128,7 +144,7 @@ fn save_writes_uuid_sidecars_and_keeps_root_compact() {
             t_end: Some(12.0),
             dt: Some(0.02),
             output_dir: None,
-            library_overrides: vec!["libs/custom".to_string()],
+            source_root_overrides: vec!["libs/custom".to_string()],
         },
     );
     config.data.plot.models.insert(
@@ -151,7 +167,7 @@ fn save_writes_uuid_sidecars_and_keeps_root_compact() {
         .expect("read root project.toml");
     assert!(!root_text.contains("[simulation.models"));
     assert!(!root_text.contains("[plot.models"));
-    assert!(root_text.contains("[libraries]"));
+    assert!(root_text.contains("[source_roots]"));
 
     let by_id_root = workspace_root
         .join(".rumoca")
@@ -186,7 +202,7 @@ fn save_writes_uuid_sidecars_and_keeps_root_compact() {
     assert_eq!(override_cfg.t_end, Some(12.0));
     assert_eq!(override_cfg.dt, Some(0.02));
     assert_eq!(
-        override_cfg.library_overrides,
+        override_cfg.source_root_overrides,
         vec!["libs/custom".to_string()]
     );
     let views = reloaded

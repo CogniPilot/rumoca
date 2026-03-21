@@ -168,8 +168,8 @@ fn assert_warm_namespace_completion_timings(
     assert!(!cold.request_was_stale && !warm.request_was_stale);
     assert_eq!(cold.uri, warm.uri);
     assert!(
-        cold.library_completion_prime_ms >= warm.library_completion_prime_ms,
-        "cold namespace completion should spend at least as much time priming the library cache"
+        cold.namespace_completion_prime_ms >= warm.namespace_completion_prime_ms,
+        "cold namespace completion should spend at least as much time priming the source-root cache"
     );
     assert!(!cold.needs_resolved_session && !warm.needs_resolved_session);
     assert!(!cold.ast_fast_path_matched && !warm.ast_fast_path_matched);
@@ -194,12 +194,12 @@ fn assert_warm_namespace_completion_timings(
         "warm namespace completion should hit namespace query cache"
     );
     assert!(
-        cold.session_cache_delta.library_completion_cache_misses >= 1,
-        "cold namespace completion should miss the library completion cache"
+        cold.session_cache_delta.namespace_completion_cache_misses >= 1,
+        "cold namespace completion should miss the namespace completion cache"
     );
     assert!(
-        warm.session_cache_delta.library_completion_cache_hits >= 1,
-        "warm namespace completion should hit the library completion cache"
+        warm.session_cache_delta.namespace_completion_cache_hits >= 1,
+        "warm namespace completion should hit the namespace completion cache"
     );
 }
 
@@ -266,12 +266,12 @@ fn execute_command_dispatches_safe_project_command() {
 }
 
 #[test]
-fn resync_sidecars_preserves_loaded_libraries_and_simulation_cache_when_paths_unchanged() {
+fn resync_sidecars_preserves_loaded_source_roots_and_simulation_cache_when_paths_unchanged() {
     run_async_test(async {
         let workspace_root = new_temp_dir("resync-preserves-simulation-cache");
         let focus = workspace_root.join("Root.mo");
-        let library_root = workspace_root.join("ModelicaStandardLibrary");
-        std::fs::create_dir_all(&library_root).expect("mkdir library root");
+        let source_root_dir = workspace_root.join("ModelicaStandardLibrary");
+        std::fs::create_dir_all(&source_root_dir).expect("mkdir source-root dir");
         std::fs::write(
             &focus,
             "model Root\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Root;\n",
@@ -281,9 +281,10 @@ fn resync_sidecars_preserves_loaded_libraries_and_simulation_cache_when_paths_un
         let service = new_test_service();
         let server = service.inner();
         *server.workspace_root.write().await = Some(workspace_root.clone());
-        *server.initial_library_paths.write().await =
-            vec![library_root.to_string_lossy().to_string()];
-        *server.library_paths.write().await = vec![library_root.to_string_lossy().to_string()];
+        *server.initial_source_root_paths.write().await =
+            vec![source_root_dir.to_string_lossy().to_string()];
+        *server.source_root_paths.write().await =
+            vec![source_root_dir.to_string_lossy().to_string()];
 
         {
             let mut session = server.session.write().await;
@@ -293,16 +294,28 @@ fn resync_sidecars_preserves_loaded_libraries_and_simulation_cache_when_paths_un
             );
         }
 
+        let source_root_key = canonical_path_key(&source_root_dir.to_string_lossy());
+        {
+            let source_set_key =
+                source_root_source_set_key(source_root_dir.to_string_lossy().as_ref());
+            let source_root_epoch = server.session.read().await.source_root_state_epoch();
+            server
+                .load_source_root_if_current(
+                    source_root_dir.to_string_lossy().as_ref(),
+                    &source_root_key,
+                    &source_set_key,
+                    None,
+                    source_root_epoch,
+                    SourceRootIndexingReason::CompletionImports,
+                )
+                .await
+                .expect("source-root load should succeed")
+                .expect("source root should load");
+        }
         server
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("initial simulation compile should succeed");
-        let library_key = canonical_path_key(&library_root.to_string_lossy());
-        server
-            .loaded_libraries
-            .write()
-            .await
-            .insert(library_key.clone());
         assert_eq!(
             server.simulation_compile_cache.read().await.len(),
             1,
@@ -330,11 +343,15 @@ fn resync_sidecars_preserves_loaded_libraries_and_simulation_cache_when_paths_un
         assert_eq!(
             server.simulation_compile_cache.read().await.len(),
             1,
-            "resync sidecars should not flush simulation cache when library paths are unchanged"
+            "resync sidecars should not flush simulation cache when source-root paths are unchanged"
         );
         assert!(
-            server.loaded_libraries.read().await.contains(&library_key),
-            "resync sidecars should preserve the loaded library set when library paths are unchanged"
+            server
+                .session
+                .read()
+                .await
+                .is_source_root_path_loaded(&source_root_key),
+            "resync sidecars should preserve the loaded source-root set when source-root paths are unchanged"
         );
     });
 }
@@ -342,10 +359,10 @@ fn resync_sidecars_preserves_loaded_libraries_and_simulation_cache_when_paths_un
 #[test]
 fn reload_project_config_rewarms_durable_libraries_when_paths_change() {
     run_async_test(async {
-        let workspace_root = new_temp_dir("reload-project-config-library-reset");
+        let workspace_root = new_temp_dir("reload-project-config-source-root-reset");
         let focus = workspace_root.join("Root.mo");
-        let library_a = write_test_library(&workspace_root, "LibA");
-        let library_b = write_test_library(&workspace_root, "LibB");
+        let source_root_a = write_test_source_root(&workspace_root, "LibA");
+        let source_root_b = write_test_source_root(&workspace_root, "LibB");
         std::fs::write(
             &focus,
             "model Root\n  Real x(start=0);\nequation\n  der(x) = 1;\nend Root;\n",
@@ -355,8 +372,9 @@ fn reload_project_config_rewarms_durable_libraries_when_paths_change() {
         let service = new_test_service();
         let server = service.inner();
         *server.workspace_root.write().await = Some(workspace_root.clone());
-        *server.initial_library_paths.write().await = vec![library_a.to_string_lossy().to_string()];
-        *server.library_paths.write().await = vec![library_a.to_string_lossy().to_string()];
+        *server.initial_source_root_paths.write().await =
+            vec![source_root_a.to_string_lossy().to_string()];
+        *server.source_root_paths.write().await = vec![source_root_a.to_string_lossy().to_string()];
 
         {
             let mut session = server.session.write().await;
@@ -370,44 +388,58 @@ fn reload_project_config_rewarms_durable_libraries_when_paths_change() {
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("initial simulation compile should succeed");
-        server
-            .loaded_libraries
-            .write()
-            .await
-            .insert(canonical_path_key(&library_a.to_string_lossy()));
+        {
+            let source_root_key = canonical_path_key(&source_root_a.to_string_lossy());
+            let source_set_key =
+                source_root_source_set_key(source_root_a.to_string_lossy().as_ref());
+            let source_root_epoch = server.session.read().await.source_root_state_epoch();
+            server
+                .load_source_root_if_current(
+                    source_root_a.to_string_lossy().as_ref(),
+                    &source_root_key,
+                    &source_set_key,
+                    None,
+                    source_root_epoch,
+                    SourceRootIndexingReason::CompletionImports,
+                )
+                .await
+                .expect("source-root load should succeed")
+                .expect("source root should load");
+        }
 
-        *server.initial_library_paths.write().await = vec![library_b.to_string_lossy().to_string()];
+        *server.initial_source_root_paths.write().await =
+            vec![source_root_b.to_string_lossy().to_string()];
         server.reload_project_config().await;
 
         assert!(
             server.simulation_compile_cache.read().await.is_empty(),
-            "changing effective library paths must flush simulation cache"
+            "changing effective source-root paths must flush simulation cache"
         );
         assert!(
             server
-                .loaded_libraries
+                .session
                 .read()
                 .await
-                .contains(&canonical_path_key(&library_b.to_string_lossy())),
-            "changing effective library paths should immediately rewarm durable roots"
+                .is_source_root_path_loaded(&canonical_path_key(&source_root_b.to_string_lossy())),
+            "changing effective source-root paths should immediately rewarm durable roots"
         );
         assert!(
-            wait_for_library_namespace_cache(server)
+            wait_for_namespace_cache_prewarm(server)
                 .await
                 .contains(&"LibB.A".to_string()),
-            "changing effective library paths should also prewarm namespace completion for the new durable root"
+            "changing effective source-root paths should also prewarm namespace completion for the new durable root"
         );
-        let library_path_keys = server
-            .library_paths
+        let source_root_path_keys = server
+            .source_root_paths
             .read()
             .await
             .iter()
             .map(|path| canonical_path_key(path))
             .collect::<Vec<_>>();
         assert_eq!(
-            library_path_keys,
-            vec![canonical_path_key(&library_b.to_string_lossy())],
-            "reloaded project config should publish the updated library path set"
+            source_root_path_keys,
+            vec![canonical_path_key(&source_root_b.to_string_lossy())],
+            "reloaded project config should publish the updated source-root path set"
         );
     });
 }
@@ -494,7 +526,7 @@ fn completion_timing_summary_reports_query_backed_member_reuse() {
 
     run_async_test(async {
         reset_session_cache_stats();
-        let library_path = temp.join("lib.mo");
+        let source_root_path = temp.join("lib.mo");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let active_key = session_document_uri_key(&active_uri);
@@ -504,7 +536,7 @@ fn completion_timing_summary_reports_query_backed_member_reuse() {
         {
             let mut session = server.session.write().await;
             session.update_document(
-                &library_path.to_string_lossy(),
+                &source_root_path.to_string_lossy(),
                 COMPLETION_SEMANTIC_LIBRARY_SOURCE,
             );
             session.update_document(&active_key, COMPLETION_SEMANTIC_ACTIVE_SOURCE);
@@ -546,11 +578,11 @@ fn completion_timing_summary_reports_query_backed_member_reuse() {
     assert_eq!(cold.uri, warm.uri);
     assert_eq!(
         cold.session_cache_delta.namespace_index_query_misses, 0,
-        "cold member completion should not build the library namespace cache"
+        "cold member completion should not build the source-root namespace cache"
     );
     assert_eq!(
-        cold.session_cache_delta.library_completion_cache_misses, 0,
-        "cold member completion should not miss the library completion cache"
+        cold.session_cache_delta.namespace_completion_cache_misses, 0,
+        "cold member completion should not miss the namespace completion cache"
     );
     assert_eq!(
         warm.session_cache_delta.semantic_navigation_builds, 0,
@@ -558,24 +590,24 @@ fn completion_timing_summary_reports_query_backed_member_reuse() {
     );
     assert_eq!(
         warm.session_cache_delta.namespace_index_query_hits, 0,
-        "warm member completion should not touch the library namespace cache"
+        "warm member completion should not touch the source-root namespace cache"
     );
     assert_eq!(
-        warm.session_cache_delta.library_completion_cache_hits, 0,
-        "warm member completion should not use the library completion cache"
+        warm.session_cache_delta.namespace_completion_cache_hits, 0,
+        "warm member completion should not use the namespace completion cache"
     );
 }
 
 #[test]
-fn completion_timing_summary_reports_warm_library_namespace_cache_reuse() {
+fn completion_timing_summary_reports_warm_source_root_namespace_cache_reuse() {
     let _guard = session_stats_test_guard();
-    let temp = new_temp_dir("library-completion-timing");
+    let temp = new_temp_dir("source-root-completion-timing");
     let timing_path = temp.join("completion-timings.jsonl");
 
     run_async_test(async {
         reset_session_cache_stats();
-        let library_path = write_test_library(&temp, "Lib");
-        let library_key = canonical_path_key(library_path.to_string_lossy().as_ref());
+        let source_root_path = write_test_source_root(&temp, "Lib");
+        let source_root_key = canonical_path_key(source_root_path.to_string_lossy().as_ref());
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let active_key = session_document_uri_key(&active_uri);
@@ -584,7 +616,8 @@ fn completion_timing_summary_reports_warm_library_namespace_cache_reuse() {
         let service = new_test_service();
         let server = service.inner();
         *server.completion_timing_path.write().await = Some(timing_path.clone());
-        *server.library_paths.write().await = vec![library_path.to_string_lossy().to_string()];
+        *server.source_root_paths.write().await =
+            vec![source_root_path.to_string_lossy().to_string()];
         {
             let mut session = server.session.write().await;
             session.update_document(&active_key, active_source);
@@ -607,8 +640,12 @@ fn completion_timing_summary_reports_warm_library_namespace_cache_reuse() {
 
         assert_two_completion_calls_contain_label(server, request, "A").await;
         assert!(
-            server.loaded_libraries.read().await.contains(&library_key),
-            "completion should load the referenced library root"
+            server
+                .session
+                .read()
+                .await
+                .is_source_root_path_loaded(&source_root_key),
+            "completion should load the referenced source root"
         );
     });
 
@@ -725,21 +762,21 @@ fn hover_timing_summary_reports_query_fast_path_for_local_alias() {
 }
 
 #[test]
-fn hover_timing_summary_reports_parsed_library_fast_path_for_qualified_type_path() {
+fn hover_timing_summary_reports_parsed_source_root_fast_path_for_qualified_type_path() {
     let _guard = session_stats_test_guard();
     let temp = new_temp_dir("hover-qualified-path-fast");
     let timing_path = temp.join("navigation-timings.jsonl");
 
     run_async_test(async {
         reset_session_cache_stats();
-        let library_path = temp.join("lib.mo");
+        let source_root_path = temp.join("lib.mo");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let service = new_test_service();
         let server = service.inner();
         seed_cross_file_qualified_path_document(
             server,
-            &library_path,
+            &source_root_path,
             &active_uri,
             Some(&timing_path),
         )
@@ -752,7 +789,7 @@ fn hover_timing_summary_reports_parsed_library_fast_path_for_qualified_type_path
             .expect("hover should return a payload");
         assert!(
             hover_text(&hover).contains("block Target"),
-            "qualified type-path hover should resolve the library target"
+            "qualified type-path hover should resolve the source-root target"
         );
     });
 
@@ -797,14 +834,14 @@ fn hover_timing_summary_reports_query_fast_path_for_imported_class() {
 
     run_async_test(async {
         reset_session_cache_stats();
-        let library_path = temp.join("lib.mo");
+        let source_root_path = temp.join("lib.mo");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let service = new_test_service();
         let server = service.inner();
         seed_cross_file_alias_navigation_document(
             server,
-            &library_path,
+            &source_root_path,
             &active_uri,
             Some(&timing_path),
         )
@@ -873,14 +910,14 @@ fn goto_definition_timing_summary_reports_query_fast_path_for_imported_class() {
 
     run_async_test(async {
         reset_session_cache_stats();
-        let library_path = temp.join("lib.mo");
+        let source_root_path = temp.join("lib.mo");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let service = new_test_service();
         let server = service.inner();
         seed_cross_file_alias_navigation_document(
             server,
-            &library_path,
+            &source_root_path,
             &active_uri,
             Some(&timing_path),
         )
@@ -900,8 +937,8 @@ fn goto_definition_timing_summary_reports_query_fast_path_for_imported_class() {
             };
             assert_eq!(
                 location.uri,
-                Url::from_file_path(&library_path).expect("file uri"),
-                "goto-definition should jump to the library file"
+                Url::from_file_path(&source_root_path).expect("file uri"),
+                "goto-definition should jump to the source-root file"
             );
             assert_eq!(
                 location.range.start.line, 1,
@@ -953,21 +990,21 @@ fn goto_definition_timing_summary_reports_query_fast_path_for_imported_class() {
 }
 
 #[test]
-fn goto_definition_timing_summary_reports_parsed_library_fast_path_for_qualified_type_path() {
+fn goto_definition_timing_summary_reports_parsed_source_root_fast_path_for_qualified_type_path() {
     let _guard = session_stats_test_guard();
     let temp = new_temp_dir("definition-qualified-path-fast");
     let timing_path = temp.join("navigation-timings.jsonl");
 
     run_async_test(async {
         reset_session_cache_stats();
-        let library_path = temp.join("lib.mo");
+        let source_root_path = temp.join("lib.mo");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let service = new_test_service();
         let server = service.inner();
         seed_cross_file_qualified_path_document(
             server,
-            &library_path,
+            &source_root_path,
             &active_uri,
             Some(&timing_path),
         )
@@ -983,8 +1020,8 @@ fn goto_definition_timing_summary_reports_parsed_library_fast_path_for_qualified
         };
         assert_eq!(
             location.uri,
-            Url::from_file_path(&library_path).expect("library uri"),
-            "qualified type-path goto-definition should jump to the library file"
+            Url::from_file_path(&source_root_path).expect("source-root uri"),
+            "qualified type-path goto-definition should jump to the source-root file"
         );
     });
 
@@ -1086,16 +1123,16 @@ fn hover_timing_summary_marks_flat_preview_requests() {
 #[ignore = "requires cached MSL under target/msl"]
 fn msl_completion_loads_libraries_on_demand() {
     run_async_test(async {
-        let msl_root = cached_msl_library_root().expect("cached MSL should exist");
+        let msl_root = cached_msl_source_root().expect("cached MSL should exist");
         let temp = new_temp_dir("msl-completion-load");
         let active_path = temp.join("active.mo");
-        let library_key = canonical_path_key(msl_root.to_string_lossy().as_ref());
+        let source_root_key = canonical_path_key(msl_root.to_string_lossy().as_ref());
 
         let service = new_test_service();
         let server = service.inner();
-        *server.library_paths.write().await = vec![msl_root.to_string_lossy().to_string()];
+        *server.source_root_paths.write().await = vec![msl_root.to_string_lossy().to_string()];
         server
-            .ensure_completion_libraries(
+            .ensure_completion_source_roots(
                 "within Modelica.Electrical.Analog.Examples;\nmodel Resistor\n  Modelica.Electrical.Analog.Basic.Ground g;\nend Resistor;\n",
                 Position {
                     line: 2,
@@ -1106,7 +1143,11 @@ fn msl_completion_loads_libraries_on_demand() {
             .await;
 
         assert!(
-            server.loaded_libraries.read().await.contains(&library_key),
+            server
+                .session
+                .read()
+                .await
+                .is_source_root_path_loaded(&source_root_key),
             "cached MSL should be loaded on demand"
         );
     });
@@ -1114,13 +1155,13 @@ fn msl_completion_loads_libraries_on_demand() {
 
 #[test]
 #[ignore = "requires cached MSL under target/msl"]
-fn msl_completion_on_open_library_example_returns_namespace_members() {
+fn msl_completion_on_open_source_root_example_returns_namespace_members() {
     run_async_test(async {
-        let msl_root = cached_msl_library_root().expect("cached MSL should exist");
+        let msl_root = cached_msl_source_root().expect("cached MSL should exist");
         let example_path = msl_root.join("Electrical/Analog/Examples/Resistor.mo");
         let example_uri = Url::from_file_path(&example_path).expect("file uri");
         let source = std::fs::read_to_string(&example_path).expect("read MSL example");
-        let library_key = canonical_path_key(msl_root.to_string_lossy().as_ref());
+        let source_root_key = canonical_path_key(msl_root.to_string_lossy().as_ref());
 
         let probe_line = source
             .lines()
@@ -1135,7 +1176,7 @@ fn msl_completion_on_open_library_example_returns_namespace_members() {
 
         let service = new_test_service();
         let server = service.inner();
-        *server.library_paths.write().await = vec![msl_root.to_string_lossy().to_string()];
+        *server.source_root_paths.write().await = vec![msl_root.to_string_lossy().to_string()];
 
         server
             .did_open(DidOpenTextDocumentParams {
@@ -1174,8 +1215,12 @@ fn msl_completion_on_open_library_example_returns_namespace_members() {
             .collect::<Vec<_>>();
 
         assert!(
-            server.loaded_libraries.read().await.contains(&library_key),
-            "completion should load cached MSL library root"
+            server
+                .session
+                .read()
+                .await
+                .is_source_root_path_loaded(&source_root_key),
+            "completion should load cached MSL source root"
         );
         assert!(
             labels.iter().any(|label| label == "Electrical"),
@@ -1351,17 +1396,18 @@ fn code_lens_resolve_skips_when_request_becomes_stale() {
 }
 
 #[test]
-fn code_lens_defers_when_required_libraries_are_unloaded() {
+fn code_lens_defers_when_required_source_roots_are_unloaded() {
     run_async_test(async {
-        let temp = new_temp_dir("code-lens-library-defer");
-        let library_path = write_test_library(&temp, "Lib");
+        let temp = new_temp_dir("code-lens-source-root-defer");
+        let source_root_path = write_test_source_root(&temp, "Lib");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let active_source = "model Active\n  Lib.A a;\nend Active;\n";
 
         let service = new_test_service();
         let server = service.inner();
-        *server.library_paths.write().await = vec![library_path.to_string_lossy().to_string()];
+        *server.source_root_paths.write().await =
+            vec![source_root_path.to_string_lossy().to_string()];
         {
             let mut session = server.session.write().await;
             session.update_document(&active_path.to_string_lossy(), active_source);
@@ -1378,17 +1424,22 @@ fn code_lens_defers_when_required_libraries_are_unloaded() {
 
         assert!(
             response.is_none(),
-            "code lens should defer until required libraries are loaded"
+            "code lens should defer until required source roots are loaded"
         );
         assert!(
-            server.loaded_libraries.read().await.is_empty(),
-            "code lens should not synchronously load libraries"
+            server
+                .session
+                .read()
+                .await
+                .loaded_source_root_path_keys()
+                .is_empty(),
+            "code lens should not synchronously load source roots"
         );
     });
 }
 
 #[test]
-fn code_lens_ignores_unrelated_library_resolve_errors() {
+fn code_lens_ignores_unrelated_source_root_resolve_errors() {
     let _guard = session_stats_test_guard();
     run_async_test(async {
         reset_session_cache_stats();
@@ -1432,7 +1483,7 @@ fn code_lens_ignores_unrelated_library_resolve_errors() {
                 .expect("broken sibling should parse");
             session
                 .add_document(&lib_key, "package Lib\nend Lib;\n")
-                .expect("library package should parse");
+                .expect("source-root package should parse");
             session
                 .add_document(
                     &active_key,
@@ -1482,7 +1533,7 @@ fn code_lens_ignores_unrelated_library_resolve_errors() {
         );
         assert!(
             titles.iter().all(|title| !title.contains("stackBus")),
-            "unrelated library resolve errors must not leak into code lens titles: {titles:?}"
+            "unrelated source-root resolve errors must not leak into code lens titles: {titles:?}"
         );
         assert!(
             resolve_delta.strict_resolved_builds >= 1,
@@ -1495,7 +1546,7 @@ fn code_lens_ignores_unrelated_library_resolve_errors() {
 fn collect_simulation_parsed_docs_snapshot_keeps_focus_and_libraries_only() {
     let focus_uri = "focus.mo";
     let other_uri = "other.mo";
-    let library_uri = "/opt/msl/Modelica/package.mo";
+    let source_root_uri = "/opt/msl/Modelica/package.mo";
     let source = "model M end M;";
 
     let mut session = Session::new(SessionConfig::default());
@@ -1506,9 +1557,12 @@ fn collect_simulation_parsed_docs_snapshot_keeps_focus_and_libraries_only() {
         .add_document(other_uri, source)
         .expect("other should parse");
     session.replace_parsed_source_set(
-        "library::/opt/msl",
-        SourceRootKind::DurableLibrary,
-        vec![(library_uri.to_string(), ast::StoredDefinition::default())],
+        "source-root::/opt/msl",
+        SourceRootKind::DurableExternal,
+        vec![(
+            source_root_uri.to_string(),
+            ast::StoredDefinition::default(),
+        )],
         None,
     );
 
@@ -1519,7 +1573,10 @@ fn collect_simulation_parsed_docs_snapshot_keeps_focus_and_libraries_only() {
     let uris: HashSet<String> = docs.into_iter().map(|(uri, _)| uri).collect();
 
     assert!(uris.contains(focus_uri), "focus doc must be included");
-    assert!(uris.contains(library_uri), "library docs must be included");
+    assert!(
+        uris.contains(source_root_uri),
+        "source-root docs must be included"
+    );
     assert!(
         !uris.contains(other_uri),
         "non-focus workspace docs must be excluded"
@@ -1631,11 +1688,11 @@ fn package_layout_errors_map_to_plain_lsp_diagnostics() {
         .expect("write package");
     std::fs::write(lib.join("A.mo"), "model A end A;").expect("write child");
 
-    let err = parse_library_with_cache(&lib).expect_err("missing within must fail");
+    let err = parse_source_root_with_cache(&lib).expect_err("missing within must fail");
     let layout = err
         .downcast_ref::<PackageLayoutError>()
         .expect("package layout error type must be preserved");
-    let diagnostics = library_load_diagnostics_for_package_layout_error(layout);
+    let diagnostics = source_root_load_diagnostics_for_package_layout_error(layout);
     let file_key = canonical_path_key(&lib.join("A.mo").to_string_lossy());
     let file_diagnostics = diagnostics
         .get(&file_key)
@@ -1655,7 +1712,7 @@ fn package_layout_errors_map_to_plain_lsp_diagnostics() {
 }
 
 #[test]
-fn package_layout_library_load_warning_is_concise_when_file_diagnostics_exist() {
+fn package_layout_source_root_load_warning_is_concise_when_file_diagnostics_exist() {
     let temp = new_temp_dir("package-layout-warning");
     let lib = temp.join("Modelica");
     std::fs::create_dir_all(&lib).expect("mkdir");
@@ -1663,8 +1720,8 @@ fn package_layout_library_load_warning_is_concise_when_file_diagnostics_exist() 
         .expect("write package");
     std::fs::write(lib.join("A.mo"), "model A end A;").expect("write child");
 
-    let err = parse_library_with_cache(&lib).expect_err("missing within must fail");
-    let message = library_load_error_message(&lib.to_string_lossy(), &err);
+    let err = parse_source_root_with_cache(&lib).expect_err("missing within must fail");
+    let message = source_root_load_error_message(&lib.to_string_lossy(), &err);
     assert!(
         message.contains("see diagnostics"),
         "source-backed package-layout failures should defer details to diagnostics: {message}"
@@ -1676,28 +1733,28 @@ fn package_layout_library_load_warning_is_concise_when_file_diagnostics_exist() 
 }
 
 #[test]
-fn did_open_library_document_moves_live_text_into_session() {
+fn did_open_source_root_document_moves_live_text_into_session() {
     run_async_test(async {
         let service = new_test_service();
         let server = service.inner();
-        let library_root_path = std::env::temp_dir().join("rumoca-lsp-test-open");
-        let library_path = library_root_path
+        let source_root_dir = std::env::temp_dir().join("rumoca-lsp-test-open");
+        let source_root_path = source_root_dir
             .join("Modelica")
             .join("Blocks")
             .join("Continuous.mo");
-        let library_uri = canonical_path_key(library_path.to_string_lossy().as_ref());
+        let source_root_uri = canonical_path_key(source_root_path.to_string_lossy().as_ref());
         let text = "within Modelica.Blocks;\npackage Continuous\nend Continuous;\n";
 
         {
             let mut session = server.session.write().await;
             session.replace_parsed_source_set(
-                "library::Modelica",
-                SourceRootKind::Library,
-                vec![(library_uri.clone(), ast::StoredDefinition::default())],
+                "source-root::Modelica",
+                SourceRootKind::External,
+                vec![(source_root_uri.clone(), ast::StoredDefinition::default())],
                 None,
             );
         }
-        let uri = Url::from_file_path(&library_path).expect("file uri");
+        let uri = Url::from_file_path(&source_root_path).expect("file uri");
         server
             .did_open(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
@@ -1713,12 +1770,12 @@ fn did_open_library_document_moves_live_text_into_session() {
             .session
             .read()
             .await
-            .get_document(&library_uri)
+            .get_document(&source_root_uri)
             .cloned()
-            .expect("opened library document must be owned by the session");
+            .expect("opened source-root document must be owned by the session");
         assert_eq!(
             session_doc.content, text,
-            "session should track the live library document text directly"
+            "session should track the live source-root document text directly"
         );
     });
 }
@@ -1771,27 +1828,27 @@ fn did_change_ignores_stale_document_versions() {
 }
 
 #[test]
-fn did_close_library_document_restores_cached_session_document() {
+fn did_close_source_root_document_restores_cached_session_document() {
     run_async_test(async {
         let service = new_test_service();
         let server = service.inner();
-        let library_root_path = std::env::temp_dir().join("rumoca-lsp-test-close");
-        let library_path = library_root_path
+        let source_root_dir = std::env::temp_dir().join("rumoca-lsp-test-close");
+        let source_root_path = source_root_dir
             .join("Modelica")
             .join("Blocks")
             .join("Continuous.mo");
-        let library_uri = canonical_path_key(library_path.to_string_lossy().as_ref());
+        let source_root_uri = canonical_path_key(source_root_path.to_string_lossy().as_ref());
 
         {
             let mut session = server.session.write().await;
             session.replace_parsed_source_set(
-                "library::Modelica",
-                SourceRootKind::Library,
-                vec![(library_uri.clone(), ast::StoredDefinition::default())],
+                "source-root::Modelica",
+                SourceRootKind::External,
+                vec![(source_root_uri.clone(), ast::StoredDefinition::default())],
                 None,
             );
         }
-        let uri = Url::from_file_path(&library_path).expect("file uri");
+        let uri = Url::from_file_path(&source_root_path).expect("file uri");
         server
             .did_open(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
@@ -1812,19 +1869,24 @@ fn did_close_library_document_restores_cached_session_document() {
             .session
             .read()
             .await
-            .get_document(&library_uri)
+            .get_document(&source_root_uri)
             .cloned();
         assert!(
             session_doc.is_some(),
-            "closing a live library document should restore the cached library document"
+            "closing a live source-root document should restore the cached source-root document"
         );
         assert!(
             session_doc.is_some_and(|doc| doc.content.is_empty()),
-            "restored library document should return to source-root ownership"
+            "restored source-root document should return to source-root ownership"
         );
+        let current_revision = server.current_analysis_revision().await;
         assert!(
-            server.namespace_prewarm_state.read().await.is_none(),
-            "closing a live library document should not enqueue background namespace prewarm"
+            !server
+                .session
+                .read()
+                .await
+                .source_root_read_prewarm_is_pending(current_revision),
+            "closing a live source-root document should not enqueue background source-root read prewarm"
         );
     });
 }

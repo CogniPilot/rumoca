@@ -22,12 +22,12 @@ impl ModelicaLanguageServer {
     ) {
         let request_token = self.begin_analysis_request().await;
         let focus_key = session_document_uri_key(&uri);
-        let library_epoch = self.current_library_state_epoch();
+        let source_root_epoch = self.session.read().await.source_root_state_epoch();
         let prewarm_key = SimulationPrewarmKey::new(model, &focus_key);
         {
             let pending = self.simulation_prewarm_state.read().await;
             if pending.get(&prewarm_key).is_some_and(|state| {
-                state.matches(request_token.session_revision, library_epoch) && !state.is_done()
+                state.matches(request_token.session_revision, source_root_epoch) && !state.is_done()
             }) {
                 return;
             }
@@ -35,7 +35,7 @@ impl ModelicaLanguageServer {
 
         let state = Arc::new(SimulationPrewarmState::new(
             request_token.session_revision,
-            library_epoch,
+            source_root_epoch,
         ));
         self.simulation_prewarm_state
             .write()

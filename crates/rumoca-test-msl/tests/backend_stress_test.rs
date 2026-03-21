@@ -18,7 +18,7 @@
 //! - `RUMOCA_STRESS_LIMIT=N` — cap number of models tested
 
 use flate2::read::GzDecoder;
-use rumoca_session::compile::{CompilationResult, CompiledLibrary, PhaseResult};
+use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
 use rumoca_session::runtime::{
     SimOptions, SimResult, prepare_dae_for_template_codegen, simulate_dae,
@@ -113,20 +113,20 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
 }
 
 // =============================================================================
-// Shared library (built once across all backends)
+// Shared source root (built once across all backends)
 // =============================================================================
 
-static MSL_LIBRARY: OnceLock<CompiledLibrary> = OnceLock::new();
+static MSL_SOURCE_ROOT: OnceLock<CompiledSourceRoot> = OnceLock::new();
 
-fn get_msl_library() -> &'static CompiledLibrary {
-    MSL_LIBRARY.get_or_init(|| {
+fn get_msl_source_root() -> &'static CompiledSourceRoot {
+    MSL_SOURCE_ROOT.get_or_init(|| {
         let msl_dir = ensure_msl_downloaded().expect("Failed to download MSL");
         let mo_files = find_mo_files(&msl_dir);
         println!("Parsing {} MSL files...", mo_files.len());
         let (successes, failures) = parse_files_parallel_lenient(&mo_files);
         println!("Parsed {} OK, {} failures", successes.len(), failures.len());
-        CompiledLibrary::from_parsed_batch_tolerant(successes)
-            .expect("failed to build library index")
+        CompiledSourceRoot::from_parsed_batch_tolerant(successes)
+            .expect("failed to build source-root index")
     })
 }
 
@@ -355,10 +355,10 @@ fn python_has_jax() -> bool {
 fn compile_inline_model(source: &str, model_name: &str) -> Result<CompilationResult, String> {
     let parsed = rumoca_session::parsing::parse_source_to_ast(source, &format!("{model_name}.mo"))
         .map_err(|e| format!("parse: {e}"))?;
-    let library =
-        CompiledLibrary::from_parsed_batch_tolerant(vec![(format!("{model_name}.mo"), parsed)])
-            .map_err(|e| format!("library: {e}"))?;
-    let report = library.compile_model_strict_reachable_with_recovery(model_name);
+    let source_root =
+        CompiledSourceRoot::from_parsed_batch_tolerant(vec![(format!("{model_name}.mo"), parsed)])
+            .map_err(|e| format!("source_root: {e}"))?;
+    let report = source_root.compile_model_strict_reachable_with_recovery(model_name);
     match report.requested_result {
         Some(PhaseResult::Success(boxed)) => Ok(*boxed),
         Some(PhaseResult::Failed { error, .. }) => Err(error),
@@ -522,11 +522,11 @@ fn outcome_tag(outcome: &ModelOutcome) -> &'static str {
 
 fn compile_to_dae(
     model: &ModelDef,
-    library: &CompiledLibrary,
+    source_root: &CompiledSourceRoot,
 ) -> Result<(rumoca_ir_dae::Dae, f64), String> {
     match &model.source {
         ModelSource::Msl => {
-            let report = library.compile_model_strict_reachable_with_recovery(&model.name);
+            let report = source_root.compile_model_strict_reachable_with_recovery(&model.name);
             let result: CompilationResult = match report.requested_result {
                 Some(PhaseResult::Success(boxed)) => *boxed,
                 Some(PhaseResult::Failed { error, .. }) => return Err(error),
@@ -1142,11 +1142,11 @@ impl BackendKind {
 
 fn run_single_model(
     model: &ModelDef,
-    library: &CompiledLibrary,
+    source_root: &CompiledSourceRoot,
     backend: &BackendKind,
 ) -> ModelOutcome {
     // 1. Compile to DAE
-    let (dae, t_end) = match compile_to_dae(model, library) {
+    let (dae, t_end) = match compile_to_dae(model, source_root) {
         Ok(v) => v,
         Err(e) => return ModelOutcome::CompileFail(e),
     };
@@ -1241,7 +1241,7 @@ fn run_stress_test(backend: BackendKind) {
     check_release_mode();
 
     let models = build_model_list();
-    let library = get_msl_library();
+    let source_root = get_msl_source_root();
 
     println!(
         "\n{:=<80}",
@@ -1258,7 +1258,7 @@ fn run_stress_test(backend: BackendKind) {
     let mut deviations: Vec<(String, f64, String)> = Vec::new();
 
     for (i, model) in models.iter().enumerate() {
-        let outcome = run_single_model(model, library, &backend);
+        let outcome = run_single_model(model, source_root, &backend);
         let tag = outcome_tag(&outcome);
 
         match &outcome {

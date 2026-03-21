@@ -34,21 +34,22 @@
 //!     .compile_str(modelica_code, "Integrator.mo")?;
 //! ```
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::{collections::HashMap, collections::HashSet};
 
 use rumoca_session::compile::{
-    Dae, FailedPhase, FlatModel, PhaseResult, ResolvedTree, Session, SessionConfig,
-};
-use rumoca_session::libraries::{
-    LibraryCacheStatus, PackageLayoutError, infer_library_roots, parse_library_with_cache,
-    should_load_library_for_source,
+    Dae, FailedPhase, FlatModel, PhaseResult, ResolvedTree, Session, SessionConfig, SourceRootKind,
 };
 use rumoca_session::parsing::collect_compile_unit_source_files;
 use rumoca_session::runtime::{
     dae_balance, dae_is_balanced, dae_to_template_json, prepare_dae_for_template_codegen,
     render_dae_template, render_dae_template_with_json, render_dae_template_with_name,
+};
+use rumoca_session::source_roots::{
+    PackageLayoutError, canonical_path_key, parse_source_root_with_cache, plan_source_root_loads,
+    referenced_unloaded_source_root_paths, render_source_root_status_message,
+    resolve_source_root_cache_dir, source_root_source_set_key,
 };
 use serde_json::{Map, Value};
 
@@ -674,19 +675,13 @@ impl CompilationResult {
 pub struct Compiler {
     /// The main model to compile.
     model_name: Option<String>,
-    /// Additional library paths to load.
-    library_paths: Vec<String>,
+    /// Additional source-root paths to load.
+    source_root_paths: Vec<String>,
     /// Enable verbose output.
     verbose: bool,
 }
 
 impl Compiler {
-    fn canonical_path_key(path: &str) -> String {
-        std::fs::canonicalize(path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| path.to_string())
-    }
-
     fn log_verbose(&self, message: impl AsRef<str>) {
         if self.verbose {
             eprintln!("{}", message.as_ref());
@@ -710,42 +705,32 @@ impl Compiler {
         self
     }
 
-    /// Add a library path to load before compiling.
+    /// Add a source-root path to load before compiling.
     ///
-    /// Library paths can be either:
+    /// Source-root paths can be either:
     /// - A single .mo file
     /// - A directory containing .mo files
-    pub fn library(mut self, path: &str) -> Self {
-        self.library_paths.push(path.to_string());
+    pub fn source_root(mut self, path: &str) -> Self {
+        self.source_root_paths.push(path.to_string());
         self
     }
 
-    /// Add multiple library paths.
-    pub fn libraries(mut self, paths: &[String]) -> Self {
-        self.library_paths.extend(paths.iter().cloned());
+    /// Add multiple source-root paths.
+    pub fn source_roots(mut self, paths: &[String]) -> Self {
+        self.source_root_paths.extend(paths.iter().cloned());
         self
     }
 
-    /// Load a library path into the session.
+    /// Load a source-root path into the session.
     ///
     /// Handles both single files and directories recursively.
-    fn load_library_into_session(
+    fn load_source_root_into_session(
         &self,
         session: &mut Session,
         path: &str,
     ) -> Result<(), CompilerError> {
         let path_obj = Path::new(path);
-        let start = {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                Some(std::time::Instant::now())
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                None
-            }
-        };
-        let parsed_library = parse_library_with_cache(path_obj).map_err(|e| {
+        let parsed_source_root = parse_source_root_with_cache(path_obj).map_err(|e| {
             if let Some(package_layout_error) = e.downcast_ref::<PackageLayoutError>() {
                 return CompilerError::SourceDiagnosticsError {
                     summary: package_layout_error.to_string(),
@@ -755,93 +740,70 @@ impl Compiler {
             }
             CompilerError::ParseError(format!("{}: {}", path, e))
         })?;
-        let elapsed = start
-            .map(|started| started.elapsed().as_secs_f64())
-            .unwrap_or(0.0);
 
-        if self.verbose {
-            let status = match parsed_library.cache_status {
-                LibraryCacheStatus::Hit => "cache hit",
-                LibraryCacheStatus::Miss => "cache miss",
-                LibraryCacheStatus::Disabled => "cache disabled",
-            };
-            let cache_path = parsed_library
-                .cache_file
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string());
-            eprintln!(
-                "[rumoca] Library {} ({}) — {} files in {:.2}s [key={}, cache={}]",
-                path,
-                status,
-                parsed_library.file_count,
-                elapsed,
-                parsed_library.cache_key,
-                cache_path
-            );
+        let source_root_key = source_root_source_set_key(path);
+        session.replace_parsed_source_set(
+            &source_root_key,
+            SourceRootKind::External,
+            parsed_source_root.documents,
+            None,
+        );
+        let cache_dir = resolve_source_root_cache_dir();
+        let _ = session.sync_source_root_semantic_summary_cache(
+            &source_root_key,
+            path_obj,
+            cache_dir.as_deref(),
+        );
+
+        if self.verbose
+            && let Some(status) = session.source_root_status(&source_root_key)
+        {
+            eprintln!("{}", render_source_root_status_message(&status));
         }
-
-        session.add_parsed_batch(parsed_library.documents);
         Ok(())
     }
 
-    /// Decide whether a library path is needed for the given source.
-    ///
-    /// Strategy:
-    /// - Infer root package/class names from the library path (e.g., `Modelica`).
-    /// - If the current source text does not mention any of those roots, skip loading.
-    /// - If roots cannot be inferred, load conservatively.
-    fn should_load_library_for_source(
-        &self,
-        source: &str,
-        lib_path: &str,
-    ) -> Result<bool, CompilerError> {
-        should_load_library_for_source(source, Path::new(lib_path))
-            .map_err(|e| CompilerError::io_error(lib_path, e.to_string()))
-    }
-
-    fn load_required_libraries(
+    fn load_required_source_roots(
         &self,
         session: &mut Session,
         source: &str,
     ) -> Result<(), CompilerError> {
-        let mut seen_library_paths = HashSet::new();
-        let mut loaded_library_roots: HashMap<String, String> = HashMap::new();
-
-        for lib_path in &self.library_paths {
-            let path_key = Self::canonical_path_key(lib_path);
-            if !seen_library_paths.insert(path_key) {
-                self.log_verbose(format!(
-                    "[rumoca] Skipping duplicate library path: {}",
-                    lib_path
-                ));
+        let loaded_source_root_path_keys = HashSet::new();
+        let referenced_source_root_paths = referenced_unloaded_source_root_paths(
+            source,
+            &self.source_root_paths,
+            &loaded_source_root_path_keys,
+        );
+        let referenced_path_keys = referenced_source_root_paths
+            .iter()
+            .map(|path| canonical_path_key(path))
+            .collect::<HashSet<_>>();
+        for source_root_path in &self.source_root_paths {
+            let path_key = canonical_path_key(source_root_path);
+            if referenced_path_keys.contains(&path_key) {
                 continue;
             }
+            self.log_verbose(format!(
+                "[rumoca] Skipping unused source root: {}",
+                source_root_path
+            ));
+        }
 
-            let inferred_roots = infer_library_roots(Path::new(lib_path)).unwrap_or_default();
-            let duplicate_root = inferred_roots.iter().find_map(|root| {
-                loaded_library_roots
-                    .get(root)
-                    .map(|provider| (root, provider))
-            });
-            if let Some((root, provider)) = duplicate_root {
-                self.log_verbose(format!(
-                    "[rumoca] Skipping library {} (duplicate root '{}' already loaded from {})",
-                    lib_path, root, provider
-                ));
-                continue;
-            }
+        let load_plan =
+            plan_source_root_loads(&referenced_source_root_paths, &loaded_source_root_path_keys);
+        for skipped in &load_plan.duplicate_root_skips {
+            self.log_verbose(format!(
+                "[rumoca] Skipping source root {} (duplicate root '{}' already loaded from {})",
+                skipped.source_root_path, skipped.root_name, skipped.provider_path
+            ));
+        }
 
-            if !self.should_load_library_for_source(source, lib_path)? {
-                self.log_verbose(format!("[rumoca] Skipping unused library: {}", lib_path));
-                continue;
-            }
-
-            self.log_verbose(format!("[rumoca] Loading library: {}", lib_path));
-            self.load_library_into_session(session, lib_path)?;
-            for root in inferred_roots {
-                loaded_library_roots.insert(root, lib_path.clone());
-            }
+        for source_root_path in &load_plan.load_paths {
+            self.log_verbose(format!(
+                "[rumoca] Loading source root: {}",
+                source_root_path
+            ));
+            self.load_source_root_into_session(session, source_root_path)?;
         }
 
         Ok(())
@@ -907,7 +869,7 @@ impl Compiler {
 
         // Create a session and add the document
         let mut session = Session::new(SessionConfig::default());
-        self.load_required_libraries(&mut session, source)?;
+        self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
             eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");

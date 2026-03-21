@@ -66,11 +66,11 @@ impl CompletionQuerySession<'_> {
         }
     }
 
-    fn all_library_class_names_cached(&self) -> Vec<String> {
+    fn namespace_class_names_cached(&self) -> Vec<String> {
         match self {
-            Self::Host(session) => session.all_library_class_names_cached(),
+            Self::Host(session) => session.namespace_class_names_cached(),
             #[cfg(feature = "server")]
-            Self::Snapshot(snapshot) => snapshot.all_library_class_names_cached(),
+            Self::Snapshot(snapshot) => snapshot.namespace_class_names_cached(),
         }
     }
 
@@ -139,25 +139,25 @@ impl CompletionQuerySession<'_> {
     }
 }
 
-fn cached_library_class_names(session: Option<&mut CompletionQuerySession<'_>>) -> Vec<String> {
+fn namespace_class_names(session: Option<&mut CompletionQuerySession<'_>>) -> Vec<String> {
     let Some(session) = session else {
         return Vec::new();
     };
 
     let namespace_entries = session.namespace_index_query("");
-    let library_names = namespace_entries
+    let class_names = namespace_entries
         .into_iter()
         .map(|(_, full_name, _)| full_name)
         .collect::<Vec<_>>();
 
-    if !library_names.is_empty() {
-        return library_names;
+    if !class_names.is_empty() {
+        return class_names;
     }
 
-    session.all_library_class_names_cached()
+    session.namespace_class_names_cached()
 }
 
-fn cached_library_namespace_children(
+fn namespace_children(
     session: Option<&mut CompletionQuerySession<'_>>,
     prefix: &str,
 ) -> Vec<(String, String, bool)> {
@@ -169,7 +169,7 @@ fn cached_library_namespace_children(
         return cached;
     }
 
-    let class_names = cached_library_class_names(Some(session));
+    let class_names = namespace_class_names(Some(session));
     if class_names.is_empty() {
         return Vec::new();
     }
@@ -179,8 +179,8 @@ fn cached_library_namespace_children(
 
 /// Handle completion request - returns keyword + scope-aware completions.
 ///
-/// When a `session` is provided, also includes library import/package/class
-/// completions from the cached namespace closure built from parsed library docs.
+/// When a `session` is provided, also includes namespace/package/class
+/// completions from the cached source-root namespace closure.
 pub fn handle_completion(
     source: &str,
     ast: Option<&ast::StoredDefinition>,
@@ -245,7 +245,7 @@ fn handle_completion_with_context(
 
     let mut items = Vec::new();
     let mut semantic_layer = CompletionSemanticLayer::SyntaxFallback;
-    let mut library_class_names: Option<Vec<String>> = None;
+    let mut cached_namespace_class_names: Option<Vec<String>> = None;
     let active_model = match (session.as_mut(), uri) {
         (Some(session), Some(uri)) => session.enclosing_class_qualified_name_query(uri, line),
         _ => ast.and_then(|tree| find_enclosing_class_qualified_name(tree, line)),
@@ -264,20 +264,25 @@ fn handle_completion_with_context(
         ) {
             return dot_items;
         }
-        let namespace_items = library_dot_completion_from_namespace(session.as_mut(), &prefix);
+        let namespace_items = namespace_dot_completion_from_namespace(session.as_mut(), &prefix);
         if !namespace_items.is_empty() {
             return CompletionResult::new(namespace_items, CompletionSemanticLayer::PackageDefMap);
         }
-        // Try library dot-completion
-        if library_class_names.is_none() {
-            library_class_names = Some(cached_library_class_names(session.as_mut()));
+        // Try namespace/class dot-completion from the cached class graph.
+        if cached_namespace_class_names.is_none() {
+            cached_namespace_class_names = Some(namespace_class_names(session.as_mut()));
         }
-        let class_names = library_class_names.as_ref().expect("populated cache");
+        let class_names = cached_namespace_class_names
+            .as_ref()
+            .expect("populated cache");
         if !class_names.is_empty() {
-            let lib_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
-            let lib_items = library_dot_completion(&lib_refs, &prefix);
-            if !lib_items.is_empty() {
-                return CompletionResult::new(lib_items, CompletionSemanticLayer::PackageDefMap);
+            let class_name_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
+            let namespace_items = namespace_dot_completion(&class_name_refs, &prefix);
+            if !namespace_items.is_empty() {
+                return CompletionResult::new(
+                    namespace_items,
+                    CompletionSemanticLayer::PackageDefMap,
+                );
             }
         }
     }
@@ -312,7 +317,7 @@ fn handle_completion_with_context(
     extend_general_completion_items(
         &mut items,
         &mut semantic_layer,
-        &mut library_class_names,
+        &mut cached_namespace_class_names,
         session,
         &partial,
     );
@@ -323,22 +328,25 @@ fn handle_completion_with_context(
 fn extend_general_completion_items(
     items: &mut Vec<CompletionItem>,
     semantic_layer: &mut CompletionSemanticLayer,
-    library_class_names: &mut Option<Vec<String>>,
+    cached_namespace_class_names: &mut Option<Vec<String>>,
     mut session: Option<CompletionQuerySession<'_>>,
     partial: &str,
 ) {
     if !partial.is_empty() {
-        let namespace_items = library_prefix_completions_from_namespace(session.as_mut(), partial);
+        let namespace_items =
+            namespace_prefix_completions_from_namespace(session.as_mut(), partial);
         if !namespace_items.is_empty() {
             *semantic_layer = (*semantic_layer).max(CompletionSemanticLayer::PackageDefMap);
             items.extend(namespace_items);
         } else {
-            if library_class_names.is_none() {
-                *library_class_names = Some(cached_library_class_names(session.as_mut()));
+            if cached_namespace_class_names.is_none() {
+                *cached_namespace_class_names = Some(namespace_class_names(session.as_mut()));
             }
-            let class_names = library_class_names.as_ref().expect("populated cache");
-            let lib_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
-            let prefix_items = library_prefix_completions(&lib_refs, partial);
+            let class_names = cached_namespace_class_names
+                .as_ref()
+                .expect("populated cache");
+            let class_name_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
+            let prefix_items = namespace_prefix_completions(&class_name_refs, partial);
             if !prefix_items.is_empty() {
                 *semantic_layer = (*semantic_layer).max(CompletionSemanticLayer::PackageDefMap);
             }
@@ -359,12 +367,12 @@ fn extend_general_completion_items(
     items.extend(keyword_items);
 }
 
-/// Dot-completion for library class names.
+/// Dot-completion for cached namespace class names.
 ///
-/// Given prefix "Modelica.Blocks." and library names like
+/// Given prefix "Modelica.Blocks." and cached class names like
 /// "Modelica.Blocks.Continuous.PID", returns completion items for
 /// the immediate children at that level (e.g., "Continuous", "Sources").
-fn library_dot_completion(library_class_names: &[&str], prefix: &str) -> Vec<CompletionItem> {
+fn namespace_dot_completion(class_names: &[&str], prefix: &str) -> Vec<CompletionItem> {
     let (search_prefix, filter_partial) = extract_qualified_prefix(prefix);
 
     if search_prefix.is_empty() {
@@ -374,7 +382,7 @@ fn library_dot_completion(library_class_names: &[&str], prefix: &str) -> Vec<Com
     let mut seen = std::collections::HashSet::new();
     let mut items = Vec::new();
 
-    for name in library_class_names {
+    for name in class_names {
         let Some(rest) = name.strip_prefix(&search_prefix) else {
             continue;
         };
@@ -393,7 +401,7 @@ fn library_dot_completion(library_class_names: &[&str], prefix: &str) -> Vec<Com
             continue;
         }
         let full_name = format!("{}{}", search_prefix, child);
-        let has_children = library_class_names
+        let has_children = class_names
             .iter()
             .any(|n| n.starts_with(&format!("{}.", full_name)));
         let kind = if has_children {
@@ -412,7 +420,7 @@ fn library_dot_completion(library_class_names: &[&str], prefix: &str) -> Vec<Com
     items
 }
 
-fn library_dot_completion_from_namespace(
+fn namespace_dot_completion_from_namespace(
     session: Option<&mut CompletionQuerySession<'_>>,
     prefix: &str,
 ) -> Vec<CompletionItem> {
@@ -422,7 +430,7 @@ fn library_dot_completion_from_namespace(
     }
 
     namespace_entries_to_completion_items(
-        cached_library_namespace_children(session, &search_prefix),
+        namespace_children(session, &search_prefix),
         &filter_partial,
     )
 }
@@ -453,15 +461,15 @@ fn extract_qualified_prefix(prefix: &str) -> (String, String) {
     }
 }
 
-/// Top-level library class prefix completion.
+/// Top-level namespace class prefix completion.
 ///
-/// Given partial "Model" and library names, returns "Modelica" etc.
-fn library_prefix_completions(library_class_names: &[&str], partial: &str) -> Vec<CompletionItem> {
+/// Given partial "Model" and cached class names, returns "Modelica" etc.
+fn namespace_prefix_completions(class_names: &[&str], partial: &str) -> Vec<CompletionItem> {
     let mut seen = std::collections::HashSet::new();
     let mut items = Vec::new();
     let partial_lower = partial.to_lowercase();
 
-    for name in library_class_names {
+    for name in class_names {
         // Get the top-level name (before first dot)
         let top_level = name.split('.').next().unwrap_or(name);
         if top_level.to_lowercase().starts_with(&partial_lower)
@@ -470,7 +478,7 @@ fn library_prefix_completions(library_class_names: &[&str], partial: &str) -> Ve
             items.push(CompletionItem {
                 label: top_level.to_string(),
                 kind: Some(CompletionItemKind::MODULE),
-                detail: Some("Library package".to_string()),
+                detail: Some("Namespace package".to_string()),
                 ..Default::default()
             });
         }
@@ -479,15 +487,15 @@ fn library_prefix_completions(library_class_names: &[&str], partial: &str) -> Ve
     items
 }
 
-fn library_prefix_completions_from_namespace(
+fn namespace_prefix_completions_from_namespace(
     session: Option<&mut CompletionQuerySession<'_>>,
     partial: &str,
 ) -> Vec<CompletionItem> {
-    namespace_entries_to_completion_items(cached_library_namespace_children(session, ""), partial)
+    namespace_entries_to_completion_items(namespace_children(session, ""), partial)
 }
 
 fn namespace_children_from_class_names(
-    library_class_names: &[String],
+    class_names: &[String],
     prefix: &str,
 ) -> Vec<(String, String, bool)> {
     let normalized_prefix = if prefix.is_empty() {
@@ -501,7 +509,7 @@ fn namespace_children_from_class_names(
     let mut seen = std::collections::HashSet::new();
     let mut items = Vec::new();
 
-    for name in library_class_names {
+    for name in class_names {
         let candidate = if normalized_prefix.is_empty() {
             name.clone()
         } else {
@@ -519,7 +527,7 @@ fn namespace_children_from_class_names(
         } else {
             format!("{normalized_prefix}{child}")
         };
-        let has_children = library_class_names
+        let has_children = class_names
             .iter()
             .any(|candidate| candidate.starts_with(&format!("{full_name}.")));
         if seen.insert(full_name.clone()) {
@@ -1461,7 +1469,7 @@ end M;
     }
 
     #[test]
-    fn library_dot_completion_uses_library_cache_after_local_edit() {
+    fn external_source_root_completion_uses_namespace_cache_after_local_edit() {
         let lib = r#"
 package Lib
   package Electrical
@@ -1474,14 +1482,14 @@ package Lib
 end Lib;
 "#;
         let mut session = Session::default();
-        let parsed = parse_source_to_ast(lib, "Lib/package.mo").expect("parse library");
+        let parsed = parse_source_to_ast(lib, "Lib/package.mo").expect("parse source root");
         let inserted = session.replace_parsed_source_set(
-            "library::Lib",
-            SourceRootKind::Library,
+            "external::Lib",
+            SourceRootKind::External,
             vec![("Lib/package.mo".to_string(), parsed)],
             None,
         );
-        assert_eq!(inserted, 1, "expected library source-set to load");
+        assert_eq!(inserted, 1, "expected external source root to load");
 
         let source = "model Active\n  Real x;\nend Active;\n";
         session
@@ -1490,12 +1498,12 @@ end Lib;
 
         let namespace_root_children = session
             .namespace_index_query("")
-            .expect("build library completion cache");
+            .expect("build namespace completion cache");
         assert!(
             namespace_root_children
                 .iter()
                 .any(|(_, full_name, _)| full_name == "Lib"),
-            "expected root library namespace cache entry: {namespace_root_children:?}"
+            "expected root source-root namespace cache entry: {namespace_root_children:?}"
         );
         let lib_namespace_children = session
             .namespace_index_query("Lib.")
@@ -1513,11 +1521,11 @@ end Lib;
             electrical_namespace_children
                 .iter()
                 .any(|(_, full_name, _)| full_name == "Lib.Electrical.Resistor"),
-            "expected nested library class in namespace cache: {electrical_namespace_children:?}"
+            "expected nested external source-root class in namespace cache: {electrical_namespace_children:?}"
         );
         assert!(
             !session.has_resolved_cached(),
-            "priming the library cache should not build the full resolved session"
+            "priming the source-root cache should not build the full resolved session"
         );
         assert_eq!(
             session
@@ -1536,9 +1544,9 @@ end Lib;
         assert!(
             !session
                 .namespace_index_query("Lib.")
-                .expect("expected library namespace after local edit")
+                .expect("expected source-root namespace after local edit")
                 .is_empty(),
-            "editing a local document should preserve the library-only completion cache"
+            "editing a local document should preserve the source-root-only completion cache"
         );
 
         let completion_source = "model Active\n  Lib.\nend Active;\n";
@@ -1553,11 +1561,11 @@ end Lib;
         let labels = items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
         assert!(
             labels.iter().any(|label| label == "Electrical"),
-            "expected library completion from cached library class names, got: {labels:?}"
+            "expected completion from cached source-root class names, got: {labels:?}"
         );
         assert!(
             !session.has_resolved_cached(),
-            "library completion should not rebuild the full resolved session"
+            "source-root completion should not rebuild the full resolved session"
         );
     }
 }

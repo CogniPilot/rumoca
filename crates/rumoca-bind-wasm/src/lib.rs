@@ -4,6 +4,7 @@
 //! lives in those crates; this module only provides WASM entry points.
 
 mod class_browser_helpers;
+mod source_root_api;
 
 use std::{
     collections::BTreeMap,
@@ -18,14 +19,14 @@ use wasm_bindgen::prelude::*;
 
 use rumoca_session::Session;
 use rumoca_session::compile::{
-    CompilationMode, CompilationResult, FailedPhase, PhaseResult, SourceRootKind,
-    session_cache_stats,
+    CompilationMode, CompilationResult, FailedPhase, PhaseResult, session_cache_stats,
 };
 use rumoca_session::parsing::ir_core as rumoca_ir_core;
 use rumoca_session::parsing::{
     Causality, ClassDef, Expression, OpBinary, StoredDefinition, Variability, collect_model_names,
     parse_source_to_ast, validate_source_syntax,
 };
+use rumoca_session::runtime::templates as runtime_templates;
 use rumoca_session::runtime::{
     SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
     simulate_dae,
@@ -36,7 +37,7 @@ use rumoca_sim::results_web::{
 };
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
-    CompletionTimingSummary, extract_library_completion_prefix,
+    CompletionTimingSummary, extract_namespace_completion_prefix,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -45,14 +46,24 @@ use crate::class_browser_helpers::{
     class_type_label, component_reference_to_path, expression_path, extract_string_literal,
     join_path, token_list_to_text,
 };
+pub use crate::source_root_api::{
+    clear_source_root_cache, compile_with_project_sources, compile_with_source_roots,
+    export_parsed_source_roots_binary, get_bundled_source_root_manifest,
+    get_source_root_document_count, get_source_root_statuses, load_bundled_source_root_cache,
+    load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
+    parse_source_root_file, sync_project_sources,
+};
 
-/// Global compilation session containing both library and user documents.
+/// Global compilation session containing both bundled source-root and user documents.
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
-const WASM_LIBRARY_SOURCE_SET_ID: &str = "wasm::libraries";
-const BUNDLED_LIBRARY_MANIFEST_JSON: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/bundled_library_manifest.json"));
-const BUNDLED_LIBRARY_CACHE_BYTES: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/bundled_library_cache.bin"));
+const WASM_BUNDLED_SOURCE_ROOT_SET_ID: &str = "wasm::bundled-source-roots";
+const WASM_PROJECT_SOURCE_SET_ID: &str = "wasm::project";
+const BUNDLED_SOURCE_ROOT_MANIFEST_JSON: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/bundled_source_root_manifest.json"
+));
+const BUNDLED_SOURCE_ROOT_CACHE_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/bundled_source_root_cache.bin"));
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,6 +134,110 @@ pub fn get_build_time_utc() -> String {
         .to_string()
 }
 
+/// Get the built-in codegen templates bundled with the WASM runtime.
+#[wasm_bindgen]
+pub fn get_builtin_templates() -> JsValue {
+    let templates = vec![
+        WasmBuiltinTemplate {
+            id: "sympy.py.jinja",
+            label: "SymPy (Python)",
+            language: "python",
+            source: runtime_templates::SYMPY,
+        },
+        WasmBuiltinTemplate {
+            id: "jax.py.jinja",
+            label: "JAX / Diffrax (Python)",
+            language: "python",
+            source: runtime_templates::JAX,
+        },
+        WasmBuiltinTemplate {
+            id: "onnx.py.jinja",
+            label: "ONNX (Python)",
+            language: "python",
+            source: runtime_templates::ONNX,
+        },
+        WasmBuiltinTemplate {
+            id: "julia_mtk.jl.jinja",
+            label: "Julia MTK",
+            language: "julia",
+            source: runtime_templates::JULIA_MTK,
+        },
+        WasmBuiltinTemplate {
+            id: "casadi_sx.py.jinja",
+            label: "CasADi SX (Python)",
+            language: "python",
+            source: runtime_templates::CASADI_SX,
+        },
+        WasmBuiltinTemplate {
+            id: "casadi_mx.py.jinja",
+            label: "CasADi MX (Python)",
+            language: "python",
+            source: runtime_templates::CASADI_MX,
+        },
+        WasmBuiltinTemplate {
+            id: "cyecca.py.jinja",
+            label: "Cyecca (Python)",
+            language: "python",
+            source: runtime_templates::CYECCA,
+        },
+        WasmBuiltinTemplate {
+            id: "embedded_c.c.jinja",
+            label: "Embedded C",
+            language: "c",
+            source: runtime_templates::EMBEDDED_C,
+        },
+        WasmBuiltinTemplate {
+            id: "dae_modelica.mo.jinja",
+            label: "DAE Modelica",
+            language: "modelica",
+            source: runtime_templates::DAE_MODELICA,
+        },
+        WasmBuiltinTemplate {
+            id: "flat_modelica.mo.jinja",
+            label: "Flat Modelica",
+            language: "modelica",
+            source: runtime_templates::FLAT_MODELICA,
+        },
+        WasmBuiltinTemplate {
+            id: "fmi2_model_description.xml.jinja",
+            label: "FMI 2.0 modelDescription.xml",
+            language: "xml",
+            source: runtime_templates::FMI2_MODEL_DESCRIPTION,
+        },
+        WasmBuiltinTemplate {
+            id: "fmi2_model.c.jinja",
+            label: "FMI 2.0 model.c",
+            language: "c",
+            source: runtime_templates::FMI2_MODEL,
+        },
+        WasmBuiltinTemplate {
+            id: "fmi2_test_driver.c.jinja",
+            label: "FMI 2.0 test driver",
+            language: "c",
+            source: runtime_templates::FMI2_TEST_DRIVER,
+        },
+        WasmBuiltinTemplate {
+            id: "fmi3_model_description.xml.jinja",
+            label: "FMI 3.0 modelDescription.xml",
+            language: "xml",
+            source: runtime_templates::FMI3_MODEL_DESCRIPTION,
+        },
+        WasmBuiltinTemplate {
+            id: "fmi3_model.c.jinja",
+            label: "FMI 3.0 model.c",
+            language: "c",
+            source: runtime_templates::FMI3_MODEL,
+        },
+        WasmBuiltinTemplate {
+            id: "fmi3_test_driver.c.jinja",
+            label: "FMI 3.0 test driver",
+            language: "c",
+            source: runtime_templates::FMI3_TEST_DRIVER,
+        },
+    ];
+    serde_wasm_bindgen::to_value(&templates).unwrap_or(JsValue::NULL)
+}
+
 // ==========================================================================
 // Parsing & Checking
 // ==========================================================================
@@ -142,15 +257,24 @@ struct WasmSimulationModelState {
     error: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BundledLibraryManifest {
-    libraries: Vec<BundledLibraryEntry>,
+struct WasmBuiltinTemplate {
+    id: &'static str,
+    label: &'static str,
+    language: &'static str,
+    source: &'static str,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BundledLibraryEntry {
+struct BundledSourceRootManifest {
+    archives: Vec<BundledSourceRootArchive>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundledSourceRootArchive {
     archive_id: String,
     file_name: String,
     file_count: usize,
@@ -751,60 +875,6 @@ fn compile_source_in_session(
     build_compile_response(&result)
 }
 
-#[derive(Default)]
-struct LibraryLoadSummary {
-    parsed_count: usize,
-    inserted_count: usize,
-    error_count: usize,
-    skipped_files: Vec<String>,
-}
-
-fn parse_library_sources_json(libraries_json: &str) -> Result<BTreeMap<String, String>, JsValue> {
-    serde_json::from_str(libraries_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid JSON: {}", e)))
-}
-
-fn parse_binary_library_snapshot(bytes: &[u8]) -> Result<Vec<(String, StoredDefinition)>, JsValue> {
-    bincode::deserialize(bytes)
-        .map_err(|e| JsValue::from_str(&format!("Invalid binary library cache: {}", e)))
-}
-
-fn bundled_library_manifest() -> Result<BundledLibraryManifest, JsValue> {
-    serde_json::from_str(BUNDLED_LIBRARY_MANIFEST_JSON)
-        .map_err(|e| JsValue::from_str(&format!("Invalid bundled library manifest: {}", e)))
-}
-
-fn load_library_sources_in_session(
-    session: &mut Session,
-    libraries_json: &str,
-) -> Result<LibraryLoadSummary, JsValue> {
-    let libraries = parse_library_sources_json(libraries_json)?;
-    let mut definitions: Vec<(String, StoredDefinition)> = Vec::with_capacity(libraries.len());
-    let mut skipped_files: Vec<String> = Vec::new();
-
-    for (filename, source) in libraries {
-        match parse_source_to_ast(&source, &filename) {
-            Ok(definition) => definitions.push((filename, definition)),
-            Err(error) => skipped_files.push(format!("{filename}: {error}")),
-        }
-    }
-
-    let parsed_count = definitions.len();
-    let inserted_count = session.replace_parsed_source_set(
-        WASM_LIBRARY_SOURCE_SET_ID,
-        SourceRootKind::Library,
-        definitions,
-        Some("input.mo"),
-    );
-
-    Ok(LibraryLoadSummary {
-        parsed_count,
-        inserted_count,
-        error_count: skipped_files.len(),
-        skipped_files,
-    })
-}
-
 /// Compile Modelica source code to DAE JSON.
 #[wasm_bindgen]
 pub fn compile(source: &str, model_name: &str) -> Result<String, JsValue> {
@@ -836,174 +906,6 @@ pub fn get_simulation_models(source: &str, default_model: &str) -> Result<String
         error: None,
     })
     .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
-}
-
-/// Compile using cached libraries if available.
-#[wasm_bindgen]
-pub fn compile_with_libraries(
-    source: &str,
-    model_name: &str,
-    libraries_json: &str,
-) -> Result<String, JsValue> {
-    with_singleton_session(|session| {
-        if !libraries_json.trim().is_empty() {
-            let libraries = parse_library_sources_json(libraries_json)?;
-            if !libraries.is_empty() {
-                load_library_sources_in_session(
-                    session,
-                    &serde_json::to_string(&libraries)
-                        .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))?,
-                )?;
-            }
-        }
-        compile_source_in_session(session, source, model_name)
-    })
-}
-
-// ==========================================================================
-// Library Management
-// ==========================================================================
-
-/// Load and parse library sources into the session.
-#[wasm_bindgen]
-pub fn load_libraries(libraries_json: &str) -> Result<String, JsValue> {
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
-    let session = lock.get_or_insert_with(Session::default);
-    let summary = load_library_sources_in_session(session, libraries_json)?;
-
-    let result = serde_json::json!({
-        "parsed_count": summary.parsed_count,
-        "inserted_count": summary.inserted_count,
-        "error_count": summary.error_count,
-        "library_names": [],
-        "conflicts": [],
-        "skipped_files": summary.skipped_files,
-    });
-    serde_json::to_string(&result).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
-}
-
-/// Parse a single library file and return serialized AST.
-#[wasm_bindgen]
-pub fn parse_library_file(source: &str, filename: &str) -> Result<String, JsValue> {
-    let def = parse_source_to_ast(source, filename)
-        .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
-    serde_json::to_string(&def)
-        .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
-}
-
-/// Merge pre-parsed library definitions into the session.
-#[wasm_bindgen]
-pub fn merge_parsed_libraries(definitions_json: &str) -> Result<u32, JsValue> {
-    let defs: Vec<(String, String)> = serde_json::from_str(definitions_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid JSON: {}", e)))?;
-
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
-    let session = lock.get_or_insert_with(Session::default);
-    let mut count = 0u32;
-
-    for (filename, ast_json) in defs {
-        if let Ok(def) = serde_json::from_str::<StoredDefinition>(&ast_json) {
-            session.add_parsed(&filename, def);
-            count += 1;
-        }
-    }
-
-    Ok(count)
-}
-
-/// Merge a binary-serialized library snapshot into the singleton session.
-#[wasm_bindgen]
-pub fn merge_parsed_libraries_binary(bytes: &[u8]) -> Result<u32, JsValue> {
-    let definitions = parse_binary_library_snapshot(bytes)?;
-    let count = definitions.len() as u32;
-
-    let mut lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
-    let session = lock.get_or_insert_with(Session::default);
-    session.add_parsed_batch(definitions);
-    Ok(count)
-}
-
-/// Return metadata for libraries embedded into this WASM build.
-#[wasm_bindgen]
-pub fn get_bundled_library_manifest() -> String {
-    BUNDLED_LIBRARY_MANIFEST_JSON.to_string()
-}
-
-/// Load the embedded binary cache for a bundled library archive.
-#[wasm_bindgen]
-pub fn load_bundled_library_cache(archive_id: &str) -> Result<u32, JsValue> {
-    let manifest = bundled_library_manifest()?;
-    let Some(_entry) = manifest
-        .libraries
-        .iter()
-        .find(|entry| entry.archive_id == archive_id)
-    else {
-        return Err(JsValue::from_str(&format!(
-            "Unknown bundled library archive: {}",
-            archive_id
-        )));
-    };
-
-    if BUNDLED_LIBRARY_CACHE_BYTES.is_empty() {
-        return Ok(0);
-    }
-
-    merge_parsed_libraries_binary(BUNDLED_LIBRARY_CACHE_BYTES)
-}
-
-/// Export selected parsed library documents as the shared binary cache format.
-#[wasm_bindgen]
-pub fn export_parsed_libraries_binary(uris_json: &str) -> Result<Vec<u8>, JsValue> {
-    let requested_uris: Vec<String> = serde_json::from_str(uris_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid JSON: {}", e)))?;
-
-    let lock = SESSION
-        .lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock error: {}", e)))?;
-    let Some(session) = lock.as_ref() else {
-        return Ok(Vec::new());
-    };
-
-    let mut definitions: Vec<(String, StoredDefinition)> = Vec::new();
-    for uri in requested_uris {
-        let Some(doc) = session.get_document(&uri) else {
-            continue;
-        };
-        if !doc.content.is_empty() {
-            continue;
-        }
-        let Some(parsed) = doc.parsed().cloned() else {
-            continue;
-        };
-        definitions.push((uri, parsed));
-    }
-
-    bincode::serialize(&definitions)
-        .map_err(|e| JsValue::from_str(&format!("Binary cache serialization error: {}", e)))
-}
-
-/// Clear the library cache.
-#[wasm_bindgen]
-pub fn clear_library_cache() {
-    if let Ok(mut s) = SESSION.lock() {
-        *s = None;
-    }
-}
-
-/// Get the number of cached library documents.
-#[wasm_bindgen]
-pub fn get_library_count() -> u32 {
-    SESSION
-        .lock()
-        .ok()
-        .and_then(|s| s.as_ref().map(|sess| sess.document_uris().len() as u32))
-        .unwrap_or(0)
 }
 
 #[derive(Default)]
@@ -1348,18 +1250,18 @@ fn wasm_cached_completion_class_name_count(
         if let Ok(entries) = session.namespace_index_query("") {
             return entries.len();
         }
-        return session.all_library_class_names_cached().len();
+        return session.namespace_class_names_cached().len();
     }
-    let library_names = session
+    let source_root_names = session
         .namespace_index_query("")
         .unwrap_or_default()
         .into_iter()
         .map(|(_, name, _)| name)
         .collect::<Vec<_>>();
-    if library_names.is_empty() {
-        session.all_library_class_names_cached().len()
+    if source_root_names.is_empty() {
+        session.namespace_class_names_cached().len()
     } else {
-        library_names.len()
+        source_root_names.len()
     }
 }
 
@@ -1373,13 +1275,13 @@ fn timed_wasm_completion(
     let position = Position { line, character };
     let stats_before = session_cache_stats();
     let completion_started = wasm_timing_start();
-    let completion_prefix = extract_library_completion_prefix(source, position);
+    let completion_prefix = extract_namespace_completion_prefix(source, position);
 
-    let completion_library_load_started = wasm_timing_start();
+    let completion_source_root_load_started = wasm_timing_start();
     if completion_prefix.is_some() {
         let _ = session.namespace_index_query("");
     }
-    let completion_library_load_ms = wasm_elapsed_ms(completion_library_load_started);
+    let completion_source_root_load_ms = wasm_elapsed_ms(completion_source_root_load_started);
 
     let class_name_count_after_ensure =
         wasm_cached_completion_class_name_count(session, completion_prefix.as_deref());
@@ -1411,9 +1313,9 @@ fn timed_wasm_completion(
             request_was_stale: false,
             uri: "file:///input.mo".to_string(),
             semantic_layer: semantic_layer.to_string(),
-            source_library_load_ms: 0,
-            completion_library_load_ms,
-            library_completion_prime_ms: 0,
+            source_root_load_ms: 0,
+            completion_source_root_load_ms,
+            namespace_completion_prime_ms: 0,
             needs_resolved_session: false,
             ast_fast_path_matched: false,
             query_fast_path_check_ms: 0,
@@ -1547,7 +1449,7 @@ fn class_target_definition(
     })
 }
 
-fn parsed_library_class_definition(
+fn parsed_source_root_class_definition(
     session: &Session,
     ast: &StoredDefinition,
     tree: &rumoca_session::parsing::ast::ClassTree,
@@ -1807,7 +1709,14 @@ pub fn lsp_definition(source: &str, line: u32, character: u32) -> Result<String,
             let resolved = resolved_tree_for_navigation(session, Some(ast), line);
             let tree = resolved.as_ref().map(|resolved| &resolved.0);
             tree.and_then(|tree| {
-                parsed_library_class_definition(session, ast, tree, &doc.content, position, &uri)
+                parsed_source_root_class_definition(
+                    session,
+                    ast,
+                    tree,
+                    &doc.content,
+                    position,
+                    &uri,
+                )
             })
             .or_else(|| {
                 rumoca_tool_lsp::handle_goto_definition(
@@ -1894,6 +1803,22 @@ pub fn simulate_model(
     solver: &str,
 ) -> Result<String, JsValue> {
     with_singleton_session(|session| {
+        simulate_model_in_session(session, source, model_name, t_end, dt, solver)
+    })
+}
+
+/// Compile with additional project-local sources and simulate a Modelica model.
+#[wasm_bindgen]
+pub fn simulate_model_with_project_sources(
+    source: &str,
+    model_name: &str,
+    project_sources_json: &str,
+    t_end: f64,
+    dt: f64,
+    solver: &str,
+) -> Result<String, JsValue> {
+    with_singleton_session(|session| {
+        crate::source_root_api::load_project_sources_in_session(session, project_sources_json)?;
         simulate_model_in_session(session, source, model_name, t_end, dt, solver)
     })
 }

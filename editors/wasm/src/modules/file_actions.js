@@ -68,7 +68,6 @@ async function readFolderEntriesFromHandle(handle, prefix = '') {
 export function installFileActions({
     getEditor,
     getCompiledModels,
-    getDaeFormat,
     getCodegenOutputEditor,
     projectFs,
     setTerminalOutput,
@@ -190,43 +189,18 @@ export function installFileActions({
         }
     };
 
-    window.saveOutput = function() {
-        const modelName = document.getElementById('modelSelect').value;
-        const compiledModels = getCompiledModels();
-        if (!modelName || !compiledModels[modelName]) {
-            alert('No output available yet. Please select a model and wait for compilation.');
-            return;
-        }
-
-        const result = compiledModels[modelName];
-        if (result.error || !result.dae) {
-            alert('No output available - model has compilation errors.');
-            return;
-        }
-
-        let content;
-        let filename;
-        let mimeType;
-        if (getDaeFormat() === 'pretty') {
-            content = result.pretty || JSON.stringify(result.dae, null, 2);
-            filename = `${modelName}.txt`;
-            mimeType = 'text/plain';
-        } else {
-            content = JSON.stringify(result.dae_native, null, 2);
-            filename = `${modelName}.json`;
-            mimeType = 'application/json';
-        }
-
-        triggerDownload(new Blob([content], { type: mimeType }), filename);
-    };
-
     window.saveCodegenOutput = function() {
         const modelName = document.getElementById('modelSelect').value;
+        const compiledModels = getCompiledModels();
         const codegenOutputEditor = getCodegenOutputEditor();
         const content = codegenOutputEditor && codegenOutputEditor.getValue
             ? codegenOutputEditor.getValue()
             : '';
-        if (!content || content.startsWith('Enter') || content.startsWith('No DAE')) {
+        if (!modelName || !compiledModels[modelName]) {
+            alert('No code generation output available yet. Choose a model and wait for compilation.');
+            return;
+        }
+        if (!content || content.startsWith('No model selected') || content.startsWith('No DAE')) {
             alert('No valid codegen output to save.');
             return;
         }

@@ -21,11 +21,17 @@ use rumoca_phase_instantiate::{
 use rumoca_phase_resolve::{ResolveOptions, resolve_with_options, resolve_with_options_collect};
 use rumoca_phase_typecheck::typecheck_instanced;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
+
+mod session_impl;
+mod session_impl_query_indexes;
+
+#[cfg(test)]
+mod tests;
 
 use crate::experiment::experiment_settings_for_model;
 use crate::instrumentation::{
@@ -33,30 +39,29 @@ use crate::instrumentation::{
     record_body_semantic_diagnostics_cache_hit, record_body_semantic_diagnostics_cache_miss,
     record_dae_model_build, record_dae_model_cache_hit, record_dae_model_cache_miss,
     record_document_parse, record_document_parse_duration, record_document_parse_error,
-    record_document_symbol_query_hit, record_document_symbol_query_miss,
     record_file_item_index_query_hit, record_file_item_index_query_miss, record_flat_model_build,
     record_flat_model_cache_hit, record_flat_model_cache_miss, record_instantiated_model_build,
     record_instantiated_model_cache_hit, record_instantiated_model_cache_miss,
     record_interface_semantic_diagnostics_build, record_interface_semantic_diagnostics_cache_hit,
-    record_interface_semantic_diagnostics_cache_miss, record_library_completion_cache_hit,
-    record_library_completion_cache_miss, record_library_completion_state_invalidation,
-    record_library_namespace_refresh_build, record_library_namespace_refresh_collect,
-    record_library_namespace_refresh_finalize, record_model_stage_semantic_diagnostics_build,
+    record_interface_semantic_diagnostics_cache_miss,
+    record_model_stage_semantic_diagnostics_build,
     record_model_stage_semantic_diagnostics_cache_hit,
-    record_model_stage_semantic_diagnostics_cache_miss, record_namespace_index_query_hit,
-    record_namespace_index_query_miss, record_parsed_file_query_hit, record_parsed_file_query_miss,
+    record_model_stage_semantic_diagnostics_cache_miss, record_namespace_completion_cache_hit,
+    record_namespace_completion_cache_miss, record_namespace_completion_state_invalidation,
+    record_namespace_index_query_hit, record_namespace_index_query_miss,
+    record_namespace_refresh_build, record_namespace_refresh_collect,
+    record_namespace_refresh_finalize, record_parsed_file_query_hit, record_parsed_file_query_miss,
     record_recovered_file_query_hit, record_recovered_file_query_miss,
     record_resolved_state_invalidation, record_semantic_navigation_build,
     record_semantic_navigation_cache_hit, record_semantic_navigation_cache_miss,
     record_standard_resolved_build, record_standard_resolved_cache_hit,
     record_strict_resolved_build, record_strict_resolved_state_invalidation,
     record_typed_model_build, record_typed_model_cache_hit, record_typed_model_cache_miss,
-    record_workspace_symbol_query_hit, record_workspace_symbol_query_miss,
-};
-use crate::library_cache::{
-    LibraryCacheStatus, parse_library_with_cache_in, resolve_library_cache_dir,
 };
 use crate::merge::{collect_class_type_counts, collect_model_names, merge_stored_definitions};
+use crate::source_root_cache::{
+    SourceRootCacheStatus, parse_source_root_with_cache_in, resolve_source_root_cache_dir,
+};
 
 mod dependency_fingerprint;
 use dependency_fingerprint::{CompileCacheEntry, DependencyFingerprintCache, Fingerprint};
@@ -71,8 +76,8 @@ mod file_outline;
 use file_outline::FileOutline;
 mod semantic_summary_cache;
 use semantic_summary_cache::{
-    LibrarySemanticSummary, read_library_semantic_summary,
-    resolve_semantic_summary_cache_dir_from_root, write_library_semantic_summary,
+    SourceRootSemanticSummary, read_source_root_semantic_summary,
+    resolve_semantic_summary_cache_dir_from_root, write_source_root_semantic_summary,
 };
 mod class_body_semantics;
 use class_body_semantics::FileClassBodySemantics;
@@ -97,8 +102,8 @@ use compile_support::{
     is_simulatable_class_type, missing_inner_label, resolve_class_for_completion,
     split_cached_target_results, typed_model_outcome_from_instantiated,
 };
-mod compiled_library;
-pub use compiled_library::CompiledLibrary;
+mod compiled_source_root;
+pub use compiled_source_root::CompiledSourceRoot;
 mod diagnostic_adapters;
 use diagnostic_adapters::{merge_error_to_common, miette_error_to_common};
 mod model_diagnostics;
@@ -116,11 +121,12 @@ use strict_compile_diagnostics::{
 };
 mod session_impl_diagnostics;
 mod session_impl_inputs;
-mod session_impl_library_loads;
 mod session_impl_model_queries;
 mod session_impl_queries;
+mod session_impl_source_root_loads;
 mod session_impl_source_roots;
 mod session_impl_symbols;
+mod session_impl_workspace_symbol_queries;
 mod session_snapshot;
 
 static RAYON_INIT: Once = Once::new();
@@ -431,11 +437,11 @@ pub struct SessionConfig {
 pub enum SourceRootKind {
     /// Open workspace/project files.
     Workspace,
-    /// Mutable library roots loaded from disk or project config.
+    /// Mutable non-workspace roots loaded from disk or project config.
     #[default]
-    Library,
-    /// Rarely-changing bundled libraries such as MSL.
-    DurableLibrary,
+    External,
+    /// Rarely-changing non-workspace roots such as MSL.
+    DurableExternal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -447,15 +453,20 @@ pub enum SourceRootDurability {
 }
 
 impl SourceRootKind {
-    fn is_library(self) -> bool {
-        matches!(self, Self::Library | Self::DurableLibrary)
+    /// Return whether this source root is managed outside the active workspace.
+    ///
+    /// This does not imply different lookup or compile semantics from
+    /// workspace roots; it only selects roots that should be surfaced through
+    /// non-workspace status/progress views.
+    fn is_non_workspace_root(self) -> bool {
+        matches!(self, Self::External | Self::DurableExternal)
     }
 
     pub(crate) fn durability(self) -> SourceRootDurability {
         match self {
             Self::Workspace => SourceRootDurability::Volatile,
-            Self::Library => SourceRootDurability::Normal,
-            Self::DurableLibrary => SourceRootDurability::Durable,
+            Self::External => SourceRootDurability::Normal,
+            Self::DurableExternal => SourceRootDurability::Durable,
         }
     }
 }
@@ -552,25 +563,85 @@ pub enum CompilationMode {
     StrictReachableUncachedWithRecovery,
 }
 
-/// Library/workspace indexing execution mode.
+/// Source-root load execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum IndexingMode {
-    /// Continue indexing with partial results when some files fail.
+pub enum SourceRootLoadMode {
+    /// Continue loading with partial results when some files fail.
     #[default]
     Tolerant,
 }
 
-/// Report for tolerant library indexing.
+/// Report for tolerant source-root loading.
 #[derive(Debug, Clone)]
-pub struct IndexingReport {
+pub struct SourceRootLoadReport {
     pub source_set_id: String,
-    pub library_path: String,
-    pub indexed_file_count: usize,
+    pub source_root_path: String,
+    pub parsed_file_count: usize,
     pub inserted_file_count: usize,
-    pub cache_status: Option<LibraryCacheStatus>,
+    pub cache_status: Option<SourceRootCacheStatus>,
     pub cache_key: Option<String>,
     pub cache_file: Option<PathBuf>,
     pub diagnostics: Vec<String>,
+}
+
+/// Session-owned source-root activity kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceRootActivityKind {
+    ColdIndexBuild,
+    WarmCacheRestore,
+    SubtreeReindex,
+}
+
+/// Session-owned source-root activity phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceRootActivityPhase {
+    Pending,
+    Running,
+    Completed,
+}
+
+/// Generic source-root activity snapshot for thin clients to render.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRootActivitySnapshot {
+    pub kind: SourceRootActivityKind,
+    pub phase: SourceRootActivityPhase,
+    pub dirty_class_prefixes: Vec<String>,
+}
+
+/// Session-owned status view for one source root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRootStatusSnapshot {
+    pub source_root_key: String,
+    pub source_root_path: Option<String>,
+    pub current: Option<SourceRootActivitySnapshot>,
+    pub last_completed: Option<SourceRootActivitySnapshot>,
+}
+
+/// Session-owned subtree refresh plan for one dirty source root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRootRefreshPlan {
+    pub source_root_key: String,
+    pub source_root_path: Option<String>,
+    pub dirty_class_prefixes: Vec<String>,
+    pub refresh_class_prefixes: Vec<String>,
+    pub affected_uris: Vec<String>,
+    pub unmatched_class_prefixes: Vec<String>,
+    pub rebuild_package_membership: bool,
+    pub full_root_fallback: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedSourceRootLoad<'a> {
+    pub source_root_kind: SourceRootKind,
+    pub source_root_path: &'a Path,
+    pub cache_status: SourceRootCacheStatus,
+    pub path_key: &'a str,
+    pub current_document_path: Option<&'a str>,
+    pub documents: Vec<(String, ast::StoredDefinition)>,
+    pub expected_epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -594,7 +665,7 @@ impl SemanticDiagnosticsMode {
         match self {
             Self::Standard => ResolveBuildMode::Standard,
             // Save diagnostics should stay focused on the active target's
-            // reachable closure and tolerate unrelated library resolve issues.
+            // reachable closure and tolerate unrelated source-root resolve issues.
             Self::Save => ResolveBuildMode::StrictCompileRecovery,
         }
     }
@@ -678,6 +749,11 @@ impl DependencyFingerprintBuildCache {
             ResolveBuildMode::StrictCompileRecovery => self.strict_compile_recovery = None,
         }
     }
+
+    fn set_all_from_cache(&mut self, cache: &DependencyFingerprintCache) {
+        self.standard = Some(cache.clone());
+        self.strict_compile_recovery = Some(cache.clone());
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -712,7 +788,24 @@ type SummarySignature = IndexMap<FileId, Fingerprint>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SourceSetQuerySignature {
     Summary(SummarySignature),
-    Revision(RevisionId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceSetClassGraphSignature {
+    source_set: SourceSetQuerySignature,
+    detached: SummarySignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SourceRootResolvedAggregate {
+    model_names: Vec<String>,
+    dependency_fingerprints: DependencyFingerprintCache,
+}
+
+#[derive(Debug, Clone)]
+struct SourceSetResolvedAggregateQueryCache {
+    signature: SourceSetQuerySignature,
+    aggregate: SourceRootResolvedAggregate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -872,7 +965,7 @@ struct ClassComponentMembersQueryCache {
 
 #[derive(Debug, Clone)]
 struct PackageDefMapQueryCache {
-    signature: SourceSetQuerySignature,
+    signature: SourceSetClassGraphSignature,
     def_map: PackageDefMap,
 }
 
@@ -902,8 +995,10 @@ impl PackageDefMapState {
         self.session_cache = None;
     }
 
-    fn invalidate_source_set(&mut self, source_set_id: SourceSetId) {
-        self.source_set_caches.shift_remove(&source_set_id);
+    fn invalidate_source_set(&mut self, _source_set_id: SourceSetId) {
+        // Keep per-source-set membership graphs resident so the next query can
+        // compare signatures and rebuild lazily instead of cold-dropping the
+        // entire root cache entry.
         self.orphan_cache = None;
         self.session_cache = None;
     }
@@ -1045,9 +1140,79 @@ struct SourceSetRecord {
     id: SourceSetId,
     kind: SourceRootKind,
     durability: SourceRootDurability,
+    source_root_path: Option<String>,
     uris: IndexSet<String>,
     revision: RevisionId,
+    dirty_class_prefixes: IndexSet<String>,
     needs_refresh: bool,
+    activity: SourceRootActivityState,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SourceRootIndexingCoordinatorState {
+    loaded_path_keys: HashSet<String>,
+    loading_path_keys: HashMap<String, u64>,
+    state_epoch: u64,
+    read_prewarm_session_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SourceRootActivityState {
+    current: Option<SourceRootActivityRecord>,
+    last_completed: Option<SourceRootActivityRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceRootActivityRecord {
+    kind: SourceRootActivityKind,
+    phase: SourceRootActivityPhase,
+    dirty_class_prefixes: IndexSet<String>,
+}
+
+impl SourceRootActivityRecord {
+    fn pending_reindex(dirty_class_prefixes: &IndexSet<String>) -> Self {
+        Self {
+            kind: SourceRootActivityKind::SubtreeReindex,
+            phase: SourceRootActivityPhase::Pending,
+            dirty_class_prefixes: dirty_class_prefixes.clone(),
+        }
+    }
+
+    fn running(kind: SourceRootActivityKind) -> Self {
+        Self {
+            kind,
+            phase: SourceRootActivityPhase::Running,
+            dirty_class_prefixes: IndexSet::new(),
+        }
+    }
+
+    fn completed(kind: SourceRootActivityKind, dirty_class_prefixes: IndexSet<String>) -> Self {
+        Self {
+            kind,
+            phase: SourceRootActivityPhase::Completed,
+            dirty_class_prefixes,
+        }
+    }
+
+    fn snapshot(&self) -> SourceRootActivitySnapshot {
+        SourceRootActivitySnapshot {
+            kind: self.kind,
+            phase: self.phase,
+            dirty_class_prefixes: self.dirty_class_prefixes.iter().cloned().collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SourceSetNamespaceQueryCache {
+    signature: SourceSetClassGraphSignature,
+    cache: NamespaceCompletionCache,
+}
+
+#[derive(Debug, Clone)]
+struct OrphanNamespaceQueryCache {
+    signature: SummarySignature,
+    cache: NamespaceCompletionCache,
 }
 
 #[derive(Debug, Clone)]
@@ -1057,13 +1222,15 @@ struct DetachedSourceRootDocument {
 }
 
 #[derive(Debug, Clone, Default)]
-struct LibraryNamespaceCache {
+struct SourceRootNamespaceCache {
     merged_cache: Option<NamespaceCompletionCache>,
-    merged_source_set_signatures: IndexMap<SourceSetId, SourceSetQuerySignature>,
+    source_set_caches: IndexMap<SourceSetId, SourceSetNamespaceQueryCache>,
+    merged_source_set_signatures: IndexMap<SourceSetId, SourceSetClassGraphSignature>,
     orphan_signature: SummarySignature,
+    orphan_cache: Option<OrphanNamespaceQueryCache>,
 }
 
-impl LibraryNamespaceCache {
+impl SourceRootNamespaceCache {
     fn invalidate_source_set(&mut self, source_set_id: SourceSetId) {
         if self
             .merged_source_set_signatures
@@ -1074,10 +1241,20 @@ impl LibraryNamespaceCache {
         }
     }
 
+    fn insert_source_set_cache(
+        &mut self,
+        source_set_id: SourceSetId,
+        entry: SourceSetNamespaceQueryCache,
+    ) {
+        self.source_set_caches.insert(source_set_id, entry);
+        self.merged_cache = None;
+        self.merged_source_set_signatures.clear();
+    }
+
     fn store_merged_cache(
         &mut self,
         cache: NamespaceCompletionCache,
-        source_set_signatures: IndexMap<SourceSetId, SourceSetQuerySignature>,
+        source_set_signatures: IndexMap<SourceSetId, SourceSetClassGraphSignature>,
         orphan_signature: SummarySignature,
     ) {
         self.merged_cache = Some(cache);
@@ -1091,7 +1268,7 @@ impl LibraryNamespaceCache {
 /// This tier is invalidated directly by file and source-set revision changes.
 #[derive(Debug, Clone, Default)]
 struct AstQueryState {
-    library_namespace_cache: Option<LibraryNamespaceCache>,
+    source_root_namespace_cache: Option<SourceRootNamespaceCache>,
     package_def_map: PackageDefMapState,
     parsed_file_query_revisions: IndexMap<FileId, RevisionId>,
     recovered_file_query_revisions: IndexMap<FileId, RevisionId>,
@@ -1159,8 +1336,8 @@ impl AstQueryState {
     }
 
     fn merge_from(&mut self, other: &Self) {
-        if let Some(cache) = &other.library_namespace_cache {
-            self.library_namespace_cache = Some(cache.clone());
+        if let Some(cache) = &other.source_root_namespace_cache {
+            self.source_root_namespace_cache = Some(cache.clone());
         }
         self.package_def_map.merge_from(&other.package_def_map);
         merge_index_map_missing(
@@ -1219,6 +1396,7 @@ struct ResolvedArtifactState {
     model_names: Vec<String>,
     builds: ResolvedBuildCache,
     dependency_fingerprints: DependencyFingerprintBuildCache,
+    source_set_aggregates: IndexMap<SourceSetId, SourceSetResolvedAggregateQueryCache>,
     reachable_model_closures:
         IndexMap<ReachableModelClosureCacheKey, ReachableModelClosureArtifact>,
     semantic_navigation: IndexMap<String, SemanticNavigationArtifact>,
@@ -1234,6 +1412,10 @@ impl ResolvedArtifactState {
     fn clear_mode(&mut self, mode: ResolveBuildMode) {
         self.builds.clear_mode(mode);
         self.dependency_fingerprints.clear_mode(mode);
+    }
+
+    fn invalidate_source_set_aggregate(&mut self, source_set_id: SourceSetId) {
+        self.source_set_aggregates.shift_remove(&source_set_id);
     }
 }
 
@@ -1683,7 +1865,7 @@ pub struct Session {
     documents: IndexMap<String, Arc<Document>>,
     detached_document_uris: IndexSet<String>,
     detached_source_root_documents: IndexMap<FileId, DetachedSourceRootDocument>,
-    /// Non-workspace parsed document groups (e.g., loaded libraries) keyed by source-set id.
+    /// Non-workspace parsed document groups (e.g., loaded source roots) keyed by source-set id.
     source_sets: IndexMap<String, SourceSetRecord>,
     /// Stable file ids for all seen URIs during the session lifetime.
     file_ids: IndexMap<String, FileId>,
@@ -1708,6 +1890,8 @@ pub struct Session {
     current_revision: RevisionId,
     /// Monotonic counter used to allocate new revisions.
     next_revision: u64,
+    /// Session-owned source-root indexing coordinator state for thin clients.
+    source_root_indexing: SourceRootIndexingCoordinatorState,
     /// All incremental ownership state for AST, resolved, flattened, and DAE tiers.
     query_state: SessionQueryState,
     /// Shared immutable snapshot for the current revision so read requests
@@ -1727,8 +1911,3 @@ pub struct Session {
 pub struct SessionSnapshot {
     session: Arc<Mutex<Session>>,
 }
-
-mod session_impl;
-
-#[cfg(test)]
-mod tests;

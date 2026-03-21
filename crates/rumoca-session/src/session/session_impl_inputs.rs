@@ -1,10 +1,37 @@
 use super::*;
 
 struct PreparedTextDocumentChange {
-    was_library_document: bool,
+    was_source_root_backed_document: bool,
     document: Document,
     parse_error: Option<String>,
     invalidate_resolved: bool,
+    source_root_edit_invalidation: SourceRootEditInvalidation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SourceRootEditInvalidation {
+    None,
+    BodyOnly,
+    InterfaceChange {
+        dirty_class_prefixes: IndexSet<String>,
+    },
+    MembershipChange {
+        dirty_class_prefixes: IndexSet<String>,
+    },
+}
+
+impl SourceRootEditInvalidation {
+    fn dirty_class_prefixes(&self) -> Option<&IndexSet<String>> {
+        match self {
+            Self::InterfaceChange {
+                dirty_class_prefixes,
+            }
+            | Self::MembershipChange {
+                dirty_class_prefixes,
+            } => Some(dirty_class_prefixes),
+            Self::None | Self::BodyOnly => None,
+        }
+    }
 }
 
 impl Session {
@@ -43,36 +70,84 @@ impl Session {
         content: &str,
         revision: RevisionId,
     ) -> Option<String> {
-        let existing_live_library_source_roots = self
+        let source_root_backing_keys_before_detach = self.source_root_backing_keys_for_uri(uri);
+        let existing_live_source_root_backing_keys = self
             .documents
             .get(uri)
             .filter(|doc| !doc.content.is_empty())
-            .map(|_| self.library_source_root_keys_for_uri(uri))
+            .map(|_| self.source_root_backing_keys_for_uri(uri))
             .unwrap_or_default();
         let prepared = self.prepare_text_document_change(uri, content);
         self.detach_uri_from_source_sets(
             uri,
             revision,
-            prepared.was_library_document && !content.is_empty(),
+            prepared.was_source_root_backed_document && !content.is_empty(),
         );
         self.insert_document(prepared.document, revision);
+        self.cache_detached_live_source_root_membership(
+            uri,
+            &source_root_backing_keys_before_detach,
+        );
         if prepared.invalidate_resolved {
             self.invalidate_resolved_state(CacheInvalidationCause::DocumentMutation);
         } else {
             self.invalidate_strict_compile_state(CacheInvalidationCause::DocumentMutation);
         }
-        if !existing_live_library_source_roots.is_empty() {
-            self.mark_source_roots_for_refresh(&existing_live_library_source_roots);
+        for source_root_key in &existing_live_source_root_backing_keys {
+            if let Some(source_set_id) = self.source_set_id(source_root_key) {
+                self.invalidate_source_root_resolved_aggregate_for_source_set(source_set_id);
+            }
+        }
+        if !existing_live_source_root_backing_keys.is_empty()
+            && let Some(dirty_class_prefixes) = prepared
+                .source_root_edit_invalidation
+                .dirty_class_prefixes()
+        {
+            self.mark_source_roots_for_refresh(
+                &existing_live_source_root_backing_keys,
+                dirty_class_prefixes,
+            );
         }
         prepared.parse_error
     }
 
+    fn cache_detached_live_source_root_membership(
+        &mut self,
+        uri: &str,
+        source_root_backing_keys_before_detach: &IndexSet<String>,
+    ) {
+        if source_root_backing_keys_before_detach.is_empty()
+            || self.uri_is_in_source_set(uri)
+            || !self.detached_source_root_keys_for_uri(uri).is_empty()
+        {
+            return;
+        }
+        let Some(parsed) = self
+            .documents
+            .get(uri)
+            .and_then(|document| document.parsed().cloned())
+        else {
+            return;
+        };
+        self.cache_detached_source_root_document(
+            uri,
+            Document::from_parsed(uri.to_string(), String::new(), parsed),
+            source_root_backing_keys_before_detach.clone(),
+        );
+    }
+
     pub(crate) fn apply_document_removal_at_revision(&mut self, uri: &str, revision: RevisionId) {
+        let existing_live_source_root_backing_keys = self.source_root_backing_keys_for_uri(uri);
         self.delete_document_entry(uri);
         self.record_file_revision(uri, revision);
         self.detach_uri_from_source_sets(uri, revision, false);
         self.restore_detached_source_root_document(uri, revision);
         self.invalidate_resolved_state(CacheInvalidationCause::DocumentRemoval);
+        for source_root_key in &existing_live_source_root_backing_keys {
+            if let Some(source_set_id) = self.source_set_id(source_root_key) {
+                self.invalidate_source_root_resolved_aggregate_for_source_set(source_set_id);
+            }
+        }
     }
 
     pub(crate) fn apply_source_root_change_at_revision(
@@ -85,12 +160,13 @@ impl Session {
         self.update_source_set_record(source_root_key, kind, uris, revision);
         self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
         if let Some(source_set_id) = self.source_set_id(source_root_key) {
-            self.invalidate_library_completion_state_for_source_set(
+            self.invalidate_source_root_resolved_aggregate_for_source_set(source_set_id);
+            self.invalidate_source_root_completion_state_for_source_set(
                 source_set_id,
                 CacheInvalidationCause::SourceSetMutation,
             );
         } else {
-            self.invalidate_library_completion_state(CacheInvalidationCause::SourceSetMutation);
+            self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
         }
     }
 
@@ -133,12 +209,13 @@ impl Session {
         self.drop_detached_source_root_membership(source_root_key);
         self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
         if let Some(source_set_id) = source_set_cache_id {
-            self.invalidate_library_completion_state_for_source_set(
+            self.invalidate_source_root_resolved_aggregate_for_source_set(source_set_id);
+            self.invalidate_source_root_completion_state_for_source_set(
                 source_set_id,
                 CacheInvalidationCause::SourceSetMutation,
             );
         } else {
-            self.invalidate_library_completion_state(CacheInvalidationCause::SourceSetMutation);
+            self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
         }
     }
 
@@ -179,7 +256,7 @@ impl Session {
     }
 
     fn prepare_text_document_change(&self, uri: &str, content: &str) -> PreparedTextDocumentChange {
-        let was_library_document = self.is_library_backed_uri(uri);
+        let was_source_root_backed_document = self.is_source_root_backed_uri(uri);
         let previous_parsed = self
             .documents
             .get(uri)
@@ -200,18 +277,61 @@ impl Session {
             true
         };
         let parse_error = syntax.parse_error().map(ToString::to_string);
+        let document = Document::new(uri.to_string(), content.to_string(), syntax);
+        let source_root_edit_invalidation = self.classify_source_root_edit_invalidation(
+            uri,
+            &document,
+            was_source_root_backed_document,
+        );
 
         PreparedTextDocumentChange {
-            was_library_document,
-            document: Document::new(uri.to_string(), content.to_string(), syntax),
+            was_source_root_backed_document,
+            document,
             parse_error,
             invalidate_resolved,
+            source_root_edit_invalidation,
+        }
+    }
+
+    fn classify_source_root_edit_invalidation(
+        &self,
+        uri: &str,
+        document: &Document,
+        was_source_root_backed_document: bool,
+    ) -> SourceRootEditInvalidation {
+        if !was_source_root_backed_document {
+            return SourceRootEditInvalidation::None;
+        }
+        let Some(previous) = self.documents.get(uri) else {
+            return SourceRootEditInvalidation::None;
+        };
+        if previous.content.is_empty() {
+            return SourceRootEditInvalidation::None;
+        }
+        if previous.summary_fingerprint() == document.summary_fingerprint() {
+            return SourceRootEditInvalidation::BodyOnly;
+        }
+
+        let previous_summary =
+            FileSummary::from_definition(FileId::default(), previous.best_effort());
+        let updated_summary =
+            FileSummary::from_definition(FileId::default(), document.best_effort());
+        let dirty_class_prefixes =
+            dirty_class_prefixes_for_summary_change(&previous_summary, &updated_summary);
+        if summary_membership_changed(&previous_summary, &updated_summary) {
+            SourceRootEditInvalidation::MembershipChange {
+                dirty_class_prefixes,
+            }
+        } else {
+            SourceRootEditInvalidation::InterfaceChange {
+                dirty_class_prefixes,
+            }
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn library_source_set_ids_for_uri(&self, uri: &str) -> Vec<SourceSetId> {
-        self.library_source_root_keys_for_uri(uri)
+    pub(crate) fn non_workspace_source_set_ids_for_uri(&self, uri: &str) -> Vec<SourceSetId> {
+        self.non_workspace_source_root_keys_for_uri(uri)
             .into_iter()
             .filter_map(|source_set_key| {
                 self.source_sets
@@ -219,5 +339,58 @@ impl Session {
                     .map(|record| record.id)
             })
             .collect()
+    }
+}
+
+fn summary_membership_changed(previous: &FileSummary, updated: &FileSummary) -> bool {
+    previous.within_path != updated.within_path
+        || previous
+            .class_keys_by_name
+            .keys()
+            .ne(updated.class_keys_by_name.keys())
+}
+
+fn dirty_class_prefixes_for_summary_change(
+    previous: &FileSummary,
+    updated: &FileSummary,
+) -> IndexSet<String> {
+    let mut dirty_class_names = IndexSet::new();
+    for qualified_name in previous.class_keys_by_name.keys() {
+        let previous_class = previous
+            .class_keys_by_name
+            .get(qualified_name)
+            .and_then(|item_key| previous.classes.get(item_key));
+        let updated_class = updated
+            .class_keys_by_name
+            .get(qualified_name)
+            .and_then(|item_key| updated.classes.get(item_key));
+        if updated_class != previous_class {
+            dirty_class_names.insert(qualified_name.clone());
+        }
+    }
+    for qualified_name in updated.class_keys_by_name.keys() {
+        if !previous.class_keys_by_name.contains_key(qualified_name) {
+            dirty_class_names.insert(qualified_name.clone());
+        }
+    }
+
+    let mut dirty_class_prefixes = IndexSet::new();
+    for qualified_name in dirty_class_names {
+        accumulate_qualified_name_ancestors(&mut dirty_class_prefixes, &qualified_name);
+    }
+    dirty_class_prefixes
+}
+
+fn accumulate_qualified_name_ancestors(
+    dirty_class_prefixes: &mut IndexSet<String>,
+    qualified_name: &str,
+) {
+    let mut current = qualified_name.trim();
+    while !current.is_empty() {
+        dirty_class_prefixes.insert(current.to_string());
+        let Some((parent, _)) = current.rsplit_once('.') else {
+            break;
+        };
+        current = parent;
     }
 }

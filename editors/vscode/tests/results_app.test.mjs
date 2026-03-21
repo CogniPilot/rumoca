@@ -22,6 +22,7 @@ function createFakeElement(tagName) {
     parentNode: null,
     style: {},
     dataset: {},
+    attributes: {},
     value: "",
     textContent: "",
     _className: "",
@@ -43,6 +44,14 @@ function createFakeElement(tagName) {
     },
     removeEventListener(type) {
       listeners.delete(type);
+    },
+    setAttribute(name, value) {
+      element.attributes[name] = String(value);
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(element.attributes, name)
+        ? element.attributes[name]
+        : null;
     },
   };
   Object.defineProperty(element, "innerHTML", {
@@ -223,6 +232,7 @@ test("shared results app draft helpers normalize timeseries, scatter, and 3d vie
       type: "3d",
       x: "x",
       yText: "y, z, ignored",
+      script: "ctx.onFrame = () => {};",
       scriptPath: ".rumoca/models/by-id/uuid/viewer_3d.js",
     },
   ]);
@@ -237,7 +247,9 @@ test("shared results app draft helpers normalize timeseries, scatter, and 3d vie
   assert.deepEqual(normalized[1].scatterSeries, [
     { name: "x vs time", x: "time", y: "x" },
   ]);
-  assert.deepEqual(normalized[2].y, ["y", "z"]);
+  assert.equal(normalized[2].x, undefined);
+  assert.deepEqual(normalized[2].y, []);
+  assert.equal(normalized[2].script, "ctx.onFrame = () => {};");
   assert.equal(normalized[2].scriptPath, ".rumoca/models/by-id/uuid/viewer_3d.js");
 });
 
@@ -263,8 +275,6 @@ test("shared results app default views match the shared saved-view model", () =>
     id: "viewer_3",
     title: "3D View",
     type: "3d",
-    x: "x",
-    y: ["y", "z"],
   });
 });
 
@@ -286,6 +296,30 @@ test("shared results app hides editable settings UI in read-only mode", () => {
     assert.ok(!texts.includes("Settings"));
     assert.ok(containsClass(root, "rumoca-results-empty"));
     assert.ok(!containsClass(root, "rumoca-results-settings"));
+
+    app.dispose();
+  } finally {
+    restoreDom();
+  }
+});
+
+test("shared results app renders gear action in editable mode", () => {
+  const restoreDom = installFakeDom();
+  try {
+    const { resultsApp } = loadResultsApp();
+    const root = createFakeElement("div");
+    const app = resultsApp.createResultsApp({
+      root,
+      model: "Ball",
+      views: [{ id: "states_time", title: "States vs Time", type: "timeseries", x: "time", y: ["*states"] }],
+      payload: null,
+      metrics: null,
+    });
+
+    const texts = collectText(root);
+    assert.ok(texts.includes("⚙"));
+    assert.ok(!texts.includes("Settings"));
+    assert.ok(containsClass(root, "rumoca-results-header-button"));
 
     app.dispose();
   } finally {

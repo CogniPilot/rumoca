@@ -15,13 +15,13 @@ fn standalone_template_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/templates/standalone_html.jinja")
 }
 
-fn setup_mock_libraries(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
-    let main_lib = root.join("MainLib");
-    let helper_lib = root.join("HelperTypes");
-    let service_lib = root.join("ServiceTypes");
+fn setup_mock_source_roots(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let main_root = root.join("MainLib");
+    let helper_root = root.join("HelperTypes");
+    let service_root = root.join("ServiceTypes");
 
     write_text(
-        &main_lib.join("package.mo"),
+        &main_root.join("package.mo"),
         r#"
 package MainLib
   model Example
@@ -35,7 +35,7 @@ end MainLib;
     );
 
     write_text(
-        &helper_lib.join("package.mo"),
+        &helper_root.join("package.mo"),
         r#"
 package HelperTypes
   constant Real defaultR = 10;
@@ -44,7 +44,7 @@ end HelperTypes;
     );
 
     write_text(
-        &service_lib.join("package.mo"),
+        &service_root.join("package.mo"),
         r#"
 package ServiceTypes
   constant Real bias = 1;
@@ -52,13 +52,13 @@ end ServiceTypes;
 "#,
     );
 
-    (main_lib, helper_lib, service_lib)
+    (main_root, helper_root, service_root)
 }
 
 #[test]
-fn compile_fails_when_transitive_root_libraries_are_not_loaded() {
+fn compile_fails_when_transitive_root_source_roots_are_not_loaded() {
     let temp = tempdir().expect("tempdir");
-    let (main_lib, _helper_lib, _service_lib) = setup_mock_libraries(temp.path());
+    let (main_root, _helper_root, _service_root) = setup_mock_source_roots(temp.path());
 
     let wrapper_model = r#"
 model Wrapper
@@ -68,7 +68,7 @@ end Wrapper;
 
     let result = Compiler::new()
         .model("Wrapper")
-        .library(main_lib.to_string_lossy().as_ref())
+        .source_root(main_root.to_string_lossy().as_ref())
         .compile_str(wrapper_model, "Wrapper.mo");
 
     assert!(
@@ -83,9 +83,9 @@ end Wrapper;
 }
 
 #[test]
-fn standalone_template_renders_with_all_library_roots_loaded() {
+fn standalone_template_renders_with_all_source_roots_loaded() {
     let temp = tempdir().expect("tempdir");
-    let (main_lib, helper_lib, service_lib) = setup_mock_libraries(temp.path());
+    let (main_root, helper_root, service_root) = setup_mock_source_roots(temp.path());
 
     let wrapper_model = r#"
 model Wrapper
@@ -97,9 +97,9 @@ end Wrapper;
 
     let result = Compiler::new()
         .model("Wrapper")
-        .library(main_lib.to_string_lossy().as_ref())
-        .library(helper_lib.to_string_lossy().as_ref())
-        .library(service_lib.to_string_lossy().as_ref())
+        .source_root(main_root.to_string_lossy().as_ref())
+        .source_root(helper_root.to_string_lossy().as_ref())
+        .source_root(service_root.to_string_lossy().as_ref())
         .compile_str(wrapper_model, "Wrapper.mo")
         .expect("compile wrapper model");
 

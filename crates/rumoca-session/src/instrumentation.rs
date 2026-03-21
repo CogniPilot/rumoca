@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::library_cache::LibraryCacheStatus;
+use crate::source_root_cache::SourceRootCacheStatus;
 
 macro_rules! session_cache_delta_fields {
     ($lhs:expr, $rhs:expr) => {
@@ -86,18 +86,18 @@ macro_rules! session_cache_delta_fields {
             document_symbol_query_misses: $lhs
                 .document_symbol_query_misses
                 .saturating_sub($rhs.document_symbol_query_misses),
-            library_files_parsed: $lhs
-                .library_files_parsed
-                .saturating_sub($rhs.library_files_parsed),
-            library_cache_hits: $lhs
-                .library_cache_hits
-                .saturating_sub($rhs.library_cache_hits),
-            library_cache_misses: $lhs
-                .library_cache_misses
-                .saturating_sub($rhs.library_cache_misses),
-            library_cache_disabled: $lhs
-                .library_cache_disabled
-                .saturating_sub($rhs.library_cache_disabled),
+            source_root_files_parsed: $lhs
+                .source_root_files_parsed
+                .saturating_sub($rhs.source_root_files_parsed),
+            source_root_cache_hits: $lhs
+                .source_root_cache_hits
+                .saturating_sub($rhs.source_root_cache_hits),
+            source_root_cache_misses: $lhs
+                .source_root_cache_misses
+                .saturating_sub($rhs.source_root_cache_misses),
+            source_root_cache_disabled: $lhs
+                .source_root_cache_disabled
+                .saturating_sub($rhs.source_root_cache_disabled),
             standard_resolved_builds: $lhs
                 .standard_resolved_builds
                 .saturating_sub($rhs.standard_resolved_builds),
@@ -183,30 +183,30 @@ macro_rules! session_cache_delta_fields {
                 .dae_model_cache_misses
                 .saturating_sub($rhs.dae_model_cache_misses),
             dae_model_builds: $lhs.dae_model_builds.saturating_sub($rhs.dae_model_builds),
-            library_completion_cache_hits: $lhs
-                .library_completion_cache_hits
-                .saturating_sub($rhs.library_completion_cache_hits),
-            library_completion_cache_misses: $lhs
-                .library_completion_cache_misses
-                .saturating_sub($rhs.library_completion_cache_misses),
-            library_namespace_refresh_collect_ms: $lhs
-                .library_namespace_refresh_collect_ms
-                .saturating_sub($rhs.library_namespace_refresh_collect_ms),
-            library_namespace_refresh_build_ms: $lhs
-                .library_namespace_refresh_build_ms
-                .saturating_sub($rhs.library_namespace_refresh_build_ms),
-            library_namespace_refresh_finalize_ms: $lhs
-                .library_namespace_refresh_finalize_ms
-                .saturating_sub($rhs.library_namespace_refresh_finalize_ms),
+            namespace_completion_cache_hits: $lhs
+                .namespace_completion_cache_hits
+                .saturating_sub($rhs.namespace_completion_cache_hits),
+            namespace_completion_cache_misses: $lhs
+                .namespace_completion_cache_misses
+                .saturating_sub($rhs.namespace_completion_cache_misses),
+            namespace_refresh_collect_ms: $lhs
+                .namespace_refresh_collect_ms
+                .saturating_sub($rhs.namespace_refresh_collect_ms),
+            namespace_refresh_build_ms: $lhs
+                .namespace_refresh_build_ms
+                .saturating_sub($rhs.namespace_refresh_build_ms),
+            namespace_refresh_finalize_ms: $lhs
+                .namespace_refresh_finalize_ms
+                .saturating_sub($rhs.namespace_refresh_finalize_ms),
             resolved_state_invalidations: $lhs
                 .resolved_state_invalidations
                 .saturating_sub($rhs.resolved_state_invalidations),
             strict_resolved_state_invalidations: $lhs
                 .strict_resolved_state_invalidations
                 .saturating_sub($rhs.strict_resolved_state_invalidations),
-            library_completion_state_invalidations: $lhs
-                .library_completion_state_invalidations
-                .saturating_sub($rhs.library_completion_state_invalidations),
+            namespace_completion_state_invalidations: $lhs
+                .namespace_completion_state_invalidations
+                .saturating_sub($rhs.namespace_completion_state_invalidations),
             document_mutation_invalidations: $lhs
                 .document_mutation_invalidations
                 .saturating_sub($rhs.document_mutation_invalidations),
@@ -249,10 +249,10 @@ pub struct SessionCacheStatsSnapshot {
     pub workspace_symbol_query_misses: u64,
     pub document_symbol_query_hits: u64,
     pub document_symbol_query_misses: u64,
-    pub library_files_parsed: u64,
-    pub library_cache_hits: u64,
-    pub library_cache_misses: u64,
-    pub library_cache_disabled: u64,
+    pub source_root_files_parsed: u64,
+    pub source_root_cache_hits: u64,
+    pub source_root_cache_misses: u64,
+    pub source_root_cache_disabled: u64,
     pub standard_resolved_builds: u64,
     pub standard_resolved_build_total_nanos: u64,
     pub standard_resolved_cache_hits: u64,
@@ -282,14 +282,14 @@ pub struct SessionCacheStatsSnapshot {
     pub dae_model_cache_hits: u64,
     pub dae_model_cache_misses: u64,
     pub dae_model_builds: u64,
-    pub library_completion_cache_hits: u64,
-    pub library_completion_cache_misses: u64,
-    pub library_namespace_refresh_collect_ms: u64,
-    pub library_namespace_refresh_build_ms: u64,
-    pub library_namespace_refresh_finalize_ms: u64,
+    pub namespace_completion_cache_hits: u64,
+    pub namespace_completion_cache_misses: u64,
+    pub namespace_refresh_collect_ms: u64,
+    pub namespace_refresh_build_ms: u64,
+    pub namespace_refresh_finalize_ms: u64,
     pub resolved_state_invalidations: u64,
     pub strict_resolved_state_invalidations: u64,
-    pub library_completion_state_invalidations: u64,
+    pub namespace_completion_state_invalidations: u64,
     pub document_mutation_invalidations: u64,
     pub source_set_mutation_invalidations: u64,
     pub document_removal_invalidations: u64,
@@ -335,10 +335,10 @@ static WORKSPACE_SYMBOL_QUERY_HITS: AtomicU64 = AtomicU64::new(0);
 static WORKSPACE_SYMBOL_QUERY_MISSES: AtomicU64 = AtomicU64::new(0);
 static DOCUMENT_SYMBOL_QUERY_HITS: AtomicU64 = AtomicU64::new(0);
 static DOCUMENT_SYMBOL_QUERY_MISSES: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_FILES_PARSED: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_CACHE_DISABLED: AtomicU64 = AtomicU64::new(0);
+static SOURCE_ROOT_FILES_PARSED: AtomicU64 = AtomicU64::new(0);
+static SOURCE_ROOT_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static SOURCE_ROOT_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static SOURCE_ROOT_CACHE_DISABLED: AtomicU64 = AtomicU64::new(0);
 static STANDARD_RESOLVED_BUILDS: AtomicU64 = AtomicU64::new(0);
 static STANDARD_RESOLVED_BUILD_TOTAL_NANOS: AtomicU64 = AtomicU64::new(0);
 static STANDARD_RESOLVED_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
@@ -368,14 +368,14 @@ static FLAT_MODEL_BUILDS: AtomicU64 = AtomicU64::new(0);
 static DAE_MODEL_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static DAE_MODEL_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static DAE_MODEL_BUILDS: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_COMPLETION_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_COMPLETION_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_NAMESPACE_REFRESH_COLLECT_MS: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_NAMESPACE_REFRESH_BUILD_MS: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_NAMESPACE_REFRESH_FINALIZE_MS: AtomicU64 = AtomicU64::new(0);
+static NAMESPACE_COMPLETION_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static NAMESPACE_COMPLETION_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static NAMESPACE_REFRESH_COLLECT_MS: AtomicU64 = AtomicU64::new(0);
+static NAMESPACE_REFRESH_BUILD_MS: AtomicU64 = AtomicU64::new(0);
+static NAMESPACE_REFRESH_FINALIZE_MS: AtomicU64 = AtomicU64::new(0);
 static RESOLVED_STATE_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
 static STRICT_RESOLVED_STATE_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
-static LIBRARY_COMPLETION_STATE_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
+static NAMESPACE_COMPLETION_STATE_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
 static DOCUMENT_MUTATION_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
 static SOURCE_SET_MUTATION_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
 static DOCUMENT_REMOVAL_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
@@ -514,14 +514,14 @@ pub(crate) fn record_document_symbol_query_miss() {
     add(&DOCUMENT_SYMBOL_QUERY_MISSES, 1);
 }
 
-pub(crate) fn record_library_cache_result(status: LibraryCacheStatus, parsed_files: usize) {
+pub(crate) fn record_source_root_cache_result(status: SourceRootCacheStatus, parsed_files: usize) {
     if parsed_files > 0 {
-        add(&LIBRARY_FILES_PARSED, parsed_files as u64);
+        add(&SOURCE_ROOT_FILES_PARSED, parsed_files as u64);
     }
     match status {
-        LibraryCacheStatus::Hit => add(&LIBRARY_CACHE_HITS, 1),
-        LibraryCacheStatus::Miss => add(&LIBRARY_CACHE_MISSES, 1),
-        LibraryCacheStatus::Disabled => add(&LIBRARY_CACHE_DISABLED, 1),
+        SourceRootCacheStatus::Hit => add(&SOURCE_ROOT_CACHE_HITS, 1),
+        SourceRootCacheStatus::Miss => add(&SOURCE_ROOT_CACHE_MISSES, 1),
+        SourceRootCacheStatus::Disabled => add(&SOURCE_ROOT_CACHE_DISABLED, 1),
     }
 }
 
@@ -641,33 +641,24 @@ pub(crate) fn record_dae_model_build() {
     add(&DAE_MODEL_BUILDS, 1);
 }
 
-pub(crate) fn record_library_completion_cache_hit() {
-    add(&LIBRARY_COMPLETION_CACHE_HITS, 1);
+pub(crate) fn record_namespace_completion_cache_hit() {
+    add(&NAMESPACE_COMPLETION_CACHE_HITS, 1);
 }
 
-pub(crate) fn record_library_completion_cache_miss() {
-    add(&LIBRARY_COMPLETION_CACHE_MISSES, 1);
+pub(crate) fn record_namespace_completion_cache_miss() {
+    add(&NAMESPACE_COMPLETION_CACHE_MISSES, 1);
 }
 
-pub(crate) fn record_library_namespace_refresh_collect(elapsed: Duration) {
-    add(
-        &LIBRARY_NAMESPACE_REFRESH_COLLECT_MS,
-        elapsed.as_millis() as u64,
-    );
+pub(crate) fn record_namespace_refresh_collect(elapsed: Duration) {
+    add(&NAMESPACE_REFRESH_COLLECT_MS, elapsed.as_millis() as u64);
 }
 
-pub(crate) fn record_library_namespace_refresh_build(elapsed: Duration) {
-    add(
-        &LIBRARY_NAMESPACE_REFRESH_BUILD_MS,
-        elapsed.as_millis() as u64,
-    );
+pub(crate) fn record_namespace_refresh_build(elapsed: Duration) {
+    add(&NAMESPACE_REFRESH_BUILD_MS, elapsed.as_millis() as u64);
 }
 
-pub(crate) fn record_library_namespace_refresh_finalize(elapsed: Duration) {
-    add(
-        &LIBRARY_NAMESPACE_REFRESH_FINALIZE_MS,
-        elapsed.as_millis() as u64,
-    );
+pub(crate) fn record_namespace_refresh_finalize(elapsed: Duration) {
+    add(&NAMESPACE_REFRESH_FINALIZE_MS, elapsed.as_millis() as u64);
 }
 
 pub(crate) fn record_resolved_state_invalidation(cause: CacheInvalidationCause) {
@@ -680,8 +671,8 @@ pub(crate) fn record_strict_resolved_state_invalidation(cause: CacheInvalidation
     record_invalidation_cause(cause);
 }
 
-pub(crate) fn record_library_completion_state_invalidation(cause: CacheInvalidationCause) {
-    add(&LIBRARY_COMPLETION_STATE_INVALIDATIONS, 1);
+pub(crate) fn record_namespace_completion_state_invalidation(cause: CacheInvalidationCause) {
+    add(&NAMESPACE_COMPLETION_STATE_INVALIDATIONS, 1);
     record_invalidation_cause(cause);
 }
 
@@ -713,10 +704,10 @@ pub fn reset_session_cache_stats() {
     reset(&WORKSPACE_SYMBOL_QUERY_MISSES);
     reset(&DOCUMENT_SYMBOL_QUERY_HITS);
     reset(&DOCUMENT_SYMBOL_QUERY_MISSES);
-    reset(&LIBRARY_FILES_PARSED);
-    reset(&LIBRARY_CACHE_HITS);
-    reset(&LIBRARY_CACHE_MISSES);
-    reset(&LIBRARY_CACHE_DISABLED);
+    reset(&SOURCE_ROOT_FILES_PARSED);
+    reset(&SOURCE_ROOT_CACHE_HITS);
+    reset(&SOURCE_ROOT_CACHE_MISSES);
+    reset(&SOURCE_ROOT_CACHE_DISABLED);
     reset(&STANDARD_RESOLVED_BUILDS);
     reset(&STANDARD_RESOLVED_BUILD_TOTAL_NANOS);
     reset(&STANDARD_RESOLVED_CACHE_HITS);
@@ -746,14 +737,14 @@ pub fn reset_session_cache_stats() {
     reset(&DAE_MODEL_CACHE_HITS);
     reset(&DAE_MODEL_CACHE_MISSES);
     reset(&DAE_MODEL_BUILDS);
-    reset(&LIBRARY_COMPLETION_CACHE_HITS);
-    reset(&LIBRARY_COMPLETION_CACHE_MISSES);
-    reset(&LIBRARY_NAMESPACE_REFRESH_COLLECT_MS);
-    reset(&LIBRARY_NAMESPACE_REFRESH_BUILD_MS);
-    reset(&LIBRARY_NAMESPACE_REFRESH_FINALIZE_MS);
+    reset(&NAMESPACE_COMPLETION_CACHE_HITS);
+    reset(&NAMESPACE_COMPLETION_CACHE_MISSES);
+    reset(&NAMESPACE_REFRESH_COLLECT_MS);
+    reset(&NAMESPACE_REFRESH_BUILD_MS);
+    reset(&NAMESPACE_REFRESH_FINALIZE_MS);
     reset(&RESOLVED_STATE_INVALIDATIONS);
     reset(&STRICT_RESOLVED_STATE_INVALIDATIONS);
-    reset(&LIBRARY_COMPLETION_STATE_INVALIDATIONS);
+    reset(&NAMESPACE_COMPLETION_STATE_INVALIDATIONS);
     reset(&DOCUMENT_MUTATION_INVALIDATIONS);
     reset(&SOURCE_SET_MUTATION_INVALIDATIONS);
     reset(&DOCUMENT_REMOVAL_INVALIDATIONS);
@@ -790,10 +781,10 @@ pub fn session_cache_stats() -> SessionCacheStatsSnapshot {
         workspace_symbol_query_misses: load(&WORKSPACE_SYMBOL_QUERY_MISSES),
         document_symbol_query_hits: load(&DOCUMENT_SYMBOL_QUERY_HITS),
         document_symbol_query_misses: load(&DOCUMENT_SYMBOL_QUERY_MISSES),
-        library_files_parsed: load(&LIBRARY_FILES_PARSED),
-        library_cache_hits: load(&LIBRARY_CACHE_HITS),
-        library_cache_misses: load(&LIBRARY_CACHE_MISSES),
-        library_cache_disabled: load(&LIBRARY_CACHE_DISABLED),
+        source_root_files_parsed: load(&SOURCE_ROOT_FILES_PARSED),
+        source_root_cache_hits: load(&SOURCE_ROOT_CACHE_HITS),
+        source_root_cache_misses: load(&SOURCE_ROOT_CACHE_MISSES),
+        source_root_cache_disabled: load(&SOURCE_ROOT_CACHE_DISABLED),
         standard_resolved_builds: load(&STANDARD_RESOLVED_BUILDS),
         standard_resolved_build_total_nanos: load(&STANDARD_RESOLVED_BUILD_TOTAL_NANOS),
         standard_resolved_cache_hits: load(&STANDARD_RESOLVED_CACHE_HITS),
@@ -829,14 +820,14 @@ pub fn session_cache_stats() -> SessionCacheStatsSnapshot {
         dae_model_cache_hits: load(&DAE_MODEL_CACHE_HITS),
         dae_model_cache_misses: load(&DAE_MODEL_CACHE_MISSES),
         dae_model_builds: load(&DAE_MODEL_BUILDS),
-        library_completion_cache_hits: load(&LIBRARY_COMPLETION_CACHE_HITS),
-        library_completion_cache_misses: load(&LIBRARY_COMPLETION_CACHE_MISSES),
-        library_namespace_refresh_collect_ms: load(&LIBRARY_NAMESPACE_REFRESH_COLLECT_MS),
-        library_namespace_refresh_build_ms: load(&LIBRARY_NAMESPACE_REFRESH_BUILD_MS),
-        library_namespace_refresh_finalize_ms: load(&LIBRARY_NAMESPACE_REFRESH_FINALIZE_MS),
+        namespace_completion_cache_hits: load(&NAMESPACE_COMPLETION_CACHE_HITS),
+        namespace_completion_cache_misses: load(&NAMESPACE_COMPLETION_CACHE_MISSES),
+        namespace_refresh_collect_ms: load(&NAMESPACE_REFRESH_COLLECT_MS),
+        namespace_refresh_build_ms: load(&NAMESPACE_REFRESH_BUILD_MS),
+        namespace_refresh_finalize_ms: load(&NAMESPACE_REFRESH_FINALIZE_MS),
         resolved_state_invalidations: load(&RESOLVED_STATE_INVALIDATIONS),
         strict_resolved_state_invalidations: load(&STRICT_RESOLVED_STATE_INVALIDATIONS),
-        library_completion_state_invalidations: load(&LIBRARY_COMPLETION_STATE_INVALIDATIONS),
+        namespace_completion_state_invalidations: load(&NAMESPACE_COMPLETION_STATE_INVALIDATIONS),
         document_mutation_invalidations: load(&DOCUMENT_MUTATION_INVALIDATIONS),
         source_set_mutation_invalidations: load(&SOURCE_SET_MUTATION_INVALIDATIONS),
         document_removal_invalidations: load(&DOCUMENT_REMOVAL_INVALIDATIONS),

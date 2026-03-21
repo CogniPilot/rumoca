@@ -10,12 +10,18 @@ const withCacheBust = (path) =>
 let init;
 let wasm_init;
 let get_version;
+let get_builtin_templates;
 let compile_to_json;
+let compile_with_project_sources;
+let sync_project_sources;
+let get_source_root_statuses;
 let get_simulation_models;
-let compile_with_libraries;
-let load_libraries;
-let clear_library_cache;
-let get_library_count;
+let compile_with_source_roots;
+let load_source_roots;
+let clear_source_root_cache;
+let get_source_root_document_count;
+let export_parsed_source_roots_binary;
+let merge_parsed_source_roots_binary;
 let lsp_diagnostics;
 let lsp_hover;
 let lsp_completion;
@@ -29,6 +35,7 @@ let list_classes;
 let get_class_info;
 let render_template;
 let simulate_model = null;
+let simulate_model_with_project_sources = null;
 let wasmModuleLoaded = false;
 
 async function loadWasmModule() {
@@ -37,12 +44,18 @@ async function loadWasmModule() {
     init = mod.default;
     wasm_init = mod.wasm_init;
     get_version = mod.get_version;
+    get_builtin_templates = mod.get_builtin_templates;
     compile_to_json = mod.compile_to_json;
+    compile_with_project_sources = mod.compile_with_project_sources;
+    sync_project_sources = mod.sync_project_sources;
+    get_source_root_statuses = mod.get_source_root_statuses;
     get_simulation_models = mod.get_simulation_models;
-    compile_with_libraries = mod.compile_with_libraries;
-    load_libraries = mod.load_libraries;
-    clear_library_cache = mod.clear_library_cache;
-    get_library_count = mod.get_library_count;
+    compile_with_source_roots = mod.compile_with_source_roots;
+    load_source_roots = mod.load_source_roots;
+    clear_source_root_cache = mod.clear_source_root_cache;
+    get_source_root_document_count = mod.get_source_root_document_count;
+    export_parsed_source_roots_binary = mod.export_parsed_source_roots_binary;
+    merge_parsed_source_roots_binary = mod.merge_parsed_source_roots_binary;
     lsp_diagnostics = mod.lsp_diagnostics;
     lsp_hover = mod.lsp_hover;
     lsp_completion = mod.lsp_completion;
@@ -58,6 +71,9 @@ async function loadWasmModule() {
     if (typeof mod.simulate_model === 'function') {
         simulate_model = mod.simulate_model;
     }
+    if (typeof mod.simulate_model_with_project_sources === 'function') {
+        simulate_model_with_project_sources = mod.simulate_model_with_project_sources;
+    }
     wasmModuleLoaded = true;
 }
 
@@ -69,8 +85,8 @@ console.log = function(...args) {
     originalLog.apply(console, args);
     // Forward WASM progress messages to main thread
     const message = args.join(' ');
-    if (message.includes('[WASM] load_libraries: parsing')) {
-        // Extract progress info: "[WASM] load_libraries: parsing 50/500 (10%)"
+    if (message.includes('[WASM] load_source_roots: parsing')) {
+        // Extract progress info: "[WASM] load_source_roots: parsing 50/500 (10%)"
         const match = message.match(/parsing (\d+)\/(\d+) \((\d+)%\)/);
         if (match) {
             self.postMessage({
@@ -111,7 +127,7 @@ initialize().then(success => {
 
 // Handle messages from main thread
 self.onmessage = async (e) => {
-    const { id, action, source, modelName, libraries, line, character, daeJson, template, tEnd, dt } = e.data;
+    const { id, action, source, modelName, line, character, daeJson, template, tEnd, dt } = e.data;
 
     if (!initialized) {
         self.postMessage({ id, error: 'Worker not initialized' });
@@ -124,9 +140,12 @@ self.onmessage = async (e) => {
             case 'languageCommand': {
                 const command = e.data.command;
                 const payload = e.data.payload || {};
+                if (typeof sync_project_sources === 'function' && typeof payload.projectSources === 'string') {
+                    sync_project_sources(payload.projectSources);
+                }
                 switch (command) {
-                    case 'rumoca.language.getLibraryCount':
-                        result = get_library_count();
+                    case 'rumoca.language.getSourceRootDocumentCount':
+                        result = get_source_root_document_count();
                         break;
                     case 'rumoca.language.diagnostics':
                         result = lsp_diagnostics(payload.source || '');
@@ -184,13 +203,24 @@ self.onmessage = async (e) => {
                         if (!simulate_model) {
                             throw new Error('Simulation not available in this WASM build. Rebuild with rumoca-sim (diffsol feature enabled).');
                         }
-                        result = simulate_model(
-                            payload.source || '',
-                            payload.modelName || 'Model',
-                            payload.tEnd || 1.0,
-                            payload.dt || 0,
-                            payload.solver || 'auto',
-                        );
+                        if (simulate_model_with_project_sources) {
+                            result = simulate_model_with_project_sources(
+                                payload.source || '',
+                                payload.modelName || 'Model',
+                                payload.projectSources || '{}',
+                                payload.tEnd || 1.0,
+                                payload.dt || 0,
+                                payload.solver || 'auto',
+                            );
+                        } else {
+                            result = simulate_model(
+                                payload.source || '',
+                                payload.modelName || 'Model',
+                                payload.tEnd || 1.0,
+                                payload.dt || 0,
+                                payload.solver || 'auto',
+                            );
+                        }
                         break;
                     default:
                         throw new Error(`Unknown project command: ${command}`);
@@ -204,21 +234,40 @@ self.onmessage = async (e) => {
                     case 'rumoca.workspace.getVersion':
                         result = get_version();
                         break;
+                    case 'rumoca.workspace.getBuiltinTemplates':
+                        result = get_builtin_templates();
+                        break;
                     case 'rumoca.workspace.compile':
                         result = compile_to_json(payload.source || '', payload.modelName || 'Model');
                         break;
-                    case 'rumoca.workspace.compileWithLibraries':
-                        result = compile_with_libraries(
+                    case 'rumoca.workspace.compileWithProjectSources':
+                        result = compile_with_project_sources(
                             payload.source || '',
                             payload.modelName || 'Model',
-                            payload.libraries || '{}',
+                            payload.projectSources || '{}',
                         );
                         break;
-                    case 'rumoca.workspace.loadLibraries':
-                        result = load_libraries(payload.libraries || '{}');
+                    case 'rumoca.workspace.compileWithSourceRoots':
+                        result = compile_with_source_roots(
+                            payload.source || '',
+                            payload.modelName || 'Model',
+                            payload.sourceRoots || '{}',
+                        );
                         break;
-                    case 'rumoca.workspace.clearLibraryCache':
-                        clear_library_cache();
+                    case 'rumoca.workspace.loadSourceRoots':
+                        result = load_source_roots(payload.sourceRoots || '{}');
+                        break;
+                    case 'rumoca.workspace.getSourceRootStatuses':
+                        result = get_source_root_statuses();
+                        break;
+                    case 'rumoca.workspace.exportParsedSourceRootsBinary':
+                        result = export_parsed_source_roots_binary(payload.urisJson || '[]');
+                        break;
+                    case 'rumoca.workspace.mergeParsedSourceRootsBinary':
+                        result = merge_parsed_source_roots_binary(payload.bytes || new Uint8Array());
+                        break;
+                    case 'rumoca.workspace.clearSourceRootCache':
+                        clear_source_root_cache();
                         result = 'OK';
                         break;
                     case 'rumoca.workspace.renderTemplate':

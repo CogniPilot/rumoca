@@ -86,8 +86,6 @@
                 id: `viewer_${suffix}`,
                 title: '3D View',
                 type: '3d',
-                x: 'x',
-                y: ['y', 'z'],
             };
         }
         return {
@@ -162,18 +160,20 @@
                 id: trimMaybeString(draft.id) || defaultResultsView(type, index).id,
                 title: title,
                 type: type,
-                x: trimMaybeString(draft.x) || undefined,
-                y: parseSeriesList(draft.yText !== undefined ? draft.yText : formatSeriesList(draft.y)),
+                x: type === '3d' ? undefined : trimMaybeString(draft.x) || undefined,
+                y: type === '3d'
+                    ? []
+                    : parseSeriesList(draft.yText !== undefined ? draft.yText : formatSeriesList(draft.y)),
                 scatterSeries: type === 'scatter'
                     ? parseScatterSeriesText(draft.scatterSeriesText)
+                    : undefined,
+                script: type === '3d'
+                    ? (trimMaybeString(draft.script) || undefined)
                     : undefined,
                 scriptPath: type === '3d'
                     ? (trimMaybeString(draft.scriptPath) || undefined)
                     : undefined,
             };
-            if (type === '3d') {
-                candidate.y = candidate.y.slice(0, 2);
-            }
             normalizedDrafts.push(candidate);
         }
         return shared.normalizeVisualizationViews(normalizedDrafts);
@@ -490,8 +490,9 @@
 
         function applyTypeVisibility(type) {
             const viewType = safeViewType(type);
-            xField.style.display = viewType === 'scatter' ? 'none' : 'grid';
-            yField.style.display = viewType === 'scatter' ? 'none' : 'grid';
+            const showSeriesFields = viewType !== 'scatter' && viewType !== '3d';
+            xField.style.display = showSeriesFields ? 'grid' : 'none';
+            yField.style.display = showSeriesFields ? 'grid' : 'none';
             scatterField.style.display = viewType === 'scatter' ? 'grid' : 'none';
             scriptPathField.style.display = viewType === '3d' ? 'grid' : 'none';
         }
@@ -544,11 +545,12 @@
                     id: view.id || base.id,
                     title: view.title || base.title,
                     type: view.type || base.type,
-                    x: view.x || base.x || '',
-                    y: ensureArray(view.y),
-                    yText: formatSeriesList(view.y),
+                    x: view.type === '3d' ? '' : view.x || base.x || '',
+                    y: view.type === '3d' ? [] : ensureArray(view.y),
+                    yText: view.type === '3d' ? '' : formatSeriesList(view.y),
                     scatterSeries: ensureArray(view.scatterSeries),
                     scatterSeriesText: formatScatterSeriesText(view.scatterSeries),
+                    script: trimMaybeString(view.script),
                     scriptPath: trimMaybeString(view.scriptPath),
                 };
             });
@@ -569,11 +571,12 @@
                 id: next.id,
                 title: next.title,
                 type: next.type,
-                x: next.x || '',
-                y: ensureArray(next.y),
-                yText: formatSeriesList(next.y),
+                x: next.type === '3d' ? '' : next.x || '',
+                y: next.type === '3d' ? [] : ensureArray(next.y),
+                yText: next.type === '3d' ? '' : formatSeriesList(next.y),
                 scatterSeries: ensureArray(next.scatterSeries),
                 scatterSeriesText: formatScatterSeriesText(next.scatterSeries),
+                script: trimMaybeString(next.script),
                 scriptPath: trimMaybeString(next.scriptPath),
             };
         }
@@ -2081,7 +2084,10 @@
         const settingsBtn = allowViewEditing ? document.createElement('button') : null;
         if (settingsBtn) {
             settingsBtn.className = 'rumoca-results-header-button';
-            settingsBtn.textContent = 'Settings';
+            settingsBtn.type = 'button';
+            settingsBtn.textContent = '⚙';
+            settingsBtn.title = 'Visualization settings';
+            settingsBtn.setAttribute('aria-label', 'Visualization settings');
             actions.appendChild(settingsBtn);
         }
         header.appendChild(title);

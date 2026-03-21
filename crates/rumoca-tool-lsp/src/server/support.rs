@@ -1,8 +1,6 @@
 use super::*;
-pub(super) use crate::completion_metrics::{
-    CompletionProgressSummary, CompletionTimingSummary, extract_library_completion_prefix,
-};
-use rumoca_session::compile::SessionCacheStatsSnapshot;
+pub(super) use crate::completion_metrics::{CompletionProgressSummary, CompletionTimingSummary};
+use rumoca_session::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapshot};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -18,22 +16,23 @@ pub(super) struct WorkspaceSymbolTimingBreakdown {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct LibraryLoadOutcome {
-    pub(super) cache_status: LibraryCacheStatus,
-    pub(super) indexed_file_count: usize,
+pub(super) struct SourceRootLoadOutcome {
+    pub(super) cache_status: SourceRootCacheStatus,
+    pub(super) parsed_file_count: usize,
     pub(super) inserted_file_count: usize,
     pub(super) cache_key: String,
     pub(super) cache_path: String,
-    pub(super) timing: DurableLibraryLoadTiming,
+    pub(super) timing: DurableSourceRootLoadTiming,
+    pub(super) status: Option<SourceRootStatusSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(super) struct DurableLibraryLoadTiming {
-    pub(super) cache: LibraryCacheTiming,
+pub(super) struct DurableSourceRootLoadTiming {
+    pub(super) cache: SourceRootCacheTiming,
     pub(super) apply_ms: u64,
 }
 
-impl DurableLibraryLoadTiming {
+impl DurableSourceRootLoadTiming {
     pub(super) fn accumulate_into(self, timing: &mut ProjectReloadTiming) {
         timing.durable_collect_files_ms += self.cache.collect_files_ms;
         timing.durable_hash_inputs_ms += self.cache.hash_inputs_ms;
@@ -44,12 +43,6 @@ impl DurableLibraryLoadTiming {
         timing.durable_cache_write_ms += self.cache.cache_write_ms;
         timing.durable_apply_ms += self.apply_ms;
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct AppliedLibraryLoad {
-    pub(super) inserted_file_count: usize,
-    pub(super) apply_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,8 +59,8 @@ pub(super) struct DiagnosticsTimingSummary {
     pub(super) uri: String,
     pub(super) trigger: &'static str,
     pub(super) semantic_layer: &'static str,
-    pub(super) requested_library_load: bool,
-    pub(super) library_load_ms: u64,
+    pub(super) requested_source_root_load: bool,
+    pub(super) source_root_load_ms: u64,
     pub(super) ran_compile: bool,
     pub(super) diagnostics_compute_ms: u64,
     pub(super) total_ms: u64,
@@ -77,13 +70,13 @@ pub(super) struct DiagnosticsTimingSummary {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct StartupTimingSummary {
-    pub(super) initial_library_paths: usize,
-    pub(super) library_paths_changed: bool,
+    pub(super) initial_source_root_paths: usize,
+    pub(super) source_root_paths_changed: bool,
     pub(super) parse_init_options_ms: u64,
     pub(super) workspace_root_ms: u64,
     pub(super) reload_project_config_ms: u64,
     pub(super) project_discover_ms: u64,
-    pub(super) resolve_library_paths_ms: u64,
+    pub(super) resolve_source_root_paths_ms: u64,
     pub(super) reset_session_ms: u64,
     pub(super) durable_prewarm_ms: u64,
     pub(super) durable_collect_files_ms: u64,
@@ -95,15 +88,15 @@ pub(super) struct StartupTimingSummary {
     pub(super) durable_cache_write_ms: u64,
     pub(super) durable_apply_ms: u64,
     pub(super) workspace_symbol_prewarm_ms: u64,
-    pub(super) namespace_prewarm_spawn_ms: u64,
+    pub(super) source_root_read_prewarm_spawn_ms: u64,
     pub(super) total_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ProjectReloadTiming {
-    pub(super) library_paths_changed: bool,
+    pub(super) source_root_paths_changed: bool,
     pub(super) project_discover_ms: u64,
-    pub(super) resolve_library_paths_ms: u64,
+    pub(super) resolve_source_root_paths_ms: u64,
     pub(super) reset_session_ms: u64,
     pub(super) durable_prewarm_ms: u64,
     pub(super) durable_collect_files_ms: u64,
@@ -115,15 +108,8 @@ pub(super) struct ProjectReloadTiming {
     pub(super) durable_cache_write_ms: u64,
     pub(super) durable_apply_ms: u64,
     pub(super) workspace_symbol_prewarm_ms: u64,
-    pub(super) namespace_prewarm_spawn_ms: u64,
+    pub(super) source_root_read_prewarm_spawn_ms: u64,
     pub(super) total_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct NamespacePrewarmState {
-    pub(super) session_revision: u64,
-    pub(super) done: Arc<AtomicBool>,
-    pub(super) finished: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -282,14 +268,6 @@ fn timing_output_path(explicit_path: Option<&Path>, env_var: &str) -> Option<Pat
         .or_else(|| std::env::var_os(env_var).map(PathBuf::from))
 }
 
-pub(super) fn cache_status_label(status: LibraryCacheStatus) -> &'static str {
-    match status {
-        LibraryCacheStatus::Hit => "cache hit",
-        LibraryCacheStatus::Miss => "cache miss",
-        LibraryCacheStatus::Disabled => "cache disabled",
-    }
-}
-
 pub(super) fn diagnostics_trigger_label(trigger: DiagnosticsTrigger) -> &'static str {
     match trigger {
         DiagnosticsTrigger::Live => "live",
@@ -330,20 +308,20 @@ pub(super) fn diagnostics_semantic_layer_label(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum LibraryIndexingReason {
+pub(super) enum SourceRootIndexingReason {
     StartupDurablePrewarm,
     CompletionImports,
     SaveDiagnostics,
     SimulationCompile,
 }
 
-impl LibraryIndexingReason {
+impl SourceRootIndexingReason {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::StartupDurablePrewarm => "startup durable library warm-start",
+            Self::StartupDurablePrewarm => "startup durable source-root warm-start",
             Self::CompletionImports => "editor completion/imports",
             Self::SaveDiagnostics => "save diagnostics",
-            Self::SimulationCompile => "simulation compile after library edits",
+            Self::SimulationCompile => "simulation compile after source-root edits",
         }
     }
 
@@ -352,153 +330,7 @@ impl LibraryIndexingReason {
     }
 }
 
-pub(super) fn library_display_name(lib_path: &str) -> String {
-    let inferred_roots = infer_library_roots(Path::new(lib_path)).unwrap_or_default();
-    if inferred_roots.is_empty() {
-        return Path::new(lib_path)
-            .file_stem()
-            .or_else(|| Path::new(lib_path).file_name())
-            .and_then(|name| name.to_str())
-            .unwrap_or(lib_path)
-            .to_string();
-    }
-    if inferred_roots.len() <= 3 {
-        return inferred_roots.join(", ");
-    }
-    format!(
-        "{}, {}, {} (+{} more)",
-        inferred_roots[0],
-        inferred_roots[1],
-        inferred_roots[2],
-        inferred_roots.len() - 3
-    )
-}
-
-pub(super) fn library_indexing_started_message(
-    lib_path: &str,
-    reason: LibraryIndexingReason,
-) -> String {
-    let library_name = library_display_name(lib_path);
-    format!(
-        "[rumoca] Indexing library {} for {}. This may use CPU while Rumoca parses and resolves it. Path: {}",
-        library_name,
-        reason.label(),
-        lib_path
-    )
-}
-
-pub(super) fn library_indexing_finished_message(
-    lib_path: &str,
-    reason: impl AsRef<str>,
-    indexed_file_count: usize,
-    inserted_file_count: usize,
-    cache_status: LibraryCacheStatus,
-) -> String {
-    let library_name = library_display_name(lib_path);
-    format!(
-        "[rumoca] Indexing done for library {} ({}; {} files indexed, {} inserted, {}).",
-        library_name,
-        reason.as_ref(),
-        indexed_file_count,
-        inserted_file_count,
-        cache_status_label(cache_status)
-    )
-}
-
-pub(super) fn library_indexing_failed_message(
-    lib_path: &str,
-    reason: LibraryIndexingReason,
-    error: &str,
-) -> String {
-    let library_name = library_display_name(lib_path);
-    format!(
-        "[rumoca] Indexing failed for library {} during {}: {}",
-        library_name,
-        reason.label(),
-        error
-    )
-}
-
-pub(super) async fn notify_library_indexing_started(
-    client: &Client,
-    lib_path: &str,
-    reason: LibraryIndexingReason,
-) {
-    let message = library_indexing_started_message(lib_path, reason);
-    if reason == LibraryIndexingReason::StartupDurablePrewarm {
-        client.log_message(MessageType::INFO, message).await;
-    } else {
-        client.show_message(MessageType::INFO, message).await;
-    }
-}
-
-pub(super) async fn notify_library_indexing_finished(
-    client: &Client,
-    lib_path: &str,
-    reason: impl AsRef<str>,
-    use_log_message: bool,
-    indexed_file_count: usize,
-    inserted_file_count: usize,
-    cache_status: LibraryCacheStatus,
-) {
-    let message = library_indexing_finished_message(
-        lib_path,
-        reason,
-        indexed_file_count,
-        inserted_file_count,
-        cache_status,
-    );
-    if use_log_message {
-        client.log_message(MessageType::INFO, message).await;
-    } else {
-        client.show_message(MessageType::INFO, message).await;
-    }
-}
-
-pub(super) async fn notify_library_indexing_failed(
-    client: &Client,
-    lib_path: &str,
-    reason: LibraryIndexingReason,
-    error: &str,
-) {
-    let message = library_indexing_failed_message(lib_path, reason, error);
-    if reason == LibraryIndexingReason::StartupDurablePrewarm {
-        client.log_message(MessageType::WARNING, message).await;
-    } else {
-        client.show_message(MessageType::WARNING, message).await;
-    }
-}
-
-pub(super) fn should_reserve_library_load(
-    loaded: &HashSet<String>,
-    loading: &HashMap<String, u64>,
-    path_key: &str,
-    expected_epoch: u64,
-    current_epoch: u64,
-) -> bool {
-    expected_epoch == current_epoch && !loaded.contains(path_key) && !loading.contains_key(path_key)
-}
-
-pub(super) fn should_apply_library_load(
-    loaded: &HashSet<String>,
-    path_key: &str,
-    expected_epoch: u64,
-    current_epoch: u64,
-) -> bool {
-    expected_epoch == current_epoch && !loaded.contains(path_key)
-}
-
-pub(super) fn should_clear_library_load(
-    loading: &HashMap<String, u64>,
-    path_key: &str,
-    reservation_epoch: u64,
-) -> bool {
-    loading
-        .get(path_key)
-        .is_some_and(|owner_epoch| *owner_epoch == reservation_epoch)
-}
-
-pub(super) fn library_load_diagnostics_for_package_layout_error(
+pub(super) fn source_root_load_diagnostics_for_package_layout_error(
     err: &PackageLayoutError,
 ) -> HashMap<String, Vec<Diagnostic>> {
     let mut by_uri = HashMap::new();
@@ -514,9 +346,9 @@ pub(super) fn library_load_diagnostics_for_package_layout_error(
     by_uri
 }
 
-pub(super) fn library_load_error_message(lib_path: &str, err: &anyhow::Error) -> String {
+pub(super) fn source_root_load_error_message(lib_path: &str, err: &anyhow::Error) -> String {
     let Some(layout) = err.downcast_ref::<PackageLayoutError>() else {
-        return format!("Failed to load library '{}': {}", lib_path, err);
+        return format!("Failed to load source root '{}': {}", lib_path, err);
     };
     if layout
         .diagnostics()
@@ -524,104 +356,11 @@ pub(super) fn library_load_error_message(lib_path: &str, err: &anyhow::Error) ->
         .any(|diagnostic| !diagnostic.labels.is_empty())
     {
         return format!(
-            "Failed to load library '{}': invalid Modelica package layout (see diagnostics)",
+            "Failed to load source root '{}': invalid Modelica package layout (see diagnostics)",
             lib_path
         );
     }
-    format!("Failed to load library '{}': {}", lib_path, err)
-}
-
-pub(super) fn existing_library_root_claims(
-    already_loaded: &HashSet<String>,
-) -> (HashSet<String>, HashMap<String, String>) {
-    let mut seen_library_paths = HashSet::new();
-    let mut claimed_roots = HashMap::new();
-    for loaded_path in already_loaded {
-        seen_library_paths.insert(canonical_path_key(loaded_path));
-        for root in infer_library_roots(Path::new(loaded_path)).unwrap_or_default() {
-            claimed_roots
-                .entry(root)
-                .or_insert_with(|| loaded_path.clone());
-        }
-    }
-    (seen_library_paths, claimed_roots)
-}
-
-pub(super) fn completion_load_progress(
-    lib_path: &str,
-    loaded: &LibraryLoadOutcome,
-) -> (String, bool) {
-    let status = match loaded.cache_status {
-        LibraryCacheStatus::Hit => "cache hit",
-        LibraryCacheStatus::Miss => "cache miss",
-        LibraryCacheStatus::Disabled => "cache disabled",
-    };
-    (
-        format!(
-            "[rumoca] Library {} ({}) — {} files, {} inserted [key={}, cache={}]",
-            lib_path,
-            status,
-            loaded.indexed_file_count,
-            loaded.inserted_file_count,
-            loaded.cache_key,
-            loaded.cache_path
-        ),
-        loaded.cache_status == LibraryCacheStatus::Miss,
-    )
-}
-
-pub(super) struct CompletionLibraryContext {
-    pub(super) completion_prefix: String,
-    pub(super) library_state_epoch: u64,
-    pub(super) library_paths: Vec<String>,
-    pub(super) already_loaded: HashSet<String>,
-    pub(super) seen_library_paths: HashSet<String>,
-    pub(super) claimed_roots: HashMap<String, String>,
-}
-
-pub(super) async fn build_completion_library_context(
-    server: &ModelicaLanguageServer,
-    source: &str,
-    position: Position,
-    current_document_path: &str,
-) -> Option<CompletionLibraryContext> {
-    let completion_prefix = extract_library_completion_prefix(source, position)?;
-    maybe_log_completion_debug(
-        &server.client,
-        format!("completion prefix={completion_prefix} doc={current_document_path}"),
-    )
-    .await;
-
-    let library_state_epoch = server.current_library_state_epoch();
-    let library_paths = server.library_paths.read().await.clone();
-    maybe_log_completion_debug(
-        &server.client,
-        format!("configured library paths={}", library_paths.join(" | ")),
-    )
-    .await;
-    let already_loaded = server.loaded_libraries.read().await.clone();
-    let (seen_library_paths, claimed_roots) = existing_library_root_claims(&already_loaded);
-    Some(CompletionLibraryContext {
-        completion_prefix,
-        library_state_epoch,
-        library_paths,
-        already_loaded,
-        seen_library_paths,
-        claimed_roots,
-    })
-}
-
-pub(super) async fn flush_completion_library_notifications(
-    server: &ModelicaLanguageServer,
-    progress_messages: Vec<String>,
-    load_errors: Vec<String>,
-) {
-    for message in progress_messages {
-        server.client.log_message(MessageType::INFO, message).await;
-    }
-    for err in load_errors {
-        server.client.log_message(MessageType::WARNING, err).await;
-    }
+    format!("Failed to load source root '{}': {}", lib_path, err)
 }
 
 #[derive(Debug, Clone)]
@@ -629,7 +368,7 @@ pub(super) struct SimulationRequestSettings {
     pub(super) solver: String,
     pub(super) t_end: f64,
     pub(super) dt: Option<f64>,
-    pub(super) library_paths: Vec<String>,
+    pub(super) source_root_paths: Vec<String>,
 }
 
 pub(super) fn simulation_request_settings_from_effective(
@@ -639,7 +378,7 @@ pub(super) fn simulation_request_settings_from_effective(
         solver: settings.solver.clone(),
         t_end: settings.t_end,
         dt: settings.dt,
-        library_paths: settings.library_paths.clone(),
+        source_root_paths: settings.source_root_paths.clone(),
     }
 }
 
@@ -659,8 +398,8 @@ pub(super) fn parse_simulation_request_settings(
         .filter(|v| v.is_finite() && *v > 0.0)
         .unwrap_or(10.0);
     let dt = normalize_dt_opt(obj.get("dt").and_then(Value::as_f64));
-    let library_paths = obj
-        .get("modelicaPath")
+    let source_root_paths = obj
+        .get("sourceRootPaths")
         .and_then(Value::as_array)
         .map(|items| {
             items
@@ -676,7 +415,7 @@ pub(super) fn parse_simulation_request_settings(
         solver,
         t_end,
         dt,
-        library_paths,
+        source_root_paths,
     })
 }
 
@@ -702,8 +441,8 @@ pub(super) fn parse_fallback_simulation(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let library_paths = obj
-        .get("modelicaPath")
+    let source_root_paths = obj
+        .get("sourceRootPaths")
         .and_then(Value::as_array)
         .map(|items| {
             items
@@ -720,7 +459,7 @@ pub(super) fn parse_fallback_simulation(
         t_end,
         dt,
         output_dir,
-        library_paths,
+        source_root_paths,
     })
 }
 
@@ -730,7 +469,7 @@ pub(super) fn simulation_settings_to_json(settings: &EffectiveSimulationConfig) 
         "tEnd": settings.t_end,
         "dt": settings.dt,
         "outputDir": settings.output_dir,
-        "modelicaPath": settings.library_paths,
+        "sourceRootPaths": settings.source_root_paths,
     })
 }
 
@@ -739,7 +478,10 @@ pub(super) fn find_open_workspace_document_for_model(
     model: &str,
 ) -> Option<Url> {
     for uri in snapshot.document_uris() {
-        if snapshot.is_loaded_library_document(&uri) {
+        // Intentionally exclude live overlays on non-workspace source roots here:
+        // this helper is selecting a user workspace document to drive project
+        // command prewarm, not a generic source-root-backed semantic input.
+        if snapshot.is_non_workspace_source_root_document(&uri) {
             continue;
         }
         let doc = snapshot.get_document(&uri)?;
@@ -764,7 +506,7 @@ pub(super) fn simulation_preset_to_json(preset: &EffectiveSimulationPreset) -> V
         "tEnd": preset.t_end,
         "dt": preset.dt,
         "outputDir": preset.output_dir,
-        "libraryOverrides": preset.library_overrides,
+        "sourceRootOverrides": preset.source_root_overrides,
     })
 }
 
@@ -780,8 +522,8 @@ pub(super) fn simulation_override_from_json(value: &Value) -> Option<SimulationM
         .get("outputDir")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let library_overrides = obj
-        .get("libraryOverrides")
+    let source_root_overrides = obj
+        .get("sourceRootOverrides")
         .and_then(Value::as_array)
         .map(|items| {
             items
@@ -798,7 +540,7 @@ pub(super) fn simulation_override_from_json(value: &Value) -> Option<SimulationM
         t_end,
         dt,
         output_dir,
-        library_overrides,
+        source_root_overrides,
     })
 }
 
@@ -868,33 +610,15 @@ pub(super) fn normalize_dt_opt(value: Option<f64>) -> Option<f64> {
     value.filter(|v| v.is_finite() && *v > 0.0)
 }
 
-pub(super) fn should_eager_load_library_for_completion_prefix(
-    _lib_path: &str,
-    _completion_prefix: &str,
-) -> bool {
-    // Library-qualified completion needs a resolve-ready session, not just the
-    // package named under the cursor. MSL's `Modelica` tree, for example, has
-    // transitive references into sibling roots like `Complex`, so loading only
-    // the matching top-level root causes resolution to fail and completion to
-    // silently fall back to keywords.
-    true
-}
-
-pub(super) fn canonical_path_key(path: &str) -> String {
-    std::fs::canonicalize(path)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string())
-}
-
 #[cfg(test)]
 fn simulation_doc_for_compile_impl(
-    is_library_document: bool,
+    is_source_root_document: bool,
     uri: &str,
     doc: &Document,
     focus_key: &str,
 ) -> std::result::Result<Option<(bool, ast::StoredDefinition)>, String> {
     let is_focus_document = canonical_path_key(uri) == focus_key;
-    if !is_focus_document && !is_library_document {
+    if !is_focus_document && !is_source_root_document {
         return Ok(None);
     }
     let parsed = if is_focus_document {
@@ -908,9 +632,10 @@ fn simulation_doc_for_compile_impl(
             "active document has no parsed or recovered AST: {}",
             doc.uri
         )),
-        None if is_library_document => {
-            Err(format!("library document has no parsed AST: {}", doc.uri))
-        }
+        None if is_source_root_document => Err(format!(
+            "source-root document has no parsed AST: {}",
+            doc.uri
+        )),
         None => Ok(None),
     }
 }
@@ -923,7 +648,7 @@ pub(super) fn simulation_doc_for_compile_snapshot(
     focus_key: &str,
 ) -> std::result::Result<Option<(bool, ast::StoredDefinition)>, String> {
     simulation_doc_for_compile_impl(
-        snapshot.is_loaded_library_document(uri),
+        snapshot.is_source_root_backed_document(uri),
         uri,
         doc,
         focus_key,
@@ -1007,39 +732,6 @@ pub(super) fn collect_simulation_parsed_docs_snapshot(
         ));
     }
     Ok(parsed_docs)
-}
-
-pub(super) fn library_source_set_id(library_path: &str) -> String {
-    format!("library::{}", canonical_path_key(library_path))
-}
-
-pub(super) fn library_source_root_path(source_set_key: &str) -> Option<String> {
-    source_set_key
-        .strip_prefix("library::")
-        .map(ToString::to_string)
-}
-
-pub(super) fn duplicate_root_provider(
-    inferred_roots: &[String],
-    claimed_roots: &HashMap<String, String>,
-) -> Option<(String, String)> {
-    inferred_roots.iter().find_map(|root| {
-        claimed_roots
-            .get(root)
-            .map(|provider| (root.clone(), provider.clone()))
-    })
-}
-
-pub(super) fn claim_roots(
-    claimed_roots: &mut HashMap<String, String>,
-    inferred_roots: Vec<String>,
-    provider: &str,
-) {
-    for root in inferred_roots {
-        claimed_roots
-            .entry(root)
-            .or_insert_with(|| provider.to_string());
-    }
 }
 
 pub(super) fn is_project_config_uri(uri: &Url) -> bool {

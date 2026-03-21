@@ -47,7 +47,7 @@ Rumoca is organized as a collection of Rust crates that share a common core comp
 │  server.rs:             │  │  - Single-threaded      │
 │  ModelicaLanguageServer │  │  - No filesystem        │
 │  - Session management   │  │  - Global SESSION mutex │
-│  - Library loading      │  │                         │
+│  - Source-root loading  │  │                         │
 │  - Project config       │  │                         │
 │  - Async tower-lsp      │  │                         │
 └───────────┬─────────────┘  └───────────┬─────────────┘
@@ -77,7 +77,7 @@ The LSP handlers (`rumoca-tool-lsp/src/handlers/`) are pure functions that:
 
 The server wrapper (`rumoca-tool-lsp/src/server.rs`) adds:
 - Session state management
-- Library loading
+- Source-root loading
 - Async I/O via tower-lsp
 - Native-only (behind `#[cfg(feature = "server")]`)
 
@@ -94,7 +94,7 @@ The `Session` type (in `rumoca-session`) holds compilation state:
 │  documents: HashMap<Uri, Document>      │  ◄─ Open files
 │  parsed_cache: HashMap<Uri, AST>        │  ◄─ Parsed ASTs
 │  resolved: Option<ResolvedTree>         │  ◄─ Name resolution
-│  library_cache: HashMap<Path, Library>  │  ◄─ Loaded libraries
+│  source_roots: HashMap<Key, SourceRoot> │  ◄─ Loaded source roots
 └─────────────────────────────────────────┘
 ```
 

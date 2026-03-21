@@ -48,8 +48,20 @@
     border-radius: 6px;
     background: var(--rumoca-results-panel);
     color: var(--rumoca-results-fg);
-    padding: 4px 10px;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 15px;
+    line-height: 1;
     cursor: pointer;
+}
+
+.rumoca-results-header-button:hover {
+    border-color: #4b89bf;
+    color: #9bd3ff;
 }
 
 .rumoca-results-status {

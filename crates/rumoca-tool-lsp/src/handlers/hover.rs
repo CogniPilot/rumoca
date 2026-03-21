@@ -353,7 +353,7 @@ mod tests {
 end Ball;
 "#;
         let broken = "model Broken\n  Real x\nend Broken;\n";
-        let library = r#"package Modelica
+        let source_root = r#"package Modelica
   package Blocks
     package Continuous
       block PID
@@ -371,7 +371,7 @@ end Modelica;
         session.update_document("ball.mo", source);
         let parse_error = session.update_document("broken.mo", broken);
         assert!(parse_error.is_some(), "broken document should stay invalid");
-        session.update_document("Modelica.mo", library);
+        session.update_document("Modelica.mo", source_root);
 
         let ast = session
             .get_document("ball.mo")

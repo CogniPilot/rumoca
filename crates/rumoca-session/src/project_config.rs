@@ -34,7 +34,7 @@ pub struct ProjectConfig {
 pub struct ProjectConfigFile {
     pub version: u32,
     pub project: ProjectMeta,
-    pub libraries: LibrariesConfig,
+    pub source_roots: SourceRootsConfig,
     pub simulation: SimulationConfig,
     pub plot: PlotConfig,
 }
@@ -44,7 +44,7 @@ impl Default for ProjectConfigFile {
         Self {
             version: PROJECT_CONFIG_VERSION,
             project: ProjectMeta::default(),
-            libraries: LibrariesConfig::default(),
+            source_roots: SourceRootsConfig::default(),
             simulation: SimulationConfig::default(),
             plot: PlotConfig::default(),
         }
@@ -59,7 +59,7 @@ pub struct ProjectMeta {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct LibrariesConfig {
+pub struct SourceRootsConfig {
     pub paths: Vec<String>,
 }
 
@@ -86,7 +86,7 @@ pub struct SimulationModelOverride {
     pub t_end: Option<f64>,
     pub dt: Option<f64>,
     pub output_dir: Option<String>,
-    pub library_overrides: Vec<String>,
+    pub source_root_overrides: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,7 +96,7 @@ pub struct EffectiveSimulationConfig {
     pub t_end: f64,
     pub dt: Option<f64>,
     pub output_dir: String,
-    pub library_paths: Vec<String>,
+    pub source_root_paths: Vec<String>,
 }
 
 impl Default for EffectiveSimulationConfig {
@@ -106,7 +106,7 @@ impl Default for EffectiveSimulationConfig {
             t_end: 10.0,
             dt: None,
             output_dir: String::new(),
-            library_paths: Vec::new(),
+            source_root_paths: Vec::new(),
         }
     }
 }
@@ -125,7 +125,7 @@ pub struct EffectiveSimulationPreset {
     pub t_end: f64,
     pub dt: Option<f64>,
     pub output_dir: String,
-    pub library_overrides: Vec<String>,
+    pub source_root_overrides: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -291,9 +291,9 @@ impl ProjectConfig {
     ) -> EffectiveSimulationConfig {
         let mut effective = fallback.clone();
         self.apply_defaults(&mut effective);
-        let project_libs = self.resolve_project_library_paths();
-        if !project_libs.is_empty() {
-            effective.library_paths = project_libs;
+        let project_source_roots = self.resolve_project_source_root_paths();
+        if !project_source_roots.is_empty() {
+            effective.source_root_paths = project_source_roots;
         }
         effective
     }
@@ -310,12 +310,12 @@ impl ProjectConfig {
         effective
     }
 
-    pub fn resolve_project_library_paths(&self) -> Vec<String> {
-        resolve_and_dedup_paths(&self.workspace_root, &self.data.libraries.paths)
+    pub fn resolve_project_source_root_paths(&self) -> Vec<String> {
+        resolve_and_dedup_paths(&self.workspace_root, &self.data.source_roots.paths)
     }
 
-    pub fn resolve_all_library_paths(&self) -> Vec<String> {
-        let mut merged = self.resolve_project_library_paths();
+    pub fn resolve_all_source_root_paths(&self) -> Vec<String> {
+        let mut merged = self.resolve_project_source_root_paths();
         let mut seen: HashSet<String> = merged
             .iter()
             .map(|path| {
@@ -327,7 +327,7 @@ impl ProjectConfig {
 
         for model_override in self.data.simulation.models.values() {
             for path in
-                resolve_and_dedup_paths(&self.workspace_root, &model_override.library_overrides)
+                resolve_and_dedup_paths(&self.workspace_root, &model_override.source_root_overrides)
             {
                 let key = fs::canonicalize(&path)
                     .map(|value| value.to_string_lossy().to_string())
@@ -390,10 +390,10 @@ impl ProjectConfig {
         if let Some(output_dir) = model_override.output_dir.as_deref() {
             effective.output_dir = output_dir.to_string();
         }
-        let additional_lib_paths =
-            resolve_and_dedup_paths(&self.workspace_root, &model_override.library_overrides);
-        if !additional_lib_paths.is_empty() {
-            let mut merged = effective.library_paths.clone();
+        let additional_source_root_paths =
+            resolve_and_dedup_paths(&self.workspace_root, &model_override.source_root_overrides);
+        if !additional_source_root_paths.is_empty() {
+            let mut merged = effective.source_root_paths.clone();
             let mut seen: HashSet<String> = merged
                 .iter()
                 .map(|path| {
@@ -402,7 +402,7 @@ impl ProjectConfig {
                         .unwrap_or_else(|_| path.clone())
                 })
                 .collect();
-            for path in additional_lib_paths {
+            for path in additional_source_root_paths {
                 let key = fs::canonicalize(&path)
                     .map(|value| value.to_string_lossy().to_string())
                     .unwrap_or_else(|_| path.clone());
@@ -410,7 +410,7 @@ impl ProjectConfig {
                     merged.push(path);
                 }
             }
-            effective.library_paths = merged;
+            effective.source_root_paths = merged;
         }
     }
 
@@ -435,17 +435,17 @@ impl ProjectConfig {
         if let Some(output_dir) = override_copy.output_dir.as_deref() {
             effective.output_dir = output_dir.to_string();
         }
-        let library_overrides = if override_copy.library_overrides.is_empty() {
-            effective.library_paths
+        let source_root_overrides = if override_copy.source_root_overrides.is_empty() {
+            effective.source_root_paths
         } else {
-            override_copy.library_overrides
+            override_copy.source_root_overrides
         };
         EffectiveSimulationPreset {
             solver: effective.solver,
             t_end: effective.t_end,
             dt: effective.dt,
             output_dir: effective.output_dir,
-            library_overrides,
+            source_root_overrides,
         }
     }
 
@@ -1430,7 +1430,7 @@ fn simulation_model_override_is_empty(value: &SimulationModelOverride) -> bool {
         && value.t_end.is_none()
         && value.dt.is_none()
         && value.output_dir.is_none()
-        && value.library_overrides.is_empty()
+        && value.source_root_overrides.is_empty()
 }
 
 fn plot_model_config_is_empty(value: &PlotModelConfig) -> bool {
@@ -1731,7 +1731,7 @@ fn normalize_dt_opt(raw: Option<f64>) -> Option<f64> {
 
 fn validate_top_level_keys(value: &toml::Value) -> Vec<String> {
     let allowed: HashSet<&'static str> =
-        HashSet::from(["version", "project", "libraries", "simulation", "plot"]);
+        HashSet::from(["version", "project", "source_roots", "simulation", "plot"]);
     let mut diagnostics = Vec::new();
     let Some(table) = value.as_table() else {
         diagnostics.push("Expected TOML table at top-level in .rumoca/project.toml".to_string());

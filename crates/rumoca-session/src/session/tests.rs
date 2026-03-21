@@ -2,6 +2,27 @@ use super::*;
 use crate::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, Span};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod cache_behavior_source_root_tests;
+mod cache_behavior_tests;
+mod class_body_semantics_tests;
+mod class_body_tests;
+mod class_interface_tests;
+mod class_member_query_tests;
+mod compile_diagnostics_tests;
+mod dae_model_query_tests;
+mod declaration_index_tests;
+mod file_outline_tests;
+mod file_summary_tests;
+mod flat_model_query_tests;
+mod instantiation_query_tests;
+mod model_closure_tests;
+mod package_def_map_tests;
+mod persisted_summary_tests;
+mod semantic_diagnostics_tests;
+mod source_root_tests;
+mod typed_model_query_tests;
+mod workspace_symbol_snapshot_tests;
+
 static SESSION_STATS_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 pub(super) fn session_stats_test_guard() -> MutexGuard<'static, ()> {
@@ -198,26 +219,26 @@ fn session_snapshot_keeps_document_and_query_view_after_host_edit() {
 }
 
 #[test]
-fn session_snapshot_keeps_loaded_library_membership_after_host_removal() {
+fn session_snapshot_keeps_loaded_source_root_membership_after_host_removal() {
     let mut session = Session::default();
     session.replace_parsed_source_set(
         "Modelica",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         vec![(
             "Modelica/package.mo".to_string(),
             parse_definition("package Modelica\nend Modelica;\n", "Modelica/package.mo"),
         )],
         None,
     );
-    assert!(session.is_loaded_library_document("Modelica/package.mo"));
+    assert!(session.is_non_workspace_source_root_document("Modelica/package.mo"));
 
     let snapshot = session.snapshot();
 
     session.remove_source_set("Modelica");
 
     assert!(
-        snapshot.is_loaded_library_document("Modelica/package.mo"),
-        "snapshot should retain loaded library ownership"
+        snapshot.is_non_workspace_source_root_document("Modelica/package.mo"),
+        "snapshot should retain loaded source-root ownership"
     );
     assert!(
         snapshot
@@ -226,8 +247,189 @@ fn session_snapshot_keeps_loaded_library_membership_after_host_removal() {
         "snapshot should retain the source-root document view"
     );
     assert!(
-        !session.is_loaded_library_document("Modelica/package.mo"),
+        !session.is_non_workspace_source_root_document("Modelica/package.mo"),
         "host should reflect the removed source root"
+    );
+}
+
+#[test]
+fn document_source_root_read_prewarm_matches_non_workspace_source_root_ownership() {
+    let mut session = Session::default();
+    session.replace_parsed_source_set(
+        "workspace",
+        SourceRootKind::Workspace,
+        vec![(
+            "Workspace.mo".to_string(),
+            parse_definition("model Workspace\nend Workspace;\n", "Workspace.mo"),
+        )],
+        None,
+    );
+    session.replace_parsed_source_set(
+        "external",
+        SourceRootKind::External,
+        vec![(
+            "Lib/package.mo".to_string(),
+            parse_definition("package Lib\nend Lib;\n", "Lib/package.mo"),
+        )],
+        None,
+    );
+
+    assert!(session.needs_source_root_read_prewarm());
+    assert!(!session.document_needs_source_root_read_prewarm("Workspace.mo"));
+    assert!(session.document_needs_source_root_read_prewarm("Lib/package.mo"));
+
+    let snapshot = session.snapshot();
+    assert!(snapshot.needs_source_root_read_prewarm());
+    assert!(!snapshot.document_needs_source_root_read_prewarm("Workspace.mo"));
+    assert!(snapshot.document_needs_source_root_read_prewarm("Lib/package.mo"));
+}
+
+#[test]
+fn source_root_read_prewarm_is_disabled_for_workspace_only_sessions() {
+    let mut session = Session::default();
+    session.replace_parsed_source_set(
+        "workspace",
+        SourceRootKind::Workspace,
+        vec![(
+            "Workspace.mo".to_string(),
+            parse_definition("model Workspace\nend Workspace;\n", "Workspace.mo"),
+        )],
+        None,
+    );
+    assert!(!session.needs_source_root_read_prewarm());
+    let snapshot = session.snapshot();
+    assert!(!snapshot.needs_source_root_read_prewarm());
+}
+
+fn partitioned_source_root_family_definitions_v1() -> Vec<(String, ast::StoredDefinition)> {
+    vec![
+        (
+            "NewFolder/package.mo".to_string(),
+            parse_definition(
+                "within ;\npackage NewFolder\nend NewFolder;\n",
+                "NewFolder/package.mo",
+            ),
+        ),
+        (
+            "NewFolder/Test.mo".to_string(),
+            parse_definition(
+                "within NewFolder;\nmodel Test\nend Test;\n",
+                "NewFolder/Test.mo",
+            ),
+        ),
+        (
+            "NewFolder/Sub/package.mo".to_string(),
+            parse_definition(
+                "within NewFolder;\npackage Sub\nend Sub;\n",
+                "NewFolder/Sub/package.mo",
+            ),
+        ),
+        (
+            "NewFolder/Sub/Nested.mo".to_string(),
+            parse_definition(
+                "within NewFolder.Sub;\nmodel Nested\nend Nested;\n",
+                "NewFolder/Sub/Nested.mo",
+            ),
+        ),
+        (
+            "Loose.mo".to_string(),
+            parse_definition("model Loose\nend Loose;\n", "Loose.mo"),
+        ),
+        (
+            "Other/package.mo".to_string(),
+            parse_definition("within ;\npackage Other\nend Other;\n", "Other/package.mo"),
+        ),
+    ]
+}
+
+fn partitioned_source_root_family_definitions_v2() -> Vec<(String, ast::StoredDefinition)> {
+    vec![
+        (
+            "NewFolder/package.mo".to_string(),
+            parse_definition(
+                "within ;\npackage NewFolder\nend NewFolder;\n",
+                "NewFolder/package.mo",
+            ),
+        ),
+        (
+            "NewFolder/Test.mo".to_string(),
+            parse_definition(
+                "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
+                "NewFolder/Test.mo",
+            ),
+        ),
+        (
+            "Loose.mo".to_string(),
+            parse_definition("model Loose\n  Real y;\nend Loose;\n", "Loose.mo"),
+        ),
+    ]
+}
+
+#[test]
+fn sync_partitioned_source_root_family_groups_top_level_packages_and_removes_stale_roots() {
+    let mut session = Session::default();
+    let definitions = partitioned_source_root_family_definitions_v1();
+
+    let inserted = session.sync_partitioned_source_root_family(
+        "workspace::project",
+        SourceRootKind::Workspace,
+        definitions,
+        None,
+        None,
+    );
+
+    assert_eq!(inserted, 6);
+    assert!(
+        session
+            .source_root_kind("workspace::project::NewFolder")
+            .is_some(),
+        "top-level package root should exist"
+    );
+    assert!(
+        session
+            .source_root_kind("workspace::project::root")
+            .is_some(),
+        "loose-file root bucket should exist"
+    );
+    assert!(
+        session
+            .source_root_kind("workspace::project::Other")
+            .is_some(),
+        "second top-level package root should exist"
+    );
+    assert_eq!(
+        session
+            .source_root_parsed_documents("workspace::project::NewFolder")
+            .expect("NewFolder source root should exist")
+            .len(),
+        4,
+        "nested package contents should stay in the top-level package root"
+    );
+
+    let updated_definitions = partitioned_source_root_family_definitions_v2();
+
+    let inserted = session.sync_partitioned_source_root_family(
+        "workspace::project",
+        SourceRootKind::Workspace,
+        updated_definitions,
+        None,
+        None,
+    );
+
+    assert_eq!(inserted, 3);
+    assert!(
+        session
+            .source_root_parsed_documents("workspace::project::Other")
+            .is_some_and(|docs| docs.is_empty()),
+        "stale top-level package roots should become empty on resync"
+    );
+    assert_eq!(
+        session
+            .source_root_parsed_documents("workspace::project::NewFolder")
+            .expect("NewFolder source root should remain")
+            .len(),
+        2,
+        "resync should replace the package root membership"
     );
 }
 
@@ -319,14 +521,14 @@ fn session_snapshots_preserve_workspace_symbol_warmth_across_body_only_edits() {
 }
 
 #[test]
-fn session_package_queries_keep_durable_library_roots_warm_across_local_summary_edits() {
+fn session_package_queries_keep_durable_external_roots_warm_across_local_summary_edits() {
     let _guard = session_stats_test_guard();
     crate::compile::reset_session_cache_stats();
 
     let mut session = Session::default();
     session.replace_parsed_source_set(
         "Modelica",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         vec![(
             "Modelica/package.mo".to_string(),
             parse_definition(
@@ -344,7 +546,7 @@ fn session_package_queries_keep_durable_library_roots_warm_across_local_summary_
     assert_eq!(
         first.as_deref(),
         Some("Modelica.Electrical.Analog.Resistor"),
-        "first lookup should resolve the durable library class"
+        "first lookup should resolve the durable external source-root class"
     );
     let stats_after_first = crate::compile::session_cache_stats();
 
@@ -359,17 +561,17 @@ fn session_package_queries_keep_durable_library_roots_warm_across_local_summary_
     assert_eq!(
         second.as_deref(),
         Some("Modelica.Electrical.Analog.Resistor"),
-        "lookup should still resolve the durable library class after local edits"
+        "lookup should still resolve the durable external source-root class after local edits"
     );
 
     let delta = crate::compile::session_cache_stats().delta_since(stats_after_first);
     assert!(
         delta.source_set_package_membership_query_hits >= 1,
-        "session-wide package queries should reuse the durable library source-set cache"
+        "session-wide package queries should reuse the durable external source-root cache"
     );
     assert_eq!(
         delta.source_set_package_membership_query_misses, 0,
-        "local edits should not rebuild the durable library source-set query"
+        "local edits should not rebuild the durable external source-root query"
     );
 }
 
@@ -464,7 +666,7 @@ fn source_set_records_keep_stable_ids_and_revision_history() {
     )];
 
     let inserted =
-        session.replace_parsed_source_set("lib", SourceRootKind::Library, defs_v1.clone(), None);
+        session.replace_parsed_source_set("lib", SourceRootKind::External, defs_v1.clone(), None);
     assert_eq!(inserted, 1, "first source-set load should insert one file");
     let first_record = source_set_record(&session, "lib");
     let first_id = first_record.id;
@@ -475,7 +677,7 @@ fn source_set_records_keep_stable_ids_and_revision_history() {
     );
 
     let warm_inserted =
-        session.replace_parsed_source_set("lib", SourceRootKind::Library, defs_v1, None);
+        session.replace_parsed_source_set("lib", SourceRootKind::External, defs_v1, None);
     assert_eq!(
         warm_inserted, 1,
         "unchanged replacement still reports file count"
@@ -490,7 +692,7 @@ fn source_set_records_keep_stable_ids_and_revision_history() {
         "unchanged source-set refresh must not bump the revision"
     );
 
-    let updated = session.replace_parsed_source_set("lib", SourceRootKind::Library, defs_v2, None);
+    let updated = session.replace_parsed_source_set("lib", SourceRootKind::External, defs_v2, None);
     assert_eq!(
         updated, 1,
         "changed source-set should still insert one file"
@@ -519,7 +721,7 @@ fn source_set_records_keep_stable_ids_and_revision_history() {
 
     let reloaded = session.replace_parsed_source_set(
         "lib",
-        SourceRootKind::Library,
+        SourceRootKind::External,
         vec![(
             "lib/Other.mo".to_string(),
             parse_definition(
@@ -542,7 +744,7 @@ fn source_set_records_keep_stable_ids_and_revision_history() {
 }
 
 #[test]
-fn session_change_keeps_workspace_root_membership_and_detaches_library_overlay() {
+fn session_change_keeps_workspace_root_membership_and_detaches_external_overlay() {
     let mut session = Session::default();
     let source = "model M\n  Real x;\nend M;\n";
 
@@ -573,25 +775,29 @@ fn session_change_keeps_workspace_root_membership_and_detaches_library_overlay()
         "workspace file change should share the transaction revision"
     );
 
-    let mut library_change = SessionChange::default();
-    library_change
-        .replace_source_root("library", SourceRootKind::Library, ["library/Lib.mo"])
-        .set_file_text("library/Lib.mo", source);
-    session.apply_change(library_change);
+    let mut external_change = SessionChange::default();
+    external_change
+        .replace_source_root("external", SourceRootKind::External, ["external/Lib.mo"])
+        .set_file_text("external/Lib.mo", source);
+    session.apply_change(external_change);
 
-    let library_record = session
+    let external_record = session
         .source_sets
-        .get("library")
-        .expect("library root should be recorded");
-    assert_eq!(library_record.kind, SourceRootKind::Library);
-    assert_eq!(library_record.durability, SourceRootDurability::Normal);
+        .get("external")
+        .expect("external source root should be recorded");
+    assert_eq!(external_record.kind, SourceRootKind::External);
+    assert_eq!(external_record.durability, SourceRootDurability::Normal);
     assert!(
-        library_record.uris.is_empty(),
-        "text overlays should detach files from library-backed roots"
+        external_record.uris.is_empty(),
+        "text overlays should detach files from external source roots"
     );
     assert!(
-        session.get_document("library/Lib.mo").is_some(),
-        "detached library overlay should still exist as a live document"
+        session.get_document("external/Lib.mo").is_some(),
+        "detached external overlay should still exist as a live document"
+    );
+    assert!(
+        session.is_non_workspace_source_root_document("external/Lib.mo"),
+        "detached external overlays should still resolve as external source-root-backed documents"
     );
 }
 
@@ -622,115 +828,12 @@ fn session_change_empty_and_noop_updates_do_not_bump_revision() {
 }
 
 #[test]
-fn removing_live_library_document_restores_latest_detached_source_root_document() {
-    let mut session = Session::default();
-    let uri = "library/Lib.mo";
-    let parsed_v1 = parse_definition("package Lib\n  model A\n  end A;\nend Lib;\n", uri);
-    let parsed_v2 = parse_definition("package Lib\n  model B\n  end B;\nend Lib;\n", uri);
-
-    session.replace_parsed_source_set(
-        "library",
-        SourceRootKind::Library,
-        vec![(uri.to_string(), parsed_v1)],
-        None,
-    );
-    let parse_error =
-        session.update_document(uri, "package Lib\n  model Open\n  end Open;\nend Lib;\n");
-    assert!(
-        parse_error.is_none(),
-        "live library edit should parse cleanly"
-    );
-
-    session.replace_parsed_source_set(
-        "library",
-        SourceRootKind::Library,
-        vec![(uri.to_string(), parsed_v2.clone())],
-        Some(uri),
-    );
-    session.remove_document(uri);
-
-    let restored = session
-        .get_document(uri)
-        .cloned()
-        .expect("closing a live library document should restore the cached source-root document");
-    assert!(
-        restored.content.is_empty(),
-        "restored library-backed document should return to parsed-source-set ownership"
-    );
-    assert_eq!(
-        restored.parsed(),
-        Some(&parsed_v2),
-        "library rebuilds while the file is open should refresh the detached backing document"
-    );
-    assert!(
-        session
-            .source_set_uris("library")
-            .is_some_and(|uris| uris.contains(uri)),
-        "restoring a detached library document should reattach it to the source root"
-    );
-}
-
-#[test]
-fn detached_library_edits_keep_library_membership_and_mark_source_root_for_refresh() {
-    let mut session = Session::default();
-    let uri = "library/Lib.mo";
-    let parsed = parse_definition("package Lib\n  model A\n  end A;\nend Lib;\n", uri);
-
-    session.replace_parsed_source_set(
-        "library",
-        SourceRootKind::Library,
-        vec![(uri.to_string(), parsed)],
-        None,
-    );
-    session.update_document(uri, "package Lib\n  model Open\n  end Open;\nend Lib;\n");
-    assert!(
-        session.is_loaded_library_document(uri),
-        "detached live library documents should still resolve as loaded library documents"
-    );
-    assert!(
-        session.dirty_library_source_root_keys().is_empty(),
-        "opening a detached library document should not mark the source root dirty yet"
-    );
-    assert_eq!(
-        session.library_source_set_ids_for_uri(uri),
-        vec![
-            session
-                .source_set_id("library")
-                .expect("source-set id should exist")
-        ],
-        "detached live library documents should still resolve to their library source root"
-    );
-
-    session.update_document(
-        uri,
-        "package Lib\n  model Open\n    Real x;\n  end Open;\nend Lib;\n",
-    );
-    assert_eq!(
-        session.dirty_library_source_root_keys(),
-        vec!["library".to_string()],
-        "editing an already-detached library document should mark its source root for refresh"
-    );
-
-    let refreshed = parse_definition("package Lib\n  model B\n  end B;\nend Lib;\n", uri);
-    session.replace_parsed_source_set(
-        "library",
-        SourceRootKind::Library,
-        vec![(uri.to_string(), refreshed)],
-        Some(uri),
-    );
-    assert!(
-        session.dirty_library_source_root_keys().is_empty(),
-        "reloading the source root should clear the pending-refresh flag"
-    );
-}
-
-#[test]
-fn file_ids_and_library_membership_reuse_path_aliases_for_same_file() {
+fn file_ids_reuse_path_aliases_for_same_file() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let library_root = temp.path().join("Lib");
-    let nested = library_root.join("nested");
+    let source_root = temp.path().join("Lib");
+    let nested = source_root.join("nested");
     std::fs::create_dir_all(&nested).expect("mkdir nested");
-    let canonical_path = library_root.join("package.mo");
+    let canonical_path = source_root.join("package.mo");
     std::fs::write(
         &canonical_path,
         "package Lib\n  model A\n  end A;\nend Lib;\n",
@@ -742,8 +845,8 @@ fn file_ids_and_library_membership_reuse_path_aliases_for_same_file() {
 
     let mut session = Session::default();
     session.replace_parsed_source_set(
-        "library",
-        SourceRootKind::Library,
+        "external",
+        SourceRootKind::External,
         vec![(
             alias_uri.clone(),
             parse_definition("package Lib\n  model A\n  end A;\nend Lib;\n", &alias_uri),
@@ -752,7 +855,7 @@ fn file_ids_and_library_membership_reuse_path_aliases_for_same_file() {
     );
 
     let source_set_id = session
-        .source_set_id("library")
+        .source_set_id("external")
         .expect("source-set id should exist");
     assert_eq!(
         session.file_id(&canonical_uri),
@@ -760,9 +863,9 @@ fn file_ids_and_library_membership_reuse_path_aliases_for_same_file() {
         "the same file should reuse one stable file id across path aliases"
     );
     assert_eq!(
-        session.library_source_set_ids_for_uri(&canonical_uri),
+        session.non_workspace_source_set_ids_for_uri(&alias_uri),
         vec![source_set_id],
-        "canonical-path lookups should resolve the attached library source root by file id"
+        "alias-path lookups should resolve the attached external source root by file id"
     );
 
     session.update_document(
@@ -770,9 +873,13 @@ fn file_ids_and_library_membership_reuse_path_aliases_for_same_file() {
         "package Lib\n  model Open\n  end Open;\nend Lib;\n",
     );
     assert_eq!(
-        session.library_source_set_ids_for_uri(&canonical_uri),
-        vec![source_set_id],
-        "detached live library documents should keep the same library membership across path aliases"
+        session.file_id(&canonical_uri),
+        session.file_id(&alias_uri),
+        "detached live documents should keep the same stable file id across path aliases"
+    );
+    assert!(
+        session.get_document(&canonical_uri).is_some(),
+        "detached live overlay should exist under the edited canonical path"
     );
 }
 
@@ -822,7 +929,7 @@ fn query_helpers_expose_file_and_source_set_revisions() {
     )];
     session.replace_parsed_source_set(
         "stdlib",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         source_set_file,
         None,
     );
@@ -842,10 +949,10 @@ fn query_helpers_expose_file_and_source_set_revisions() {
         .source_set_file_ids("stdlib")
         .first()
         .copied()
-        .expect("library source set should expose file id");
+        .expect("source set should expose file id");
     assert_ne!(
         lib_file_id, id_a,
-        "library ids should be distinct from workspace file ids"
+        "external source-root ids should be distinct from workspace file ids"
     );
     let lib_file_uri = session
         .file_uri(lib_file_id)
@@ -855,7 +962,7 @@ fn query_helpers_expose_file_and_source_set_revisions() {
     let changed_after_source_set = session.changed_file_ids_since(rev_a);
     assert!(
         changed_after_source_set.contains(&lib_file_id),
-        "library source-set load should be reported as a changed file id"
+        "external source-root load should be reported as a changed file id"
     );
     assert!(
         !changed_after_source_set.contains(&id_a),
@@ -1825,39 +1932,3 @@ fn lru_cache_helpers_bound_size_and_refresh_recent_entries() {
     );
     assert!(cache.contains_key("C"), "new entry should be inserted");
 }
-
-mod compile_diagnostics_tests;
-
-mod cache_behavior_tests;
-
-mod declaration_index_tests;
-
-mod class_body_tests;
-
-mod file_outline_tests;
-
-mod file_summary_tests;
-
-mod package_def_map_tests;
-
-mod class_interface_tests;
-
-mod class_member_query_tests;
-
-mod model_closure_tests;
-
-mod instantiation_query_tests;
-
-mod typed_model_query_tests;
-
-mod flat_model_query_tests;
-
-mod dae_model_query_tests;
-
-mod class_body_semantics_tests;
-
-mod semantic_diagnostics_tests;
-
-mod persisted_summary_tests;
-
-mod workspace_symbol_snapshot_tests;

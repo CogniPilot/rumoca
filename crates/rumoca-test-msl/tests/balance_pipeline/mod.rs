@@ -238,7 +238,7 @@ struct MslSummary {
     msl_version: String,
     total_mo_files: usize,
     parse_errors: usize,
-    /// Global library/session resolve failures that invalidate the whole run.
+    /// Global source-root/session resolve failures that invalidate the whole run.
     resolve_errors: usize,
     /// Per-model strict-closure resolve failures.
     #[serde(default)]

@@ -7,9 +7,12 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Error)]
-#[error("invalid Modelica package layout under '{}': {summary}", library_path.display())]
+#[error(
+    "invalid Modelica package layout under '{}': {summary}",
+    source_root_path.display()
+)]
 pub struct PackageLayoutError {
-    library_path: PathBuf,
+    source_root_path: PathBuf,
     summary: String,
     diagnostics: Vec<CommonDiagnostic>,
     source_map: SourceMap,
@@ -17,7 +20,7 @@ pub struct PackageLayoutError {
 
 impl PackageLayoutError {
     fn new(
-        library_path: PathBuf,
+        source_root_path: PathBuf,
         diagnostics: Vec<CommonDiagnostic>,
         source_map: SourceMap,
     ) -> Self {
@@ -33,7 +36,7 @@ impl PackageLayoutError {
             .collect::<Vec<_>>()
             .join("; ");
         Self {
-            library_path,
+            source_root_path,
             summary,
             diagnostics,
             source_map,
@@ -140,12 +143,12 @@ pub fn collect_compile_unit_source_files(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-pub(crate) fn collect_library_source_files(path: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn collect_source_root_source_files(path: &Path) -> Result<Vec<PathBuf>> {
     if path.is_file() {
         return Ok(vec![path.to_path_buf()]);
     }
     if !path.is_dir() {
-        bail!("library path does not exist: {}", path.display());
+        bail!("source-root path does not exist: {}", path.display());
     }
 
     let roots = discover_package_roots(path)?;
@@ -168,7 +171,7 @@ pub(crate) fn collect_library_source_files(path: &Path) -> Result<Vec<PathBuf>> 
 }
 
 /// Validate package-directory structure and within-clauses (MLS §13.4.1, §13.4.3).
-pub(crate) fn validate_library_package_layout(
+pub(crate) fn validate_source_root_package_layout(
     path: &Path,
     docs: &[(String, StoredDefinition)],
 ) -> Result<()> {
@@ -845,8 +848,8 @@ mod tests {
             (&child_mo, "model A end A;"),
         ]);
 
-        let err =
-            validate_library_package_layout(&root, &docs).expect_err("missing within must fail");
+        let err = validate_source_root_package_layout(&root, &docs)
+            .expect_err("missing within must fail");
         let err = err
             .downcast_ref::<PackageLayoutError>()
             .expect("typed package-layout error");
@@ -873,7 +876,7 @@ mod tests {
             (&child_mo, "within Pkg; model A end A;"),
         ]);
 
-        validate_library_package_layout(&root, &docs).expect("valid within should pass");
+        validate_source_root_package_layout(&root, &docs).expect("valid within should pass");
     }
 
     #[test]
@@ -892,15 +895,15 @@ mod tests {
         ]);
         fs::remove_file(&child_mo).expect("remove child after parse");
 
-        validate_library_package_layout(&root, &docs)
+        validate_source_root_package_layout(&root, &docs)
             .expect("valid layout should not reread missing source files on the success path");
     }
 
     #[test]
     fn package_layout_discovers_deep_package_roots_without_heuristics() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let library_root = temp.path().join("workspace");
-        let root = library_root.join("nested/vendor/Pkg");
+        let source_root = temp.path().join("workspace");
+        let root = source_root.join("nested/vendor/Pkg");
         fs::create_dir_all(&root).expect("mkdir");
         let package_mo = root.join("package.mo");
         let child_mo = root.join("A.mo");
@@ -912,7 +915,7 @@ mod tests {
             (&child_mo, "within Pkg; model A end A;"),
         ]);
 
-        validate_library_package_layout(&library_root, &docs)
+        validate_source_root_package_layout(&source_root, &docs)
             .expect("deep package root should be discovered");
     }
 
@@ -933,7 +936,7 @@ mod tests {
             (&child_mo, "within Pkg; model A end A;"),
         ]);
 
-        validate_library_package_layout(&root, &docs)
+        validate_source_root_package_layout(&root, &docs)
             .expect("resource directories outside package tree should be ignored");
     }
 

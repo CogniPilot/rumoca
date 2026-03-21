@@ -1,6 +1,6 @@
 import { setupCommandPalette } from './modules/command_palette.js';
 import { createSourceBreadcrumbs } from './modules/breadcrumbs.js';
-import { createLibraryDocsController } from './modules/library_docs.js';
+import { createPackageArchiveController } from './modules/package_archive_controller.js';
 import { createDiagnosticsController } from './modules/diagnostics_panel.js';
 import { installFileActions } from './modules/file_actions.js';
 import { setupMonacoWorkspace } from './modules/monaco_setup.js';
@@ -12,10 +12,17 @@ import {
 import {
     createProjectFilesystem,
     inferModelicaFileName,
+    normalizePath,
 } from './modules/project_fs.js';
 
 let editor;
 const projectFs = createProjectFilesystem();
+const WASM_PROJECT_PERSIST_DB = 'rumoca-wasm-editor';
+const WASM_PROJECT_PERSIST_STORE = 'autosave';
+const WASM_PROJECT_PERSIST_KEY = 'active-project';
+let projectPersistenceTimer = null;
+let projectPersistenceInFlight = Promise.resolve();
+let projectPersistenceReady = false;
 const projectInterface = createProjectInterface({
     projectFs,
     runtimeBridge: {
@@ -23,17 +30,644 @@ const projectInterface = createProjectInterface({
             return sendRequest(action, payload, timeoutMs);
         },
     },
+    onProjectMutation() {
+        scheduleProjectPersistence();
+    },
 });
-let simResultsPanelState = { activeViewId: null };
+let simResultsPanelState = emptySimResultsPanelState();
 let suspendWorkspaceObservers = false;
 let defaultProjectSeed = null;
+let openDocumentPaths = [];
 const simulationSettingsModal = document.getElementById('simulationSettingsModal');
 const simulationSettingsFrame = document.getElementById('simulationSettingsFrame');
 const simulationSettingsCloseBtn = document.getElementById('simulationSettingsCloseBtn');
+const codegenSettingsModal = document.getElementById('codegenSettingsModal');
+const codegenSettingsCloseBtn = document.getElementById('codegenSettingsCloseBtn');
+const codegenSettingsCancelBtn = document.getElementById('codegenSettingsCancelBtn');
+const codegenSettingsApplyBtn = document.getElementById('codegenSettingsApplyBtn');
+const codegenTemplateModeSelect = document.getElementById('codegenTemplateModeSelect');
+const codegenBuiltinTemplateSelect = document.getElementById('codegenBuiltinTemplateSelect');
+const codegenCustomTemplatePathInput = document.getElementById('codegenCustomTemplatePathInput');
+const codegenBuiltinTemplateField = document.getElementById('codegenBuiltinTemplateField');
+const codegenCustomTemplateField = document.getElementById('codegenCustomTemplateField');
+const codegenTemplateSummary = document.getElementById('codegenTemplateSummary');
+const simRunTabs = document.getElementById('simRunTabs');
+const outputTabsRoot = document.getElementById('outputTabs');
+const codegenRunTabs = document.getElementById('codegenRunTabs');
+const resultsSettingsBtn = document.getElementById('resultsSettingsBtn');
+const resultsCloseBtn = document.getElementById('resultsCloseBtn');
+const fileMenuButton = document.getElementById('fileMenuButton');
+const fileMenuPanel = document.getElementById('fileMenuPanel');
+const packageArchiveInput = document.getElementById('packageArchiveInput');
+const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+const mobileSidebarBtn = document.getElementById('mobileSidebarBtn');
+const mobileProjectBtn = document.getElementById('mobileProjectBtn');
+const mobileAppbarTitle = document.getElementById('mobileAppbarTitle');
+const workbenchSidepanel = document.getElementById('workbenchSidepanel');
+const sidebarExplorerBtn = document.getElementById('sidebarExplorerBtn');
+const sidebarProjectBtn = document.getElementById('sidebarProjectBtn');
+const sidebarEditorPaneBtn = document.getElementById('sidebarEditorPaneBtn');
+const sidebarResultsPaneBtn = document.getElementById('sidebarResultsPaneBtn');
+const sidebarCodegenPaneBtn = document.getElementById('sidebarCodegenPaneBtn');
+const workbenchSidebar = document.getElementById('workbenchSidebar');
+const explorerSidebarPanel = document.getElementById('explorerSidebarPanel');
+const projectSidebarPanel = document.getElementById('projectSidebarPanel');
+const explorerSection = document.getElementById('explorerSection');
+const outlineSection = document.getElementById('outlineSection');
+const explorerSectionToggle = document.getElementById('explorerSectionToggle');
+const outlineSectionToggle = document.getElementById('outlineSectionToggle');
+const explorerSectionArrow = document.getElementById('explorerSectionArrow');
+const outlineSectionArrow = document.getElementById('outlineSectionArrow');
+const explorerNewFileBtn = document.getElementById('explorerNewFileBtn');
+const explorerNewFolderBtn = document.getElementById('explorerNewFolderBtn');
+const explorerTreeToggleBtn = document.getElementById('explorerTreeToggleBtn');
+const outlineTreeToggleBtn = document.getElementById('outlineTreeToggleBtn');
+const resizeHandleSidebar = document.getElementById('resizeHandleSidebar');
+const resizeHandleSidebarV = document.getElementById('resizeHandleSidebarV');
+const explorerTree = document.getElementById('explorerTree');
+const outlineTree = document.getElementById('outlineTree');
+const editorWorkbench = document.getElementById('editorWorkbench');
+const editorPaneArea = document.getElementById('editorPaneArea');
+const primaryEditorStack = document.getElementById('primaryEditorStack');
+const secondaryEditorStack = document.getElementById('secondaryEditorStack');
+const primaryEditorEmpty = document.getElementById('primaryEditorEmpty');
+const secondaryEditorEmpty = document.getElementById('secondaryEditorEmpty');
+const editorTabsRoot = document.getElementById('editorTabs');
+const secondaryEditorTabsRoot = document.getElementById('secondaryEditorTabs');
+const editorSplitHandle = document.getElementById('editorSplitHandle');
+const editorDropOverlay = document.getElementById('editorDropOverlay');
+const editorDropZones = Array.from(document.querySelectorAll('.editor-drop-zone'));
+const editorRunButtons = Array.from(document.querySelectorAll('[data-editor-run-btn]'));
+const editorSettingsButtons = Array.from(document.querySelectorAll('[data-editor-settings-btn]'));
+const editorCloseButtons = Array.from(document.querySelectorAll('[data-editor-close-btn]'));
+const rightPanel = document.getElementById('rightPanel');
+const sidebarContextMenu = document.getElementById('sidebarContextMenu');
+const sidebarContextActionBtn = document.getElementById('sidebarContextActionBtn');
 const projectVisualizationStorage = buildProjectVisualizationViewStorage({ projectFs });
+const editorViewStates = new Map();
+const editorPanes = {
+    primary: { id: 'primary', stackEl: primaryEditorStack, tabsEl: editorTabsRoot, editorElId: 'editor', paths: [], activePath: '', editor: null },
+    secondary: { id: 'secondary', stackEl: secondaryEditorStack, tabsEl: secondaryEditorTabsRoot, editorElId: 'secondaryEditor', paths: [], activePath: '', editor: null },
+};
+let activeEditorPaneId = 'primary';
+let editorPaneSplit = 'single';
+let editorPaneVisible = true;
+let isResizingEditorSplit = false;
+let dragEditorTabState = null;
+let monacoApi = null;
+let createSourceEditorFactory = null;
+let bindPaneEditorToWorkspace = null;
+let outlineRenderVersion = 0;
+let outlineRefreshTimer = null;
+const explorerCollapsedNodes = new Set();
+const outlineCollapsedNodes = new Set();
+let explorerBranchKeys = [];
+let outlineBranchKeys = [];
+let selectedExplorerPath = '';
+let sidebarContextAction = null;
+const EXPLORER_ROOT_SELECTION = '.';
+const DEFAULT_CODEGEN_TEMPLATE_ID = 'sympy.py.jinja';
+const LEGACY_CUSTOM_TEMPLATE_PATH = '.rumoca/templates/custom_codegen.jinja';
+let builtInCodegenTemplates = [];
+let builtInCodegenTemplatesLoaded = false;
+let codegenSettings = defaultCodegenSettings();
+let codegenRuns = [];
+let activeCodegenRunId = '';
+let codegenRunSequence = 0;
 
 function trimMaybeString(value) {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+function defaultCodegenSettings() {
+    return {
+        mode: 'builtin',
+        builtinTemplateId: DEFAULT_CODEGEN_TEMPLATE_ID,
+        customTemplatePath: '',
+    };
+}
+
+function normalizeCodegenSettings(value) {
+    const next = value && typeof value === 'object' ? value : {};
+    return {
+        mode: next.mode === 'custom' ? 'custom' : 'builtin',
+        builtinTemplateId: trimMaybeString(next.builtinTemplateId) || DEFAULT_CODEGEN_TEMPLATE_ID,
+        customTemplatePath: trimMaybeString(next.customTemplatePath),
+    };
+}
+
+function inferCodegenLanguage(templateId) {
+    const nextId = trimMaybeString(templateId).toLowerCase();
+    if (nextId.endsWith('.py.jinja')) return 'python';
+    if (nextId.endsWith('.jl.jinja')) return 'julia';
+    if (nextId.endsWith('.c.jinja') || nextId.endsWith('.h.jinja')) return 'c';
+    if (nextId.endsWith('.xml.jinja')) return 'xml';
+    if (nextId.endsWith('.mo.jinja')) return 'modelica';
+    if (nextId.endsWith('.json.jinja')) return 'json';
+    if (nextId.endsWith('.html.jinja')) return 'html';
+    return 'plaintext';
+}
+
+function findBuiltInCodegenTemplate(templateId) {
+    const nextId = trimMaybeString(templateId);
+    if (!nextId) {
+        return builtInCodegenTemplates[0] || null;
+    }
+    return builtInCodegenTemplates.find((template) => template.id === nextId) || builtInCodegenTemplates[0] || null;
+}
+
+function populateBuiltInCodegenTemplateOptions() {
+    if (!codegenBuiltinTemplateSelect) {
+        return;
+    }
+    codegenBuiltinTemplateSelect.innerHTML = builtInCodegenTemplates
+        .map((template) => `<option value="${template.id}">${template.label}</option>`)
+        .join('');
+}
+
+async function ensureBuiltInCodegenTemplatesLoaded() {
+    if (builtInCodegenTemplatesLoaded) {
+        return builtInCodegenTemplates;
+    }
+    const raw = await sendWorkspaceCommand('rumoca.workspace.getBuiltinTemplates', {});
+    const templates = Array.isArray(raw) ? raw : [];
+    builtInCodegenTemplates = templates
+        .map((entry) => ({
+            id: trimMaybeString(entry?.id),
+            label: trimMaybeString(entry?.label),
+            language: trimMaybeString(entry?.language) || 'plaintext',
+            source: typeof entry?.source === 'string' ? entry.source : '',
+        }))
+        .filter((entry) => entry.id && entry.label && entry.source);
+    builtInCodegenTemplatesLoaded = true;
+    populateBuiltInCodegenTemplateOptions();
+    if (!findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId) && builtInCodegenTemplates[0]) {
+        codegenSettings = {
+            ...codegenSettings,
+            builtinTemplateId: builtInCodegenTemplates[0].id,
+        };
+    }
+    refreshCodegenSettingsForm();
+    refreshCodegenTemplateSummary();
+    return builtInCodegenTemplates;
+}
+
+function refreshCodegenSettingsForm() {
+    if (codegenTemplateModeSelect) {
+        codegenTemplateModeSelect.value = codegenSettings.mode;
+    }
+    if (codegenBuiltinTemplateSelect) {
+        const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId);
+        if (selectedBuiltin) {
+            codegenBuiltinTemplateSelect.value = selectedBuiltin.id;
+        }
+    }
+    if (codegenCustomTemplatePathInput) {
+        codegenCustomTemplatePathInput.value = codegenSettings.customTemplatePath;
+    }
+    if (codegenBuiltinTemplateField) {
+        codegenBuiltinTemplateField.hidden = codegenSettings.mode !== 'builtin';
+    }
+    if (codegenCustomTemplateField) {
+        codegenCustomTemplateField.hidden = codegenSettings.mode !== 'custom';
+    }
+}
+
+function refreshCodegenSettingsDraftVisibility() {
+    const mode = trimMaybeString(codegenTemplateModeSelect?.value) === 'custom' ? 'custom' : 'builtin';
+    if (codegenBuiltinTemplateField) {
+        codegenBuiltinTemplateField.hidden = mode !== 'builtin';
+    }
+    if (codegenCustomTemplateField) {
+        codegenCustomTemplateField.hidden = mode !== 'custom';
+    }
+}
+
+function refreshCodegenTemplateSummary() {
+    if (!codegenTemplateSummary) {
+        return;
+    }
+    const activeRun = activeCodegenRun();
+    if (activeRun) {
+        codegenTemplateSummary.textContent = activeRun.templateLabel
+            ? `Rendered with: ${activeRun.templateLabel}`
+            : 'Rendered output snapshot';
+        return;
+    }
+    if (codegenSettings.mode === 'custom') {
+        codegenTemplateSummary.textContent = codegenSettings.customTemplatePath
+            ? `Custom template: ${codegenSettings.customTemplatePath}`
+            : 'Custom template: choose a workspace file';
+        return;
+    }
+    const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId);
+    codegenTemplateSummary.textContent = selectedBuiltin
+        ? `Built-in template: ${selectedBuiltin.label}`
+        : 'Built-in template: loading...';
+}
+
+function currentCodegenModel() {
+    return trimMaybeString(window.selectedModel || currentSimulationModel());
+}
+
+function formatCodegenRunLabel(modelName, createdAt) {
+    const timeLabel = new Date(createdAt).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+    });
+    return `${trimMaybeString(modelName) || 'Model'} Codegen - ${timeLabel}`;
+}
+
+function activeCodegenRun() {
+    return codegenRuns.find((run) => run.id === activeCodegenRunId) || null;
+}
+
+function showActiveCodegenRun() {
+    const run = activeCodegenRun();
+    if (!run) {
+        setCodegenOutput('', 'plaintext');
+        refreshCodegenTemplateSummary();
+        return;
+    }
+    setCodegenOutput(run.text || '', run.language || 'plaintext');
+    refreshCodegenTemplateSummary();
+}
+
+function renderCodegenRunTabs() {
+    if (!codegenRunTabs) {
+        return;
+    }
+    codegenRunTabs.innerHTML = '';
+    for (const run of codegenRuns) {
+        const shell = document.createElement('div');
+        shell.className = `results-run-tab-shell${run.id === activeCodegenRunId ? ' active' : ''}`;
+
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = `results-run-tab${run.id === activeCodegenRunId ? ' active' : ''}`;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', String(run.id === activeCodegenRunId));
+        tab.title = run.label;
+        tab.textContent = run.label;
+        tab.addEventListener('click', () => {
+            activeCodegenRunId = run.id;
+            window.switchRightTab('codegen');
+        });
+        shell.appendChild(tab);
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'results-run-close';
+        close.title = `Close ${run.label}`;
+        close.setAttribute('aria-label', `Close ${run.label}`);
+        close.textContent = '×';
+        close.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            closeCodegenRun(run.id);
+        });
+        shell.appendChild(close);
+        codegenRunTabs.appendChild(shell);
+    }
+}
+
+function readCodegenSettingsFromForm() {
+    return normalizeCodegenSettings({
+        mode: codegenTemplateModeSelect?.value,
+        builtinTemplateId: codegenBuiltinTemplateSelect?.value,
+        customTemplatePath: codegenCustomTemplatePathInput?.value,
+    });
+}
+
+async function applyCodegenSettings(nextSettings, { rerender = true } = {}) {
+    if (codegenSettings.mode === nextSettings.mode
+        && codegenSettings.builtinTemplateId === nextSettings.builtinTemplateId
+        && codegenSettings.customTemplatePath === nextSettings.customTemplatePath) {
+        refreshCodegenSettingsForm();
+        refreshCodegenTemplateSummary();
+        return;
+    }
+    codegenSettings = normalizeCodegenSettings(nextSettings);
+    refreshCodegenSettingsForm();
+    refreshCodegenTemplateSummary();
+    scheduleProjectPersistence();
+    void rerender;
+}
+
+function migrateLegacyCodegenTemplateState(nextState) {
+    if (!nextState || typeof nextState !== 'object') {
+        return null;
+    }
+    if (nextState.codegenSettings && typeof nextState.codegenSettings === 'object') {
+        return null;
+    }
+    const legacyTemplate = typeof nextState.template === 'string' ? nextState.template : '';
+    if (!trimMaybeString(legacyTemplate)) {
+        return null;
+    }
+    if (projectFs.getFileContent(LEGACY_CUSTOM_TEMPLATE_PATH) !== legacyTemplate) {
+        projectFs.setFile(LEGACY_CUSTOM_TEMPLATE_PATH, legacyTemplate);
+    }
+    return {
+        mode: 'custom',
+        builtinTemplateId: DEFAULT_CODEGEN_TEMPLATE_ID,
+        customTemplatePath: LEGACY_CUSTOM_TEMPLATE_PATH,
+    };
+}
+
+async function resolveCodegenTemplateSelection() {
+    if (codegenSettings.mode === 'custom') {
+        const templatePath = trimMaybeString(codegenSettings.customTemplatePath);
+        if (!templatePath) {
+            throw new Error('Choose a custom template file in Template Settings.');
+        }
+        const templateSource = projectFs.getFileContent(templatePath);
+        if (typeof templateSource !== 'string') {
+            throw new Error(`Template file not found: ${templatePath}`);
+        }
+        return {
+            source: templateSource,
+            label: templatePath,
+            language: inferCodegenLanguage(templatePath),
+        };
+    }
+    const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId);
+    if (!selectedBuiltin) {
+        throw new Error('No built-in codegen templates are available.');
+    }
+    return {
+        source: selectedBuiltin.source,
+        label: selectedBuiltin.label,
+        language: selectedBuiltin.language || inferCodegenLanguage(selectedBuiltin.id),
+    };
+}
+
+function normalizeStringMap(value) {
+    const next = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return next;
+    }
+    for (const [key, entry] of Object.entries(value)) {
+        const nextKey = trimMaybeString(key);
+        const nextValue = trimMaybeString(entry);
+        if (nextKey && nextValue) {
+            next[nextKey] = nextValue;
+        }
+    }
+    return next;
+}
+
+function parseBadgeNumber(text) {
+    const match = String(text || '').match(/\d+/);
+    return match ? Number(match[0]) : 0;
+}
+
+function isProjectPersistenceEnabled() {
+    return !isRumocaSmokeMode()
+        && typeof window !== 'undefined'
+        && typeof window.indexedDB !== 'undefined';
+}
+
+function indexedDbRequest(request) {
+    return new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('IndexedDB request failed'));
+    });
+}
+
+function indexedDbTransactionDone(transaction) {
+    return new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('IndexedDB transaction failed'));
+        transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+    });
+}
+
+function openProjectPersistenceDb() {
+    return new Promise((resolve, reject) => {
+        const request = window.indexedDB.open(WASM_PROJECT_PERSIST_DB, 1);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(WASM_PROJECT_PERSIST_STORE)) {
+                db.createObjectStore(WASM_PROJECT_PERSIST_STORE);
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('Failed to open IndexedDB'));
+    });
+}
+
+async function loadPersistedProjectEntries() {
+    if (!isProjectPersistenceEnabled()) {
+        return null;
+    }
+    const db = await openProjectPersistenceDb();
+    try {
+        const transaction = db.transaction(WASM_PROJECT_PERSIST_STORE, 'readonly');
+        const store = transaction.objectStore(WASM_PROJECT_PERSIST_STORE);
+        const record = await indexedDbRequest(store.get(WASM_PROJECT_PERSIST_KEY));
+        await indexedDbTransactionDone(transaction);
+        return Array.isArray(record?.entries) ? record.entries : null;
+    } finally {
+        db.close();
+    }
+}
+
+async function savePersistedProjectEntries(entries) {
+    if (!isProjectPersistenceEnabled()) {
+        return;
+    }
+    const db = await openProjectPersistenceDb();
+    try {
+        const transaction = db.transaction(WASM_PROJECT_PERSIST_STORE, 'readwrite');
+        const store = transaction.objectStore(WASM_PROJECT_PERSIST_STORE);
+        await indexedDbRequest(store.put({
+            schemaVersion: 1,
+            savedAt: Date.now(),
+            entries,
+        }, WASM_PROJECT_PERSIST_KEY));
+        await indexedDbTransactionDone(transaction);
+    } finally {
+        db.close();
+    }
+}
+
+function collectPersistedProjectEntries() {
+    projectFs.setEditorState(collectProjectEditorState());
+    if (editor?.getValue) {
+        persistActivePaneDocument();
+    }
+    return projectFs.snapshotArchiveEntries({ includeCacheFiles: true });
+}
+
+async function persistProjectToBrowserStorage() {
+    if (!isProjectPersistenceEnabled()) {
+        return;
+    }
+    try {
+        await savePersistedProjectEntries(collectPersistedProjectEntries());
+    } catch (error) {
+        console.warn('Failed to persist WASM project state:', error);
+    }
+}
+
+function enqueueProjectPersistence() {
+    projectPersistenceInFlight = projectPersistenceInFlight
+        .catch(() => {})
+        .then(() => persistProjectToBrowserStorage());
+    return projectPersistenceInFlight;
+}
+
+function scheduleProjectPersistence(delayMs = 250) {
+    if (!isProjectPersistenceEnabled() || !projectPersistenceReady) {
+        return;
+    }
+    if (projectPersistenceTimer) {
+        clearTimeout(projectPersistenceTimer);
+    }
+    projectPersistenceTimer = setTimeout(() => {
+        projectPersistenceTimer = null;
+        void enqueueProjectPersistence();
+    }, delayMs);
+}
+
+function flushProjectPersistence() {
+    if (!isProjectPersistenceEnabled() || !projectPersistenceReady) {
+        return Promise.resolve();
+    }
+    if (projectPersistenceTimer) {
+        clearTimeout(projectPersistenceTimer);
+        projectPersistenceTimer = null;
+        void enqueueProjectPersistence();
+    }
+    return projectPersistenceInFlight.catch(() => {});
+}
+
+function emptySimResultsPanelState() {
+    return {
+        activeViewId: null,
+        activeRunIdByModel: {},
+        activeViewIdByRun: {},
+    };
+}
+
+function normalizeSimResultsPanelState(value, fallbackActiveViewId = null) {
+    const next = emptySimResultsPanelState();
+    const legacyActiveViewId = trimMaybeString(fallbackActiveViewId) || null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        next.activeViewId = legacyActiveViewId;
+        return next;
+    }
+    next.activeViewId = trimMaybeString(value.activeViewId) || legacyActiveViewId;
+    next.activeRunIdByModel = normalizeStringMap(value.activeRunIdByModel);
+    next.activeViewIdByRun = normalizeStringMap(value.activeViewIdByRun);
+    return next;
+}
+
+function pathParts(path) {
+    return String(path || '').split('/').filter(Boolean);
+}
+
+function baseName(path) {
+    return pathParts(path).at(-1) || '';
+}
+
+function parentDirectory(path) {
+    const parts = pathParts(path);
+    return parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+}
+
+function isExplorerTextEntry(entry) {
+    return (
+        entry?.sourceKind === 'workspace'
+        || entry?.sourceKind === 'packageArchive'
+        || entry?.sourceKind === 'sidecar'
+    ) && entry?.isText === true;
+}
+
+function normalizeOpenDocumentPaths(paths, fallbackPath = '') {
+    const next = [];
+    const seen = new Set();
+    const pushPath = (candidate) => {
+        const normalized = trimMaybeString(candidate);
+        if (!normalized || seen.has(normalized)) {
+            return;
+        }
+        if (typeof projectFs.getFileContent(normalized) !== 'string') {
+            return;
+        }
+        seen.add(normalized);
+        next.push(normalized);
+    };
+    if (Array.isArray(paths)) {
+        for (const path of paths) {
+            pushPath(path);
+        }
+    }
+    pushPath(fallbackPath);
+    return next;
+}
+
+function otherEditorPaneId(paneId) {
+    return paneId === 'secondary' ? 'primary' : 'secondary';
+}
+
+function normalizeEditorPaneId(paneId) {
+    return paneId === 'secondary' ? 'secondary' : 'primary';
+}
+
+function getEditorPane(paneId = activeEditorPaneId) {
+    return editorPanes[normalizeEditorPaneId(paneId)];
+}
+
+function rebuildOpenDocumentPaths() {
+    openDocumentPaths = normalizeOpenDocumentPaths([
+        ...editorPanes.primary.paths,
+        ...editorPanes.secondary.paths,
+    ]);
+}
+
+function syncOpenDocuments(nextPaths = openDocumentPaths, fallbackPath = '') {
+    editorPanes.primary.paths = normalizeOpenDocumentPaths(nextPaths, fallbackPath);
+    editorPanes.primary.activePath = trimMaybeString(fallbackPath)
+        || editorPanes.primary.paths.at(-1)
+        || '';
+    editorPanes.secondary.paths = [];
+    editorPanes.secondary.activePath = '';
+    editorPaneSplit = 'single';
+    rebuildOpenDocumentPaths();
+}
+
+function setPanePaths(paneId, nextPaths, fallbackPath = '') {
+    const pane = getEditorPane(paneId);
+    pane.paths = normalizeOpenDocumentPaths(nextPaths, fallbackPath);
+    pane.activePath = trimMaybeString(fallbackPath)
+        || pane.paths.at(-1)
+        || '';
+    rebuildOpenDocumentPaths();
+}
+
+function removePathFromOtherEditorPane(path, keepPaneId) {
+    const nextPath = trimMaybeString(path);
+    const keepId = normalizeEditorPaneId(keepPaneId);
+    for (const [paneId, pane] of Object.entries(editorPanes)) {
+        if (paneId === keepId) {
+            continue;
+        }
+        if (!pane.paths.includes(nextPath)) {
+            continue;
+        }
+        pane.paths = pane.paths.filter((candidate) => candidate !== nextPath);
+        if (pane.activePath === nextPath) {
+            pane.activePath = pane.paths.at(-1) || '';
+        }
+    }
+    rebuildOpenDocumentPaths();
+}
+
+function hasSecondaryEditorPane() {
+    return editorPaneSplit !== 'single';
 }
 
 function sharedVisualization() {
@@ -44,10 +678,320 @@ function sharedVisualization() {
     return shared;
 }
 
+function setFileMenuOpen(isOpen) {
+    if (!fileMenuButton || !fileMenuPanel) {
+        return;
+    }
+    fileMenuButton.setAttribute('aria-expanded', String(Boolean(isOpen)));
+    fileMenuPanel.classList.toggle('open', Boolean(isOpen));
+}
+
+function currentSidebarMode() {
+    return workbenchSidebar?.dataset.mode === 'project' ? 'project' : 'explorer';
+}
+
+function syncWorkbenchPaneButtons() {
+    if (sidebarEditorPaneBtn) {
+        const active = editorPaneVisible && hasOpenEditorPane();
+        sidebarEditorPaneBtn.classList.toggle('active', active);
+        sidebarEditorPaneBtn.setAttribute('aria-pressed', String(active));
+    }
+    if (sidebarResultsPaneBtn) {
+        const active = window.activeRightTab === 'simulate';
+        sidebarResultsPaneBtn.classList.toggle('active', active);
+        sidebarResultsPaneBtn.setAttribute('aria-pressed', String(active));
+    }
+    if (sidebarCodegenPaneBtn) {
+        const active = window.activeRightTab === 'codegen';
+        sidebarCodegenPaneBtn.classList.toggle('active', active);
+        sidebarCodegenPaneBtn.setAttribute('aria-pressed', String(active));
+    }
+}
+
+function updateMobileAppbarTitle() {
+    if (!mobileAppbarTitle) {
+        return;
+    }
+    const activePath = trimMaybeString(projectFs.getActiveDocumentPath());
+    const title = currentSidebarMode() === 'project'
+        ? 'Project'
+        : activePath
+            ? baseName(activePath) || activePath
+            : 'Rumoca';
+    mobileAppbarTitle.textContent = title;
+}
+
+function syncSidebarBackdrop() {
+    if (!sidebarBackdrop) {
+        return;
+    }
+    const open = isNarrowLayout() && !workbenchSidepanel?.classList.contains('collapsed');
+    sidebarBackdrop.hidden = !open;
+}
+
+function syncSidebarModeButtons() {
+    const collapsed = workbenchSidepanel?.classList.contains('collapsed');
+    const mode = currentSidebarMode();
+    if (sidebarExplorerBtn) {
+        const active = !collapsed && mode === 'explorer';
+        const expanded = !collapsed && mode === 'explorer';
+        sidebarExplorerBtn.classList.toggle('active', active);
+        sidebarExplorerBtn.setAttribute('aria-expanded', String(expanded));
+        sidebarExplorerBtn.setAttribute('aria-pressed', String(active));
+        sidebarExplorerBtn.title = active ? 'Hide Explorer sidebar' : 'Show Explorer sidebar';
+        sidebarExplorerBtn.setAttribute('aria-label', sidebarExplorerBtn.title);
+    }
+    if (sidebarProjectBtn) {
+        const active = !collapsed && mode === 'project';
+        const expanded = !collapsed && mode === 'project';
+        sidebarProjectBtn.classList.toggle('active', active);
+        sidebarProjectBtn.setAttribute('aria-expanded', String(expanded));
+        sidebarProjectBtn.setAttribute('aria-pressed', String(active));
+        sidebarProjectBtn.title = active ? 'Hide Project sidebar' : 'Show Project sidebar';
+        sidebarProjectBtn.setAttribute('aria-label', sidebarProjectBtn.title);
+    }
+    if (mobileSidebarBtn) {
+        const active = !collapsed && mode === 'explorer';
+        mobileSidebarBtn.classList.toggle('active', active);
+        mobileSidebarBtn.setAttribute('aria-expanded', String(active));
+    }
+    if (mobileProjectBtn) {
+        const active = !collapsed && mode === 'project';
+        mobileProjectBtn.classList.toggle('active', active);
+        mobileProjectBtn.setAttribute('aria-expanded', String(active));
+    }
+    updateMobileAppbarTitle();
+}
+
+function setSidebarMode(mode, { persist = true } = {}) {
+    const nextMode = mode === 'project' ? 'project' : 'explorer';
+    if (workbenchSidebar) {
+        workbenchSidebar.dataset.mode = nextMode;
+    }
+    explorerSidebarPanel?.classList.toggle('pane-hidden', nextMode !== 'explorer');
+    projectSidebarPanel?.classList.toggle('pane-hidden', nextMode !== 'project');
+    syncSidebarModeButtons();
+    if (persist) {
+        scheduleProjectPersistence();
+    }
+}
+
+function setSidebarCollapsed(collapsed) {
+    if (!workbenchSidepanel) {
+        return;
+    }
+    const nextCollapsed = Boolean(collapsed);
+    workbenchSidepanel.classList.toggle('collapsed', nextCollapsed);
+    syncSidebarModeButtons();
+    syncSidebarBackdrop();
+    updateSidebarSplitHandleVisibility();
+    scheduleProjectPersistence();
+}
+
+function toggleSidebarCollapsed() {
+    setSidebarCollapsed(!workbenchSidepanel?.classList.contains('collapsed'));
+    layoutAllEditors();
+}
+
+function setSidebarSectionCollapsed(sectionName, collapsed) {
+    const normalized = sectionName === 'outline' ? 'outline' : 'explorer';
+    const section = normalized === 'outline' ? outlineSection : explorerSection;
+    const toggle = normalized === 'outline' ? outlineSectionToggle : explorerSectionToggle;
+    const arrow = normalized === 'outline' ? outlineSectionArrow : explorerSectionArrow;
+    if (!section || !toggle || !arrow) {
+        return;
+    }
+    const nextCollapsed = Boolean(collapsed);
+    section.classList.toggle('collapsed', nextCollapsed);
+    toggle.setAttribute('aria-expanded', String(!nextCollapsed));
+    arrow.textContent = nextCollapsed ? '▸' : '▾';
+    scheduleProjectPersistence();
+}
+
+function toggleSidebarSection(sectionName) {
+    const section = sectionName === 'outline' ? outlineSection : explorerSection;
+    if (!section) {
+        return;
+    }
+    setSidebarSectionCollapsed(sectionName, !section.classList.contains('collapsed'));
+    updateSidebarSplitHandleVisibility();
+}
+
+function closeSidebarContextMenu() {
+    sidebarContextAction = null;
+    if (!sidebarContextMenu || !sidebarContextActionBtn) {
+        return;
+    }
+    sidebarContextMenu.classList.remove('open');
+    sidebarContextMenu.style.left = '';
+    sidebarContextMenu.style.top = '';
+    sidebarContextActionBtn.textContent = '';
+}
+
+function openSidebarContextMenu(clientX, clientY, action) {
+    if (!sidebarContextMenu || !sidebarContextActionBtn || !action) {
+        return;
+    }
+    sidebarContextAction = action;
+    sidebarContextActionBtn.textContent = action.label || 'Delete';
+    sidebarContextActionBtn.classList.toggle('danger', action.danger !== false);
+    sidebarContextMenu.classList.add('open');
+    sidebarContextMenu.style.left = `${clientX}px`;
+    sidebarContextMenu.style.top = `${clientY}px`;
+    const rect = sidebarContextMenu.getBoundingClientRect();
+    const nextLeft = Math.max(8, Math.min(clientX, window.innerWidth - rect.width - 8));
+    const nextTop = Math.max(8, Math.min(clientY, window.innerHeight - rect.height - 8));
+    sidebarContextMenu.style.left = `${nextLeft}px`;
+    sidebarContextMenu.style.top = `${nextTop}px`;
+}
+
+function workspaceCreationBaseDirectory() {
+    const selectedPath = trimMaybeString(selectedExplorerPath);
+    if (selectedPath === EXPLORER_ROOT_SELECTION) {
+        return '';
+    }
+    if (selectedPath) {
+        const selectedEntry = projectFs.getFileEntry(selectedPath);
+        if (selectedEntry?.sourceKind === 'workspace') {
+            return parentDirectory(selectedPath);
+        }
+        const hasFolder = projectFs.listFolders().includes(selectedPath)
+            || projectFs.listFileEntries().some((entry) => entry.path.startsWith(`${selectedPath}/`));
+        if (hasFolder) {
+            return selectedPath;
+        }
+    }
+    const activePath = projectFs.getActiveDocumentPath();
+    const activeEntry = projectFs.getFileEntry(activePath);
+    if (activeEntry?.sourceKind === 'workspace') {
+        return parentDirectory(activePath);
+    }
+    return '';
+}
+
+function defaultNewWorkspaceFilePath() {
+    const baseDir = workspaceCreationBaseDirectory();
+    return baseDir ? `${baseDir}/NewFile.mo` : 'NewFile.mo';
+}
+
+function defaultNewWorkspaceFolderPath() {
+    const baseDir = workspaceCreationBaseDirectory();
+    return baseDir ? `${baseDir}/NewFolder` : 'NewFolder';
+}
+
+function resolveWorkspaceCreationPath(inputPath) {
+    const requestedPath = trimMaybeString(inputPath);
+    if (!requestedPath) {
+        return '';
+    }
+    const normalizedRequestedPath = normalizePath(requestedPath);
+    if (!normalizedRequestedPath) {
+        return '';
+    }
+    if (normalizedRequestedPath.includes('/')) {
+        return normalizedRequestedPath;
+    }
+    const baseDir = workspaceCreationBaseDirectory();
+    return baseDir ? `${baseDir}/${normalizedRequestedPath}` : normalizedRequestedPath;
+}
+
+function defaultWorkspaceFileContent(path) {
+    if (!String(path || '').endsWith('.mo')) {
+        return '';
+    }
+    if (baseName(path) === 'package.mo') {
+        const packagePath = parentDirectory(path);
+        const packageName = baseName(packagePath);
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(packageName)) {
+            return '';
+        }
+        const enclosingPath = parentDirectory(packagePath);
+        const withinLine = enclosingPath ? `within ${enclosingPath};\n` : 'within ;\n';
+        return `${withinLine}package ${packageName}\nend ${packageName};\n`;
+    }
+    const stem = baseName(path).replace(/\.[^.]+$/, '');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(stem)) {
+        return '';
+    }
+    return `model ${stem}\nend ${stem};\n`;
+}
+
+function currentExplorerSelectionPath() {
+    const selectedPath = trimMaybeString(selectedExplorerPath);
+    if (selectedPath === EXPLORER_ROOT_SELECTION) {
+        return '';
+    }
+    return selectedPath
+        || (hasOpenEditorPane() ? projectFs.getActiveDocumentPath() : '');
+}
+
+function setSelectedExplorerPath(path) {
+    selectedExplorerPath = trimMaybeString(path);
+    updateExplorerActiveSelection(currentExplorerSelectionPath());
+}
+
+function expandWorkspaceExplorerPath(path, includeLeaf = false) {
+    const parts = pathParts(path);
+    let prefix = '';
+    const limit = includeLeaf ? parts.length : Math.max(0, parts.length - 1);
+    for (let index = 0; index < limit; index += 1) {
+        prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
+        explorerCollapsedNodes.delete(`explorer:${prefix}`);
+    }
+}
+
+function pruneOpenDocuments(predicate, fallbackPath = projectFs.getActiveDocumentPath()) {
+    syncOpenDocuments(openDocumentPaths.filter((path) => !predicate(path)), fallbackPath);
+}
+
+function closeTitlebarMenu() {
+    setFileMenuOpen(false);
+}
+
+function toggleFileMenu() {
+    if (!fileMenuPanel) {
+        return;
+    }
+    setFileMenuOpen(!fileMenuPanel.classList.contains('open'));
+}
+
+window.closeTitlebarMenu = closeTitlebarMenu;
+window.openPackageArchivePicker = function() {
+    closeTitlebarMenu();
+    packageArchiveInput?.click();
+};
+window.loadPackageArchiveInput = async function(input) {
+    const file = input?.files?.[0];
+    if (!file) {
+        return;
+    }
+    try {
+        if (typeof window.loadPackageArchiveFile !== 'function') {
+            throw new Error('Package archive loader is unavailable.');
+        }
+        setTerminalOutput(`Loading package archive ${file.name}...`);
+        await window.loadPackageArchiveFile(file);
+    } catch (error) {
+        const message = error?.message || String(error);
+        setTerminalOutput(`Failed to load package archive: ${message}`);
+        alert(`Failed to load package archive: ${message}`);
+    } finally {
+        if (input) {
+            input.value = '';
+        }
+    }
+};
+
 const resultsPanelController = createResultsPanelController({
     root: document.getElementById('simPlot'),
+    tabsRoot: document.getElementById('simRunTabs'),
     projectFs,
     projectInterface,
+    onActivateRun(kind) {
+        if (kind === 'simulate') {
+            window.switchRightTab('simulate');
+        }
+    },
     onStatus(message, tone) {
         const statusEl = document.getElementById('simStatus');
         if (!statusEl) return;
@@ -68,14 +1012,1386 @@ const resultsPanelController = createResultsPanelController({
             ...simResultsPanelState,
             ...(nextState || {}),
         };
+        scheduleProjectPersistence();
     },
 });
+
+function currentResultsModel() {
+    return trimMaybeString(window.selectedModel || currentSimulationModel());
+}
+
+function hasOpenEditorPane() {
+    return openDocumentPaths.length > 0;
+}
+
+function hasSimulationOutputPane() {
+    return Boolean(resultsPanelController.getSimulationRun(currentResultsModel()));
+}
+
+function hasCodegenOutputPane() {
+    return Boolean(activeCodegenRun());
+}
+
+function setActiveRightTabState(tabName) {
+    window.activeRightTab = tabName === 'codegen' ? 'codegen' : tabName === 'simulate' ? 'simulate' : '';
+    document.getElementById('simTab').classList.toggle('active', window.activeRightTab === 'simulate');
+    document.getElementById('codegenTab').classList.toggle('active', window.activeRightTab === 'codegen');
+}
+
+function updateWorkbenchPaneVisibility() {
+    const nextLeftArea = document.querySelector('.left-area');
+    const nextResizeHandleH = document.getElementById('resizeHandleH');
+    const nextRightPanel = document.getElementById('rightPanel');
+    const nextWorkbenchTop = document.querySelector('.workbench-top') || document.querySelector('.main-container');
+    if (!nextLeftArea || !nextResizeHandleH || !nextRightPanel || !nextWorkbenchTop) {
+        return;
+    }
+    const showEditor = editorPaneVisible && hasOpenEditorPane();
+    const showOutput = Boolean(window.activeRightTab);
+    nextLeftArea.classList.toggle('pane-hidden', !showEditor);
+    nextRightPanel.classList.toggle('pane-hidden', !showOutput);
+    nextResizeHandleH.classList.toggle('pane-hidden', !(showEditor && showOutput));
+    nextWorkbenchTop.dataset.layout = showEditor && showOutput
+        ? 'split'
+        : showEditor
+            ? 'editor'
+            : showOutput
+            ? 'output'
+                : 'empty';
+    syncWorkbenchPaneButtons();
+}
+
+function activeResultsSettingsTrigger() {
+    return document.querySelector('#simPlot .rumoca-results-header-button');
+}
+
+function refreshResultsWindowChrome() {
+    const hasRun = Boolean(resultsPanelController.getSimulationRun(currentResultsModel()));
+    const hasCodegenRun = Boolean(activeCodegenRun());
+    if (outputTabsRoot) {
+        outputTabsRoot.dataset.activePane = window.activeRightTab === 'codegen'
+            ? 'codegen'
+            : window.activeRightTab === 'simulate'
+                ? 'simulate'
+                : '';
+    }
+    renderCodegenRunTabs();
+    if (resultsSettingsBtn) {
+        resultsSettingsBtn.hidden = window.activeRightTab !== 'simulate';
+        resultsSettingsBtn.disabled = !hasRun;
+        resultsSettingsBtn.setAttribute('aria-disabled', String(!hasRun));
+    }
+    if (resultsCloseBtn) {
+        const canClose = window.activeRightTab === 'codegen' ? hasCodegenRun : hasRun;
+        resultsCloseBtn.hidden = !window.activeRightTab;
+        resultsCloseBtn.disabled = !canClose;
+        resultsCloseBtn.setAttribute('aria-disabled', String(!canClose));
+        resultsCloseBtn.title = window.activeRightTab === 'codegen'
+            ? 'Close active code generation output'
+            : 'Close active results window';
+        resultsCloseBtn.setAttribute(
+            'aria-label',
+            window.activeRightTab === 'codegen'
+                ? 'Close active code generation output'
+                : 'Close active results window',
+        );
+    }
+    updateWorkbenchPaneVisibility();
+}
+
+window.openActiveResultsSettings = function() {
+    const trigger = activeResultsSettingsTrigger();
+    if (trigger instanceof HTMLElement) {
+        trigger.click();
+    }
+};
+
+window.closeActiveResultsRun = function() {
+    if (window.activeRightTab === 'codegen') {
+        closeCodegenRun(activeCodegenRunId);
+        return;
+    }
+    resultsPanelController.closeActiveRun(currentResultsModel());
+    refreshResultsWindowChrome();
+};
+
+if (simRunTabs) {
+    const runTabsObserver = new MutationObserver(() => {
+        refreshResultsWindowChrome();
+    });
+    runTabsObserver.observe(simRunTabs, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+    });
+}
+
 void resultsPanelController.renderModel('');
+refreshResultsWindowChrome();
+refreshFileRunSettingsButton();
+
+function addCodegenRun(run) {
+    codegenRuns.push(run);
+    activeCodegenRunId = run.id;
+    renderCodegenRunTabs();
+    showActiveCodegenRun();
+}
+
+function closeCodegenRun(runId) {
+    const nextRunId = trimMaybeString(runId);
+    if (!nextRunId) {
+        return;
+    }
+    const closedIndex = codegenRuns.findIndex((run) => run.id === nextRunId);
+    if (closedIndex < 0) {
+        return;
+    }
+    codegenRuns.splice(closedIndex, 1);
+    if (activeCodegenRunId === nextRunId) {
+        const fallback = codegenRuns[Math.max(0, closedIndex - 1)] || codegenRuns[closedIndex] || null;
+        activeCodegenRunId = fallback?.id || '';
+    }
+    if (!activeCodegenRunId) {
+        setCodegenOutput('', 'plaintext');
+    } else if (window.activeRightTab === 'codegen') {
+        showActiveCodegenRun();
+    }
+    refreshCodegenTemplateSummary();
+    refreshFileRunSettingsButton();
+    refreshResultsWindowChrome();
+    scheduleProjectPersistence();
+}
+
+function clearCodegenRuns() {
+    codegenRuns = [];
+    activeCodegenRunId = '';
+    setCodegenOutput('', 'plaintext');
+    refreshCodegenTemplateSummary();
+    refreshResultsWindowChrome();
+}
+
+function editorPaneEmptyElement(paneId) {
+    return normalizeEditorPaneId(paneId) === 'secondary' ? secondaryEditorEmpty : primaryEditorEmpty;
+}
+
+function paneFallbackPathAfterClosing(paneId, path) {
+    const pane = getEditorPane(paneId);
+    const nextPath = trimMaybeString(path);
+    const remaining = pane.paths.filter((candidate) => candidate !== nextPath);
+    if (remaining.length === 0) {
+        return '';
+    }
+    const closedIndex = Math.max(0, pane.paths.indexOf(nextPath));
+    return remaining[Math.min(closedIndex, remaining.length - 1)] || '';
+}
+
+function setEditorPaneSplit(split) {
+    editorPaneSplit = split === 'horizontal' ? 'horizontal' : split === 'vertical' ? 'vertical' : 'single';
+    if (editorPaneArea) {
+        editorPaneArea.dataset.split = editorPaneSplit;
+    }
+    const showSecondary = editorPaneSplit !== 'single';
+    secondaryEditorStack?.classList.toggle('pane-hidden', !showSecondary);
+    editorSplitHandle?.classList.toggle('pane-hidden', !showSecondary);
+    if (!showSecondary) {
+        primaryEditorStack.style.width = '';
+        primaryEditorStack.style.height = '';
+    } else if (editorPaneSplit === 'horizontal') {
+        primaryEditorStack.style.width = '';
+    } else {
+        primaryEditorStack.style.height = '';
+    }
+    primaryEditorStack?.classList.toggle('active', activeEditorPaneId === 'primary');
+    secondaryEditorStack?.classList.toggle('active', activeEditorPaneId === 'secondary');
+}
+
+function refreshEditorPaneEmptyState(paneId) {
+    const pane = getEditorPane(paneId);
+    const emptyEl = editorPaneEmptyElement(paneId);
+    if (!pane?.editor || !emptyEl) {
+        return;
+    }
+    const isEmpty = pane.paths.length === 0 || !trimMaybeString(pane.activePath);
+    pane.stackEl?.classList.toggle('empty', isEmpty);
+    emptyEl.hidden = !isEmpty;
+    const container = document.getElementById(pane.editorElId);
+    if (container) {
+        container.hidden = isEmpty;
+    }
+}
+
+function persistActivePaneDocument() {
+    const pane = getEditorPane(activeEditorPaneId);
+    const activePath = trimMaybeString(pane?.activePath);
+    if (!activePath || typeof pane?.editor?.getValue !== 'function') {
+        return;
+    }
+    if (typeof pane.editor.saveViewState === 'function') {
+        editorViewStates.set(activePath, pane.editor.saveViewState());
+    }
+    projectFs.setFile(activePath, pane.editor.getValue());
+    projectFs.activateDocument(activePath);
+}
+
+function setActiveEditorPane(
+    paneId,
+    { focusEditor = false, refreshNavigation = true, outlineDelayMs = 0, persistCurrent = true } = {},
+) {
+    const nextPane = getEditorPane(paneId);
+    if (!nextPane?.editor) {
+        return;
+    }
+    if (persistCurrent) {
+        persistActivePaneDocument();
+    }
+    activeEditorPaneId = nextPane.id;
+    editor = nextPane.editor;
+    window.editor = nextPane.editor;
+    if (trimMaybeString(nextPane.activePath)) {
+        projectFs.activateDocument(nextPane.activePath);
+    }
+    setEditorPaneSplit(editorPaneSplit);
+    if (refreshNavigation) {
+        refreshActiveDocumentNavigation({ outlineDelayMs });
+    }
+    applyActiveEditorLockState();
+    if (focusEditor && typeof nextPane.editor.focus === 'function') {
+        nextPane.editor.focus();
+    }
+}
+
+function canCloseProjectDocument(path = projectFs.getActiveDocumentPath(), paneId = activeEditorPaneId) {
+    const pane = getEditorPane(paneId);
+    const nextPath = trimMaybeString(path);
+    return Boolean(nextPath && pane?.paths.includes(nextPath));
+}
+
+function collapseSingleEmptyPaneIfPossible() {
+    const primaryHasFiles = editorPanes.primary.paths.length > 0;
+    const secondaryHasFiles = editorPanes.secondary.paths.length > 0;
+    if (primaryHasFiles || secondaryHasFiles) {
+        return;
+    }
+    setEditorPaneSplit('single');
+    activeEditorPaneId = 'primary';
+}
+
+async function closeProjectDocument(path = projectFs.getActiveDocumentPath(), paneId = activeEditorPaneId) {
+    const pane = getEditorPane(paneId);
+    const nextPath = trimMaybeString(path);
+    if (!pane || !nextPath || !pane.paths.includes(nextPath)) {
+        return;
+    }
+    const fallbackPath = paneFallbackPathAfterClosing(pane.id, nextPath);
+    editorViewStates.delete(nextPath);
+    if (pane.id === activeEditorPaneId && pane.activePath === nextPath) {
+        persistActivePaneDocument();
+    }
+    pane.paths = pane.paths.filter((candidate) => candidate !== nextPath);
+    pane.activePath = fallbackPath;
+    rebuildOpenDocumentPaths();
+    if (fallbackPath) {
+        await openProjectDocument(fallbackPath, {
+            paneId: pane.id,
+            focusEditor: pane.id === activeEditorPaneId,
+            forceReload: true,
+        });
+    } else {
+        refreshEditorPaneEmptyState(pane.id);
+        collapseSingleEmptyPaneIfPossible();
+        renderEditorTabs();
+        refreshWorkbenchNavigation();
+        scheduleProjectPersistence();
+    }
+}
+
+window.closeActiveProjectDocument = () => closeProjectDocument(projectFs.getActiveDocumentPath(), activeEditorPaneId);
+window.closeActivePaneDocument = (paneId) => closeProjectDocument(getEditorPane(paneId)?.activePath || '', paneId);
+
+function activeDocumentEntry(path = projectFs.getActiveDocumentPath()) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return null;
+    }
+    return projectFs.getFileEntry(nextPath);
+}
+
+function readDocumentLockStates() {
+    const raw = projectFs.getEditorState()?.documentLockStates;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return {};
+    }
+    const next = {};
+    for (const [path, locked] of Object.entries(raw)) {
+        const normalizedPath = trimMaybeString(path);
+        if (!normalizedPath || typeof locked !== 'boolean') {
+            continue;
+        }
+        next[normalizedPath] = locked;
+    }
+    return next;
+}
+
+function readFolderLockStates() {
+    const raw = projectFs.getEditorState()?.folderLockStates;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return {};
+    }
+    const next = {};
+    for (const [path, locked] of Object.entries(raw)) {
+        const normalizedPath = trimMaybeString(path);
+        if (!normalizedPath || typeof locked !== 'boolean') {
+            continue;
+        }
+        next[normalizedPath] = locked;
+    }
+    return next;
+}
+
+function defaultLockStateForEntry(entry) {
+    return entry?.sourceKind === 'packageArchive';
+}
+
+function inheritedFolderLock(path) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return null;
+    }
+    const folderLockStates = readFolderLockStates();
+    let bestPath = '';
+    let bestValue = null;
+    for (const [folderPath, locked] of Object.entries(folderLockStates)) {
+        if (nextPath === folderPath || nextPath.startsWith(`${folderPath}/`)) {
+            if (folderPath.length > bestPath.length) {
+                bestPath = folderPath;
+                bestValue = locked;
+            }
+        }
+    }
+    return typeof bestValue === 'boolean' ? bestValue : null;
+}
+
+function isDocumentLocked(path = projectFs.getActiveDocumentPath()) {
+    const nextPath = trimMaybeString(path);
+    const entry = activeDocumentEntry(nextPath);
+    const lockStates = readDocumentLockStates();
+    if (Object.prototype.hasOwnProperty.call(lockStates, nextPath)) {
+        return Boolean(lockStates[nextPath]);
+    }
+    const inherited = inheritedFolderLock(nextPath);
+    if (typeof inherited === 'boolean') {
+        return inherited;
+    }
+    return defaultLockStateForEntry(entry);
+}
+
+function setDocumentLocked(path, locked) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return;
+    }
+    const existingState = projectFs.getEditorState() || {};
+    projectFs.setEditorState({
+        ...existingState,
+        documentLockStates: {
+            ...readDocumentLockStates(),
+            [nextPath]: Boolean(locked),
+        },
+    });
+}
+
+function isFolderLocked(path, entries = projectFs.listFileEntries()) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return false;
+    }
+    const folderLockStates = readFolderLockStates();
+    if (Object.prototype.hasOwnProperty.call(folderLockStates, nextPath)) {
+        return Boolean(folderLockStates[nextPath]);
+    }
+    const descendants = entries.filter(
+        (entry) => entry.path === nextPath || entry.path.startsWith(`${nextPath}/`),
+    );
+    if (descendants.length === 0) {
+        return false;
+    }
+    return descendants.every((entry) => isDocumentLocked(entry.path));
+}
+
+function setFolderLocked(path, locked) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return;
+    }
+    const existingState = projectFs.getEditorState() || {};
+    const documentLockStates = readDocumentLockStates();
+    for (const candidatePath of Object.keys(documentLockStates)) {
+        if (candidatePath === nextPath || candidatePath.startsWith(`${nextPath}/`)) {
+            delete documentLockStates[candidatePath];
+        }
+    }
+    const folderLockStates = readFolderLockStates();
+    for (const candidatePath of Object.keys(folderLockStates)) {
+        if (candidatePath.startsWith(`${nextPath}/`)) {
+            delete folderLockStates[candidatePath];
+        }
+    }
+    folderLockStates[nextPath] = Boolean(locked);
+    projectFs.setEditorState({
+        ...existingState,
+        documentLockStates,
+        folderLockStates,
+    });
+}
+
+function applyActiveEditorLockState() {
+    if (!editor) {
+        return;
+    }
+    const entry = activeDocumentEntry();
+    const locked = isDocumentLocked(entry?.path || '');
+    if (typeof editor.updateOptions === 'function') {
+        editor.updateOptions({ readOnly: locked });
+    }
+}
+
+function toggleDocumentLock(path = projectFs.getActiveDocumentPath()) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return;
+    }
+    setDocumentLocked(nextPath, !isDocumentLocked(nextPath));
+    applyActiveEditorLockState();
+    refreshWorkbenchNavigation();
+    scheduleProjectPersistence();
+}
+
+function toggleFolderLock(path) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return;
+    }
+    setFolderLocked(nextPath, !isFolderLocked(nextPath));
+    applyActiveEditorLockState();
+    refreshWorkbenchNavigation();
+    scheduleProjectPersistence();
+}
+
+window.toggleActiveEditorLock = function() {
+    toggleDocumentLock(projectFs.getActiveDocumentPath());
+};
+
+function appendSidebarEmpty(container, message) {
+    container.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'sidebar-empty';
+    empty.textContent = message;
+    container.appendChild(empty);
+}
+
+function appendSidebarRow(container, {
+    nodeId = '',
+    ancestorIds = [],
+    kind = 'file',
+    label,
+    path = '',
+    depth = 0,
+    meta = '',
+    active = false,
+    onClick = null,
+    sourceKind = 'workspace',
+    sourceBadge = '',
+    hasChildren = false,
+    collapsed = false,
+    onContextMenu = null,
+    action = null,
+    hidden = false,
+}) {
+    const shell = document.createElement('div');
+    shell.className = `sidebar-row-shell${active ? ' active' : ''}`;
+    if (nodeId) {
+        shell.dataset.nodeId = nodeId;
+    }
+    if (Array.isArray(ancestorIds) && ancestorIds.length > 0) {
+        shell.dataset.ancestorIds = ancestorIds.join('|');
+    }
+    shell.dataset.hasChildren = String(Boolean(hasChildren));
+    shell.hidden = Boolean(hidden);
+    if (path) {
+        shell.dataset.path = path;
+    }
+
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `sidebar-row${kind === 'dir' ? ' dir' : ''}${sourceKind === 'packageArchive' ? ' package-archive' : ''}${active ? ' active' : ''}`;
+    row.style.paddingLeft = `${12 + depth * 14}px`;
+    if (path) {
+        row.dataset.path = path;
+    }
+    if (typeof onClick === 'function') {
+        row.addEventListener('click', onClick);
+    } else {
+        row.setAttribute('aria-disabled', 'true');
+    }
+    if (typeof onContextMenu === 'function') {
+        row.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onContextMenu(event);
+        });
+    }
+
+    const expander = document.createElement('span');
+    expander.className = 'expander';
+    expander.textContent = hasChildren ? (collapsed ? '▸' : '▾') : '';
+    row.appendChild(expander);
+
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    row.appendChild(icon);
+
+    const text = document.createElement('span');
+    text.className = 'label';
+    text.textContent = label;
+    row.appendChild(text);
+
+    if (meta) {
+        const metaNode = document.createElement('span');
+        metaNode.className = 'meta';
+        metaNode.textContent = meta;
+        row.appendChild(metaNode);
+    }
+
+    if (sourceBadge) {
+        const badgeNode = document.createElement('span');
+        badgeNode.className = 'source-badge';
+        badgeNode.textContent = sourceBadge;
+        row.appendChild(badgeNode);
+    }
+
+    shell.appendChild(row);
+
+    if (action && typeof action.run === 'function') {
+        const actionBtn = document.createElement('button');
+        actionBtn.type = 'button';
+        actionBtn.className = `sidebar-row-action${action.locked ? ' locked' : ' unlocked'}`;
+        actionBtn.textContent = action.icon || (action.locked ? '🔒' : '🔓');
+        actionBtn.title = action.title || '';
+        actionBtn.setAttribute('aria-label', action.ariaLabel || action.title || '');
+        actionBtn.setAttribute('aria-pressed', String(Boolean(action.locked)));
+        actionBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            action.run();
+        });
+        shell.appendChild(actionBtn);
+    }
+
+    container.appendChild(shell);
+}
+
+function createSidebarNode(id, label, {
+    kind = 'dir',
+    path = '',
+    meta = '',
+    sourceKind = 'workspace',
+    sourceBadge = '',
+    run = null,
+    active = false,
+    contextAction = null,
+    action = null,
+} = {}) {
+    return {
+        id,
+        label,
+        kind,
+        path,
+        meta,
+        sourceKind,
+        sourceBadge,
+        run,
+        active,
+        contextAction,
+        action,
+        children: [],
+    };
+}
+
+function ensureSidebarBranch(nodes, id, label, options = {}) {
+    let existing = nodes.find((node) => node.id === id);
+    if (existing) {
+        if (options.meta) {
+            existing.meta = options.meta;
+        }
+        if (options.sourceKind) {
+            existing.sourceKind = options.sourceKind;
+        }
+        if (options.sourceBadge) {
+            existing.sourceBadge = options.sourceBadge;
+        }
+        if (options.contextAction) {
+            existing.contextAction = options.contextAction;
+        }
+        if (options.action) {
+            existing.action = options.action;
+        }
+        return existing;
+    }
+    existing = createSidebarNode(id, label, { ...options, kind: 'dir' });
+    nodes.push(existing);
+    return existing;
+}
+
+function collectBranchKeys(nodes, sink = []) {
+    for (const node of nodes) {
+        if (Array.isArray(node.children) && node.children.length > 0) {
+            sink.push(node.id);
+            collectBranchKeys(node.children, sink);
+        }
+    }
+    return sink;
+}
+
+function allBranchesCollapsed(branchKeys, collapsedKeys) {
+    return Array.isArray(branchKeys)
+        && branchKeys.length > 0
+        && branchKeys.every((key) => collapsedKeys.has(key));
+}
+
+function updateTreeToggleButton(button, branchKeys, collapsedKeys, label) {
+    if (!button) {
+        return;
+    }
+    const hasBranches = Array.isArray(branchKeys) && branchKeys.length > 0;
+    const expandMode = hasBranches && allBranchesCollapsed(branchKeys, collapsedKeys);
+    const nextLabel = hasBranches
+        ? `${expandMode ? 'Expand' : 'Collapse'} all`
+        : `${label} empty`;
+    button.textContent = '';
+    button.dataset.mode = expandMode ? 'expand' : 'collapse';
+    button.disabled = !hasBranches;
+    if (!hasBranches) {
+        button.title = `No ${label.toLowerCase()} items to toggle`;
+        button.setAttribute('aria-label', button.title);
+        return;
+    }
+    button.title = `${nextLabel} ${label.toLowerCase()} items`;
+    button.setAttribute('aria-label', button.title);
+    button.dataset.mode = expandMode ? 'expand' : 'collapse';
+}
+
+function renderSidebarTreeNodes(container, nodes, {
+    depth = 0,
+    collapsedKeys = new Set(),
+    onToggle = null,
+    ancestorIds = [],
+} = {}) {
+    for (const node of nodes) {
+        const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+        const isCollapsed = hasChildren && collapsedKeys.has(node.id);
+        const hidden = ancestorIds.some((ancestorId) => collapsedKeys.has(ancestorId));
+        appendSidebarRow(container, {
+            nodeId: node.id,
+            ancestorIds,
+            kind: node.kind || (hasChildren ? 'dir' : 'file'),
+            label: node.label,
+            path: node.path || '',
+            depth,
+            meta: node.meta,
+            active: Boolean(node.active),
+            onClick: node.kind === 'dir'
+                ? () => {
+                    if (node.path) {
+                        setSelectedExplorerPath(node.path);
+                    }
+                    if (hasChildren) {
+                        onToggle?.(node.id);
+                    }
+                }
+                : (typeof node.run === 'function'
+                    ? () => {
+                        if (node.path) {
+                            setSelectedExplorerPath(node.path);
+                        }
+                        node.run();
+                    }
+                    : null),
+            sourceKind: node.sourceKind || 'workspace',
+            sourceBadge: node.sourceBadge || '',
+            hasChildren,
+            collapsed: isCollapsed,
+            onContextMenu: node.contextAction
+                ? (event) => {
+                    openSidebarContextMenu(event.clientX, event.clientY, node.contextAction);
+                }
+                : null,
+            action: node.action || null,
+            hidden,
+        });
+        if (hasChildren) {
+            renderSidebarTreeNodes(container, node.children, {
+                depth: depth + 1,
+                collapsedKeys,
+                onToggle,
+                ancestorIds: ancestorIds.concat(node.id),
+            });
+        }
+    }
+}
+
+function updateRenderedTreeVisibility(container, collapsedKeys = new Set()) {
+    if (!container) {
+        return;
+    }
+    for (const shell of container.querySelectorAll('.sidebar-row-shell')) {
+        const ancestorIds = String(shell.dataset.ancestorIds || '')
+            .split('|')
+            .map((value) => value.trim())
+            .filter(Boolean);
+        shell.hidden = ancestorIds.some((ancestorId) => collapsedKeys.has(ancestorId));
+        if (shell.dataset.hasChildren !== 'true') {
+            continue;
+        }
+        const expander = shell.querySelector('.expander');
+        if (!expander) {
+            continue;
+        }
+        expander.textContent = collapsedKeys.has(shell.dataset.nodeId) ? '▸' : '▾';
+    }
+}
+
+async function deleteExplorerFolder(path) {
+    closeSidebarContextMenu();
+    if (!window.confirm(`Delete folder "${path}"?`)) {
+        return;
+    }
+    const removedPackageArchiveContent = projectFs.listFileEntries().some(
+        (entry) => entry.sourceKind === 'packageArchive'
+            && (entry.path === path || entry.path.startsWith(`${path}/`)),
+    );
+    const previousActivePath = projectFs.getActiveDocumentPath();
+    const removed = projectFs.removeFolder(path);
+    if (!removed) {
+        return;
+    }
+    if (selectedExplorerPath === path || selectedExplorerPath.startsWith(`${path}/`)) {
+        selectedExplorerPath = '';
+    }
+    if (removedPackageArchiveContent) {
+        await packageArchiveController.restoreProjectPackageArchives();
+    }
+    pruneOpenDocuments(
+        (candidate) => candidate === path || candidate.startsWith(`${path}/`),
+        projectFs.getActiveDocumentPath(),
+    );
+    const nextActivePath = projectFs.getActiveDocumentPath();
+    if (previousActivePath !== nextActivePath || !projectFs.getFileContent(previousActivePath)) {
+        await openProjectDocument(nextActivePath, { focusEditor: false, forceReload: true });
+        return;
+    }
+    refreshWorkbenchNavigation();
+    scheduleProjectPersistence();
+}
+
+async function deleteExplorerFile(path) {
+    closeSidebarContextMenu();
+    if (!window.confirm(`Delete file "${path}"?`)) {
+        return;
+    }
+    const removedPackageArchiveContent = projectFs.listFileEntries().some(
+        (entry) => entry.sourceKind === 'packageArchive' && entry.path === path,
+    );
+    const previousActivePath = projectFs.getActiveDocumentPath();
+    const removed = projectFs.removeFile(path);
+    if (!removed) {
+        return;
+    }
+    if (selectedExplorerPath === path) {
+        selectedExplorerPath = '';
+    }
+    if (removedPackageArchiveContent) {
+        await packageArchiveController.restoreProjectPackageArchives();
+    }
+    pruneOpenDocuments((candidate) => candidate === path, projectFs.getActiveDocumentPath());
+    const nextActivePath = projectFs.getActiveDocumentPath();
+    if (previousActivePath !== nextActivePath || !projectFs.getFileContent(previousActivePath)) {
+        await openProjectDocument(nextActivePath, { focusEditor: false, forceReload: true });
+        return;
+    }
+    refreshWorkbenchNavigation();
+    scheduleProjectPersistence();
+}
+
+function createExplorerFolderAction(path) {
+    return {
+        label: 'Delete Folder',
+        danger: true,
+        run: async () => {
+            await deleteExplorerFolder(path);
+        },
+    };
+}
+
+function createExplorerFileAction(path) {
+    return {
+        label: 'Delete File',
+        danger: true,
+        run: async () => {
+            await deleteExplorerFile(path);
+        },
+    };
+}
+
+function explorerLockAction(path, sourceKind) {
+    const locked = isDocumentLocked(path);
+    const imported = sourceKind === 'packageArchive';
+    return {
+        locked,
+        title: imported
+            ? (locked
+                ? 'Imported file is locked. Click to unlock editing for this file.'
+                : 'Imported file is unlocked. Click to lock editing for this file.')
+            : (locked
+                ? 'File is locked. Click to unlock editing for this file.'
+                : 'File is unlocked. Click to lock editing for this file.'),
+        ariaLabel: imported
+            ? (locked ? 'Unlock imported file' : 'Lock imported file')
+            : (locked ? 'Unlock file' : 'Lock file'),
+        run: () => {
+            toggleDocumentLock(path);
+        },
+    };
+}
+
+function explorerFolderLockAction(path, sourceKind, locked) {
+    const imported = sourceKind === 'packageArchive';
+    return {
+        locked: Boolean(locked),
+        title: imported
+            ? (locked
+                ? 'Imported folder is locked. Click to unlock editing for files in this folder.'
+                : 'Imported folder is unlocked. Click to lock editing for files in this folder.')
+            : (locked
+                ? 'Folder is locked. Click to unlock editing for files in this folder.'
+                : 'Folder is unlocked. Click to lock editing for files in this folder.'),
+        ariaLabel: imported
+            ? (locked ? 'Unlock imported folder' : 'Lock imported folder')
+            : (locked ? 'Unlock folder' : 'Lock folder'),
+        run: () => {
+            toggleFolderLock(path);
+        },
+    };
+}
+
+async function createWorkspaceFileFromExplorer() {
+    closeSidebarContextMenu();
+    const defaultPath = defaultNewWorkspaceFilePath();
+    const requestedPath = resolveWorkspaceCreationPath(
+        window.prompt('New file path', defaultPath) || '',
+    );
+    if (!requestedPath) {
+        return;
+    }
+    try {
+        const existingContent = projectFs.getFileContent(requestedPath);
+        if (typeof existingContent === 'string') {
+            expandWorkspaceExplorerPath(requestedPath);
+            revealExplorerPath(requestedPath);
+            await openProjectDocument(requestedPath, { forceReload: true });
+            return;
+        }
+        const createdPath = projectFs.setFile(
+            requestedPath,
+            defaultWorkspaceFileContent(requestedPath),
+        );
+        expandWorkspaceExplorerPath(createdPath);
+        revealExplorerPath(createdPath);
+        await openProjectDocument(createdPath, { forceReload: true });
+        scheduleProjectPersistence(0);
+    } catch (error) {
+        window.alert(error instanceof Error ? error.message : String(error));
+    }
+}
+
+function createWorkspaceFolderFromExplorer() {
+    closeSidebarContextMenu();
+    const defaultPath = defaultNewWorkspaceFolderPath();
+    const requestedPath = resolveWorkspaceCreationPath(
+        window.prompt('New folder path', defaultPath) || '',
+    );
+    if (!requestedPath) {
+        return;
+    }
+    try {
+        if (projectFs.listFolders().includes(requestedPath)) {
+            expandWorkspaceExplorerPath(requestedPath, true);
+            revealExplorerPath(requestedPath);
+            return;
+        }
+        const createdPath = projectFs.setFolder(requestedPath);
+        expandWorkspaceExplorerPath(createdPath, true);
+        revealExplorerPath(createdPath);
+        scheduleProjectPersistence(0);
+    } catch (error) {
+        window.alert(error instanceof Error ? error.message : String(error));
+    }
+}
+
+function collapseImportedExplorerBranches() {
+    const entries = projectFs.listFileEntries().filter(
+        (entry) => entry.sourceKind === 'packageArchive' && isExplorerTextEntry(entry),
+    );
+    for (const entry of entries) {
+        const parts = pathParts(parentDirectory(entry.path));
+        let prefix = '';
+        for (const part of parts) {
+            prefix = prefix ? `${prefix}/${part}` : part;
+            explorerCollapsedNodes.add(`explorer:${prefix}`);
+        }
+    }
+}
+
+function buildExplorerNodes(folderPaths, entries, activePath) {
+    const rootNodes = [];
+    const folderStats = new Map();
+    const ensureFolderStats = (path) => {
+        const normalized = trimMaybeString(path);
+        if (!normalized) {
+            return null;
+        }
+        if (!folderStats.has(normalized)) {
+            folderStats.set(normalized, {
+                totalFiles: 0,
+                packageArchiveFiles: 0,
+                lockedFiles: 0,
+            });
+        }
+        return folderStats.get(normalized);
+    };
+    const addFolderStats = (path, sourceKind, locked) => {
+        const stats = ensureFolderStats(path);
+        if (!stats) {
+            return;
+        }
+        stats.totalFiles += 1;
+        if (sourceKind === 'packageArchive') {
+            stats.packageArchiveFiles += 1;
+        }
+        if (locked) {
+            stats.lockedFiles += 1;
+        }
+    };
+    const registerFolderPath = (path) => {
+        let prefix = '';
+        for (const part of pathParts(path)) {
+            prefix = prefix ? `${prefix}/${part}` : part;
+            ensureFolderStats(prefix);
+        }
+    };
+    for (const folderPath of folderPaths) {
+        registerFolderPath(folderPath);
+    }
+    for (const entry of entries) {
+        let prefix = '';
+        for (const part of pathParts(parentDirectory(entry.path))) {
+            prefix = prefix ? `${prefix}/${part}` : part;
+            addFolderStats(prefix, entry.sourceKind, isDocumentLocked(entry.path));
+        }
+    }
+    const folderSourceKind = (path) => {
+        const stats = folderStats.get(path);
+        return stats && stats.totalFiles > 0 && stats.packageArchiveFiles === stats.totalFiles
+            ? 'packageArchive'
+            : 'workspace';
+    };
+    const folderLocked = (path) => {
+        const stats = folderStats.get(path);
+        return Boolean(stats && stats.totalFiles > 0 && stats.lockedFiles === stats.totalFiles);
+    }
+    const ensureDirectoryPath = (path) => {
+        const parts = pathParts(path);
+        let currentNodes = rootNodes;
+        let prefix = '';
+        for (const part of parts) {
+            prefix = prefix ? `${prefix}/${part}` : part;
+            const sourceKind = folderSourceKind(prefix);
+            const branch = ensureSidebarBranch(currentNodes, `explorer:${prefix}`, part, {
+                path: prefix,
+                sourceKind,
+                active: prefix === activePath,
+                contextAction: createExplorerFolderAction(prefix),
+                action: explorerFolderLockAction(prefix, sourceKind, folderLocked(prefix)),
+            });
+            currentNodes = branch.children;
+        }
+        return currentNodes;
+    };
+
+    for (const folderPath of folderPaths) {
+        ensureDirectoryPath(folderPath);
+    }
+
+    for (const entry of entries) {
+        const parts = pathParts(entry.path);
+        if (parts.length === 0) {
+            continue;
+        }
+        const currentNodes = ensureDirectoryPath(parentDirectory(entry.path));
+        currentNodes.push(createSidebarNode(`explorer-file:${entry.path}`, parts.at(-1) || entry.path, {
+            kind: 'file',
+            path: entry.path,
+            active: entry.path === activePath,
+            run: () => {
+                void openProjectDocument(entry.path);
+            },
+            contextAction: createExplorerFileAction(entry.path),
+            action: explorerLockAction(entry.path, entry.sourceKind),
+        }));
+    }
+    return rootNodes;
+}
+
+function renderEditorTabsForPane(paneId) {
+    const pane = getEditorPane(paneId);
+    if (!pane?.tabsEl) {
+        return;
+    }
+    pane.tabsEl.innerHTML = '';
+    if (pane.paths.length === 0) {
+        appendSidebarEmpty(pane.tabsEl, 'No open files.');
+        refreshEditorPaneEmptyState(pane.id);
+        return;
+    }
+    for (const path of pane.paths) {
+        const tab = document.createElement('div');
+        tab.className = `editor-tab${path === pane.activePath ? ' active' : ''}`;
+        tab.title = path;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', path === pane.activePath ? 'true' : 'false');
+        tab.draggable = true;
+        tab.dataset.path = path;
+        tab.dataset.paneId = pane.id;
+
+        const tabButton = document.createElement('button');
+        tabButton.type = 'button';
+        tabButton.className = 'editor-tab-button';
+        tabButton.title = path;
+
+        const name = document.createElement('span');
+        name.className = 'tab-name';
+        name.textContent = baseName(path) || path;
+        tabButton.appendChild(name);
+
+        const dir = parentDirectory(path);
+        if (dir) {
+            const pathNode = document.createElement('span');
+            pathNode.className = 'tab-path';
+            pathNode.textContent = dir;
+            tabButton.appendChild(pathNode);
+        }
+
+        tabButton.addEventListener('click', () => {
+            void openProjectDocument(path, { paneId: pane.id });
+        });
+        tab.appendChild(tabButton);
+
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.className = 'editor-tab-close';
+        closeButton.title = 'Close file';
+        closeButton.setAttribute('aria-label', `Close ${baseName(path) || path}`);
+        closeButton.textContent = '✕';
+        closeButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void closeProjectDocument(path, pane.id);
+        });
+        tab.appendChild(closeButton);
+
+        tab.addEventListener('dragstart', (event) => {
+            dragEditorTabState = { path, sourcePaneId: pane.id };
+            tab.classList.add('dragging');
+            event.dataTransfer?.setData('text/plain', JSON.stringify(dragEditorTabState));
+            event.dataTransfer?.setData('application/x-rumoca-editor-tab', JSON.stringify(dragEditorTabState));
+            event.dataTransfer.effectAllowed = 'move';
+            if (editorDropOverlay) {
+                editorDropOverlay.hidden = false;
+            }
+        });
+        tab.addEventListener('dragend', () => {
+            tab.classList.remove('dragging');
+            dragEditorTabState = null;
+            if (editorDropOverlay) {
+                editorDropOverlay.hidden = true;
+            }
+            for (const zone of editorDropZones) {
+                zone.classList.remove('active');
+            }
+        });
+        pane.tabsEl.appendChild(tab);
+    }
+    if (!pane.tabsEl.dataset.dragBound) {
+        pane.tabsEl.addEventListener('dragover', (event) => {
+            if (!dragEditorTabState) {
+                return;
+            }
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+        });
+        pane.tabsEl.addEventListener('drop', async (event) => {
+            if (!dragEditorTabState) {
+                return;
+            }
+            event.preventDefault();
+            await moveEditorTabToPane(dragEditorTabState.path, dragEditorTabState.sourcePaneId, pane.id);
+        });
+        pane.tabsEl.dataset.dragBound = 'true';
+    }
+    refreshEditorPaneEmptyState(pane.id);
+}
+
+function renderEditorTabs() {
+    setEditorPaneSplit(editorPaneSplit);
+    renderEditorTabsForPane('primary');
+    renderEditorTabsForPane('secondary');
+    for (const button of editorCloseButtons) {
+        const paneId = button.dataset.paneId || activeEditorPaneId;
+        const pane = getEditorPane(paneId);
+        const closable = canCloseProjectDocument(pane?.activePath || '', paneId);
+        button.disabled = !closable;
+        button.setAttribute('aria-disabled', String(!closable));
+        button.title = closable ? 'Close active file' : 'No open file';
+    }
+}
+
+function updateExplorerActiveSelection(activePath = '') {
+    if (!explorerTree) {
+        return;
+    }
+    const nextPath = trimMaybeString(activePath);
+    for (const shell of explorerTree.querySelectorAll('.sidebar-row-shell[data-path]')) {
+        shell.classList.toggle('active', nextPath && shell.dataset.path === nextPath);
+    }
+    for (const row of explorerTree.querySelectorAll('.sidebar-row[data-path]')) {
+        const isActive = nextPath && row.dataset.path === nextPath;
+        row.classList.toggle('active', isActive);
+        row.setAttribute('aria-current', isActive ? 'true' : 'false');
+    }
+}
+
+function findExplorerRowByPath(path = '') {
+    const nextPath = trimMaybeString(path);
+    if (!explorerTree || !nextPath) {
+        return null;
+    }
+    for (const row of explorerTree.querySelectorAll('.sidebar-row[data-path]')) {
+        if (row.dataset.path === nextPath) {
+            return row;
+        }
+    }
+    return null;
+}
+
+function revealExplorerPath(path = '') {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return;
+    }
+    setSidebarMode('explorer', { persist: false });
+    setSidebarCollapsed(false);
+    setSelectedExplorerPath(nextPath);
+    renderExplorerPane();
+    updateWorkbenchPaneVisibility();
+    updateMobileAppbarTitle();
+    requestAnimationFrame(() => {
+        let row = findExplorerRowByPath(nextPath);
+        if (!row) {
+            renderExplorerPane();
+            row = findExplorerRowByPath(nextPath);
+        }
+        row?.scrollIntoView({
+            block: 'nearest',
+            inline: 'nearest',
+        });
+    });
+}
+
+function renderExplorerPane() {
+    if (!explorerTree) {
+        return;
+    }
+    const fileEntries = projectFs.listFileEntries().filter(isExplorerTextEntry);
+    const folderEntries = projectFs.listFolders();
+    if (fileEntries.length === 0 && folderEntries.length === 0) {
+        appendSidebarEmpty(explorerTree, 'Project files will appear here.');
+        explorerBranchKeys = [];
+        updateTreeToggleButton(explorerTreeToggleBtn, explorerBranchKeys, explorerCollapsedNodes, 'Explorer');
+        return;
+    }
+
+    const activePath = currentExplorerSelectionPath();
+    explorerTree.innerHTML = '';
+    const nodes = buildExplorerNodes(folderEntries, fileEntries, activePath);
+    explorerBranchKeys = collectBranchKeys(nodes, []);
+    updateTreeToggleButton(explorerTreeToggleBtn, explorerBranchKeys, explorerCollapsedNodes, 'Explorer');
+    renderSidebarTreeNodes(explorerTree, nodes, {
+        collapsedKeys: explorerCollapsedNodes,
+        onToggle(nodeId) {
+            if (explorerCollapsedNodes.has(nodeId)) {
+                explorerCollapsedNodes.delete(nodeId);
+            } else {
+                explorerCollapsedNodes.add(nodeId);
+            }
+            updateRenderedTreeVisibility(explorerTree, explorerCollapsedNodes);
+            updateTreeToggleButton(explorerTreeToggleBtn, explorerBranchKeys, explorerCollapsedNodes, 'Explorer');
+            scheduleProjectPersistence();
+        },
+    });
+    updateExplorerActiveSelection(activePath);
+}
+
+explorerTree?.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    if (target.closest('.sidebar-row') || target.closest('.sidebar-row-action')) {
+        return;
+    }
+    setSelectedExplorerPath(EXPLORER_ROOT_SELECTION);
+    scheduleProjectPersistence();
+});
+
+function refreshActiveDocumentNavigation({ includeOutline = true, outlineDelayMs = 0 } = {}) {
+    renderEditorTabs();
+    updateExplorerActiveSelection(currentExplorerSelectionPath());
+    updateWorkbenchPaneVisibility();
+    updateMobileAppbarTitle();
+    if (!includeOutline) {
+        return;
+    }
+    if (outlineDelayMs > 0) {
+        scheduleOutlineRefresh(outlineDelayMs);
+        return;
+    }
+    void renderOutlinePane();
+}
+
+async function renderOutlinePane() {
+    if (!outlineTree) {
+        return;
+    }
+    const renderId = ++outlineRenderVersion;
+    const activePath = hasOpenEditorPane() ? projectFs.getActiveDocumentPath() : '';
+    if (!activePath || !editor) {
+        appendSidebarEmpty(outlineTree, 'Open a Modelica file to view symbols.');
+        outlineBranchKeys = [];
+        updateTreeToggleButton(outlineTreeToggleBtn, outlineBranchKeys, outlineCollapsedNodes, 'Outline');
+        return;
+    }
+    if (!workerReady) {
+        appendSidebarEmpty(outlineTree, 'Waiting for language worker...');
+        outlineBranchKeys = [];
+        updateTreeToggleButton(outlineTreeToggleBtn, outlineBranchKeys, outlineCollapsedNodes, 'Outline');
+        return;
+    }
+
+    const items = await buildDocumentSymbolTreeNodes();
+    if (renderId !== outlineRenderVersion) {
+        return;
+    }
+    if (items.length === 0) {
+        appendSidebarEmpty(outlineTree, 'No symbols found in the active document.');
+        outlineBranchKeys = [];
+        updateTreeToggleButton(outlineTreeToggleBtn, outlineBranchKeys, outlineCollapsedNodes, 'Outline');
+        return;
+    }
+
+    outlineTree.innerHTML = '';
+    outlineBranchKeys = collectBranchKeys(items, []);
+    updateTreeToggleButton(outlineTreeToggleBtn, outlineBranchKeys, outlineCollapsedNodes, 'Outline');
+    renderSidebarTreeNodes(outlineTree, items, {
+        collapsedKeys: outlineCollapsedNodes,
+        onToggle(nodeId) {
+            if (outlineCollapsedNodes.has(nodeId)) {
+                outlineCollapsedNodes.delete(nodeId);
+            } else {
+                outlineCollapsedNodes.add(nodeId);
+            }
+            updateRenderedTreeVisibility(outlineTree, outlineCollapsedNodes);
+            updateTreeToggleButton(outlineTreeToggleBtn, outlineBranchKeys, outlineCollapsedNodes, 'Outline');
+            scheduleProjectPersistence();
+        },
+    });
+}
+
+function scheduleOutlineRefresh(delayMs = 120) {
+    if (outlineRefreshTimer) {
+        clearTimeout(outlineRefreshTimer);
+    }
+    outlineRefreshTimer = setTimeout(() => {
+        outlineRefreshTimer = null;
+        void renderOutlinePane();
+    }, delayMs);
+}
+
+function refreshWorkbenchNavigation({ includeOutline = true, outlineDelayMs = 0 } = {}) {
+    renderEditorTabs();
+    renderExplorerPane();
+    updateWorkbenchPaneVisibility();
+    updateMobileAppbarTitle();
+    if (!includeOutline) {
+        return;
+    }
+    if (outlineDelayMs > 0) {
+        scheduleOutlineRefresh(outlineDelayMs);
+        return;
+    }
+    void renderOutlinePane();
+}
+
+function inferSourceEditorLanguage(path) {
+    const nextPath = trimMaybeString(path).toLowerCase();
+    if (nextPath.endsWith('.mo')) return 'modelica';
+    if (nextPath.endsWith('.jinja') || nextPath.endsWith('.jinja2')) return 'jinja2';
+    if (nextPath.endsWith('.js') || nextPath.endsWith('.mjs') || nextPath.endsWith('.cjs')) {
+        return 'javascript';
+    }
+    if (nextPath.endsWith('.toml')) return 'toml';
+    if (nextPath.endsWith('.py')) return 'python';
+    if (nextPath.endsWith('.jl')) return 'julia';
+    if (nextPath.endsWith('.json')) return 'json';
+    if (nextPath.endsWith('.xml')) return 'xml';
+    if (nextPath.endsWith('.html')) return 'html';
+    if (nextPath.endsWith('.c') || nextPath.endsWith('.h')) return 'c';
+    return 'plaintext';
+}
+
+function resolveSupportedEditorLanguage(languageId) {
+    const nextId = trimMaybeString(languageId) || 'plaintext';
+    const getLanguages = monacoApi?.languages?.getLanguages;
+    if (typeof getLanguages !== 'function') {
+        return nextId === 'toml' ? 'ini' : nextId;
+    }
+    const supported = getLanguages.call(monacoApi.languages)
+        .some((entry) => trimMaybeString(entry?.id) === nextId);
+    if (supported) {
+        return nextId;
+    }
+    if (nextId === 'toml') {
+        return 'ini';
+    }
+    return 'plaintext';
+}
 
 // Panel references
 const resizeHandleH = document.getElementById('resizeHandleH');
 const leftArea = document.querySelector('.left-area');
+const workbenchTop = document.querySelector('.workbench-top') || document.querySelector('.main-container');
+const workbenchMain = document.querySelector('.workbench-main') || document.querySelector('.main-container');
 let isResizingH = false;
+let isResizingSidebar = false;
+let isResizingSidebarSplit = false;
 
 function isNarrowLayout() {
     return window.innerWidth <= 980;
@@ -88,10 +2404,16 @@ resizeHandleH.addEventListener('mousedown', (e) => {
     document.body.style.cursor = 'ew-resize';
     document.body.style.userSelect = 'none';
 });
+editorSplitHandle?.addEventListener('mousedown', () => {
+    if (editorPaneSplit === 'single') return;
+    isResizingEditorSplit = true;
+    document.body.style.cursor = editorPaneSplit === 'horizontal' ? 'ns-resize' : 'ew-resize';
+    document.body.style.userSelect = 'none';
+});
 
 const layoutAllEditors = () => {
     if (window.editor) window.editor.layout();
-    if (window.templateEditor) window.templateEditor.layout();
+    if (editorPanes.secondary.editor) editorPanes.secondary.editor.layout();
     if (window.outputEditor) window.outputEditor.layout();
     if (window.codegenOutputEditor) window.codegenOutputEditor.layout();
 };
@@ -104,12 +2426,398 @@ function syncResponsiveLayoutState() {
     } else if (leftArea.style.flex === '1 1 auto') {
         leftArea.style.flex = '1';
     }
+    syncSidebarBackdrop();
 }
 
 window.addEventListener('resize', syncResponsiveLayoutState);
+window.addEventListener('resize', updateSidebarSplitHandleVisibility);
 syncResponsiveLayoutState();
+setSidebarMode('explorer', { persist: false });
+setSidebarCollapsed(isNarrowLayout());
+setSidebarSectionCollapsed('explorer', false);
+setSidebarSectionCollapsed('outline', false);
+updateSidebarSplitHandleVisibility();
+
+sidebarExplorerBtn?.addEventListener('click', () => {
+    const collapsed = workbenchSidepanel?.classList.contains('collapsed');
+    const isExplorer = currentSidebarMode() === 'explorer';
+    if (collapsed || !isExplorer) {
+        setSidebarMode('explorer');
+        setSidebarCollapsed(false);
+    } else {
+        setSidebarCollapsed(true);
+    }
+});
+mobileSidebarBtn?.addEventListener('click', () => {
+    const collapsed = workbenchSidepanel?.classList.contains('collapsed');
+    const isExplorer = currentSidebarMode() === 'explorer';
+    if (collapsed || !isExplorer) {
+        setSidebarMode('explorer');
+        setSidebarCollapsed(false);
+    } else {
+        setSidebarCollapsed(true);
+    }
+});
+sidebarProjectBtn?.addEventListener('click', () => {
+    const collapsed = workbenchSidepanel?.classList.contains('collapsed');
+    const isProject = currentSidebarMode() === 'project';
+    if (collapsed || !isProject) {
+        setSidebarMode('project');
+        setSidebarCollapsed(false);
+    } else {
+        setSidebarCollapsed(true);
+    }
+});
+mobileProjectBtn?.addEventListener('click', () => {
+    const collapsed = workbenchSidepanel?.classList.contains('collapsed');
+    const isProject = currentSidebarMode() === 'project';
+    if (collapsed || !isProject) {
+        setSidebarMode('project');
+        setSidebarCollapsed(false);
+    } else {
+        setSidebarCollapsed(true);
+    }
+});
+sidebarBackdrop?.addEventListener('click', () => {
+    setSidebarCollapsed(true);
+});
+sidebarEditorPaneBtn?.addEventListener('click', () => {
+    editorPaneVisible = !editorPaneVisible;
+    updateWorkbenchPaneVisibility();
+    scheduleProjectPersistence();
+});
+sidebarResultsPaneBtn?.addEventListener('click', () => {
+    window.switchRightTab(window.activeRightTab === 'simulate' ? '' : 'simulate');
+});
+sidebarCodegenPaneBtn?.addEventListener('click', () => {
+    window.switchRightTab(window.activeRightTab === 'codegen' ? '' : 'codegen');
+});
+explorerNewFileBtn?.addEventListener('click', () => {
+    void createWorkspaceFileFromExplorer();
+});
+explorerNewFolderBtn?.addEventListener('click', () => {
+    createWorkspaceFolderFromExplorer();
+});
+explorerSectionToggle?.addEventListener('click', () => {
+    toggleSidebarSection('explorer');
+});
+outlineSectionToggle?.addEventListener('click', () => {
+    toggleSidebarSection('outline');
+});
+for (const zone of editorDropZones) {
+    zone.addEventListener('dragover', (event) => {
+        if (!dragEditorTabState) {
+            return;
+        }
+        event.preventDefault();
+        zone.classList.add('active');
+        event.dataTransfer.dropEffect = 'move';
+    });
+    zone.addEventListener('dragleave', () => {
+        zone.classList.remove('active');
+    });
+    zone.addEventListener('drop', async (event) => {
+        if (!dragEditorTabState) {
+            return;
+        }
+        event.preventDefault();
+        zone.classList.remove('active');
+        await splitEditorPaneWithTab(
+            dragEditorTabState.path,
+            dragEditorTabState.sourcePaneId,
+            zone.dataset.dropPosition || 'right',
+        );
+        dragEditorTabState = null;
+        if (editorDropOverlay) {
+            editorDropOverlay.hidden = true;
+        }
+    });
+}
+explorerTreeToggleBtn?.addEventListener('click', () => {
+    if (allBranchesCollapsed(explorerBranchKeys, explorerCollapsedNodes)) {
+        explorerCollapsedNodes.clear();
+    } else {
+        explorerCollapsedNodes.clear();
+        for (const nodeId of explorerBranchKeys) {
+            explorerCollapsedNodes.add(nodeId);
+        }
+    }
+    updateRenderedTreeVisibility(explorerTree, explorerCollapsedNodes);
+    updateTreeToggleButton(explorerTreeToggleBtn, explorerBranchKeys, explorerCollapsedNodes, 'Explorer');
+    scheduleProjectPersistence();
+});
+outlineTreeToggleBtn?.addEventListener('click', () => {
+    if (allBranchesCollapsed(outlineBranchKeys, outlineCollapsedNodes)) {
+        outlineCollapsedNodes.clear();
+    } else {
+        outlineCollapsedNodes.clear();
+        for (const nodeId of outlineBranchKeys) {
+            outlineCollapsedNodes.add(nodeId);
+        }
+    }
+    updateRenderedTreeVisibility(outlineTree, outlineCollapsedNodes);
+    updateTreeToggleButton(outlineTreeToggleBtn, outlineBranchKeys, outlineCollapsedNodes, 'Outline');
+    scheduleProjectPersistence();
+});
+
+function updateSidebarSplitHandleVisibility() {
+    if (!resizeHandleSidebarV) {
+        return;
+    }
+    const hidden = isNarrowLayout()
+        || workbenchSidepanel?.classList.contains('collapsed')
+        || currentSidebarMode() !== 'explorer'
+        || explorerSection?.classList.contains('collapsed')
+        || outlineSection?.classList.contains('collapsed');
+    resizeHandleSidebarV.style.display = hidden ? 'none' : '';
+}
+
+resizeHandleSidebar?.addEventListener('mousedown', () => {
+    if (isNarrowLayout() || workbenchSidepanel?.classList.contains('collapsed')) return;
+    isResizingSidebar = true;
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+});
+
+resizeHandleSidebarV?.addEventListener('mousedown', () => {
+    if (isNarrowLayout()) return;
+    if (workbenchSidepanel?.classList.contains('collapsed')) return;
+    if (currentSidebarMode() !== 'explorer') return;
+    if (explorerSection?.classList.contains('collapsed') || outlineSection?.classList.contains('collapsed')) return;
+    isResizingSidebarSplit = true;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+});
+
+function setRuntimeStatusBar(message, tone = 'loading') {
+    const runtimeLabel = document.getElementById('outputRuntimeStatus');
+    if (!runtimeLabel) return;
+    runtimeLabel.textContent = `Runtime: ${String(message || '').trim() || 'Unknown'}`;
+    runtimeLabel.dataset.tone = tone;
+}
+
+function setCompileStatusBadge(message, tone = 'loading') {
+    const compileLabel = document.getElementById('outputCompileStatus');
+    if (!compileLabel) return;
+    compileLabel.textContent = `Compile: ${String(message || '').trim() || 'Unknown'}`;
+    compileLabel.dataset.tone = tone;
+}
+
+setRuntimeStatusBar('Loading...', 'loading');
+setCompileStatusBadge('Waiting...', 'loading');
+
+let startupCompileRequested = false;
+
+function requestStartupCompileIfReady() {
+    if (startupCompileRequested) {
+        return;
+    }
+    if (!workerReady) {
+        return;
+    }
+    if (typeof window.triggerCompileNow !== 'function') {
+        return;
+    }
+    if (isRumocaSmokeMode()) {
+        return;
+    }
+    if (!hasOpenEditorPane()) {
+        return;
+    }
+    if (!projectFs.getActiveDocumentPath()?.endsWith('.mo')) {
+        return;
+    }
+    startupCompileRequested = true;
+    window.triggerCompileNow();
+}
+
+function paneEditor(paneId) {
+    return getEditorPane(paneId)?.editor || null;
+}
+
+function applyEditorLanguage(paneId, path) {
+    const nextEditor = paneEditor(paneId);
+    const model = nextEditor?.getModel?.();
+    if (!nextEditor || !model || !monacoApi?.editor?.setModelLanguage) {
+        return;
+    }
+    const languageId = resolveSupportedEditorLanguage(inferSourceEditorLanguage(path));
+    monacoApi.editor.setModelLanguage(model, languageId);
+    if (typeof window.refreshCodeLens === 'function') {
+        window.refreshCodeLens();
+    }
+}
+
+function ensureSecondarySourceEditor() {
+    const pane = getEditorPane('secondary');
+    if (pane.editor || !createSourceEditorFactory) {
+        return pane.editor;
+    }
+    pane.editor = createSourceEditorFactory('secondaryEditor');
+    if (pane.editor && typeof bindPaneEditorToWorkspace === 'function') {
+        bindPaneEditorToWorkspace('secondary', pane.editor);
+    }
+    return pane.editor;
+}
+
+async function openProjectDocument(path, { paneId = activeEditorPaneId, focusEditor = true, forceReload = false } = {}) {
+    const nextPath = trimMaybeString(path);
+    const targetPane = getEditorPane(paneId);
+    const targetEditor = normalizeEditorPaneId(paneId) === 'secondary'
+        ? ensureSecondarySourceEditor()
+        : paneEditor('primary');
+    if (!nextPath || !targetPane || !targetEditor) {
+        return;
+    }
+    const nextContent = projectFs.getFileContent(nextPath);
+    if (typeof nextContent !== 'string') {
+        return;
+    }
+    editorPaneVisible = true;
+    updateWorkbenchPaneVisibility();
+
+    removePathFromOtherEditorPane(nextPath, targetPane.id);
+    const currentPath = trimMaybeString(targetPane.activePath);
+    if (currentPath === nextPath && !forceReload) {
+        setPanePaths(targetPane.id, [...targetPane.paths, nextPath], nextPath);
+        setActiveEditorPane(targetPane.id, { focusEditor, refreshNavigation: false });
+        refreshActiveDocumentNavigation({ outlineDelayMs: 80 });
+        scheduleProjectPersistence(1200);
+        return;
+    }
+
+    if (currentPath && typeof targetEditor.saveViewState === 'function') {
+        editorViewStates.set(currentPath, targetEditor.saveViewState());
+    }
+    if (currentPath && typeof targetEditor.getValue === 'function') {
+        projectFs.setFile(currentPath, targetEditor.getValue());
+    }
+
+    targetPane.paths = normalizeOpenDocumentPaths([...targetPane.paths, nextPath], currentPath || nextPath);
+    rebuildOpenDocumentPaths();
+
+    suspendWorkspaceObservers = true;
+    try {
+        targetEditor.setValue(nextContent);
+        applyEditorLanguage(targetPane.id, nextPath);
+    } finally {
+        suspendWorkspaceObservers = false;
+    }
+
+    if (typeof targetEditor.restoreViewState === 'function') {
+        const viewState = editorViewStates.get(nextPath);
+        if (viewState) {
+            targetEditor.restoreViewState(viewState);
+        }
+    }
+
+    targetPane.activePath = nextPath;
+    projectFs.setActiveDocument(nextPath, nextContent);
+    selectedExplorerPath = nextPath;
+    setActiveEditorPane(targetPane.id, {
+        focusEditor,
+        refreshNavigation: false,
+        persistCurrent: false,
+    });
+    updateSourceBreadcrumbs();
+    refreshSimulationSettingsModalIfOpen();
+    refreshActiveDocumentNavigation({ outlineDelayMs: 80 });
+    updateMobileAppbarTitle();
+    if (isNarrowLayout()) {
+        setSidebarCollapsed(true);
+    }
+    scheduleProjectPersistence(1200);
+}
+
+async function moveEditorTabToPane(path, sourcePaneId, targetPaneId) {
+    const nextPath = trimMaybeString(path);
+    const sourcePane = getEditorPane(sourcePaneId);
+    const targetPane = getEditorPane(targetPaneId);
+    if (!nextPath || !sourcePane || !targetPane) {
+        return;
+    }
+    if (sourcePane.activePath === nextPath && typeof sourcePane.editor?.getValue === 'function') {
+        projectFs.setFile(nextPath, sourcePane.editor.getValue());
+    }
+    if (!targetPane.paths.includes(nextPath)) {
+        targetPane.paths = normalizeOpenDocumentPaths([...targetPane.paths, nextPath], nextPath);
+    } else {
+        targetPane.activePath = nextPath;
+    }
+    if (sourcePane.id !== targetPane.id) {
+        sourcePane.paths = sourcePane.paths.filter((candidate) => candidate !== nextPath);
+        if (sourcePane.activePath === nextPath) {
+            sourcePane.activePath = sourcePane.paths.at(-1) || '';
+        }
+    }
+    rebuildOpenDocumentPaths();
+    await openProjectDocument(nextPath, { paneId: targetPane.id, focusEditor: true, forceReload: true });
+    collapseSingleEmptyPaneIfPossible();
+}
+
+async function splitEditorPaneWithTab(path, sourcePaneId, position) {
+    const nextPath = trimMaybeString(path);
+    if (!nextPath) {
+        return;
+    }
+    ensureSecondarySourceEditor();
+    const sourcePane = getEditorPane(sourcePaneId);
+    if (sourcePane?.activePath === nextPath && typeof sourcePane.editor?.getValue === 'function') {
+        projectFs.setFile(nextPath, sourcePane.editor.getValue());
+    }
+    const primaryPane = getEditorPane('primary');
+    const secondaryPane = getEditorPane('secondary');
+    if (editorPaneSplit === 'single') {
+        const sourcePaths = normalizeOpenDocumentPaths(sourcePane.paths, sourcePane.activePath);
+        const remaining = sourcePaths.filter((candidate) => candidate !== nextPath);
+        if (position === 'left') {
+            primaryPane.paths = [nextPath];
+            primaryPane.activePath = nextPath;
+            secondaryPane.paths = remaining;
+            secondaryPane.activePath = remaining.at(-1) || '';
+            setEditorPaneSplit('vertical');
+            await openProjectDocument(nextPath, { paneId: 'primary', focusEditor: true, forceReload: true });
+            if (secondaryPane.activePath) {
+                await openProjectDocument(secondaryPane.activePath, { paneId: 'secondary', focusEditor: false, forceReload: true });
+            } else {
+                refreshEditorPaneEmptyState('secondary');
+            }
+            return;
+        }
+        primaryPane.paths = remaining;
+        primaryPane.activePath = remaining.at(-1) || '';
+        secondaryPane.paths = [nextPath];
+        secondaryPane.activePath = nextPath;
+        setEditorPaneSplit(position === 'bottom' ? 'horizontal' : 'vertical');
+        if (primaryPane.activePath) {
+            await openProjectDocument(primaryPane.activePath, { paneId: 'primary', focusEditor: false, forceReload: true });
+        } else {
+            refreshEditorPaneEmptyState('primary');
+        }
+        await openProjectDocument(nextPath, { paneId: 'secondary', focusEditor: true, forceReload: true });
+        return;
+    }
+    setEditorPaneSplit(position === 'bottom' ? 'horizontal' : 'vertical');
+    const targetPaneId = position === 'left' ? 'primary' : 'secondary';
+    await moveEditorTabToPane(nextPath, sourcePaneId, targetPaneId);
+}
 
 document.addEventListener('mousemove', (e) => {
+    if (isResizingSidebar) {
+        if (isNarrowLayout()) {
+            isResizingSidebar = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            return;
+        }
+        const panelRect = workbenchSidepanel.getBoundingClientRect();
+        const newWidth = e.clientX - panelRect.left - 6;
+        if (workbenchSidebar) {
+            workbenchSidebar.style.width = `${Math.max(180, Math.min(newWidth, 480))}px`;
+        }
+        layoutAllEditors();
+        return;
+    }
     if (isResizingH) {
         if (isNarrowLayout()) {
             isResizingH = false;
@@ -117,29 +2825,66 @@ document.addEventListener('mousemove', (e) => {
             document.body.style.userSelect = '';
             return;
         }
-        const containerRect = document.querySelector('.main-container').getBoundingClientRect();
+        const containerRect = workbenchTop.getBoundingClientRect();
         const newWidth = e.clientX - containerRect.left;
         leftArea.style.flex = 'none';
         leftArea.style.width = Math.max(200, newWidth) + 'px';
         layoutAllEditors();
     }
+    if (isResizingSidebarSplit) {
+        const sidebarRect = workbenchSidebar?.getBoundingClientRect();
+        if (!sidebarRect || !explorerSection || !outlineSection) {
+            return;
+        }
+        const explorerHeaderHeight = explorerSection.querySelector('.sidebar-section-header')?.getBoundingClientRect().height || 0;
+        const handleHeight = resizeHandleSidebarV?.getBoundingClientRect().height || 0;
+        const outlineHeaderHeight = outlineSection.querySelector('.sidebar-section-header')?.getBoundingClientRect().height || 0;
+        const outlineMinHeight = 90 + outlineHeaderHeight;
+        const nextHeight = e.clientY - sidebarRect.top - explorerHeaderHeight;
+        const maxHeight = Math.max(140, sidebarRect.height - handleHeight - outlineMinHeight);
+        explorerSection.style.flex = 'none';
+        explorerSection.style.height = `${Math.max(140, Math.min(nextHeight, maxHeight))}px`;
+        return;
+    }
     if (isResizingV) {
-        const leftAreaEl = document.querySelector('.left-area');
-        const leftAreaRect = leftAreaEl.getBoundingClientRect();
-        const newHeight = leftAreaRect.bottom - e.clientY;
+        const workbenchRect = workbenchMain.getBoundingClientRect();
+        const newHeight = workbenchRect.bottom - e.clientY;
         const clampedHeight = Math.max(100, Math.min(newHeight, window.innerHeight * 0.5));
         bottomPanel.style.height = clampedHeight + 'px';
         if (window.editor) window.editor.layout();
+        return;
+    }
+    if (isResizingEditorSplit) {
+        const areaRect = editorPaneArea?.getBoundingClientRect();
+        if (!areaRect) {
+            return;
+        }
+        if (editorPaneSplit === 'horizontal') {
+            const newHeight = Math.max(120, Math.min(e.clientY - areaRect.top, areaRect.height - 120));
+            primaryEditorStack.style.flex = 'none';
+            primaryEditorStack.style.height = `${newHeight}px`;
+            primaryEditorStack.style.width = '';
+        } else {
+            const newWidth = Math.max(200, Math.min(e.clientX - areaRect.left, areaRect.width - 200));
+            primaryEditorStack.style.flex = 'none';
+            primaryEditorStack.style.width = `${newWidth}px`;
+            primaryEditorStack.style.height = '';
+        }
+        layoutAllEditors();
     }
 });
 
 document.addEventListener('mouseup', () => {
-    if (isResizingH || isResizingV) {
+    if (isResizingH || isResizingV || isResizingSidebar || isResizingSidebarSplit || isResizingEditorSplit) {
         isResizingH = false;
         isResizingV = false;
+        isResizingSidebar = false;
+        isResizingSidebarSplit = false;
+        isResizingEditorSplit = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         layoutAllEditors();
+        scheduleProjectPersistence();
     }
 });
 
@@ -155,7 +2900,7 @@ resizeHandleV.addEventListener('mousedown', (e) => {
 });
 
 // Active right tab state
-window.activeRightTab = 'simulate';
+window.activeRightTab = '';
 window.activeBottomTab = 'output';
 
 function normalizeTabName(tabName, allowed, fallback) {
@@ -167,35 +2912,68 @@ function setBottomPanelCollapsed(collapsed) {
     const arrow = document.getElementById('bottomArrow');
     if (!arrow) return;
     arrow.innerHTML = bottomPanel.classList.contains('collapsed') ? '&#9650;' : '&#9660;';
+    scheduleProjectPersistence();
 }
 
-// Switch between right panel tabs (Simulate / DAE / Codegen)
+function refreshFileRunSettingsButton() {
+    if (editorSettingsButtons.length === 0) {
+        return;
+    }
+    for (const button of editorSettingsButtons) {
+        if (window.activeRightTab === 'codegen') {
+            button.title = 'Codegen template settings';
+            button.setAttribute('aria-label', 'Codegen template settings');
+        } else {
+            button.title = 'Simulation settings';
+            button.setAttribute('aria-label', 'Simulation settings');
+        }
+    }
+}
+
+window.openCodegenTab = function() {
+    const modelName = currentCodegenModel();
+    if (modelName && window.compiledModels?.[modelName]) {
+        void createCodegenRunForModel(modelName);
+        return;
+    }
+    showTemplateError('Compile a model before rendering code generation output.');
+};
+
+window.openCodegenTabForPane = function(paneId) {
+    setActiveEditorPane(paneId);
+    window.openCodegenTab();
+};
+
+window.openFileRunSettings = function() {
+    if (window.activeRightTab === 'codegen') {
+        openCodegenSettingsModal();
+        return;
+    }
+    openSimulationSettingsModal();
+};
+
+window.openFileRunSettingsForPane = function(paneId) {
+    setActiveEditorPane(paneId);
+    window.openFileRunSettings();
+};
+
+// Switch between right panel tabs (Simulate / Codegen)
 window.switchRightTab = function(tabName) {
-    window.activeRightTab = tabName;
-    // Update tab buttons
-    document.querySelectorAll('.right-tab-bar .right-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.tab === tabName);
-    });
-    // Update tab content
-    document.getElementById('simTab').classList.toggle('active', tabName === 'simulate');
-    document.getElementById('daeTab').classList.toggle('active', tabName === 'dae');
-    document.getElementById('codegenTab').classList.toggle('active', tabName === 'codegen');
+    const nextTab = tabName === 'codegen' ? 'codegen' : tabName === 'simulate' ? 'simulate' : '';
+    setActiveRightTabState(nextTab);
+    refreshFileRunSettingsButton();
+    refreshResultsWindowChrome();
     // Refresh editors in the newly visible tab
     setTimeout(() => {
         layoutAllEditors();
-        // If switching to DAE or Codegen, refresh the output
-        const modelName = document.getElementById('modelSelect').value;
-        if (modelName && window.compiledModels && window.compiledModels[modelName]) {
-            if (tabName === 'dae') {
-                displayDaeOutput(modelName);
-            } else if (tabName === 'codegen') {
-                displayCodegenOutput(modelName);
-            }
+        if (nextTab === 'codegen') {
+            showActiveCodegenRun();
         }
-        if (tabName === 'simulate') {
+        if (nextTab === 'simulate') {
             void resultsPanelController.renderModel(window.selectedModel || '');
         }
     }, 0);
+    scheduleProjectPersistence();
 };
 
 // Toggle bottom panel collapse/expand (collapses down)
@@ -206,37 +2984,63 @@ window.toggleBottomPanel = function() {
 
 // Switch between bottom panel tabs
 window.switchBottomTab = function(tabName) {
-    window.activeBottomTab = tabName;
+    const nextTab = tabName === 'errors' ? 'errors' : 'output';
+    window.activeBottomTab = nextTab;
     // Update tab buttons (only within bottom panel)
     document.querySelectorAll('.panel-header-bottom .bottom-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.tab === tabName);
+        tab.classList.toggle('active', tab.dataset.tab === nextTab);
     });
     // Update sections
-    document.getElementById('outputSection').classList.toggle('active', tabName === 'output');
-    document.getElementById('errorsSection').classList.toggle('active', tabName === 'errors');
-    document.getElementById('librariesSection').classList.toggle('active', tabName === 'libraries');
-    document.getElementById('packagesSection').classList.toggle('active', tabName === 'packages');
-    if (tabName === 'packages' && typeof window.refreshPackageViewer === 'function') {
-        window.refreshPackageViewer();
-    }
+    document.getElementById('outputSection').classList.toggle('active', nextTab === 'output');
+    document.getElementById('errorsSection').classList.toggle('active', nextTab === 'errors');
+    scheduleProjectPersistence();
 };
 
 function collectProjectEditorState() {
+    const existingState = projectFs.getEditorState() || {};
     return {
-        rightTab: String(window.activeRightTab || 'simulate'),
+        ...existingState,
+        rightTab: typeof window.activeRightTab === 'string' ? window.activeRightTab : '',
         bottomTab: String(window.activeBottomTab || 'output'),
         bottomPanelCollapsed: bottomPanel.classList.contains('collapsed'),
-        template: window.templateEditor?.getValue?.() || '',
-        simResultsActiveViewId: trimMaybeString(simResultsPanelState.activeViewId) || null,
+        sidebarCollapsed: workbenchSidepanel?.classList.contains('collapsed') || false,
+        sidebarMode: currentSidebarMode(),
+        explorerSectionCollapsed: explorerSection?.classList.contains('collapsed') || false,
+        outlineSectionCollapsed: outlineSection?.classList.contains('collapsed') || false,
+        leftAreaWidth: String(leftArea?.style.width || existingState.leftAreaWidth || ''),
+        sidebarWidth: String(workbenchSidebar?.style.width || existingState.sidebarWidth || ''),
+        bottomPanelHeight: String(bottomPanel?.style.height || existingState.bottomPanelHeight || ''),
+        explorerSectionHeight: String(explorerSection?.style.height || existingState.explorerSectionHeight || ''),
+        explorerCollapsedNodeIds: [...explorerCollapsedNodes],
+        outlineCollapsedNodeIds: [...outlineCollapsedNodes],
+        selectedExplorerPath: trimMaybeString(selectedExplorerPath),
+        editorPaneVisible,
+        openDocuments: [...openDocumentPaths],
+        codegenSettings: { ...codegenSettings },
+        simResultsPanelState: normalizeSimResultsPanelState(simResultsPanelState),
     };
 }
 
 function applyProjectEditorState(editorState) {
     const fallbackState = defaultProjectSeed?.editorState || {
-        rightTab: 'simulate',
+        rightTab: '',
         bottomTab: 'output',
         bottomPanelCollapsed: false,
-        template: '',
+        sidebarCollapsed: false,
+        sidebarMode: 'explorer',
+        explorerSectionCollapsed: false,
+        outlineSectionCollapsed: false,
+        leftAreaWidth: '',
+        sidebarWidth: '',
+        bottomPanelHeight: '',
+        explorerSectionHeight: '',
+        explorerCollapsedNodeIds: [],
+        outlineCollapsedNodeIds: [],
+        selectedExplorerPath: '',
+        editorPaneVisible: true,
+        openDocuments: [],
+        codegenSettings: defaultCodegenSettings(),
+        simResultsPanelState: emptySimResultsPanelState(),
     };
     const nextState = editorState && typeof editorState === 'object'
         ? {
@@ -246,31 +3050,91 @@ function applyProjectEditorState(editorState) {
         : fallbackState;
     const rightTab = normalizeTabName(
         String(nextState.rightTab || fallbackState.rightTab),
-        ['simulate', 'dae', 'codegen'],
-        'simulate',
+        ['simulate', 'codegen', ''],
+        '',
     );
     const bottomTab = normalizeTabName(
         String(nextState.bottomTab || fallbackState.bottomTab),
-        ['output', 'errors', 'libraries', 'packages'],
+        ['output', 'errors'],
         'output',
     );
+    const sidebarMode = normalizeTabName(
+        String(nextState.sidebarMode || fallbackState.sidebarMode || 'explorer'),
+        ['explorer', 'project'],
+        'explorer',
+    );
 
-    if (window.templateEditor?.setValue) {
-        const template = String(nextState.template || fallbackState.template || '');
-        if (window.templateEditor.getValue() !== template) {
-            window.templateEditor.setValue(template);
+    codegenSettings = normalizeCodegenSettings(
+        migrateLegacyCodegenTemplateState(nextState)
+        || nextState.codegenSettings
+        || fallbackState.codegenSettings,
+    );
+    refreshCodegenSettingsForm();
+    refreshCodegenTemplateSummary();
+
+    simResultsPanelState = normalizeSimResultsPanelState(
+        nextState.simResultsPanelState ?? fallbackState.simResultsPanelState,
+        nextState.simResultsActiveViewId ?? fallbackState.simResultsActiveViewId,
+    );
+    explorerCollapsedNodes.clear();
+    for (const nodeId of Array.isArray(nextState.explorerCollapsedNodeIds)
+        ? nextState.explorerCollapsedNodeIds
+        : fallbackState.explorerCollapsedNodeIds || []) {
+        const nextNodeId = trimMaybeString(nodeId);
+        if (nextNodeId) {
+            explorerCollapsedNodes.add(nextNodeId);
         }
     }
-
-    simResultsPanelState = {
-        activeViewId: trimMaybeString(nextState.simResultsActiveViewId)
-            || trimMaybeString(fallbackState.simResultsActiveViewId)
-            || null,
-    };
-
+    outlineCollapsedNodes.clear();
+    for (const nodeId of Array.isArray(nextState.outlineCollapsedNodeIds)
+        ? nextState.outlineCollapsedNodeIds
+        : fallbackState.outlineCollapsedNodeIds || []) {
+        const nextNodeId = trimMaybeString(nodeId);
+        if (nextNodeId) {
+            outlineCollapsedNodes.add(nextNodeId);
+        }
+    }
+    const restoredActivePath = trimMaybeString(projectFs.getActiveDocumentPath());
+    if (Array.isArray(nextState.openDocuments)) {
+        syncOpenDocuments(nextState.openDocuments, restoredActivePath);
+    } else {
+        syncOpenDocuments(fallbackState.openDocuments, restoredActivePath);
+    }
+    selectedExplorerPath = trimMaybeString(nextState.selectedExplorerPath)
+        || restoredActivePath;
+    editorPaneVisible = nextState.editorPaneVisible !== false;
+    setSidebarMode(sidebarMode, { persist: false });
     setBottomPanelCollapsed(Boolean(nextState.bottomPanelCollapsed));
+    setSidebarCollapsed(Boolean(nextState.sidebarCollapsed));
+    setSidebarSectionCollapsed('explorer', Boolean(nextState.explorerSectionCollapsed));
+    setSidebarSectionCollapsed('outline', Boolean(nextState.outlineSectionCollapsed));
+    const savedLeftAreaWidth = trimMaybeString(nextState.leftAreaWidth);
+    if (savedLeftAreaWidth && /^\d+px$/.test(savedLeftAreaWidth) && !isNarrowLayout()) {
+        leftArea.style.flex = 'none';
+        leftArea.style.width = savedLeftAreaWidth;
+    } else {
+        syncResponsiveLayoutState();
+    }
+    const savedSidebarWidth = trimMaybeString(nextState.sidebarWidth);
+    if (savedSidebarWidth && /^\d+px$/.test(savedSidebarWidth) && !isNarrowLayout() && workbenchSidebar) {
+        workbenchSidebar.style.width = savedSidebarWidth;
+    }
+    const savedBottomPanelHeight = trimMaybeString(nextState.bottomPanelHeight);
+    if (savedBottomPanelHeight && /^\d+px$/.test(savedBottomPanelHeight)) {
+        bottomPanel.style.height = savedBottomPanelHeight;
+    }
+    const savedExplorerHeight = trimMaybeString(nextState.explorerSectionHeight);
+    if (savedExplorerHeight && /^\d+px$/.test(savedExplorerHeight) && !isNarrowLayout() && explorerSection) {
+        explorerSection.style.flex = 'none';
+        explorerSection.style.height = savedExplorerHeight;
+    } else if (explorerSection) {
+        explorerSection.style.flex = '';
+        explorerSection.style.height = '';
+    }
+    updateSidebarSplitHandleVisibility();
     window.switchRightTab(rightTab);
     window.switchBottomTab(bottomTab);
+    refreshWorkbenchNavigation();
 }
 
 function buildNewProjectState() {
@@ -278,11 +3142,22 @@ function buildNewProjectState() {
         activeDocumentPath: 'Main.mo',
         activeDocumentContent: 'model Main\nend Main;\n',
         editorState: {
-            rightTab: 'simulate',
+            rightTab: '',
             bottomTab: 'output',
             bottomPanelCollapsed: false,
-            template: '',
-            simResultsActiveViewId: null,
+            sidebarCollapsed: false,
+            sidebarMode: 'explorer',
+            explorerSectionCollapsed: false,
+            outlineSectionCollapsed: false,
+            leftAreaWidth: '',
+            sidebarWidth: '',
+            bottomPanelHeight: '',
+            explorerSectionHeight: '',
+            explorerCollapsedNodeIds: [],
+            outlineCollapsedNodeIds: [],
+            openDocuments: [projectFs.getActiveDocumentPath()],
+            codegenSettings: defaultCodegenSettings(),
+            simResultsPanelState: emptySimResultsPanelState(),
         },
     };
     projectFs.clearProject();
@@ -292,8 +3167,8 @@ function buildNewProjectState() {
         activeDocumentPath: projectFs.getActiveDocumentPath(),
         activeDocumentContent: projectFs.getActiveDocumentContent(),
         editorState: projectFs.getEditorState(),
-        libraryArchives: [],
-        fileCount: projectFs.listFiles().length,
+        packageArchives: [],
+        fileCount: projectFs.listFileEntries().length,
     };
 }
 
@@ -303,7 +3178,7 @@ function projectSimulationFallback() {
         tEnd: 10.0,
         dt: null,
         outputDir: '',
-        modelicaPath: [],
+        sourceRootPaths: [],
     };
 }
 
@@ -334,12 +3209,94 @@ function listSimulationModels() {
 }
 
 function currentSimulationModel() {
-    return trimMaybeString(document.getElementById('modelSelect')?.value || '');
+    return trimMaybeString(
+        document.getElementById('modelSelect')?.value
+        || window.selectedModel
+        || projectFs.getEditorState()?.selectedSimulationModel
+        || '',
+    );
+}
+
+function collectWorkspaceModelicaSources(excludePath = projectFs.getActiveDocumentPath()) {
+    const excluded = normalizePath(excludePath);
+    const sources = {};
+    for (const entry of projectFs.listFiles()) {
+        const path = normalizePath(entry?.path);
+        if (!path || path === excluded || !path.endsWith('.mo')) {
+            continue;
+        }
+        if (String(path).startsWith('.rumoca/') || entry?.sourceKind === 'packageArchive') {
+            continue;
+        }
+        if (typeof entry?.content !== 'string') {
+            continue;
+        }
+        sources[path] = entry.content;
+    }
+    return sources;
+}
+
+function collectWorkspaceModelicaSourcesJson(excludePath = projectFs.getActiveDocumentPath()) {
+    return JSON.stringify(collectWorkspaceModelicaSources(excludePath));
+}
+
+function simulationModelPreference(preferredModel = '') {
+    return trimMaybeString(preferredModel)
+        || trimMaybeString(window.selectedModel)
+        || trimMaybeString(projectFs.getEditorState()?.selectedSimulationModel)
+        || trimMaybeString(document.getElementById('modelSelect')?.value || '');
+}
+
+function updateSimulationModelOptions(models, selectedModel = '') {
+    const modelSelect = document.getElementById('modelSelect');
+    if (!modelSelect) {
+        return {
+            models: [],
+            selectedModel: '',
+        };
+    }
+    const uniqueModels = Array.from(new Set(
+        (Array.isArray(models) ? models : [])
+            .map((entry) => trimMaybeString(entry))
+            .filter(Boolean),
+    ));
+    const preferred = simulationModelPreference(selectedModel);
+    modelSelect.innerHTML = uniqueModels.length === 0
+        ? '<option value="">-- No models --</option>'
+        : uniqueModels.map((model) => `<option value="${model}">${model}</option>`).join('');
+    const resolvedSelection = preferred && uniqueModels.includes(preferred)
+        ? preferred
+        : uniqueModels[0] || '';
+    modelSelect.value = resolvedSelection;
+    if (resolvedSelection) {
+        projectInterface.execute('rumoca.project.setSelectedSimulationModel', { model: resolvedSelection });
+    }
+    return {
+        models: uniqueModels,
+        selectedModel: resolvedSelection,
+    };
+}
+
+async function resolveSimulationModels(preferredModel = '') {
+    const preferred = simulationModelPreference(preferredModel);
+    const knownModels = Array.from(new Set([
+        ...listSimulationModels(),
+        ...Object.keys(window.compiledModels || {}).map((entry) => trimMaybeString(entry)),
+        preferred,
+    ].filter(Boolean)));
+    if (knownModels.length > 0) {
+        return updateSimulationModelOptions(knownModels, preferred);
+    }
+    if (!projectFs.getActiveDocumentPath().endsWith('.mo') || !editor) {
+        return updateSimulationModelOptions([], preferred);
+    }
+    const modelState = await getSimulationModelState(editor.getValue(), preferred);
+    return updateSimulationModelOptions(modelState.models, modelState.selectedModel || preferred);
 }
 
 function simulationSettingsFeatures() {
     return {
-        addLibraryPath: false,
+        addSourceRootPath: false,
         prepareModels: false,
         resyncSidecars: false,
         workspaceSettings: false,
@@ -353,7 +3310,7 @@ function simulationViewsForModel(model) {
     return Array.isArray(config?.views) ? config.views : [];
 }
 
-function buildSimulationSettingsDocument(model) {
+function buildSimulationSettingsDocument(model, availableModels = listSimulationModels()) {
     const config = projectInterface.execute('rumoca.project.getSimulationConfig', {
         model,
         fallback: projectSimulationFallback(),
@@ -361,7 +3318,7 @@ function buildSimulationSettingsDocument(model) {
     return sharedVisualization().buildHostedSimulationSettingsDocument(
         sharedVisualization().buildHostedSimulationSettingsState({
             activeModel: model,
-            availableModels: listSimulationModels(),
+            availableModels,
             current: config?.effective,
             fallbackCurrent: projectSimulationFallback(),
             views: simulationViewsForModel(model),
@@ -379,11 +3336,12 @@ async function renderSimulationSettingsModal(preferredModel = '') {
     if (!simulationSettingsFrame) {
         return;
     }
+    const resolvedModels = await resolveSimulationModels(preferredModel);
     const model = trimMaybeString(preferredModel)
-        || currentSimulationModel()
-        || listSimulationModels()[0]
+        || trimMaybeString(resolvedModels.selectedModel)
+        || resolvedModels.models[0]
         || 'Model';
-    simulationSettingsFrame.srcdoc = buildSimulationSettingsDocument(model);
+    simulationSettingsFrame.srcdoc = buildSimulationSettingsDocument(model, resolvedModels.models);
 }
 
 function refreshSimulationSettingsModalIfOpen() {
@@ -425,6 +3383,7 @@ async function saveSimulationSettingsForModel(model, preset, views) {
         },
         afterSave: async () => {
             await resultsPanelController.renderModel(window.selectedModel || '');
+            scheduleProjectPersistence();
         },
     });
 }
@@ -456,6 +3415,7 @@ async function resetSimulationSettingsForModel(model) {
         readViews: () => [],
         afterReset: async () => {
             await resultsPanelController.renderModel(window.selectedModel || '');
+            scheduleProjectPersistence();
         },
     });
 }
@@ -479,6 +3439,42 @@ function closeSimulationSettingsModal() {
 }
 
 window.openSimulationSettingsModal = openSimulationSettingsModal;
+
+function openCodegenSettingsModal() {
+    if (!codegenSettingsModal) {
+        return;
+    }
+    void ensureBuiltInCodegenTemplatesLoaded();
+    refreshCodegenSettingsForm();
+    codegenSettingsModal.hidden = false;
+}
+
+function closeCodegenSettingsModal() {
+    if (!codegenSettingsModal) {
+        return;
+    }
+    codegenSettingsModal.hidden = true;
+    refreshCodegenSettingsForm();
+}
+
+async function applyCodegenSettingsFromModal() {
+    await ensureBuiltInCodegenTemplatesLoaded();
+    const nextSettings = readCodegenSettingsFromForm();
+    if (nextSettings.mode === 'custom') {
+        if (!nextSettings.customTemplatePath) {
+            showTemplateError('Choose a custom template file before applying codegen settings.');
+            codegenCustomTemplatePathInput?.focus();
+            return;
+        }
+        if (typeof projectFs.getFileContent(nextSettings.customTemplatePath) !== 'string') {
+            showTemplateError(`Template file not found: ${nextSettings.customTemplatePath}`);
+            codegenCustomTemplatePathInput?.focus();
+            return;
+        }
+    }
+    await applyCodegenSettings(nextSettings);
+    closeCodegenSettingsModal();
+}
 
 const simulationSettingsHandlers = sharedVisualization().buildHostedSimulationSettingsHandlers({
     getActiveModel: () => currentSimulationModel() || listSimulationModels()[0] || 'Model',
@@ -519,58 +3515,63 @@ simulationSettingsModal?.addEventListener('click', (event) => {
         closeSimulationSettingsModal();
     }
 });
-
-function parseBadgeNumber(text) {
-    const match = String(text || '').match(/\d+/);
-    return match ? Number(match[0]) : 0;
-}
-
-function updateGlobalStatusBar() {
-    const modelSelect = document.getElementById('modelSelect');
-    const diagnosticsBadge = document.getElementById('diagnosticsCount');
-    const compileStatus = document.getElementById('autoCompileStatus');
-    const libraryBadge = document.getElementById('libCount');
-
-    const modelLabel = document.getElementById('statusBarModel');
-    const problemsLabel = document.getElementById('statusBarProblems');
-    const compileLabel = document.getElementById('statusBarCompile');
-    const librariesLabel = document.getElementById('statusBarLibraries');
-    if (!modelLabel || !problemsLabel || !compileLabel || !librariesLabel) return;
-
-    const selectedModel = String(modelSelect?.value || '').trim();
-    const problemText = String(diagnosticsBadge?.textContent || '').trim();
-    const compileText = String(compileStatus?.textContent || '').trim();
-    const libraryText = String(libraryBadge?.textContent || '').trim();
-
-    modelLabel.textContent = `Model: ${selectedModel || '--'}`;
-    problemsLabel.textContent = `Problems: ${problemText || parseBadgeNumber(problemText)}`;
-    compileLabel.textContent = `Compile: ${compileText || 'idle'}`;
-    librariesLabel.textContent = `Libraries: ${parseBadgeNumber(libraryText)}`;
-}
-
-function bindStatusBarObservers() {
-    const idsToWatch = ['diagnosticsCount', 'autoCompileStatus', 'libCount'];
-    const observer = new MutationObserver(() => updateGlobalStatusBar());
-    for (const id of idsToWatch) {
-        const element = document.getElementById(id);
-        if (!element) continue;
-        observer.observe(element, {
-            childList: true,
-            subtree: true,
-            characterData: true,
-            attributes: true,
-        });
+codegenTemplateModeSelect?.addEventListener('change', () => {
+    refreshCodegenSettingsDraftVisibility();
+});
+codegenSettingsCloseBtn?.addEventListener('click', () => {
+    closeCodegenSettingsModal();
+});
+codegenSettingsCancelBtn?.addEventListener('click', () => {
+    closeCodegenSettingsModal();
+});
+codegenSettingsApplyBtn?.addEventListener('click', async () => {
+    await applyCodegenSettingsFromModal();
+});
+codegenSettingsModal?.addEventListener('click', (event) => {
+    if (event.target === codegenSettingsModal) {
+        closeCodegenSettingsModal();
     }
-
-    const modelSelect = document.getElementById('modelSelect');
-    if (modelSelect) {
-        modelSelect.addEventListener('change', () => updateGlobalStatusBar());
+});
+sidebarContextMenu?.addEventListener('click', (event) => {
+    event.stopPropagation();
+});
+sidebarContextActionBtn?.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const action = sidebarContextAction;
+    closeSidebarContextMenu();
+    if (typeof action?.run === 'function') {
+        await action.run();
     }
-}
-
-bindStatusBarObservers();
-window.updateGlobalStatusBar = updateGlobalStatusBar;
-setTimeout(() => updateGlobalStatusBar(), 0);
+});
+fileMenuButton?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleFileMenu();
+});
+fileMenuPanel?.addEventListener('click', (event) => {
+    event.stopPropagation();
+});
+document.addEventListener('click', () => {
+    closeTitlebarMenu();
+    closeSidebarContextMenu();
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        closeTitlebarMenu();
+        closeSidebarContextMenu();
+        closeCodegenSettingsModal();
+    }
+});
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+        void flushProjectPersistence();
+    }
+});
+window.addEventListener('resize', () => {
+    closeSidebarContextMenu();
+});
+window.addEventListener('pagehide', () => {
+    void flushProjectPersistence();
+});
 
 // DAE format state (Pretty vs JSON in DAE tab)
 window.daeFormat = 'pretty';
@@ -597,10 +3598,12 @@ window.runSimulation = async function() {
     const tEnd = Number(simulationConfig.effective?.tEnd) || 1.0;
     const dt = Number(simulationConfig.effective?.dt) || 0;
     const source = window.editor ? window.editor.getValue() : '';
-    const btn = document.getElementById('simRunBtn');
+    const runButtons = editorRunButtons;
     const status = document.getElementById('simStatus');
 
-    btn.disabled = true;
+    for (const button of runButtons) {
+        button.disabled = true;
+    }
     status.textContent = 'Simulating...';
     status.style.color = '#9a6700';
 
@@ -609,6 +3612,7 @@ window.runSimulation = async function() {
             source,
             model: modelName,
             fallback: projectSimulationFallback(),
+            projectSources: collectWorkspaceModelicaSourcesJson(projectFs.getActiveDocumentPath()),
             timeoutMs: 60000,
         });
         const simulateMs = Math.round((Number(result.metrics?.simulateSeconds) || 0) * 1000);
@@ -619,19 +3623,25 @@ window.runSimulation = async function() {
             payload: result.payload,
             ...(result.metrics ? { metrics: result.metrics } : {}),
         });
+        window.switchRightTab('simulate');
     } catch (e) {
         status.textContent = e.message || 'Simulation failed';
         status.style.color = '#c9184a';
     } finally {
-        btn.disabled = false;
+        for (const button of runButtons) {
+            button.disabled = false;
+        }
     }
+};
+
+window.runSimulationForPane = function(paneId) {
+    setActiveEditorPane(paneId);
+    return window.runSimulation();
 };
 
 // Display output for the active tab
 function displayModelOutput(modelName) {
-    if (window.activeRightTab === 'dae') {
-        displayDaeOutput(modelName);
-    } else if (window.activeRightTab === 'codegen') {
+    if (window.activeRightTab === 'codegen') {
         displayCodegenOutput(modelName);
     }
 }
@@ -657,15 +3667,14 @@ function displayDaeOutput(modelName) {
 
 // Display codegen output (render template)
 async function displayCodegenOutput(modelName) {
+    if (!trimMaybeString(modelName)) {
+        setCodegenOutput('No model selected');
+        clearTemplateErrors();
+        return;
+    }
     const result = window.compiledModels[modelName];
     if (!result || result.error || !result.dae) {
         setCodegenOutput(result?.error ? '' : 'No DAE available');
-        return;
-    }
-    const template = window.templateEditor ? window.templateEditor.getValue() : '';
-    if (!template.trim()) {
-        setCodegenOutput('Enter or select a template to render output.');
-        clearTemplateErrors();
         return;
     }
     if (!result.dae_native) {
@@ -674,16 +3683,54 @@ async function displayCodegenOutput(modelName) {
         return;
     }
     try {
+        await ensureBuiltInCodegenTemplatesLoaded();
+        const templateSelection = await resolveCodegenTemplateSelection();
         const daeJson = JSON.stringify(result.dae_native);
         const rendered = await sendWorkspaceCommand('rumoca.workspace.renderTemplate', {
             daeJson,
-            template,
+            template: templateSelection.source,
         });
-        setCodegenOutput(rendered);
+        setCodegenOutput(rendered, templateSelection.language);
         clearTemplateErrors();
     } catch (e) {
         setCodegenOutput('');
         showTemplateError(e.message);
+    }
+}
+
+async function createCodegenRunForModel(modelName) {
+    const nextModel = trimMaybeString(modelName);
+    if (!nextModel) {
+        showTemplateError('No model selected for code generation output.');
+        return;
+    }
+    const result = window.compiledModels[nextModel];
+    if (!result || result.error || !result.dae_native) {
+        showTemplateError('Compile a model before rendering code generation output.');
+        return;
+    }
+    try {
+        await ensureBuiltInCodegenTemplatesLoaded();
+        const templateSelection = await resolveCodegenTemplateSelection();
+        const daeJson = JSON.stringify(result.dae_native);
+        const rendered = await sendWorkspaceCommand('rumoca.workspace.renderTemplate', {
+            daeJson,
+            template: templateSelection.source,
+        });
+        const createdAt = new Date().toISOString();
+        addCodegenRun({
+            id: `codegen_${Date.now()}_${++codegenRunSequence}`,
+            label: formatCodegenRunLabel(nextModel, createdAt),
+            createdAt,
+            modelName: nextModel,
+            text: rendered,
+            language: templateSelection.language,
+            templateLabel: templateSelection.label,
+        });
+        clearTemplateErrors();
+        window.switchRightTab('codegen');
+    } catch (e) {
+        showTemplateError(e.message || 'Failed to render code generation output.');
     }
 }
 
@@ -1020,14 +4067,19 @@ function prettyPrintDae(dae) {
     return out.join('\n');
 }
 
-const libraryDocsController = createLibraryDocsController({
+const packageArchiveController = createPackageArchiveController({
     sendLanguageCommand,
     sendWorkspaceCommand,
     setTerminalOutput,
     isWorkerReady: () => workerReady,
     projectFs,
+    onPackageArchivesChanged: () => {
+        collapseImportedExplorerBranches();
+        refreshWorkbenchNavigation({ includeOutline: false });
+        scheduleProjectPersistence(2000);
+    },
 });
-libraryDocsController.bindWindowApi();
+packageArchiveController.bindWindowApi();
 
 // Store compiled results for all models: { modelName: { dae, balance } }
 window.compiledModels = {};
@@ -1037,7 +4089,7 @@ function resetCompiledWorkspaceState() {
     window.compiledModels = {};
     window.selectedModel = null;
     window.currentDaeForCompletions = null;
-    simResultsPanelState = { activeViewId: null };
+    simResultsPanelState = emptySimResultsPanelState();
     resultsPanelController.clear();
     const modelSelect = document.getElementById('modelSelect');
     if (modelSelect) {
@@ -1045,42 +4097,50 @@ function resetCompiledWorkspaceState() {
         modelSelect.value = '';
     }
     projectInterface.execute('rumoca.project.setSelectedSimulationModel', { model: '' });
-    const statusSpan = document.getElementById('autoCompileStatus');
-    if (statusSpan) {
-        statusSpan.textContent = '';
-        statusSpan.style.color = '#888';
-    }
-    setDaeOutput('No model selected');
+    setCompileStatusBadge('Waiting...', 'loading');
     displayCodegenOutput('');
     void resultsPanelController.renderModel('');
+    refreshResultsWindowChrome();
 }
 
 async function applyImportedProject(projectState) {
     resetCompiledWorkspaceState();
+    startupCompileRequested = false;
     suspendWorkspaceObservers = true;
     try {
         if (editor?.setValue) {
             editor.setValue(projectState.activeDocumentContent || '');
         }
         applyProjectEditorState(projectState.editorState);
-        projectFs.updateActiveDocumentContent(editor?.getValue?.() || projectState.activeDocumentContent || '');
+        const activePath = trimMaybeString(projectFs.getActiveDocumentPath());
+        if (activePath) {
+            projectFs.activateDocument(activePath);
+        }
     } finally {
         suspendWorkspaceObservers = false;
     }
-    await libraryDocsController.restoreProjectLibraries();
+    await packageArchiveController.restoreProjectPackageArchives();
     updateSourceBreadcrumbs();
-    updateGlobalStatusBar();
+    refreshWorkbenchNavigation();
     await resultsPanelController.renderModel(window.selectedModel || '');
     refreshSimulationSettingsModalIfOpen();
-    if (!isRumocaSmokeMode() && typeof window.triggerCompileNow === 'function') {
-        window.triggerCompileNow();
+    scheduleProjectPersistence(0);
+    requestStartupCompileIfReady();
+}
+
+async function restorePersistedProjectIfAvailable() {
+    const entries = await loadPersistedProjectEntries();
+    if (!Array.isArray(entries) || entries.length === 0) {
+        return false;
     }
+    const projectState = projectFs.loadArchiveEntries(entries);
+    await applyImportedProject(projectState);
+    return true;
 }
 
 installFileActions({
     getEditor: () => window.editor,
     getCompiledModels: () => window.compiledModels,
-    getDaeFormat: () => window.daeFormat,
     getCodegenOutputEditor: () => window.codegenOutputEditor,
     projectFs,
     setTerminalOutput,
@@ -1104,27 +4164,14 @@ window.updateSelectedModel = function() {
     if (modelName && window.compiledModels[modelName]) {
         const result = window.compiledModels[modelName];
         // Refresh the active tab's output
-        if (window.activeRightTab === 'dae') displayDaeOutput(modelName);
-        else if (window.activeRightTab === 'codegen') displayCodegenOutput(modelName);
+        if (window.activeRightTab === 'codegen') displayCodegenOutput(modelName);
         // Update DAE for template autocompletion
         if (result.dae_native) {
             window.currentDaeForCompletions = result.dae_native;
         }
-        // Update balance status
-        const statusSpan = document.getElementById('autoCompileStatus');
-        const b = result.balance;
-        if (b) {
-            const balanceStatus = b.is_balanced ? 'BALANCED' :
-                (typeof b.status === 'string' ? b.status.toUpperCase() :
-                (b.status.CompileError ? 'ERROR' : 'UNBALANCED'));
-            statusSpan.textContent = b.is_balanced ? `${modelName}: Balanced` : `${modelName}: ${balanceStatus}`;
-            statusSpan.style.color = b.is_balanced ? '#2d6a4f' : '#c9184a';
-        }
-    } else if (!modelName) {
-        setDaeOutput('No model selected');
     }
+    refreshResultsWindowChrome();
     updateSourceBreadcrumbs();
-    updateGlobalStatusBar();
     refreshSimulationSettingsModalIfOpen();
 };
 
@@ -1146,21 +4193,21 @@ let workerReady = false;
 worker.onmessage = (e) => {
     const { id, ready, success, result, error, progress, current, total, percent } = e.data;
 
-    // Handle progress updates for library loading
+    // Handle progress updates for package-archive loading
     if (progress) {
-        libraryDocsController.handleWorkerProgress({ current, total, percent });
+        packageArchiveController.handleWorkerProgress({ current, total, percent });
         return;
     }
 
     if (ready !== undefined) {
-        const status = document.getElementById('status');
         if (success) {
-            status.textContent = 'Ready';
-            status.className = 'status ready';
+            setRuntimeStatusBar('Ready', 'ready');
             workerReady = true;
             if (window.refreshModelicaSemanticTokens) {
                 window.refreshModelicaSemanticTokens();
             }
+            refreshWorkbenchNavigation();
+            requestStartupCompileIfReady();
             // Fetch version and show welcome message
             sendWorkspaceCommand('rumoca.workspace.getVersion', {}).then(version => {
                 setTerminalOutput(`Rumoca v${version} - Modelica Compiler\nHover over tabs/buttons for help.`);
@@ -1168,8 +4215,7 @@ worker.onmessage = (e) => {
                 setTerminalOutput('WASM initialized! Edit code to compile.');
             });
         } else {
-            status.textContent = 'Error';
-            status.className = 'status error';
+            setRuntimeStatusBar('Error', 'error');
             setTerminalOutput('Failed to initialize WASM worker.');
         }
         return;
@@ -1184,8 +4230,7 @@ worker.onmessage = (e) => {
 
 worker.onerror = (e) => {
     console.error('Worker error:', e);
-    document.getElementById('status').textContent = 'Worker Error';
-    document.getElementById('status').className = 'status error';
+    setRuntimeStatusBar('Worker Error', 'error');
 };
 
 function sendRequest(action, params = {}, timeout = 30000) {
@@ -1213,12 +4258,32 @@ function sendRequest(action, params = {}, timeout = 30000) {
     });
 }
 
+function languageCommandNeedsProjectSources(command) {
+    return command === 'rumoca.language.diagnostics'
+        || command === 'rumoca.language.hover'
+        || command === 'rumoca.language.completion'
+        || command === 'rumoca.language.completionWithTiming'
+        || command === 'rumoca.language.definition'
+        || command === 'rumoca.language.documentSymbols';
+}
+
+function augmentLanguagePayload(command, payload = {}) {
+    if (!languageCommandNeedsProjectSources(command)) {
+        return payload;
+    }
+    const activePath = projectFs?.getActiveDocumentPath?.() || '';
+    return {
+        ...payload,
+        projectSources: collectWorkspaceModelicaSourcesJson(activePath),
+    };
+}
+
 function sendLanguageCommand(command, payload = {}, timeout = 30000) {
     return sendRequest(
         'languageCommand',
         {
             command,
-            payload,
+            payload: augmentLanguagePayload(command, payload),
         },
         timeout,
     );
@@ -1243,7 +4308,7 @@ function readRumocaSmokeConfig() {
     return {
         modelName: params.get('smoke_model') || '',
         sourceUrl: params.get('smoke_source_url') || '',
-        libraryZipUrl: params.get('smoke_library_zip_url') || '',
+        packageArchiveUrl: params.get('smoke_package_archive_url') || '',
         callbackPort: Number.parseInt(params.get('smoke_callback_port') || '0', 10),
         readyTimeoutMs: Number.parseInt(params.get('smoke_ready_timeout_ms') || '20000', 10),
         compileTimeoutMs: Number.parseInt(params.get('smoke_compile_timeout_ms') || '60000', 10),
@@ -1300,19 +4365,19 @@ async function waitForRumocaSmoke(label, predicate, timeoutMs) {
     throw new Error(`${label} timed out after ${timeoutMs}ms`);
 }
 
-async function loadRumocaSmokeLibraryArchive(libraryZipUrl) {
-    const response = await fetch(libraryZipUrl, { cache: 'no-store' });
+async function loadRumocaSmokePackageArchive(packageArchiveUrl) {
+    const response = await fetch(packageArchiveUrl, { cache: 'no-store' });
     if (!response.ok) {
-        throw new Error(`Failed to fetch smoke library archive: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to fetch smoke package archive: ${response.status} ${response.statusText}`);
     }
     const bytes = await response.arrayBuffer();
-    const fileName = libraryZipUrl.split('/').pop() || 'smoke-library.zip';
+    const fileName = packageArchiveUrl.split('/').pop() || 'smoke-package-archive.zip';
     const file = new File([bytes], fileName, { type: 'application/zip' });
-    if (typeof window.stageLibraryArchiveFile !== 'function') {
-        throw new Error('library staging unavailable for smoke archive load');
+    if (typeof window.stagePackageArchiveFile !== 'function') {
+        throw new Error('package-archive staging unavailable for smoke archive load');
     }
-    rumocaSmokeLibrariesImported = false;
-    return await window.stageLibraryArchiveFile(file);
+    rumocaSmokeSourceRootsImported = false;
+    return await window.stagePackageArchiveFile(file);
 }
 
 function normalizeCompletionItems(rawCompletion) {
@@ -1323,7 +4388,7 @@ function normalizeCompletionItems(rawCompletion) {
 const EXPECTED_MSL_COMPLETION_LABEL = 'Electrical';
 const EXPECTED_MSL_NAVIGATION_LABEL = 'Ground';
 const ACTIVE_WASM_URI = 'file:///input.mo';
-let rumocaSmokeLibrariesImported = false;
+let rumocaSmokeSourceRootsImported = false;
 
 function completionLabel(item) {
     if (typeof item?.label === 'string') {
@@ -1448,7 +4513,7 @@ async function measureRumocaSmokeDefinition(source, timeoutMs) {
 }
 
 async function measureRumocaSmokeCompletion(source, timeoutMs, options = {}) {
-    const { ensureLibraryImport = false } = options;
+    const { ensureSourceRootImport = false } = options;
     if (!window.editor || !window.editor.getModel) {
         throw new Error('editor unavailable for smoke completion measurement');
     }
@@ -1470,14 +4535,14 @@ async function measureRumocaSmokeCompletion(source, timeoutMs, options = {}) {
     window.editor.revealPositionInCenter(position);
 
     const started = performance.now();
-    let libraryImportMs = 0;
-    if (ensureLibraryImport && !rumocaSmokeLibrariesImported) {
-        if (typeof window.importLoadedLibrariesForSmoke !== 'function') {
-            throw new Error('library import unavailable for smoke completion measurement');
+    let sourceRootImportMs = 0;
+    if (ensureSourceRootImport && !rumocaSmokeSourceRootsImported) {
+        if (typeof window.importLoadedPackageArchivesForSmoke !== 'function') {
+            throw new Error('source-root import unavailable for smoke completion measurement');
         }
-        const imported = await window.importLoadedLibrariesForSmoke();
-        libraryImportMs = Math.max(0, Number(imported?.libraryImportMs) || 0);
-        rumocaSmokeLibrariesImported = true;
+        const imported = await window.importLoadedPackageArchivesForSmoke();
+        sourceRootImportMs = Math.max(0, Number(imported?.sourceRootImportMs) || 0);
+        rumocaSmokeSourceRootsImported = true;
     }
     const rawCompletion = await sendLanguageCommand(
         'rumoca.language.completionWithTiming',
@@ -1493,7 +4558,7 @@ async function measureRumocaSmokeCompletion(source, timeoutMs, options = {}) {
     const items = normalizeCompletionItems(parsedCompletion?.items || parsedCompletion);
     return {
         completionMs,
-        libraryImportMs,
+        sourceRootImportMs,
         completionCount: items.length,
         expectedCompletionPresent: items.some(
             item => completionLabel(item) === EXPECTED_MSL_COMPLETION_LABEL,
@@ -1519,7 +4584,7 @@ async function measureRumocaSmokeCodeLenses() {
 async function runRumocaBrowserSmoke(config) {
     const result = {
         modelName: config.modelName || null,
-        libraryCount: 0,
+        sourceRootCount: 0,
         statusText: '',
     };
     setRumocaSmokeResult('running', result);
@@ -1527,17 +4592,17 @@ async function runRumocaBrowserSmoke(config) {
     try {
         await waitForRumocaSmoke(
             'worker ready',
-            () => workerReady && window.editor && window.loadLibraryArchiveFile,
+            () => workerReady && window.editor && window.loadPackageArchiveFile,
             config.readyTimeoutMs,
         );
 
-        if (config.libraryZipUrl) {
-            const stagedArchive = await loadRumocaSmokeLibraryArchive(config.libraryZipUrl);
+        if (config.packageArchiveUrl) {
+            const stagedArchive = await loadRumocaSmokePackageArchive(config.packageArchiveUrl);
             result.archiveLoadMs = Math.max(0, Number(stagedArchive?.archivePrepMs) || 0);
-            result.libraryCount = await waitForRumocaSmoke(
-                'loaded library count',
+            result.sourceRootCount = await waitForRumocaSmoke(
+                'loaded source-root count',
                 () => {
-                    const count = parseBadgeNumber(document.getElementById('libCount')?.textContent || '0');
+                    const count = parseBadgeNumber(document.getElementById('packageArchiveCount')?.textContent || '0');
                     return count > 0 ? count : null;
                 },
                 config.readyTimeoutMs,
@@ -1591,16 +4656,17 @@ async function runRumocaBrowserSmoke(config) {
         const codeLenses = await measureRumocaSmokeCodeLenses();
         result.codeLensMs = codeLenses.codeLensMs;
         result.codeLensCount = codeLenses.codeLensCount;
-        const libraryLoad = await measureRumocaSmokeCompletion(
+        const sourceRootLoad = await measureRumocaSmokeCompletion(
             completionProbeSource,
             config.completionTimeoutMs,
-            { ensureLibraryImport: true },
+            { ensureSourceRootImport: true },
         );
-        result.libraryLoadMs = libraryLoad.completionMs;
-        result.libraryLoadCompletionCount = libraryLoad.completionCount;
-        result.libraryExpectedCompletionPresent = libraryLoad.expectedCompletionPresent;
-        result.libraryStageTimings = libraryLoad.stageTimings;
-        if (!result.libraryExpectedCompletionPresent) {
+        result.sourceRootLoadMs = sourceRootLoad.completionMs;
+        result.sourceRootImportMs = sourceRootLoad.sourceRootImportMs;
+        result.sourceRootLoadCompletionCount = sourceRootLoad.completionCount;
+        result.sourceRootExpectedCompletionPresent = sourceRootLoad.expectedCompletionPresent;
+        result.sourceRootStageTimings = sourceRootLoad.stageTimings;
+        if (!result.sourceRootExpectedCompletionPresent) {
             throw new Error(
                 `Initial smoke completion items did not include Modelica.${EXPECTED_MSL_COMPLETION_LABEL}`,
             );
@@ -1660,22 +4726,21 @@ async function runRumocaBrowserSmoke(config) {
         }
 
         const compileStart = performance.now();
+        const projectSources = collectWorkspaceModelicaSourcesJson(projectFs.getActiveDocumentPath());
         const compileJson = await sendWorkspaceCommand(
-            result.libraryCount > 0
-                ? 'rumoca.workspace.compileWithLibraries'
-                : 'rumoca.workspace.compile',
+            'rumoca.workspace.compileWithProjectSources',
             {
                 source: window.editor.getValue(),
                 modelName: smokeModelName,
-                libraries: '{}',
+                projectSources,
             },
             config.compileTimeoutMs,
         );
         const compileResult = JSON.parse(compileJson);
         result.compileMs = Math.round(performance.now() - compileStart);
         result.modelName = smokeModelName;
-        result.libraryCount = parseBadgeNumber(document.getElementById('libCount')?.textContent || '0');
-        result.statusText = String(document.getElementById('autoCompileStatus')?.textContent || '');
+        result.sourceRootCount = parseBadgeNumber(document.getElementById('packageArchiveCount')?.textContent || '0');
+        result.statusText = String(document.getElementById('outputCompileStatus')?.textContent || '');
         window.compiledModels = window.compiledModels || {};
         window.compiledModels[smokeModelName] = {
             dae: compileResult.dae,
@@ -1749,7 +4814,7 @@ async function buildQuickOpenItems() {
                         window.updateSelectedModel();
                     }
                     if (typeof window.switchRightTab === 'function') {
-                        window.switchRightTab('dae');
+                        window.switchRightTab('simulate');
                     }
                     if (editor) editor.focus();
                 },
@@ -1773,9 +4838,6 @@ async function buildQuickOpenItems() {
                 detail: `${classType}${partialSuffix}`,
                 tags: ['class', 'documentation', classType.toLowerCase()],
                 run: async () => {
-                    if (typeof window.switchBottomTab === 'function') {
-                        window.switchBottomTab('packages');
-                    }
                     if (typeof window.selectClass === 'function') {
                         await window.selectClass(encodeURIComponent(qualifiedName));
                     }
@@ -1811,7 +4873,65 @@ function normalizeDocumentSymbols(payload) {
     return { nested, flat };
 }
 
-function flattenNestedDocumentSymbols(symbols, sink, parentPath = '') {
+function buildNestedDocumentSymbolTree(symbols, parentPath = '') {
+    const nodes = [];
+    if (!Array.isArray(symbols)) {
+        return nodes;
+    }
+    for (const symbol of symbols) {
+        if (!symbol || typeof symbol !== 'object') continue;
+        const name = String(symbol.name || '').trim();
+        if (!name) continue;
+        const fullName = parentPath ? `${parentPath}.${name}` : name;
+        const pos = symbolStartPosition(symbol);
+        const children = buildNestedDocumentSymbolTree(symbol.children, fullName);
+        nodes.push({
+            id: `outline:${fullName}`,
+            label: name,
+            kind: children.length > 0 ? 'dir' : 'file',
+            meta: String(symbol.detail || ''),
+            sourceKind: 'workspace',
+            run: () => jumpToModelicaLocation(pos.lineNumber, pos.column),
+            children,
+        });
+    }
+    return nodes;
+}
+
+function buildFlatDocumentSymbolTree(symbols) {
+    const rootNodes = [];
+    if (!Array.isArray(symbols)) {
+        return rootNodes;
+    }
+    for (const symbol of symbols) {
+        if (!symbol || typeof symbol !== 'object') continue;
+        const name = String(symbol.name || '').trim();
+        if (!name) continue;
+        const containerName = String(symbol.containerName || symbol.container_name || '').trim();
+        const pos = symbolStartPosition(symbol);
+        let currentNodes = rootNodes;
+        let prefix = '';
+        if (containerName) {
+            const parts = containerName.split('.').filter(Boolean);
+            for (const part of parts) {
+                prefix = prefix ? `${prefix}.${part}` : part;
+                const branch = ensureSidebarBranch(currentNodes, `outline:${prefix}`, part, {
+                    sourceKind: 'workspace',
+                });
+                currentNodes = branch.children;
+            }
+        }
+        currentNodes.push(createSidebarNode(`outline:${containerName ? `${containerName}.` : ''}${name}`, name, {
+            kind: 'file',
+            meta: 'Symbol',
+            sourceKind: 'workspace',
+            run: () => jumpToModelicaLocation(pos.lineNumber, pos.column),
+        }));
+    }
+    return rootNodes;
+}
+
+function flattenNestedDocumentSymbols(symbols, sink, parentPath = '', depth = 0) {
     if (!Array.isArray(symbols)) return sink;
     for (const symbol of symbols) {
         if (!symbol || typeof symbol !== 'object') continue;
@@ -1822,11 +4942,12 @@ function flattenNestedDocumentSymbols(symbols, sink, parentPath = '') {
             sink.push({
                 label: fullName,
                 detail: String(symbol.detail || ''),
+                depth,
                 tags: ['symbol', 'outline'],
                 run: () => jumpToModelicaLocation(pos.lineNumber, pos.column),
             });
         }
-        flattenNestedDocumentSymbols(symbol.children, sink, fullName);
+        flattenNestedDocumentSymbols(symbol.children, sink, fullName, depth + 1);
     }
     return sink;
 }
@@ -1843,11 +4964,27 @@ function flattenFlatDocumentSymbols(symbols, sink) {
         sink.push({
             label: fullName,
             detail: 'Symbol',
+            depth: Math.max(0, containerName ? containerName.split('.').length : 0),
             tags: ['symbol', 'outline'],
             run: () => jumpToModelicaLocation(pos.lineNumber, pos.column),
         });
     }
     return sink;
+}
+
+async function buildDocumentSymbolTreeNodes() {
+    if (!editor || !workerReady) return [];
+    try {
+        const source = editor.getValue();
+        const json = await sendLanguageCommand('rumoca.language.documentSymbols', { source });
+        const parsed = JSON.parse(json);
+        const symbols = normalizeDocumentSymbols(parsed);
+        const nestedNodes = buildNestedDocumentSymbolTree(symbols.nested);
+        return nestedNodes.length > 0 ? nestedNodes : buildFlatDocumentSymbolTree(symbols.flat);
+    } catch (error) {
+        console.warn('Symbol tree failed:', error);
+        return [];
+    }
 }
 
 async function buildDocumentSymbolItems() {
@@ -1876,16 +5013,25 @@ setupCommandPalette({
 require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' }});
 require(['vs/editor/editor.main'], function() {
     const monacoState = setupMonacoWorkspace({ monaco, sendLanguageCommand, layoutAllEditors });
+    monacoApi = monaco;
+    createSourceEditorFactory = monacoState.createSourceEditor;
     editor = monacoState.editor;
-    const templateEditor = monacoState.templateEditor;
+    editorPanes.primary.editor = editor;
     projectFs.setActiveDocument(
         inferModelicaFileName(editor.getValue(), 'Ball.mo'),
         editor.getValue(),
     );
+    syncOpenDocuments([projectFs.getActiveDocumentPath()], projectFs.getActiveDocumentPath());
+    editorPanes.primary.activePath = projectFs.getActiveDocumentPath();
+    refreshWorkbenchNavigation();
     defaultProjectSeed = {
         activeDocumentPath: projectFs.getActiveDocumentPath(),
         activeDocumentContent: editor.getValue(),
         editorState: collectProjectEditorState(),
+    };
+    applyActiveEditorLockState();
+    window.openProjectDocument = (path) => {
+        void openProjectDocument(path);
     };
     window.triggerQuickFixAtCursor = async function() {
         if (!editor) return;
@@ -1903,10 +5049,34 @@ require(['vs/editor/editor.main'], function() {
         };
     }
 
+    const scheduleSemanticTokenRefresh = debounce(() => {
+        if (window.refreshModelicaSemanticTokens) {
+            window.refreshModelicaSemanticTokens();
+        }
+    }, 300);
+
+    const scheduleTypingOutlineRefresh = debounce(() => {
+        if (outlineSection?.classList.contains('collapsed')) {
+            return;
+        }
+        scheduleOutlineRefresh(0);
+    }, 350);
+
+    const scheduleCodegenRefresh = debounce(() => {
+        if (window.activeRightTab !== 'codegen') {
+            return;
+        }
+        const modelName = currentSimulationModel();
+        if (modelName && window.compiledModels?.[modelName]) {
+            void displayCodegenOutput(modelName);
+        }
+    }, 350);
+
     diagnosticsController = createDiagnosticsController({
         monaco,
         getModelEditor: () => editor,
-        getTemplateEditor: () => window.templateEditor,
+        getModelPath: () => projectFs.getActiveDocumentPath(),
+        getTemplateEditor: () => null,
         switchToErrorsTab: () => window.switchBottomTab('errors'),
         triggerModelicaQuickFix: triggerModelicaQuickFixAt,
     });
@@ -1919,12 +5089,21 @@ require(['vs/editor/editor.main'], function() {
         const isStaleRun = () => runGeneration !== liveCheckGeneration;
 
         const source = editor.getValue();
-        const statusSpan = document.getElementById('autoCompileStatus');
         const modelSelect = document.getElementById('modelSelect');
         const startTime = performance.now();
+        const setCompileStatus = (text, color) => {
+            const nextText = String(text || '');
+            const tone = color === '#c9184a'
+                ? 'error'
+                : color === '#2d6a4f'
+                    ? 'ready'
+                    : color === '#9a6700'
+                        ? 'loading'
+                        : 'loading';
+            setCompileStatusBadge(nextText, tone);
+        };
 
-        statusSpan.textContent = 'Compiling...';
-        statusSpan.style.color = '#9a6700';
+        setCompileStatus('Compiling...', '#9a6700');
         updateCompileErrors([]);
 
         try {
@@ -1948,10 +5127,7 @@ require(['vs/editor/editor.main'], function() {
         const modelState = await getSimulationModelState(source, previousSelection);
         if (isStaleRun()) return;
         const models = Array.isArray(modelState.models) ? modelState.models : [];
-        modelSelect.innerHTML = models.length === 0
-            ? '<option value="">-- No models --</option>'
-            : models.map((model) => `<option value="${model}">${model}</option>`).join('');
-        modelSelect.value = modelState.selectedModel || '';
+        updateSimulationModelOptions(models, modelState.selectedModel || previousSelection);
         if (isStaleRun()) return;
 
         // Clear old compiled results
@@ -1968,10 +5144,10 @@ require(['vs/editor/editor.main'], function() {
         if (hasErrorDiagnostics) {
             updateCompileErrors([]);
             const elapsed = (performance.now() - startTime).toFixed(0);
-            statusSpan.textContent = hasParseErrors
-                ? `Syntax Error (${elapsed}ms)`
-                : `Error (${elapsed}ms)`;
-            statusSpan.style.color = '#c9184a';
+            setCompileStatus(
+                hasParseErrors ? `Syntax Error (${elapsed}ms)` : `Error (${elapsed}ms)`,
+                '#c9184a',
+            );
             if (models.length > 0) {
                 const selectedModel = modelSelect.value || models[0];
                 window.selectedModel = selectedModel;
@@ -1983,16 +5159,14 @@ require(['vs/editor/editor.main'], function() {
             }
             if (window.refreshCodeLens) window.refreshCodeLens();
             window.switchBottomTab('errors');
-            if (document.getElementById('packagesSection').classList.contains('active')) {
-                libraryDocsController.refreshPackageViewer(true);
+            if (document.getElementById('classTreePanel')) {
+                packageArchiveController.refreshPackageViewer(true);
             }
             return;
         }
 
         // Compile all models
-        let cachedCount = 0;
-        try { cachedCount = await sendLanguageCommand('rumoca.language.getLibraryCount', {}); } catch (e) {}
-
+        const projectSources = collectWorkspaceModelicaSourcesJson(projectFs.getActiveDocumentPath());
         let successCount = 0;
         const compileErrors = [];
 
@@ -2001,18 +5175,11 @@ require(['vs/editor/editor.main'], function() {
             try {
                 let json;
                 console.log('[compile] compiling model:', modelName);
-                if (cachedCount > 0) {
-                    json = await sendWorkspaceCommand('rumoca.workspace.compileWithLibraries', {
-                        source,
-                        modelName,
-                        libraries: '{}',
-                    });
-                } else {
-                    json = await sendWorkspaceCommand('rumoca.workspace.compile', {
-                        source,
-                        modelName,
-                    });
-                }
+                json = await sendWorkspaceCommand('rumoca.workspace.compileWithProjectSources', {
+                    source,
+                    modelName,
+                    projectSources,
+                });
                 if (isStaleRun()) return;
                 const result = JSON.parse(json);
                 console.log('[compile] got result for', modelName, '- pretty length:', result.pretty?.length, 'dae keys:', Object.keys(result.dae || {}));
@@ -2060,12 +5227,10 @@ require(['vs/editor/editor.main'], function() {
         if (selectedModel && window.compiledModels[selectedModel]) {
             const result = window.compiledModels[selectedModel];
             // Refresh the active tab
-            if (window.activeRightTab === 'dae') displayDaeOutput(selectedModel);
-            else if (window.activeRightTab === 'codegen') displayCodegenOutput(selectedModel);
+            if (window.activeRightTab === 'codegen') displayCodegenOutput(selectedModel);
 
             if (result.error) {
-                statusSpan.textContent = `Error (${elapsed}ms)`;
-                statusSpan.style.color = '#c9184a';
+                setCompileStatus(`Error (${elapsed}ms)`, '#c9184a');
                 window.switchBottomTab('errors');
             } else {
                 const b = result.balance;
@@ -2074,55 +5239,88 @@ require(['vs/editor/editor.main'], function() {
                         (typeof b.status === 'string' ? b.status.toUpperCase() :
                         (b.status.CompileError ? 'ERROR' : 'UNBALANCED'));
                     const modelCountStr = models.length > 1 ? ` [${successCount}/${models.length}]` : '';
-                    statusSpan.textContent = b.is_balanced
-                        ? `Balanced (${elapsed}ms)${modelCountStr}`
-                        : `${balanceStatus} (${elapsed}ms)${modelCountStr}`;
-                    statusSpan.style.color = b.is_balanced ? '#2d6a4f' : '#c9184a';
+                    setCompileStatus(
+                        b.is_balanced
+                            ? `Balanced (${elapsed}ms)${modelCountStr}`
+                            : `${balanceStatus} (${elapsed}ms)${modelCountStr}`,
+                        b.is_balanced ? '#2d6a4f' : '#c9184a',
+                    );
                 }
             }
         } else if (selectedModel && models.includes(selectedModel)) {
             setDaeOutput(`Waiting for compilation of ${selectedModel}...`);
-            statusSpan.textContent = `${elapsed}ms`;
-            statusSpan.style.color = '#888';
+            setCompileStatus(`${elapsed}ms`, '#888');
         } else {
             setDaeOutput(models.length === 0 ? 'No models found in source' : 'Select a model');
-            statusSpan.textContent = models.length === 0 ? 'No models' : `${elapsed}ms`;
-            statusSpan.style.color = '#888';
+            setCompileStatus(models.length === 0 ? 'No models' : `${elapsed}ms`, '#888');
         }
 
         // Refresh CodeLens to show balance for all models
         if (window.refreshCodeLens) window.refreshCodeLens();
-        if (document.getElementById('packagesSection').classList.contains('active')) {
-            libraryDocsController.refreshPackageViewer(true);
+        if (document.getElementById('classTreePanel')) {
+            packageArchiveController.refreshPackageViewer(true);
         }
         refreshSimulationSettingsModalIfOpen();
         } catch (unexpectedError) {
             if (isStaleRun()) return;
             // Catch any unexpected errors to ensure status is always updated
             console.error('[runLiveChecks] Unexpected error:', unexpectedError);
-            statusSpan.textContent = 'Error';
-            statusSpan.style.color = '#c9184a';
+            setCompileStatus('Error', '#c9184a');
             updateCompileErrors([{ model: 'live-check', message: String(unexpectedError?.message || unexpectedError) }]);
-        } finally {
-            updateGlobalStatusBar();
         }
-    }, 500);
+    }, 1200);
     window.triggerCompileNow = () => {
         runLiveChecks();
     };
+    requestStartupCompileIfReady();
 
-    editor.onDidChangeModelContent(() => {
-        projectFs.updateActiveDocumentContent(editor.getValue());
-        if (window.refreshModelicaSemanticTokens) window.refreshModelicaSemanticTokens();
-        updateSourceBreadcrumbs();
-        if (suspendWorkspaceObservers) return;
-        if (isRumocaSmokeMode()) return;
-        runLiveChecks();
-    });
+    bindPaneEditorToWorkspace = (paneId, paneEditor) => {
+        if (!paneEditor || paneEditor.__rumocaPaneBound) {
+            return;
+        }
+        paneEditor.__rumocaPaneBound = true;
+        paneEditor.onDidFocusEditorText(() => {
+            setActiveEditorPane(paneId);
+        });
+        paneEditor.onDidChangeModelContent(() => {
+            if (suspendWorkspaceObservers) return;
+            if (activeEditorPaneId !== paneId) {
+                setActiveEditorPane(paneId);
+            }
+            const pane = getEditorPane(paneId);
+            const activePath = trimMaybeString(pane?.activePath);
+            if (activePath) {
+                projectFs.setFile(activePath, paneEditor.getValue());
+                if (activeEditorPaneId === paneId) {
+                    projectFs.activateDocument(activePath);
+                }
+            }
+            updateSourceBreadcrumbs();
+            scheduleProjectPersistence();
+            scheduleSemanticTokenRefresh();
+            if (projectFs.getActiveDocumentPath().endsWith('.mo')) {
+                scheduleTypingOutlineRefresh();
+            }
+            if (
+                window.activeRightTab === 'codegen'
+                && codegenSettings.mode === 'custom'
+                && projectFs.getActiveDocumentPath() === trimMaybeString(codegenSettings.customTemplatePath)
+            ) {
+                scheduleCodegenRefresh();
+            }
+            if (isRumocaSmokeMode()) return;
+            if (!projectFs.getActiveDocumentPath().endsWith('.mo')) return;
+            runLiveChecks();
+        });
+        paneEditor.onDidChangeCursorPosition(() => {
+            if (activeEditorPaneId !== paneId) {
+                return;
+            }
+            updateSourceBreadcrumbs();
+        });
+    };
 
-    editor.onDidChangeCursorPosition(() => {
-        updateSourceBreadcrumbs();
-    });
+    bindPaneEditorToWorkspace('primary', editor);
 
     window.nextProblem = () => navigateProblems(1);
     window.previousProblem = () => navigateProblems(-1);
@@ -2143,30 +5341,32 @@ require(['vs/editor/editor.main'], function() {
         navigateProblems(event.shiftKey ? -1 : 1);
     });
 
-    setTimeout(() => {
-        updateSourceBreadcrumbs();
-        if (isRumocaSmokeMode()) return;
-        runLiveChecks();
-    }, 1000);
-
-    // Template editor change listener - re-render when template changes (if codegen tab is active)
-    let templateDebounceTimer = null;
-    templateEditor.onDidChangeModelContent(() => {
-        if (suspendWorkspaceObservers) return;
-        if (window.activeRightTab !== 'codegen') return;
-        if (templateDebounceTimer) clearTimeout(templateDebounceTimer);
-        templateDebounceTimer = setTimeout(() => {
-            const modelName = document.getElementById('modelSelect').value;
-            if (modelName && window.compiledModels[modelName]) {
-                displayCodegenOutput(modelName);
-            }
-        }, 300);
-    });
-
     const smokeConfig = readRumocaSmokeConfig();
-    if (smokeConfig) {
-        void runRumocaBrowserSmoke(smokeConfig).catch(error => {
-            console.error('[rumoca-smoke] browser smoke failed:', error);
-        });
-    }
+    void (async () => {
+        let restored = false;
+        try {
+            restored = await restorePersistedProjectIfAvailable();
+        } catch (error) {
+            console.warn('Failed to restore persisted WASM project state:', error);
+            await applyImportedProject(buildNewProjectState());
+            restored = true;
+        }
+
+        projectPersistenceReady = true;
+        scheduleProjectPersistence(0);
+
+        if (!restored) {
+            setTimeout(() => {
+                updateSourceBreadcrumbs();
+                if (isRumocaSmokeMode()) return;
+                runLiveChecks();
+            }, 1000);
+        }
+
+        if (smokeConfig) {
+            void runRumocaBrowserSmoke(smokeConfig).catch(error => {
+                console.error('[rumoca-smoke] browser smoke failed:', error);
+            });
+        }
+    })();
 });

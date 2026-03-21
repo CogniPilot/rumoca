@@ -201,7 +201,7 @@ fn test_strict_reachable_ignores_unreachable_failures_when_requested_succeeds() 
 }
 
 #[test]
-fn test_strict_reachable_ignores_unrelated_library_resolve_errors() {
+fn test_strict_reachable_ignores_unrelated_source_root_resolve_errors() {
     let mut session = Session::default();
     session
         .add_document(
@@ -238,7 +238,7 @@ fn test_strict_reachable_ignores_unrelated_library_resolve_errors() {
             end Lib;
             "#,
         )
-        .expect("library package should parse");
+        .expect("source-root package should parse");
     session
         .add_document(
             "root.mo",
@@ -253,16 +253,16 @@ fn test_strict_reachable_ignores_unrelated_library_resolve_errors() {
     let report = session.compile_model_strict_reachable_with_recovery("Root");
     assert!(
         report.requested_succeeded(),
-        "strict compile must ignore unrelated library resolve errors"
+        "strict compile must ignore unrelated source-root resolve errors"
     );
     assert!(
         report.failures.is_empty(),
-        "unrelated library resolve diagnostics must not leak into Root"
+        "unrelated source-root resolve diagnostics must not leak into Root"
     );
 }
 
 #[test]
-fn test_compiled_library_tolerant_strict_reachable_ignores_unrelated_library_errors() {
+fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_root_errors() {
     let parsed = vec![
         (
             "good_dep.mo".to_string(),
@@ -301,7 +301,7 @@ fn test_compiled_library_tolerant_strict_reachable_ignores_unrelated_library_err
                 "#,
                 "lib.mo",
             )
-            .expect("library package should parse"),
+            .expect("source-root package should parse"),
         ),
         (
             "root.mo".to_string(),
@@ -317,26 +317,26 @@ fn test_compiled_library_tolerant_strict_reachable_ignores_unrelated_library_err
         ),
     ];
 
-    let library = CompiledLibrary::from_parsed_batch_tolerant(parsed)
-        .expect("tolerant compiled library should index despite unrelated errors");
+    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(parsed)
+        .expect("tolerant compiled source root should index despite unrelated errors");
     assert!(
-        library.model_names().iter().any(|name| name == "Root"),
-        "Root must still be discoverable without a whole-library strict resolve"
+        source_root.model_names().iter().any(|name| name == "Root"),
+        "Root must still be discoverable without a whole-source-root strict resolve"
     );
 
-    let report = library.compile_model_strict_reachable_with_recovery("Root");
+    let report = source_root.compile_model_strict_reachable_with_recovery("Root");
     assert!(
         report.requested_succeeded(),
-        "strict closure compile must ignore unrelated library diagnostics"
+        "strict closure compile must ignore unrelated source-root diagnostics"
     );
     assert!(
         report.failures.is_empty(),
-        "unrelated library diagnostics must not leak into Root"
+        "unrelated source-root diagnostics must not leak into Root"
     );
 }
 
 #[test]
-fn test_compiled_library_strict_reachable_uncached_does_not_fill_cache() {
+fn test_compiled_source_root_strict_reachable_uncached_does_not_fill_cache() {
     let definition = rumoca_phase_parse::parse_to_ast(
         r#"
         package P
@@ -357,18 +357,18 @@ fn test_compiled_library_strict_reachable_uncached_does_not_fill_cache() {
     )
     .expect("package should parse");
 
-    let library = CompiledLibrary::from_stored_definition(definition)
-        .expect("compiled library should build from one parsed package");
+    let source_root = CompiledSourceRoot::from_stored_definition(definition)
+        .expect("compiled source root should build from one parsed package");
 
-    let report = library.compile_model_strict_reachable_uncached_with_recovery("P.A");
+    let report = source_root.compile_model_strict_reachable_uncached_with_recovery("P.A");
     assert!(report.requested_succeeded(), "P.A should compile");
     assert!(
-        library
+        source_root
             .compile_cache
             .lock()
-            .expect("compiled library cache poisoned")
+            .expect("compiled source-root cache poisoned")
             .is_empty(),
-        "uncached strict compile should not retain phase results in the shared library cache"
+        "uncached strict compile should not retain phase results in the shared source-root cache"
     );
 }
 

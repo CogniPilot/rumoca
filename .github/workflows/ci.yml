@@ -77,7 +77,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Run lint gate
-        run: cargo run --quiet --bin rum -- verify lint
+        run: cargo run --bin rum -- verify lint
 
   test:
     name: Test (${{ matrix.os }})
@@ -92,14 +92,38 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Cache rustup toolchain
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cargo/bin
+          key: ${{ runner.os }}-rustup-test-v1-${{ hashFiles('rust-toolchain.toml') }}
+
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          toolchain="$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          fi
+          rustup set profile minimal
+          if ! rustup toolchain list | grep -Eq "^${toolchain}"; then
+            rustup toolchain install "$toolchain"
+          fi
+          if ! rustup component list --toolchain "$toolchain" --installed | grep -qx 'rust-src'; then
+            rustup component add rust-src --toolchain "$toolchain"
+          fi
+          if ! rustup target list --toolchain "$toolchain" --installed | grep -qx 'wasm32-unknown-unknown'; then
+            rustup target add wasm32-unknown-unknown --toolchain "$toolchain"
+          fi
+          rustup default "$toolchain"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -108,7 +132,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache MSL
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: msl-cache
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
@@ -133,10 +157,10 @@ jobs:
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
       - name: Run tests
-        run: cargo run --quiet --bin rum -- verify workspace
+        run: cargo run --bin rum -- verify workspace
 
       - name: Build all binaries
-        run: cargo run --quiet --bin rum -- verify binaries
+        run: cargo run --bin rum -- verify binaries
 
   template-runtime-tests:
     name: Template Runtime Tests
@@ -153,7 +177,7 @@ jobs:
           persist-credentials: true
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             /opt/rumoca/cargo/registry
@@ -162,7 +186,7 @@ jobs:
           key: template-runtime-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run template runtime checks
-        run: cargo run --quiet --bin rum -- verify template-runtimes
+        run: cargo run --bin rum -- verify template-runtimes
 
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate
@@ -212,7 +236,7 @@ jobs:
           "$browser" --version
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -221,7 +245,7 @@ jobs:
           key: ${{ runner.os }}-cargo-editor-msl-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache MSL
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: msl-cache-editor
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
@@ -246,7 +270,7 @@ jobs:
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
       - name: Run unified full-MSL LSP/editor gate
-        run: cargo run --quiet --bin rum -- verify lsp-msl-completion-timings
+        run: cargo run --bin rum -- verify lsp-msl-completion-timings
 
       - name: Upload full-MSL LSP/editor report
         if: always()
@@ -259,7 +283,11 @@ jobs:
   coverage-gate:
     name: Coverage Gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # This job installs cargo-llvm-cov and generates full workspace artifacts
+    # before running the trim/gate steps, so 30 minutes is too tight on cold
+    # GitHub runners. Keep explicit headroom here to avoid job-level
+    # cancellation while tests are still progressing.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
@@ -273,7 +301,7 @@ jobs:
           rustup component add llvm-tools-preview
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -323,7 +351,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -332,7 +360,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache MSL
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: msl-cache
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
@@ -381,7 +409,7 @@ jobs:
           omc --version
 
       - name: Run full MSL quality gate
-        run: cargo run --quiet --bin rum -- verify msl-parity
+        run: cargo run --bin rum -- verify msl-parity
 
   # ============================================================================
   # Documentation
@@ -401,7 +429,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Build documentation
-        run: cargo run --quiet --bin rum -- verify docs
+        run: cargo run --bin rum -- verify docs
 
       - name: Upload documentation
         uses: actions/upload-artifact@v6
@@ -432,7 +460,7 @@ jobs:
           node-version: '20'
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -441,7 +469,7 @@ jobs:
           key: ${{ runner.os }}-cargo-vscode-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run VS Code extension CI gate
-        run: cargo run --quiet --bin rum -- vscode test
+        run: cargo run --bin rum -- vscode test
 
   # ============================================================================
   # WebAssembly Build & GitHub Pages
@@ -468,7 +496,7 @@ jobs:
           node-version: '20'
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -477,7 +505,7 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run WASM CI gate
-        run: cargo run --quiet --bin rum -- wasm test
+        run: cargo run --bin rum -- wasm test
 
       - name: Prepare GitHub Pages content
         run: |
@@ -495,6 +523,7 @@ jobs:
           cp editors/wasm/rumoca.png gh-pages/
           cp editors/wasm/coi-serviceworker.js gh-pages/
           cp -r editors/wasm/src gh-pages/
+          cp -r editors/wasm/vendor gh-pages/
 
           sed 's|\.\./\.\./pkg/|./pkg/|g' \
               editors/wasm/index.html > gh-pages/index.html

@@ -1,6 +1,13 @@
 use super::*;
 use std::time::Instant;
 
+struct IsolatedLocalSourceRootCloneState {
+    kept_source_root_keys: IndexSet<String>,
+    kept_source_set_ids: IndexSet<SourceSetId>,
+    source_sets: IndexMap<String, SourceSetRecord>,
+    source_set_keys: IndexMap<SourceSetId, String>,
+}
+
 impl Session {
     /// Clone the full session state for isolated background work.
     ///
@@ -20,51 +27,74 @@ impl Session {
     ///
     /// This keeps stable file ids for the selected local documents so
     /// save-diagnostics/model-stage caches remain reusable, while omitting
-    /// loaded library/source-root AST state from the isolated clone.
+    /// non-workspace source-root AST state from the isolated clone. Workspace
+    /// source roots remain because they participate in the active project graph.
     pub fn clone_for_isolated_local_work(&self, keep_uris: &[String]) -> Session {
         let keep_uris = keep_uris.iter().cloned().collect::<IndexSet<_>>();
+        let IsolatedLocalSourceRootCloneState {
+            kept_source_root_keys,
+            kept_source_set_ids,
+            source_sets,
+            source_set_keys,
+        } = self.isolated_local_clone_source_roots();
         let mut documents = IndexMap::new();
         let mut detached_document_uris = IndexSet::new();
+        let mut detached_source_root_documents = IndexMap::new();
         let mut file_ids = IndexMap::new();
         let mut file_path_keys = IndexMap::new();
         let mut file_uris = IndexMap::new();
+        let mut file_source_sets = IndexMap::new();
         let mut file_revisions = IndexMap::new();
 
-        for uri in keep_uris {
-            let Some(document) = self.documents.get(&uri).cloned() else {
+        for uri in self.documents.keys() {
+            if !self.should_keep_isolated_local_document(uri, &keep_uris, &kept_source_root_keys) {
+                continue;
+            }
+            let Some(document) = self.documents.get(uri.as_str()).cloned() else {
                 continue;
             };
-            let Some(file_id) = self.file_ids.get(&uri).copied() else {
+            let Some(file_id) = self.file_ids.get(uri.as_str()).copied() else {
                 continue;
             };
             documents.insert(uri.clone(), document);
-            if self.detached_document_uris.contains(&uri) {
+            if self.detached_document_uris.contains(uri.as_str()) {
                 detached_document_uris.insert(uri.clone());
             }
             file_ids.insert(uri.clone(), file_id);
-            file_path_keys.insert(path_lookup_key(&uri), file_id);
+            file_path_keys.insert(path_lookup_key(uri), file_id);
             file_uris.insert(file_id, uri.clone());
             if let Some(revision) = self.file_revisions.get(&file_id).copied() {
                 file_revisions.insert(file_id, revision);
+            }
+            if let Some(kept_membership) =
+                self.retained_isolated_local_membership(file_id, &kept_source_set_ids)
+            {
+                file_source_sets.insert(file_id, kept_membership);
+            }
+            if let Some(detached) =
+                self.retained_isolated_detached_document(file_id, &kept_source_root_keys)
+            {
+                detached_source_root_documents.insert(file_id, detached);
             }
         }
 
         Session {
             documents,
             detached_document_uris,
-            detached_source_root_documents: IndexMap::new(),
-            source_sets: IndexMap::new(),
+            detached_source_root_documents,
+            source_sets,
             file_ids,
             file_path_keys,
             file_uris,
-            source_set_keys: IndexMap::new(),
-            file_source_sets: IndexMap::new(),
+            source_set_keys,
+            file_source_sets,
             source_set_signature_overrides: IndexMap::new(),
             file_revisions,
             next_file_id: self.next_file_id,
             next_source_set_id: self.next_source_set_id,
             current_revision: self.current_revision,
             next_revision: self.next_revision,
+            source_root_indexing: SourceRootIndexingCoordinatorState::default(),
             query_state: SessionQueryState {
                 ast: AstQueryState::default(),
                 resolved: self.query_state.resolved.clone(),
@@ -75,6 +105,76 @@ impl Session {
             lightweight_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
             workspace_symbol_snapshot_cache: Arc::new(Mutex::new(SharedSessionSnapshot::default())),
         }
+    }
+
+    fn isolated_local_clone_source_roots(&self) -> IsolatedLocalSourceRootCloneState {
+        let mut kept_source_root_keys = IndexSet::new();
+        let mut kept_source_set_ids = IndexSet::new();
+        let mut source_sets = IndexMap::new();
+        let mut source_set_keys = IndexMap::new();
+
+        for (key, record) in &self.source_sets {
+            if record.kind.is_non_workspace_root() {
+                continue;
+            }
+            kept_source_root_keys.insert(key.clone());
+            kept_source_set_ids.insert(record.id);
+            source_set_keys.insert(record.id, key.clone());
+            source_sets.insert(key.clone(), record.clone());
+        }
+
+        IsolatedLocalSourceRootCloneState {
+            kept_source_root_keys,
+            kept_source_set_ids,
+            source_sets,
+            source_set_keys,
+        }
+    }
+
+    fn should_keep_isolated_local_document(
+        &self,
+        uri: &str,
+        keep_uris: &IndexSet<String>,
+        kept_source_root_keys: &IndexSet<String>,
+    ) -> bool {
+        keep_uris.contains(uri)
+            || self
+                .source_root_backing_keys_for_uri(uri)
+                .iter()
+                .any(|key| kept_source_root_keys.contains(key))
+    }
+
+    fn retained_isolated_local_membership(
+        &self,
+        file_id: FileId,
+        kept_source_set_ids: &IndexSet<SourceSetId>,
+    ) -> Option<IndexSet<SourceSetId>> {
+        let kept_membership = self
+            .file_source_sets
+            .get(&file_id)?
+            .iter()
+            .copied()
+            .filter(|source_set_id| kept_source_set_ids.contains(source_set_id))
+            .collect::<IndexSet<_>>();
+        (!kept_membership.is_empty()).then_some(kept_membership)
+    }
+
+    fn retained_isolated_detached_document(
+        &self,
+        file_id: FileId,
+        kept_source_root_keys: &IndexSet<String>,
+    ) -> Option<DetachedSourceRootDocument> {
+        let detached = self.detached_source_root_documents.get(&file_id)?;
+        let kept_keys = detached
+            .source_root_keys
+            .iter()
+            .filter(|key| kept_source_root_keys.contains(*key))
+            .cloned()
+            .collect::<IndexSet<_>>();
+        (!kept_keys.is_empty()).then_some(DetachedSourceRootDocument {
+            document: detached.document.clone(),
+            source_root_keys: kept_keys,
+        })
     }
 
     pub(crate) fn sync_query_state_from_snapshots(&mut self) {
@@ -185,6 +285,7 @@ impl Session {
             next_source_set_id: self.next_source_set_id,
             current_revision: self.current_revision,
             next_revision: self.next_revision,
+            source_root_indexing: SourceRootIndexingCoordinatorState::default(),
             query_state: SessionQueryState {
                 ast: ast_query_state,
                 ..SessionQueryState::default()
@@ -271,6 +372,7 @@ impl Session {
             next_source_set_id: self.next_source_set_id,
             current_revision: self.current_revision,
             next_revision: self.next_revision,
+            source_root_indexing: SourceRootIndexingCoordinatorState::default(),
             query_state: SessionQueryState {
                 ast: ast_query_state,
                 ..SessionQueryState::default()
@@ -339,6 +441,7 @@ impl Session {
             next_source_set_id: self.next_source_set_id,
             current_revision: self.current_revision,
             next_revision: self.next_revision,
+            source_root_indexing: SourceRootIndexingCoordinatorState::default(),
             query_state: SessionQueryState {
                 ast: ast_query_state,
                 ..SessionQueryState::default()
@@ -403,36 +506,56 @@ impl SessionSnapshot {
         })
     }
 
-    pub fn dirty_library_source_root_keys(&self) -> Vec<String> {
-        self.with_session_ref(Session::dirty_library_source_root_keys)
+    pub fn dirty_source_root_keys(&self) -> Vec<String> {
+        self.with_session_ref(Session::dirty_source_root_keys)
+    }
+
+    pub fn dirty_non_workspace_source_root_keys(&self) -> Vec<String> {
+        self.with_session_ref(Session::dirty_non_workspace_source_root_keys)
+    }
+
+    pub fn source_root_kind(&self, source_root_key: &str) -> Option<SourceRootKind> {
+        self.with_session_ref(|session| session.source_root_kind(source_root_key))
     }
 
     pub fn source_root_durability(&self, source_root_key: &str) -> Option<SourceRootDurability> {
         self.with_session_ref(|session| session.source_root_durability(source_root_key))
     }
 
-    pub fn is_loaded_library_document(&self, uri: &str) -> bool {
-        self.with_session_ref(|session| session.is_loaded_library_document(uri))
+    pub fn is_source_root_backed_document(&self, uri: &str) -> bool {
+        self.with_session_ref(|session| session.is_source_root_backed_document(uri))
+    }
+
+    pub fn is_non_workspace_source_root_document(&self, uri: &str) -> bool {
+        self.with_session_ref(|session| session.is_non_workspace_source_root_document(uri))
+    }
+
+    pub fn document_needs_source_root_read_prewarm(&self, uri: &str) -> bool {
+        self.with_session_ref(|session| session.document_needs_source_root_read_prewarm(uri))
+    }
+
+    pub fn needs_source_root_read_prewarm(&self) -> bool {
+        self.with_session_ref(Session::needs_source_root_read_prewarm)
     }
 
     pub fn namespace_index_query(&self, prefix: &str) -> Result<Vec<(String, String, bool)>> {
         self.with_session(|session| session.namespace_index_query(prefix))
     }
 
-    pub fn all_library_class_names_cached(&self) -> Vec<String> {
-        self.with_session_ref(Session::all_library_class_names_cached)
+    pub fn namespace_class_names_cached(&self) -> Vec<String> {
+        self.with_session_ref(Session::namespace_class_names_cached)
     }
 
     pub fn all_class_names_cached(&self) -> Vec<String> {
         self.with_session_ref(Session::all_class_names_cached)
     }
 
-    pub fn library_namespace_children_cached(&self, prefix: &str) -> Vec<(String, String, bool)> {
-        self.with_session_ref(|session| session.library_namespace_children_cached(prefix))
+    pub fn namespace_children_cached(&self, prefix: &str) -> Vec<(String, String, bool)> {
+        self.with_session_ref(|session| session.namespace_children_cached(prefix))
     }
 
-    pub fn library_namespace_fingerprint_cached(&self, prefix: &str) -> Option<String> {
-        self.with_session_ref(|session| session.library_namespace_fingerprint_cached(prefix))
+    pub fn namespace_fingerprint_cached(&self, prefix: &str) -> Option<String> {
+        self.with_session_ref(|session| session.namespace_fingerprint_cached(prefix))
     }
 
     pub fn file_item_index_query(&self, uri: &str) -> Vec<WorkspaceSymbol> {
@@ -548,11 +671,37 @@ impl SessionSnapshot {
         });
     }
 
+    pub fn prewarm_document_read_queries(&self, uri: &str) {
+        if self.document_needs_source_root_read_prewarm(uri) {
+            self.prewarm_source_root_read_queries();
+            return;
+        }
+        self.prewarm_document_ide_queries(uri);
+    }
+
+    pub fn prewarm_source_root_read_queries(&self) {
+        if !self.needs_source_root_read_prewarm() {
+            return;
+        }
+        self.prewarm_source_root_namespace_queries();
+        self.prewarm_workspace_symbol_queries();
+    }
+
+    pub fn prewarm_source_root_namespace_queries(&self) {
+        if !self.needs_source_root_read_prewarm() {
+            return;
+        }
+        let _ = self.namespace_index_query("");
+    }
+
     pub fn document_symbol_query(&self, uri: &str) -> Option<Vec<DocumentSymbol>> {
         self.with_session(|session| session.document_symbol_query(uri))
     }
 
     pub fn prewarm_workspace_symbol_queries(&self) {
+        if !self.needs_source_root_read_prewarm() {
+            return;
+        }
         self.with_session(Session::prewarm_workspace_symbol_query_caches);
     }
 

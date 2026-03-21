@@ -82,7 +82,7 @@ const SURFACE_COVERAGE = {
     "settings.openUserSettings": [REGISTRATION_CONTRACT_REF],
     "settings.openViewScript": [REGISTRATION_CONTRACT_REF],
     "settings.openWorkspaceSettings": [REGISTRATION_CONTRACT_REF],
-    "settings.pickLibraryPath": [REGISTRATION_CONTRACT_REF],
+    "settings.pickSourceRootPath": [REGISTRATION_CONTRACT_REF],
     "settings.prepareModels": [REGISTRATION_CONTRACT_REF],
     "settings.reset": [REGISTRATION_CONTRACT_REF],
     "settings.resyncSidecars": [REGISTRATION_CONTRACT_REF],

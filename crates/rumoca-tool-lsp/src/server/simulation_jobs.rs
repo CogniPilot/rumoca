@@ -4,13 +4,14 @@ use std::sync::atomic::Ordering;
 
 use super::*;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicBool;
 use tower_lsp::lsp_types;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct SimulationCompileKey {
     model_name: String,
     focus_document_path: String,
-    library_epoch: u64,
+    source_root_epoch: u64,
     local_source_fingerprint: u64,
 }
 
@@ -32,23 +33,23 @@ impl SimulationPrewarmKey {
 #[derive(Debug)]
 pub(super) struct SimulationPrewarmState {
     session_revision: u64,
-    library_epoch: u64,
+    source_root_epoch: u64,
     done: AtomicBool,
     finished: tokio::sync::Notify,
 }
 
 impl SimulationPrewarmState {
-    pub(super) fn new(session_revision: u64, library_epoch: u64) -> Self {
+    pub(super) fn new(session_revision: u64, source_root_epoch: u64) -> Self {
         Self {
             session_revision,
-            library_epoch,
+            source_root_epoch,
             done: AtomicBool::new(false),
             finished: tokio::sync::Notify::new(),
         }
     }
 
-    pub(super) fn matches(&self, session_revision: u64, library_epoch: u64) -> bool {
-        self.session_revision == session_revision && self.library_epoch == library_epoch
+    pub(super) fn matches(&self, session_revision: u64, source_root_epoch: u64) -> bool {
+        self.session_revision == session_revision && self.source_root_epoch == source_root_epoch
     }
 
     pub(super) fn is_done(&self) -> bool {
@@ -172,12 +173,12 @@ impl ModelicaLanguageServer {
     fn simulation_compile_key(
         model: &str,
         context: &SimulationCompileContext,
-        library_epoch: u64,
+        source_root_epoch: u64,
     ) -> SimulationCompileKey {
         Self::simulation_compile_key_from_parts(
             model,
             &context.focus_key,
-            library_epoch,
+            source_root_epoch,
             context.local_source_fingerprint,
         )
     }
@@ -185,13 +186,13 @@ impl ModelicaLanguageServer {
     fn simulation_compile_key_from_parts(
         model: &str,
         focus_key: &str,
-        library_epoch: u64,
+        source_root_epoch: u64,
         local_source_fingerprint: u64,
     ) -> SimulationCompileKey {
         SimulationCompileKey {
             model_name: model.to_string(),
             focus_document_path: focus_key.to_string(),
-            library_epoch,
+            source_root_epoch,
             local_source_fingerprint,
         }
     }
@@ -219,7 +220,7 @@ impl ModelicaLanguageServer {
     ) -> bool {
         let key = SimulationPrewarmKey::new(model, focus_document_path);
         let current_revision = self.current_analysis_revision().await;
-        let current_library_epoch = self.current_library_state_epoch();
+        let current_source_root_epoch = self.session.read().await.source_root_state_epoch();
         let pending = self
             .simulation_prewarm_state
             .read()
@@ -229,7 +230,7 @@ impl ModelicaLanguageServer {
         let Some(state) = pending else {
             return false;
         };
-        if !state.matches(current_revision, current_library_epoch)
+        if !state.matches(current_revision, current_source_root_epoch)
             || state.done.load(Ordering::Acquire)
         {
             return false;
@@ -415,8 +416,8 @@ impl ModelicaLanguageServer {
             .prepare_simulation_compile_context(focus_document_path, true)
             .await?;
         let prepare_context_seconds = prepare_started.elapsed().as_secs_f64();
-        let library_epoch = self.current_library_state_epoch();
-        let cache_key = Self::simulation_compile_key(model, &context, library_epoch);
+        let source_root_epoch = self.session.read().await.source_root_state_epoch();
+        let cache_key = Self::simulation_compile_key(model, &context, source_root_epoch);
         if let Some(cached) = self
             .simulation_compile_cache
             .read()
@@ -458,10 +459,10 @@ impl ModelicaLanguageServer {
     async fn prepare_simulation_compile_context(
         &self,
         focus_document_path: &str,
-        rebuild_dirty_libraries: bool,
+        rebuild_dirty_source_roots: bool,
     ) -> std::result::Result<SimulationCompileContext, String> {
-        if rebuild_dirty_libraries {
-            self.rebuild_dirty_libraries_before_compile(focus_document_path)
+        if rebuild_dirty_source_roots {
+            self.rebuild_dirty_source_roots_before_compile(focus_document_path)
                 .await?;
         }
 
@@ -487,13 +488,16 @@ impl ModelicaLanguageServer {
         &self,
         local_compile_unit_sources: &[(String, String)],
     ) -> Session {
-        let loaded_libraries = self.loaded_libraries.read().await.clone();
-        let requires_loaded_libraries = local_compile_unit_requires_loaded_libraries(
-            local_compile_unit_sources,
-            &loaded_libraries,
-        );
+        let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
+        let requires_loaded_source_roots =
+            rumoca_session::source_roots::sources_require_loaded_source_roots(
+                local_compile_unit_sources
+                    .iter()
+                    .map(|(_, source)| source.as_str()),
+                &loaded_source_roots,
+            );
         let session = self.session.read().await;
-        if !requires_loaded_libraries {
+        if !requires_loaded_source_roots {
             let local_compile_unit_uris = local_compile_unit_sources
                 .iter()
                 .map(|(uri, _)| uri.clone())
@@ -521,7 +525,8 @@ impl ModelicaLanguageServer {
             .document_uris()
             .into_iter()
             .filter(|uri| {
-                !isolated_session.is_loaded_library_document(uri) && !keep_local_uris.contains(*uri)
+                !isolated_session.is_source_root_backed_document(uri)
+                    && !keep_local_uris.contains(*uri)
             })
             .map(ToString::to_string)
             .collect();
@@ -558,13 +563,13 @@ impl ModelicaLanguageServer {
         &self,
         models: Vec<String>,
         context: &SimulationCompileContext,
-        library_epoch: u64,
+        source_root_epoch: u64,
     ) -> (Vec<String>, Vec<String>) {
         let cache = self.simulation_compile_cache.read().await;
         let mut prepared_models = Vec::new();
         let mut missing_models = Vec::new();
         for model in models {
-            let cache_key = Self::simulation_compile_key(&model, context, library_epoch);
+            let cache_key = Self::simulation_compile_key(&model, context, source_root_epoch);
             if cache.contains_key(&cache_key) {
                 prepared_models.push(model);
             } else {
@@ -626,7 +631,7 @@ impl ModelicaLanguageServer {
                 "solver": settings.solver,
                 "tEnd": settings.t_end,
                 "dt": settings.dt,
-                "modelicaPath": settings.library_paths,
+                "sourceRootPaths": settings.source_root_paths,
             },
         });
         let server = self.clone();
@@ -690,18 +695,19 @@ impl ModelicaLanguageServer {
             Err(error) => return (Vec::new(), Vec::new(), Some(error)),
         };
         let uri_path = session_document_uri_key(&uri);
-        let loaded_libraries = if settings.library_paths.is_empty() {
-            self.ensure_source_libraries_loaded(&source, &uri_path)
+        let loaded_source_roots = if settings.source_root_paths.is_empty() {
+            let source_root_paths = self.source_root_paths.read().await.clone();
+            self.ensure_source_roots_loaded_with_paths(&source, &uri_path, &source_root_paths)
                 .await
         } else {
-            self.ensure_source_libraries_loaded_with_paths(
+            self.ensure_source_roots_loaded_with_paths(
                 &source,
                 &uri_path,
-                &settings.library_paths,
+                &settings.source_root_paths,
             )
             .await
         };
-        if loaded_libraries {
+        if loaded_source_roots {
             request_token = self.refresh_analysis_request_revision(request_token).await;
         }
         if self.analysis_request_is_stale(request_token).await {
@@ -726,9 +732,9 @@ impl ModelicaLanguageServer {
                 Some(Self::stale_background_request_error()),
             );
         }
-        let library_epoch = self.current_library_state_epoch();
+        let source_root_epoch = self.session.read().await.source_root_state_epoch();
         let (mut prepared_models, missing_models) = self
-            .split_prepared_and_missing_models(models, &context, library_epoch)
+            .split_prepared_and_missing_models(models, &context, source_root_epoch)
             .await;
         if missing_models.is_empty() {
             return (prepared_models, Vec::new(), None);
@@ -766,7 +772,7 @@ impl ModelicaLanguageServer {
                     let cache_key = Self::simulation_compile_key_from_parts(
                         &model,
                         &focus_key,
-                        library_epoch,
+                        source_root_epoch,
                         local_source_fingerprint,
                     );
                     cache.insert(cache_key, (*compiled).clone());
@@ -843,15 +849,4 @@ impl ModelicaLanguageServer {
         })
         .ok()
     }
-}
-
-fn local_compile_unit_requires_loaded_libraries(
-    local_compile_unit_sources: &[(String, String)],
-    loaded_libraries: &HashSet<String>,
-) -> bool {
-    loaded_libraries.iter().any(|library_path| {
-        local_compile_unit_sources.iter().any(|(_, source)| {
-            should_load_library_for_source(source, Path::new(library_path)).unwrap_or(true)
-        })
-    })
 }

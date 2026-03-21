@@ -184,9 +184,9 @@ pub(super) fn render_completion_timing_breakdown_table(
                 run,
                 measurement.client_ms,
                 measurement.lsp.total_ms,
-                measurement.lsp.source_library_load_ms,
-                measurement.lsp.completion_library_load_ms,
-                measurement.lsp.library_completion_prime_ms,
+                measurement.lsp.source_root_load_ms,
+                measurement.lsp.completion_source_root_load_ms,
+                measurement.lsp.namespace_completion_prime_ms,
                 measurement.lsp.query_fast_path_check_ms,
                 measurement.lsp.completion_handler_ms,
                 completion_route_label(&measurement.lsp),
@@ -320,8 +320,8 @@ pub(super) fn render_completion_cache_stats_table(
                     entry.file_item_index_query_misses,
                 ),
                 hit_miss_cell(
-                    entry.session_cache_delta.library_completion_cache_hits,
-                    entry.session_cache_delta.library_completion_cache_misses,
+                    entry.session_cache_delta.namespace_completion_cache_hits,
+                    entry.session_cache_delta.namespace_completion_cache_misses,
                 ),
                 model_build_cell(&entry.session_cache_delta),
                 probe_width = PROBE_COL_WIDTH,
@@ -370,9 +370,9 @@ fn build_runtime_matrix_rows(
             "completion:1st",
             "completion",
             report,
-            Some("library-load"),
-            Some("library-load"),
-            Some("library-load"),
+            Some("source-root-load"),
+            Some("source-root-load"),
+            Some("source-root-load"),
         ),
         shared_runtime_row(
             "codeLens",
@@ -659,8 +659,8 @@ fn completion_route_label(entry: &CompletionTimingEntry) -> &'static str {
         "ast"
     } else if entry.needs_resolved_session {
         "need"
-    } else if entry.session_cache_delta.library_completion_cache_hits > 0
-        || entry.session_cache_delta.library_completion_cache_misses > 0
+    } else if entry.session_cache_delta.namespace_completion_cache_hits > 0
+        || entry.session_cache_delta.namespace_completion_cache_misses > 0
         || entry.namespace_index_query_hits > 0
         || entry.namespace_index_query_misses > 0
     {
@@ -892,7 +892,7 @@ mod tests {
                 detail: "live-diag=0".to_string(),
             },
             LspApiValidationEntry {
-                operation: "library-load".to_string(),
+                operation: "source-root-load".to_string(),
                 kind: "req".to_string(),
                 ok: true,
                 client_ms: Some(18),
@@ -1006,7 +1006,7 @@ mod tests {
                     detail: "full-MSL doc".to_string(),
                 },
                 RuntimeSmokeEntry {
-                    operation: "library-load".to_string(),
+                    operation: "source-root-load".to_string(),
                     ok: true,
                     client_ms: Some(28),
                     detail: "i=17 l=20 s=12 c=0".to_string(),
@@ -1058,7 +1058,7 @@ mod tests {
                     detail: "full-MSL doc".to_string(),
                 },
                 RuntimeSmokeEntry {
-                    operation: "library-load".to_string(),
+                    operation: "source-root-load".to_string(),
                     ok: true,
                     client_ms: Some(9),
                     detail: "i=17 l=1 s=0 c=0".to_string(),
@@ -1095,7 +1095,7 @@ mod tests {
         client_ms: u64,
         completion_count: usize,
         resolved_build_ms: Option<u64>,
-        library_load_ms: u64,
+        source_root_load_ms: u64,
         total_ms: u64,
         warm_cache_hit: bool,
     ) -> CompletionMeasurementReport {
@@ -1111,9 +1111,9 @@ mod tests {
                 request_was_stale: false,
                 uri: "/tmp/Modelica 4.1.0/Electrical/Analog/Examples/Resistor.mo".to_string(),
                 semantic_layer: "package_def_map".to_string(),
-                source_library_load_ms: library_load_ms,
-                completion_library_load_ms: 0,
-                library_completion_prime_ms: 9,
+                source_root_load_ms,
+                completion_source_root_load_ms: 0,
+                namespace_completion_prime_ms: 9,
                 needs_resolved_session: false,
                 ast_fast_path_matched: false,
                 query_fast_path_check_ms: 0,
@@ -1139,8 +1139,8 @@ mod tests {
                 session_cache_delta: CompletionSessionCacheDelta {
                     declaration_index_query_hits: 3,
                     source_set_package_membership_query_hits: 1,
-                    library_completion_cache_hits: u64::from(warm_cache_hit),
-                    library_completion_cache_misses: u64::from(!warm_cache_hit),
+                    namespace_completion_cache_hits: u64::from(warm_cache_hit),
+                    namespace_completion_cache_misses: u64::from(!warm_cache_hit),
                     ..CompletionSessionCacheDelta::default()
                 },
             },
@@ -1197,8 +1197,8 @@ mod tests {
     fn completion_timing_entry_parses_snake_case_session_cache_delta() {
         let entry: CompletionTimingEntry = serde_json::from_value(json!({
             "uri": "/tmp/Resistor.mo",
-            "sourceLibraryLoadMs": 12,
-            "completionLibraryLoadMs": 0,
+            "sourceRootLoadMs": 12,
+            "completionSourceRootLoadMs": 0,
             "resolvedBuildMs": null,
             "completionHandlerMs": 4,
             "totalMs": 16,
@@ -1215,8 +1215,8 @@ mod tests {
                 "typed_model_cache_hits": 0,
                 "typed_model_cache_misses": 1,
                 "typed_model_builds": 1,
-                "library_completion_cache_hits": 2,
-                "library_completion_cache_misses": 0
+                "namespace_completion_cache_hits": 2,
+                "namespace_completion_cache_misses": 0
             }
         }))
         .expect("completion timing entry should parse");
@@ -1224,7 +1224,7 @@ mod tests {
         assert_eq!(entry.session_cache_delta.semantic_navigation_cache_hits, 1);
         assert_eq!(entry.session_cache_delta.instantiated_model_cache_misses, 1);
         assert_eq!(entry.session_cache_delta.typed_model_builds, 1);
-        assert_eq!(entry.session_cache_delta.library_completion_cache_hits, 2);
+        assert_eq!(entry.session_cache_delta.namespace_completion_cache_hits, 2);
     }
 
     #[test]
@@ -1312,7 +1312,7 @@ mod tests {
         assert!(!table.contains("archive-load"));
         assert!(!table.contains("compile"));
         assert!(!table.contains("activate"));
-        assert!(table.contains("library-load"));
+        assert!(table.contains("source-root-load"));
         for line in table.lines() {
             assert_eq!(line.len(), TERMINAL_TABLE_WIDTH, "{line}");
             assert!(

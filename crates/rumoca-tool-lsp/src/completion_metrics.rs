@@ -11,9 +11,9 @@ pub struct CompletionTimingSummary {
     pub request_was_stale: bool,
     pub uri: String,
     pub semantic_layer: String,
-    pub source_library_load_ms: u64,
-    pub completion_library_load_ms: u64,
-    pub library_completion_prime_ms: u64,
+    pub source_root_load_ms: u64,
+    pub completion_source_root_load_ms: u64,
+    pub namespace_completion_prime_ms: u64,
     pub needs_resolved_session: bool,
     pub ast_fast_path_matched: bool,
     pub query_fast_path_check_ms: u64,
@@ -69,7 +69,7 @@ pub fn extract_import_completion_prefix(source: &str, position: Position) -> Opt
     (!token.is_empty()).then_some(token)
 }
 
-pub fn extract_library_completion_prefix(source: &str, position: Position) -> Option<String> {
+pub fn extract_namespace_completion_prefix(source: &str, position: Position) -> Option<String> {
     if let Some(import_prefix) = extract_import_completion_prefix(source, position) {
         return Some(import_prefix);
     }

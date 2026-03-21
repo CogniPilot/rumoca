@@ -1,7 +1,7 @@
-// Lightweight Web Worker for parallel library parsing
+// Lightweight Web Worker for parallel source-root parsing
 // Multiple instances of this worker can run concurrently to parse files in parallel
 
-import init, { parse_library_file } from './rumoca.js';
+import init, { parse_source_root_file } from './rumoca.js';
 
 let initialized = false;
 
@@ -36,7 +36,7 @@ self.onmessage = async (e) => {
     for (let i = 0; i < files.length; i++) {
         const [filename, source] = files[i];
         try {
-            const ast = parse_library_file(source, filename);
+            const ast = parse_source_root_file(source, filename);
             results.push([filename, ast]);
         } catch (e) {
             // Skip files that fail to parse
