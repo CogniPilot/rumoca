@@ -20,8 +20,8 @@ with full modification context (MLS behavior for evaluated dimensions).
 
 - `build_resolved_with_diagnostics()` is the canonical tree-build API for diagnostic-first flows.
 - Single-document sessions use strict unresolved-name/function behavior.
-- Multi-document/library indexing flows use tolerant resolve flags to avoid aborting on unrelated
-  external library symbols.
+- Multi-document/source-root indexing flows use tolerant resolve flags to avoid aborting on
+  unrelated external source-root symbols.
 
 ## Per-Model Compile Contract
 
@@ -37,7 +37,7 @@ with full modification context (MLS behavior for evaluated dimensions).
 
 - `CompilationMode::StrictReachable` and
   `CompilationMode::StrictReachableWithRecovery` are the compile-mode vocabulary.
-- `IndexingMode::Tolerant` is the indexing-mode vocabulary.
+- `SourceRootLoadMode::Tolerant` is the indexing-mode vocabulary.
 - Strict-reachable variants currently share the same behavior path.
 
 ## Strict-Reachable-With-Recovery Contract

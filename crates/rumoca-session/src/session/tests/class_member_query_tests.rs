@@ -98,7 +98,7 @@ fn class_lookup_query_resolves_unique_suffix_and_rejects_ambiguity() {
             "lib.mo",
             "package Lib\n  model Plane\n  end Plane;\nend Lib;\n",
         )
-        .expect("library should parse");
+        .expect("source root should parse");
 
     assert_eq!(
         session.class_lookup_query("Lib.Plane"),
@@ -115,7 +115,7 @@ fn class_lookup_query_resolves_unique_suffix_and_rejects_ambiguity() {
             "other.mo",
             "package Other\n  model Plane\n  end Plane;\nend Other;\n",
         )
-        .expect("second library should parse");
+        .expect("second source root should parse");
 
     assert_eq!(
         session.class_lookup_query("Plane"),

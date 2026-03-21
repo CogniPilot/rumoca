@@ -29,6 +29,26 @@ function assert(condition, message) {
   }
 }
 
+function assertEqual(actual, expected, message) {
+  if (!Object.is(actual, expected)) {
+    throw new Error(message || `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+function assertNotEqual(actual, expected, message) {
+  if (Object.is(actual, expected)) {
+    throw new Error(message || `expected values to differ, got ${JSON.stringify(actual)}`);
+  }
+}
+
+function assertDeepEqual(actual, expected, message) {
+  const actualJson = JSON.stringify(actual);
+  const expectedJson = JSON.stringify(expected);
+  if (actualJson !== expectedJson) {
+    throw new Error(message || `expected ${expectedJson}, got ${actualJson}`);
+  }
+}
+
 function simulationPayloadMatchesSharedResultsContract() {
   const run = sampleSimulationRun({
     names: ["x", "y"],
@@ -149,9 +169,14 @@ async function persistsSimulationRunsThroughProjectFilesystem() {
   const resultEntries = projectFs.listFiles().filter(
     (entry) => entry.path.startsWith(".rumoca/results/") && !entry.path.startsWith(".rumoca/results/runs/"),
   );
-  assert(resultEntries.length === 1, `expected one last-result entry, got ${resultEntries.length}`);
-  const lastResult = projectFs.getFileContent(resultEntries[0].path);
-  assert(typeof lastResult === "string" && lastResult.includes('"model": "Ball"'), "expected last result sidecar");
+  assertDeepEqual(
+    resultEntries.map((entry) => entry.path),
+    [".rumoca/results/index.json"],
+    `expected only results index sidecar, got ${resultEntries.map((entry) => entry.path).join(", ")}`,
+  );
+  const indexDoc = JSON.parse(projectFs.getFileContent(resultEntries[0].path));
+  assertEqual(indexDoc.latestRuns?.length, 1, "expected one latest-run index entry");
+  assertEqual(indexDoc.latestRuns?.[0]?.model, "Ball");
   const runFiles = projectFs.listFiles().filter((entry) => entry.path.startsWith(".rumoca/results/runs/"));
   assert(runFiles.length === 1, `expected one persisted run doc, got ${runFiles.length}`);
   const persistedRunDoc = JSON.parse(runFiles[0].content);
@@ -197,13 +222,17 @@ async function persistsSeparatePathsForResultSlugCollisions() {
   const resultEntries = projectFs.listFiles().filter(
     (entry) => entry.path.startsWith(".rumoca/results/") && !entry.path.startsWith(".rumoca/results/runs/"),
   );
-  assert(
-    resultEntries.length === 2,
-    `expected two last-result entries for colliding slugs, got ${resultEntries.length}`,
+  assertDeepEqual(
+    resultEntries.map((entry) => entry.path),
+    [".rumoca/results/index.json"],
+    `expected only one results index file, got ${resultEntries.map((entry) => entry.path).join(", ")}`,
   );
-  assert(
-    resultEntries[0].path !== resultEntries[1].path,
-    "expected different hashed result paths for colliding model labels",
+  const indexDoc = JSON.parse(resultEntries[0].content);
+  assertEqual(indexDoc.latestRuns?.length, 2, "expected two latest-run entries in the shared index");
+  assertNotEqual(
+    indexDoc.latestRuns[0].runId,
+    indexDoc.latestRuns[1].runId,
+    "expected different run ids for colliding model labels",
   );
 }
 

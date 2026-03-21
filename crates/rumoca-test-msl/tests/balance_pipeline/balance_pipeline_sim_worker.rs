@@ -38,6 +38,12 @@ pub(super) const SLOW_SIM_PREP_LOG_THRESHOLD_ENV: &str = "RUMOCA_MSL_SLOW_SIM_PR
 /// When unset, no per-worker memory cap is applied and worker fan-out defaults
 /// to stage-level CPU parallelism (`n_cpus / 2` by default).
 pub(super) const SIM_WORKER_MEMORY_MB_ENV: &str = "RUMOCA_MSL_SIM_WORKER_MEMORY_MB";
+/// `prlimit --as` caps virtual address space, not resident memory.
+///
+/// The Rust sim worker needs substantial mmap/headroom above its practical RSS,
+/// otherwise modest models abort inside the allocator before the solver timeout
+/// path can report a normal `sim_timeout`.
+const SIM_WORKER_ADDRESS_SPACE_HEADROOM_FACTOR: usize = 2;
 
 static SIM_WORKER_EXE: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
 static SIM_WORKER_PRLIMIT_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -63,6 +69,13 @@ pub(super) fn sim_worker_memory_limit_mb() -> Option<usize> {
     let raw = std::env::var(SIM_WORKER_MEMORY_MB_ENV).ok()?;
     let parsed = raw.trim().parse::<usize>().ok()?;
     if parsed == 0 { None } else { Some(parsed) }
+}
+
+fn sim_worker_address_space_limit_bytes(memory_mb: usize) -> usize {
+    memory_mb
+        .saturating_mul(SIM_WORKER_ADDRESS_SPACE_HEADROOM_FACTOR)
+        .saturating_mul(1024)
+        .saturating_mul(1024)
 }
 
 fn slow_sim_prep_log_threshold_secs_from_override(raw: Option<&str>) -> Option<f64> {
@@ -419,7 +432,7 @@ pub(super) fn spawn_sim_worker_process(
     let mut cmd = match sim_worker_memory_limit_mb() {
         Some(memory_mb) if sim_worker_prlimit_available() => {
             let mut wrapped = Command::new("prlimit");
-            let bytes = memory_mb.saturating_mul(1024).saturating_mul(1024);
+            let bytes = sim_worker_address_space_limit_bytes(memory_mb);
             wrapped
                 .arg(format!("--as={bytes}"))
                 .arg("--")
@@ -855,6 +868,18 @@ mod tests {
         assert_eq!(
             sim_worker_wall_timeout_secs(10.0),
             10.0 + SIM_WORKER_TIMEOUT_GRACE_SECS
+        );
+    }
+
+    #[test]
+    fn sim_worker_address_space_limit_adds_virtual_memory_headroom() {
+        assert_eq!(
+            sim_worker_address_space_limit_bytes(2048),
+            4096 * 1024 * 1024
+        );
+        assert_eq!(
+            sim_worker_address_space_limit_bytes(512),
+            1024 * 1024 * 1024
         );
     }
 

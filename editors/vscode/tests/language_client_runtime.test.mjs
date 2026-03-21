@@ -34,10 +34,10 @@ test("configuration restart stops the old client and updates the notebook execut
   runtime.setServerPath(path.join(path.sep, "tmp", "servers", "rumoca-0", "rumoca-lsp"));
 
   const changedKeys = await runtime.handleConfigurationChange(
-    (section) => section === "rumoca.modelicaPath",
+    (section) => section === "rumoca.sourceRootPaths",
   );
 
-  assert.deepEqual(changedKeys, ["modelicaPath"]);
+  assert.deepEqual(changedKeys, ["sourceRootPaths"]);
   assert.equal(startCallCount, 1);
   assert.deepEqual(stoppedClientIds, ["client-0"]);
   assert.equal(

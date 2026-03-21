@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   modelScopedViewerScriptRelativePath,
+  preferredViewerScriptPathForModel,
   resolveModelIdentityUuid,
   resolvePreferredViewerScriptPath,
 } from "../out/results_paths.js";
@@ -94,9 +95,24 @@ test("resolvePreferredViewerScriptPath prefers the model-scoped by-id sidecar di
   );
 });
 
-test("resolvePreferredViewerScriptPath rejects unresolved by-id lookups", async () => {
+test("resolvePreferredViewerScriptPath falls back to the stable model path when no sidecar exists", async () => {
+  const workspaceRoot = await makeWorkspaceWithIdentity([]);
+
+  const resolved = await resolvePreferredViewerScriptPath(
+    workspaceRoot,
+    "Pkg.System.Ball",
+    "viewer_3d",
+  );
+
+  assert.equal(
+    resolved,
+    preferredViewerScriptPathForModel("Pkg.System.Ball", "viewer_3d"),
+  );
+});
+
+test("resolvePreferredViewerScriptPath still rejects missing workspace roots", async () => {
   await assert.rejects(
     () => resolvePreferredViewerScriptPath(undefined, "Pkg.System.Ball", "viewer_3d"),
-    /Missing model sidecar UUID|without a workspace root/,
+    /without a workspace root/,
   );
 });

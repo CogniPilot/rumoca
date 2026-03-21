@@ -20,12 +20,12 @@ fn compiler_with_msl() -> Option<Compiler> {
     if let Some(raw) = env::var_os("MODELICAPATH") {
         return Some(
             env::split_paths(&raw).fold(Compiler::new(), |compiler, path| {
-                compiler.library(path.to_string_lossy().as_ref())
+                compiler.source_root(path.to_string_lossy().as_ref())
             }),
         );
     }
     if let Some(msl_root) = cached_msl_root() {
-        return Some(Compiler::new().library(msl_root.to_string_lossy().as_ref()));
+        return Some(Compiler::new().source_root(msl_root.to_string_lossy().as_ref()));
     }
     None
 }

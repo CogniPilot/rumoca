@@ -5,7 +5,7 @@ use super::editor_surface_tests::{
     assert_formatting_wraps_handler,
 };
 
-const QUERY_CLASS_LIBRARY_SOURCE: &str = r#"package Lib
+const QUERY_CLASS_SOURCE_ROOT_SOURCE: &str = r#"package Lib
   block Target
     Real y;
   equation
@@ -34,12 +34,15 @@ fn query_class_reference_position() -> Position {
 
 async fn seed_query_class_workspace_documents(
     server: &ModelicaLanguageServer,
-    library_path: &Path,
+    source_root_path: &Path,
     active_uri: &Url,
 ) {
     let active_key = session_document_uri_key(active_uri);
     let mut session = server.session.write().await;
-    session.update_document(&library_path.to_string_lossy(), QUERY_CLASS_LIBRARY_SOURCE);
+    session.update_document(
+        &source_root_path.to_string_lossy(),
+        QUERY_CLASS_SOURCE_ROOT_SOURCE,
+    );
     session.update_document(&active_key, QUERY_CLASS_ACTIVE_SOURCE);
 }
 
@@ -102,18 +105,26 @@ async fn rename_query_class_target(
         .expect("rename should produce edits")
 }
 
-fn assert_query_class_rename_edits(rename: &WorkspaceEdit, library_uri: &Url, active_uri: &Url) {
+fn assert_query_class_rename_edits(
+    rename: &WorkspaceEdit,
+    source_root_uri: &Url,
+    active_uri: &Url,
+) {
     let changes = rename.changes.as_ref().expect("rename changes");
-    let library_edits = changes
-        .get(library_uri)
-        .expect("rename should edit the library declaration file");
+    let source_root_edits = changes
+        .get(source_root_uri)
+        .expect("rename should edit the source-root declaration file");
     assert!(
-        library_edits.iter().any(|edit| edit.range.start.line == 1),
-        "rename should update the library declaration"
+        source_root_edits
+            .iter()
+            .any(|edit| edit.range.start.line == 1),
+        "rename should update the source-root declaration"
     );
     assert!(
-        library_edits.iter().any(|edit| edit.range.start.line == 5),
-        "rename should update the library end name"
+        source_root_edits
+            .iter()
+            .any(|edit| edit.range.start.line == 5),
+        "rename should update the source-root end name"
     );
 
     let active_edits = changes
@@ -263,17 +274,18 @@ end M;
 }
 
 #[test]
-fn document_symbol_returns_outline_for_open_library_document() {
+fn document_symbol_returns_outline_for_open_source_root_document() {
     run_async_test(async {
-        let temp = new_temp_dir("document-symbol-library-overlay");
-        let library_root = write_test_library(&temp, "Lib");
-        let library_file = library_root.join("package.mo");
-        let uri = Url::from_file_path(&library_file).expect("file uri");
-        let source = std::fs::read_to_string(&library_file).expect("read test library");
+        let temp = new_temp_dir("document-symbol-source-root-overlay");
+        let source_root_dir = write_test_source_root(&temp, "Lib");
+        let source_root_file = source_root_dir.join("package.mo");
+        let uri = Url::from_file_path(&source_root_file).expect("file uri");
+        let source = std::fs::read_to_string(&source_root_file).expect("read test source root");
 
         let service = new_test_service();
         let server = service.inner();
-        *server.library_paths.write().await = vec![library_root.to_string_lossy().to_string()];
+        *server.source_root_paths.write().await =
+            vec![source_root_dir.to_string_lossy().to_string()];
 
         server
             .did_open(DidOpenTextDocumentParams {
@@ -289,11 +301,11 @@ fn document_symbol_returns_outline_for_open_library_document() {
         let symbols = fetch_document_symbols(server, &uri).await;
         assert!(
             document_symbol_tree_contains_name(&symbols, "Lib"),
-            "open library document should return package symbols"
+            "open source-root document should return package symbols"
         );
         assert!(
             document_symbol_tree_contains_name(&symbols, "A"),
-            "open library document should return nested class symbols"
+            "open source-root document should return nested class symbols"
         );
     });
 }
@@ -401,20 +413,20 @@ fn references_prepare_rename_and_rename_follow_component_occurrences() {
 fn references_prepare_rename_and_rename_follow_query_backed_class_targets() {
     run_async_test(async {
         let temp = new_temp_dir("references-rename-query-class");
-        let library_path = temp.join("lib.mo");
-        let library_uri = Url::from_file_path(&library_path).expect("file uri");
+        let source_root_path = temp.join("lib.mo");
+        let source_root_uri = Url::from_file_path(&source_root_path).expect("file uri");
         let active_path = temp.join("active.mo");
         let active_uri = Url::from_file_path(&active_path).expect("file uri");
         let service = new_test_service();
         let server = service.inner();
-        seed_query_class_workspace_documents(server, &library_path, &active_uri).await;
+        seed_query_class_workspace_documents(server, &source_root_path, &active_uri).await;
 
         let references = fetch_query_class_references(server, &active_uri).await;
         assert!(
-            references
-                .iter()
-                .any(|location| { location.uri == library_uri && location.range.start.line == 1 }),
-            "references should include the library declaration"
+            references.iter().any(|location| {
+                location.uri == source_root_uri && location.range.start.line == 1
+            }),
+            "references should include the source-root declaration"
         );
         assert!(
             references
@@ -430,7 +442,7 @@ fn references_prepare_rename_and_rename_follow_query_backed_class_targets() {
         assert_eq!(range.start.line, 3);
 
         let rename = rename_query_class_target(server, &active_uri).await;
-        assert_query_class_rename_edits(&rename, &library_uri, &active_uri);
+        assert_query_class_rename_edits(&rename, &source_root_uri, &active_uri);
     });
 }
 

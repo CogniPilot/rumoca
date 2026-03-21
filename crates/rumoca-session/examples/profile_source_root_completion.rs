@@ -15,11 +15,11 @@ fn default_msl_archive_root() -> PathBuf {
 fn parse_args() -> PathBuf {
     let mut args = std::env::args().skip(1);
     match args.next() {
-        Some(arg) if arg == "--library-root" => {
-            let value = args.next().expect("--library-root requires a path");
+        Some(arg) if arg == "--source-root" => {
+            let value = args.next().expect("--source-root requires a path");
             assert!(
                 args.next().is_none(),
-                "unexpected extra arguments after --library-root"
+                "unexpected extra arguments after --source-root"
             );
             PathBuf::from(value)
         }
@@ -54,39 +54,39 @@ fn namespace_class_names(session: &mut Session) -> Vec<String> {
 
 fn main() {
     let archive_root = parse_args();
-    let library_paths = [
+    let source_root_paths = [
         archive_root.join("Modelica 4.1.0"),
         archive_root.join("ModelicaServices 4.1.0"),
         archive_root.join("Complex.mo"),
     ];
 
-    for path in &library_paths {
+    for path in &source_root_paths {
         assert!(
             path.exists(),
-            "expected library path to exist: {}",
+            "expected source-root path to exist: {}",
             path.display()
         );
     }
 
     let mut session = Session::new(SessionConfig::default());
 
-    for library_path in &library_paths {
+    for source_root_path in &source_root_paths {
         let started = Instant::now();
-        let report = session.index_library_tolerant(
-            &library_path.display().to_string(),
-            SourceRootKind::DurableLibrary,
-            library_path,
+        let report = session.load_source_root_tolerant(
+            &source_root_path.display().to_string(),
+            SourceRootKind::DurableExternal,
+            source_root_path,
             None,
         );
         assert!(
             report.diagnostics.is_empty(),
-            "library load failed for {}: {:?}",
-            library_path.display(),
+            "source-root load failed for {}: {:?}",
+            source_root_path.display(),
             report.diagnostics
         );
         println!(
             "indexed {} in {:?} ({:?}, {} inserted)",
-            library_path.display(),
+            source_root_path.display(),
             started.elapsed(),
             report.cache_status,
             report.inserted_file_count
@@ -96,7 +96,7 @@ fn main() {
     let completion_started = Instant::now();
     let class_names = namespace_class_names(&mut session);
     println!(
-        "built library completion cache in {:?} ({} classes)",
+        "built source-root completion cache in {:?} ({} classes)",
         completion_started.elapsed(),
         class_names.len()
     );

@@ -7,8 +7,8 @@ use rumoca_session::compile::{
     CompilationResult, PhaseResult, Session, SessionConfig, SourceRootKind, StrictCompileReport,
     compile_phase_timing_stats, reset_compile_phase_timing_stats,
 };
-use rumoca_session::libraries::parse_library_with_cache;
 use rumoca_session::runtime::{SimOptions, SimSolverMode, simulate_dae};
+use rumoca_session::source_roots::parse_source_root_with_cache;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProfileMode {
@@ -22,7 +22,7 @@ enum ProfileMode {
 struct Args {
     /// Root directory of the extracted MSL release.
     #[arg(long)]
-    library: PathBuf,
+    source_root: PathBuf,
 
     /// Fully qualified model name to compile.
     #[arg(long)]
@@ -73,25 +73,28 @@ fn print_compile_phase_snapshot() {
     );
 }
 
-fn load_profiled_model(library: &std::path::Path, model: &str) -> Result<Box<CompilationResult>> {
-    let parsed = parse_library_with_cache(library).with_context(|| {
+fn load_profiled_model(
+    source_root: &std::path::Path,
+    model: &str,
+) -> Result<Box<CompilationResult>> {
+    let parsed = parse_source_root_with_cache(source_root).with_context(|| {
         format!(
-            "failed to parse Modelica library under {}",
-            library.display()
+            "failed to parse Modelica source root under {}",
+            source_root.display()
         )
     })?;
 
     let mut session = Session::new(SessionConfig::default());
     let inserted = session.replace_parsed_source_set(
         "profile-msl",
-        SourceRootKind::DurableLibrary,
+        SourceRootKind::DurableExternal,
         parsed.documents,
         None,
     );
     println!(
-        "Loaded {} parsed library documents from {} (cache: {:?})",
+        "Loaded {} parsed source-root documents from {} (cache: {:?})",
         inserted,
-        library.display(),
+        source_root.display(),
         parsed.cache_status
     );
 
@@ -142,7 +145,7 @@ fn build_sim_options(result: &CompilationResult, stop_time_override: Option<f64>
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let result = load_profiled_model(&args.library, &args.model)?;
+    let result = load_profiled_model(&args.source_root, &args.model)?;
 
     if matches!(args.mode, ProfileMode::Compile) {
         return Ok(());
@@ -169,10 +172,10 @@ mod tests {
     use super::*;
 
     fn write_library(temp: &tempfile::TempDir) -> PathBuf {
-        let library = temp.path().join("Lib");
-        std::fs::create_dir_all(&library).expect("mkdir");
+        let source_root = temp.path().join("Lib");
+        std::fs::create_dir_all(&source_root).expect("mkdir");
         std::fs::write(
-            library.join("package.mo"),
+            source_root.join("package.mo"),
             r#"
 within ;
 package Lib
@@ -188,14 +191,14 @@ end Lib;
 "#,
         )
         .expect("write package");
-        library
+        source_root
     }
 
     #[test]
-    fn load_profiled_model_compiles_minimal_library() {
+    fn load_profiled_model_compiles_minimal_source_root() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let library = write_library(&temp);
-        let result = load_profiled_model(&library, "Lib.M").expect("focused compile");
+        let source_root = write_library(&temp);
+        let result = load_profiled_model(&source_root, "Lib.M").expect("focused compile");
         assert_eq!(result.dae.states.len(), 1);
         assert_eq!(result.experiment_stop_time, Some(1.5));
     }
@@ -203,8 +206,8 @@ end Lib;
     #[test]
     fn build_sim_options_uses_experiment_metadata() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let library = write_library(&temp);
-        let result = load_profiled_model(&library, "Lib.M").expect("focused compile");
+        let source_root = write_library(&temp);
+        let result = load_profiled_model(&source_root, "Lib.M").expect("focused compile");
         let options = build_sim_options(&result, None);
         assert_eq!(options.t_start, 0.25);
         assert_eq!(options.t_end, 1.5);
@@ -217,8 +220,8 @@ end Lib;
     #[test]
     fn build_sim_options_honors_stop_time_override() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let library = write_library(&temp);
-        let result = load_profiled_model(&library, "Lib.M").expect("focused compile");
+        let source_root = write_library(&temp);
+        let result = load_profiled_model(&source_root, "Lib.M").expect("focused compile");
         let options = build_sim_options(&result, Some(2.0));
         assert_eq!(options.t_end, 2.0);
     }

@@ -22,7 +22,7 @@
 //!
 //! `Session` and `SessionConfig` are intentionally available at the crate root.
 //! All other APIs are namespaced (`compile`, `parsing`, `runtime`, `analysis`,
-//! `libraries`, `project`) to prevent root facade growth.
+//! `source_roots`, `project`) to prevent root facade growth.
 //!
 //! # Example
 //!
@@ -43,8 +43,6 @@ mod experiment;
 mod instrumentation;
 #[cfg(test)]
 mod instrumentation_tests;
-mod library;
-mod library_cache;
 mod merge;
 mod package_layout;
 mod parse;
@@ -52,6 +50,8 @@ mod parsed_artifact_cache;
 mod project_config;
 mod runtime_api;
 mod session;
+mod source_root_cache;
+mod source_root_discovery;
 mod traversal_adapter;
 
 /// Analysis helpers.
@@ -62,17 +62,24 @@ pub mod analysis {
     };
 }
 
-/// Library discovery and cache helpers.
-pub mod libraries {
-    pub use crate::library::{
-        extract_declared_roots, infer_library_roots, should_load_library_for_source,
-        source_contains_identifier,
-    };
-    pub use crate::library_cache::{
-        LibraryCacheStatus, LibraryCacheTiming, ParsedLibrary, parse_library_with_cache,
-        parse_library_with_cache_in, resolve_library_cache_dir,
-    };
+/// Source-root discovery and cache helpers.
+pub mod source_roots {
     pub use crate::package_layout::PackageLayoutError;
+    pub use crate::session::SourceRootRefreshPlan;
+    pub use crate::source_root_cache::{
+        ParsedSourceRoot, SourceRootCacheStatus, SourceRootCacheTiming,
+        parse_source_root_with_cache, parse_source_root_with_cache_in,
+        resolve_source_root_cache_dir,
+    };
+    pub use crate::source_root_discovery::{
+        SourceRootDuplicateSkip, SourceRootLoadPlan, canonical_path_key,
+        classify_configured_source_root_kind, merge_source_root_paths, plan_source_root_loads,
+        referenced_unloaded_source_root_paths, render_source_root_indexing_failed_message,
+        render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
+        render_source_root_status_message, source_requires_unloaded_source_roots,
+        source_root_paths_changed, source_root_source_set_key, source_root_status_display_name,
+        sources_require_loaded_source_roots,
+    };
 }
 
 /// Parsing and merge helpers.
@@ -99,11 +106,11 @@ pub mod parsing {
 /// Workspace project config and sidecar helpers.
 pub mod project {
     pub use crate::project_config::{
-        EffectiveSimulationConfig, EffectiveSimulationPreset, LibrariesConfig, ModelIdentityRecord,
-        PlotConfig, PlotDefaults, PlotModelConfig, PlotViewConfig, ProjectConfig,
-        ProjectConfigFile, ProjectFileMoveHint, ProjectGcCandidate, ProjectGcReport, ProjectMeta,
-        ProjectResyncRemap, ProjectResyncReport, ProjectSimulationSnapshot, SimulationConfig,
-        SimulationDefaults, SimulationModelOverride, clear_model_simulation_preset,
+        EffectiveSimulationConfig, EffectiveSimulationPreset, ModelIdentityRecord, PlotConfig,
+        PlotDefaults, PlotModelConfig, PlotViewConfig, ProjectConfig, ProjectConfigFile,
+        ProjectFileMoveHint, ProjectGcCandidate, ProjectGcReport, ProjectMeta, ProjectResyncRemap,
+        ProjectResyncReport, ProjectSimulationSnapshot, SimulationConfig, SimulationDefaults,
+        SimulationModelOverride, SourceRootsConfig, clear_model_simulation_preset,
         gc_orphan_model_sidecars, load_last_simulation_result_for_model, load_plot_views_for_model,
         load_simulation_run, load_simulation_snapshot_for_model, resync_model_sidecars,
         resync_model_sidecars_with_known_models, resync_model_sidecars_with_move_hints,
@@ -129,13 +136,15 @@ pub mod compile {
     };
     pub use crate::session::{
         ClassLocalCompletionItem, ClassLocalCompletionKind, CompilationMode, CompilationResult,
-        CompilationSummary, CompilePhaseTimingSnapshot, CompilePhaseTimingStat, CompiledLibrary,
+        CompilationSummary, CompilePhaseTimingSnapshot, CompilePhaseTimingStat, CompiledSourceRoot,
         DaeCompilationResult, Document, DocumentSymbol, DocumentSymbolKind, FailedPhase,
-        IndexingMode, IndexingReport, LocalComponentInfo, ModelDiagnostics, ModelFailureDiagnostic,
-        NavigationClassTargetInfo, PhaseResult, SemanticDiagnosticsMode, Session, SessionChange,
-        SessionConfig, SessionSnapshot, SourceRootDurability, SourceRootKind, StrictCompileReport,
-        WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
-        compile_phase_timing_stats, reset_compile_phase_timing_stats,
+        LocalComponentInfo, ModelDiagnostics, ModelFailureDiagnostic, NavigationClassTargetInfo,
+        ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session, SessionChange,
+        SessionConfig, SessionSnapshot, SourceRootActivityKind, SourceRootActivityPhase,
+        SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind, SourceRootLoadMode,
+        SourceRootLoadReport, SourceRootStatusSnapshot, StrictCompileReport, WorkspaceSymbol,
+        WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming, compile_phase_timing_stats,
+        reset_compile_phase_timing_stats,
     };
 }
 

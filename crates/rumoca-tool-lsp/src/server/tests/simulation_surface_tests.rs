@@ -1,4 +1,5 @@
 use super::*;
+use std::path::{Path, PathBuf};
 
 async fn wait_for_simulation_compile_cache_model(
     server: &ModelicaLanguageServer,
@@ -22,6 +23,64 @@ async fn wait_for_simulation_compile_cache_model(
 async fn has_simulation_compile_cache_model(server: &ModelicaLanguageServer, model: &str) -> bool {
     let cache = server.simulation_compile_cache.read().await;
     format!("{:?}", cache.keys().collect::<Vec<_>>()).contains(model)
+}
+
+fn write_simulation_subtree_workspace(temp: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let workspace_root = temp.join("A");
+    std::fs::create_dir_all(workspace_root.join("Sub1")).expect("mkdir Sub1");
+    std::fs::create_dir_all(workspace_root.join("Sub2")).expect("mkdir Sub2");
+    std::fs::write(
+        workspace_root.join("package.mo"),
+        "within ;\npackage A\nend A;\n",
+    )
+    .expect("write A/package.mo");
+    std::fs::write(
+        workspace_root.join("Sub1/package.mo"),
+        "within A;\npackage Sub1\nend Sub1;\n",
+    )
+    .expect("write A/Sub1/package.mo");
+    let model_path = workspace_root.join("Sub1/M.mo");
+    std::fs::write(
+        &model_path,
+        "within A.Sub1;\nmodel M\n  Real x(start=0);\nequation\n  der(x) = 1;\nend M;\n",
+    )
+    .expect("write A/Sub1/M.mo");
+    std::fs::write(
+        workspace_root.join("Sub2/package.mo"),
+        "within A;\npackage Sub2\nend Sub2;\n",
+    )
+    .expect("write A/Sub2/package.mo");
+    std::fs::write(
+        workspace_root.join("Sub2/N.mo"),
+        "within A.Sub2;\nmodel N\nend N;\n",
+    )
+    .expect("write A/Sub2/N.mo");
+    let focus = temp.join("Ball.mo");
+    std::fs::write(
+        &focus,
+        "model Ball\n  A.Sub1.M m;\n  A.Sub2.N n;\nend Ball;\n",
+    )
+    .expect("write focus");
+    (workspace_root, model_path, focus)
+}
+
+fn apply_structural_subtree_edit(session: &mut Session, model_uri: &str) {
+    let open_error = session.update_document(
+        model_uri,
+        "within A.Sub1;\nmodel M\n  Real x(start=0);\nequation\n  der(x) = 1;\nend M;\n",
+    );
+    assert!(
+        open_error.is_none(),
+        "detaching the source-root-backed document should stay parseable"
+    );
+    let parse_error = session.update_document(
+        model_uri,
+        "within A.Sub1;\nmodel M\n  Real x(start=0);\n  parameter Real gain = 2;\nequation\n  der(x) = gain;\nend M;\n",
+    );
+    assert!(
+        parse_error.is_none(),
+        "structural subtree edit should stay parseable"
+    );
 }
 
 #[test]
@@ -226,7 +285,71 @@ fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document
 }
 
 #[test]
-fn isolated_simulation_session_skips_loaded_libraries_for_local_only_models() {
+fn simulation_compile_keeps_sibling_namespace_fingerprint_warm_after_subtree_refresh() {
+    run_async_test(async {
+        let temp = new_temp_dir("simulation-subtree-refresh");
+        let (workspace_root, model_path, focus) = write_simulation_subtree_workspace(&temp);
+
+        let parsed = parse_source_root_with_cache(&workspace_root).expect("parse workspace root");
+        let source_set_id = format!(
+            "workspace::{}",
+            canonical_path_key(workspace_root.to_string_lossy().as_ref())
+        );
+        let model_uri = model_path.to_string_lossy().to_string();
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.replace_parsed_source_set(
+                &source_set_id,
+                SourceRootKind::Workspace,
+                parsed.documents,
+                None,
+            );
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+            session
+                .namespace_index_query("")
+                .expect("prime namespace cache");
+        }
+        let sub2_before = server
+            .session
+            .read()
+            .await
+            .namespace_fingerprint_cached("A.Sub2.")
+            .expect("A.Sub2 namespace fingerprint before subtree refresh");
+
+        {
+            let mut session = server.session.write().await;
+            apply_structural_subtree_edit(&mut session, &model_uri);
+        }
+
+        let compiled = server
+            .compile_model_for_simulation("Ball", &focus.to_string_lossy())
+            .await
+            .expect("simulation compile after subtree refresh should succeed");
+
+        assert_eq!(compiled.dae.states.len(), 1);
+        let session = server.session.read().await;
+        assert!(
+            session.dirty_source_root_keys().is_empty(),
+            "simulation compile should clear the pending subtree refresh state"
+        );
+        let sub2_after = session
+            .namespace_fingerprint_cached("A.Sub2.")
+            .expect("A.Sub2 namespace fingerprint after subtree refresh");
+        assert_eq!(
+            sub2_before, sub2_after,
+            "simulation compile after refreshing A.Sub1 should keep the unaffected A.Sub2 subtree warm"
+        );
+    });
+}
+
+#[test]
+fn isolated_simulation_session_skips_loaded_source_roots_for_local_only_models() {
     run_async_test(async {
         let temp = new_temp_dir("simulation-isolate-local-only");
         let focus = temp.join("Decay.mo");
@@ -235,35 +358,47 @@ fn isolated_simulation_session_skips_loaded_libraries_for_local_only_models() {
             "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
         )
         .expect("write focus");
-        let library_root = write_test_library(&temp, "Lib");
-        let library_doc =
-            canonical_path_key(library_root.join("package.mo").to_string_lossy().as_ref());
+        let source_root_dir = write_test_source_root(&temp, "Lib");
+        let source_root_doc = canonical_path_key(
+            source_root_dir
+                .join("package.mo")
+                .to_string_lossy()
+                .as_ref(),
+        );
 
         let service = new_test_service();
         let server = service.inner();
+        let source_set_key = source_root_source_set_key(source_root_dir.to_string_lossy().as_ref());
+        let source_root_key = canonical_path_key(source_root_dir.to_string_lossy().as_ref());
         {
             let mut session = server.session.write().await;
-            session.replace_parsed_source_set(
-                &library_source_set_id(library_root.to_string_lossy().as_ref()),
-                SourceRootKind::Library,
-                vec![(library_doc.clone(), ast::StoredDefinition::default())],
-                None,
-            );
             session.update_document(
                 &focus.to_string_lossy(),
                 &std::fs::read_to_string(&focus).expect("read focus"),
             );
         }
+        let source_root_epoch = server.session.read().await.source_root_state_epoch();
         server
-            .loaded_libraries
-            .write()
+            .load_source_root_if_current(
+                source_root_dir.to_string_lossy().as_ref(),
+                &source_root_key,
+                &source_set_key,
+                None,
+                source_root_epoch,
+                SourceRootIndexingReason::CompletionImports,
+            )
             .await
-            .insert(canonical_path_key(library_root.to_string_lossy().as_ref()));
+            .expect("source-root load should succeed")
+            .expect("source root should load");
 
         let uris = server
             .isolated_simulation_document_uris_for_focus(&focus.to_string_lossy())
             .await
             .expect("isolated session uris");
+        let canonical_uris = uris
+            .iter()
+            .map(|uri| canonical_path_key(uri))
+            .collect::<Vec<_>>();
 
         assert!(
             uris.iter()
@@ -271,30 +406,84 @@ fn isolated_simulation_session_skips_loaded_libraries_for_local_only_models() {
             "isolated simulation session should keep the focus document",
         );
         assert!(
-            !uris.iter().any(|uri| uri == &library_doc),
-            "local-only simulation compile should not clone unrelated loaded library documents",
+            !canonical_uris.iter().any(|uri| uri == &source_root_doc),
+            "local-only simulation compile should not clone unrelated loaded source-root documents",
         );
     });
 }
 
 #[test]
-fn isolated_simulation_session_keeps_loaded_libraries_when_referenced() {
+fn isolated_simulation_session_keeps_loaded_source_roots_when_referenced() {
     run_async_test(async {
-        let temp = new_temp_dir("simulation-isolate-with-library");
+        let temp = new_temp_dir("simulation-isolate-with-source-root");
         let focus = temp.join("Decay.mo");
         std::fs::write(&focus, "model Decay\n  Lib.A a;\nend Decay;\n").expect("write focus");
-        let library_root = write_test_library(&temp, "Lib");
-        let library_doc =
-            canonical_path_key(library_root.join("package.mo").to_string_lossy().as_ref());
+        let source_root_dir = write_test_source_root(&temp, "Lib");
+        let source_root_doc = canonical_path_key(
+            source_root_dir
+                .join("package.mo")
+                .to_string_lossy()
+                .as_ref(),
+        );
+
+        let service = new_test_service();
+        let server = service.inner();
+        let source_set_key = source_root_source_set_key(source_root_dir.to_string_lossy().as_ref());
+        let source_root_key = canonical_path_key(source_root_dir.to_string_lossy().as_ref());
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+        let source_root_epoch = server.session.read().await.source_root_state_epoch();
+        server
+            .load_source_root_if_current(
+                source_root_dir.to_string_lossy().as_ref(),
+                &source_root_key,
+                &source_set_key,
+                None,
+                source_root_epoch,
+                SourceRootIndexingReason::CompletionImports,
+            )
+            .await
+            .expect("source-root load should succeed")
+            .expect("source root should load");
+
+        let uris = server
+            .isolated_simulation_document_uris_for_focus(&focus.to_string_lossy())
+            .await
+            .expect("isolated session uris");
+        let canonical_uris = uris
+            .iter()
+            .map(|uri| canonical_path_key(uri))
+            .collect::<Vec<_>>();
+
+        assert!(
+            canonical_uris.iter().any(|uri| uri == &source_root_doc),
+            "simulation compile should keep loaded source-root documents when the local compile unit references that root",
+        );
+    });
+}
+
+#[test]
+fn isolated_simulation_session_keeps_workspace_source_root_documents() {
+    run_async_test(async {
+        let temp = new_temp_dir("simulation-isolate-with-workspace-root");
+        let focus = temp.join("Decay.mo");
+        std::fs::write(&focus, "model Decay\n  NewFolder.Test test;\nend Decay;\n")
+            .expect("write focus");
+        let workspace_doc = "workspace/NewFolder/Test.mo".to_string();
 
         let service = new_test_service();
         let server = service.inner();
         {
             let mut session = server.session.write().await;
             session.replace_parsed_source_set(
-                &library_source_set_id(library_root.to_string_lossy().as_ref()),
-                SourceRootKind::Library,
-                vec![(library_doc.clone(), ast::StoredDefinition::default())],
+                "workspace",
+                SourceRootKind::Workspace,
+                vec![(workspace_doc.clone(), ast::StoredDefinition::default())],
                 None,
             );
             session.update_document(
@@ -302,11 +491,6 @@ fn isolated_simulation_session_keeps_loaded_libraries_when_referenced() {
                 &std::fs::read_to_string(&focus).expect("read focus"),
             );
         }
-        server
-            .loaded_libraries
-            .write()
-            .await
-            .insert(canonical_path_key(library_root.to_string_lossy().as_ref()));
 
         let uris = server
             .isolated_simulation_document_uris_for_focus(&focus.to_string_lossy())
@@ -314,8 +498,8 @@ fn isolated_simulation_session_keeps_loaded_libraries_when_referenced() {
             .expect("isolated session uris");
 
         assert!(
-            uris.iter().any(|uri| uri == &library_doc),
-            "simulation compile should keep loaded library documents when the local compile unit references that root",
+            uris.iter().any(|uri| uri == &workspace_doc),
+            "simulation isolation should keep source-root-backed workspace documents",
         );
     });
 }
@@ -349,7 +533,7 @@ fn prepare_simulation_models_populates_cache_for_each_requested_model() {
                     solver: "auto".to_string(),
                     t_end: 10.0,
                     dt: None,
-                    library_paths: Vec::new(),
+                    source_root_paths: Vec::new(),
                 },
                 None,
             )
@@ -402,7 +586,7 @@ fn get_simulation_config_prewarms_open_document_model() {
                     "tEnd": 1.0,
                     "dt": 0.1,
                     "outputDir": "",
-                    "modelicaPath": [],
+                    "sourceRootPaths": [],
                 }
             })))
             .await
@@ -463,7 +647,7 @@ fn get_simulation_config_waits_for_matching_prewarm() {
                     "tEnd": 1.0,
                     "dt": 0.1,
                     "outputDir": "",
-                    "modelicaPath": [],
+                    "sourceRootPaths": [],
                 }
             })))
             .await
@@ -598,7 +782,7 @@ fn prepare_simulation_models_request_returns_stale_error_after_revision_bump() {
                             solver: "auto".to_string(),
                             t_end: 10.0,
                             dt: None,
-                            library_paths: Vec::new(),
+                            source_root_paths: Vec::new(),
                         },
                         Some(token),
                     )
@@ -673,7 +857,7 @@ fn simulate_model_returns_stale_error_after_revision_bump() {
                                 "solver": "auto",
                                 "tEnd": 1.0,
                                 "dt": 0.1,
-                                "modelicaPath": []
+                                "sourceRootPaths": []
                             }
                         })),
                         Some(token),

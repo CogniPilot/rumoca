@@ -1,5 +1,11 @@
 use super::*;
 use rumoca_session::compile::{reset_session_cache_stats, session_cache_stats};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::source_root_api::sync_project_sources_with_cache_root_for_tests;
+
+mod lsp_diagnostics_tests;
+mod source_root_api_tests;
 
 static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -29,9 +35,42 @@ const USES_MODELICA_SOURCE: &str = r#"
     end UsesModelica;
     "#;
 
-fn mini_modelica_library_json() -> String {
+const WORKSPACE_PACKAGE_MO: &str = r#"
+    within ;
+    package NewFolder
+    end NewFolder;
+    "#;
+
+const WORKSPACE_PACKAGE_TEST_MODEL: &str = r#"
+    within NewFolder;
+    model Test
+      Real x;
+    equation
+      der(x) = 1;
+    end Test;
+    "#;
+
+const USES_WORKSPACE_PACKAGE_SOURCE: &str = r#"
+    model UsesWorkspacePackage
+      import NewFolder.Test;
+      Test test;
+      Real y(start = 0);
+    equation
+      der(y) = test.x;
+    end UsesWorkspacePackage;
+    "#;
+
+fn mini_modelica_source_root_json() -> String {
     serde_json::json!({
         "Modelica/package.mo": MINI_MODELICA_LIBRARY,
+    })
+    .to_string()
+}
+
+fn workspace_package_sources_json() -> String {
+    serde_json::json!({
+        "NewFolder/package.mo": WORKSPACE_PACKAGE_MO,
+        "NewFolder/Test.mo": WORKSPACE_PACKAGE_TEST_MODEL,
     })
     .to_string()
 }
@@ -125,6 +164,18 @@ fn lexeme_at(source: &str, line: u32, col: u32, len: u32) -> String {
         .collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn unique_test_cache_root() -> std::path::PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "rumoca-bind-wasm-source-root-cache-{}-{nonce}",
+        std::process::id()
+    ))
+}
+
 #[test]
 fn test_get_version() {
     let version = get_version();
@@ -151,9 +202,9 @@ fn test_init_start_hook_is_safe_to_call() {
 #[test]
 fn test_wasm_init_is_a_noop() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     wasm_init(4);
-    assert_eq!(get_library_count(), 0);
+    assert_eq!(get_source_root_document_count(), 0);
 }
 
 #[test]
@@ -391,7 +442,7 @@ fn test_compile_to_json_valid_model() {
 #[test]
 fn test_compile_to_json_matches_compile_wrapper_output() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
     let source = r#"
     model Ball
@@ -414,13 +465,13 @@ fn test_compile_to_json_matches_compile_wrapper_output() {
         "compile_to_json should remain an exact alias of compile"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_compile_to_json_qualifies_unqualified_within_model_name() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
     let source = r#"
     within Outer;
@@ -443,18 +494,18 @@ fn test_compile_to_json_qualifies_unqualified_within_model_name() {
         "expected within-qualified model to compile successfully, got: {compiled_result:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_load_libraries_creates_usable_library_source_set() {
+fn test_load_source_roots_creates_usable_source_root_source_set() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
-    let result_json =
-        load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
+    let result_json = load_source_roots(&mini_modelica_source_root_json())
+        .expect("load_source_roots should succeed");
     let result: serde_json::Value =
-        serde_json::from_str(&result_json).expect("load_libraries should return JSON");
+        serde_json::from_str(&result_json).expect("load_source_roots should return JSON");
 
     assert_eq!(
         result
@@ -477,10 +528,10 @@ fn test_load_libraries_creates_usable_library_source_set() {
             .unwrap_or_default(),
         0
     );
-    assert_eq!(get_library_count(), 1);
+    assert_eq!(get_source_root_document_count(), 1);
 
     let compiled = compile(USES_MODELICA_SOURCE, "UsesModelica")
-        .expect("compile should succeed with preloaded library");
+        .expect("compile should succeed with preloaded source root");
     let compiled_result: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
     assert!(
@@ -489,23 +540,23 @@ fn test_load_libraries_creates_usable_library_source_set() {
             .and_then(|b| b.get("is_balanced"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        "expected library-backed model to compile successfully, got: {compiled_result:?}"
+        "expected source-root-backed model to compile successfully, got: {compiled_result:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_compile_with_libraries_uses_supplied_library_sources() {
+fn test_compile_with_source_roots_uses_supplied_source_root_sources() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
-    let compiled = compile_with_libraries(
+    let compiled = compile_with_source_roots(
         USES_MODELICA_SOURCE,
         "UsesModelica",
-        &mini_modelica_library_json(),
+        &mini_modelica_source_root_json(),
     )
-    .expect("compile_with_libraries should succeed");
+    .expect("compile_with_source_roots should succeed");
     let compiled_result: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
 
@@ -515,24 +566,24 @@ fn test_compile_with_libraries_uses_supplied_library_sources() {
             .and_then(|b| b.get("is_balanced"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        "expected compile_with_libraries to honor supplied libraries, got: {compiled_result:?}"
+        "expected compile_with_source_roots to honor supplied source roots, got: {compiled_result:?}"
     );
     assert!(
-        get_library_count() >= 1,
-        "expected compile_with_libraries to populate at least one cached library document"
+        get_source_root_document_count() >= 1,
+        "expected compile_with_source_roots to populate at least one cached source-root document"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_compile_with_libraries_preserves_cached_libraries_when_given_empty_object() {
+fn test_compile_with_source_roots_preserves_cached_source_roots_when_given_empty_object() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
-    load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
-    let compiled = compile_with_libraries(USES_MODELICA_SOURCE, "UsesModelica", "{}")
-        .expect("compile_with_libraries should reuse cached libraries");
+    load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
+    let compiled = compile_with_source_roots(USES_MODELICA_SOURCE, "UsesModelica", "{}")
+        .expect("compile_with_source_roots should reuse cached source roots");
     let compiled_result: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
 
@@ -542,39 +593,42 @@ fn test_compile_with_libraries_preserves_cached_libraries_when_given_empty_objec
             .and_then(|b| b.get("is_balanced"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        "expected compile_with_libraries to preserve cached libraries for '{{}}', got: {compiled_result:?}"
+        "expected compile_with_source_roots to preserve cached source roots for '{{}}', got: {compiled_result:?}"
     );
     assert!(
-        get_library_count() >= 1,
-        "expected cached library documents to remain available after compile_with_libraries('{{}}')"
+        get_source_root_document_count() >= 1,
+        "expected cached source-root documents to remain available after compile_with_source_roots('{{}}')"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_parse_library_file_and_merge_parsed_libraries_support_compilation() {
+fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
-    let ast_json = parse_library_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
-        .expect("parse_library_file should serialize an AST");
+    let ast_json = parse_source_root_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
+        .expect("parse_source_root_file should serialize an AST");
     let parsed: rumoca_session::parsing::ast::StoredDefinition =
-        serde_json::from_str(&ast_json).expect("parse_library_file should return AST JSON");
+        serde_json::from_str(&ast_json).expect("parse_source_root_file should return AST JSON");
     assert!(
         parsed.classes.contains_key("Modelica"),
-        "expected parsed library AST to include the top-level package"
+        "expected parsed source-root AST to include the top-level package"
     );
 
     let definitions_json = serde_json::to_string(&vec![("Modelica/package.mo", ast_json)])
-        .expect("serialize parsed library definitions");
-    let merged =
-        merge_parsed_libraries(&definitions_json).expect("merge_parsed_libraries should succeed");
-    assert_eq!(merged, 1, "expected one parsed library definition to merge");
-    assert_eq!(get_library_count(), 1);
+        .expect("serialize parsed source-root definitions");
+    let merged = merge_parsed_source_roots(&definitions_json)
+        .expect("merge_parsed_source_roots should succeed");
+    assert_eq!(
+        merged, 1,
+        "expected one parsed source-root definition to merge"
+    );
+    assert_eq!(get_source_root_document_count(), 1);
 
     let compiled = compile(USES_MODELICA_SOURCE, "UsesModelica")
-        .expect("merged parsed libraries should be visible to compile");
+        .expect("merged parsed source roots should be visible to compile");
     let compiled_result: serde_json::Value =
         serde_json::from_str(&compiled).expect("compile should return valid JSON");
     assert!(
@@ -583,32 +637,32 @@ fn test_parse_library_file_and_merge_parsed_libraries_support_compilation() {
             .and_then(|b| b.get("is_balanced"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        "expected merged library definitions to support successful compilation, got: {compiled_result:?}"
+        "expected merged source-root definitions to support successful compilation, got: {compiled_result:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_clear_library_cache_clears_the_singleton_session() {
+fn test_clear_source_root_cache_clears_the_singleton_session() {
     let _guard = session_test_guard();
-    clear_library_cache();
-    load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
-    assert_eq!(get_library_count(), 1);
+    clear_source_root_cache();
+    load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
+    assert_eq!(get_source_root_document_count(), 1);
 
-    clear_library_cache();
+    clear_source_root_cache();
 
     assert_eq!(
-        get_library_count(),
+        get_source_root_document_count(),
         0,
-        "clear_library_cache should remove loaded library documents"
+        "clear_source_root_cache should remove loaded source-root documents"
     );
 }
 
 #[test]
-fn test_compile_with_libraries_ignores_unrelated_session_parse_errors() {
+fn test_compile_with_source_roots_ignores_unrelated_session_parse_errors() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
     {
         let mut lock = SESSION.lock().expect("session lock");
@@ -616,10 +670,10 @@ fn test_compile_with_libraries_ignores_unrelated_session_parse_errors() {
         session.update_document("Broken.mo", "model Broken\n  Real x\nend Broken;\n");
     }
 
-    let compiled = compile_with_libraries(
+    let compiled = compile_with_source_roots(
         USES_MODELICA_SOURCE,
         "UsesModelica",
-        &mini_modelica_library_json(),
+        &mini_modelica_source_root_json(),
     )
     .expect("focused compile should ignore unrelated session parse errors");
     let compiled_result: serde_json::Value =
@@ -631,19 +685,19 @@ fn test_compile_with_libraries_ignores_unrelated_session_parse_errors() {
             .and_then(|b| b.get("is_balanced"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        "expected compile_with_libraries to ignore unrelated parse errors, got: {compiled_result:?}"
+        "expected compile_with_source_roots to ignore unrelated parse errors, got: {compiled_result:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_lsp_completion_uses_loaded_library_completion_cache() {
+fn test_lsp_completion_uses_loaded_source_root_completion_cache() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
 
-    load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
+    load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
     let source = "model UsesModelica\n  Modelica.\nend UsesModelica;\n";
     let line = 1;
     let character = "  Modelica.".len() as u32;
@@ -656,29 +710,27 @@ fn test_lsp_completion_uses_loaded_library_completion_cache() {
         serde_json::from_str(&first).expect("completion JSON should decode");
     assert!(
         first_items.iter().any(|item| item.label == "Blocks"),
-        "expected library namespace completion items, got: {first_items:?}"
+        "expected source-root namespace completion items, got: {first_items:?}"
     );
     {
         let lock = SESSION.lock().expect("session lock");
         let session = lock.as_ref().expect("singleton session should exist");
         assert!(
-            session
-                .library_namespace_fingerprint_cached("Modelica.")
-                .is_some(),
-            "cold completion should populate the library namespace cache"
+            session.namespace_fingerprint_cached("Modelica.").is_some(),
+            "cold completion should populate the source-root namespace cache"
         );
     }
     assert_eq!(
         first_delta.semantic_navigation_builds, 0,
-        "library namespace completion should avoid semantic navigation"
+        "source-root namespace completion should avoid semantic navigation"
     );
     assert_eq!(
         first_delta.strict_resolved_builds, 0,
-        "library namespace completion should avoid strict resolved state"
+        "source-root namespace completion should avoid strict resolved state"
     );
     assert!(
         !singleton_session_has_standard_resolved_cached(),
-        "library namespace completion should avoid populating the standard resolved session"
+        "source-root namespace completion should avoid populating the standard resolved session"
     );
 
     let second = lsp_completion(source, line, character).expect("warm completion should succeed");
@@ -687,31 +739,31 @@ fn test_lsp_completion_uses_loaded_library_completion_cache() {
         serde_json::from_str(&second).expect("completion JSON should decode");
     assert!(
         second_items.iter().any(|item| item.label == "Blocks"),
-        "warm completion should still expose library namespace members"
+        "warm completion should still expose source-root namespace members"
     );
     assert_eq!(
         second_delta.semantic_navigation_builds, 0,
-        "warm library namespace completion should avoid semantic navigation"
+        "warm source-root namespace completion should avoid semantic navigation"
     );
     assert_eq!(
         second_delta.strict_resolved_builds, 0,
-        "warm library namespace completion should avoid strict resolved state"
+        "warm source-root namespace completion should avoid strict resolved state"
     );
     assert!(
-        second_delta.library_completion_cache_hits >= 1,
-        "warm library namespace completion should hit the library completion cache"
+        second_delta.namespace_completion_cache_hits >= 1,
+        "warm source-root namespace completion should hit the source-root completion cache"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_lsp_completion_with_timing_reports_cache_breakdown() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
 
-    load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
+    load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
     let source = "model UsesModelica\n  Modelica.\nend UsesModelica;\n";
     let line = 1;
     let character = "  Modelica.".len() as u32;
@@ -725,7 +777,7 @@ fn test_lsp_completion_with_timing_reports_cache_breakdown() {
         "expected timed completion items to include Blocks, got: {:?}",
         first.items
     );
-    assert_eq!(first.timing.source_library_load_ms, 0);
+    assert_eq!(first.timing.source_root_load_ms, 0);
     assert_eq!(first.timing.resolved_build_ms, None);
     assert_eq!(
         first.timing.session_cache_delta.semantic_navigation_builds,
@@ -740,22 +792,22 @@ fn test_lsp_completion_with_timing_reports_cache_breakdown() {
         second
             .timing
             .session_cache_delta
-            .library_completion_cache_hits
+            .namespace_completion_cache_hits
             >= 1,
-        "warm timed completion should report a library completion cache hit"
+        "warm timed completion should report a source-root completion cache hit"
     );
     assert_eq!(
         second.timing.session_cache_delta.semantic_navigation_builds,
         0
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_lsp_completion_keeps_local_member_lookup_on_ast_fast_path() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
     let source = r#"model Plane
   Real x, y, theta;
@@ -798,13 +850,13 @@ end Sim;
         "warm completion should still expose local semantic members"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_lsp_diagnostics_reuses_semantic_diagnostics_cache() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
     let source = "model Active\n  Real x;\nequation\n  der(x) = -x;\nend Active;\n";
 
@@ -832,20 +884,20 @@ fn test_lsp_diagnostics_reuses_semantic_diagnostics_cache() {
         "warm diagnostics should reuse cached semantic diagnostics for clean models"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_wasm_lsp_hover_uses_parsed_library_fast_path_for_imported_class() {
+fn test_wasm_lsp_hover_uses_parsed_source_root_fast_path_for_imported_class() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
 
-    let libraries = serde_json::json!({
+    let source_roots = serde_json::json!({
         "Lib/package.mo": "package Lib\n  block Target\n    Real y;\n  equation\n    y = 1;\n  end Target;\nend Lib;\n",
     })
     .to_string();
-    load_libraries(&libraries).expect("load_libraries should succeed");
+    load_source_roots(&source_roots).expect("load_source_roots should succeed");
 
     let source = r#"model M
   import Lib.Target;
@@ -884,22 +936,22 @@ end M;
     );
     assert_eq!(
         second_delta.semantic_navigation_builds, 0,
-        "warm hover should keep using the parsed-library fast path"
+        "warm hover should keep using the parsed-source-root fast path"
     );
     assert!(
         !singleton_session_has_standard_resolved_cached(),
         "warm hover should continue avoiding the standard resolved session"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_wasm_lsp_hover_uses_parsed_library_fast_path_for_qualified_class() {
+fn test_wasm_lsp_hover_uses_parsed_source_root_fast_path_for_qualified_class() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
-    load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
+    load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
 
     let source = r#"model UsesModelica
   Modelica.Blocks.Sources.Constant c;
@@ -914,31 +966,31 @@ end UsesModelica;
     let hover = hover_markdown(&hover_json).expect("hover should resolve the qualified class");
     assert!(
         hover.contains("model Constant"),
-        "expected hover to describe the qualified library class, got: {hover}"
+        "expected hover to describe the qualified source-root class, got: {hover}"
     );
     assert_eq!(
         delta.semantic_navigation_builds, 0,
-        "qualified library hover should stay off semantic navigation"
+        "qualified source-root hover should stay off semantic navigation"
     );
     assert!(
         !singleton_session_has_standard_resolved_cached(),
-        "qualified library hover should avoid populating the standard resolved session"
+        "qualified source-root hover should avoid populating the standard resolved session"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_wasm_lsp_definition_uses_parsed_library_fast_path_for_imported_class() {
+fn test_wasm_lsp_definition_uses_parsed_source_root_fast_path_for_imported_class() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
 
-    let libraries = serde_json::json!({
+    let source_roots = serde_json::json!({
         "Lib/package.mo": "package Lib\n  block Target\n    Real y;\n  equation\n    y = 1;\n  end Target;\nend Lib;\n",
     })
     .to_string();
-    load_libraries(&libraries).expect("load_libraries should succeed");
+    load_source_roots(&source_roots).expect("load_source_roots should succeed");
 
     let source = r#"model M
   import Lib.Target;
@@ -966,7 +1018,7 @@ end M;
     );
     assert!(
         first_location.uri.to_string().contains("Lib/package.mo"),
-        "expected goto-definition to point at the loaded library, got: {}",
+        "expected goto-definition to point at the loaded source-root, got: {}",
         first_location.uri
     );
     assert_eq!(
@@ -988,22 +1040,22 @@ end M;
     );
     assert_eq!(
         second_delta.semantic_navigation_builds, 0,
-        "warm goto-definition should keep using the parsed-library fast path"
+        "warm goto-definition should keep using the parsed-source-root fast path"
     );
     assert!(
         !singleton_session_has_standard_resolved_cached(),
         "warm goto-definition should continue avoiding the standard resolved session"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_wasm_lsp_definition_uses_parsed_library_fast_path_for_qualified_class() {
+fn test_wasm_lsp_definition_uses_parsed_source_root_fast_path_for_qualified_class() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
-    load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
+    load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
 
     let source = r#"model UsesModelica
   Modelica.Blocks.Sources.Constant c;
@@ -1023,25 +1075,25 @@ end UsesModelica;
     };
     assert!(
         location.uri.to_string().contains("Modelica/package.mo"),
-        "expected goto-definition to resolve into the loaded library, got: {}",
+        "expected goto-definition to resolve into the loaded source-root, got: {}",
         location.uri
     );
     assert_eq!(
         delta.semantic_navigation_builds, 0,
-        "qualified library goto-definition should stay off semantic navigation"
+        "qualified source-root goto-definition should stay off semantic navigation"
     );
     assert!(
         !singleton_session_has_standard_resolved_cached(),
-        "qualified library goto-definition should avoid populating the standard resolved session"
+        "qualified source-root goto-definition should avoid populating the standard resolved session"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_lsp_completion_rebuilds_ast_local_members_after_source_edit() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
     let source_v1 = r#"model Plane
   Real x, y, theta;
@@ -1100,13 +1152,13 @@ end Sim;
         "edited completion must not reuse stale AST-local members: {second_labels:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_list_classes_wrapper_serializes_singleton_class_tree() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     with_singleton_document(
         r#"
         package Lib
@@ -1138,13 +1190,13 @@ fn test_list_classes_wrapper_serializes_singleton_class_tree() {
         "expected top-level package in list_classes payload: {tree:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_list_classes_wrapper_tolerates_resolve_failures() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     with_singleton_document(
         r#"
         package BrokenLib
@@ -1182,13 +1234,13 @@ fn test_list_classes_wrapper_tolerates_resolve_failures() {
         "expected parsed class tree to include BrokenLib.Broken despite resolve errors: {tree:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_get_class_info_wrapper_serializes_documentation_and_components() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     with_singleton_document(DOC_MODEL_SOURCE);
 
     let json = get_class_info("DocModel").expect("get_class_info should succeed");
@@ -1218,20 +1270,20 @@ fn test_get_class_info_wrapper_serializes_documentation_and_components() {
         "expected documentation_revisions_html in get_class_info payload: {info:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_get_class_info_wrapper_uses_parsed_within_library_docs() {
+fn test_get_class_info_wrapper_uses_parsed_within_source_root_docs() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
-    let libraries = serde_json::json!({
+    let source_roots = serde_json::json!({
         "Lib/package.mo": "within ;\npackage Lib\nend Lib;\n",
         "Lib/Sub.mo": "within Lib;\npackage Sub\n  model Broken \"Doc\"\n    Real x = Missing.value;\n  end Broken;\nend Sub;\n",
     })
     .to_string();
-    load_libraries(&libraries).expect("load_libraries should succeed");
+    load_source_roots(&source_roots).expect("load_source_roots should succeed");
 
     let json = get_class_info("Lib.Sub.Broken").expect("get_class_info should read parsed docs");
     let info: serde_json::Value = serde_json::from_str(&json).expect("valid class info JSON");
@@ -1247,54 +1299,54 @@ fn test_get_class_info_wrapper_uses_parsed_within_library_docs() {
         info.get("source_modelica")
             .and_then(|value| value.as_str())
             .is_some_and(|source| source.contains("model Broken")),
-        "expected parsed class source for within-loaded library class: {info:?}"
+        "expected parsed class source for within-loaded source-root class: {info:?}"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
-fn test_lsp_completion_reuses_loaded_library_namespace_cache_after_local_edit() {
+fn test_lsp_completion_reuses_loaded_source_root_namespace_cache_after_local_edit() {
     let _guard = session_test_guard();
-    clear_library_cache();
-    load_libraries(&mini_modelica_library_json()).expect("load_libraries should succeed");
+    clear_source_root_cache();
+    load_source_roots(&mini_modelica_source_root_json()).expect("load_source_roots should succeed");
 
     let source_v1 = "model UsesModelica\n  Modelica.\nend UsesModelica;\n";
     let source_v2 = "model UsesModelica\n  Real localX;\n  Modelica.\nend UsesModelica;\n";
 
     let first = lsp_completion(source_v1, 1, "  Modelica.".len() as u32)
-        .expect("first library completion should work");
+        .expect("first source-root completion should work");
     let first_labels = completion_labels(&first);
     assert!(
         first_labels.iter().any(|label| label == "Blocks"),
-        "expected loaded library namespace completion to include Blocks, got: {first_labels:?}"
+        "expected loaded source-root namespace completion to include Blocks, got: {first_labels:?}"
     );
     let fingerprint_before = {
         let lock = SESSION.lock().expect("session lock");
         let session = lock.as_ref().expect("singleton session");
         session
-            .library_namespace_fingerprint_cached("Modelica.")
+            .namespace_fingerprint_cached("Modelica.")
             .expect("Modelica namespace fingerprint should be cached")
     };
 
     let second = lsp_completion(source_v2, 2, "  Modelica.".len() as u32)
-        .expect("warm library completion should work");
+        .expect("warm source-root completion should work");
     let second_labels = completion_labels(&second);
     assert!(
         second_labels.iter().any(|label| label == "Blocks"),
-        "local edits should preserve loaded library namespace completion, got: {second_labels:?}"
+        "local edits should preserve loaded source-root namespace completion, got: {second_labels:?}"
     );
     {
         let lock = SESSION.lock().expect("session lock");
         let session = lock.as_ref().expect("singleton session");
         assert_eq!(
-            session.library_namespace_fingerprint_cached("Modelica."),
+            session.namespace_fingerprint_cached("Modelica."),
             Some(fingerprint_before),
-            "unrelated local edits should preserve the loaded library namespace cache"
+            "unrelated local edits should preserve the loaded source-root namespace cache"
         );
     }
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
@@ -1628,7 +1680,7 @@ fn test_compile_to_json_recovers_after_syntax_diagnostics() {
 #[test]
 fn test_simulate_model_wrapper_returns_time_series_payload() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
 
     let source = r#"
     model Decay
@@ -1685,13 +1737,13 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
         Some(1)
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_wasm_lsp_completion_keeps_local_members_on_ast_fast_path() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
 
     let source = r#"
@@ -1749,13 +1801,13 @@ fn test_wasm_lsp_completion_keeps_local_members_on_ast_fast_path() {
         "warm completion should still avoid the standard resolved session"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
 
 #[test]
 fn test_wasm_lsp_diagnostics_reuse_semantic_diagnostics_cache() {
     let _guard = session_test_guard();
-    clear_library_cache();
+    clear_source_root_cache();
     reset_session_cache_stats();
 
     let source = r#"
@@ -1822,7 +1874,5 @@ fn test_wasm_lsp_diagnostics_reuse_semantic_diagnostics_cache() {
         "warm diagnostics should reuse the model-stage diagnostics cache"
     );
 
-    clear_library_cache();
+    clear_source_root_cache();
 }
-
-mod lsp_diagnostics_tests;

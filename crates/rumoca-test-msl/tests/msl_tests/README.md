@@ -13,7 +13,7 @@ This directory contains helper includes for `tests/msl_tests.rs`.
   - Owns state-count-ranked fast/long/full simulation-set selection via
     `RUMOCA_MSL_SIM_SET`.
   - Keeps the compile-target reduction behavior for focused runs centralized.
-- Focused model compiles reuse the shared parsed/resolved MSL library tree, but
+- Focused model compiles reuse the shared parsed/resolved MSL source-root tree, but
   each requested model is compiled on its own uncached reachable closure so
   per-model phase results do not accumulate across the full 180-model gate.
 - The harness stages the official `ModelicaStandardLibrary_v4.1.0.zip` release

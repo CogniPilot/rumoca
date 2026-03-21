@@ -34,7 +34,7 @@ const VALIDATION_ITEM_COL_WIDTH: usize = 18;
 const RUNTIME_NOTE_COL_WIDTH: usize = 35;
 const WARM_LATENCY_SAMPLE_COUNT: usize = 20;
 const LOCAL_COMPLETION_TARGET_MS: u64 = 30;
-const LIBRARY_COMPLETION_TARGET_MS: u64 = 50;
+const SOURCE_ROOT_COMPLETION_TARGET_MS: u64 = 50;
 const HOVER_TARGET_MS: u64 = 30;
 const DEFINITION_TARGET_MS: u64 = 30;
 const LIVE_DIAGNOSTICS_TARGET_MS: u64 = 75;
@@ -243,7 +243,7 @@ impl LspStdioClient {
                 "name": "full-msl-benchmark",
             }],
             "initializationOptions": {
-                "modelicaPath": modelica_paths,
+                "sourceRootPaths": modelica_paths,
             }
         });
         let response = self.request("initialize", params, COMPLETION_TIMEOUT)?;
@@ -497,8 +497,9 @@ fn run_completion_probe(
     let workspace_uri = directory_url(msl_archive_root)?;
     let (source, position) = load_probe_source(&document_path, probe)?;
     let timing_path = unique_timing_path(report_dir, probe.probe_name);
-    let diagnostics_path = report_dir.join(format!("{}-diagnostics.jsonl", probe.probe_name));
-    let progress_path = report_dir.join(format!("{}-progress.jsonl", probe.probe_name));
+    let diagnostics_path =
+        unique_timing_path(report_dir, &format!("{}-diagnostics", probe.probe_name));
+    let progress_path = unique_timing_path(report_dir, &format!("{}-progress", probe.probe_name));
     let stable_timing_path = report_dir.join(format!("{}.jsonl", probe.probe_name));
 
     println!("Benchmarking {}...", probe.probe_name);
@@ -628,23 +629,23 @@ fn ensure_namespace_cache_reuse(
     warm: &CompletionTimingEntry,
 ) -> Result<()> {
     ensure!(
-        cold.session_cache_delta.library_completion_cache_hits >= 1,
-        "cold completion for {} did not observe a prewarmed library completion cache hit",
+        cold.session_cache_delta.namespace_completion_cache_hits >= 1,
+        "cold completion for {} did not observe a prewarmed namespace completion cache hit",
         probe_name
     );
     ensure!(
-        cold.session_cache_delta.library_completion_cache_misses == 0,
-        "cold completion for {} unexpectedly rebuilt the library completion cache",
+        cold.session_cache_delta.namespace_completion_cache_misses == 0,
+        "cold completion for {} unexpectedly rebuilt the namespace completion cache",
         probe_name
     );
     ensure!(
-        warm.session_cache_delta.library_completion_cache_hits >= 1,
-        "warm completion for {} did not record a library completion cache hit",
+        warm.session_cache_delta.namespace_completion_cache_hits >= 1,
+        "warm completion for {} did not record a namespace completion cache hit",
         probe_name
     );
     ensure!(
-        warm.session_cache_delta.library_completion_cache_misses == 0,
-        "warm completion for {} unexpectedly missed the library completion cache",
+        warm.session_cache_delta.namespace_completion_cache_misses == 0,
+        "warm completion for {} unexpectedly missed the namespace completion cache",
         probe_name
     );
     ensure!(
@@ -680,13 +681,13 @@ fn ensure_edited_probe_reuse(
         probe_name
     );
     ensure!(
-        edited.session_cache_delta.library_completion_cache_hits >= 1,
-        "edited completion for {} should reuse the warmed library completion cache",
+        edited.session_cache_delta.namespace_completion_cache_hits >= 1,
+        "edited completion for {} should reuse the warmed namespace completion cache",
         probe_name
     );
     ensure!(
-        edited.session_cache_delta.library_completion_cache_misses == 0,
-        "edited completion for {} unexpectedly missed the library completion cache",
+        edited.session_cache_delta.namespace_completion_cache_misses == 0,
+        "edited completion for {} unexpectedly missed the namespace completion cache",
         probe_name
     );
     ensure!(
@@ -1219,12 +1220,14 @@ fn build_vscode_runtime_report(summary: &vscode_cmd::VscodeMslSmokeSummary) -> R
                 &format!("count={}", summary.code_lens_count.unwrap_or(0)),
             ),
             runtime_entry(
-                "library-load",
-                summary.library_expected_completion_present.unwrap_or(false),
-                summary.library_load_ms,
+                "source-root-load",
+                summary
+                    .source_root_expected_completion_present
+                    .unwrap_or(false),
+                summary.source_root_load_ms,
                 &vscode_completion_stage_detail(
-                    summary.library_load_completion_count.unwrap_or(0),
-                    summary.library_stage_timings.as_ref(),
+                    summary.source_root_load_completion_count.unwrap_or(0),
+                    summary.source_root_stage_timings.as_ref(),
                 ),
             ),
             runtime_entry(
@@ -1270,14 +1273,14 @@ fn build_vscode_runtime_report(summary: &vscode_cmd::VscodeMslSmokeSummary) -> R
 fn completion_stage_metrics(
     items: u64,
     total_ms: Option<u64>,
-    source_library_load_ms: Option<u64>,
-    completion_library_load_ms: Option<u64>,
+    source_root_load_ms: Option<u64>,
+    completion_source_root_load_ms: Option<u64>,
 ) -> String {
     format!(
         "i={items} l={} s={} c={}",
         total_ms.unwrap_or(0),
-        source_library_load_ms.unwrap_or(0),
-        completion_library_load_ms.unwrap_or(0),
+        source_root_load_ms.unwrap_or(0),
+        completion_source_root_load_ms.unwrap_or(0),
     )
 }
 
@@ -1291,8 +1294,8 @@ fn validation_completion_stage_detail(
         completion_stage_metrics(
             items as u64,
             Some(timing.total_ms),
-            Some(timing.source_library_load_ms),
-            Some(timing.completion_library_load_ms),
+            Some(timing.source_root_load_ms),
+            Some(timing.completion_source_root_load_ms),
         ),
         timing.semantic_layer
     )
@@ -1305,8 +1308,8 @@ fn vscode_completion_stage_detail(
     completion_stage_metrics(
         items,
         timing.and_then(|entry| entry.total_ms),
-        timing.and_then(|entry| entry.source_library_load_ms),
-        timing.and_then(|entry| entry.completion_library_load_ms),
+        timing.and_then(|entry| entry.source_root_load_ms),
+        timing.and_then(|entry| entry.completion_source_root_load_ms),
     )
 }
 
@@ -1331,17 +1334,19 @@ fn build_wasm_runtime_report(summary: &verify_cmd::WasmSmokeSummary) -> RuntimeS
             ),
             runtime_entry(
                 "archive-load",
-                summary.library_count.unwrap_or(0) > 0,
+                summary.source_root_count.unwrap_or(0) > 0,
                 summary.archive_load_ms,
-                &format!("libs={}", summary.library_count.unwrap_or(0)),
+                &format!("roots={}", summary.source_root_count.unwrap_or(0)),
             ),
             runtime_entry(
-                "library-load",
-                summary.library_expected_completion_present.unwrap_or(false),
-                summary.library_load_ms,
+                "source-root-load",
+                summary
+                    .source_root_expected_completion_present
+                    .unwrap_or(false),
+                summary.source_root_load_ms,
                 &vscode_completion_stage_detail(
-                    summary.library_load_completion_count.unwrap_or(0),
-                    summary.library_stage_timings.as_ref(),
+                    summary.source_root_load_completion_count.unwrap_or(0),
+                    summary.source_root_stage_timings.as_ref(),
                 ),
             ),
             runtime_entry(
@@ -1396,28 +1401,28 @@ fn completion_cache_runtime_entry(
     runtime_entry(
         "completion:cache",
         warm_cache
-            .and_then(|delta| delta.library_completion_cache_hits)
+            .and_then(|delta| delta.namespace_completion_cache_hits)
             .unwrap_or(0)
             >= 1
             && warm_cache
-                .and_then(|delta| delta.library_completion_cache_misses)
+                .and_then(|delta| delta.namespace_completion_cache_misses)
                 .unwrap_or(0)
                 == 0
             && warm_cache
-                .and_then(|delta| delta.library_files_parsed)
+                .and_then(|delta| delta.source_root_files_parsed)
                 .unwrap_or(0)
                 == 0,
         warm_stage.and_then(|timing| timing.total_ms),
         &format!(
             "hit={} miss={} parsed={}",
             warm_cache
-                .and_then(|delta| delta.library_completion_cache_hits)
+                .and_then(|delta| delta.namespace_completion_cache_hits)
                 .unwrap_or(0),
             warm_cache
-                .and_then(|delta| delta.library_completion_cache_misses)
+                .and_then(|delta| delta.namespace_completion_cache_misses)
                 .unwrap_or(0),
             warm_cache
-                .and_then(|delta| delta.library_files_parsed)
+                .and_then(|delta| delta.source_root_files_parsed)
                 .unwrap_or(0),
         ),
     )

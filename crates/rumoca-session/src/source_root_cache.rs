@@ -6,33 +6,35 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::instrumentation::record_library_cache_result;
-use crate::package_layout::{collect_library_source_files, validate_library_package_layout};
+use crate::instrumentation::record_source_root_cache_result;
+use crate::package_layout::{
+    collect_source_root_source_files, validate_source_root_package_layout,
+};
 use crate::parsed_artifact_cache::{
     parse_file_with_precomputed_hash_status, resolve_parsed_artifact_cache_dir_from_root,
 };
 
-const LIBRARY_CACHE_SCHEMA_VERSION: u32 = 1;
+const SOURCE_ROOT_CACHE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LibraryCacheStatus {
+pub enum SourceRootCacheStatus {
     Hit,
     Miss,
     Disabled,
 }
 
 #[derive(Debug, Clone)]
-pub struct ParsedLibrary {
+pub struct ParsedSourceRoot {
     pub documents: Vec<(String, StoredDefinition)>,
     pub file_count: usize,
-    pub cache_status: LibraryCacheStatus,
+    pub cache_status: SourceRootCacheStatus,
     pub cache_key: String,
     pub cache_file: Option<PathBuf>,
-    pub timing: LibraryCacheTiming,
+    pub timing: SourceRootCacheTiming,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct LibraryCacheTiming {
+pub struct SourceRootCacheTiming {
     pub collect_files_ms: u64,
     pub hash_inputs_ms: u64,
     pub cache_lookup_ms: u64,
@@ -44,15 +46,15 @@ pub struct LibraryCacheTiming {
 }
 
 #[derive(Debug, Clone)]
-struct HashedLibraryFile {
+struct HashedSourceRootFile {
     path: PathBuf,
     source_hash: String,
 }
 
 #[derive(Debug, Clone)]
-struct LibraryInputHash {
+struct SourceRootInputHash {
     cache_key: String,
-    files: Vec<HashedLibraryFile>,
+    files: Vec<HashedSourceRootFile>,
 }
 
 fn env_flag_is_truthy(var: &str) -> bool {
@@ -132,20 +134,17 @@ fn compiler_source_fingerprint() -> Option<String> {
     recursive_collect_compiler_source_files(&crates_dir, &mut files).ok()?;
     files.sort();
 
-    let mut entries: Vec<(String, u64, [u8; 32])> = files
-        .par_iter()
-        .map(|file| -> std::io::Result<(String, u64, [u8; 32])> {
-            let rel = file
-                .strip_prefix(workspace_root)
-                .unwrap_or(file)
-                .to_string_lossy()
-                .to_string();
-            let bytes = fs::read(file)?;
-            let digest = *blake3::hash(&bytes).as_bytes();
-            Ok((rel, bytes.len() as u64, digest))
-        })
-        .collect::<std::io::Result<Vec<_>>>()
-        .ok()?;
+    let mut entries = Vec::with_capacity(files.len());
+    for file in &files {
+        let rel = file
+            .strip_prefix(workspace_root)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .to_string();
+        let bytes = fs::read(file).ok()?;
+        let digest = *blake3::hash(&bytes).as_bytes();
+        entries.push((rel, bytes.len() as u64, digest));
+    }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = blake3::Hasher::new();
@@ -160,7 +159,7 @@ fn compiler_source_fingerprint() -> Option<String> {
     Some(hasher.finalize().to_hex().to_string())
 }
 
-pub(crate) fn cache_compiler_version() -> String {
+pub(crate) fn source_root_cache_compiler_version() -> String {
     static CACHED: OnceLock<String> = OnceLock::new();
 
     if let Some(explicit) = std::env::var_os("RUMOCA_LIBRARY_CACHE_COMPILER_FINGERPRINT") {
@@ -215,10 +214,10 @@ fn recursive_collect_dirs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result
 }
 
 fn collect_modelica_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    collect_library_source_files(path).map_err(|err| std::io::Error::other(err.to_string()))
+    collect_source_root_source_files(path).map_err(|err| std::io::Error::other(err.to_string()))
 }
 
-fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<LibraryInputHash> {
+fn hash_source_root_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<SourceRootInputHash> {
     let canonical_root = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut dirs = Vec::new();
     if path.is_dir() {
@@ -243,7 +242,7 @@ fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<Librar
         .collect::<std::io::Result<Vec<_>>>()?;
     let hashed_files = entries
         .iter()
-        .map(|(path, _, _, digest)| HashedLibraryFile {
+        .map(|(path, _, _, digest)| HashedSourceRootFile {
             path: path.clone(),
             source_hash: blake3::Hash::from(*digest).to_hex().to_string(),
         })
@@ -251,8 +250,8 @@ fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<Librar
     entries.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut hasher = blake3::Hasher::new();
-    hasher.update(format!("schema={}\n", LIBRARY_CACHE_SCHEMA_VERSION).as_bytes());
-    hasher.update(format!("compiler={}\n", cache_compiler_version()).as_bytes());
+    hasher.update(format!("schema={}\n", SOURCE_ROOT_CACHE_SCHEMA_VERSION).as_bytes());
+    hasher.update(format!("compiler={}\n", source_root_cache_compiler_version()).as_bytes());
     hasher.update(canonical_root.to_string_lossy().as_bytes());
     hasher.update(b"\n");
     for dir in dirs {
@@ -273,7 +272,7 @@ fn hash_library_inputs(path: &Path, files: &[PathBuf]) -> std::io::Result<Librar
         hasher.update(&digest);
     }
 
-    Ok(LibraryInputHash {
+    Ok(SourceRootInputHash {
         cache_key: hasher.finalize().to_hex().to_string(),
         files: hashed_files,
     })
@@ -356,19 +355,19 @@ fn default_cache_root_dir() -> PathBuf {
     std::env::temp_dir().join("rumoca")
 }
 
-fn resolve_library_cache_dir_from_override(override_dir: Option<PathBuf>) -> Option<PathBuf> {
+fn resolve_source_root_cache_dir_from_override(override_dir: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = override_dir {
         if path.as_os_str().is_empty() {
             return None;
         }
-        return Some(absolutize_cache_path(path).join("library"));
+        return Some(absolutize_cache_path(path).join("source-roots"));
     }
-    Some(default_cache_root_dir().join("library"))
+    Some(default_cache_root_dir().join("source-roots"))
 }
 
-pub fn resolve_library_cache_dir() -> Option<PathBuf> {
+pub fn resolve_source_root_cache_dir() -> Option<PathBuf> {
     let override_dir = std::env::var_os("RUMOCA_CACHE_DIR").map(PathBuf::from);
-    resolve_library_cache_dir_from_override(override_dir)
+    resolve_source_root_cache_dir_from_override(override_dir)
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -381,8 +380,8 @@ fn usable_cache_dir(cache_dir: Option<PathBuf>) -> Option<PathBuf> {
     Some(cache_dir)
 }
 
-fn load_library_documents_from_artifact_cache(
-    files: &[HashedLibraryFile],
+fn load_source_root_documents_from_artifact_cache(
+    files: &[HashedSourceRootFile],
     cache_dir: Option<&Path>,
 ) -> Result<(Vec<(String, StoredDefinition)>, bool)> {
     let docs = files
@@ -402,9 +401,12 @@ fn load_library_documents_from_artifact_cache(
     ))
 }
 
-pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Result<ParsedLibrary> {
+pub fn parse_source_root_with_cache_in(
+    path: &Path,
+    cache_dir: Option<&Path>,
+) -> Result<ParsedSourceRoot> {
     let total_started = Instant::now();
-    let mut timing = LibraryCacheTiming::default();
+    let mut timing = SourceRootCacheTiming::default();
 
     let collect_started = Instant::now();
     let files = collect_modelica_files(path)
@@ -412,17 +414,17 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
     timing.collect_files_ms = elapsed_ms(collect_started);
 
     let hash_started = Instant::now();
-    let input_hash = hash_library_inputs(path, &files)
+    let input_hash = hash_source_root_inputs(path, &files)
         .with_context(|| format!("fingerprint {}", path.display()))?;
     timing.hash_inputs_ms = elapsed_ms(hash_started);
     let parsed_artifact_cache_dir =
         usable_cache_dir(resolve_parsed_artifact_cache_dir_from_root(cache_dir));
     let load_started = Instant::now();
-    let (docs, all_hits) = load_library_documents_from_artifact_cache(
+    let (docs, all_hits) = load_source_root_documents_from_artifact_cache(
         &input_hash.files,
         parsed_artifact_cache_dir.as_deref(),
     )
-    .with_context(|| format!("parse library files under {}", path.display()))?;
+    .with_context(|| format!("parse source-root files under {}", path.display()))?;
     let load_ms = elapsed_ms(load_started);
     if cache_dir.is_some() {
         if all_hits {
@@ -434,23 +436,23 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
         timing.parse_files_ms = load_ms;
     }
     let validate_started = Instant::now();
-    validate_library_package_layout(path, &docs)?;
+    validate_source_root_package_layout(path, &docs)?;
     timing.validate_layout_ms = elapsed_ms(validate_started);
     let cache_status = match (parsed_artifact_cache_dir.is_some(), all_hits) {
-        (true, true) => LibraryCacheStatus::Hit,
-        (true, false) => LibraryCacheStatus::Miss,
-        (false, _) => LibraryCacheStatus::Disabled,
+        (true, true) => SourceRootCacheStatus::Hit,
+        (true, false) => SourceRootCacheStatus::Miss,
+        (false, _) => SourceRootCacheStatus::Disabled,
     };
-    record_library_cache_result(
+    record_source_root_cache_result(
         cache_status,
-        if cache_status == LibraryCacheStatus::Hit {
+        if cache_status == SourceRootCacheStatus::Hit {
             0
         } else {
             files.len()
         },
     );
     timing.total_ms = elapsed_ms(total_started);
-    Ok(ParsedLibrary {
+    Ok(ParsedSourceRoot {
         documents: docs,
         file_count: files.len(),
         cache_status,
@@ -460,18 +462,18 @@ pub fn parse_library_with_cache_in(path: &Path, cache_dir: Option<&Path>) -> Res
     })
 }
 
-pub fn parse_library_with_cache(path: &Path) -> Result<ParsedLibrary> {
-    parse_library_with_cache_in(path, resolve_library_cache_dir().as_deref())
+pub fn parse_source_root_with_cache(path: &Path) -> Result<ParsedSourceRoot> {
+    parse_source_root_with_cache_in(path, resolve_source_root_cache_dir().as_deref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libraries::PackageLayoutError;
     use crate::parse::parse_files_parallel_with_cache_statuses;
+    use crate::source_roots::PackageLayoutError;
 
     #[test]
-    fn library_cache_hits_after_first_parse() {
+    fn source_root_cache_hits_after_first_parse() {
         let temp = tempfile::tempdir().expect("tempdir");
         let lib_dir = temp.path().join("lib");
         let cache_dir = temp.path().join("cache");
@@ -482,8 +484,9 @@ mod tests {
         )
         .expect("write package");
 
-        let first = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("first parse");
-        assert_eq!(first.cache_status, LibraryCacheStatus::Miss);
+        let first =
+            parse_source_root_with_cache_in(&lib_dir, Some(&cache_dir)).expect("first parse");
+        assert_eq!(first.cache_status, SourceRootCacheStatus::Miss);
         assert_eq!(first.file_count, 1);
         assert!(
             first.timing.total_ms
@@ -494,8 +497,9 @@ mod tests {
                     + first.timing.cache_write_ms
         );
 
-        let second = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("second parse");
-        assert_eq!(second.cache_status, LibraryCacheStatus::Hit);
+        let second =
+            parse_source_root_with_cache_in(&lib_dir, Some(&cache_dir)).expect("second parse");
+        assert_eq!(second.cache_status, SourceRootCacheStatus::Hit);
         assert_eq!(second.file_count, 1);
         assert!(
             second.timing.total_ms
@@ -509,19 +513,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_library_cache_dir_is_absolute_and_stable() {
-        let path = resolve_library_cache_dir().expect("cache dir should resolve by default");
+    fn resolve_source_root_cache_dir_is_absolute_and_stable() {
+        let path = resolve_source_root_cache_dir().expect("cache dir should resolve by default");
         assert!(path.is_absolute(), "cache dir must be absolute: {path:?}");
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("library")
+            Some("source-roots")
         );
     }
 
     #[test]
-    fn resolve_library_cache_dir_uses_override_and_appends_library_dir() {
+    fn resolve_source_root_cache_dir_uses_override_and_appends_source_root_dir() {
         let path =
-            resolve_library_cache_dir_from_override(Some(PathBuf::from("custom-cache-root")))
+            resolve_source_root_cache_dir_from_override(Some(PathBuf::from("custom-cache-root")))
                 .expect("override should resolve");
         assert!(
             path.is_absolute(),
@@ -529,7 +533,7 @@ mod tests {
         );
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("library")
+            Some("source-roots")
         );
         assert_eq!(
             path.parent()
@@ -540,13 +544,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_library_cache_dir_empty_override_disables_cache() {
-        let path = resolve_library_cache_dir_from_override(Some(PathBuf::new()));
+    fn resolve_source_root_cache_dir_empty_override_disables_cache() {
+        let path = resolve_source_root_cache_dir_from_override(Some(PathBuf::new()));
         assert!(path.is_none(), "empty override should disable cache");
     }
 
     #[test]
-    fn parse_library_with_cache_falls_back_when_cache_path_is_unusable() {
+    fn parse_source_root_with_cache_falls_back_when_cache_path_is_unusable() {
         let temp = tempfile::tempdir().expect("tempdir");
         let lib_dir = temp.path().join("lib");
         std::fs::create_dir_all(&lib_dir).expect("mkdir");
@@ -559,15 +563,15 @@ mod tests {
         let blocked_path = temp.path().join("blocked-cache-path");
         std::fs::write(&blocked_path, "this is a file, not a directory").expect("write file");
 
-        let parsed = parse_library_with_cache_in(&lib_dir, Some(&blocked_path))
+        let parsed = parse_source_root_with_cache_in(&lib_dir, Some(&blocked_path))
             .expect("cache failure should not fail parsing");
-        assert_eq!(parsed.cache_status, LibraryCacheStatus::Disabled);
+        assert_eq!(parsed.cache_status, SourceRootCacheStatus::Disabled);
         assert_eq!(parsed.file_count, 1);
         assert!(parsed.cache_file.is_none());
     }
 
     #[test]
-    fn parse_library_with_cache_ignores_non_package_resource_mo_files() {
+    fn parse_source_root_with_cache_ignores_non_package_resource_mo_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let lib_dir = temp.path().join("lib");
         let cache_dir = temp.path().join("cache");
@@ -580,7 +584,7 @@ mod tests {
         )
         .expect("write resource demo");
 
-        let parsed = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("parse");
+        let parsed = parse_source_root_with_cache_in(&lib_dir, Some(&cache_dir)).expect("parse");
         assert_eq!(parsed.file_count, 2);
         assert_eq!(parsed.documents.len(), 2);
         assert!(
@@ -588,12 +592,12 @@ mod tests {
                 .documents
                 .iter()
                 .all(|(uri, _)| !uri.contains("Resources/Images/Docs/Demo.mo")),
-            "resource .mo outside package tree must not be parsed as a library entity"
+            "resource .mo outside package tree must not be parsed as a source-root entity"
         );
     }
 
     #[test]
-    fn parse_library_with_cache_keeps_top_level_wrapper_mo_files() {
+    fn parse_source_root_with_cache_keeps_top_level_wrapper_mo_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let lib_dir = temp.path().join("lib");
         let cache_dir = temp.path().join("cache");
@@ -611,7 +615,7 @@ mod tests {
         std::fs::write(lib_dir.join("Pkg/A.mo"), "within Pkg; model A end A;")
             .expect("write child");
 
-        let parsed = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("parse");
+        let parsed = parse_source_root_with_cache_in(&lib_dir, Some(&cache_dir)).expect("parse");
         assert_eq!(parsed.file_count, 3);
         assert!(
             parsed
@@ -623,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_library_with_cache_preserves_package_layout_error_type() {
+    fn parse_source_root_with_cache_preserves_package_layout_error_type() {
         let temp = tempfile::tempdir().expect("tempdir");
         let lib_dir = temp.path().join("Pkg");
         std::fs::create_dir_all(&lib_dir).expect("mkdir");
@@ -631,7 +635,7 @@ mod tests {
         std::fs::write(lib_dir.join("A.mo"), "model A end A;").expect("write child");
 
         let err =
-            parse_library_with_cache_in(&lib_dir, None).expect_err("missing within must fail");
+            parse_source_root_with_cache_in(&lib_dir, None).expect_err("missing within must fail");
         let layout = err
             .downcast_ref::<PackageLayoutError>()
             .expect("package layout error type must be preserved");
@@ -639,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn library_miss_reuses_unchanged_parsed_file_artifacts() {
+    fn source_root_miss_reuses_unchanged_parsed_file_artifacts() {
         let temp = tempfile::tempdir().expect("tempdir");
         let lib_dir = temp.path().join("Lib");
         let cache_dir = temp.path().join("cache");
@@ -655,8 +659,9 @@ mod tests {
         )
         .expect("write B");
 
-        let first = parse_library_with_cache_in(&lib_dir, Some(&cache_dir)).expect("first parse");
-        assert_eq!(first.cache_status, LibraryCacheStatus::Miss);
+        let first =
+            parse_source_root_with_cache_in(&lib_dir, Some(&cache_dir)).expect("first parse");
+        assert_eq!(first.cache_status, SourceRootCacheStatus::Miss);
 
         std::fs::write(
             lib_dir.join("B.mo"),
@@ -679,7 +684,7 @@ mod tests {
                 crate::parsed_artifact_cache::ParsedArtifactCacheStatus::Hit,
                 crate::parsed_artifact_cache::ParsedArtifactCacheStatus::Miss
             ],
-            "the changed library file should be reparsed while unchanged files reuse cached ASTs"
+            "the changed source-root file should be reparsed while unchanged files reuse cached ASTs"
         );
     }
 }

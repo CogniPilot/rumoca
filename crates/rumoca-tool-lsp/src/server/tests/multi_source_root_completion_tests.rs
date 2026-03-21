@@ -35,7 +35,7 @@ async fn assert_two_completions_contain_label<F>(
     }
 }
 
-fn assert_multi_library_namespace_timing(
+fn assert_multi_source_root_namespace_timing(
     cold: &LoggedCompletionTimingSummary,
     warm: &LoggedCompletionTimingSummary,
 ) {
@@ -55,9 +55,9 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
         .collect()
 }
 
-fn write_test_library(root: &Path, package_name: &str) -> PathBuf {
+fn write_test_source_root(root: &Path, package_name: &str) -> PathBuf {
     let lib = root.join(package_name);
-    std::fs::create_dir_all(&lib).expect("mkdir test library");
+    std::fs::create_dir_all(&lib).expect("mkdir test source root");
     std::fs::write(
         lib.join("package.mo"),
         format!(
@@ -69,16 +69,16 @@ fn write_test_library(root: &Path, package_name: &str) -> PathBuf {
 }
 
 #[test]
-fn completion_warm_namespace_cache_reuse_with_multiple_library_paths() {
+fn completion_warm_namespace_cache_reuse_with_multiple_source_root_paths() {
     let _guard = session_stats_test_guard();
-    let temp = new_temp_dir("multi-library-completion-timing");
+    let temp = new_temp_dir("multi-source-root-completion-timing");
     let timing_path = temp.join("completion-timings.jsonl");
 
     run_async_test(async {
         reset_session_cache_stats();
-        let lib_path = write_test_library(&temp, "Lib");
-        let aux_path = write_test_library(&temp, "Aux");
-        let extra_path = write_test_library(&temp, "Extra");
+        let lib_path = write_test_source_root(&temp, "Lib");
+        let aux_path = write_test_source_root(&temp, "Aux");
+        let extra_path = write_test_source_root(&temp, "Extra");
         let lib_key = canonical_path_key(lib_path.to_string_lossy().as_ref());
         let aux_key = canonical_path_key(aux_path.to_string_lossy().as_ref());
         let extra_key = canonical_path_key(extra_path.to_string_lossy().as_ref());
@@ -90,7 +90,7 @@ fn completion_warm_namespace_cache_reuse_with_multiple_library_paths() {
         let service = new_test_service();
         let server = service.inner();
         *server.completion_timing_path.write().await = Some(timing_path.clone());
-        *server.library_paths.write().await = vec![
+        *server.source_root_paths.write().await = vec![
             lib_path.to_string_lossy().to_string(),
             aux_path.to_string_lossy().to_string(),
             extra_path.to_string_lossy().to_string(),
@@ -117,18 +117,18 @@ fn completion_warm_namespace_cache_reuse_with_multiple_library_paths() {
 
         assert_two_completions_contain_label(server, request, "A").await;
         {
-            let loaded_libraries = server.loaded_libraries.read().await;
+            let loaded_source_roots = server.session.read().await.loaded_source_root_path_keys();
             assert!(
-                loaded_libraries.contains(&lib_key),
-                "first completion should load the referenced library root"
+                loaded_source_roots.contains(&lib_key),
+                "first completion should load the referenced source root"
             );
             assert!(
-                loaded_libraries.contains(&aux_key),
-                "first completion should load sibling library roots in the same request"
+                loaded_source_roots.contains(&aux_key),
+                "first completion should load sibling source roots in the same request"
             );
             assert!(
-                loaded_libraries.contains(&extra_key),
-                "first completion should load every remaining sibling library root in the same request"
+                loaded_source_roots.contains(&extra_key),
+                "first completion should load every remaining sibling source root in the same request"
             );
         }
     });
@@ -139,22 +139,25 @@ fn completion_warm_namespace_cache_reuse_with_multiple_library_paths() {
         2,
         "expected cold and warm completion timings"
     );
-    assert_multi_library_namespace_timing(&entries[0], &entries[1]);
+    assert_multi_source_root_namespace_timing(&entries[0], &entries[1]);
     assert!(
         entries[0]
             .session_cache_delta
-            .library_completion_cache_misses
+            .namespace_completion_cache_misses
             >= 1,
-        "cold namespace completion should miss the library completion cache"
+        "cold namespace completion should miss the namespace completion cache"
     );
     assert!(
-        entries[1].session_cache_delta.library_completion_cache_hits >= 1,
-        "warm namespace completion should hit the library completion cache"
+        entries[1]
+            .session_cache_delta
+            .namespace_completion_cache_hits
+            >= 1,
+        "warm namespace completion should hit the namespace completion cache"
     );
     assert_eq!(
         entries[1]
             .session_cache_delta
-            .library_completion_cache_misses,
+            .namespace_completion_cache_misses,
         0,
         "warm namespace completion should not miss after sibling roots are preloaded"
     );

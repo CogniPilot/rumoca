@@ -1445,7 +1445,7 @@ end Ball;
     }
 
     #[test]
-    fn loaded_library_clears_import_and_type_reference_diagnostics() {
+    fn loaded_source_root_clears_import_and_type_reference_diagnostics() {
         let lib = r#"
 package Modelica
   package Blocks
@@ -1465,14 +1465,14 @@ end Ball;
 "#;
         let mut session = Session::default();
         let parsed =
-            parse_source_to_ast_with_errors(lib, "Modelica/package.mo").expect("parse library");
+            parse_source_to_ast_with_errors(lib, "Modelica/package.mo").expect("parse source root");
         let inserted = session.replace_parsed_source_set(
-            "library::Modelica",
-            SourceRootKind::DurableLibrary,
+            "external::Modelica",
+            SourceRootKind::DurableExternal,
             vec![("Modelica/package.mo".to_string(), parsed)],
             None,
         );
-        assert_eq!(inserted, 1, "library source-set should be inserted");
+        assert_eq!(inserted, 1, "source root should be inserted");
 
         let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
         assert!(
@@ -1481,7 +1481,7 @@ end Ball;
                     && (d.message.contains("unresolved import")
                         || d.message.contains("unresolved type reference"))
             }),
-            "loaded library should clear import/type resolution diagnostics, got: {diagnostics:?}"
+            "loaded source root should clear import/type resolution diagnostics, got: {diagnostics:?}"
         );
     }
 
@@ -1705,7 +1705,7 @@ package Modelica
 end Modelica;
 "#,
             )
-            .expect("library preload should parse");
+            .expect("source-root preload should parse");
 
         let source = r#"
 model Ball
@@ -1792,32 +1792,32 @@ end A;
     }
 
     #[test]
-    fn unresolved_library_diagnostics_do_not_panic_or_leak_into_active_file() {
+    fn unresolved_source_root_diagnostics_do_not_panic_or_leak_into_active_file() {
         let source = "model M\n  Real x;\nequation\n  der(x) = -x;\nend M;\n";
         let mut session = Session::default();
 
-        let mut broken_library = String::from("model BrokenLib\n  Real x;\nequation\n");
+        let mut broken_source_root = String::from("model BrokenLib\n  Real x;\nequation\n");
         for _ in 0..256 {
-            broken_library.push_str("  // filler\n");
+            broken_source_root.push_str("  // filler\n");
         }
-        broken_library.push_str("  x = unknownLibFn(1.0);\nend BrokenLib;\n");
+        broken_source_root.push_str("  x = unknownLibFn(1.0);\nend BrokenLib;\n");
 
         session
-            .add_document("lib_with_error.mo", &broken_library)
-            .expect("library preload should parse");
+            .add_document("lib_with_error.mo", &broken_source_root)
+            .expect("source-root preload should parse");
 
         let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
         assert!(
             diagnostics
                 .iter()
                 .all(|diag| !diag.message.contains("unknownLibFn")),
-            "library-only unresolved diagnostics should be filtered out for active file: {:?}",
+            "source-root-only unresolved diagnostics should be filtered out for active file: {:?}",
             diagnostics
         );
     }
 
     #[test]
-    fn unknown_builtin_modifier_is_reported_with_preloaded_library_session() {
+    fn unknown_builtin_modifier_is_reported_with_preloaded_source_root_session() {
         let source = r#"
 model M
   Real x(startd = 1.0);
@@ -1839,7 +1839,7 @@ package Lib
 end Lib;
 "#,
             )
-            .expect("library preload should parse");
+            .expect("source-root preload should parse");
 
         let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
         assert!(
@@ -1847,13 +1847,13 @@ end Lib;
                 d.code == Some(NumberOrString::String("ET001".to_string()))
                     && d.message.contains("unknown modifier `startd`")
             }),
-            "expected unknown-modifier diagnostic with preloaded libraries, got: {:?}",
+            "expected unknown-modifier diagnostic with preloaded source roots, got: {:?}",
             diagnostics
         );
     }
 
     #[test]
-    fn unknown_builtin_modifier_startdt_is_reported_with_preloaded_library_session() {
+    fn unknown_builtin_modifier_startdt_is_reported_with_preloaded_source_root_session() {
         let source = r#"
 model M
   Real x(startdt=1.0);
@@ -1875,7 +1875,7 @@ package Lib
 end Lib;
 "#,
             )
-            .expect("library preload should parse");
+            .expect("source-root preload should parse");
 
         let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
         assert!(
@@ -1883,7 +1883,7 @@ end Lib;
                 d.code == Some(NumberOrString::String("ET001".to_string()))
                     && d.message.contains("unknown modifier `startdt`")
             }),
-            "expected unknown-modifier diagnostic with preloaded libraries, got: {:?}",
+            "expected unknown-modifier diagnostic with preloaded source roots, got: {:?}",
             diagnostics
         );
     }

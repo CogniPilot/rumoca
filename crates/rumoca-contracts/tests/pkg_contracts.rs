@@ -5,11 +5,11 @@
 use rumoca_contracts::test_support::{
     expect_parse_err_with_code, expect_parse_ok, expect_resolve_failure_with_code, expect_success,
 };
-use rumoca_session::libraries::parse_library_with_cache_in;
+use rumoca_session::source_roots::parse_source_root_with_cache_in;
 use std::fs;
 use std::path::Path;
 
-fn write_library_file(root: &Path, relative: &str, content: &str) {
+fn write_source_root_file(root: &Path, relative: &str, content: &str) {
     let path = root.join(relative);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create package parent");
@@ -17,14 +17,14 @@ fn write_library_file(root: &Path, relative: &str, content: &str) {
     fs::write(path, content).expect("write package file");
 }
 
-fn expect_library_layout_ok(files: &[(&str, &str)], root_relative: &str) {
+fn expect_source_root_layout_ok(files: &[(&str, &str)], root_relative: &str) {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().join(root_relative);
     fs::create_dir_all(&root).expect("create package root");
     for (relative, content) in files {
-        write_library_file(&root, relative, content);
+        write_source_root_file(&root, relative, content);
     }
-    parse_library_with_cache_in(&root, None).unwrap_or_else(|error| {
+    parse_source_root_with_cache_in(&root, None).unwrap_or_else(|error| {
         panic!(
             "expected valid package layout under {}: {error}",
             root.display()
@@ -32,7 +32,7 @@ fn expect_library_layout_ok(files: &[(&str, &str)], root_relative: &str) {
     });
 }
 
-fn expect_library_layout_error(
+fn expect_source_root_layout_error(
     files: &[(&str, &str)],
     root_relative: &str,
     expected_fragment: &str,
@@ -41,9 +41,9 @@ fn expect_library_layout_error(
     let root = temp.path().join(root_relative);
     fs::create_dir_all(&root).expect("create package root");
     for (relative, content) in files {
-        write_library_file(&root, relative, content);
+        write_source_root_file(&root, relative, content);
     }
-    let error = parse_library_with_cache_in(&root, None)
+    let error = parse_source_root_with_cache_in(&root, None)
         .expect_err("expected invalid package layout to fail");
     assert!(
         error.to_string().contains(expected_fragment),
@@ -216,7 +216,7 @@ fn pkg_005_import_cannot_traverse_model_members() {
 
 #[test]
 fn pkg_006_directory_requires_package_mo() {
-    expect_library_layout_error(
+    expect_source_root_layout_error(
         &[
             ("package.mo", "package Pkg end Pkg;"),
             ("Sub/A.mo", "within Pkg.Sub; model A end A;"),
@@ -233,7 +233,7 @@ fn pkg_006_directory_requires_package_mo() {
 
 #[test]
 fn pkg_007_duplicate_child_class_names_rejected() {
-    expect_library_layout_error(
+    expect_source_root_layout_error(
         &[
             ("package.mo", "package Pkg end Pkg;"),
             ("A.mo", "within Pkg; model Same end Same;"),
@@ -251,7 +251,7 @@ fn pkg_007_duplicate_child_class_names_rejected() {
 
 #[test]
 fn pkg_008_dir_and_file_conflict_rejected() {
-    expect_library_layout_error(
+    expect_source_root_layout_error(
         &[
             ("package.mo", "package Pkg end Pkg;"),
             ("A.mo", "within Pkg; model A end A;"),
@@ -269,7 +269,7 @@ fn pkg_008_dir_and_file_conflict_rejected() {
 
 #[test]
 fn pkg_009_non_top_level_file_requires_within() {
-    expect_library_layout_error(
+    expect_source_root_layout_error(
         &[
             ("package.mo", "package Pkg end Pkg;"),
             ("A.mo", "model A end A;"),
@@ -286,7 +286,7 @@ fn pkg_009_non_top_level_file_requires_within() {
 
 #[test]
 fn pkg_010_within_must_match_enclosing_package() {
-    expect_library_layout_error(
+    expect_source_root_layout_error(
         &[
             ("package.mo", "package Pkg end Pkg;"),
             ("Sub/package.mo", "within Pkg; package Sub end Sub;"),
@@ -369,7 +369,7 @@ fn pkg_wildcard_import() {
 
 #[test]
 fn pkg_nested_package_layout_is_valid() {
-    expect_library_layout_ok(
+    expect_source_root_layout_ok(
         &[
             ("package.mo", "package Pkg end Pkg;"),
             ("Sub/package.mo", "within Pkg; package Sub end Sub;"),

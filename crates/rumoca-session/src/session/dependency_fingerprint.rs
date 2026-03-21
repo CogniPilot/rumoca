@@ -1,5 +1,6 @@
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_ast as ast;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::PhaseResult;
@@ -13,10 +14,11 @@ pub(crate) struct CompileCacheEntry {
     pub(crate) result: PhaseResult,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct DependencyFingerprintCache {
     class_hashes: IndexMap<String, Fingerprint>,
     class_deps: IndexMap<String, IndexSet<String>>,
+    #[serde(skip)]
     model_fingerprints: IndexMap<String, Fingerprint>,
 }
 
@@ -50,6 +52,52 @@ impl DependencyFingerprintCache {
 
     pub(crate) fn class_dependencies(&self) -> &IndexMap<String, IndexSet<String>> {
         &self.class_deps
+    }
+
+    pub(crate) fn merge_from(&mut self, other: &Self) {
+        for (qualified_name, hash) in &other.class_hashes {
+            self.class_hashes.insert(qualified_name.clone(), *hash);
+        }
+        for (qualified_name, deps) in &other.class_deps {
+            self.class_deps.insert(qualified_name.clone(), deps.clone());
+        }
+        self.model_fingerprints.clear();
+    }
+
+    pub(crate) fn aggregate_fingerprint(&self) -> Fingerprint {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"rumoca-dependency-fingerprint-aggregate-v1");
+
+        let mut class_hashes = self.class_hashes.iter().collect::<Vec<_>>();
+        class_hashes.sort_by_key(|(qualified_name, _)| *qualified_name);
+        for (qualified_name, fingerprint) in class_hashes {
+            hasher.update(qualified_name.as_bytes());
+            hasher.update(fingerprint);
+        }
+
+        let mut class_deps = self.class_deps.iter().collect::<Vec<_>>();
+        class_deps.sort_by_key(|(qualified_name, _)| *qualified_name);
+        for (qualified_name, deps) in class_deps {
+            hasher.update(qualified_name.as_bytes());
+            let mut sorted_deps = deps.iter().collect::<Vec<_>>();
+            sorted_deps.sort_unstable();
+            for dep in sorted_deps {
+                hasher.update(dep.as_bytes());
+            }
+        }
+
+        *hasher.finalize().as_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_class_dependencies_for_test(
+        &mut self,
+        class_name: &str,
+        deps: impl IntoIterator<Item = String>,
+    ) {
+        self.class_deps
+            .insert(class_name.to_string(), deps.into_iter().collect());
+        self.model_fingerprints.clear();
     }
 
     fn model_fingerprint_recursive(

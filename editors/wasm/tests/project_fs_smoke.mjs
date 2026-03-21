@@ -15,7 +15,7 @@ function activeDocumentRoundTrip() {
   projectFs.setActiveDocument(inferModelicaFileName(source, "Main.mo"), source);
   projectFs.setEditorState({
     rightTab: "codegen",
-    bottomTab: "libraries",
+    bottomTab: "errors",
     bottomPanelCollapsed: true,
     sim: { tEnd: "5.0", dt: "0.1" },
     template: "{{ dae.model_name }}",
@@ -43,10 +43,10 @@ function activeDocumentRoundTrip() {
   );
 }
 
-function libraryArchiveRoundTrip() {
+function packageArchiveRoundTrip() {
   const projectFs = createProjectFilesystem();
   projectFs.setActiveDocument("Main.mo", "model Main\nend Main;\n");
-  projectFs.replaceLibraryArchive("msl", "Modelica.zip", {
+  projectFs.replacePackageArchive("msl", "Modelica.zip", {
     "Modelica/package.mo": "package Modelica\nend Modelica;\n",
     "Modelica/Icons.mo": "within Modelica;\npackage Icons\nend Icons;\n",
   });
@@ -55,14 +55,14 @@ function libraryArchiveRoundTrip() {
   const restored = createProjectFilesystem();
   restored.loadArchiveEntries(entries);
 
-  const archives = restored.listLibraryArchives();
+  const archives = restored.listPackageArchives();
   assert(archives.length === 1, `expected 1 restored archive, got ${archives.length}`);
   assert(
     archives[0].fileName === "Modelica.zip",
     `expected restored archive filename, got ${archives[0].fileName}`,
   );
 
-  const archiveFiles = restored.getArchiveFiles("msl");
+  const archiveFiles = restored.getPackageArchiveFiles("msl");
   assert(
     archiveFiles["Modelica/package.mo"]?.includes("package Modelica"),
     "expected restored archive to keep package.mo contents",
@@ -76,7 +76,7 @@ function libraryArchiveRoundTrip() {
 function binaryArchiveRoundTrip() {
   const projectFs = createProjectFilesystem();
   const cache = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 255, 254, 253]);
-  projectFs.replaceLibraryArchive("msl", "Modelica.zip", {
+  projectFs.replacePackageArchive("msl", "Modelica.zip", {
     "Modelica/cache.bin": cache,
     "Modelica/package.mo": "package Modelica\nend Modelica;\n",
   });
@@ -85,7 +85,7 @@ function binaryArchiveRoundTrip() {
   const restored = createProjectFilesystem();
   restored.loadArchiveEntries(entries);
 
-  const archiveFiles = restored.getArchiveFiles("msl");
+  const archiveFiles = restored.getPackageArchiveFiles("msl");
   const restoredCache = archiveFiles["Modelica/cache.bin"];
   assert(
     restoredCache instanceof Uint8Array,
@@ -103,21 +103,21 @@ function binaryArchiveRoundTrip() {
   }
 }
 
-function libraryRemovalCleansFiles() {
+function packageArchiveRemovalCleansFiles() {
   const projectFs = createProjectFilesystem();
   projectFs.setActiveDocument("Main.mo", "model Main\nend Main;\n");
-  projectFs.replaceLibraryArchive("lib-a", "LibA.zip", {
+  projectFs.replacePackageArchive("lib-a", "LibA.zip", {
     "Lib/package.mo": "package Lib\nend Lib;\n",
   });
-  projectFs.removeLibraryArchive("lib-a");
+  projectFs.removePackageArchive("lib-a");
 
   assert(
-    projectFs.listLibraryArchives().length === 0,
-    "expected no library archives after removal",
+    projectFs.listPackageArchives().length === 0,
+    "expected no package archives after removal",
   );
   assert(
     !projectFs.listFiles().some((file) => file.path === "Lib/package.mo"),
-    "expected library files to be removed with archive removal",
+    "expected package-archive files to be removed with archive removal",
   );
 }
 
@@ -132,12 +132,12 @@ function folderEntryImportRestoresProjectState() {
       path: ".rumoca/editor-state.json",
       content: JSON.stringify({
         rightTab: "simulate",
-        bottomTab: "packages",
+        bottomTab: "errors",
         sim: { tEnd: "20", dt: "0" },
       }),
     },
     {
-      path: ".rumoca/cache/library.bin",
+      path: ".rumoca/cache/package-archive.bin",
       content: "stale cache data",
     },
   ]);
@@ -147,7 +147,7 @@ function folderEntryImportRestoresProjectState() {
     `expected Demo/Plant.mo active document, got ${projectState.activeDocumentPath}`,
   );
   assert(
-    projectState.editorState?.bottomTab === "packages",
+    projectState.editorState?.bottomTab === "errors",
     "expected editor sidecar state to load from file entries",
   );
   assert(
@@ -157,7 +157,7 @@ function folderEntryImportRestoresProjectState() {
 }
 
 activeDocumentRoundTrip();
-libraryArchiveRoundTrip();
+packageArchiveRoundTrip();
 binaryArchiveRoundTrip();
-libraryRemovalCleansFiles();
+packageArchiveRemovalCleansFiles();
 folderEntryImportRestoresProjectState();

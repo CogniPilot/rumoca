@@ -13,10 +13,10 @@ export function check(source) {
 }
 
 /**
- * Clear the library cache.
+ * Clear the source-root cache.
  */
-export function clear_library_cache() {
-    wasm.clear_library_cache();
+export function clear_source_root_cache() {
+    wasm.clear_source_root_cache();
 }
 
 /**
@@ -78,13 +78,13 @@ export function compile_to_json(source, model_name) {
 }
 
 /**
- * Compile using cached libraries if available.
+ * Compile using cached source roots if available.
  * @param {string} source
  * @param {string} model_name
- * @param {string} _libraries_json
+ * @param {string} _source_roots_json
  * @returns {string}
  */
-export function compile_with_libraries(source, model_name, _libraries_json) {
+export function compile_with_source_roots(source, model_name, _source_roots_json) {
     let deferred5_0;
     let deferred5_1;
     try {
@@ -92,9 +92,9 @@ export function compile_with_libraries(source, model_name, _libraries_json) {
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(model_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(_libraries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr2 = passStringToWasm0(_source_roots_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.compile_with_libraries(ptr0, len0, ptr1, len1, ptr2, len2);
+        const ret = wasm.compile_with_source_roots(ptr0, len0, ptr1, len1, ptr2, len2);
         var ptr4 = ret[0];
         var len4 = ret[1];
         if (ret[3]) {
@@ -110,11 +110,11 @@ export function compile_with_libraries(source, model_name, _libraries_json) {
 }
 
 /**
- * Get the number of cached library documents.
+ * Get the number of cached source-root documents.
  * @returns {number}
  */
-export function get_library_count() {
-    const ret = wasm.get_library_count();
+export function get_source_root_document_count() {
+    const ret = wasm.get_source_root_document_count();
     return ret >>> 0;
 }
 
@@ -155,17 +155,17 @@ export function lint(source) {
 }
 
 /**
- * Load and parse library sources into the cache.
- * @param {string} libraries_json
+ * Load and parse source-root sources into the cache.
+ * @param {string} source_roots_json
  * @returns {string}
  */
-export function load_libraries(libraries_json) {
+export function load_source_roots(source_roots_json) {
     let deferred3_0;
     let deferred3_1;
     try {
-        const ptr0 = passStringToWasm0(libraries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(source_roots_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.load_libraries(ptr0, len0);
+        const ret = wasm.load_source_roots(ptr0, len0);
         var ptr2 = ret[0];
         var len2 = ret[1];
         if (ret[3]) {
@@ -338,14 +338,14 @@ export function lsp_semantic_tokens(source) {
 }
 
 /**
- * Merge pre-parsed library definitions into the cache.
+ * Merge pre-parsed source-root definitions into the cache.
  * @param {string} definitions_json
  * @returns {number}
  */
-export function merge_parsed_libraries(definitions_json) {
+export function merge_parsed_source_roots(definitions_json) {
     const ptr0 = passStringToWasm0(definitions_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.merge_parsed_libraries(ptr0, len0);
+    const ret = wasm.merge_parsed_source_roots(ptr0, len0);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -365,12 +365,12 @@ export function parse(source) {
 }
 
 /**
- * Parse a single library file and return serialized AST.
+ * Parse a single source-root file and return serialized AST.
  * @param {string} source
  * @param {string} filename
  * @returns {string}
  */
-export function parse_library_file(source, filename) {
+export function parse_source_root_file(source, filename) {
     let deferred4_0;
     let deferred4_1;
     try {
@@ -378,7 +378,7 @@ export function parse_library_file(source, filename) {
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(filename, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.parse_library_file(ptr0, len0, ptr1, len1);
+        const ret = wasm.parse_source_root_file(ptr0, len0, ptr1, len1);
         var ptr3 = ret[0];
         var len3 = ret[1];
         if (ret[3]) {

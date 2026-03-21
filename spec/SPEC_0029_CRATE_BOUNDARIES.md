@@ -92,12 +92,72 @@ Its root API MUST stay minimal:
 
 - Allowed root exports: `Session`, `SessionConfig`.
 - Compile result and helper types remain under explicit namespaces such as `rumoca_session::compile::*`.
-- Non-compile helper surfaces remain under explicit namespaces (`analysis`, `parsing`, `runtime`, `libraries`, `project`).
+- Non-compile helper surfaces remain under explicit namespaces (`analysis`, `parsing`, `runtime`, `source_roots`, `project`).
 
 CI enforcement:
 - Violations MUST fail CI.
 - The workspace test `crates/rumoca/tests/architecture_hardening_test.rs::test_session_root_facade_exports_are_minimal`
   enforces this root export policy.
+
+### 10. Session-Owned Source-Root And Class-Graph State
+
+`rumoca-session` owns IDE/runtime semantic state above the phase crates.
+
+Required boundaries:
+
+- Source-root membership, source-root status, and source-root cache hydration MUST live in
+  `rumoca-session`.
+- The incremental class graph and all derived namespace/package-membership views MUST live in
+  `rumoca-session`.
+- Workspace roots and imported roots are semantically identical source roots.
+  Differences in cache retention or warm-restore policy are implementation details only.
+- Clients MUST NOT implement their own semantic invalidation policy, cache ownership, subtree
+  rebuild scope, or duplicate source-root planning logic.
+
+Allowed client responsibilities:
+
+- `rumoca-tool-lsp` may own transport, async lane selection, request cancellation, and progress
+  delivery.
+- `vscode` may own editor UI and user interaction only, through `rumoca-tool-lsp`.
+- `rumoca-bind-wasm` and the `rumoca` CLI may adapt input/output and transport data to
+  `rumoca-session`, but not re-implement source-root/class-graph policy.
+
+Rationale:
+
+- This keeps one incremental class-graph story from session through all clients.
+- It prevents LSP, WASM, and CLI from drifting into separate cache/invalidation implementations.
+- It keeps background reindex/cache-restore state available to all clients through one session-owned
+  surface.
+
+### 11. Session Persistence Boundary
+
+`rumoca-session` MAY persist warm-restore state, but the persisted boundary MUST stop at
+source-root-scoped AST/index state plus resolved aggregate inputs.
+
+Persisted state MAY include:
+
+- parsed-source-root cache files
+- file summaries and declaration indexes
+- package-membership / namespace aggregate state
+- source-root resolved aggregate inputs such as:
+  - model names
+  - class dependency graphs
+  - dependency fingerprints derived from resolved class graphs
+
+Persisted state MUST NOT include typed, flat, or DAE artifacts by default.
+
+Those tiers remain in-memory-only unless a later measured design change explicitly updates this spec.
+
+Rationale:
+
+- Typed/flat/DAE artifacts are target-scoped, larger, and more invalidation-sensitive than the
+  source-root aggregate state above them.
+- The current warm-restore goal is to avoid rebuilding front-end and resolved dependency inputs on
+  reopen, not to serialize the full downstream compile pipeline.
+- Once AST/index and resolved aggregate inputs are restored, downstream typed/flat/DAE caches can
+  rebuild lazily behind existing dependency fingerprints inside the same process.
+- This keeps persistence simple, source-root-scoped, and semantically uniform across workspace and
+  imported roots.
 
 ## Dependency Tiers
 

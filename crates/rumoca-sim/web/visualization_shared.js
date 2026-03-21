@@ -18,6 +18,7 @@
 
     const RESULTS_ROOT = '.rumoca/results';
     const RESULTS_RUNS_ROOT = `${RESULTS_ROOT}/runs`;
+    const RESULTS_INDEX_PATH = `${RESULTS_ROOT}/index.json`;
     const MODEL_BY_ID_ROOT = '.rumoca/models/by-id';
 
     function sanitizeIdentifier(input) {
@@ -100,6 +101,10 @@
         return `${RESULTS_ROOT}/${stableResultStem(model)}.json`;
     }
 
+    function latestSimulationResultsIndexPath() {
+        return RESULTS_INDEX_PATH;
+    }
+
     function nextSimulationRunLocation(model, pathExists) {
         const now = Date.now();
         const slug = stableResultStem(model);
@@ -117,7 +122,7 @@
 // Geometry is defined here so each model can fully customize visuals.
 ctx.onInit = (api) => {
   if (typeof api.enableDefaultViewerRuntime === "function") {
-    api.enableDefaultViewerRuntime({ selectedObjectName: "ball", followSelected: false });
+    api.enableDefaultViewerRuntime({ selectedObjectName: "ball", followSelected: true });
   }
   const { THREE, state } = api;
   if (!THREE || !state || !state.scene) return;
@@ -150,14 +155,8 @@ ctx.onInit = (api) => {
 ctx.onFrame = (api) => {
   const ball = api.state ? api.state.ball : null;
   if (ball) {
-    const x = Number(api.getValue("x", api.sampleIndex));
-    const y = Number(api.getValue("y", api.sampleIndex));
-    const z = Number(api.getValue("z", api.sampleIndex));
-    ball.position.set(
-      Number.isFinite(y) ? y : 0,
-      Number.isFinite(x) ? x : 0,
-      Number.isFinite(z) ? z : 0
-    );
+    const height = Number(api.getValue("x", api.sampleIndex));
+    ball.position.set(0, Number.isFinite(height) ? height : 0, 0);
   }
 };`;
     }
@@ -699,10 +698,85 @@ ctx.onFrame = (api) => {
         return normalized;
     }
 
+    function normalizeLatestSimulationResultsIndex(raw) {
+        const next = {
+            version: 1,
+            latestRuns: [],
+        };
+        if (!raw || typeof raw !== 'object') {
+            return next;
+        }
+        const seenModels = new Set();
+        for (const entry of Array.isArray(raw.latestRuns) ? raw.latestRuns : []) {
+            const model = trimMaybeString(entry && entry.model);
+            const runId = normalizeRunId(entry && entry.runId);
+            if (!model || !runId || seenModels.has(model)) {
+                continue;
+            }
+            seenModels.add(model);
+            next.latestRuns.push({
+                model,
+                runId,
+                savedAtUnixMs: Math.max(0, Number(entry && entry.savedAtUnixMs) || 0),
+            });
+        }
+        return next;
+    }
+
+    function buildLatestSimulationResultsIndexDocument(entries) {
+        return {
+            version: 1,
+            latestRuns: normalizeLatestSimulationResultsIndex({
+                latestRuns: Array.isArray(entries) ? entries : [],
+            }).latestRuns,
+        };
+    }
+
+    async function readLatestSimulationResultsIndex(args) {
+        if (!args || typeof args.readTextFile !== 'function') {
+            return normalizeLatestSimulationResultsIndex(null);
+        }
+        let text;
+        try {
+            text = await args.readTextFile(latestSimulationResultsIndexPath());
+        } catch {
+            return normalizeLatestSimulationResultsIndex(null);
+        }
+        try {
+            return normalizeLatestSimulationResultsIndex(JSON.parse(String(text || '')));
+        } catch {
+            return normalizeLatestSimulationResultsIndex(null);
+        }
+    }
+
+    async function writeLatestSimulationResultIndexEntry(args) {
+        if (!args || typeof args.writeTextFile !== 'function') {
+            return undefined;
+        }
+        const model = trimMaybeString(args.model);
+        const runId = normalizeRunId(args.runId);
+        if (!model || !runId) {
+            return undefined;
+        }
+        const index = await readLatestSimulationResultsIndex({
+            readTextFile: args.readTextFile,
+        });
+        const latestRuns = index.latestRuns.filter((entry) => entry.model !== model);
+        latestRuns.push({
+            model,
+            runId,
+            savedAtUnixMs: Math.max(0, Number(args.savedAtUnixMs) || 0),
+        });
+        const doc = buildLatestSimulationResultsIndexDocument(latestRuns);
+        await args.writeTextFile(latestSimulationResultsIndexPath(), JSON.stringify(doc, null, 2));
+        return doc;
+    }
+
     function buildLastSimulationResultDocument(args) {
         return {
             version: 1,
             model: trimMaybeString(args && args.model),
+            runId: normalizeRunId(args && args.runId),
             savedAtUnixMs: Math.max(0, Number(args && args.savedAtUnixMs) || 0),
             payload: cloneJson(args && args.payload ? args.payload : null),
             metrics: cloneJson(args && args.metrics ? args.metrics : null),
@@ -713,20 +787,42 @@ ctx.onFrame = (api) => {
         if (!args || typeof args.writeTextFile !== 'function') {
             return undefined;
         }
-        const path = lastSimulationResultPath(args.model);
         const doc = buildLastSimulationResultDocument({
             model: args.model,
+            runId: args.runId,
             savedAtUnixMs: args.savedAtUnixMs,
             payload: args.payload,
             metrics: args.metrics,
         });
-        await args.writeTextFile(path, JSON.stringify(doc, null, 2));
-        return { path, document: doc };
+        await writeLatestSimulationResultIndexEntry({
+            model: args.model,
+            runId: args.runId,
+            savedAtUnixMs: args.savedAtUnixMs,
+            readTextFile: args.readTextFile,
+            writeTextFile: args.writeTextFile,
+        });
+        return {
+            path: latestSimulationResultsIndexPath(),
+            document: doc,
+        };
     }
 
     async function readLastSimulationResultDocument(args) {
         if (!args || typeof args.readTextFile !== 'function') {
             return null;
+        }
+        const latestIndex = await readLatestSimulationResultsIndex({
+            readTextFile: args.readTextFile,
+        });
+        const latestEntry = latestIndex.latestRuns.find((entry) => entry.model === trimMaybeString(args.model));
+        if (latestEntry?.runId) {
+            const persistedRun = await readPersistedSimulationRunDocument({
+                runId: latestEntry.runId,
+                readTextFile: args.readTextFile,
+            });
+            if (persistedRun) {
+                return persistedRun;
+            }
         }
         let text;
         try {
@@ -746,6 +842,7 @@ ctx.onFrame = (api) => {
         }
         const metrics = normalizeSimulationRunMetrics(parsed && parsed.metrics);
         return {
+            ...(trimMaybeString(parsed && parsed.runId) ? { runId: trimMaybeString(parsed.runId) } : {}),
             payload,
             ...(metrics ? { metrics } : {}),
         };
@@ -780,9 +877,12 @@ ctx.onFrame = (api) => {
         if (typeof args?.writeLastResultTextFile === 'function') {
             await writeLastSimulationResultDocument({
                 model,
+                runId: persisted?.runId,
                 payload,
                 metrics,
+                readTextFile: args.readTextFile,
                 writeTextFile: args.writeLastResultTextFile,
+                savedAtUnixMs: persisted?.savedAtUnixMs,
             });
         }
         if (!persisted) {
@@ -825,6 +925,7 @@ ctx.onFrame = (api) => {
                 }
                 : null,
             pathExists: args?.pathExists,
+            readTextFile: args?.readTextFile,
             writeTextFile: args?.writeTextFile,
             writeLastResultTextFile: args?.writeLastResultTextFile,
         });
@@ -885,7 +986,7 @@ ctx.onFrame = (api) => {
     function normalizeHostedSimulationSettingsFeatures(value) {
         const features = value && typeof value === 'object' ? value : {};
         return {
-            addLibraryPath: features.addLibraryPath !== false,
+            addSourceRootPath: features.addSourceRootPath !== false,
             prepareModels: features.prepareModels !== false,
             resyncSidecars: features.resyncSidecars !== false,
             workspaceSettings: features.workspaceSettings !== false,
@@ -896,9 +997,9 @@ ctx.onFrame = (api) => {
 
     function normalizeHostedSimulationSettingsCurrent(value) {
         const current = value && typeof value === 'object' ? value : {};
-        const libraryOverrides = current.libraryOverrides !== undefined
-            ? current.libraryOverrides
-            : current.modelicaPath;
+        const sourceRootOverrides = current.sourceRootOverrides !== undefined
+            ? current.sourceRootOverrides
+            : current.sourceRootPaths;
         const tEndRaw = current.tEnd === undefined || current.tEnd === null
             ? ''
             : String(current.tEnd).trim();
@@ -912,7 +1013,7 @@ ctx.onFrame = (api) => {
             tEnd: Number.isFinite(tEnd) && tEnd > 0 ? tEnd : 10,
             dt: Number.isFinite(dt) && dt > 0 ? dt : null,
             outputDir: trimMaybeString(current.outputDir),
-            libraryOverrides: normalizeStringArray(libraryOverrides),
+            sourceRootOverrides: normalizeStringArray(sourceRootOverrides),
         };
     }
 
@@ -960,7 +1061,7 @@ ctx.onFrame = (api) => {
             tEnd,
             dt,
             outputDir: trimMaybeString(payload && payload.outputDir),
-            libraryOverrides: normalizeStringArray(payload && payload.modelicaPath),
+            sourceRootOverrides: normalizeStringArray(payload && payload.sourceRootPaths),
             views: normalizeVisualizationViews(payload && payload.views),
         };
     }
@@ -975,7 +1076,7 @@ ctx.onFrame = (api) => {
             tEnd: current.tEnd,
             dt: current.dt,
             outputDir: current.outputDir,
-            modelicaPath: [...current.libraryOverrides],
+            sourceRootPaths: [...current.sourceRootOverrides],
             views: normalizeVisualizationViews(source.views),
         };
     }
@@ -1086,7 +1187,7 @@ ctx.onFrame = (api) => {
                 tEnd: current.tEnd,
                 dt: current.dt,
                 outputDir: current.outputDir,
-                modelicaPath: [...current.libraryOverrides],
+                sourceRootPaths: [...current.sourceRootOverrides],
             },
             views: views.length > 0
                 ? views
@@ -1113,7 +1214,7 @@ ctx.onFrame = (api) => {
         return value;
     }
 
-    function normalizeSettingsPickLibraryPathResult(value) {
+    function normalizeSettingsPickSourceRootPathResult(value) {
         if (value === undefined || value === null || value === '') {
             return { path: undefined };
         }
@@ -1230,14 +1331,14 @@ ctx.onFrame = (api) => {
                         tEnd: normalized.tEnd,
                         dt: normalized.dt,
                         outputDir: normalized.outputDir,
-                        libraryOverrides: [...normalized.libraryOverrides],
+                        sourceRootOverrides: [...normalized.sourceRootOverrides],
                     },
                     current: {
                         solver: normalized.solver,
                         tEnd: normalized.tEnd,
                         dt: normalized.dt,
                         outputDir: normalized.outputDir,
-                        modelicaPath: [...normalized.libraryOverrides],
+                        sourceRootPaths: [...normalized.sourceRootOverrides],
                     },
                     views: normalized.views,
                     payload,
@@ -1291,10 +1392,10 @@ ctx.onFrame = (api) => {
                 );
             },
         };
-        if (typeof args?.pickLibraryPath === 'function') {
-            handlers.pickLibraryPath = async ({ payload }) =>
-                normalizeSettingsPickLibraryPathResult(
-                    await args.pickLibraryPath({ model: currentModel(), payload }),
+        if (typeof args?.pickSourceRootPath === 'function') {
+            handlers.pickSourceRootPath = async ({ payload }) =>
+                normalizeSettingsPickSourceRootPathResult(
+                    await args.pickSourceRootPath({ model: currentModel(), payload }),
                 );
         }
         if (typeof args?.prepareModels === 'function') {
@@ -1323,7 +1424,7 @@ ctx.onFrame = (api) => {
         const availableModels = state.availableModels;
         const current = state.current;
         const features = state.features;
-        const addLibraryPathAttrs = features.addLibraryPath ? '' : ' style="display:none;"';
+        const addSourceRootPathAttrs = features.addSourceRootPath ? '' : ' style="display:none;"';
         const prepareModelsAttrs = features.prepareModels ? '' : ' style="display:none;"';
         const resyncSidecarsAttrs = features.resyncSidecars ? '' : ' style="display:none;"';
         const workspaceSettingsAttrs = features.workspaceSettings ? '' : ' style="display:none;"';
@@ -1346,17 +1447,17 @@ ctx.onFrame = (api) => {
     :root {
       --pad: 16px;
       --radius: 8px;
-      --card-border: var(--vscode-panel-border, var(--vscode-input-border));
-      --muted: var(--vscode-descriptionForeground);
-      --ok: var(--vscode-testing-iconPassed);
-      --error: var(--vscode-errorForeground);
+      --card-border: var(--vscode-panel-border, var(--vscode-input-border, #3c3c3c));
+      --muted: var(--vscode-descriptionForeground, #9da5b4);
+      --ok: var(--vscode-testing-iconPassed, #73c991);
+      --error: var(--vscode-errorForeground, #f48771);
     }
     html, body { height: 100%; }
     body {
       margin: 0;
-      font-family: var(--vscode-font-family);
-      color: var(--vscode-foreground);
-      background: var(--vscode-editor-background);
+      font-family: var(--vscode-font-family, system-ui, sans-serif);
+      color: var(--vscode-foreground, #d4d4d4);
+      background: var(--vscode-editor-background, #1e1e1e);
     }
     .page {
       padding: var(--pad);
@@ -1387,7 +1488,7 @@ ctx.onFrame = (api) => {
       border: 1px solid var(--card-border);
       border-radius: var(--radius);
       padding: 12px;
-      background: var(--vscode-sideBar-background, transparent);
+      background: var(--vscode-sideBar-background, #252526);
     }
     .card h3 {
       margin: 0 0 10px 0;
@@ -1407,9 +1508,9 @@ ctx.onFrame = (api) => {
     input, textarea, select {
       width: 100%;
       box-sizing: border-box;
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
-      border: 1px solid var(--vscode-input-border);
+      background: var(--vscode-input-background, #313131);
+      color: var(--vscode-input-foreground, #cccccc);
+      border: 1px solid var(--vscode-input-border, #3c3c3c);
       border-radius: 6px;
       padding: 7px 8px;
       font-size: 12px;
@@ -1430,7 +1531,7 @@ ctx.onFrame = (api) => {
       border: 1px solid var(--card-border);
       border-radius: 6px;
       padding: 10px;
-      background: var(--vscode-editor-background);
+      background: var(--vscode-editor-background, #1e1e1e);
     }
     #viewList { min-height: 180px; height: 100%; }
     .stack { display: grid; gap: 8px; }
@@ -1456,13 +1557,13 @@ ctx.onFrame = (api) => {
     button.ghost {
       background: transparent;
       border: 1px solid var(--card-border);
-      color: var(--vscode-foreground);
+      color: var(--vscode-foreground, #d4d4d4);
     }
     .footer {
       position: sticky;
       bottom: 0;
       padding-top: 8px;
-      background: linear-gradient(to bottom, transparent, var(--vscode-editor-background) 22%);
+      background: linear-gradient(to bottom, transparent, var(--vscode-editor-background, #1e1e1e) 22%);
     }
     .actions {
       display: flex;
@@ -1472,7 +1573,7 @@ ctx.onFrame = (api) => {
       border: 1px solid var(--card-border);
       border-radius: var(--radius);
       padding: 10px;
-      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background, #1e1e1e));
     }
     .actions-hint {
       width: 100%;
@@ -1532,15 +1633,15 @@ ctx.onFrame = (api) => {
     </div>
 
     <div class="card">
-      <h3>Libraries</h3>
+      <h3>Source Root Paths</h3>
       <div class="toolbar">
-        <button id="addLib" class="ghost"${addLibraryPathAttrs}>Add Library Directory...</button>
-        <button id="clearLibs" class="ghost">Clear</button>
+        <button id="addSourceRootPath" class="ghost"${addSourceRootPathAttrs}>Add Source Root Directory...</button>
+        <button id="clearSourceRoots" class="ghost">Clear</button>
       </div>
       <div class="field">
-        <label for="modelicaPath">Additional Library Paths For This Model</label>
-        <textarea id="modelicaPath" placeholder="/path/to/ModelicaStandardLibrary"></textarea>
-        <div class="hint">If set, these are appended to the default library paths for this model.</div>
+        <label for="sourceRootPaths">Additional Source Root Paths For This Model</label>
+        <textarea id="sourceRootPaths" placeholder="/path/to/ModelicaStandardLibrary"></textarea>
+        <div class="hint">If set, these are appended to the default source-root paths for this model.</div>
       </div>
     </div>
 
@@ -1659,8 +1760,8 @@ ctx.onFrame = (api) => {
     const tEndInput = document.getElementById('tEnd');
     const dtInput = document.getElementById('dt');
     const modelSelectInput = document.getElementById('modelSelect');
-    const modelicaPathInput = document.getElementById('modelicaPath');
-    const clearLibsBtn = document.getElementById('clearLibs');
+    const sourceRootPathsInput = document.getElementById('sourceRootPaths');
+    const clearSourceRootsBtn = document.getElementById('clearSourceRoots');
     const statusEl = document.getElementById('status');
     const viewListInput = document.getElementById('viewList');
     const viewTitleInput = document.getElementById('viewTitle');
@@ -1760,16 +1861,13 @@ ctx.onFrame = (api) => {
 
     function parseSeriesList(text) {
       return String(text || '')
-        .split(/
-?
-|,/)
+        .split(/\\r?\\n|,/)
         .map((v) => v.trim())
         .filter(Boolean);
     }
 
     function stringifySeries(list) {
-      return (Array.isArray(list) ? list : []).map((v) => String(v).trim()).filter(Boolean).join('
-');
+      return (Array.isArray(list) ? list : []).map((v) => String(v).trim()).filter(Boolean).join('\\n');
     }
 
     function makeUniqueViewId(prefix) {
@@ -2050,10 +2148,8 @@ ctx.onFrame = (api) => {
 
     function collectSavePayload() {
       commitViewEditor();
-      const libs = modelicaPathInput.value
-        .split(/
-?
-/)
+      const libs = sourceRootPathsInput.value
+        .split(/\\r?\\n/)
         .map((value) => value.trim())
         .filter(Boolean);
       const normalizedViews = views.map((view, index) => {
@@ -2094,7 +2190,7 @@ ctx.onFrame = (api) => {
         tEnd: Number(tEndInput.value),
         dt: dtInput.value.trim(),
         outputDir: preservedOutputDir,
-        modelicaPath: libs,
+        sourceRootPaths: libs,
         views: normalizedViews,
       };
     }
@@ -2128,7 +2224,7 @@ ctx.onFrame = (api) => {
 
     function shouldDelegateAutoSave(target) {
       if (!(target instanceof HTMLElement)) return false;
-      if (target.closest('#reset, #workspaceSettings, #userSettings, #openViewScript, #addLib, #prepareModels, #resyncSidecars')) {
+      if (target.closest('#reset, #workspaceSettings, #userSettings, #openViewScript, #addSourceRootPath, #prepareModels, #resyncSidecars')) {
         return false;
       }
       return !!target.closest('input, textarea, select');
@@ -2292,8 +2388,7 @@ ctx.onFrame = (api) => {
         solverInput.value = String(reset && reset.solver ? reset.solver : 'auto');
         tEndInput.value = String(reset && reset.tEnd !== undefined ? reset.tEnd : 10);
         dtInput.value = String(reset && reset.dt ? reset.dt : '');
-        modelicaPathInput.value = Array.isArray(reset && reset.modelicaPath) ? reset.modelicaPath.join('
-') : '';
+        sourceRootPathsInput.value = Array.isArray(reset && reset.sourceRootPaths) ? reset.sourceRootPaths.join('\\n') : '';
         views = Array.isArray(reset && reset.views) && reset.views.length > 0
           ? reset.views
           : [{ id: 'states_time', title: 'States vs Time', type: 'timeseries', x: 'time', y: ['*states'] }];
@@ -2340,20 +2435,17 @@ ctx.onFrame = (api) => {
       }
     });
 
-    document.getElementById('addLib').addEventListener('click', async () => {
+    document.getElementById('addSourceRootPath').addEventListener('click', async () => {
       try {
-        const result = await requestHost('pickLibraryPath', {});
+        const result = await requestHost('pickSourceRootPath', {});
         if (result && result.path) {
-          const lines = modelicaPathInput.value
-            .split(/
-?
-/)
+          const lines = sourceRootPathsInput.value
+            .split(/\\r?\\n/)
             .map((value) => value.trim())
             .filter(Boolean);
           if (!lines.includes(result.path)) {
             lines.push(result.path);
-            modelicaPathInput.value = lines.join('
-');
+            sourceRootPathsInput.value = lines.join('\\n');
             scheduleAutoSave();
           }
         }
@@ -2362,8 +2454,8 @@ ctx.onFrame = (api) => {
       }
     });
 
-    clearLibsBtn.addEventListener('click', () => {
-      modelicaPathInput.value = '';
+    clearSourceRootsBtn.addEventListener('click', () => {
+      sourceRootPathsInput.value = '';
       scheduleAutoSave();
     });
 
@@ -2386,8 +2478,7 @@ ctx.onFrame = (api) => {
     solverInput.value = String(current.solver || 'auto');
     tEndInput.value = String(current.tEnd || 10);
     dtInput.value = current.dt === null || current.dt === undefined ? '' : String(current.dt);
-    modelicaPathInput.value = Array.isArray(current.libraryOverrides) ? current.libraryOverrides.join('
-') : '';
+    sourceRootPathsInput.value = Array.isArray(current.sourceRootOverrides) ? current.sourceRootOverrides.join('\\n') : '';
     renderModelSelect();
     renderViewList();
   </script>
@@ -3073,8 +3164,8 @@ ctx.onFrame = (api) => {
         const tEnd = Number.isFinite(preset.tEnd) && preset.tEnd > 0 ? Number(preset.tEnd) : null;
         const dt = Number.isFinite(preset.dt) && preset.dt > 0 ? Number(preset.dt) : null;
         const outputDir = trimMaybeString(preset.outputDir) || null;
-        const libraryOverrides = normalizeStringArray(preset.libraryOverrides);
-        if (!normalizedSolver && tEnd === null && dt === null && !outputDir && libraryOverrides.length === 0) {
+        const sourceRootOverrides = normalizeStringArray(preset.sourceRootOverrides);
+        if (!normalizedSolver && tEnd === null && dt === null && !outputDir && sourceRootOverrides.length === 0) {
             return null;
         }
         return {
@@ -3082,7 +3173,7 @@ ctx.onFrame = (api) => {
             ...(tEnd !== null ? { tEnd } : {}),
             ...(dt !== null ? { dt } : {}),
             ...(outputDir ? { outputDir } : {}),
-            ...(libraryOverrides.length > 0 ? { libraryOverrides } : {}),
+            ...(sourceRootOverrides.length > 0 ? { sourceRootOverrides } : {}),
         };
     }
 
@@ -3103,10 +3194,10 @@ ctx.onFrame = (api) => {
                 ? Number(normalizedFallback.dt)
                 : null;
         const outputDir = trimMaybeString(value?.outputDir) || trimMaybeString(normalizedFallback.outputDir) || '';
-        const modelicaPath = normalizeStringArray(value?.modelicaPath).length > 0
-            ? normalizeStringArray(value?.modelicaPath)
-            : normalizeStringArray(normalizedFallback.modelicaPath);
-        return { solver: normalizedSolver, tEnd, dt, outputDir, modelicaPath };
+        const sourceRootPaths = normalizeStringArray(value?.sourceRootPaths).length > 0
+            ? normalizeStringArray(value?.sourceRootPaths)
+            : normalizeStringArray(normalizedFallback.sourceRootPaths);
+        return { solver: normalizedSolver, tEnd, dt, outputDir, sourceRootPaths };
     }
 
     function simulationSettingsJson(settings) {
@@ -3115,7 +3206,7 @@ ctx.onFrame = (api) => {
             tEnd: settings.tEnd,
             dt: settings.dt,
             outputDir: settings.outputDir,
-            modelicaPath: [...settings.modelicaPath],
+            sourceRootPaths: [...settings.sourceRootPaths],
         };
     }
 
@@ -3129,9 +3220,9 @@ ctx.onFrame = (api) => {
         const dtLine = tomlNumberLine('dt', preset?.dt);
         if (dtLine) lines.push(dtLine);
         if (outputDir) lines.push(`output_dir = ${tomlString(outputDir)}`);
-        const libraryOverrides = normalizeStringArray(preset?.libraryOverrides);
-        if (libraryOverrides.length > 0) {
-            lines.push(`library_overrides = ${tomlStringArray(libraryOverrides)}`);
+        const sourceRootOverrides = normalizeStringArray(preset?.sourceRootOverrides);
+        if (sourceRootOverrides.length > 0) {
+            lines.push(`source_root_overrides = ${tomlStringArray(sourceRootOverrides)}`);
         }
         return lines.length > 0 ? `${lines.join('\n')}\n` : '';
     }
@@ -3228,7 +3319,7 @@ ctx.onFrame = (api) => {
                     tEnd: parsed.t_end,
                     dt: parsed.dt,
                     outputDir: parsed.output_dir,
-                    libraryOverrides: parsed.library_overrides,
+                    sourceRootOverrides: parsed.source_root_overrides,
                 });
                 if (preset) {
                     simulationModels.set(identity.qualifiedName, preset);
@@ -3280,15 +3371,15 @@ ctx.onFrame = (api) => {
             tEnd: state.defaults.tEnd,
             dt: state.defaults.dt,
             outputDir: state.defaults.outputDir,
-            modelicaPath: [],
+            sourceRootPaths: [],
         }, fallback);
         const preset = normalizeProjectSimulationPreset(state.simulationModels.get(model));
         const effective = normalizeProjectSimulationSettings({
             ...defaults,
             ...(preset || {}),
-            modelicaPath: normalizeStringArray(preset?.libraryOverrides).length > 0
-                ? preset.libraryOverrides
-                : defaults.modelicaPath,
+            sourceRootPaths: normalizeStringArray(preset?.sourceRootOverrides).length > 0
+                ? preset.sourceRootOverrides
+                : defaults.sourceRootPaths,
         }, defaults);
         return {
             preset: preset
@@ -3297,9 +3388,9 @@ ctx.onFrame = (api) => {
                     tEnd: effective.tEnd,
                     dt: effective.dt,
                     outputDir: effective.outputDir,
-                    libraryOverrides: normalizeStringArray(preset.libraryOverrides).length > 0
-                        ? [...preset.libraryOverrides]
-                        : [...defaults.modelicaPath],
+                    sourceRootOverrides: normalizeStringArray(preset.sourceRootOverrides).length > 0
+                        ? [...preset.sourceRootOverrides]
+                        : [...defaults.sourceRootPaths],
                 }
                 : null,
             defaults: simulationSettingsJson(defaults),
@@ -3431,6 +3522,7 @@ ctx.onFrame = (api) => {
     return {
         buildHostedResultsPanelState,
         buildHostedResultsPanelTitle,
+        buildLatestSimulationResultsIndexDocument,
         buildVisualizationModel,
         buildSimulationRunDocument,
         defaultThreeDimensionalViewerScript,
@@ -3445,6 +3537,7 @@ ctx.onFrame = (api) => {
         handleHostedResultsRequest,
         handleHostedSimulationSettingsRequest,
         lastSimulationResultPath,
+        latestSimulationResultsIndexPath,
         loadHostedSimulationRun,
         loadHostedSimulationRunWithViews,
         loadHostedProjectResultsViews,
@@ -3455,6 +3548,7 @@ ctx.onFrame = (api) => {
         normalizeHostedResultsPanelState,
         normalizeHostedResultsModelRef,
         normalizeHostedResultsNotifyPayload,
+        normalizeLatestSimulationResultsIndex,
         normalizeHostedSimulationSettingsSavePayload,
         normalizeHostedSimulationSettingsState,
         normalizeVisualizationViews,
@@ -3465,6 +3559,7 @@ ctx.onFrame = (api) => {
         persistHostedSimulationRun,
         persistHostedSimulationRunWithViews,
         preferredViewerScriptPathForModel,
+        readLatestSimulationResultsIndex,
         resetHostedProjectResultsViews,
         resetHostedProjectSimulationSettings,
         executeHostedProjectSidecarCommand,
@@ -3478,6 +3573,7 @@ ctx.onFrame = (api) => {
         saveHostedProjectResultsViews,
         saveHostedProjectSimulationSettings,
         simulationRunDocumentPath,
+        writeLatestSimulationResultIndexEntry,
         writeLastSimulationResultDocument,
         writePersistedSimulationRunDocument,
     };

@@ -6,6 +6,7 @@ const nodeRequire = createRequire(__filename);
 
 type VisualizationSharedModule = {
     modelScopedViewerScriptRelativePath(uuid: string, viewId: string): string;
+    preferredViewerScriptPathForModel(model: string, viewId: string): string;
     sanitizeResultsPathSegment(input: string): string;
 };
 
@@ -25,6 +26,7 @@ function loadVisualizationShared(): VisualizationSharedModule {
         }
         const loaded = nodeRequire(candidate) as Partial<VisualizationSharedModule>;
         if (typeof loaded.modelScopedViewerScriptRelativePath !== 'function'
+            || typeof loaded.preferredViewerScriptPathForModel !== 'function'
             || typeof loaded.sanitizeResultsPathSegment !== 'function') {
             continue;
         }
@@ -85,6 +87,10 @@ export function modelScopedViewerScriptRelativePath(uuid: string, viewId: string
     return loadVisualizationShared().modelScopedViewerScriptRelativePath(uuid, viewId);
 }
 
+export function preferredViewerScriptPathForModel(model: string, viewId: string): string {
+    return loadVisualizationShared().preferredViewerScriptPathForModel(model, viewId);
+}
+
 export async function resolveModelIdentityUuid(
     workspaceRoot: string,
     model: string,
@@ -143,10 +149,8 @@ export async function resolvePreferredViewerScriptPath(
         throw new Error(`Cannot resolve a model-scoped 3D viewer script path for '${model}' without a workspace root.`);
     }
     const uuid = await resolveModelIdentityUuid(workspaceRoot, model);
-    if (!uuid) {
-        throw new Error(
-            `Missing model sidecar UUID for '${model}'. Save the project settings first so Rumoca creates .rumoca/models/by-id/<uuid>/.`,
-        );
+    if (uuid) {
+        return modelScopedViewerScriptRelativePath(uuid, viewId);
     }
-    return modelScopedViewerScriptRelativePath(uuid, viewId);
+    return preferredViewerScriptPathForModel(model, viewId);
 }

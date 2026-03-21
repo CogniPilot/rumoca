@@ -1493,7 +1493,7 @@ function Model() {
 
       let delta
       // Use damped least-squares for both square and rectangular systems.
-      // This is robust for over-determined DAEs (m > n) that arise from expanded libraries.
+      // This is robust for over-determined DAEs (m > n) that arise from expanded package trees.
       delta = solveDampedLeastSquares(J, r, lambda)
       for (let i = 0; i < n; i++) {
         if (!Number.isFinite(delta[i])) {

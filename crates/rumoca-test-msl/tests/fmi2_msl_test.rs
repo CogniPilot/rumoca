@@ -2,7 +2,7 @@
 //!
 //! Tests a curated set of MSL models that compile and simulate successfully
 //! through the FMI2 C template pipeline. For each model we:
-//! 1. Compile the model from the MSL library
+//! 1. Compile the model from the MSL source root
 //! 2. Run rumoca's built-in diffsol simulator to get a reference trace
 //! 3. Render FMI2 C source, compile with `cc`, run to get CSV trace
 //! 4. Compare the two traces and assert they agree within tolerance
@@ -19,7 +19,7 @@
 //! - `RUMOCA_FMI2_MSL_TOLERANCE=0.20` — max allowed trace deviation (default 0.20)
 
 use flate2::read::GzDecoder;
-use rumoca_session::compile::{CompilationResult, CompiledLibrary, PhaseResult};
+use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
 use rumoca_session::runtime::{SimOptions, SimResult, simulate_dae};
 use std::collections::HashMap;
@@ -406,13 +406,13 @@ impl std::fmt::Display for ModelOutcome {
 // =============================================================================
 
 fn run_single_model(
-    library: &CompiledLibrary,
+    source_root: &CompiledSourceRoot,
     model_name: &str,
     dt: f64,
     tolerance: f64,
 ) -> ModelOutcome {
     // 1. Compile
-    let report = library.compile_model_strict_reachable_with_recovery(model_name);
+    let report = source_root.compile_model_strict_reachable_with_recovery(model_name);
     let result: CompilationResult = match report.requested_result {
         Some(PhaseResult::Success(boxed)) => *boxed,
         Some(PhaseResult::Failed { error, .. }) => {
@@ -520,13 +520,13 @@ fn test_fmi2_vs_rumoca_msl() {
     // 1. Download/cache MSL
     let msl_dir = ensure_msl_downloaded().expect("Failed to download MSL");
 
-    // 2. Parse and build library
+    // 2. Parse and build the MSL source root
     let mo_files = find_mo_files(&msl_dir);
     println!("Parsing {} MSL files...", mo_files.len());
     let (successes, failures) = parse_files_parallel_lenient(&mo_files);
     println!("Parsed {} OK, {} failures", successes.len(), failures.len());
-    let library = CompiledLibrary::from_parsed_batch_tolerant(successes)
-        .expect("failed to build library index");
+    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(successes)
+        .expect("failed to build source-root index");
 
     // 3. Select target models
     let mut targets = fmi2_target_models();
@@ -543,7 +543,7 @@ fn test_fmi2_vs_rumoca_msl() {
     let mut deviations: Vec<(String, f64, String)> = Vec::new();
 
     for (i, model_name) in targets.iter().enumerate() {
-        let outcome = run_single_model(&library, model_name, dt, tolerance);
+        let outcome = run_single_model(&source_root, model_name, dt, tolerance);
         let tag = match &outcome {
             ModelOutcome::Pass { .. } => {
                 pass += 1;

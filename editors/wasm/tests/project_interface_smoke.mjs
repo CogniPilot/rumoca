@@ -41,7 +41,7 @@ function simulationPresetWritesLspCompatibleSidecars() {
 
   const config = projectInterface.execute("rumoca.project.getSimulationConfig", {
     model: "Ball",
-    fallback: { solver: "auto", tEnd: 10, dt: null, outputDir: "", modelicaPath: [] },
+    fallback: { solver: "auto", tEnd: 10, dt: null, outputDir: "", sourceRootPaths: [] },
   });
   assert(
     config.effective.tEnd === 12.5,
@@ -136,7 +136,7 @@ function parsesExistingLspProjectFiles() {
   const projectInterface = createProjectInterface({ projectFs });
   const simulation = projectInterface.execute("rumoca.project.getSimulationConfig", {
     model: "Ball",
-    fallback: { solver: "auto", tEnd: 10, dt: null, outputDir: "", modelicaPath: [] },
+    fallback: { solver: "auto", tEnd: 10, dt: null, outputDir: "", sourceRootPaths: [] },
   });
   const visualization = projectInterface.execute("rumoca.project.getVisualizationConfig", { model: "Ball" });
 
@@ -234,7 +234,7 @@ async function simulationCommandsUseRuntimeBridgeAndPersistSelectedModel() {
   const started = await projectInterface.execute("rumoca.project.startSimulation", {
     source: "model PIDMSL\nend PIDMSL;\n",
     model: "Other",
-    fallback: { solver: "auto", tEnd: 5, dt: null, outputDir: "", modelicaPath: [] },
+    fallback: { solver: "auto", tEnd: 5, dt: null, outputDir: "", sourceRootPaths: [] },
     timeoutMs: 12345,
   });
   assert(started?.ok === true, "expected startSimulation ok response");

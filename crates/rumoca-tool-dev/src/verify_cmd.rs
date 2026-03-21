@@ -235,7 +235,7 @@ fn run_msl_hotspot_flamegraphs(root: &Path) -> Result<()> {
             latest_msl_results_path(root).display()
         )
     })?;
-    let library = cached_msl_library_root(root)?;
+    let source_root = cached_msl_source_root(root)?;
 
     let Some((compile_model, compile_seconds)) = hottest_compile_model(&summary) else {
         anyhow::bail!("latest MSL results did not contain per-model compile timings");
@@ -248,7 +248,7 @@ fn run_msl_hotspot_flamegraphs(root: &Path) -> Result<()> {
         msl_flamegraph_cmd::MslFlamegraphArgs {
             model: compile_model.to_string(),
             mode: msl_flamegraph_cmd::MslFlamegraphMode::Compile,
-            library: Some(library.clone()),
+            source_root: Some(source_root.clone()),
             output: None,
             freq: 99,
             no_inline: false,
@@ -268,7 +268,7 @@ fn run_msl_hotspot_flamegraphs(root: &Path) -> Result<()> {
         msl_flamegraph_cmd::MslFlamegraphArgs {
             model: sim_model.to_string(),
             mode: msl_flamegraph_cmd::MslFlamegraphMode::Simulate,
-            library: Some(library),
+            source_root: Some(source_root),
             output: None,
             freq: 99,
             no_inline: false,
@@ -312,12 +312,12 @@ fn run_editor_msl_smoke(root: &Path, install_prereqs: bool) -> Result<()> {
 }
 
 fn run_vscode_editor_msl_smoke(root: &Path, install_prereqs: bool) -> Result<()> {
-    let msl_root = cached_msl_library_root(root)?;
+    let msl_root = cached_msl_source_root(root)?;
     vscode_cmd::run_vscode_msl_smoke(root, &msl_root, install_prereqs)
 }
 
 fn run_wasm_editor_msl_smoke(root: &Path) -> Result<()> {
-    let msl_root = cached_msl_library_root(root)?;
+    let msl_root = cached_msl_source_root(root)?;
     run_wasm_browser_msl_smoke(root, &msl_root)
 }
 
@@ -341,7 +341,7 @@ fn run_rum_step(root: &Path, step: &VerifyStep) -> Result<()> {
     run_status(cmd)
 }
 
-fn cached_msl_library_root(root: &Path) -> Result<PathBuf> {
+fn cached_msl_source_root(root: &Path) -> Result<PathBuf> {
     let msl_root = root.join("target/msl/ModelicaStandardLibrary-4.1.0");
     anyhow::ensure!(
         msl_root.is_dir(),
@@ -352,7 +352,7 @@ fn cached_msl_library_root(root: &Path) -> Result<PathBuf> {
 }
 
 fn run_lsp_msl_completion_timings(root: &Path, install_prereqs: bool) -> Result<()> {
-    let msl_root = cached_msl_library_root(root)?;
+    let msl_root = cached_msl_source_root(root)?;
     lsp_benchmark_cmd::run_lsp_msl_completion_timings(root, &msl_root, install_prereqs)
 }
 
@@ -381,7 +381,7 @@ pub(crate) fn run_wasm_browser_msl_smoke_report(
     let browser = detect_browser_binary()?;
     let result_path = output_dir.join("wasm-browser-result.json");
     let smoke_url = format!(
-        "http://127.0.0.1:{port}/editors/wasm/index.html?rumoca_smoke=1&smoke_model=Resistor&smoke_source_url=/target/editor-msl-smoke/Resistor.mo&smoke_library_zip_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
+        "http://127.0.0.1:{port}/editors/wasm/index.html?rumoca_smoke=1&smoke_model=Resistor&smoke_source_url=/target/editor-msl-smoke/Resistor.mo&smoke_package_archive_url=/target/editor-msl-smoke/msl-slice.zip&smoke_compile_timeout_ms=300000"
     );
     let mut smoke = Command::new("node");
     smoke
@@ -626,16 +626,16 @@ fn detect_browser_binary() -> Result<String> {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WasmSmokeSummary {
     pub(crate) model_name: Option<String>,
-    pub(crate) library_count: Option<u64>,
+    pub(crate) source_root_count: Option<u64>,
     pub(crate) status_text: Option<String>,
     pub(crate) open_ms: Option<u64>,
     pub(crate) code_lens_ms: Option<u64>,
     pub(crate) code_lens_count: Option<u64>,
     pub(crate) archive_load_ms: Option<u64>,
-    pub(crate) library_load_ms: Option<u64>,
-    pub(crate) library_load_completion_count: Option<u64>,
-    pub(crate) library_expected_completion_present: Option<bool>,
-    pub(crate) library_stage_timings: Option<vscode_cmd::VscodeStageTimingSummary>,
+    pub(crate) source_root_load_ms: Option<u64>,
+    pub(crate) source_root_load_completion_count: Option<u64>,
+    pub(crate) source_root_expected_completion_present: Option<bool>,
+    pub(crate) source_root_stage_timings: Option<vscode_cmd::VscodeStageTimingSummary>,
     pub(crate) compile_ms: Option<u64>,
     pub(crate) completion_ms: Option<u64>,
     pub(crate) completion_count: Option<u64>,
@@ -663,11 +663,11 @@ struct WasmSmokeCallback {
 
 fn enforce_wasm_smoke_latency_budget(summary: &WasmSmokeSummary) -> Result<()> {
     if let Some(max_ms) = env_var_nonzero_u64("RUMOCA_WASM_EDITOR_SMOKE_LIBRARY_LOAD_MAX_MS")
-        && let Some(measured_ms) = summary.archive_load_ms.or(summary.library_load_ms)
+        && let Some(measured_ms) = summary.archive_load_ms.or(summary.source_root_load_ms)
     {
         anyhow::ensure!(
             measured_ms <= max_ms,
-            "wasm editor smoke library load took {measured_ms}ms (budget {max_ms}ms)"
+            "wasm editor smoke source-root load took {measured_ms}ms (budget {max_ms}ms)"
         );
     }
 

@@ -30,7 +30,7 @@ function normalizeCommandItems(items) {
 function modePlaceholder(mode) {
     if (mode === 'quickOpen') return 'Type a model or class to open';
     if (mode === 'symbolSearch') return 'Type a symbol name to jump to';
-    return 'Type a command (e.g., compile, simulate, library)';
+    return 'Type a command (e.g., compile, simulate, package archive)';
 }
 
 function modeLoadingMessage(mode) {
@@ -53,8 +53,11 @@ function isEditableElement(target) {
 }
 
 function monacoEditorHasTextFocus() {
-    const candidates = [window.editor, window.templateEditor];
-    return candidates.some(editor => Boolean(editor && typeof editor.hasTextFocus === 'function' && editor.hasTextFocus()));
+    return Boolean(
+        window.editor
+        && typeof window.editor.hasTextFocus === 'function'
+        && window.editor.hasTextFocus(),
+    );
 }
 
 export function setupCommandPalette(options = {}) {
@@ -245,13 +248,13 @@ export function setupCommandPalette(options = {}) {
             },
         },
         {
-            label: 'Libraries: Load Archive',
-            description: 'Open file picker to load a Modelica library ZIP',
-            tags: ['library', 'msl', 'zip'],
+            label: 'Project: Import Package Archive',
+            description: 'Open the file picker to import a Modelica package ZIP into the workspace',
+            tags: ['package', 'archive', 'msl', 'zip'],
             run: () => {
-                if (typeof window.switchBottomTab === 'function') window.switchBottomTab('libraries');
-                const firstInput = document.querySelector('#libraryList .library-row input[type="file"]');
-                if (firstInput) firstInput.click();
+                if (typeof window.openPackageArchivePicker === 'function') {
+                    window.openPackageArchivePicker();
+                }
             },
         },
         {
@@ -259,7 +262,6 @@ export function setupCommandPalette(options = {}) {
             description: 'Reload package/class documentation tree from current cache',
             tags: ['packages', 'docs', 'refresh'],
             run: () => {
-                if (typeof window.switchBottomTab === 'function') window.switchBottomTab('packages');
                 if (typeof window.refreshPackageViewer === 'function') window.refreshPackageViewer(true);
             },
         },

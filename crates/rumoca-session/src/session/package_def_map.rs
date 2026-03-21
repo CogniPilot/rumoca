@@ -1,11 +1,15 @@
+use super::Fingerprint;
 use super::declaration_index::ItemKey;
-use super::file_summary::FileSummary;
+use super::file_summary::{
+    ClassSummary, ComponentSummary, ExtendSummary, FileSummary, ImportSummary,
+};
 use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PackageDefEntry {
     pub(crate) item_key: ItemKey,
+    pub(crate) interface_fingerprint: Fingerprint,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -44,14 +48,41 @@ impl PackageDefMap {
     }
 
     pub(crate) fn extend_from_summary(&mut self, summary: &FileSummary) {
-        for (item_key, _) in summary.iter() {
+        for (item_key, class) in summary.iter() {
             self.insert_declared_class(
                 item_key.qualified_name(),
                 PackageDefEntry {
                     item_key: item_key.clone(),
+                    interface_fingerprint: class_interface_fingerprint(class),
                 },
             );
         }
+    }
+
+    pub(crate) fn patched_with_summaries<'a>(
+        &self,
+        dirty_class_prefixes: &IndexSet<String>,
+        summaries: impl IntoIterator<Item = &'a FileSummary>,
+    ) -> Self {
+        let dirty_leaf_prefixes = leaf_dirty_prefixes(dirty_class_prefixes);
+        if dirty_leaf_prefixes.is_empty() {
+            return self.clone();
+        }
+
+        let mut patched = Self::default();
+        for (qualified_name, entry) in self.class_entries() {
+            if dirty_leaf_prefixes
+                .iter()
+                .any(|prefix| qualified_name_in_subtree(qualified_name, prefix))
+            {
+                continue;
+            }
+            patched.insert_declared_class(qualified_name.clone(), entry.clone());
+        }
+        for summary in summaries {
+            patched.extend_from_summary(summary);
+        }
+        patched
     }
 
     pub(crate) fn from_persisted(
@@ -73,6 +104,7 @@ impl PackageDefMap {
                         container_path,
                         name,
                     ),
+                    interface_fingerprint: synthetic_namespace_hash(&entry.qualified_name),
                 },
             );
         }
@@ -85,6 +117,12 @@ impl PackageDefMap {
                 .as_ref()
                 .map(|entry| (qualified_name, entry))
         })
+    }
+
+    pub(crate) fn node_fingerprint(&self, qualified_name: &str) -> Fingerprint {
+        self.declared_class(qualified_name)
+            .map(|entry| entry.interface_fingerprint)
+            .unwrap_or_else(|| synthetic_namespace_hash(qualified_name))
     }
 
     pub(crate) fn namespace_nodes(&self) -> impl Iterator<Item = (&String, &IndexSet<String>)> {
@@ -142,6 +180,58 @@ impl PackageDefMap {
     }
 }
 
+#[derive(Serialize)]
+struct AggregateClassSummary<'a> {
+    class_type: &'a rumoca_ir_ast::ClassType,
+    encapsulated: bool,
+    partial: bool,
+    expandable: bool,
+    operator_record: bool,
+    pure: bool,
+    causality: &'a rumoca_ir_ast::Causality,
+    is_protected: bool,
+    is_final: bool,
+    is_replaceable: bool,
+    constrainedby: &'a Option<String>,
+    array_subscripts: &'a [rumoca_ir_ast::Subscript],
+    imports: &'a [ImportSummary],
+    extends: &'a [ExtendSummary],
+    components: &'a IndexMap<String, ComponentSummary>,
+}
+
+fn class_interface_fingerprint(class: &ClassSummary) -> Fingerprint {
+    fingerprint_value(&AggregateClassSummary {
+        class_type: &class.class_type,
+        encapsulated: class.encapsulated,
+        partial: class.partial,
+        expandable: class.expandable,
+        operator_record: class.operator_record,
+        pure: class.pure,
+        causality: &class.causality,
+        is_protected: class.is_protected,
+        is_final: class.is_final,
+        is_replaceable: class.is_replaceable,
+        constrainedby: &class.constrainedby,
+        array_subscripts: &class.array_subscripts,
+        imports: &class.imports,
+        extends: &class.extends,
+        components: &class.components,
+    })
+}
+
+fn fingerprint_value<T: Serialize>(value: &T) -> Fingerprint {
+    let encoded =
+        bincode::serialize(value).expect("query fingerprint serialization should succeed");
+    *blake3::hash(&encoded).as_bytes()
+}
+
+fn synthetic_namespace_hash(name: &str) -> Fingerprint {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rumoca-class-graph-node-v1");
+    hasher.update(name.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
 impl PersistedPackageDefMap {
     pub(crate) fn from_file_summaries(
         file_summaries_by_uri: &IndexMap<String, FileSummary>,
@@ -180,4 +270,23 @@ fn split_qualified_name(qualified_name: &str) -> (String, String) {
         Some((container_path, name)) => (container_path.to_string(), name.to_string()),
         None => (String::new(), qualified_name.to_string()),
     }
+}
+
+pub(super) fn leaf_dirty_prefixes(dirty_class_prefixes: &IndexSet<String>) -> Vec<String> {
+    dirty_class_prefixes
+        .iter()
+        .filter(|candidate| {
+            !dirty_class_prefixes
+                .iter()
+                .any(|other| other != *candidate && qualified_name_in_subtree(other, candidate))
+        })
+        .cloned()
+        .collect()
+}
+
+pub(super) fn qualified_name_in_subtree(qualified_name: &str, prefix: &str) -> bool {
+    qualified_name == prefix
+        || qualified_name
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('.'))
 }

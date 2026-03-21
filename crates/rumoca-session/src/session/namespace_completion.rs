@@ -11,6 +11,7 @@ type Fingerprint = [u8; 32];
 pub(crate) struct NamespaceCompletionCache {
     class_names: Vec<String>,
     namespace_edges: IndexMap<String, IndexSet<String>>,
+    node_fingerprints: IndexMap<String, Fingerprint>,
     children_by_prefix: IndexMap<String, Vec<NamespaceCompletionEntry>>,
     namespace_fingerprints: OnceLock<IndexMap<String, Fingerprint>>,
 }
@@ -24,6 +25,7 @@ impl Clone for NamespaceCompletionCache {
         Self {
             class_names: self.class_names.clone(),
             namespace_edges: self.namespace_edges.clone(),
+            node_fingerprints: self.node_fingerprints.clone(),
             children_by_prefix: self.children_by_prefix.clone(),
             namespace_fingerprints,
         }
@@ -31,6 +33,13 @@ impl Clone for NamespaceCompletionCache {
 }
 
 impl NamespaceCompletionCache {
+    pub(crate) fn aggregate_fingerprint(&self) -> Fingerprint {
+        self.namespace_fingerprints()
+            .get("")
+            .copied()
+            .unwrap_or_else(|| synthetic_namespace_hash(""))
+    }
+
     #[cfg(test)]
     pub(crate) fn from_documents<'a>(
         definitions: impl Iterator<Item = &'a ast::StoredDefinition>,
@@ -62,8 +71,9 @@ impl NamespaceCompletionCache {
     }
 
     fn namespace_fingerprints(&self) -> &IndexMap<String, Fingerprint> {
-        self.namespace_fingerprints
-            .get_or_init(|| build_namespace_fingerprints(&self.namespace_edges))
+        self.namespace_fingerprints.get_or_init(|| {
+            build_namespace_fingerprints(&self.namespace_edges, &self.node_fingerprints)
+        })
     }
 
     pub(crate) fn extend_from_package_def_map(&mut self, index: &PackageDefMap) {
@@ -72,9 +82,29 @@ impl NamespaceCompletionCache {
                 .class_entries()
                 .map(|(qualified_name, _)| qualified_name.clone()),
         );
+        for (qualified_name, _) in index.class_entries() {
+            self.node_fingerprints
+                .entry(qualified_name.clone())
+                .or_insert_with(|| index.node_fingerprint(qualified_name));
+        }
         for (prefix, edges) in index.namespace_nodes() {
             self.namespace_edges
                 .entry(namespace_prefix_key(prefix))
+                .or_default()
+                .extend(edges.iter().cloned());
+        }
+    }
+
+    pub(crate) fn extend_from_namespace_cache(&mut self, other: &NamespaceCompletionCache) {
+        self.class_names.extend(other.class_names.iter().cloned());
+        for (qualified_name, fingerprint) in &other.node_fingerprints {
+            self.node_fingerprints
+                .entry(qualified_name.clone())
+                .or_insert(*fingerprint);
+        }
+        for (prefix, edges) in &other.namespace_edges {
+            self.namespace_edges
+                .entry(prefix.clone())
                 .or_default()
                 .extend(edges.iter().cloned());
         }
@@ -111,6 +141,7 @@ impl NamespaceCacheCollector {
         NamespaceCompletionCache {
             class_names,
             namespace_edges: self.namespace_edges,
+            node_fingerprints: IndexMap::new(),
             children_by_prefix,
             namespace_fingerprints: OnceLock::new(),
         }
@@ -219,12 +250,13 @@ fn build_children_by_prefix(
 
 fn build_namespace_fingerprints(
     namespace_edges: &IndexMap<String, IndexSet<String>>,
+    node_fingerprints: &IndexMap<String, Fingerprint>,
 ) -> IndexMap<String, Fingerprint> {
     let mut memo = IndexMap::new();
     let mut prefixes = namespace_edges.keys().cloned().collect::<Vec<_>>();
     prefixes.sort_unstable();
     for prefix in prefixes {
-        namespace_fingerprint_recursive(&prefix, namespace_edges, &mut memo);
+        namespace_fingerprint_recursive(&prefix, namespace_edges, node_fingerprints, &mut memo);
     }
     memo
 }
@@ -232,6 +264,7 @@ fn build_namespace_fingerprints(
 fn namespace_fingerprint_recursive(
     prefix: &str,
     namespace_edges: &IndexMap<String, IndexSet<String>>,
+    node_fingerprints: &IndexMap<String, Fingerprint>,
     memo: &mut IndexMap<String, Fingerprint>,
 ) -> Fingerprint {
     if let Some(fingerprint) = memo.get(prefix) {
@@ -239,7 +272,7 @@ fn namespace_fingerprint_recursive(
     }
 
     let own_name = prefix.strip_suffix('.').unwrap_or(prefix);
-    let own_hash = synthetic_namespace_hash(own_name);
+    let own_hash = node_fingerprint(own_name, node_fingerprints);
     let mut children = namespace_edges
         .get(prefix)
         .map(|set| set.iter().cloned().collect::<Vec<_>>())
@@ -253,8 +286,12 @@ fn namespace_fingerprint_recursive(
 
     for child_full_name in children {
         hasher.update(child_full_name.as_bytes());
-        let child_hash =
-            child_namespace_or_class_fingerprint(&child_full_name, namespace_edges, memo);
+        let child_hash = child_namespace_or_class_fingerprint(
+            &child_full_name,
+            namespace_edges,
+            node_fingerprints,
+            memo,
+        );
         hasher.update(&child_hash);
     }
 
@@ -266,14 +303,22 @@ fn namespace_fingerprint_recursive(
 fn child_namespace_or_class_fingerprint(
     full_name: &str,
     namespace_edges: &IndexMap<String, IndexSet<String>>,
+    node_fingerprints: &IndexMap<String, Fingerprint>,
     memo: &mut IndexMap<String, Fingerprint>,
 ) -> Fingerprint {
     let child_prefix = format!("{full_name}.");
     if namespace_edges.contains_key(&child_prefix) {
-        namespace_fingerprint_recursive(&child_prefix, namespace_edges, memo)
+        namespace_fingerprint_recursive(&child_prefix, namespace_edges, node_fingerprints, memo)
     } else {
-        synthetic_namespace_hash(full_name)
+        node_fingerprint(full_name, node_fingerprints)
     }
+}
+
+fn node_fingerprint(name: &str, node_fingerprints: &IndexMap<String, Fingerprint>) -> Fingerprint {
+    node_fingerprints
+        .get(name)
+        .copied()
+        .unwrap_or_else(|| synthetic_namespace_hash(name))
 }
 
 fn synthetic_namespace_hash(name: &str) -> Fingerprint {

@@ -1,93 +1,51 @@
 use super::*;
 
 impl ModelicaLanguageServer {
-    pub(super) async fn ensure_source_libraries_loaded(
+    pub(super) async fn ensure_source_roots_loaded_with_paths(
         &self,
         text: &str,
         current_document_path: &str,
+        source_root_paths: &[String],
     ) -> bool {
-        let library_paths = self.library_paths.read().await.clone();
-        self.ensure_source_libraries_loaded_with_paths(text, current_document_path, &library_paths)
-            .await
-    }
-
-    pub(super) async fn source_requires_unloaded_libraries(&self, text: &str) -> bool {
-        let library_paths = self.library_paths.read().await.clone();
-        let loaded_libraries = self.loaded_libraries.read().await.clone();
-        let mut seen_library_paths = HashSet::new();
-
-        for lib_path in library_paths {
-            let path_key = canonical_path_key(&lib_path);
-            if !seen_library_paths.insert(path_key.clone()) {
-                continue;
-            }
-            if loaded_libraries.contains(&path_key) {
-                continue;
-            }
-            let should_load =
-                should_load_library_for_source(text, Path::new(&lib_path)).unwrap_or(true);
-            if should_load {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    pub(super) async fn ensure_source_libraries_loaded_with_paths(
-        &self,
-        text: &str,
-        current_document_path: &str,
-        library_paths: &[String],
-    ) -> bool {
-        let mut library_state_epoch = self.current_library_state_epoch();
-        let already_loaded = self.loaded_libraries.read().await.clone();
-        let mut seen_library_paths = HashSet::new();
-        let mut claimed_roots = HashMap::new();
+        let (already_loaded, mut source_root_state_epoch) = {
+            let session = self.session.read().await;
+            (
+                session.loaded_source_root_path_keys(),
+                session.source_root_state_epoch(),
+            )
+        };
         let mut loaded_any = false;
-        for loaded_path in &already_loaded {
-            seen_library_paths.insert(canonical_path_key(loaded_path));
-            for root in infer_library_roots(Path::new(loaded_path)).unwrap_or_default() {
-                claimed_roots
-                    .entry(root)
-                    .or_insert_with(|| loaded_path.clone());
-            }
-        }
+        let referenced_source_root_paths =
+            rumoca_session::source_roots::referenced_unloaded_source_root_paths(
+                text,
+                source_root_paths,
+                &already_loaded,
+            );
+        let load_plan = rumoca_session::source_roots::plan_source_root_loads(
+            &referenced_source_root_paths,
+            &already_loaded,
+        );
 
         let mut progress_messages = Vec::new();
         let mut load_errors = Vec::new();
-        for lib_path in library_paths {
-            let path_key = canonical_path_key(lib_path);
-            if !seen_library_paths.insert(path_key.clone()) {
-                continue;
-            }
-            if already_loaded.contains(&path_key) {
-                continue;
-            }
-            let inferred_roots = infer_library_roots(Path::new(lib_path)).unwrap_or_default();
-            if let Some((root, provider)) = duplicate_root_provider(&inferred_roots, &claimed_roots)
-            {
-                progress_messages.push(format!(
-                    "[rumoca] Skipping library {} (duplicate root '{}' already loaded from {})",
-                    lib_path, root, provider
-                ));
-                continue;
-            }
-            let should_load =
-                should_load_library_for_source(text, Path::new(lib_path)).unwrap_or(true);
-            if !should_load {
-                continue;
-            }
-            progress_messages.push(format!("[rumoca] Loading library: {lib_path}"));
-            let source_set_id = library_source_set_id(lib_path);
+        for skipped in &load_plan.duplicate_root_skips {
+            progress_messages.push(format!(
+                "[rumoca] Skipping source root {} (duplicate root '{}' already loaded from {})",
+                skipped.source_root_path, skipped.root_name, skipped.provider_path
+            ));
+        }
+        for source_root_path in load_plan.load_paths {
+            let path_key = canonical_path_key(&source_root_path);
+            progress_messages.push(format!("[rumoca] Loading source root: {source_root_path}"));
+            let source_set_id = source_root_source_set_key(&source_root_path);
             let loaded = match self
-                .load_library_source_set_if_current(
-                    lib_path,
+                .load_source_root_if_current(
+                    &source_root_path,
                     &path_key,
                     &source_set_id,
                     Some(current_document_path),
-                    library_state_epoch,
-                    LibraryIndexingReason::SaveDiagnostics,
+                    source_root_state_epoch,
+                    SourceRootIndexingReason::SaveDiagnostics,
                 )
                 .await
             {
@@ -98,23 +56,20 @@ impl ModelicaLanguageServer {
                     continue;
                 }
             };
-            let status = match loaded.cache_status {
-                LibraryCacheStatus::Hit => "cache hit",
-                LibraryCacheStatus::Miss => "cache miss",
-                LibraryCacheStatus::Disabled => "cache disabled",
-            };
-            progress_messages.push(format!(
-                "[rumoca] Library {} ({}) — {} files, {} inserted [key={}, cache={}]",
-                lib_path,
-                status,
-                loaded.indexed_file_count,
-                loaded.inserted_file_count,
-                loaded.cache_key,
-                loaded.cache_path
-            ));
+            progress_messages.push(
+                loaded
+                    .status
+                    .as_ref()
+                    .map(render_source_root_status_message)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "[rumoca] Source root {} — {} files, {} inserted",
+                            source_root_path, loaded.parsed_file_count, loaded.inserted_file_count
+                        )
+                    }),
+            );
             loaded_any = true;
-            claim_roots(&mut claimed_roots, inferred_roots, lib_path);
-            library_state_epoch = self.current_library_state_epoch();
+            source_root_state_epoch = self.session.read().await.source_root_state_epoch();
         }
         for message in progress_messages {
             self.client.log_message(MessageType::INFO, message).await;
@@ -151,8 +106,8 @@ impl ModelicaLanguageServer {
         let diagnostics_timing_path = self.diagnostics_timing_path.read().await.clone();
         let publish_diagnostics_timing =
             |request_was_stale: bool,
-             requested_library_load: bool,
-             library_load_ms: u64,
+             requested_source_root_load: bool,
+             source_root_load_ms: u64,
              ran_compile: bool,
              diagnostics_compute_ms: u64| {
                 let stats_after = session_cache_stats();
@@ -168,8 +123,8 @@ impl ModelicaLanguageServer {
                             ran_compile,
                             &session_cache_delta,
                         ),
-                        requested_library_load,
-                        library_load_ms,
+                        requested_source_root_load,
+                        source_root_load_ms,
                         ran_compile,
                         diagnostics_compute_ms,
                         total_ms: request_started.elapsed().as_millis() as u64,
@@ -180,12 +135,14 @@ impl ModelicaLanguageServer {
             };
         let should_compile = trigger == DiagnosticsTrigger::Save;
         if should_compile {
-            let library_load_started = Instant::now();
-            self.ensure_source_libraries_loaded(text, &file_name).await;
-            let library_load_ms = library_load_started.elapsed().as_millis() as u64;
+            let source_root_load_started = Instant::now();
+            let source_root_paths = self.source_root_paths.read().await.clone();
+            self.ensure_source_roots_loaded_with_paths(text, &file_name, &source_root_paths)
+                .await;
+            let source_root_load_ms = source_root_load_started.elapsed().as_millis() as u64;
             request_token = self.refresh_analysis_request_revision(request_token).await;
             if self.analysis_request_is_stale(request_token).await {
-                publish_diagnostics_timing(true, should_compile, library_load_ms, false, 0);
+                publish_diagnostics_timing(true, should_compile, source_root_load_ms, false, 0);
                 return;
             }
             let diagnostics_started = Instant::now();
@@ -198,14 +155,14 @@ impl ModelicaLanguageServer {
             );
             drop(session);
             let diagnostics_compute_ms = diagnostics_started.elapsed().as_millis() as u64;
-            diagnostics.extend(self.stored_library_load_diagnostics(&file_name).await);
+            diagnostics.extend(self.stored_source_root_load_diagnostics(&file_name).await);
             self.client
                 .publish_diagnostics(uri, diagnostics, None)
                 .await;
             publish_diagnostics_timing(
                 false,
                 should_compile,
-                library_load_ms,
+                source_root_load_ms,
                 true,
                 diagnostics_compute_ms,
             );
@@ -218,7 +175,7 @@ impl ModelicaLanguageServer {
             publish_diagnostics_timing(true, false, 0, false, diagnostics_compute_ms);
             return;
         }
-        diagnostics.extend(self.stored_library_load_diagnostics(&file_name).await);
+        diagnostics.extend(self.stored_source_root_load_diagnostics(&file_name).await);
         self.client
             .publish_diagnostics(uri, diagnostics, None)
             .await;

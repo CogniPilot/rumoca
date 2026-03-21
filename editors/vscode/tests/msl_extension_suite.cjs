@@ -104,9 +104,9 @@ exports.run = async function run() {
   result.codeLensMs = Math.round(performance.now() - codeLensStart);
   result.codeLensCount = Array.isArray(codeLenses) ? codeLenses.length : 0;
 
-  const libraryLoadStart = performance.now();
-  const libraryLoad = await withTimeout(
-    "library load executeCompletionItemProvider",
+  const sourceRootLoadStart = performance.now();
+  const sourceRootLoad = await withTimeout(
+    "source-root load executeCompletionItemProvider",
     () => vscode.commands.executeCommand(
       "vscode.executeCompletionItemProvider",
       uri,
@@ -114,10 +114,10 @@ exports.run = async function run() {
     ),
     completionMaxMs,
   );
-  result.libraryLoadMs = Math.round(performance.now() - libraryLoadStart);
-  const libraryItems = Array.isArray(libraryLoad?.items) ? libraryLoad.items : [];
-  result.libraryLoadCompletionCount = libraryItems.length;
-  result.libraryExpectedCompletionPresent = libraryItems.some(
+  result.sourceRootLoadMs = Math.round(performance.now() - sourceRootLoadStart);
+  const sourceRootItems = Array.isArray(sourceRootLoad?.items) ? sourceRootLoad.items : [];
+  result.sourceRootLoadCompletionCount = sourceRootItems.length;
+  result.sourceRootExpectedCompletionPresent = sourceRootItems.some(
     (item) => labelText(item.label) === EXPECTED_MSL_COMPLETION_LABEL,
   );
 
@@ -182,8 +182,8 @@ exports.run = async function run() {
   writeResult(resultPath, result);
 
   assert(
-    result.libraryExpectedCompletionPresent,
-    `expected initial MSL completion items to include ${EXPECTED_MSL_COMPLETION_LABEL}, got ${libraryItems
+    result.sourceRootExpectedCompletionPresent,
+    `expected initial MSL completion items to include ${EXPECTED_MSL_COMPLETION_LABEL}, got ${sourceRootItems
       .slice(0, 20)
       .map((item) => labelText(item.label))
       .join(", ")}`,
