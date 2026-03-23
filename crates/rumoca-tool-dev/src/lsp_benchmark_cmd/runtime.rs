@@ -8,7 +8,9 @@ use super::render::{
 };
 
 mod cache_assertions;
+mod command_validation;
 mod provenance_assertions;
+use command_validation::validate_workspace_template_commands;
 use provenance_assertions::{
     compile_diagnostics_semantic_layer, diagnostics_entries_since,
     ensure_completion_entries_have_semantic_layer, ensure_completion_entries_not_stale,
@@ -1277,6 +1279,7 @@ fn run_execute_command_validation(
     )?);
     entries.extend(validate_execute_visualization_commands(client, workspace)?);
     entries.extend(validate_execute_sidecar_commands(client, workspace)?);
+    entries.extend(validate_workspace_template_commands(client, &sim_uri)?);
     Ok(entries)
 }
 
@@ -1749,6 +1752,8 @@ fn validate_initialize_response(
         "rumoca.project.setSelectedSimulationModel",
         "rumoca.project.startSimulation",
         "rumoca.project.prepareSimulationModels",
+        "rumoca.workspace.getBuiltinTemplates",
+        "rumoca.workspace.renderTemplate",
     ];
     ensure!(
         commands == expected_commands,
@@ -1831,6 +1836,8 @@ fn ensure_required_lsp_validation_entries(entries: &[LspApiValidationEntry]) -> 
         "exec:resync",
         "exec:filesMv",
         "exec:simulate",
+        "exec:getBuiltinTpl",
+        "exec:renderTpl",
         "shutdown",
     ] {
         ensure!(

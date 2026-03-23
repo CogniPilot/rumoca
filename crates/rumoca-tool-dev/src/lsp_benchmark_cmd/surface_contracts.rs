@@ -494,7 +494,7 @@ pub(super) const VSCODE_SURFACE_SPECS: &[SurfaceCoverageSpec] = &[
         surface: "settings:save",
         kind: "webview",
         source_path: "editors/vscode/src/extension.ts",
-        source_pattern: "save: async ({ model, preset, views }: {",
+        source_pattern: "save: async ({ model, preset, codegenSettings: nextCodegenSettings, views }: {",
         proof_path: "editors/vscode/tests/extension_surface_contract.test.mjs",
         proof_pattern: "\"settings.save\"",
         proof_label: "vscode-contract:settings_save",
