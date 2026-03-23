@@ -1513,24 +1513,24 @@ end CoupledGains;
     let model = "CoupledGains";
 
     // FMI2: render and compile
-    let fmi2_c = rumoca_phase_codegen::render_template_with_name(
-        &dae, templates::FMI2_MODEL, model,
-    ).expect("FMI2 render");
-    let fmi2_driver = rumoca_phase_codegen::render_template_with_name(
-        &dae, templates::FMI2_TEST_DRIVER, model,
-    ).expect("FMI2 driver render");
+    let fmi2_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_MODEL, model)
+            .expect("FMI2 render");
+    let fmi2_driver =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI2_TEST_DRIVER, model)
+            .expect("FMI2 driver render");
     compile_and_run_c(
         &[("model.c", &fmi2_c), ("driver.c", &fmi2_driver)],
         &["--t-end", "1.0", "--dt", "0.001"],
     );
 
     // FMI3: render and compile
-    let fmi3_c = rumoca_phase_codegen::render_template_with_name(
-        &dae, templates::FMI3_MODEL, model,
-    ).expect("FMI3 render");
-    let fmi3_driver = rumoca_phase_codegen::render_template_with_name(
-        &dae, templates::FMI3_TEST_DRIVER, model,
-    ).expect("FMI3 driver render");
+    let fmi3_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_MODEL, model)
+            .expect("FMI3 render");
+    let fmi3_driver =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::FMI3_TEST_DRIVER, model)
+            .expect("FMI3 driver render");
     compile_and_run_c(
         &[("model.c", &fmi3_c), ("driver.c", &fmi3_driver)],
         &["--t-end", "1.0", "--dt", "0.001"],
