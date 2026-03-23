@@ -446,6 +446,15 @@ test("shared simulation settings document supports browser hosts and hidden host
       outputDir: "",
       sourceRootOverrides: [],
     },
+    codegen: {
+      mode: "custom",
+      builtinTemplateId: "sympy.py.jinja",
+      customTemplatePath: "templates/custom.py.jinja",
+    },
+    codegenTemplates: [
+      { id: "sympy.py.jinja", label: "SymPy" },
+      { id: "casadi.py.jinja", label: "CasADi" },
+    ],
     views: [],
     features: {
       addSourceRootPath: false,
@@ -463,6 +472,11 @@ test("shared simulation settings document supports browser hosts and hidden host
   assert.match(html, /id="workspaceSettings" class="secondary" style="display:none;"/);
   assert.match(html, /var\(--vscode-foreground, #d4d4d4\)/);
   assert.match(html, /var\(--vscode-input-background, #313131\)/);
+  assert.match(html, /<h3>Codegen<\/h3>/);
+  assert.match(html, /id="codegenMode"/);
+  assert.match(html, /id="codegenBuiltinTemplateId"/);
+  assert.match(html, /id="codegenCustomTemplatePath"/);
+  assert.match(html, /templates\/custom\.py\.jinja/);
   assert.match(html, /split\(\/\\r\?\\n\|,\/\)/);
   assert.match(html, /split\(\/\\r\?\\n\/\)/);
   assert.match(html, /join\('\\n'\)/);
@@ -488,6 +502,11 @@ test("shared simulation settings helpers normalize state and build host handlers
     outputDir: "out",
     sourceRootOverrides: ["MSL"],
   });
+  assert.deepEqual(state.codegen, {
+    mode: "builtin",
+    builtinTemplateId: "sympy.py.jinja",
+    customTemplatePath: "",
+  });
 
   const builtState = shared.buildHostedSimulationSettingsState({
     activeModel: "Pkg.Ball",
@@ -500,6 +519,15 @@ test("shared simulation settings helpers normalize state and build host handlers
       outputDir: "",
       sourceRootPaths: ["Fallback"],
     },
+    fallbackCodegen: {
+      mode: "custom",
+      builtinTemplateId: "casadi.py.jinja",
+      customTemplatePath: "templates/generated.py.jinja",
+    },
+    codegenTemplates: [
+      { id: "sympy.py.jinja", label: "SymPy" },
+      { id: "casadi.py.jinja", label: "CasADi" },
+    ],
     views: [],
     defaultViews: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
   });
@@ -511,13 +539,23 @@ test("shared simulation settings helpers normalize state and build host handlers
     outputDir: "",
     sourceRootOverrides: ["Fallback"],
   });
+  assert.deepEqual(builtState.codegen, {
+    mode: "custom",
+    builtinTemplateId: "casadi.py.jinja",
+    customTemplatePath: "templates/generated.py.jinja",
+  });
+  assert.deepEqual(builtState.codegenTemplates, [
+    { id: "sympy.py.jinja", label: "SymPy" },
+    { id: "casadi.py.jinja", label: "CasADi" },
+  ]);
   assert.equal(builtState.views.length, 1);
 
   const handlers = shared.buildHostedSimulationSettingsHandlers({
     getActiveModel: () => "Pkg.Ball",
-    save: async ({ model, preset, views }) => ({
+    save: async ({ model, preset, codegenSettings, views }) => ({
       model,
       preset,
+      codegenSettings,
       viewCount: views.length,
     }),
     reset: async () => ({
@@ -527,6 +565,11 @@ test("shared simulation settings helpers normalize state and build host handlers
         dt: null,
         outputDir: "",
         sourceRootPaths: ["MSL"],
+      },
+      codegen: {
+        mode: "builtin",
+        builtinTemplateId: "casadi.py.jinja",
+        customTemplatePath: "",
       },
       views: [],
     }),
@@ -540,6 +583,11 @@ test("shared simulation settings helpers normalize state and build host handlers
       dt: "0.25",
       outputDir: "out",
       sourceRootPaths: ["MSL"],
+      codegen: {
+        mode: "custom",
+        builtinTemplateId: "sympy.py.jinja",
+        customTemplatePath: "templates/generated.py.jinja",
+      },
       views: [{ id: "states_time", title: "States", type: "timeseries", x: "time", y: ["x"] }],
     },
   });
@@ -552,6 +600,11 @@ test("shared simulation settings helpers normalize state and build host handlers
       outputDir: "out",
       sourceRootOverrides: ["MSL"],
     },
+    codegenSettings: {
+      mode: "custom",
+      builtinTemplateId: "sympy.py.jinja",
+      customTemplatePath: "templates/generated.py.jinja",
+    },
     viewCount: 1,
   });
 
@@ -562,6 +615,11 @@ test("shared simulation settings helpers normalize state and build host handlers
     dt: null,
     outputDir: "",
     sourceRootPaths: ["MSL"],
+    codegen: {
+      mode: "builtin",
+      builtinTemplateId: "casadi.py.jinja",
+      customTemplatePath: "",
+    },
     views: [],
   });
 

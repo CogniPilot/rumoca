@@ -1,5 +1,6 @@
 import path from "node:path";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { createProjectFilesystem } from "../src/modules/project_fs.js";
 import { createProjectInterface } from "../src/modules/project_interface.js";
 
@@ -263,7 +264,48 @@ async function simulationCommandsUseRuntimeBridgeAndPersistSelectedModel() {
   );
 }
 
+function unifiedSettingsSurfaceUsesSharedModal() {
+  const mainSource = readFileSync(
+    path.resolve("editors", "wasm", "src", "main.js"),
+    "utf8",
+  );
+  const htmlSource = readFileSync(
+    path.resolve("editors", "wasm", "index.html"),
+    "utf8",
+  );
+
+  assert(
+    mainSource.includes("codegen: codegenSettings"),
+    "expected shared settings state to include codegen settings",
+  );
+  assert(
+    mainSource.includes("codegenTemplates: templates"),
+    "expected shared settings state to include codegen template options",
+  );
+  assert(
+    mainSource.includes("button.title = 'Simulation and codegen settings';"),
+    "expected editor settings button to use unified settings copy",
+  );
+  assert(
+    mainSource.includes("window.openFileRunSettings = function() {\n    openSimulationSettingsModal();\n};"),
+    "expected run settings button to open the shared simulation/settings modal",
+  );
+  assert(
+    !mainSource.includes("openCodegenSettingsModal"),
+    "expected dedicated codegen settings modal logic to be removed",
+  );
+  assert(
+    htmlSource.includes('id="simulationSettingsTitle">Rumoca Settings</h3>'),
+    "expected simulation settings modal title to reflect unified Rumoca settings",
+  );
+  assert(
+    !htmlSource.includes('id="codegenSettingsModal"'),
+    "expected standalone codegen settings modal markup to be removed",
+  );
+}
+
 simulationPresetWritesLspCompatibleSidecars();
 resetSimulationPresetRemovesSidecars();
 parsesExistingLspProjectFiles();
 await simulationCommandsUseRuntimeBridgeAndPersistSelectedModel();
+unifiedSettingsSurfaceUsesSharedModal();

@@ -1,4 +1,116 @@
 use super::*;
+use rumoca_session::runtime::{render_dae_template_with_name, templates as runtime_templates};
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinTemplateDescriptor {
+    id: &'static str,
+    label: &'static str,
+    language: &'static str,
+    source: &'static str,
+}
+
+fn builtin_template_descriptors() -> Vec<BuiltinTemplateDescriptor> {
+    vec![
+        BuiltinTemplateDescriptor {
+            id: "sympy.py.jinja",
+            label: "SymPy (Python)",
+            language: "python",
+            source: runtime_templates::SYMPY,
+        },
+        BuiltinTemplateDescriptor {
+            id: "jax.py.jinja",
+            label: "JAX / Diffrax (Python)",
+            language: "python",
+            source: runtime_templates::JAX,
+        },
+        BuiltinTemplateDescriptor {
+            id: "onnx.py.jinja",
+            label: "ONNX (Python)",
+            language: "python",
+            source: runtime_templates::ONNX,
+        },
+        BuiltinTemplateDescriptor {
+            id: "julia_mtk.jl.jinja",
+            label: "Julia MTK",
+            language: "julia",
+            source: runtime_templates::JULIA_MTK,
+        },
+        BuiltinTemplateDescriptor {
+            id: "casadi_sx.py.jinja",
+            label: "CasADi SX (Python)",
+            language: "python",
+            source: runtime_templates::CASADI_SX,
+        },
+        BuiltinTemplateDescriptor {
+            id: "casadi_mx.py.jinja",
+            label: "CasADi MX (Python)",
+            language: "python",
+            source: runtime_templates::CASADI_MX,
+        },
+        BuiltinTemplateDescriptor {
+            id: "cyecca.py.jinja",
+            label: "Cyecca (Python)",
+            language: "python",
+            source: runtime_templates::CYECCA,
+        },
+        BuiltinTemplateDescriptor {
+            id: "embedded_c.c.jinja",
+            label: "Embedded C",
+            language: "c",
+            source: runtime_templates::EMBEDDED_C,
+        },
+        BuiltinTemplateDescriptor {
+            id: "dae_modelica.mo.jinja",
+            label: "DAE Modelica",
+            language: "modelica",
+            source: runtime_templates::DAE_MODELICA,
+        },
+        BuiltinTemplateDescriptor {
+            id: "flat_modelica.mo.jinja",
+            label: "Flat Modelica",
+            language: "modelica",
+            source: runtime_templates::FLAT_MODELICA,
+        },
+        BuiltinTemplateDescriptor {
+            id: "fmi2_model_description.xml.jinja",
+            label: "FMI 2.0 modelDescription.xml",
+            language: "xml",
+            source: runtime_templates::FMI2_MODEL_DESCRIPTION,
+        },
+        BuiltinTemplateDescriptor {
+            id: "fmi2_model.c.jinja",
+            label: "FMI 2.0 model.c",
+            language: "c",
+            source: runtime_templates::FMI2_MODEL,
+        },
+        BuiltinTemplateDescriptor {
+            id: "fmi2_test_driver.c.jinja",
+            label: "FMI 2.0 test driver",
+            language: "c",
+            source: runtime_templates::FMI2_TEST_DRIVER,
+        },
+        BuiltinTemplateDescriptor {
+            id: "fmi3_model_description.xml.jinja",
+            label: "FMI 3.0 modelDescription.xml",
+            language: "xml",
+            source: runtime_templates::FMI3_MODEL_DESCRIPTION,
+        },
+        BuiltinTemplateDescriptor {
+            id: "fmi3_model.c.jinja",
+            label: "FMI 3.0 model.c",
+            language: "c",
+            source: runtime_templates::FMI3_MODEL,
+        },
+        BuiltinTemplateDescriptor {
+            id: "fmi3_test_driver.c.jinja",
+            label: "FMI 3.0 test driver",
+            language: "c",
+            source: runtime_templates::FMI3_TEST_DRIVER,
+        },
+    ]
+}
 
 impl ModelicaLanguageServer {
     pub(super) async fn simulation_request_settings_for_model_prewarm(
@@ -65,6 +177,73 @@ impl ModelicaLanguageServer {
                     format!("[rumoca] project config: {diagnostic}"),
                 )
                 .await;
+        }
+    }
+
+    pub(super) async fn execute_get_builtin_templates(&self) -> Option<Value> {
+        serde_json::to_value(builtin_template_descriptors()).ok()
+    }
+
+    pub(super) async fn execute_render_template(&self, params: Option<Value>) -> Option<Value> {
+        let params_value = params?;
+        let obj = params_value.as_object()?;
+        let uri = obj.get("uri").and_then(Value::as_str)?;
+        let uri = Url::parse(uri).ok()?;
+        let model = obj.get("model").and_then(Value::as_str)?.trim().to_string();
+        let template = obj.get("template").and_then(Value::as_str)?.to_string();
+        if model.is_empty() {
+            return Some(Self::simulation_error_value("model is required"));
+        }
+        if template.trim().is_empty() {
+            return Some(Self::simulation_error_value("template source is required"));
+        }
+
+        let mut request_token = self.begin_analysis_request().await;
+        let source = match self.open_document_source_for_uri(&uri).await {
+            Ok(source) => source,
+            Err(error) => return Some(Self::simulation_error_value(error)),
+        };
+        let uri_path = session_document_uri_key(&uri);
+
+        if self
+            .wait_for_simulation_prewarm_if_current(&model, &uri_path)
+            .await
+        {
+            request_token = self.refresh_analysis_request_revision(request_token).await;
+        }
+
+        let source_root_paths = self.source_root_paths.read().await.clone();
+        let loaded_source_roots = self
+            .ensure_source_roots_loaded_with_paths(&source, &uri_path, &source_root_paths)
+            .await;
+        if loaded_source_roots {
+            request_token = self.refresh_analysis_request_revision(request_token).await;
+        }
+        if let Some(response) = self.stale_simulation_response(request_token).await {
+            return Some(response);
+        }
+
+        let _strict_lane = self.work_lanes.strict.lock().await;
+        let compiled = match self.compile_model_for_simulation(&model, &uri_path).await {
+            Ok(result) => result,
+            Err(error) => {
+                return Some(Self::simulation_error_value(format!(
+                    "compilation failed: {error}",
+                )));
+            }
+        };
+        if let Some(response) = self.stale_simulation_response(request_token).await {
+            return Some(response);
+        }
+
+        match render_dae_template_with_name(compiled.dae.as_ref(), &template, &model) {
+            Ok(output) => Some(json!({
+                "ok": true,
+                "output": output,
+            })),
+            Err(error) => Some(Self::simulation_error_value(format!(
+                "template render failed: {error}",
+            ))),
         }
     }
 
