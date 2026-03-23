@@ -176,6 +176,34 @@ fn cli_parses_vscode_package() {
 }
 
 #[test]
+fn cli_parses_vscode_install_check() {
+    let cli = Cli::try_parse_from([
+        "rum",
+        "vscode",
+        "install-check",
+        "--no-build",
+        "--no-open",
+        "--document",
+        "examples/Ball.mo",
+    ])
+    .expect("parse vscode install-check");
+    match cli.command {
+        Commands::Vscode(args) => match args.command {
+            VscodeCommand::InstallCheck(args) => {
+                assert!(args.no_build);
+                assert!(args.no_open);
+                assert_eq!(
+                    args.document.as_deref(),
+                    Some(Path::new("examples/Ball.mo"))
+                );
+            }
+            other => panic!("expected vscode install-check, got {other:?}"),
+        },
+        other => panic!("expected vscode command, got {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_vscode_test() {
     let cli = Cli::try_parse_from(["rum", "vscode", "test"]).expect("parse vscode test");
     match cli.command {

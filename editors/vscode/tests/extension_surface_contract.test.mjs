@@ -318,6 +318,28 @@ test("surface contract: activation commands stay aligned with contributed comman
   );
 });
 
+test("surface contract: modelica files activate the extension", () => {
+  const packageJson = readPackageJson();
+
+  assert.ok(
+    Array.isArray(packageJson.activationEvents)
+      && packageJson.activationEvents.includes("onLanguage:modelica"),
+    "opening a .mo file should activate the extension so LSP features like code lens can appear",
+  );
+});
+
+test("surface contract: packaged VSIX bundles vscode-languageclient runtime", () => {
+  const packageJson = readPackageJson();
+  const esbuildBase = packageJson.scripts?.["esbuild-base"];
+
+  assert.equal(typeof esbuildBase, "string", "package.json scripts.esbuild-base must exist");
+  assert.equal(
+    esbuildBase.includes("--external:vscode-languageclient"),
+    false,
+    "the packaged extension must bundle vscode-languageclient because the VSIX ships without node_modules",
+  );
+});
+
 test("surface contract: editor title command placement stays aligned with the toolbar layout", () => {
   const packageSurface = inventoryPackageSurface(readPackageJson());
 
@@ -357,6 +379,27 @@ test("surface contract: shared settings command opens the unified settings panel
   assert.ok(
     templateSettingsCommandBlock.includes("await openUnifiedSettingsForEditor(editor);"),
     "template settings command should open the unified settings panel",
+  );
+});
+
+test("surface contract: initial language-server startup failure does not skip command registration", () => {
+  const source = readExtensionSource();
+  const initialStartupBlock = sliceFrom(
+    source,
+    "const initialLanguageClient = await startLanguageClient();",
+    "const wireResultsPanelMessageHandling = (panel: vscode.WebviewPanel) => {",
+  );
+
+  assert.equal(
+    initialStartupBlock.includes("if (!initialLanguageClient.clientStarted) {\n        return;\n    }"),
+    false,
+    "initial language-server startup failure should not abort activate() before commands are registered",
+  );
+  assert.ok(
+    initialStartupBlock.includes(
+      "log('Continuing activation without a running language server so commands remain available.');",
+    ),
+    "activation should explicitly continue when the first language-server start fails",
   );
 });
 

@@ -104,6 +104,25 @@ struct VscodePackageArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+struct VscodeInstallCheckArgs {
+    /// Reuse the latest existing VSIX instead of rebuilding/packaging
+    #[arg(long)]
+    no_build: bool,
+    /// Use system rumoca-lsp when rebuilding the VSIX
+    #[arg(long, short = 's')]
+    system: bool,
+    /// Root directory for the isolated VS Code profile
+    #[arg(long, value_name = "DIR")]
+    profile_root: Option<PathBuf>,
+    /// Modelica file to open after installing the VSIX
+    #[arg(long, value_name = "FILE")]
+    document: Option<PathBuf>,
+    /// Install the VSIX into the isolated profile without opening VS Code
+    #[arg(long)]
+    no_open: bool,
+}
+
+#[derive(Debug, Args, Clone)]
 struct VscodeHostArgs {
     /// Skip rebuilding/copying rumoca-lsp into editors/vscode/bin
     #[arg(long)]
@@ -128,6 +147,8 @@ enum VscodeCommand {
     Build(VscodeBuildArgs),
     /// Package a platform-specific VSIX with bundled release binaries
     Package(VscodePackageArgs),
+    /// Build/package the VSIX if needed, install it into an isolated profile, and open a .mo file
+    InstallCheck(VscodeInstallCheckArgs),
     /// VS Code extension verification gate
     Test,
     /// Watch Rust/TypeScript and launch the Extension Development Host
@@ -398,6 +419,7 @@ fn cmd_vscode(args: VscodeArgs) -> Result<()> {
     match args.command {
         VscodeCommand::Build(args) => vscode_cmd::build_vscode_ext(args),
         VscodeCommand::Package(args) => vscode_cmd::package_vscode_ext(args),
+        VscodeCommand::InstallCheck(args) => vscode_cmd::install_check_vscode_ext(args),
         VscodeCommand::Test => vscode_cmd::run_vscode_ci(&repo_root()),
         VscodeCommand::Edit(args) => vscode_cmd::vscode_dev(args),
     }
