@@ -15,7 +15,7 @@ use walkdir::WalkDir;
 
 use crate::{
     VscodeBuildArgs, VscodeHostArgs, VscodeInstallCheckArgs, VscodePackageArgs, exe_name,
-    newest_prefixed_file, repo_cli_cmd, repo_root, run_status, run_status_quiet,
+    newest_prefixed_file, repo_cli_cmd, repo_root, run_capture, run_status, run_status_quiet,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,13 +339,19 @@ fn prepare_vscode_msl_smoke_command(
     timing_output_path: Option<&Path>,
     options: VscodeSmokeOptions,
 ) -> Result<PreparedVscodeSmokeCommand> {
+    let source_vscode_dir = resolve_vscode_dir(root)?;
     let smoke_stage = prepare_vscode_smoke_stage(root)?;
     let staged_vscode_dir = smoke_stage.path();
+    let smoke_executable = resolve_vscode_smoke_executable(
+        staged_vscode_dir,
+        &source_vscode_dir.join(".vscode-test"),
+    )?;
 
     let mut smoke = new_vscode_smoke_command("node", options)?;
     smoke
         .arg("tests/run_msl_extension_smoke.mjs")
         .env("RUMOCA_VSCODE_MSL_ROOT", msl_root)
+        .env("RUMOCA_VSCODE_SMOKE_EXECUTABLE", &smoke_executable)
         .current_dir(staged_vscode_dir);
     if let Some(path) = summary_output_path {
         smoke.env("RUMOCA_VSCODE_SMOKE_SUMMARY_OUT", path);
@@ -387,6 +393,8 @@ fn run_installed_vscode_extension_smoke(
     summary_output_path: &Path,
 ) -> Result<()> {
     ensure_vscode_npm_dependencies(vscode_dir, VscodeNpmDependencyMode::IfMissing, false, false)?;
+    let smoke_executable =
+        resolve_vscode_smoke_executable(vscode_dir, &vscode_dir.join(".vscode-test"))?;
     let mut smoke = new_vscode_smoke_command("node", VscodeSmokeOptions::default())?;
     smoke
         .arg("tests/run_installed_extension_check.mjs")
@@ -395,6 +403,7 @@ fn run_installed_vscode_extension_smoke(
         .env("RUMOCA_VSCODE_INSTALL_CHECK_USER_DATA_DIR", user_data_dir)
         .env("RUMOCA_VSCODE_INSTALL_CHECK_EXTENSIONS_DIR", extensions_dir)
         .env("RUMOCA_VSCODE_INSTALL_CHECK_RESULT", summary_output_path)
+        .env("RUMOCA_VSCODE_SMOKE_EXECUTABLE", &smoke_executable)
         .current_dir(vscode_dir);
     run_status_quiet(smoke)
 }
@@ -404,12 +413,18 @@ fn prepare_vscode_failed_start_smoke_command(
     summary_output_path: Option<&Path>,
     options: VscodeSmokeOptions,
 ) -> Result<PreparedVscodeSmokeCommand> {
+    let source_vscode_dir = resolve_vscode_dir(root)?;
     let smoke_stage = prepare_vscode_smoke_stage(root)?;
     let staged_vscode_dir = smoke_stage.path();
+    let smoke_executable = resolve_vscode_smoke_executable(
+        staged_vscode_dir,
+        &source_vscode_dir.join(".vscode-test"),
+    )?;
 
     let mut smoke = new_vscode_smoke_command("node", options)?;
     smoke
         .arg("tests/run_failed_start_command_smoke.mjs")
+        .env("RUMOCA_VSCODE_SMOKE_EXECUTABLE", &smoke_executable)
         .current_dir(staged_vscode_dir);
     if let Some(path) = summary_output_path {
         smoke.env("RUMOCA_VSCODE_FAILED_START_ARTIFACT_RESULT", path);
@@ -697,6 +712,22 @@ fn try_symlink_dir(source: &Path, destination: &Path) -> std::io::Result<()> {
             "directory symlinks unsupported on this platform",
         ))
     }
+}
+
+fn resolve_vscode_smoke_executable(vscode_dir: &Path, cache_path: &Path) -> Result<PathBuf> {
+    // Cache the VS Code test runtime under editors/vscode/.vscode-test so every
+    // smoke stage reuses the same verified download instead of hitting the CDN again.
+    let mut resolve = Command::new("node");
+    resolve
+        .arg("tests/resolve_vscode_smoke_executable.mjs")
+        .env("RUMOCA_VSCODE_SMOKE_CACHE_PATH", cache_path)
+        .current_dir(vscode_dir);
+    let executable = run_capture(resolve)?.trim().to_string();
+    ensure!(
+        !executable.is_empty(),
+        "failed to resolve VS Code smoke executable path"
+    );
+    Ok(PathBuf::from(executable))
 }
 
 pub(crate) fn vscode_dev(args: VscodeHostArgs) -> Result<()> {
