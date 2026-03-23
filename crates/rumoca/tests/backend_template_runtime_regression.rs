@@ -1462,3 +1462,77 @@ fn jax_param_decay() {
 fn jax_oscillator() {
     jax_trace_test(OSCILLATOR_SOURCE, "Oscillator");
 }
+
+// ============================================================================
+// Regression test for issue #115: component output variables in FMU C code
+// ============================================================================
+
+/// Regression test for issue #115: FMI2/FMI3 generated C code must
+/// compile when the DAE has non-empty output variables (dae.w).
+///
+/// Uses two coupled blocks with an algebraic loop so that the output
+/// variables cannot be trivially eliminated and remain in dae.w after
+/// the prepare phase.
+#[test]
+fn fmi2_fmi3_component_output_compiles() {
+    // Two coupled output blocks: g1.y and g2.y form an algebraic loop
+    // that prevents the eliminator from inlining both outputs.
+    const SOURCE: &str = r#"
+block Gain
+  parameter Real k = 1;
+  input Real u;
+  output Real y;
+equation
+  y = k * u;
+end Gain;
+
+model CoupledGains
+  Real x(start = 1);
+  Gain g1(k = 2);
+  Gain g2(k = 0.5);
+equation
+  g1.u = x + g2.y;
+  g2.u = g1.y;
+  der(x) = -g1.y;
+end CoupledGains;
+"#;
+
+    let dae = prepare_dae(SOURCE, "CoupledGains");
+
+    // At least one algebraic or output variable must survive elimination
+    // (the coupled gain blocks create a 2-unknown algebraic loop).
+    let n_alg = dae.outputs.len() + dae.algebraics.len();
+    assert!(
+        n_alg > 0,
+        "test model should have algebraic/output variables that survive elimination, \
+         got outputs={:?} algebraics={:?}",
+        dae.outputs.keys().collect::<Vec<_>>(),
+        dae.algebraics.keys().collect::<Vec<_>>(),
+    );
+
+    let model = "CoupledGains";
+
+    // FMI2: render and compile
+    let fmi2_c = rumoca_phase_codegen::render_template_with_name(
+        &dae, templates::FMI2_MODEL, model,
+    ).expect("FMI2 render");
+    let fmi2_driver = rumoca_phase_codegen::render_template_with_name(
+        &dae, templates::FMI2_TEST_DRIVER, model,
+    ).expect("FMI2 driver render");
+    compile_and_run_c(
+        &[("model.c", &fmi2_c), ("driver.c", &fmi2_driver)],
+        &["--t-end", "1.0", "--dt", "0.001"],
+    );
+
+    // FMI3: render and compile
+    let fmi3_c = rumoca_phase_codegen::render_template_with_name(
+        &dae, templates::FMI3_MODEL, model,
+    ).expect("FMI3 render");
+    let fmi3_driver = rumoca_phase_codegen::render_template_with_name(
+        &dae, templates::FMI3_TEST_DRIVER, model,
+    ).expect("FMI3 driver render");
+    compile_and_run_c(
+        &[("model.c", &fmi3_c), ("driver.c", &fmi3_driver)],
+        &["--t-end", "1.0", "--dt", "0.001"],
+    );
+}
