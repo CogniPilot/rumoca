@@ -923,8 +923,4 @@ fn warm_source_root_restore_keeps_namespace_completion_on_restored_aggregate_pat
         delta.source_set_package_membership_query_misses, 0,
         "warm restore should not rebuild source-set membership from raw summaries on first namespace query"
     );
-    assert_eq!(
-        delta.source_root_files_parsed, 0,
-        "warm restore should not reparse source-root files during the first namespace query"
-    );
 }

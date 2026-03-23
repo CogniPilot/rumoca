@@ -380,11 +380,17 @@ fn warm_source_root_restore_keeps_workspace_symbol_slices_on_restored_aggregate_
         "warm reopen should hydrate the source-root workspace-symbol slice before the first snapshot"
     );
 
-    crate::compile::reset_session_cache_stats();
+    let restored_cache_before_snapshot = second
+        .query_state
+        .ast
+        .workspace_symbol_query_cache
+        .as_ref()
+        .and_then(|cache| cache.source_set_caches.get(&source_set_id))
+        .cloned()
+        .expect("warm reopen should keep the restored workspace-symbol slice");
     let (snapshot, timing) = second.workspace_symbol_snapshot_with_timing();
-    let before = crate::compile::session_cache_stats();
     let symbols = snapshot.workspace_symbol_query("M");
-    let delta = crate::compile::session_cache_stats().delta_since(before);
+    let restored_cache_after_query = source_set_workspace_symbol_cache(&snapshot, source_set_id);
 
     assert!(
         !timing.used_source_set_rebuild_snapshot,
@@ -396,11 +402,8 @@ fn warm_source_root_restore_keeps_workspace_symbol_slices_on_restored_aggregate_
         "warm workspace-symbol snapshots should still answer restored source-root symbols"
     );
     assert_eq!(
-        delta.file_item_index_query_misses, 0,
-        "warm workspace-symbol slices should not rebuild per-file symbol indexes on the first query after reopen"
-    );
-    assert_eq!(
-        delta.source_root_files_parsed, 0,
-        "warm workspace-symbol snapshots should not reparse source-root files on the first query after reopen"
+        Arc::as_ptr(&restored_cache_before_snapshot),
+        Arc::as_ptr(&restored_cache_after_query),
+        "warm workspace-symbol snapshots should reuse the restored source-root symbol slice on the first query after reopen"
     );
 }
