@@ -246,6 +246,157 @@ fn eval_builtin(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Topological sort of parameters by start-expression dependencies
+// ---------------------------------------------------------------------------
+
+/// Collect all parameter/constant names referenced in an expression.
+fn collect_param_refs(
+    expr: &Expression,
+    param_names: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut refs = Vec::new();
+    collect_param_refs_inner(expr, param_names, &mut refs);
+    refs
+}
+
+fn collect_param_refs_inner(
+    expr: &Expression,
+    param_names: &std::collections::HashSet<String>,
+    refs: &mut Vec<String>,
+) {
+    match expr {
+        Expression::VarRef { name, .. } => {
+            let s = name.as_str().to_string();
+            if param_names.contains(&s) && !refs.contains(&s) {
+                refs.push(s);
+            }
+        }
+        Expression::Unary { rhs, .. } => {
+            collect_param_refs_inner(rhs, param_names, refs);
+        }
+        Expression::Binary { lhs, rhs, .. } => {
+            collect_param_refs_inner(lhs, param_names, refs);
+            collect_param_refs_inner(rhs, param_names, refs);
+        }
+        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_param_refs_inner(arg, param_names, refs);
+            }
+        }
+        Expression::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, then_expr) in branches {
+                collect_param_refs_inner(cond, param_names, refs);
+                collect_param_refs_inner(then_expr, param_names, refs);
+            }
+            collect_param_refs_inner(else_branch, param_names, refs);
+        }
+        Expression::Array { elements, .. } => {
+            for e in elements {
+                collect_param_refs_inner(e, param_names, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Topologically sort an `IndexMap` of variables by their start-expression
+/// dependencies. Variables whose start expressions reference other variables
+/// in the same map are placed after their dependencies.
+///
+/// Uses Kahn's algorithm. Cycles are broken arbitrarily (cyclic entries are
+/// appended at the end in their original order).
+fn topo_sort_by_start_deps(
+    map: &indexmap::IndexMap<VarName, Variable>,
+) -> indexmap::IndexMap<VarName, Variable> {
+    use std::collections::{HashSet, VecDeque};
+
+    if map.len() <= 1 {
+        return map.clone();
+    }
+
+    let names: HashSet<String> = map.keys().map(|k| k.as_str().to_string()).collect();
+    let name_list: Vec<String> = map.keys().map(|k| k.as_str().to_string()).collect();
+
+    // Build adjacency: deps[i] = set of indices that i depends on
+    let mut deps: Vec<HashSet<usize>> = Vec::with_capacity(map.len());
+    for (_name, var) in map {
+        let dep_indices = var
+            .start
+            .as_ref()
+            .map(|start| {
+                let self_idx = deps.len();
+                collect_param_refs(start, &names)
+                    .iter()
+                    .filter_map(|r| name_list.iter().position(|n| n == r))
+                    .filter(|&idx| idx != self_idx)
+                    .collect()
+            })
+            .unwrap_or_default();
+        deps.push(dep_indices);
+    }
+
+    // Kahn's algorithm
+    let n = map.len();
+    let mut in_degree = vec![0usize; n];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, dep_set) in deps.iter().enumerate() {
+        in_degree[i] = dep_set.len();
+        for &d in dep_set {
+            dependents[d].push(i);
+        }
+    }
+
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    for (i, &deg) in in_degree.iter().enumerate() {
+        if deg == 0 {
+            queue.push_back(i);
+        }
+    }
+
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    while let Some(idx) = queue.pop_front() {
+        order.push(idx);
+        for &dep in &dependents[idx] {
+            in_degree[dep] -= 1;
+            if in_degree[dep] == 0 {
+                queue.push_back(dep);
+            }
+        }
+    }
+
+    // Append any remaining (cyclic) entries in original order
+    if order.len() < n {
+        for i in 0..n {
+            if !order.contains(&i) {
+                order.push(i);
+            }
+        }
+    }
+
+    // Rebuild the map in topological order
+    let entries: Vec<(VarName, Variable)> =
+        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut sorted = indexmap::IndexMap::with_capacity(n);
+    for &idx in &order {
+        let (k, v) = entries[idx].clone();
+        sorted.insert(k, v);
+    }
+    sorted
+}
+
+/// Sort parameter and constant maps in the DAE by start-expression dependency
+/// order. This ensures that when templates iterate `dae.p | items`, each
+/// parameter's start expression can reference only previously-initialized
+/// parameters.
+pub fn sort_parameters_by_start_deps(dae: &mut Dae) {
+    dae.constants = topo_sort_by_start_deps(&dae.constants);
+    dae.parameters = topo_sort_by_start_deps(&dae.parameters);
+}
+
 fn eval_named_function(name: &str, args: &[Expression], env: &HashMap<String, f64>) -> Option<f64> {
     let arg = |i: usize| args.get(i).and_then(|e| eval_const_expr(e, env));
     match name {

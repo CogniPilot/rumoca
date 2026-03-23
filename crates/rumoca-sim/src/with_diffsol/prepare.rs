@@ -1018,6 +1018,15 @@ pub(super) fn prepare_dae_for_template_codegen_only(
         })
     })?;
 
+    // Sort parameters/constants by start-expression dependency order so that
+    // template backends (which iterate dae.p in map order) evaluate each
+    // parameter after its dependencies have been initialized.
+    trace_step("sort_parameters_by_start_deps", &mut || {
+        run_timeout_step(budget, || {
+            rumoca_ir_dae::sort_parameters_by_start_deps(&mut dae)
+        })
+    })?;
+
     Ok(dae)
 }
 
