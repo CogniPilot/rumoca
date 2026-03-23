@@ -11,6 +11,8 @@ name = "rumoca"
 crate-type = ["cdylib"]
 
 [dependencies]
+rumoca = { workspace = true }
+rumoca-sim = { workspace = true }
 rumoca-session = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }

@@ -721,11 +721,19 @@ jobs:
         shell: bash
         run: |
           cd crates/rumoca-bind-python
+          rm -rf dist
+          mkdir -p dist
           if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
             maturin build --release --out dist
           else
             maturin build --release --out dist --target ${{ matrix.target }}
           fi
+
+      - name: Smoke test installed wheel
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall crates/rumoca-bind-python/dist/*.whl
+          python crates/rumoca-bind-python/tests/smoke_test.py
 
       - name: Upload wheels
         uses: actions/upload-artifact@v6

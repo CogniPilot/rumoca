@@ -2967,7 +2967,9 @@ version = "0.8.9"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
+ "rumoca",
  "rumoca-session",
+ "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde_json",
