@@ -584,6 +584,7 @@ static void compute_derivatives(ModelInstance* m) {
 
 {{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
@@ -622,6 +623,7 @@ static void compute_outputs(ModelInstance* m) {
 
 {{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
@@ -662,6 +664,7 @@ static void compute_discrete_updates(ModelInstance* m) {
 {#- Unpack all variables needed for discrete equations (pre_ = current value for continuous vars) -#}
 {{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
@@ -693,6 +696,7 @@ static void compute_event_indicators(ModelInstance* m) {
 
 {{ unpack_vars(dae.x, "m->x", pre_array="m->x") }}
 {{ unpack_vars(dae.y, "m->y", pre_array="m->y") }}
+{{ unpack_vars(dae.w, "m->w", pre_array="m->w") }}
 {{ unpack_vars(dae.u, "m->u", pre_array="m->u") }}
 {{ unpack_vars(dae.p, "m->p") }}
 {{ unpack_vars(dae.constants, "m->constants") }}
