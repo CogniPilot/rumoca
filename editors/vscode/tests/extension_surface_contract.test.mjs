@@ -29,21 +29,35 @@ const SURFACE_COVERAGE = {
   packageCommands: {
     "rumoca.collapseAllAnnotations": [COMMAND_CONTRACT_REF],
     "rumoca.expandAllAnnotations": [COMMAND_CONTRACT_REF],
+    "rumoca.openSettingsMenu": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.openSimulationSettings": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
+    "rumoca.openTemplateSettings": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
+    "rumoca.renderTemplate": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.simulateModel": [COMMAND_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.toggleAnnotation": [COMMAND_CONTRACT_REF],
   },
   activationCommands: {
+    "rumoca.openSettingsMenu": [ACTIVATION_CONTRACT_REF],
     "rumoca.openSimulationSettings": [ACTIVATION_CONTRACT_REF],
+    "rumoca.openTemplateSettings": [ACTIVATION_CONTRACT_REF],
+    "rumoca.renderTemplate": [ACTIVATION_CONTRACT_REF],
     "rumoca.simulateModel": [ACTIVATION_CONTRACT_REF],
   },
   extensionCommands: {
     "rumoca.collapseAllAnnotations": [REGISTRATION_CONTRACT_REF],
     "rumoca.expandAllAnnotations": [REGISTRATION_CONTRACT_REF],
+    "rumoca.openSettingsMenu": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.openSimulationSettings": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
+    "rumoca.openTemplateSettings": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.resyncSidecars": [REGISTRATION_CONTRACT_REF],
+    "rumoca.renderTemplate": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.simulateModel": [REGISTRATION_CONTRACT_REF, ACTIVATION_CONTRACT_REF],
     "rumoca.toggleAnnotation": [REGISTRATION_CONTRACT_REF],
+  },
+  menuEntries: {
+    "editor/title:rumoca.openSettingsMenu": [COMMAND_CONTRACT_REF],
+    "editor/title:rumoca.renderTemplate": [COMMAND_CONTRACT_REF],
+    "editor/title/run:rumoca.simulateModel": [COMMAND_CONTRACT_REF],
   },
   serializers: {
     rumocaResults: [REGISTRATION_CONTRACT_REF],
@@ -138,6 +152,14 @@ function sliceFrom(source, startPattern, endPattern) {
 }
 
 function inventoryPackageSurface(packageJson) {
+  const menuEntries = [];
+  for (const [menuId, entries] of Object.entries(packageJson.contributes?.menus ?? {})) {
+    for (const entry of entries ?? []) {
+      if (typeof entry?.command === "string" && entry.command.length > 0) {
+        menuEntries.push(`${menuId}:${entry.command}`);
+      }
+    }
+  }
   return {
     packageCommands: sortUnique(
       (packageJson.contributes?.commands ?? [])
@@ -149,6 +171,7 @@ function inventoryPackageSurface(packageJson) {
         .filter((value) => typeof value === "string" && value.startsWith("onCommand:"))
         .map((value) => value.slice("onCommand:".length)),
     ),
+    menuEntries: sortUnique(menuEntries),
   };
 }
 
@@ -292,6 +315,48 @@ test("surface contract: activation commands stay aligned with contributed comman
       packageSurface.packageCommands.includes(command),
     ),
     "every onCommand activation event should refer to a contributed command",
+  );
+});
+
+test("surface contract: editor title command placement stays aligned with the toolbar layout", () => {
+  const packageSurface = inventoryPackageSurface(readPackageJson());
+
+  assertInventory("menuEntries", packageSurface.menuEntries, SURFACE_COVERAGE.menuEntries);
+});
+
+test("surface contract: shared settings command opens the unified settings panel", () => {
+  const source = readExtensionSource();
+  const settingsMenuCommandBlock = sliceFrom(
+    source,
+    "const settingsMenuCommand = vscode.commands.registerCommand(",
+    "context.subscriptions.push(settingsMenuCommand);",
+  );
+  const simulationSettingsCommandBlock = sliceFrom(
+    source,
+    "const simulationSettingsCommand = vscode.commands.registerCommand(",
+    "context.subscriptions.push(simulationSettingsCommand);",
+  );
+  const templateSettingsCommandBlock = sliceFrom(
+    source,
+    "const templateSettingsCommand = vscode.commands.registerCommand(",
+    "context.subscriptions.push(templateSettingsCommand);",
+  );
+
+  assert.ok(
+    !settingsMenuCommandBlock.includes("vscode.window.showQuickPick("),
+    "shared settings command should no longer present a picker",
+  );
+  assert.ok(
+    settingsMenuCommandBlock.includes("await openUnifiedSettingsForEditor(editor);"),
+    "shared settings command should open the unified settings panel",
+  );
+  assert.ok(
+    simulationSettingsCommandBlock.includes("await openUnifiedSettingsForEditor(editor);"),
+    "simulation settings command should open the unified settings panel",
+  );
+  assert.ok(
+    templateSettingsCommandBlock.includes("await openUnifiedSettingsForEditor(editor);"),
+    "template settings command should open the unified settings panel",
   );
 });
 

@@ -177,6 +177,8 @@ impl ModelicaLanguageServer {
                     "rumoca.project.setSelectedSimulationModel".to_string(),
                     "rumoca.project.startSimulation".to_string(),
                     "rumoca.project.prepareSimulationModels".to_string(),
+                    "rumoca.workspace.getBuiltinTemplates".to_string(),
+                    "rumoca.workspace.renderTemplate".to_string(),
                 ],
                 work_done_progress_options: WorkDoneProgressOptions::default(),
             }),
@@ -1491,6 +1493,8 @@ impl LanguageServer for ModelicaLanguageServer {
             "rumoca.project.prepareSimulationModels" => {
                 self.execute_prepare_simulation_models(arg0).await
             }
+            "rumoca.workspace.getBuiltinTemplates" => self.execute_get_builtin_templates().await,
+            "rumoca.workspace.renderTemplate" => self.execute_render_template(arg0).await,
             _ => None,
         };
         Ok(response)

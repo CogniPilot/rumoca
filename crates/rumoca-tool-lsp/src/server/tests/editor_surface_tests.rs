@@ -266,6 +266,42 @@ fn execute_command_dispatches_safe_project_command() {
 }
 
 #[test]
+fn execute_command_dispatches_workspace_template_catalog_command() {
+    run_async_test(async {
+        let workspace_root = new_temp_dir("execute-workspace-template-command");
+        let workspace_uri = Url::from_directory_path(&workspace_root).expect("workspace uri");
+        let service = new_test_service();
+        let server = service.inner();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(workspace_uri),
+                ..InitializeParams::default()
+            })
+            .await
+            .expect("initialize should succeed");
+
+        let response = server
+            .execute_command(ExecuteCommandParams {
+                command: "rumoca.workspace.getBuiltinTemplates".to_string(),
+                arguments: Vec::new(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await
+            .expect("execute command should succeed")
+            .expect("execute command should return a payload");
+        let templates = response
+            .as_array()
+            .expect("template catalog should serialize to an array");
+        assert!(
+            templates.iter().any(|template| {
+                template.get("id").and_then(serde_json::Value::as_str) == Some("sympy.py.jinja")
+            }),
+            "workspace template catalog should include the SymPy built-in"
+        );
+    });
+}
+
+#[test]
 fn resync_sidecars_preserves_loaded_source_roots_and_simulation_cache_when_paths_unchanged() {
     run_async_test(async {
         let workspace_root = new_temp_dir("resync-preserves-simulation-cache");

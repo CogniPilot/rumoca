@@ -45,6 +45,21 @@ function createFakeElement(tagName) {
     removeEventListener(type) {
       listeners.delete(type);
     },
+    dispatchEvent(event) {
+      const type = typeof event === "string" ? event : event?.type;
+      if (!type) {
+        return false;
+      }
+      const listener = listeners.get(type);
+      if (typeof listener === "function") {
+        listener(event ?? { type, target: element });
+        return true;
+      }
+      return false;
+    },
+    click() {
+      return element.dispatchEvent({ type: "click", target: element });
+    },
     setAttribute(name, value) {
       element.attributes[name] = String(value);
     },
@@ -143,6 +158,19 @@ function containsClass(node, className) {
     return true;
   }
   return (node.children || []).some((child) => containsClass(child, className));
+}
+
+function findElementByText(node, text) {
+  if (node?.textContent === text) {
+    return node;
+  }
+  for (const child of node.children || []) {
+    const match = findElementByText(child, text);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
 }
 
 test("shared results app exports pure helpers for host bridges", () => {
@@ -320,6 +348,57 @@ test("shared results app renders gear action in editable mode", () => {
     assert.ok(texts.includes("⚙"));
     assert.ok(!texts.includes("Settings"));
     assert.ok(containsClass(root, "rumoca-results-header-button"));
+
+    app.dispose();
+  } finally {
+    restoreDom();
+  }
+});
+
+test("shared results app keeps run metrics in details and omits the top timing strip", () => {
+  const restoreDom = installFakeDom();
+  try {
+    const { resultsApp } = loadResultsApp();
+    const root = createFakeElement("div");
+    const app = resultsApp.createResultsApp({
+      root,
+      model: "Ball",
+      views: [{ id: "states_time", title: "States vs Time", type: "timeseries", x: "time", y: ["x"] }],
+      payload: {
+        version: 1,
+        names: ["x"],
+        allData: [[0, 1], [1, 2]],
+        nStates: 1,
+        variableMeta: [],
+        simDetails: {
+          actual: { t_start: 0, t_end: 10 },
+          requested: { solver: "bdf", dt: 0.1 },
+        },
+      },
+      metrics: {
+        compileSeconds: 0.5,
+        simulateSeconds: 1.25,
+        points: 42,
+        variables: 7,
+      },
+    });
+
+    assert.ok(
+      !containsClass(root, "rumoca-results-timing"),
+      "results header should not render a separate timing strip",
+    );
+
+    const detailsButton = findElementByText(root, "Run Details");
+    assert.ok(detailsButton, "expected run details button");
+    detailsButton.click();
+
+    const texts = collectText(root);
+    const detailsText = texts.find((entry) => entry.includes("Run\n  compile: 0.5s"));
+    assert.ok(detailsText, "expected run details modal text");
+    assert.match(detailsText, /Series: 1/);
+    assert.match(detailsText, /Run\n  compile: 0.5s\n  simulate: 1.25s\n  points: 42\n  vars: 7/);
+    assert.match(detailsText, /Actual\n  t_start: 0\n  t_end: 10/);
+    assert.match(detailsText, /Requested\n  solver: bdf\n  dt: 0.1/);
 
     app.dispose();
   } finally {
