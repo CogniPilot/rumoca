@@ -1,0 +1,14 @@
+{
+  "name": "rumoca-install-check-harness",
+  "displayName": "Rumoca Install Check Harness",
+  "version": "0.0.1",
+  "publisher": "JamesGoppert",
+  "private": true,
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "*"
+  ]
+}

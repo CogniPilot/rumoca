@@ -2793,10 +2793,11 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     const initialLanguageClient = await startLanguageClient();
-    if (!initialLanguageClient.clientStarted) {
-        return;
+    if (initialLanguageClient.clientStarted) {
+        languageClientRuntime.setServerPath(initialLanguageClient.serverPath);
+    } else {
+        log('Continuing activation without a running language server so commands remain available.');
     }
-    languageClientRuntime.setServerPath(initialLanguageClient.serverPath);
 
     const wireResultsPanelMessageHandling = (panel: vscode.WebviewPanel) => {
         const messageDisposable = panel.webview.onDidReceiveMessage(async (message) => {
