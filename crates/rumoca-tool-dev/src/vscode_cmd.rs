@@ -14,8 +14,8 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use crate::{
-    VscodeBuildArgs, VscodeHostArgs, VscodePackageArgs, exe_name, newest_prefixed_file,
-    repo_cli_cmd, repo_root, run_status, run_status_quiet,
+    VscodeBuildArgs, VscodeHostArgs, VscodeInstallCheckArgs, VscodePackageArgs, exe_name,
+    newest_prefixed_file, repo_cli_cmd, repo_root, run_status, run_status_quiet,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,50 +165,73 @@ pub(crate) struct VscodeMslSmokeSummary {
 
 pub(crate) fn build_vscode_ext(args: VscodeBuildArgs) -> Result<()> {
     let root = repo_root();
-    let vscode_dir = resolve_vscode_dir(&root)?;
-
-    if !args.system {
-        build_and_stage_vscode_lsp(&root, &vscode_dir, true)?;
-    }
-
-    ensure_vscode_npm_dependencies(
-        &vscode_dir,
-        VscodeNpmDependencyMode::IfMissing,
-        false,
-        false,
-    )?;
-
-    println!("Compiling extension TypeScript...");
-    let mut npm_esbuild = Command::new("npm");
-    npm_esbuild
-        .arg("run")
-        .arg("esbuild")
-        .current_dir(&vscode_dir);
-    run_status(npm_esbuild)?;
-
-    println!("Packaging extension...");
-    let mut npm_package = Command::new("npm");
-    npm_package
-        .arg("run")
-        .arg("package")
-        .current_dir(&vscode_dir);
-    run_status(npm_package)?;
-
-    let vsix = newest_prefixed_file(&vscode_dir, "rumoca-modelica-", "vsix")?
-        .context("failed to locate packaged VSCode extension (*.vsix)")?;
+    let vsix = build_vscode_dev_vsix(&root, args.system)?;
     println!("Built VSIX: {}", vsix.display());
 
     if !args.no_install {
         println!("Installing extension in VSCode...");
-        let mut code = Command::new("code");
-        code.arg("--install-extension")
-            .arg(&vsix)
-            .arg("--force")
-            .current_dir(&vscode_dir);
-        run_status(code)?;
+        install_vscode_vsix(&vsix, None, None)?;
     }
 
     Ok(())
+}
+
+pub(crate) fn install_check_vscode_ext(args: VscodeInstallCheckArgs) -> Result<()> {
+    let root = repo_root();
+    let vscode_dir = resolve_vscode_dir(&root)?;
+    ensure!(
+        command_available("code"),
+        "missing `code` CLI in PATH; install VS Code's Shell Command and retry"
+    );
+
+    let profile_root = resolve_install_check_profile_root(&root, args.profile_root.as_deref())?;
+    let document = resolve_install_check_document(&root, args.document.as_deref())?;
+    let smoke_workspace = prepare_install_check_workspace(&profile_root, &document)?;
+    let user_data_dir = profile_root.join("user-data");
+    let extensions_dir = profile_root.join("extensions");
+    let artifacts_dir = profile_root.join("artifacts");
+    fs::create_dir_all(&artifacts_dir)
+        .with_context(|| format!("failed to create {}", artifacts_dir.display()))?;
+
+    let vsix = if args.no_build {
+        newest_prefixed_file(&vscode_dir, "rumoca-modelica-", "vsix")?.context(
+            "failed to locate packaged VSCode extension (*.vsix); rerun without --no-build",
+        )?
+    } else {
+        build_vscode_dev_vsix(&root, args.system)?
+    };
+    println!("Using VSIX: {}", vsix.display());
+
+    println!(
+        "Installing VSIX into isolated profile at {}",
+        profile_root.display()
+    );
+    install_vscode_vsix(&vsix, Some(&user_data_dir), Some(&extensions_dir))?;
+
+    println!("Running installed-extension smoke against packaged VSIX...");
+    let summary_path = artifacts_dir.join("installed-extension-smoke-summary.json");
+    run_installed_vscode_extension_smoke(
+        &vscode_dir,
+        &smoke_workspace,
+        &document,
+        &user_data_dir,
+        &extensions_dir,
+        &summary_path,
+    )?;
+    println!(
+        "Installed-extension smoke passed: {}",
+        summary_path.display()
+    );
+
+    if args.no_open {
+        return Ok(());
+    }
+
+    println!(
+        "Opening VS Code with the isolated install-check profile on {}...",
+        document.display()
+    );
+    launch_vscode_install_check_profile(&document, &user_data_dir, &extensions_dir)
 }
 
 pub(crate) fn package_vscode_ext(args: VscodePackageArgs) -> Result<()> {
@@ -303,8 +326,10 @@ pub(crate) fn run_vscode_msl_smoke_report(
     run_status_quiet(smoke)?;
     let raw = fs::read_to_string(&summary_path)
         .with_context(|| format!("failed to read {}", summary_path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse {}", summary_path.display()))
+    let summary = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", summary_path.display()))?;
+    run_vscode_failed_start_command_smoke(root, output_dir, options)?;
+    Ok(summary)
 }
 
 fn prepare_vscode_msl_smoke_command(
@@ -314,6 +339,88 @@ fn prepare_vscode_msl_smoke_command(
     timing_output_path: Option<&Path>,
     options: VscodeSmokeOptions,
 ) -> Result<PreparedVscodeSmokeCommand> {
+    let smoke_stage = prepare_vscode_smoke_stage(root)?;
+    let staged_vscode_dir = smoke_stage.path();
+
+    let mut smoke = new_vscode_smoke_command("node", options)?;
+    smoke
+        .arg("tests/run_msl_extension_smoke.mjs")
+        .env("RUMOCA_VSCODE_MSL_ROOT", msl_root)
+        .current_dir(staged_vscode_dir);
+    if let Some(path) = summary_output_path {
+        smoke.env("RUMOCA_VSCODE_SMOKE_SUMMARY_OUT", path);
+        smoke.env("RUMOCA_VSCODE_SMOKE_ARTIFACT_RESULT", path);
+    }
+    if let Some(path) = timing_output_path {
+        smoke.env("RUMOCA_VSCODE_SMOKE_ARTIFACT_TIMINGS", path);
+    }
+    Ok(PreparedVscodeSmokeCommand {
+        command: smoke,
+        _stage_dir: smoke_stage,
+    })
+}
+
+fn run_vscode_failed_start_command_smoke(
+    root: &Path,
+    output_dir: &Path,
+    options: VscodeSmokeOptions,
+) -> Result<()> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let summary_path = output_dir.join("vscode-failed-start-command-smoke-summary.json");
+    let PreparedVscodeSmokeCommand {
+        command: smoke,
+        _stage_dir,
+    } = prepare_vscode_failed_start_smoke_command(root, Some(&summary_path), options)?;
+    run_status_quiet(smoke)?;
+    let _ = fs::read_to_string(&summary_path)
+        .with_context(|| format!("failed to read {}", summary_path.display()))?;
+    Ok(())
+}
+
+fn run_installed_vscode_extension_smoke(
+    vscode_dir: &Path,
+    workspace_file: &Path,
+    document_path: &Path,
+    user_data_dir: &Path,
+    extensions_dir: &Path,
+    summary_output_path: &Path,
+) -> Result<()> {
+    ensure_vscode_npm_dependencies(vscode_dir, VscodeNpmDependencyMode::IfMissing, false, false)?;
+    let mut smoke = new_vscode_smoke_command("node", VscodeSmokeOptions::default())?;
+    smoke
+        .arg("tests/run_installed_extension_check.mjs")
+        .env("RUMOCA_VSCODE_INSTALL_CHECK_WORKSPACE", workspace_file)
+        .env("RUMOCA_VSCODE_INSTALL_CHECK_DOCUMENT", document_path)
+        .env("RUMOCA_VSCODE_INSTALL_CHECK_USER_DATA_DIR", user_data_dir)
+        .env("RUMOCA_VSCODE_INSTALL_CHECK_EXTENSIONS_DIR", extensions_dir)
+        .env("RUMOCA_VSCODE_INSTALL_CHECK_RESULT", summary_output_path)
+        .current_dir(vscode_dir);
+    run_status_quiet(smoke)
+}
+
+fn prepare_vscode_failed_start_smoke_command(
+    root: &Path,
+    summary_output_path: Option<&Path>,
+    options: VscodeSmokeOptions,
+) -> Result<PreparedVscodeSmokeCommand> {
+    let smoke_stage = prepare_vscode_smoke_stage(root)?;
+    let staged_vscode_dir = smoke_stage.path();
+
+    let mut smoke = new_vscode_smoke_command("node", options)?;
+    smoke
+        .arg("tests/run_failed_start_command_smoke.mjs")
+        .current_dir(staged_vscode_dir);
+    if let Some(path) = summary_output_path {
+        smoke.env("RUMOCA_VSCODE_FAILED_START_ARTIFACT_RESULT", path);
+    }
+    Ok(PreparedVscodeSmokeCommand {
+        command: smoke,
+        _stage_dir: smoke_stage,
+    })
+}
+
+fn prepare_vscode_smoke_stage(root: &Path) -> Result<TempDir> {
     let source_vscode_dir = resolve_vscode_dir(root)?;
     let smoke_stage = stage_vscode_smoke_workspace(&source_vscode_dir)?;
     let staged_vscode_dir = smoke_stage.path();
@@ -337,23 +444,142 @@ fn prepare_vscode_msl_smoke_command(
         .env("RUMOCA_REPO_ROOT", root)
         .current_dir(staged_vscode_dir);
     run_status_quiet(npm_esbuild)?;
+    Ok(smoke_stage)
+}
 
-    let mut smoke = new_vscode_smoke_command("node", options)?;
-    smoke
-        .arg("tests/run_msl_extension_smoke.mjs")
-        .env("RUMOCA_VSCODE_MSL_ROOT", msl_root)
-        .current_dir(staged_vscode_dir);
-    if let Some(path) = summary_output_path {
-        smoke.env("RUMOCA_VSCODE_SMOKE_SUMMARY_OUT", path);
-        smoke.env("RUMOCA_VSCODE_SMOKE_ARTIFACT_RESULT", path);
+fn build_vscode_dev_vsix(root: &Path, system: bool) -> Result<PathBuf> {
+    let vscode_dir = resolve_vscode_dir(root)?;
+
+    if !system {
+        build_and_stage_vscode_lsp(root, &vscode_dir, true)?;
     }
-    if let Some(path) = timing_output_path {
-        smoke.env("RUMOCA_VSCODE_SMOKE_ARTIFACT_TIMINGS", path);
+
+    ensure_vscode_npm_dependencies(
+        &vscode_dir,
+        VscodeNpmDependencyMode::IfMissing,
+        false,
+        false,
+    )?;
+
+    println!("Compiling extension TypeScript...");
+    let mut npm_esbuild = Command::new("npm");
+    npm_esbuild
+        .arg("run")
+        .arg("esbuild")
+        .current_dir(&vscode_dir);
+    run_status(npm_esbuild)?;
+
+    println!("Packaging extension...");
+    let mut npm_package = Command::new("npm");
+    npm_package
+        .arg("run")
+        .arg("package")
+        .current_dir(&vscode_dir);
+    run_status(npm_package)?;
+
+    newest_prefixed_file(&vscode_dir, "rumoca-modelica-", "vsix")?
+        .context("failed to locate packaged VSCode extension (*.vsix)")
+}
+
+fn install_vscode_vsix(
+    vsix: &Path,
+    user_data_dir: Option<&Path>,
+    extensions_dir: Option<&Path>,
+) -> Result<()> {
+    let mut code = Command::new("code");
+    if let Some(dir) = user_data_dir {
+        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        code.arg("--user-data-dir").arg(dir);
     }
-    Ok(PreparedVscodeSmokeCommand {
-        command: smoke,
-        _stage_dir: smoke_stage,
-    })
+    if let Some(dir) = extensions_dir {
+        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        code.arg("--extensions-dir").arg(dir);
+    }
+    code.arg("--install-extension").arg(vsix).arg("--force");
+    run_status(code)
+}
+
+fn resolve_install_check_profile_root(root: &Path, requested: Option<&Path>) -> Result<PathBuf> {
+    let profile_root = match requested {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => root.join(path),
+        None => root.join("target").join("vscode-install-check"),
+    };
+    if profile_root.exists() {
+        fs::remove_dir_all(&profile_root)
+            .with_context(|| format!("failed to remove {}", profile_root.display()))?;
+    }
+    fs::create_dir_all(&profile_root)
+        .with_context(|| format!("failed to create {}", profile_root.display()))?;
+    Ok(profile_root)
+}
+
+fn resolve_install_check_document(root: &Path, requested: Option<&Path>) -> Result<PathBuf> {
+    let candidate = match requested {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => root.join(path),
+        None => root.join("examples").join("Ball.mo"),
+    };
+    let resolved = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| candidate.clone());
+    ensure!(
+        resolved.is_file(),
+        "install-check document does not exist or is not a file: {}",
+        resolved.display()
+    );
+    ensure!(
+        resolved.extension().and_then(|ext| ext.to_str()) == Some("mo"),
+        "install-check document must be a .mo file: {}",
+        resolved.display()
+    );
+    Ok(resolved)
+}
+
+fn prepare_install_check_workspace(profile_root: &Path, document: &Path) -> Result<PathBuf> {
+    let workspace_dir = profile_root.join("workspace");
+    fs::create_dir_all(&workspace_dir)
+        .with_context(|| format!("failed to create {}", workspace_dir.display()))?;
+    let workspace_file = workspace_dir.join("install-check.code-workspace");
+    let workspace_folder = document.parent().with_context(|| {
+        format!(
+            "install-check document has no parent directory: {}",
+            document.display()
+        )
+    })?;
+    let missing_server_path = workspace_dir.join(exe_name("missing-rumoca-lsp"));
+    let workspace = serde_json::json!({
+        "folders": [{ "path": workspace_folder }],
+        "settings": {
+            "rumoca.debug": false,
+            "rumoca.serverPath": missing_server_path,
+            "rumoca.sourceRootPaths": [],
+        }
+    });
+    fs::write(
+        &workspace_file,
+        serde_json::to_string_pretty(&workspace)
+            .context("failed to serialize install-check workspace")?,
+    )
+    .with_context(|| format!("failed to write {}", workspace_file.display()))?;
+    Ok(workspace_file)
+}
+
+fn launch_vscode_install_check_profile(
+    document_file: &Path,
+    user_data_dir: &Path,
+    extensions_dir: &Path,
+) -> Result<()> {
+    let mut code = Command::new("code");
+    code.arg("--user-data-dir")
+        .arg(user_data_dir)
+        .arg("--extensions-dir")
+        .arg(extensions_dir)
+        .arg("--new-window")
+        .arg("--disable-workspace-trust")
+        .arg("--wait")
+        .arg(document_file);
+    run_status(code)
 }
 
 fn stage_vscode_smoke_workspace(source_vscode_dir: &Path) -> Result<TempDir> {
@@ -1182,10 +1408,11 @@ mod tests {
         VscodeMslSmokeSummary, VscodeNpmDependencyMode, VscodeNpmInstallPlan, VscodePackageTarget,
         VscodeSmokeEnvironment, VscodeSmokeLaunchMode, VscodeSmokeOptions,
         cargo_target_cc_env_suffix, cargo_target_linker_env_suffix,
-        mirror_cached_vscode_smoke_install, replace_staged_binary, resolve_vscode_npm_install_plan,
-        select_vscode_smoke_launch_mode, should_copy_vscode_smoke_root_entry,
-        should_install_vscode_smoke_prereqs, should_retry_vscode_npm_ci_after_clean,
-        stage_vscode_smoke_workspace,
+        mirror_cached_vscode_smoke_install, prepare_install_check_workspace, replace_staged_binary,
+        resolve_install_check_document, resolve_install_check_profile_root,
+        resolve_vscode_npm_install_plan, select_vscode_smoke_launch_mode,
+        should_copy_vscode_smoke_root_entry, should_install_vscode_smoke_prereqs,
+        should_retry_vscode_npm_ci_after_clean, stage_vscode_smoke_workspace,
     };
     use anyhow::anyhow;
     use serde_json::json;
@@ -1406,6 +1633,61 @@ mod tests {
             cargo_target_linker_env_suffix("x86_64-unknown-linux-musl"),
             "X86_64_UNKNOWN_LINUX_MUSL"
         );
+    }
+
+    #[test]
+    fn install_check_profile_root_defaults_under_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let profile_root =
+            resolve_install_check_profile_root(temp.path(), None).expect("resolve profile root");
+        assert_eq!(
+            profile_root,
+            temp.path().join("target/vscode-install-check")
+        );
+        assert!(profile_root.is_dir());
+    }
+
+    #[test]
+    fn install_check_document_defaults_to_ball_example() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        let document =
+            resolve_install_check_document(&root, None).expect("resolve default install document");
+        assert!(document.ends_with("examples/Ball.mo"));
+        assert!(document.is_file());
+    }
+
+    #[test]
+    fn install_check_workspace_writes_missing_server_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let document = temp.path().join("Example.mo");
+        std::fs::write(&document, "model Example end Example;").expect("write model file");
+
+        let workspace =
+            prepare_install_check_workspace(temp.path(), &document).expect("prepare workspace");
+        let raw = std::fs::read_to_string(&workspace).expect("read workspace file");
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("parse workspace json");
+        assert_eq!(
+            value
+                .get("folders")
+                .and_then(|folders| folders.get(0))
+                .and_then(|folder| folder.get("path"))
+                .and_then(serde_json::Value::as_str),
+            document.parent().and_then(|path| path.to_str())
+        );
+        let server_path = value
+            .get("settings")
+            .and_then(|settings| settings.get("rumoca.serverPath"))
+            .and_then(serde_json::Value::as_str)
+            .expect("missing server path override");
+        let expected_name = if cfg!(windows) {
+            "missing-rumoca-lsp.exe"
+        } else {
+            "missing-rumoca-lsp"
+        };
+        assert!(server_path.ends_with(expected_name));
     }
 
     #[test]

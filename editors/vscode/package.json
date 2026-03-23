@@ -31,6 +31,7 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
+    "onLanguage:modelica",
     "onNotebook:jupyter-notebook",
     "onCommand:rumoca.openSettingsMenu",
     "onCommand:rumoca.renderTemplate",
@@ -261,7 +262,7 @@
   "scripts": {
     "vendor-webview-assets": "node ./scripts/vendor-webview-assets.mjs",
     "vscode:prepublish": "npm run esbuild-base -- --minify",
-    "esbuild-base": "npm run vendor-webview-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:vscode-languageclient --external:vscode-languageclient/node --external:vscode-languageclient/* --format=cjs --platform=node",
+    "esbuild-base": "npm run vendor-webview-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
     "esbuild": "npm run esbuild-base -- --sourcemap",
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "tsc -p ./",
@@ -294,4 +295,3 @@
     }
   }
 }
-
