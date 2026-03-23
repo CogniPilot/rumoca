@@ -6,41 +6,35 @@
 
 //! Python bindings for the Rumoca Modelica compiler.
 //!
-//! This module provides Python bindings using PyO3, allowing the Rumoca
-//! compiler to be used directly from Python.
-//!
-//! ## Usage from Python
-//! ```python
-//! import rumoca
-//!
-//! # Check if code is valid
-//! result = rumoca.parse("model M Real x; end M;")
-//! print(result.success)  # True
-//!
-//! # Get lint messages
-//! messages = rumoca.lint("model m Real x; end m;")
-//! for msg in messages:
-//!     print(f"{msg.level}: {msg.message}")
-//!
-//! # Render code from DAE JSON with an explicit template
-//! template = "model {{ model_name }} end {{ model_name }};"
-//! code = rumoca.render_template(dae_json, template)
-//!
-//! # Compile inline Modelica source to DAE JSON
-//! dae_json = rumoca.compile("model M Real x; equation der(x) = -x; end M;", "M")
-//!
-//! # Compile a model from a file path
-//! dae_json = rumoca.compile_file("M.mo", "M")
-//! ```
+//! The top-level functions remain convenient one-shot wrappers, while
+//! [`ProjectSession`] provides a reusable session for workloads that want to
+//! retain loaded source roots and compile/query caches across calls.
 
+use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions::PyRuntimeError};
-use std::fs;
-
-use rumoca_session::parsing::validate_source_syntax;
-use rumoca_session::runtime::render_dae_template_with_json;
+use rumoca_session::compile::{FailedPhase, PhaseResult, Session, SessionConfig, SourceRootKind};
+use rumoca_session::parsing::{
+    collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
+};
+use rumoca_session::runtime::{
+    SimOptions, SimSolverMode, render_dae_template_with_json, simulate_dae,
+};
+use rumoca_session::source_roots::{
+    canonical_path_key, merge_source_root_paths, plan_source_root_loads,
+    referenced_unloaded_source_root_paths, source_root_source_set_key,
+};
+use rumoca_sim::results_web::{
+    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
+    build_simulation_payload,
+};
 use rumoca_tool_fmt::FormatOptions;
 use rumoca_tool_lint::{LintLevel, LintOptions, lint as lint_source};
+use serde_json::{Value, json};
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::time::Instant;
 
 #[derive(Debug)]
 struct PyRuntimeStringError(String);
@@ -109,6 +103,269 @@ impl LintMessage {
     }
 }
 
+#[pyclass(unsendable)]
+struct ProjectSession {
+    session: Session,
+    source_root_paths: Vec<String>,
+    effective_source_root_paths: Vec<String>,
+}
+
+#[pymethods]
+impl ProjectSession {
+    #[new]
+    #[pyo3(signature = (source_roots=None))]
+    fn new(source_roots: Option<Vec<String>>) -> Self {
+        let source_root_paths = source_roots.unwrap_or_default();
+        let effective_source_root_paths = resolve_source_root_paths(&source_root_paths);
+        Self {
+            session: Session::new(SessionConfig::default()),
+            source_root_paths,
+            effective_source_root_paths,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProjectSession(source_roots={}, loaded_source_roots={})",
+            self.source_root_paths.len(),
+            self.session.loaded_source_root_path_keys().len()
+        )
+    }
+
+    fn clear(&mut self) {
+        self.session = Session::new(SessionConfig::default());
+    }
+
+    #[pyo3(signature = (source_roots))]
+    fn configure_source_roots(
+        &mut self,
+        source_roots: Vec<String>,
+    ) -> Result<(), PyRuntimeStringError> {
+        self.source_root_paths = source_roots;
+        refresh_effective_source_root_paths(
+            &mut self.session,
+            &self.source_root_paths,
+            &mut self.effective_source_root_paths,
+        );
+        Ok(())
+    }
+
+    fn get_source_roots(&self) -> Vec<String> {
+        self.source_root_paths.clone()
+    }
+
+    fn load_source_roots(&mut self) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let reports =
+            load_source_roots_into_session(&mut self.session, &self.effective_source_root_paths)?;
+        source_root_reports_json(&reports)
+    }
+
+    fn source_root_statuses(&mut self) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        serde_json::to_string(&self.session.source_root_statuses())
+            .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+    }
+
+    #[pyo3(signature = (source, model_name=None, filename=None))]
+    fn compile(
+        &mut self,
+        source: &str,
+        model_name: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let filename = filename.unwrap_or("input.mo");
+        let (result, _) = compile_source_in_session(
+            &mut self.session,
+            source,
+            model_name,
+            filename,
+            &self.effective_source_root_paths,
+        )?;
+        serialize_raw_dae(&result)
+    }
+
+    #[pyo3(signature = (source, model_name=None, filename=None))]
+    fn compile_to_json(
+        &mut self,
+        source: &str,
+        model_name: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let filename = filename.unwrap_or("input.mo");
+        let (result, _) = compile_source_in_session(
+            &mut self.session,
+            source,
+            model_name,
+            filename,
+            &self.effective_source_root_paths,
+        )?;
+        result
+            .to_json()
+            .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+    }
+
+    #[pyo3(signature = (path, model_name=None))]
+    fn compile_file(
+        &mut self,
+        path: &str,
+        model_name: Option<&str>,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let (result, _) = compile_file_in_session(
+            &mut self.session,
+            path,
+            model_name,
+            &self.effective_source_root_paths,
+        )?;
+        serialize_raw_dae(&result)
+    }
+
+    #[pyo3(signature = (path, model_name=None))]
+    fn compile_file_to_json(
+        &mut self,
+        path: &str,
+        model_name: Option<&str>,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let (result, _) = compile_file_in_session(
+            &mut self.session,
+            path,
+            model_name,
+            &self.effective_source_root_paths,
+        )?;
+        result
+            .to_json()
+            .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+    }
+
+    #[pyo3(signature = (source, template, model_name=None, filename=None, prepared=false, scalarize=true))]
+    fn render_model(
+        &mut self,
+        source: &str,
+        template: &str,
+        model_name: Option<&str>,
+        filename: Option<&str>,
+        prepared: bool,
+        scalarize: bool,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let filename = filename.unwrap_or("input.mo");
+        let (result, actual_model_name) = compile_source_in_session(
+            &mut self.session,
+            source,
+            model_name,
+            filename,
+            &self.effective_source_root_paths,
+        )?;
+        render_compiled_model(&result, &actual_model_name, template, prepared, scalarize)
+    }
+
+    #[pyo3(signature = (path, template, model_name=None, prepared=false, scalarize=true))]
+    fn render_model_file(
+        &mut self,
+        path: &str,
+        template: &str,
+        model_name: Option<&str>,
+        prepared: bool,
+        scalarize: bool,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let (result, actual_model_name) = compile_file_in_session(
+            &mut self.session,
+            path,
+            model_name,
+            &self.effective_source_root_paths,
+        )?;
+        render_compiled_model(&result, &actual_model_name, template, prepared, scalarize)
+    }
+
+    #[pyo3(signature = (source, template_id, model_name=None, filename=None, prepared=true, scalarize=true))]
+    fn render_builtin_model(
+        &mut self,
+        source: &str,
+        template_id: &str,
+        model_name: Option<&str>,
+        filename: Option<&str>,
+        prepared: bool,
+        scalarize: bool,
+    ) -> Result<String, PyRuntimeStringError> {
+        let template = builtin_template_source(template_id).ok_or_else(|| {
+            PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
+        })?;
+        self.render_model(source, template, model_name, filename, prepared, scalarize)
+    }
+
+    #[pyo3(signature = (path, template_id, model_name=None, prepared=true, scalarize=true))]
+    fn render_builtin_file(
+        &mut self,
+        path: &str,
+        template_id: &str,
+        model_name: Option<&str>,
+        prepared: bool,
+        scalarize: bool,
+    ) -> Result<String, PyRuntimeStringError> {
+        let template = builtin_template_source(template_id).ok_or_else(|| {
+            PyRuntimeStringError(format!("Unknown built-in template id: {template_id}"))
+        })?;
+        self.render_model_file(path, template, model_name, prepared, scalarize)
+    }
+
+    #[pyo3(signature = (source, model_name=None, filename=None, t_end=1.0, dt=None, solver=None))]
+    fn simulate(
+        &mut self,
+        source: &str,
+        model_name: Option<&str>,
+        filename: Option<&str>,
+        t_end: f64,
+        dt: Option<f64>,
+        solver: Option<&str>,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        let filename = filename.unwrap_or("input.mo");
+        simulate_source_in_session(
+            &mut self.session,
+            source,
+            model_name,
+            filename,
+            &self.effective_source_root_paths,
+            SimRequest { t_end, dt, solver },
+        )
+    }
+
+    #[pyo3(signature = (path, model_name=None, t_end=1.0, dt=None, solver=None))]
+    fn simulate_file(
+        &mut self,
+        path: &str,
+        model_name: Option<&str>,
+        t_end: f64,
+        dt: Option<f64>,
+        solver: Option<&str>,
+    ) -> Result<String, PyRuntimeStringError> {
+        self.sync_source_root_paths()?;
+        simulate_file_in_session(
+            &mut self.session,
+            path,
+            model_name,
+            &self.effective_source_root_paths,
+            SimRequest { t_end, dt, solver },
+        )
+    }
+}
+
+impl ProjectSession {
+    fn sync_source_root_paths(&mut self) -> Result<(), PyRuntimeStringError> {
+        refresh_effective_source_root_paths(
+            &mut self.session,
+            &self.source_root_paths,
+            &mut self.effective_source_root_paths,
+        );
+        Ok(())
+    }
+}
+
 /// Get the Rumoca version.
 #[pyfunction]
 fn version() -> String {
@@ -116,13 +373,6 @@ fn version() -> String {
 }
 
 /// Parse Modelica source code.
-///
-/// Args:
-///     source: Modelica source code as a string
-///     filename: Optional filename for error messages (default: "input.mo")
-///
-/// Returns:
-///     ParseResult with success flag and optional error message
 #[pyfunction]
 #[pyo3(signature = (source, filename=None))]
 fn parse(source: &str, filename: Option<&str>) -> ParseResult {
@@ -141,13 +391,6 @@ fn parse(source: &str, filename: Option<&str>) -> ParseResult {
 }
 
 /// Lint Modelica source code.
-///
-/// Args:
-///     source: Modelica source code as a string
-///     filename: Optional filename for error messages (default: "input.mo")
-///
-/// Returns:
-///     List of LintMessage objects
 #[pyfunction]
 #[pyo3(signature = (source, filename=None))]
 fn lint(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
@@ -175,16 +418,6 @@ fn lint(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
 }
 
 /// Format Modelica source code.
-///
-/// Args:
-///     source: Modelica source code as a string
-///     filename: Optional filename for diagnostics (default: "input.mo")
-///
-/// Returns:
-///     Formatted Modelica source code
-///
-/// Raises:
-///     RuntimeError: If source has syntax errors
 #[pyfunction(name = "format")]
 #[pyo3(signature = (source, filename=None))]
 fn format_source(source: &str, filename: Option<&str>) -> Result<String, PyRuntimeStringError> {
@@ -195,13 +428,6 @@ fn format_source(source: &str, filename: Option<&str>) -> Result<String, PyRunti
 }
 
 /// Format Modelica source code, returning original source on format/syntax error.
-///
-/// Args:
-///     source: Modelica source code as a string
-///     filename: Optional filename for diagnostics (default: "input.mo")
-///
-/// Returns:
-///     Formatted source, or original source if formatting fails
 #[pyfunction]
 #[pyo3(signature = (source, filename=None))]
 fn format_or_original(source: &str, filename: Option<&str>) -> String {
@@ -211,21 +437,11 @@ fn format_or_original(source: &str, filename: Option<&str>) -> String {
 }
 
 /// Check Modelica source code for errors and warnings.
-///
-/// This combines parsing and linting, returning all issues found.
-///
-/// Args:
-///     source: Modelica source code as a string
-///     filename: Optional filename for error messages (default: "input.mo")
-///
-/// Returns:
-///     List of LintMessage objects (including syntax errors)
 #[pyfunction]
 #[pyo3(signature = (source, filename=None))]
 fn check(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
     let filename = filename.unwrap_or("input.mo");
 
-    // First check for syntax errors
     if let Err(e) = validate_source_syntax(source, filename) {
         return vec![LintMessage {
             rule: "syntax-error".to_string(),
@@ -238,108 +454,742 @@ fn check(source: &str, filename: Option<&str>) -> Vec<LintMessage> {
         }];
     }
 
-    // Then run linter
     lint(source, Some(filename))
 }
 
 /// Render code from DAE JSON using an explicit template string.
-///
-/// Args:
-///     dae_json: DAE as a JSON string
-///     template: Template source text (minijinja/Jinja-compatible)
-///
-/// Returns:
-///     Rendered output as a string
-///
-/// Raises:
-///     RuntimeError: If JSON parsing or template rendering fails
 #[pyfunction]
 fn render_template(dae_json: &str, template: &str) -> Result<String, PyRuntimeStringError> {
-    let dae_json: serde_json::Value = serde_json::from_str(dae_json)
+    let dae_json: Value = serde_json::from_str(dae_json)
         .map_err(|e| PyRuntimeStringError(format!("Invalid DAE JSON: {e}")))?;
     render_dae_template_with_json(&dae_json, template)
         .map_err(|e| PyRuntimeStringError(format!("Template rendering error: {e}")))
 }
 
-/// Compile inline Modelica source code to DAE JSON.
-///
-/// Args:
-///     source: Modelica source code as a string
-///     model_name: Name of the model to compile
-///     filename: Optional filename for error messages (default: "input.mo")
-///
-/// Returns:
-///     DAE as a JSON string
-///
-/// Raises:
-///     RuntimeError: If compilation fails
+/// Return the built-in codegen templates as JSON.
 #[pyfunction]
-#[pyo3(signature = (source, model_name, filename=None))]
+fn get_builtin_templates() -> Result<String, PyRuntimeStringError> {
+    serde_json::to_string(&builtin_templates_json())
+        .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+}
+
+/// Compile inline Modelica source code to raw DAE JSON.
+#[pyfunction]
+#[pyo3(signature = (source, model_name=None, filename=None, source_roots=None))]
 fn compile(
     source: &str,
-    model_name: &str,
+    model_name: Option<&str>,
     filename: Option<&str>,
+    source_roots: Option<Vec<String>>,
 ) -> Result<String, PyRuntimeStringError> {
-    compile_source_to_dae_json(source, model_name, filename)
+    let mut session = ProjectSession::new(source_roots);
+    session.compile(source, model_name, filename)
 }
 
-/// Compile a Modelica file to DAE JSON.
-///
-/// Args:
-///     path: Filesystem path to a readable ``.mo`` file
-///     model_name: Name of the model to compile
-///
-/// Returns:
-///     DAE as a JSON string
-///
-/// Raises:
-///     RuntimeError: If the file cannot be read or compilation fails
+/// Compile inline Modelica source code to canonical CLI-style JSON.
 #[pyfunction]
-fn compile_file(path: &str, model_name: &str) -> Result<String, PyRuntimeStringError> {
-    let source = fs::read_to_string(path)
-        .map_err(|e| PyRuntimeStringError(format!("Failed to read {path}: {e}")))?;
-    compile_source_to_dae_json(&source, model_name, Some(path))
+#[pyo3(signature = (source, model_name=None, filename=None, source_roots=None))]
+fn compile_to_json(
+    source: &str,
+    model_name: Option<&str>,
+    filename: Option<&str>,
+    source_roots: Option<Vec<String>>,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.compile_to_json(source, model_name, filename)
 }
 
-/// Compile inline Modelica source code to DAE JSON.
-///
-/// Compatibility alias for ``compile(...)`` when working with source strings directly.
+/// Compile inline Modelica source code to raw DAE JSON.
 #[pyfunction(name = "compile_source")]
-#[pyo3(signature = (source, model_name, filename=None))]
+#[pyo3(signature = (source, model_name=None, filename=None, source_roots=None))]
 fn compile_source(
     source: &str,
-    model_name: &str,
+    model_name: Option<&str>,
     filename: Option<&str>,
+    source_roots: Option<Vec<String>>,
 ) -> Result<String, PyRuntimeStringError> {
-    compile_source_to_dae_json(source, model_name, filename)
+    compile(source, model_name, filename, source_roots)
 }
 
-fn compile_source_to_dae_json(
-    source: &str,
-    model_name: &str,
-    filename: Option<&str>,
+/// Compile a Modelica file to raw DAE JSON.
+#[pyfunction]
+#[pyo3(signature = (path, model_name=None, source_roots=None))]
+fn compile_file(
+    path: &str,
+    model_name: Option<&str>,
+    source_roots: Option<Vec<String>>,
 ) -> Result<String, PyRuntimeStringError> {
-    use rumoca_session::compile::PhaseResult;
-    use rumoca_session::{Session, SessionConfig};
+    let mut session = ProjectSession::new(source_roots);
+    session.compile_file(path, model_name)
+}
 
-    let filename = filename.unwrap_or("input.mo").to_string();
-    let mut session = Session::new(SessionConfig::default());
+/// Compile a Modelica file to canonical CLI-style JSON.
+#[pyfunction]
+#[pyo3(signature = (path, model_name=None, source_roots=None))]
+fn compile_file_to_json(
+    path: &str,
+    model_name: Option<&str>,
+    source_roots: Option<Vec<String>>,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.compile_file_to_json(path, model_name)
+}
 
-    session
-        .add_document(&filename, source)
-        .map_err(|e| PyRuntimeStringError(format!("Parse error: {e}")))?;
+/// Compile and render a template against one source string.
+#[pyfunction]
+#[pyo3(signature = (source, template, model_name=None, filename=None, source_roots=None, prepared=false, scalarize=true))]
+fn render_model(
+    source: &str,
+    template: &str,
+    model_name: Option<&str>,
+    filename: Option<&str>,
+    source_roots: Option<Vec<String>>,
+    prepared: bool,
+    scalarize: bool,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.render_model(source, template, model_name, filename, prepared, scalarize)
+}
 
-    let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
-    if !report.failures.is_empty() {
-        return Err(PyRuntimeStringError(report.failure_summary(10)));
+/// Compile and render a template against one model file.
+#[pyfunction]
+#[pyo3(signature = (path, template, model_name=None, source_roots=None, prepared=false, scalarize=true))]
+fn render_model_file(
+    path: &str,
+    template: &str,
+    model_name: Option<&str>,
+    source_roots: Option<Vec<String>>,
+    prepared: bool,
+    scalarize: bool,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.render_model_file(path, template, model_name, prepared, scalarize)
+}
+
+/// Compile and render one built-in template against inline source.
+#[pyfunction]
+#[pyo3(signature = (source, template_id, model_name=None, filename=None, source_roots=None, prepared=true, scalarize=true))]
+fn render_builtin_model(
+    source: &str,
+    template_id: &str,
+    model_name: Option<&str>,
+    filename: Option<&str>,
+    source_roots: Option<Vec<String>>,
+    prepared: bool,
+    scalarize: bool,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.render_builtin_model(
+        source,
+        template_id,
+        model_name,
+        filename,
+        prepared,
+        scalarize,
+    )
+}
+
+/// Compile and render one built-in template against a model file.
+#[pyfunction]
+#[pyo3(signature = (path, template_id, model_name=None, source_roots=None, prepared=true, scalarize=true))]
+fn render_builtin_file(
+    path: &str,
+    template_id: &str,
+    model_name: Option<&str>,
+    source_roots: Option<Vec<String>>,
+    prepared: bool,
+    scalarize: bool,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.render_builtin_file(path, template_id, model_name, prepared, scalarize)
+}
+
+/// Compile and simulate inline Modelica source.
+#[pyfunction]
+#[pyo3(signature = (source, model_name=None, filename=None, source_roots=None, t_end=1.0, dt=None, solver=None))]
+fn simulate(
+    source: &str,
+    model_name: Option<&str>,
+    filename: Option<&str>,
+    source_roots: Option<Vec<String>>,
+    t_end: f64,
+    dt: Option<f64>,
+    solver: Option<&str>,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.simulate(source, model_name, filename, t_end, dt, solver)
+}
+
+/// Compile and simulate a Modelica file.
+#[pyfunction]
+#[pyo3(signature = (path, model_name=None, source_roots=None, t_end=1.0, dt=None, solver=None))]
+fn simulate_file(
+    path: &str,
+    model_name: Option<&str>,
+    source_roots: Option<Vec<String>>,
+    t_end: f64,
+    dt: Option<f64>,
+    solver: Option<&str>,
+) -> Result<String, PyRuntimeStringError> {
+    let mut session = ProjectSession::new(source_roots);
+    session.simulate_file(path, model_name, t_end, dt, solver)
+}
+
+fn builtin_templates_json() -> Value {
+    json!([
+        {
+            "id": "sympy.py.jinja",
+            "label": "SymPy (Python)",
+            "language": "python",
+            "source": rumoca_session::runtime::templates::SYMPY,
+        },
+        {
+            "id": "jax.py.jinja",
+            "label": "JAX / Diffrax (Python)",
+            "language": "python",
+            "source": rumoca_session::runtime::templates::JAX,
+        },
+        {
+            "id": "onnx.py.jinja",
+            "label": "ONNX (Python)",
+            "language": "python",
+            "source": rumoca_session::runtime::templates::ONNX,
+        },
+        {
+            "id": "julia_mtk.jl.jinja",
+            "label": "Julia MTK",
+            "language": "julia",
+            "source": rumoca_session::runtime::templates::JULIA_MTK,
+        },
+        {
+            "id": "casadi_sx.py.jinja",
+            "label": "CasADi SX (Python)",
+            "language": "python",
+            "source": rumoca_session::runtime::templates::CASADI_SX,
+        },
+        {
+            "id": "casadi_mx.py.jinja",
+            "label": "CasADi MX (Python)",
+            "language": "python",
+            "source": rumoca_session::runtime::templates::CASADI_MX,
+        },
+        {
+            "id": "cyecca.py.jinja",
+            "label": "Cyecca (Python)",
+            "language": "python",
+            "source": rumoca_session::runtime::templates::CYECCA,
+        },
+        {
+            "id": "embedded_c.c.jinja",
+            "label": "Embedded C",
+            "language": "c",
+            "source": rumoca_session::runtime::templates::EMBEDDED_C,
+        },
+        {
+            "id": "dae_modelica.mo.jinja",
+            "label": "DAE Modelica",
+            "language": "modelica",
+            "source": rumoca_session::runtime::templates::DAE_MODELICA,
+        },
+        {
+            "id": "flat_modelica.mo.jinja",
+            "label": "Flat Modelica",
+            "language": "modelica",
+            "source": rumoca_session::runtime::templates::FLAT_MODELICA,
+        },
+        {
+            "id": "fmi2_model_description.xml.jinja",
+            "label": "FMI 2.0 modelDescription.xml",
+            "language": "xml",
+            "source": rumoca_session::runtime::templates::FMI2_MODEL_DESCRIPTION,
+        },
+        {
+            "id": "fmi2_model.c.jinja",
+            "label": "FMI 2.0 model.c",
+            "language": "c",
+            "source": rumoca_session::runtime::templates::FMI2_MODEL,
+        },
+        {
+            "id": "fmi2_test_driver.c.jinja",
+            "label": "FMI 2.0 test driver",
+            "language": "c",
+            "source": rumoca_session::runtime::templates::FMI2_TEST_DRIVER,
+        },
+        {
+            "id": "fmi3_model_description.xml.jinja",
+            "label": "FMI 3.0 modelDescription.xml",
+            "language": "xml",
+            "source": rumoca_session::runtime::templates::FMI3_MODEL_DESCRIPTION,
+        },
+        {
+            "id": "fmi3_model.c.jinja",
+            "label": "FMI 3.0 model.c",
+            "language": "c",
+            "source": rumoca_session::runtime::templates::FMI3_MODEL,
+        },
+        {
+            "id": "fmi3_test_driver.c.jinja",
+            "label": "FMI 3.0 test driver",
+            "language": "c",
+            "source": rumoca_session::runtime::templates::FMI3_TEST_DRIVER,
+        },
+    ])
+}
+
+fn builtin_template_source(template_id: &str) -> Option<&'static str> {
+    match template_id {
+        "sympy.py.jinja" => Some(rumoca_session::runtime::templates::SYMPY),
+        "jax.py.jinja" => Some(rumoca_session::runtime::templates::JAX),
+        "onnx.py.jinja" => Some(rumoca_session::runtime::templates::ONNX),
+        "julia_mtk.jl.jinja" => Some(rumoca_session::runtime::templates::JULIA_MTK),
+        "casadi_sx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_SX),
+        "casadi_mx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_MX),
+        "cyecca.py.jinja" => Some(rumoca_session::runtime::templates::CYECCA),
+        "embedded_c.c.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C),
+        "dae_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::DAE_MODELICA),
+        "flat_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::FLAT_MODELICA),
+        "fmi2_model_description.xml.jinja" => {
+            Some(rumoca_session::runtime::templates::FMI2_MODEL_DESCRIPTION)
+        }
+        "fmi2_model.c.jinja" => Some(rumoca_session::runtime::templates::FMI2_MODEL),
+        "fmi2_test_driver.c.jinja" => Some(rumoca_session::runtime::templates::FMI2_TEST_DRIVER),
+        "fmi3_model_description.xml.jinja" => {
+            Some(rumoca_session::runtime::templates::FMI3_MODEL_DESCRIPTION)
+        }
+        "fmi3_model.c.jinja" => Some(rumoca_session::runtime::templates::FMI3_MODEL),
+        "fmi3_test_driver.c.jinja" => Some(rumoca_session::runtime::templates::FMI3_TEST_DRIVER),
+        _ => None,
     }
-    let result = match report.requested_result.take() {
-        Some(PhaseResult::Success(result)) => *result,
-        _ => return Err(PyRuntimeStringError(report.failure_summary(10))),
-    };
+}
 
+fn split_env_modelicapath() -> Vec<String> {
+    let Some(raw) = env::var_os("MODELICAPATH") else {
+        return Vec::new();
+    };
+    env::split_paths(&raw)
+        .filter(|entry| !entry.as_os_str().is_empty())
+        .map(|entry| entry.to_string_lossy().to_string())
+        .collect()
+}
+
+fn resolve_source_root_paths(configured_paths: &[String]) -> Vec<String> {
+    let env_paths = split_env_modelicapath();
+    merge_source_root_paths(&env_paths, configured_paths)
+}
+
+fn refresh_effective_source_root_paths(
+    session: &mut Session,
+    configured_paths: &[String],
+    effective_paths: &mut Vec<String>,
+) {
+    let next_paths = resolve_source_root_paths(configured_paths);
+    let next_keys = next_paths
+        .iter()
+        .map(|path| canonical_path_key(path))
+        .collect::<std::collections::HashSet<_>>();
+    for removed_path in effective_paths.iter() {
+        if next_keys.contains(&canonical_path_key(removed_path)) {
+            continue;
+        }
+        let source_set_key = source_root_source_set_key(removed_path);
+        let _ = session.replace_parsed_source_set(
+            &source_set_key,
+            SourceRootKind::External,
+            Vec::new(),
+            None,
+        );
+    }
+    *effective_paths = next_paths;
+}
+
+fn source_root_reports_json(
+    reports: &[rumoca_session::compile::SourceRootLoadReport],
+) -> Result<String, PyRuntimeStringError> {
+    let payload = json!({
+        "count": reports.len(),
+        "reports": reports.iter().map(|report| {
+            json!({
+                "sourceSetId": report.source_set_id,
+                "sourceRootPath": report.source_root_path,
+                "parsedFileCount": report.parsed_file_count,
+                "insertedFileCount": report.inserted_file_count,
+                "cacheStatus": report.cache_status.map(|status| format!("{status:?}")),
+                "cacheKey": report.cache_key,
+                "cacheFile": report.cache_file.as_ref().map(|path| path.to_string_lossy().to_string()),
+                "diagnostics": report.diagnostics,
+            })
+        }).collect::<Vec<_>>(),
+    });
+    serde_json::to_string(&payload).map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+}
+
+fn load_source_roots_into_session(
+    session: &mut Session,
+    source_root_paths: &[String],
+) -> Result<Vec<rumoca_session::compile::SourceRootLoadReport>, PyRuntimeStringError> {
+    let loaded = session.loaded_source_root_path_keys();
+    let plan = plan_source_root_loads(source_root_paths, &loaded);
+    let mut reports = Vec::with_capacity(plan.load_paths.len());
+    for source_root_path in plan.load_paths {
+        let source_root_key = source_root_source_set_key(&source_root_path);
+        let report = session.load_source_root_tolerant(
+            &source_root_key,
+            SourceRootKind::External,
+            Path::new(&source_root_path),
+            None,
+        );
+        if !report.diagnostics.is_empty() {
+            return Err(PyRuntimeStringError(report.diagnostics.join("\n")));
+        }
+        reports.push(report);
+    }
+    Ok(reports)
+}
+
+fn ensure_required_source_roots_loaded(
+    session: &mut Session,
+    source: &str,
+    source_root_paths: &[String],
+) -> Result<(), PyRuntimeStringError> {
+    let loaded = session.loaded_source_root_path_keys();
+    let referenced = referenced_unloaded_source_root_paths(source, source_root_paths, &loaded);
+    let plan = plan_source_root_loads(&referenced, &loaded);
+    for source_root_path in plan.load_paths {
+        let source_root_key = source_root_source_set_key(&source_root_path);
+        let report = session.load_source_root_tolerant(
+            &source_root_key,
+            SourceRootKind::External,
+            Path::new(&source_root_path),
+            None,
+        );
+        if !report.diagnostics.is_empty() {
+            return Err(PyRuntimeStringError(report.diagnostics.join("\n")));
+        }
+    }
+    Ok(())
+}
+
+fn load_local_compile_unit(
+    session: &mut Session,
+    source: &str,
+    file_name: &str,
+) -> Result<(), PyRuntimeStringError> {
+    let path = Path::new(file_name);
+    if !path.is_file() {
+        let _ = session.update_document(file_name, source);
+        return Ok(());
+    }
+
+    let files = collect_compile_unit_source_files(path)
+        .map_err(|e| PyRuntimeStringError(format!("Compile-unit error: {e}")))?;
+    for sibling in files {
+        if sibling == path {
+            continue;
+        }
+        let sibling_path = sibling.to_string_lossy().to_string();
+        let sibling_source = fs::read_to_string(&sibling)
+            .map_err(|e| PyRuntimeStringError(format!("Failed to read {sibling_path}: {e}")))?;
+        let _ = session.update_document(&sibling_path, &sibling_source);
+    }
+
+    let _ = session.update_document(file_name, source);
+    Ok(())
+}
+
+fn infer_model_name_from_session(
+    session: &mut Session,
+    uri: &str,
+) -> Result<String, PyRuntimeStringError> {
+    let definition = session
+        .get_document(uri)
+        .map(|doc| doc.best_effort().clone())
+        .ok_or_else(|| PyRuntimeStringError(format!("failed to load document '{uri}'")))?;
+
+    let top_level_names = definition
+        .classes
+        .iter()
+        .filter_map(|(name, class)| {
+            let class_kind = class.class_type.as_str();
+            if class_kind == "model" || class_kind == "block" || class_kind == "class" {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut candidates = collect_model_names(&definition);
+    candidates.sort();
+    candidates.dedup();
+    if candidates.is_empty() {
+        if let Some((diagnostics, source_map)) =
+            session.document_parse_diagnostics_with_source_map(uri)
+        {
+            let source_summary = diagnostics
+                .into_iter()
+                .map(|diagnostic| match diagnostic.code {
+                    Some(code) => format!("{code}: {}", diagnostic.message),
+                    None => diagnostic.message,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(PyRuntimeStringError(format!(
+                "failed to infer model from '{uri}': {source_summary}\nsource_map={source_map:?}"
+            )));
+        }
+        return Err(PyRuntimeStringError(format!(
+            "No compilable model/block/class candidates found in '{uri}'."
+        )));
+    }
+
+    if top_level_names.len() == 1
+        && let Some(model) = choose_single_candidate_by_suffix(&candidates, &top_level_names[0])
+    {
+        return Ok(model);
+    }
+
+    if candidates.len() == 1 {
+        return Ok(candidates[0].clone());
+    }
+
+    let file_stem = Path::new(uri)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    if !file_stem.is_empty()
+        && let Some(model) = choose_single_candidate_by_suffix(&candidates, file_stem)
+    {
+        return Ok(model);
+    }
+
+    let preview = candidates
+        .iter()
+        .take(15)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(PyRuntimeStringError(format!(
+        "Unable to infer model from '{uri}'. Candidates: {}{}.",
+        preview,
+        if candidates.len() > 15 { ", ..." } else { "" }
+    )))
+}
+
+fn choose_single_candidate_by_suffix(candidates: &[String], suffix: &str) -> Option<String> {
+    let mut matches = candidates
+        .iter()
+        .filter(|candidate| last_segment(candidate) == suffix || candidate.as_str() == suffix)
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        return Some(matches[0].clone());
+    }
+    if matches.is_empty() {
+        return None;
+    }
+
+    matches.sort_by_key(|candidate| candidate.matches('.').count());
+    let min_depth = matches[0].matches('.').count();
+    let min_matches = matches
+        .into_iter()
+        .filter(|candidate| candidate.matches('.').count() == min_depth)
+        .collect::<Vec<_>>();
+    if min_matches.len() == 1 {
+        Some(min_matches[0].clone())
+    } else {
+        None
+    }
+}
+
+fn last_segment(qualified_name: &str) -> &str {
+    qualified_name.rsplit('.').next().unwrap_or(qualified_name)
+}
+
+fn compile_requested_model(
+    session: &mut Session,
+    model_name: &str,
+) -> Result<HighLevelCompilationResult, PyRuntimeStringError> {
+    let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
+    let failure_summary = report.failure_summary(usize::MAX);
+    let result = match report.requested_result.take() {
+        Some(PhaseResult::Success(result)) => {
+            if !report.failures.is_empty() {
+                return Err(PyRuntimeStringError(failure_summary));
+            }
+            *result
+        }
+        Some(PhaseResult::NeedsInner { .. }) => {
+            return Err(PyRuntimeStringError(failure_summary));
+        }
+        Some(PhaseResult::Failed { phase, .. }) => {
+            let phase_name = match phase {
+                FailedPhase::Instantiate => "instantiate",
+                FailedPhase::Typecheck => "typecheck",
+                FailedPhase::Flatten => "flatten",
+                FailedPhase::ToDae => "todae",
+            };
+            return Err(PyRuntimeStringError(format!(
+                "{phase_name} failed: {failure_summary}"
+            )));
+        }
+        None => return Err(PyRuntimeStringError(failure_summary)),
+    };
+    let resolved = session.resolved_cached().ok_or_else(|| {
+        PyRuntimeStringError("strict compile produced no cached resolved tree".to_string())
+    })?;
+    Ok(HighLevelCompilationResult {
+        dae: result.dae,
+        flat: result.flat,
+        resolved,
+    })
+}
+
+fn compile_source_in_session(
+    session: &mut Session,
+    source: &str,
+    model_name: Option<&str>,
+    file_name: &str,
+    source_root_paths: &[String],
+) -> Result<(HighLevelCompilationResult, String), PyRuntimeStringError> {
+    ensure_required_source_roots_loaded(session, source, source_root_paths)?;
+    load_local_compile_unit(session, source, file_name)?;
+    let model_name = match model_name {
+        Some(name) => name.to_string(),
+        None => infer_model_name_from_session(session, file_name)?,
+    };
+    let result = compile_requested_model(session, &model_name)?;
+    Ok((result, model_name))
+}
+
+fn compile_file_in_session(
+    session: &mut Session,
+    path: &str,
+    model_name: Option<&str>,
+    source_root_paths: &[String],
+) -> Result<(HighLevelCompilationResult, String), PyRuntimeStringError> {
+    let source = fs::read_to_string(path)
+        .map_err(|e| PyRuntimeStringError(format!("Failed to read {path}: {e}")))?;
+    compile_source_in_session(session, &source, model_name, path, source_root_paths)
+}
+
+fn serialize_raw_dae(result: &HighLevelCompilationResult) -> Result<String, PyRuntimeStringError> {
     serde_json::to_string_pretty(&result.dae)
         .map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+}
+
+fn render_compiled_model(
+    result: &HighLevelCompilationResult,
+    model_name: &str,
+    template: &str,
+    prepared: bool,
+    scalarize: bool,
+) -> Result<String, PyRuntimeStringError> {
+    if prepared {
+        result
+            .render_template_str_prepared_with_name(template, model_name, scalarize)
+            .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
+    } else {
+        result
+            .render_template_str_with_name(template, model_name)
+            .map_err(|e| PyRuntimeStringError(format!("Template error: {e}")))
+    }
+}
+
+fn parse_solver_mode(solver: Option<&str>) -> (SimSolverMode, String) {
+    match solver {
+        Some(raw) if !raw.trim().is_empty() => {
+            let trimmed = raw.trim();
+            (
+                SimSolverMode::from_external_name(trimmed),
+                trimmed.to_string(),
+            )
+        }
+        _ => (SimSolverMode::Auto, "auto".to_string()),
+    }
+}
+
+fn seconds_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64()
+}
+
+#[derive(Clone, Copy)]
+struct SimRequest<'a> {
+    t_end: f64,
+    dt: Option<f64>,
+    solver: Option<&'a str>,
+}
+
+fn simulate_compiled_model(
+    result: &HighLevelCompilationResult,
+    model_name: &str,
+    compile_seconds: f64,
+    request: SimRequest<'_>,
+) -> Result<String, PyRuntimeStringError> {
+    let (solver_mode, solver_label) = parse_solver_mode(request.solver);
+    let opts = SimOptions {
+        t_end: request.t_end,
+        dt: request.dt,
+        solver_mode,
+        ..SimOptions::default()
+    };
+    let sim_started = Instant::now();
+    let sim = simulate_dae(&result.dae, &opts)
+        .map_err(|e| PyRuntimeStringError(format!("Simulation error: {e}")))?;
+    let metrics = SimulationRunMetrics {
+        compile_seconds: Some(compile_seconds),
+        simulate_seconds: Some(seconds_since(sim_started)),
+        ..SimulationRunMetrics::default()
+    };
+    let request = SimulationRequestSummary {
+        solver: solver_label,
+        t_start: opts.t_start,
+        t_end: opts.t_end,
+        dt: opts.dt,
+        rtol: opts.rtol,
+        atol: opts.atol,
+    };
+    let output = json!({
+        "model": model_name,
+        "payload": build_simulation_payload(&sim, &request, &metrics),
+        "metrics": build_simulation_metrics_value(&sim, &metrics),
+    });
+    serde_json::to_string(&output).map_err(|e| PyRuntimeStringError(format!("JSON error: {e}")))
+}
+
+fn simulate_source_in_session(
+    session: &mut Session,
+    source: &str,
+    model_name: Option<&str>,
+    file_name: &str,
+    source_root_paths: &[String],
+    request: SimRequest<'_>,
+) -> Result<String, PyRuntimeStringError> {
+    let compile_started = Instant::now();
+    let (result, actual_model_name) =
+        compile_source_in_session(session, source, model_name, file_name, source_root_paths)?;
+    simulate_compiled_model(
+        &result,
+        &actual_model_name,
+        seconds_since(compile_started),
+        request,
+    )
+}
+
+fn simulate_file_in_session(
+    session: &mut Session,
+    path: &str,
+    model_name: Option<&str>,
+    source_root_paths: &[String],
+    request: SimRequest<'_>,
+) -> Result<String, PyRuntimeStringError> {
+    let compile_started = Instant::now();
+    let (result, actual_model_name) =
+        compile_file_in_session(session, path, model_name, source_root_paths)?;
+    simulate_compiled_model(
+        &result,
+        &actual_model_name,
+        seconds_since(compile_started),
+        request,
+    )
 }
 
 /// Rumoca Python module.
@@ -352,11 +1202,21 @@ fn rumoca(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lint, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(compile, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(compile_file, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_file_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(compile_source, m)?)?;
     m.add_function(wrap_pyfunction!(render_template, m)?)?;
+    m.add_function(wrap_pyfunction!(render_model, m)?)?;
+    m.add_function(wrap_pyfunction!(render_model_file, m)?)?;
+    m.add_function(wrap_pyfunction!(render_builtin_model, m)?)?;
+    m.add_function(wrap_pyfunction!(render_builtin_file, m)?)?;
+    m.add_function(wrap_pyfunction!(get_builtin_templates, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate_file, m)?)?;
     m.add_class::<ParseResult>()?;
     m.add_class::<LintMessage>()?;
+    m.add_class::<ProjectSession>()?;
     Ok(())
 }
 
@@ -388,7 +1248,6 @@ mod tests {
     #[test]
     fn test_lint() {
         let messages = lint("model m Real x; end m;", None);
-        // Should have naming convention warning
         assert!(!messages.is_empty());
     }
 
@@ -407,14 +1266,26 @@ mod tests {
     }
 
     #[test]
+    fn test_get_builtin_templates_includes_sympy() {
+        let templates = get_builtin_templates().expect("templates");
+        let parsed: Value = serde_json::from_str(&templates).expect("json");
+        assert!(parsed.as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("id").and_then(Value::as_str) == Some("sympy.py.jinja"))
+        }));
+    }
+
+    #[test]
     fn test_compile_inline_source() {
         let dae_json = compile(
             "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
-            "Ball",
+            Some("Ball"),
             Some("Ball.mo"),
+            None,
         )
         .expect("compile inline");
-        let dae: serde_json::Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
         assert_eq!(
             dae.get("class_type").and_then(|v| v.as_str()),
             Some("Model")
@@ -423,6 +1294,23 @@ mod tests {
             dae.get("x")
                 .and_then(|v| v.as_object())
                 .is_some_and(|state_map| state_map.contains_key("x"))
+        );
+    }
+
+    #[test]
+    fn test_compile_to_json_returns_canonical_payload() {
+        let dae_json = compile_to_json(
+            "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
+            Some("Ball"),
+            Some("Ball.mo"),
+            None,
+        )
+        .expect("compile to json");
+        let dae: Value = serde_json::from_str(&dae_json).expect("valid JSON");
+        assert!(dae.get("x").is_some(), "canonical payload should contain x");
+        assert!(
+            dae.get("f_x").is_some(),
+            "canonical payload should contain f_x"
         );
     }
 
@@ -435,31 +1323,29 @@ mod tests {
         )
         .expect("write temp model");
 
-        let dae_json =
-            compile_file(temp_file.to_string_lossy().as_ref(), "Ball").expect("compile from file");
-        let dae: serde_json::Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        let dae_json = compile_file(temp_file.to_string_lossy().as_ref(), Some("Ball"), None)
+            .expect("compile from file");
+        let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
         assert_eq!(
             dae.get("class_type").and_then(|v| v.as_str()),
             Some("Model")
-        );
-        assert!(
-            dae.get("x")
-                .and_then(|v| v.as_object())
-                .is_some_and(|state_map| state_map.contains_key("x"))
         );
 
         let _ = fs::remove_file(temp_file);
     }
 
     #[test]
-    fn test_compile_source_alias_matches_compile() {
-        let dae_json = compile_source(
-            "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
-            "Ball",
-            Some("Ball.mo"),
+    fn test_compile_file_fixture_loads_source_root_and_infers_model() {
+        let fixture = fixture_path("UsesLib.mo");
+        let source_root = fixture_path("Lib");
+
+        let dae_json = compile_file(
+            fixture.to_string_lossy().as_ref(),
+            None,
+            Some(vec![source_root.to_string_lossy().to_string()]),
         )
-        .expect("compile via alias");
-        let dae: serde_json::Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        .expect("compile from fixture");
+        let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
         assert_eq!(
             dae.get("class_type").and_then(|v| v.as_str()),
             Some("Model")
@@ -472,15 +1358,112 @@ mod tests {
     }
 
     #[test]
+    fn test_project_session_reuses_fixture_source_root_for_simulation() {
+        let fixture = fixture_path("UsesLib.mo");
+        let source_root = fixture_path("Lib");
+        let mut session =
+            ProjectSession::new(Some(vec![source_root.to_string_lossy().to_string()]));
+
+        let dae_json = session
+            .compile_file(fixture.to_string_lossy().as_ref(), None)
+            .expect("compile from project session");
+        let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        assert_eq!(
+            dae.get("class_type").and_then(|v| v.as_str()),
+            Some("Model")
+        );
+
+        let statuses = session.source_root_statuses().expect("statuses");
+        let parsed: Value = serde_json::from_str(&statuses).expect("status json");
+        assert!(
+            parsed.as_array().is_some_and(|items| !items.is_empty()),
+            "expected loaded source root status after compile"
+        );
+
+        let sim_json = session
+            .simulate_file(
+                fixture.to_string_lossy().as_ref(),
+                None,
+                0.2,
+                Some(0.1),
+                Some("auto"),
+            )
+            .expect("simulate fixture");
+        let sim: Value = serde_json::from_str(&sim_json).expect("valid sim JSON");
+        assert!(
+            sim.get("metrics")
+                .and_then(|value| value.get("points"))
+                .and_then(Value::as_u64)
+                .is_some_and(|points| points >= 2)
+        );
+    }
+
+    #[test]
+    fn test_render_builtin_file_uses_prepared_template() {
+        let fixture = fixture_path("UsesLib.mo");
+        let source_root = fixture_path("Lib");
+        let rendered = render_builtin_file(
+            fixture.to_string_lossy().as_ref(),
+            "dae_modelica.mo.jinja",
+            None,
+            Some(vec![source_root.to_string_lossy().to_string()]),
+            true,
+            true,
+        )
+        .expect("render built-in template");
+        assert!(rendered.contains("class UsesLib"));
+    }
+
+    #[test]
+    fn test_compile_source_alias_matches_compile() {
+        let dae_json = compile_source(
+            "model Ball\n  Real x(start=0);\nequation\n  der(x) = -x;\nend Ball;\n",
+            Some("Ball"),
+            Some("Ball.mo"),
+            None,
+        )
+        .expect("compile via alias");
+        let dae: Value = serde_json::from_str(&dae_json).expect("valid DAE JSON");
+        assert_eq!(
+            dae.get("class_type").and_then(|v| v.as_str()),
+            Some("Model")
+        );
+    }
+
+    #[test]
     fn test_compile_rejects_empty_source() {
-        let err = compile("", "Ball", Some("Ball.mo")).expect_err("empty source should fail");
+        let err =
+            compile("", Some("Ball"), Some("Ball.mo"), None).expect_err("empty source should fail");
         assert!(!err.0.is_empty());
     }
 
     #[test]
     fn test_compile_file_rejects_missing_file() {
-        let err = compile_file("missing.mo", "Ball").expect_err("missing file should fail");
+        let err =
+            compile_file("missing.mo", Some("Ball"), None).expect_err("missing file should fail");
         assert!(err.0.contains("Failed to read"));
+    }
+
+    #[test]
+    fn test_load_source_roots_reports_fixture_load() {
+        let source_root = fixture_path("Lib");
+        let mut session =
+            ProjectSession::new(Some(vec![source_root.to_string_lossy().to_string()]));
+        let summary = session.load_source_roots().expect("load roots");
+        let parsed: Value = serde_json::from_str(&summary).expect("summary json");
+        assert!(
+            parsed
+                .get("reports")
+                .and_then(Value::as_array)
+                .is_some_and(|reports| !reports.is_empty())
+        );
+    }
+
+    fn fixture_path(relative: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(relative)
     }
 
     fn unique_temp_model_path(stem: &str) -> std::path::PathBuf {
