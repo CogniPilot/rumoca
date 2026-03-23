@@ -261,6 +261,13 @@
         const simDetails = payload && payload.simDetails ? payload.simDetails : {};
         const actual = simDetails.actual || {};
         const requested = simDetails.requested || {};
+        const compileSeconds = Number(metrics && metrics.compileSeconds);
+        const simulateSeconds = Number(metrics && metrics.simulateSeconds);
+        const points = Number(metrics && metrics.points);
+        const variables = Number(metrics && metrics.variables);
+        const compilePhases = metrics && typeof metrics === 'object' && metrics.compilePhaseSeconds
+            ? metrics.compilePhaseSeconds
+            : null;
         if (viewModel && viewModel.type === 'scatter') {
             lines.push(`Scatter series: ${viewModel.y.length}`);
         } else if (viewModel && viewModel.type === '3d') {
@@ -268,8 +275,36 @@
         } else if (viewModel && viewModel.y) {
             lines.push(`Series: ${viewModel.y.length}`);
         }
-        lines.push(`Points: ${Number(metrics && metrics.points) || 0}`);
-        lines.push(`Variables: ${Number(metrics && metrics.variables) || 0}`);
+        if (Number.isFinite(compileSeconds)
+            || Number.isFinite(simulateSeconds)
+            || Number.isFinite(points)
+            || Number.isFinite(variables)) {
+            if (lines.length > 0) {
+                lines.push('');
+            }
+            lines.push('Run');
+            if (Number.isFinite(compileSeconds)) lines.push(`  compile: ${formatNum(compileSeconds)}s`);
+            if (Number.isFinite(simulateSeconds)) lines.push(`  simulate: ${formatNum(simulateSeconds)}s`);
+            if (Number.isFinite(points)) lines.push(`  points: ${Math.max(0, Math.floor(points))}`);
+            if (Number.isFinite(variables)) lines.push(`  vars: ${Math.max(0, Math.floor(variables))}`);
+        }
+        if (compilePhases && typeof compilePhases === 'object') {
+            const instantiate = Number(compilePhases.instantiate);
+            const typecheck = Number(compilePhases.typecheck);
+            const flatten = Number(compilePhases.flatten);
+            const todae = Number(compilePhases.todae);
+            if (Number.isFinite(instantiate)
+                || Number.isFinite(typecheck)
+                || Number.isFinite(flatten)
+                || Number.isFinite(todae)) {
+                lines.push('');
+                lines.push('Compile Phases');
+                if (Number.isFinite(instantiate)) lines.push(`  instantiate: ${formatNum(instantiate)}s`);
+                if (Number.isFinite(typecheck)) lines.push(`  typecheck: ${formatNum(typecheck)}s`);
+                if (Number.isFinite(flatten)) lines.push(`  flatten: ${formatNum(flatten)}s`);
+                if (Number.isFinite(todae)) lines.push(`  todae: ${formatNum(todae)}s`);
+            }
+        }
         lines.push('');
         lines.push('Actual');
         if (actual.t_start !== undefined) lines.push(`  t_start: ${formatNum(actual.t_start)}`);
@@ -2097,10 +2132,6 @@
         const status = createStatusBanner();
         root.appendChild(status.element);
 
-        const timing = document.createElement('div');
-        timing.className = 'rumoca-results-timing';
-        root.appendChild(timing);
-
         const tabs = document.createElement('div');
         tabs.className = 'rumoca-results-tabs';
         root.appendChild(tabs);
@@ -2117,7 +2148,7 @@
                     views = normalizeResultsViewDrafts(shared, nextViews);
                     activeViewId = chooseActiveViewId(views, activeViewId);
                     render();
-                    status.show('Views saved.', 'ok');
+                    status.clear();
                 },
                 shared: shared,
             })
@@ -2132,11 +2163,6 @@
             }
             mountedView = null;
             content.innerHTML = '';
-        }
-
-        function renderTiming() {
-            const parts = buildResultsTimingSummary(metrics);
-            timing.textContent = parts.join(' | ');
         }
 
         function renderTabs() {
@@ -2164,7 +2190,6 @@
         }
 
         function render() {
-            renderTiming();
             renderTabs();
             if (!payload) {
                 renderEmpty('Run a simulation to view results.');

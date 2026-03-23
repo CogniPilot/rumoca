@@ -223,6 +223,55 @@ fn compile_model_for_simulation_reports_active_local_parse_errors() {
 }
 
 #[test]
+fn render_template_command_renders_compiled_open_document_model() {
+    run_async_test(async {
+        let temp = new_temp_dir("render-template-command");
+        let focus = temp.join("Decay.mo");
+        std::fs::write(
+            &focus,
+            "model Decay\n  Real x(start=1);\nequation\n  der(x) = -x;\nend Decay;\n",
+        )
+        .expect("write focus");
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(
+                &focus.to_string_lossy(),
+                &std::fs::read_to_string(&focus).expect("read focus"),
+            );
+        }
+
+        let response = server
+            .execute_command(ExecuteCommandParams {
+                command: "rumoca.workspace.renderTemplate".to_string(),
+                arguments: vec![serde_json::json!({
+                    "uri": Url::from_file_path(&focus)
+                        .expect("file uri")
+                        .to_string(),
+                    "model": "Decay",
+                    "template": "{{ model_name }}",
+                })],
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await
+            .expect("execute command should succeed")
+            .expect("execute command should return a payload");
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "render template command should report success"
+        );
+        assert_eq!(
+            response.get("output").and_then(serde_json::Value::as_str),
+            Some("Decay"),
+            "render template command should render with the compiled model name"
+        );
+    });
+}
+
+#[test]
 fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document_model() {
     let _guard = session_stats_test_guard();
     run_async_test(async {

@@ -32,8 +32,11 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "onNotebook:jupyter-notebook",
+    "onCommand:rumoca.openSettingsMenu",
+    "onCommand:rumoca.renderTemplate",
     "onCommand:rumoca.simulateModel",
-    "onCommand:rumoca.openSimulationSettings"
+    "onCommand:rumoca.openSimulationSettings",
+    "onCommand:rumoca.openTemplateSettings"
   ],
   "contributes": {
     "languages": [
@@ -174,6 +177,36 @@
         }
       },
       {
+        "command": "rumoca.renderTemplate",
+        "title": "Render Codegen Template",
+        "shortTitle": "Render Template",
+        "category": "Rumoca",
+        "icon": {
+          "light": "icons/template-light.svg",
+          "dark": "icons/template-dark.svg"
+        }
+      },
+      {
+        "command": "rumoca.openTemplateSettings",
+        "title": "Open Template Settings",
+        "shortTitle": "Template Settings",
+        "category": "Rumoca",
+        "icon": {
+          "light": "icons/settings-light.svg",
+          "dark": "icons/settings-dark.svg"
+        }
+      },
+      {
+        "command": "rumoca.openSettingsMenu",
+        "title": "Open Rumoca Settings",
+        "shortTitle": "Settings",
+        "category": "Rumoca",
+        "icon": {
+          "light": "icons/settings-light.svg",
+          "dark": "icons/settings-dark.svg"
+        }
+      },
+      {
         "command": "rumoca.toggleAnnotation",
         "title": "Toggle Annotation Expansion",
         "category": "Rumoca"
@@ -192,14 +225,21 @@
     "menus": {
       "editor/title": [
         {
-          "command": "rumoca.simulateModel",
+          "command": "rumoca.renderTemplate",
           "when": "editorLangId == modelica",
-          "group": "navigation@10"
+          "group": "navigation"
         },
         {
-          "command": "rumoca.openSimulationSettings",
+          "command": "rumoca.openSettingsMenu",
           "when": "editorLangId == modelica",
-          "group": "navigation@11"
+          "group": "navigation"
+        }
+      ],
+      "editor/title/run": [
+        {
+          "command": "rumoca.simulateModel",
+          "when": "editorLangId == modelica",
+          "group": "navigation"
         }
       ]
     },
@@ -254,5 +294,3 @@
     }
   }
 }
-
-

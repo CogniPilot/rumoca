@@ -987,11 +987,36 @@ ctx.onFrame = (api) => {
         const features = value && typeof value === 'object' ? value : {};
         return {
             addSourceRootPath: features.addSourceRootPath !== false,
+            codegenSettings: features.codegenSettings !== false,
             prepareModels: features.prepareModels !== false,
             resyncSidecars: features.resyncSidecars !== false,
             workspaceSettings: features.workspaceSettings !== false,
             userSettings: features.userSettings !== false,
             openViewScript: features.openViewScript !== false,
+        };
+    }
+
+    function normalizeHostedCodegenTemplates(value) {
+        if (!Array.isArray(value)) {
+            return [];
+        }
+        return value
+            .map((entry) => {
+                const template = entry && typeof entry === 'object' ? entry : {};
+                return {
+                    id: trimMaybeString(template.id),
+                    label: trimMaybeString(template.label),
+                };
+            })
+            .filter((entry) => entry.id.length > 0 && entry.label.length > 0);
+    }
+
+    function normalizeHostedCodegenSettingsCurrent(value) {
+        const current = value && typeof value === 'object' ? value : {};
+        return {
+            mode: trimMaybeString(current.mode) === 'custom' ? 'custom' : 'builtin',
+            builtinTemplateId: trimMaybeString(current.builtinTemplateId) || 'sympy.py.jinja',
+            customTemplatePath: trimMaybeString(current.customTemplatePath),
         };
     }
 
@@ -1024,6 +1049,8 @@ ctx.onFrame = (api) => {
             activeModel,
             availableModels: availableModels.length > 0 ? availableModels : [activeModel],
             current: normalizeHostedSimulationSettingsCurrent(args && args.current),
+            codegen: normalizeHostedCodegenSettingsCurrent(args && args.codegen),
+            codegenTemplates: normalizeHostedCodegenTemplates(args && args.codegenTemplates),
             views: normalizeVisualizationViews(args && args.views),
             features: normalizeHostedSimulationSettingsFeatures(args && args.features),
         };
@@ -1035,6 +1062,8 @@ ctx.onFrame = (api) => {
             activeModel: args && args.activeModel,
             availableModels: args && args.availableModels,
             current: (args && args.current) ?? (args && args.fallbackCurrent),
+            codegen: (args && args.codegen) ?? (args && args.fallbackCodegen),
+            codegenTemplates: args && args.codegenTemplates,
             views: configuredViews.length > 0
                 ? configuredViews
                 : normalizeVisualizationViews(args && args.defaultViews),
@@ -1062,6 +1091,7 @@ ctx.onFrame = (api) => {
             dt,
             outputDir: trimMaybeString(payload && payload.outputDir),
             sourceRootOverrides: normalizeStringArray(payload && payload.sourceRootPaths),
+            codegen: normalizeHostedCodegenSettingsCurrent(payload && payload.codegen),
             views: normalizeVisualizationViews(payload && payload.views),
         };
     }
@@ -1077,6 +1107,7 @@ ctx.onFrame = (api) => {
             dt: current.dt,
             outputDir: current.outputDir,
             sourceRootPaths: [...current.sourceRootOverrides],
+            codegen: normalizeHostedCodegenSettingsCurrent(source.codegen),
             views: normalizeVisualizationViews(source.views),
         };
     }
@@ -1333,6 +1364,7 @@ ctx.onFrame = (api) => {
                         outputDir: normalized.outputDir,
                         sourceRootOverrides: [...normalized.sourceRootOverrides],
                     },
+                    codegenSettings: normalized.codegen,
                     current: {
                         solver: normalized.solver,
                         tEnd: normalized.tEnd,
@@ -1423,17 +1455,30 @@ ctx.onFrame = (api) => {
         const activeModel = state.activeModel;
         const availableModels = state.availableModels;
         const current = state.current;
+        const codegen = state.codegen;
+        const codegenTemplates = state.codegenTemplates;
         const features = state.features;
         const addSourceRootPathAttrs = features.addSourceRootPath ? '' : ' style="display:none;"';
+        const codegenAttrs = features.codegenSettings ? '' : ' style="display:none;"';
         const prepareModelsAttrs = features.prepareModels ? '' : ' style="display:none;"';
         const resyncSidecarsAttrs = features.resyncSidecars ? '' : ' style="display:none;"';
         const workspaceSettingsAttrs = features.workspaceSettings ? '' : ' style="display:none;"';
         const userSettingsAttrs = features.userSettings ? '' : ' style="display:none;"';
         const openViewScriptAttrs = features.openViewScript ? '' : ' style="display:none;"';
+        const codegenTemplateOptions = codegenTemplates.length > 0
+            ? codegenTemplates
+                .map((template) => {
+                    const selected = template.id === codegen.builtinTemplateId ? ' selected' : '';
+                    return `<option value="${escapeHtml(template.id)}"${selected}>${escapeHtml(template.label)}</option>`;
+                })
+                .join('')
+            : '<option value="sympy.py.jinja">sympy.py.jinja</option>';
         const initialState = {
             activeModel,
             availableModels,
             current,
+            codegen,
+            codegenTemplates,
             views: state.views,
         };
         const initialStateJson = escapeInlineScriptJson(JSON.stringify(initialState));
@@ -1632,6 +1677,28 @@ ctx.onFrame = (api) => {
       </div>
     </div>
 
+    <div class="card"${codegenAttrs}>
+      <h3>Codegen</h3>
+      <div class="grid">
+        <div class="field">
+          <label for="codegenMode">Template Source</label>
+          <select id="codegenMode">
+            <option value="builtin"${codegen.mode === 'builtin' ? ' selected' : ''}>Built-in</option>
+            <option value="custom"${codegen.mode === 'custom' ? ' selected' : ''}>Custom file</option>
+          </select>
+        </div>
+        <div class="field" id="codegenBuiltinField">
+          <label for="codegenBuiltinTemplateId">Built-in Template</label>
+          <select id="codegenBuiltinTemplateId">${codegenTemplateOptions}</select>
+        </div>
+        <div class="field" id="codegenCustomField">
+          <label for="codegenCustomTemplatePath">Custom Template File</label>
+          <input id="codegenCustomTemplatePath" placeholder="templates/my_template.py.jinja" value="${escapeHtml(codegen.customTemplatePath)}">
+        </div>
+      </div>
+      <div class="hint" style="margin-top: 8px;">Template rendering uses this selection for code generation output in both editors.</div>
+    </div>
+
     <div class="card">
       <h3>Source Root Paths</h3>
       <div class="toolbar">
@@ -1727,7 +1794,7 @@ ctx.onFrame = (api) => {
         <button id="workspaceSettings" class="secondary"${workspaceSettingsAttrs}>Workspace Settings</button>
         <button id="userSettings" class="secondary"${userSettingsAttrs}>User Settings</button>
         <div id="status" class="status"></div>
-        <div class="actions-hint">Autosaves per-model preset for <code id="activeModelHint"></code> in <code>.rumoca/models/by-id/&lt;uuid&gt;/simulation.toml</code> and panel layout in <code>.rumoca/models/by-id/&lt;uuid&gt;/views.toml</code>. Play uses these values.</div>
+        <div class="actions-hint">Autosaves the per-model preset for <code id="activeModelHint"></code> in <code>.rumoca/models/by-id/&lt;uuid&gt;/simulation.toml</code>, panel layout in <code>.rumoca/models/by-id/&lt;uuid&gt;/views.toml</code>, and the current codegen template selection. Play and template rendering use these values.</div>
       </div>
     </div>
   </div>
@@ -1759,6 +1826,11 @@ ctx.onFrame = (api) => {
     const solverInput = document.getElementById('solver');
     const tEndInput = document.getElementById('tEnd');
     const dtInput = document.getElementById('dt');
+    const codegenModeInput = document.getElementById('codegenMode');
+    const codegenBuiltinTemplateIdInput = document.getElementById('codegenBuiltinTemplateId');
+    const codegenCustomTemplatePathInput = document.getElementById('codegenCustomTemplatePath');
+    const codegenBuiltinField = document.getElementById('codegenBuiltinField');
+    const codegenCustomField = document.getElementById('codegenCustomField');
     const modelSelectInput = document.getElementById('modelSelect');
     const sourceRootPathsInput = document.getElementById('sourceRootPaths');
     const clearSourceRootsBtn = document.getElementById('clearSourceRoots');
@@ -1787,6 +1859,11 @@ ctx.onFrame = (api) => {
     const pendingRequests = new Map();
     let nextRequestId = 1;
     const current = initialState && initialState.current ? initialState.current : {};
+    const initialCodegen = initialState && initialState.codegen ? initialState.codegen : {
+      mode: 'builtin',
+      builtinTemplateId: 'sympy.py.jinja',
+      customTemplatePath: '',
+    };
     const activeModelName = String(initialState && initialState.activeModel ? initialState.activeModel : '');
     const availableModels = Array.isArray(initialState && initialState.availableModels)
       ? initialState.availableModels.map((entry) => String(entry || '').trim()).filter(Boolean)
@@ -1799,6 +1876,12 @@ ctx.onFrame = (api) => {
     let selectedScatterSeriesIndex = -1;
     let autoSaveTimer = null;
     let isResettingFromHost = false;
+
+    function syncCodegenDraftVisibility() {
+      const custom = String(codegenModeInput.value || 'builtin') === 'custom';
+      codegenBuiltinField.style.display = custom ? 'none' : 'grid';
+      codegenCustomField.style.display = custom ? 'grid' : 'none';
+    }
 
     function setStatus(text, level) {
       statusEl.textContent = text || '';
@@ -2191,6 +2274,11 @@ ctx.onFrame = (api) => {
         dt: dtInput.value.trim(),
         outputDir: preservedOutputDir,
         sourceRootPaths: libs,
+        codegen: {
+          mode: String(codegenModeInput.value || 'builtin').trim() === 'custom' ? 'custom' : 'builtin',
+          builtinTemplateId: String(codegenBuiltinTemplateIdInput.value || '').trim(),
+          customTemplatePath: String(codegenCustomTemplatePathInput.value || '').trim(),
+        },
         views: normalizedViews,
       };
     }
@@ -2388,6 +2476,15 @@ ctx.onFrame = (api) => {
         solverInput.value = String(reset && reset.solver ? reset.solver : 'auto');
         tEndInput.value = String(reset && reset.tEnd !== undefined ? reset.tEnd : 10);
         dtInput.value = String(reset && reset.dt ? reset.dt : '');
+        const nextCodegen = reset && reset.codegen ? reset.codegen : {
+          mode: 'builtin',
+          builtinTemplateId: 'sympy.py.jinja',
+          customTemplatePath: '',
+        };
+        codegenModeInput.value = String(nextCodegen.mode || 'builtin') === 'custom' ? 'custom' : 'builtin';
+        codegenBuiltinTemplateIdInput.value = String(nextCodegen.builtinTemplateId || 'sympy.py.jinja');
+        codegenCustomTemplatePathInput.value = String(nextCodegen.customTemplatePath || '');
+        syncCodegenDraftVisibility();
         sourceRootPathsInput.value = Array.isArray(reset && reset.sourceRootPaths) ? reset.sourceRootPaths.join('\\n') : '';
         views = Array.isArray(reset && reset.views) && reset.views.length > 0
           ? reset.views
@@ -2459,6 +2556,10 @@ ctx.onFrame = (api) => {
       scheduleAutoSave();
     });
 
+    codegenModeInput.addEventListener('change', () => {
+      syncCodegenDraftVisibility();
+    });
+
     document.getElementById('workspaceSettings').addEventListener('click', async () => {
       try {
         await requestHost('openWorkspaceSettings', {});
@@ -2478,6 +2579,10 @@ ctx.onFrame = (api) => {
     solverInput.value = String(current.solver || 'auto');
     tEndInput.value = String(current.tEnd || 10);
     dtInput.value = current.dt === null || current.dt === undefined ? '' : String(current.dt);
+    codegenModeInput.value = String(initialCodegen.mode || 'builtin') === 'custom' ? 'custom' : 'builtin';
+    codegenBuiltinTemplateIdInput.value = String(initialCodegen.builtinTemplateId || 'sympy.py.jinja');
+    codegenCustomTemplatePathInput.value = String(initialCodegen.customTemplatePath || '');
+    syncCodegenDraftVisibility();
     sourceRootPathsInput.value = Array.isArray(current.sourceRootOverrides) ? current.sourceRootOverrides.join('\\n') : '';
     renderModelSelect();
     renderViewList();

@@ -41,15 +41,6 @@ let openDocumentPaths = [];
 const simulationSettingsModal = document.getElementById('simulationSettingsModal');
 const simulationSettingsFrame = document.getElementById('simulationSettingsFrame');
 const simulationSettingsCloseBtn = document.getElementById('simulationSettingsCloseBtn');
-const codegenSettingsModal = document.getElementById('codegenSettingsModal');
-const codegenSettingsCloseBtn = document.getElementById('codegenSettingsCloseBtn');
-const codegenSettingsCancelBtn = document.getElementById('codegenSettingsCancelBtn');
-const codegenSettingsApplyBtn = document.getElementById('codegenSettingsApplyBtn');
-const codegenTemplateModeSelect = document.getElementById('codegenTemplateModeSelect');
-const codegenBuiltinTemplateSelect = document.getElementById('codegenBuiltinTemplateSelect');
-const codegenCustomTemplatePathInput = document.getElementById('codegenCustomTemplatePathInput');
-const codegenBuiltinTemplateField = document.getElementById('codegenBuiltinTemplateField');
-const codegenCustomTemplateField = document.getElementById('codegenCustomTemplateField');
 const codegenTemplateSummary = document.getElementById('codegenTemplateSummary');
 const simRunTabs = document.getElementById('simRunTabs');
 const outputTabsRoot = document.getElementById('outputTabs');
@@ -176,15 +167,6 @@ function findBuiltInCodegenTemplate(templateId) {
     return builtInCodegenTemplates.find((template) => template.id === nextId) || builtInCodegenTemplates[0] || null;
 }
 
-function populateBuiltInCodegenTemplateOptions() {
-    if (!codegenBuiltinTemplateSelect) {
-        return;
-    }
-    codegenBuiltinTemplateSelect.innerHTML = builtInCodegenTemplates
-        .map((template) => `<option value="${template.id}">${template.label}</option>`)
-        .join('');
-}
-
 async function ensureBuiltInCodegenTemplatesLoaded() {
     if (builtInCodegenTemplatesLoaded) {
         return builtInCodegenTemplates;
@@ -200,47 +182,14 @@ async function ensureBuiltInCodegenTemplatesLoaded() {
         }))
         .filter((entry) => entry.id && entry.label && entry.source);
     builtInCodegenTemplatesLoaded = true;
-    populateBuiltInCodegenTemplateOptions();
     if (!findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId) && builtInCodegenTemplates[0]) {
         codegenSettings = {
             ...codegenSettings,
             builtinTemplateId: builtInCodegenTemplates[0].id,
         };
     }
-    refreshCodegenSettingsForm();
     refreshCodegenTemplateSummary();
     return builtInCodegenTemplates;
-}
-
-function refreshCodegenSettingsForm() {
-    if (codegenTemplateModeSelect) {
-        codegenTemplateModeSelect.value = codegenSettings.mode;
-    }
-    if (codegenBuiltinTemplateSelect) {
-        const selectedBuiltin = findBuiltInCodegenTemplate(codegenSettings.builtinTemplateId);
-        if (selectedBuiltin) {
-            codegenBuiltinTemplateSelect.value = selectedBuiltin.id;
-        }
-    }
-    if (codegenCustomTemplatePathInput) {
-        codegenCustomTemplatePathInput.value = codegenSettings.customTemplatePath;
-    }
-    if (codegenBuiltinTemplateField) {
-        codegenBuiltinTemplateField.hidden = codegenSettings.mode !== 'builtin';
-    }
-    if (codegenCustomTemplateField) {
-        codegenCustomTemplateField.hidden = codegenSettings.mode !== 'custom';
-    }
-}
-
-function refreshCodegenSettingsDraftVisibility() {
-    const mode = trimMaybeString(codegenTemplateModeSelect?.value) === 'custom' ? 'custom' : 'builtin';
-    if (codegenBuiltinTemplateField) {
-        codegenBuiltinTemplateField.hidden = mode !== 'builtin';
-    }
-    if (codegenCustomTemplateField) {
-        codegenCustomTemplateField.hidden = mode !== 'custom';
-    }
 }
 
 function refreshCodegenTemplateSummary() {
@@ -332,24 +281,14 @@ function renderCodegenRunTabs() {
     }
 }
 
-function readCodegenSettingsFromForm() {
-    return normalizeCodegenSettings({
-        mode: codegenTemplateModeSelect?.value,
-        builtinTemplateId: codegenBuiltinTemplateSelect?.value,
-        customTemplatePath: codegenCustomTemplatePathInput?.value,
-    });
-}
-
 async function applyCodegenSettings(nextSettings, { rerender = true } = {}) {
     if (codegenSettings.mode === nextSettings.mode
         && codegenSettings.builtinTemplateId === nextSettings.builtinTemplateId
         && codegenSettings.customTemplatePath === nextSettings.customTemplatePath) {
-        refreshCodegenSettingsForm();
         refreshCodegenTemplateSummary();
         return;
     }
     codegenSettings = normalizeCodegenSettings(nextSettings);
-    refreshCodegenSettingsForm();
     refreshCodegenTemplateSummary();
     scheduleProjectPersistence();
     void rerender;
@@ -380,7 +319,7 @@ async function resolveCodegenTemplateSelection() {
     if (codegenSettings.mode === 'custom') {
         const templatePath = trimMaybeString(codegenSettings.customTemplatePath);
         if (!templatePath) {
-            throw new Error('Choose a custom template file in Template Settings.');
+            throw new Error('Choose a custom template file in Rumoca settings.');
         }
         const templateSource = projectFs.getFileContent(templatePath);
         if (typeof templateSource !== 'string') {
@@ -2920,13 +2859,8 @@ function refreshFileRunSettingsButton() {
         return;
     }
     for (const button of editorSettingsButtons) {
-        if (window.activeRightTab === 'codegen') {
-            button.title = 'Codegen template settings';
-            button.setAttribute('aria-label', 'Codegen template settings');
-        } else {
-            button.title = 'Simulation settings';
-            button.setAttribute('aria-label', 'Simulation settings');
-        }
+        button.title = 'Simulation and codegen settings';
+        button.setAttribute('aria-label', 'Simulation and codegen settings');
     }
 }
 
@@ -2945,10 +2879,6 @@ window.openCodegenTabForPane = function(paneId) {
 };
 
 window.openFileRunSettings = function() {
-    if (window.activeRightTab === 'codegen') {
-        openCodegenSettingsModal();
-        return;
-    }
     openSimulationSettingsModal();
 };
 
@@ -3069,7 +2999,6 @@ function applyProjectEditorState(editorState) {
         || nextState.codegenSettings
         || fallbackState.codegenSettings,
     );
-    refreshCodegenSettingsForm();
     refreshCodegenTemplateSummary();
 
     simResultsPanelState = normalizeSimResultsPanelState(
@@ -3310,17 +3239,21 @@ function simulationViewsForModel(model) {
     return Array.isArray(config?.views) ? config.views : [];
 }
 
-function buildSimulationSettingsDocument(model, availableModels = listSimulationModels()) {
+async function buildSimulationSettingsDocument(model, availableModels = listSimulationModels()) {
     const config = projectInterface.execute('rumoca.project.getSimulationConfig', {
         model,
         fallback: projectSimulationFallback(),
     });
+    const templates = await ensureBuiltInCodegenTemplatesLoaded();
     return sharedVisualization().buildHostedSimulationSettingsDocument(
         sharedVisualization().buildHostedSimulationSettingsState({
             activeModel: model,
             availableModels,
             current: config?.effective,
             fallbackCurrent: projectSimulationFallback(),
+            codegen: codegenSettings,
+            fallbackCodegen: defaultCodegenSettings(),
+            codegenTemplates: templates,
             views: simulationViewsForModel(model),
             defaultViews: [],
             features: simulationSettingsFeatures(),
@@ -3341,7 +3274,7 @@ async function renderSimulationSettingsModal(preferredModel = '') {
         || trimMaybeString(resolvedModels.selectedModel)
         || resolvedModels.models[0]
         || 'Model';
-    simulationSettingsFrame.srcdoc = buildSimulationSettingsDocument(model, resolvedModels.models);
+    simulationSettingsFrame.srcdoc = await buildSimulationSettingsDocument(model, resolvedModels.models);
 }
 
 function refreshSimulationSettingsModalIfOpen() {
@@ -3440,48 +3373,22 @@ function closeSimulationSettingsModal() {
 
 window.openSimulationSettingsModal = openSimulationSettingsModal;
 
-function openCodegenSettingsModal() {
-    if (!codegenSettingsModal) {
-        return;
-    }
-    void ensureBuiltInCodegenTemplatesLoaded();
-    refreshCodegenSettingsForm();
-    codegenSettingsModal.hidden = false;
-}
-
-function closeCodegenSettingsModal() {
-    if (!codegenSettingsModal) {
-        return;
-    }
-    codegenSettingsModal.hidden = true;
-    refreshCodegenSettingsForm();
-}
-
-async function applyCodegenSettingsFromModal() {
-    await ensureBuiltInCodegenTemplatesLoaded();
-    const nextSettings = readCodegenSettingsFromForm();
-    if (nextSettings.mode === 'custom') {
-        if (!nextSettings.customTemplatePath) {
-            showTemplateError('Choose a custom template file before applying codegen settings.');
-            codegenCustomTemplatePathInput?.focus();
-            return;
-        }
-        if (typeof projectFs.getFileContent(nextSettings.customTemplatePath) !== 'string') {
-            showTemplateError(`Template file not found: ${nextSettings.customTemplatePath}`);
-            codegenCustomTemplatePathInput?.focus();
-            return;
-        }
-    }
-    await applyCodegenSettings(nextSettings);
-    closeCodegenSettingsModal();
-}
-
 const simulationSettingsHandlers = sharedVisualization().buildHostedSimulationSettingsHandlers({
     getActiveModel: () => currentSimulationModel() || listSimulationModels()[0] || 'Model',
-    save: async ({ model, preset, views }) =>
-        await saveSimulationSettingsForModel(model, preset, views),
-    reset: async ({ model }) =>
-        await resetSimulationSettingsForModel(model),
+    save: async ({ model, preset, codegenSettings: nextCodegenSettings, views }) => {
+        const saved = await saveSimulationSettingsForModel(model, preset, views);
+        await applyCodegenSettings(nextCodegenSettings, { rerender: false });
+        return saved;
+    },
+    reset: async ({ model }) => {
+        const resetCodegen = defaultCodegenSettings();
+        const resetState = await resetSimulationSettingsForModel(model);
+        await applyCodegenSettings(resetCodegen, { rerender: false });
+        return {
+            ...resetState,
+            codegen: resetCodegen,
+        };
+    },
     selectModel: async ({ model }) => {
         const modelSelect = document.getElementById('modelSelect');
         if (modelSelect) {
@@ -3515,23 +3422,6 @@ simulationSettingsModal?.addEventListener('click', (event) => {
         closeSimulationSettingsModal();
     }
 });
-codegenTemplateModeSelect?.addEventListener('change', () => {
-    refreshCodegenSettingsDraftVisibility();
-});
-codegenSettingsCloseBtn?.addEventListener('click', () => {
-    closeCodegenSettingsModal();
-});
-codegenSettingsCancelBtn?.addEventListener('click', () => {
-    closeCodegenSettingsModal();
-});
-codegenSettingsApplyBtn?.addEventListener('click', async () => {
-    await applyCodegenSettingsFromModal();
-});
-codegenSettingsModal?.addEventListener('click', (event) => {
-    if (event.target === codegenSettingsModal) {
-        closeCodegenSettingsModal();
-    }
-});
 sidebarContextMenu?.addEventListener('click', (event) => {
     event.stopPropagation();
 });
@@ -3558,7 +3448,7 @@ document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
         closeTitlebarMenu();
         closeSidebarContextMenu();
-        closeCodegenSettingsModal();
+        closeSimulationSettingsModal();
     }
 });
 document.addEventListener('visibilitychange', () => {

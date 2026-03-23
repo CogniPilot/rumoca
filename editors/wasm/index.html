@@ -2278,42 +2278,10 @@
     <div id="simulationSettingsModal" class="modal-shell" hidden>
         <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="simulationSettingsTitle">
             <div class="modal-header">
-                <h3 id="simulationSettingsTitle">Simulation Settings</h3>
+                <h3 id="simulationSettingsTitle">Rumoca Settings</h3>
                 <button class="small toolbar-icon" id="simulationSettingsCloseBtn" title="Close settings">✕</button>
             </div>
-            <iframe id="simulationSettingsFrame" class="modal-frame" title="Simulation Settings"></iframe>
-        </div>
-    </div>
-
-    <div id="codegenSettingsModal" class="modal-shell" hidden>
-        <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="codegenSettingsTitle" style="width: min(640px, 100%); height: auto; max-height: min(560px, 100%);">
-            <div class="modal-header">
-                <h3 id="codegenSettingsTitle">Codegen Template Settings</h3>
-                <button class="small toolbar-icon" id="codegenSettingsCloseBtn" title="Close settings">✕</button>
-            </div>
-            <div class="settings-form">
-                <div class="settings-field">
-                    <label for="codegenTemplateModeSelect">Template Source</label>
-                    <select id="codegenTemplateModeSelect">
-                        <option value="builtin">Built-in</option>
-                        <option value="custom">Custom file</option>
-                    </select>
-                    <div class="settings-field-hint">Use a bundled template, or point codegen at a template file in the current workspace.</div>
-                </div>
-                <div class="settings-field" id="codegenBuiltinTemplateField">
-                    <label for="codegenBuiltinTemplateSelect">Built-in Template</label>
-                    <select id="codegenBuiltinTemplateSelect"></select>
-                </div>
-                <div class="settings-field" id="codegenCustomTemplateField" hidden>
-                    <label for="codegenCustomTemplatePathInput">Custom Template File</label>
-                    <input id="codegenCustomTemplatePathInput" type="text" placeholder="templates/my_template.py.jinja" spellcheck="false" autocomplete="off">
-                    <div class="settings-field-hint">Enter a workspace-relative file path. The file must already exist and contain template text.</div>
-                </div>
-            </div>
-            <div class="settings-actions">
-                <button class="small" type="button" id="codegenSettingsCancelBtn">Cancel</button>
-                <button class="small" type="button" id="codegenSettingsApplyBtn">Apply</button>
-            </div>
+            <iframe id="simulationSettingsFrame" class="modal-frame" title="Rumoca Settings"></iframe>
         </div>
     </div>
 
