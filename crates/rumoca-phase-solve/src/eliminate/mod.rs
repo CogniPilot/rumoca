@@ -999,8 +999,159 @@ pub fn try_solve_for_unknown(rhs: &Expression, unknown: &VarName) -> Option<Expr
             // -(z - expr) has the same solutions as (z - expr).
             try_solve_for_unknown(inner, unknown)
         }
+        // Pattern: 0 = a + b + c + ... (additive form, e.g. connection equations)
+        // Handled by try_solve_additive_for_unknown() which requires the live
+        // unknown set to avoid solving 2-unknown equations incorrectly.
+        // This base function does NOT handle additive forms — callers that want
+        // additive solving should use try_solve_additive_for_unknown() directly.
         _ => None,
     }
+}
+
+/// Try to solve an additive equation `0 = a + b + c` for `unknown`, but only
+/// when exactly one term contains the unknown AND no other term contains a
+/// different live unknown (to avoid solving 2-unknown equations).
+pub fn try_solve_additive_for_unknown(
+    rhs: &Expression,
+    unknown: &VarName,
+    live_unknowns: &[VarName],
+) -> Option<Expression> {
+    let terms = flatten_additive_terms(rhs);
+    if terms.len() < 2 {
+        return None;
+    }
+
+    // Find which term(s) contain the target unknown
+    let mut unknown_idx = None;
+    for (i, (_, term)) in terms.iter().enumerate() {
+        if expr_contains_var(term, unknown) {
+            if unknown_idx.is_some() {
+                return None; // multiple terms contain the unknown
+            }
+            unknown_idx = Some(i);
+        }
+    }
+    let unknown_idx = unknown_idx?;
+
+    // The unknown term must be a bare VarRef (linear, coefficient = 1)
+    let (unknown_positive, unknown_term) = terms[unknown_idx];
+    if !is_var_ref(unknown_term, unknown) {
+        return None;
+    }
+
+    // Check that no OTHER term contains a DIFFERENT live unknown
+    for (i, (_, term)) in terms.iter().enumerate() {
+        if i == unknown_idx {
+            continue;
+        }
+        for other_unknown in live_unknowns {
+            if other_unknown != unknown && expr_contains_var(term, other_unknown) {
+                return None; // another term has a different live unknown
+            }
+        }
+    }
+
+    // Safe to solve: build -(other_terms) or other_terms
+    let other_terms: Vec<(bool, &Expression)> = terms
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != unknown_idx)
+        .map(|(_, &(sign, term))| {
+            if unknown_positive {
+                (!sign, term)
+            } else {
+                (sign, term)
+            }
+        })
+        .collect();
+
+    build_sum_expr(&other_terms)
+}
+
+/// Flatten a tree of Add/Sub operations into signed terms.
+/// E.g., `a + b - c + d` → [(+, a), (+, b), (-, c), (+, d)]
+fn flatten_additive_terms(expr: &Expression) -> Vec<(bool, &Expression)> {
+    match expr {
+        Expression::Binary {
+            op: OpBinary::Add(_),
+            lhs,
+            rhs,
+        } => {
+            let mut terms = flatten_additive_terms(lhs);
+            terms.extend(flatten_additive_terms(rhs));
+            terms
+        }
+        Expression::Binary {
+            op: OpBinary::Sub(_),
+            lhs,
+            rhs,
+        } => {
+            let mut terms = flatten_additive_terms(lhs);
+            // Negate all terms from the RHS
+            for (sign, term) in flatten_additive_terms(rhs) {
+                terms.push((!sign, term));
+            }
+            terms
+        }
+        Expression::Unary {
+            op: OpUnary::Minus(_),
+            rhs: inner,
+        } => {
+            flatten_additive_terms(inner)
+                .into_iter()
+                .map(|(sign, term)| (!sign, term))
+                .collect()
+        }
+        _ => vec![(true, expr)],
+    }
+}
+
+/// Build an Expression from a list of signed terms.
+fn build_sum_expr(terms: &[(bool, &Expression)]) -> Option<Expression> {
+    if terms.is_empty() {
+        return Some(Expression::Literal(rumoca_ir_dae::Literal::Real(0.0)));
+    }
+    if terms.len() == 1 {
+        let (positive, expr) = terms[0];
+        return if positive {
+            Some(expr.clone())
+        } else {
+            Some(Expression::Unary {
+                op: OpUnary::Minus(Default::default()),
+                rhs: Box::new(expr.clone()),
+            })
+        };
+    }
+
+    // Start with the first term
+    let (first_positive, first_expr) = terms[0];
+    let mut result = if first_positive {
+        first_expr.clone()
+    } else {
+        Expression::Unary {
+            op: OpUnary::Minus(Default::default()),
+            rhs: Box::new(first_expr.clone()),
+        }
+    };
+
+    // Add remaining terms
+    for &(positive, term) in &terms[1..] {
+        if positive {
+            result = Expression::Binary {
+                op: OpBinary::Add(Default::default()),
+                lhs: Box::new(result),
+                rhs: Box::new(term.clone()),
+            };
+        } else {
+            result = Expression::Binary {
+                op: OpBinary::Sub(Default::default()),
+                lhs: Box::new(result),
+                rhs: Box::new(term.clone()),
+            };
+        }
+    }
+
+    Some(result)
 }
 
 /// Check if an expression contains `der(var_name)`.

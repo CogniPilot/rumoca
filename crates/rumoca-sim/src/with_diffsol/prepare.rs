@@ -1027,6 +1027,16 @@ pub(super) fn prepare_dae_for_template_codegen_only(
         })
     })?;
 
+    // Sort algebraic/output variables by equation dependency order so that
+    // template backends evaluate each algebraic variable after the variables
+    // it depends on. Without this, circular alias chains (e.g., G.n.v = Nr.p.v
+    // and Nr.p.v = G.n.v) produce stale values.
+    trace_step("sort_algebraics_by_equation_deps", &mut || {
+        run_timeout_step(budget, || {
+            rumoca_ir_dae::sort_algebraics_by_equation_deps(&mut dae)
+        })
+    })?;
+
     Ok(dae)
 }
 
