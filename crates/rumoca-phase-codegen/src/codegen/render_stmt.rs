@@ -6,7 +6,8 @@
 //! - AST expression variants used within statements
 
 use super::render_expr::{
-    get_binop_string, get_field, get_unop_string, is_mul_elem_op, render_args, render_expression,
+    get_binop_string, get_field, get_unop_string, is_exp_op, is_mul_elem_op, render_args,
+    render_expression,
 };
 use super::{ExprConfig, IfStyle, RenderResult};
 use crate::errors::render_err;
@@ -239,7 +240,15 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
     // Generate for loop header based on config
     match cfg.if_style {
         IfStyle::Ternary => {
-            result.push_str(&format!("{indent}for (int {loop_var} = 0; {loop_var} < /* {range_str} */; {loop_var}++) {{\n"));
+            if let Some((start, end)) = parse_colon_range(&range_str) {
+                result.push_str(&format!(
+                    "{indent}for (int {loop_var} = {start}; {loop_var} <= {end}; {loop_var}++) {{\n"
+                ));
+            } else {
+                result.push_str(&format!(
+                    "{indent}for (int {loop_var} = 0; {loop_var} < /* {range_str} */; {loop_var}++) {{\n"
+                ));
+            }
         }
         IfStyle::Function => {
             // When python_range is true, render_ast_range already produces `range(...)`,
@@ -295,8 +304,19 @@ fn extract_for_loop_index(
     let ident = first
         .get_attr("ident")
         .ok()
-        .and_then(|i| i.get_attr("text").ok())
-        .map(|t| t.to_string())
+        .map(|i| {
+            // Try AST Token form (ident.text) first
+            if let Ok(text) = i.get_attr("text") {
+                let s = text.to_string();
+                if !s.is_empty() {
+                    return s;
+                }
+            }
+            // Fall back to DAE string form (plain String value)
+            let s = i.to_string();
+            let trimmed = s.trim_matches('"').to_string();
+            if trimmed.is_empty() { "i".to_string() } else { trimmed }
+        })
         .unwrap_or_else(|| "i".to_string());
 
     let range = first
@@ -305,6 +325,19 @@ fn extract_for_loop_index(
         .unwrap_or_else(|_| "1:1".to_string());
 
     Ok((ident, range))
+}
+
+/// Parse a "start:end" range string into integer bounds for C for-loops.
+/// Returns `None` if the format doesn't match or values aren't integers.
+fn parse_colon_range(range_str: &str) -> Option<(i64, i64)> {
+    let parts: Vec<&str> = range_str.splitn(2, ':').collect();
+    if parts.len() == 2 {
+        let start = parts[0].trim().parse::<i64>().ok()?;
+        let end = parts[1].trim().parse::<i64>().ok()?;
+        Some((start, end))
+    } else {
+        None
+    }
 }
 
 /// Render a while loop statement.
@@ -570,7 +603,7 @@ fn render_assert_statement(assert: &Value, cfg: &ExprConfig, indent: &str) -> Re
 /// Render an AST ComponentReference to a string.
 fn render_component_ref(comp: &Value) -> String {
     if let Some(s) = comp.as_str() {
-        return s.replace('.', "_");
+        return super::sanitize_name(s);
     }
 
     let Some(parts_val) = get_field(comp, "parts").ok() else {
@@ -585,7 +618,8 @@ fn render_component_ref(comp: &Value) -> String {
         .map(|part| render_component_ref_part(&part))
         .collect();
 
-    part_strs.join("_")
+    let joined = part_strs.join("_");
+    super::sanitize_name(&joined)
 }
 
 /// Render a single component reference part (identifier + optional subscripts).
@@ -734,6 +768,22 @@ fn render_ast_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
         && let Some(func) = &cfg.mul_elem_fn
     {
         return Ok(format!("{func}({lhs}, {rhs})"));
+    }
+    // Use function-call form for logical operators when the op string
+    // looks like a function name (contains '.', e.g. "ca.logic_and").
+    if get_field(&op, "And").is_ok() && cfg.and_op.contains('.') {
+        return Ok(format!("{}({}, {})", cfg.and_op, lhs, rhs));
+    }
+    if get_field(&op, "Or").is_ok() && cfg.or_op.contains('.') {
+        return Ok(format!("{}({}, {})", cfg.or_op, lhs, rhs));
+    }
+    if is_exp_op(&op) {
+        if let Some(ref power_fn) = cfg.power_fn {
+            return Ok(format!("{power_fn}({lhs}, {rhs})"));
+        }
+        if cfg.power.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            return Ok(format!("{}({lhs}, {rhs})", cfg.power));
+        }
     }
     let op = get_binop_string(&op, cfg)?;
     Ok(format!("({lhs} {op} {rhs})"))

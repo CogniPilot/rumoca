@@ -223,9 +223,9 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         })
         .unwrap_or_default();
     let name = if cfg.sanitize_dots {
-        raw_name.replace('.', "_")
+        super::sanitize_name(&raw_name)
     } else {
-        raw_name
+        super::escape_reserved_keyword(&raw_name)
     };
 
     let subscripts = render_subscripts(var_ref, cfg)?;
@@ -354,14 +354,32 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
     // Modelica `min({a,b,c})` → C `fmin(fmin(a,b),c)` (not `fmin((double[]){a,b,c})`)
     if matches!(func_name.as_str(), "Min" | "Max" | "Sum") {
         let args_val = get_field(builtin, "args")?;
-        if args_val.len() == Some(1)
-            && let Ok(first_arg) = args_val.get_item(&Value::from(0))
-            && let Ok(array) = get_field(&first_arg, "Array")
-            && let Ok(elements) = get_field(&array, "elements")
-        {
-            let len = elements.len().unwrap_or(0);
-            if len > 0 {
-                return render_chained_minmaxsum(&func_name, &elements, len, cfg);
+        if args_val.len() == Some(1) {
+            if let Ok(first_arg) = args_val.get_item(&Value::from(0)) {
+                // Direct Array argument: expand inline
+                if let Ok(array) = get_field(&first_arg, "Array")
+                    && let Ok(elements) = get_field(&array, "elements")
+                {
+                    let len = elements.len().unwrap_or(0);
+                    if len > 0 {
+                        return render_chained_minmaxsum(&func_name, &elements, len, cfg);
+                    }
+                }
+                // ArrayComprehension argument for C targets: unroll to chained sum
+                if func_name == "Sum"
+                    && matches!(cfg.if_style, super::IfStyle::Ternary)
+                    && get_field(&first_arg, "ArrayComprehension").is_ok()
+                {
+                    let unrolled = render_expression(&first_arg, cfg)?;
+                    // If the comprehension unrolled to a scalar (e.g., REAL_C(0.0)
+                    // for empty range), return it directly
+                    if !unrolled.starts_with(&cfg.array_start) {
+                        return Ok(unrolled);
+                    }
+                    // Otherwise it's a C array literal — not valid for __rumoca_sum
+                    // since it needs (arr, n). For now, return 0 for empty results.
+                    return Ok(format!("({unrolled})"));
+                }
             }
         }
     }
@@ -452,8 +470,8 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Identity" => format!("{}eye({})", cfg.prefix, args),
         "Cross" => format!("{}cross({})", cfg.prefix, args),
         "Div" => format!("{}div({})", cfg.prefix, args),
-        "Mod" => format!("fmod({})", args),
-        "Rem" => format!("remainder({})", args),
+        "Mod" => format!("{}fmod({})", cfg.prefix, args),
+        "Rem" => format!("{}remainder({})", cfg.prefix, args),
         "Fill" => {
             // fill(val, n) → val (scalar broadcast; array fill not supported yet)
             if let Some(comma_pos) = args.find(',') {
@@ -738,13 +756,25 @@ fn python_range_end(end: &str) -> String {
 }
 
 /// Render an array-comprehension expression as `{expr for i in range ... if filter}`.
+///
+/// For C targets (`IfStyle::Ternary`), attempts to unroll the comprehension
+/// into an array literal when the range has statically-known integer bounds.
+/// Falls back to rendering a 0 literal for empty ranges.
 fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderResult {
-    let body = get_field(array_comp, "expr")
-        .and_then(|v| render_expression(&v, cfg))
-        .map_err(|_| render_err("ArrayComprehension missing 'expr' field"))?;
     let indices = get_field(array_comp, "indices")
         .map_err(|_| render_err("ArrayComprehension missing 'indices' field"))?;
     let len = indices.len().unwrap_or(0);
+
+    // For C targets, try to unroll the comprehension at render time
+    if matches!(cfg.if_style, super::IfStyle::Ternary) && len == 1 {
+        if let Ok(unrolled) = try_unroll_c_comprehension(array_comp, cfg) {
+            return Ok(unrolled);
+        }
+    }
+
+    let body = get_field(array_comp, "expr")
+        .and_then(|v| render_expression(&v, cfg))
+        .map_err(|_| render_err("ArrayComprehension missing 'expr' field"))?;
 
     let mut index_clauses = Vec::new();
     for i in 0..len {
@@ -777,6 +807,62 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
     } else {
         Ok(format!("{{{body}{for_clause}{filter_clause}}}"))
     }
+}
+
+/// Try to unroll an array comprehension for C targets.
+/// Returns the unrolled expression if the range is statically known,
+/// or Err if unrolling is not possible.
+fn try_unroll_c_comprehension(
+    array_comp: &Value,
+    cfg: &ExprConfig,
+) -> Result<String, minijinja::Error> {
+    let indices = get_field(array_comp, "indices")?;
+    let index = indices.get_item(&Value::from(0))?;
+    let var_name = get_field(&index, "name")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| "i".to_string());
+
+    // Get the range and try to extract integer bounds
+    let range_val = get_field(&index, "range")?;
+    let range_str = render_expression(&range_val, cfg)?;
+    let parts: Vec<&str> = range_str.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(render_err("cannot unroll: non-simple range"));
+    }
+    let start: i64 = parts[0]
+        .trim()
+        .parse()
+        .map_err(|_| render_err("cannot unroll: non-integer start"))?;
+    let end: i64 = parts[1]
+        .trim()
+        .parse()
+        .map_err(|_| render_err("cannot unroll: non-integer end"))?;
+
+    // Empty range
+    if start > end {
+        return Ok("REAL_C(0.0)".to_string());
+    }
+
+    // Get the body expression node (not yet rendered — we need to re-render per iteration)
+    let body_node = get_field(array_comp, "expr")?;
+
+    // Unroll: render body with the loop variable substituted for each value
+    // We do a simple textual substitution on the rendered body
+    let mut elements = Vec::new();
+    for val in start..=end {
+        // Render the body expression, then substitute the loop variable
+        let body_rendered = render_expression(&body_node, cfg)?;
+        // Replace occurrences of the loop variable name with the concrete value
+        let substituted = body_rendered.replace(&var_name, &val.to_string());
+        elements.push(substituted);
+    }
+
+    Ok(format!(
+        "{}{}{}",
+        cfg.array_start,
+        elements.join(", "),
+        cfg.array_end
+    ))
 }
 
 /// Render an index expression as `base[subscripts]`.

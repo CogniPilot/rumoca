@@ -317,10 +317,46 @@ const PYTHON_KEYWORDS: &[&str] = &[
     "with", "yield",
 ];
 
+/// C/C++ reserved words that cannot be used as identifiers in generated C code.
+const C_KEYWORDS: &[&str] = &[
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+    "volatile", "while", "inline", "restrict",
+];
+
+/// Sanitize a name for use as a target-language identifier.
+///
+/// Replaces all non-alphanumeric/underscore characters with `_`, then
+/// appends `_` if the result is a reserved keyword.  This matches the
+/// `sanitize` Jinja filter so that equation-side references agree with
+/// the variable declarations emitted by the templates.
+pub(crate) fn sanitize_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            result.push(ch);
+        } else {
+            result.push('_');
+        }
+    }
+    escape_reserved_keyword(&result)
+}
+
+/// Escape a name if it collides with a reserved keyword (Python or C).
+/// Appends `_` to the name if it matches.
+pub(crate) fn escape_reserved_keyword(name: &str) -> String {
+    if PYTHON_KEYWORDS.contains(&name) || C_KEYWORDS.contains(&name) {
+        format!("{name}_")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Filter to sanitize variable names for target language identifiers.
 ///
 /// Replaces dots and other non-identifier characters with underscores,
-/// and appends `_` to Python keywords.
+/// and appends `_` to reserved keywords (Python + C).
 fn sanitize_filter(value: Value) -> String {
     let s = value.to_string();
     let mut result = String::with_capacity(s.len());
@@ -331,8 +367,8 @@ fn sanitize_filter(value: Value) -> String {
             result.push('_');
         }
     }
-    // Escape Python keywords by appending underscore
-    if PYTHON_KEYWORDS.contains(&result.as_str()) {
+    // Escape reserved keywords by appending underscore
+    if PYTHON_KEYWORDS.contains(&result.as_str()) || C_KEYWORDS.contains(&result.as_str()) {
         result.push('_');
     }
     result
