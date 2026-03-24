@@ -21,7 +21,7 @@
 -#}
 {%- set _use_float = use_float | default(false) -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
-{% set cfg = {"prefix": "", "power": "powf" if _use_float else "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(" ~ ("float" if _use_float else "double") ~ "[]){", "array_end": "}", "subscript_underscore": true} %}
+{% set cfg = {"prefix": "", "power": "powf" if _use_float else "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(" ~ ("float" if _use_float else "double") ~ "[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum"} %}
 {#- Macro: compute total scalar size of a variable map -#}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
@@ -297,6 +297,15 @@ static inline real_t __rumoca_sum(const real_t* arr, int n) {
 {% endfor %}
 {% endif %}
 {%- endmacro %}
+
+/* =========================================================================
+ * User-Defined Function Forward Declarations
+ * ========================================================================= */
+{% for func_name, func in dae.functions | items %}
+{% if func.outputs | length == 1 %}
+static real_t {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims %}const real_t* {{ p.name | sanitize }}, int {{ p.name | sanitize }}_size{% else %}real_t {{ p.name | sanitize }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %});
+{% endif %}
+{% endfor %}
 
 /* =========================================================================
  * User-Defined Functions
