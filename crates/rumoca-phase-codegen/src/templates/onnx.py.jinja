@@ -19,7 +19,7 @@ except ImportError:
     raise ImportError("onnx package required: pip install onnx")
 
 {# Configuration for render_expr - prefix maps sin→onnx_sin etc. #}
-{% set cfg = {"prefix": "onnx_", "power": "**", "if_style": "function"} %}
+{% set cfg = {"prefix": "onnx_", "power": "**", "if_style": "function", "python_range": true} %}
 
 # =========================================================================
 # GraphBuilder — accumulates ONNX nodes and initializers

@@ -87,7 +87,9 @@ def create_model():
     n_z = 0
     n_z_continuous = 0
     n_z_discrete = 0
-    _z = ca.MX.sym('z', 0)
+    _z_c = ca.MX.sym('z_c', 0)
+    _z_d = ca.MX.sym('z_d', 0)
+    _z = ca.vertcat(_z_c, _z_d)
 
     # =========================================================================
     # Input Variables (0 variables)
@@ -133,9 +135,17 @@ def create_model():
     # =========================================================================
     # DAE as CasADi Function
     # =========================================================================
-    dae_fn = ca.Function('dae',
-        [_x, _xdot, _z, _u, _p, t],
+    # _z is vertcat(_z_c, _z_d) which is not a pure symbol, so we create a
+    # fresh monolithic symbol for the Function interface and substitute.
+    _z_sym = ca.MX.sym('z', n_z)
+    _f_x_for_fn = ca.substitute(
         [f_x],
+        [_z_c, _z_d],
+        [_z_sym[:n_z_continuous], _z_sym[n_z_continuous:]]
+    )[0]
+    dae_fn = ca.Function('dae',
+        [_x, _xdot, _z_sym, _u, _p, t],
+        [_f_x_for_fn],
         ['x', 'xdot', 'z', 'u', 'p', 't'],
         ['f_x'])
 
@@ -164,9 +174,8 @@ def create_model():
         # integration (MLS §8.5). Only continuous algebraics (y, w) are part of
         # the DAE solved by IDAS. Discrete variables (z, m) are updated at
         # event boundaries by the simulation driver.
-        _z_c = _z[:n_z_continuous]  # continuous algebraics only
+        # _z_c and _z_d are already pure MX symbols (declared at module level).
         if n_z_discrete > 0:
-            _z_d = _z[n_z_continuous:]  # discrete (fixed during integration)
             _p_full = ca.vertcat(_p, _u, _z_d)
         else:
             _p_full = ca.vertcat(_p, _u)

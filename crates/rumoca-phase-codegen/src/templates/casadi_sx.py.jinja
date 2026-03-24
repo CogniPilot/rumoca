@@ -29,22 +29,82 @@ def pre(x):
     """
     return x
 
-def Modelica_ComplexMath_abs(c_re, c_im):
+def Clock(*args):
+    """Modelica Clock() constructor stub (MLS §16.3).
+
+    In continuous CasADi simulation, clocked constructs are not meaningful.
+    Returns 0 so that expressions referencing Clock() do not crash.
+    """
+    return 0
+
+def previous(x):
+    """Modelica previous() operator stub (MLS §16.4).
+
+    In continuous simulation, previous(x) = x (no discrete tick tracking).
+    """
+    return x
+
+def firstTick(*args):
+    """Modelica firstTick() operator stub (MLS §16.10).
+
+    Returns False — not at a first tick in continuous simulation.
+    """
+    return False
+
+def interval(*args):
+    """Modelica interval() operator stub (MLS §16.10).
+
+    Returns 0.0 — clock interval is not meaningful in continuous simulation.
+    """
+    return 0.0
+
+def hold(x):
+    """Modelica hold() operator stub (MLS §16.5.1).
+
+    In continuous simulation, pass through the value unchanged.
+    """
+    return x
+
+def subSample(x, *args):
+    """Modelica subSample() operator stub (MLS §16.5.2). Pass through."""
+    return x
+
+def superSample(x, *args):
+    """Modelica superSample() operator stub (MLS §16.5.2). Pass through."""
+    return x
+
+def shiftSample(x, *args):
+    """Modelica shiftSample() operator stub (MLS §16.5.3). Pass through."""
+    return x
+
+def backSample(x, *args):
+    """Modelica backSample() operator stub (MLS §16.5.3). Pass through."""
+    return x
+
+def noClock(x):
+    """Modelica noClock() operator stub (MLS §16.5.4). Pass through."""
+    return x
+
+def Complex(re, im=0):
+    """Complex record constructor — projects to real part for real-valued DAE."""
+    return re
+
+def Modelica_ComplexMath_abs(c_re, c_im=0):
     """ComplexMath.abs: magnitude of complex number (uses real sqrt)."""
     return ca.sqrt(ca.power(c_re, 2) + ca.power(c_im, 2))
 
-def Modelica_ComplexMath_sqrt(c1_re, c1_im):
+def Modelica_ComplexMath_sqrt(c1_re, c1_im=0):
     """ComplexMath.sqrt: square root of complex number."""
     r = Modelica_ComplexMath_abs(c1_re, c1_im)
     phi = ca.atan2(c1_im, c1_re)
     return ca.sqrt(r) * ca.cos(phi / 2.0)
 
-def Modelica_ComplexMath_arg(c_re, c_im):
+def Modelica_ComplexMath_arg(c_re, c_im=0):
     """ComplexMath.arg: argument (phase angle) of complex number."""
     return ca.atan2(c_im, c_re)
 
 {# Configuration for render_expr - CasADi/Python style #}
-{% set cfg = {"prefix": "ca.", "power": "**", "power_fn": "ca.power", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} %}
+{% set cfg = {"prefix": "ca.", "power": "**", "power_fn": "ca.power", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "python_range": true, "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} %}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
 {%- for name, var in vars | items -%}
@@ -123,55 +183,65 @@ def create_model():
     n_z = {{ var_size(dae.y) | trim }} + {{ var_size(dae.w) | trim }} + {{ var_size(dae.z) | trim }} + {{ var_size(dae.m) | trim }}
     n_z_continuous = {{ var_size(dae.y) | trim }} + {{ var_size(dae.w) | trim }}
     n_z_discrete = {{ var_size(dae.z) | trim }} + {{ var_size(dae.m) | trim }}
-    _z = ca.SX.sym('z', n_z)
 
-    # Named slices into _z
-{% set ns_z = namespace(offset=0) %}
+    # Declare continuous and discrete algebraic symbols separately so that
+    # each is a pure SX symbolic (consistent with MX template).
+    _z_c = ca.SX.sym('z_c', n_z_continuous)
+    _z_d = ca.SX.sym('z_d', n_z_discrete)
+    _z = ca.vertcat(_z_c, _z_d)
+
+    # Named slices into _z_c (continuous algebraics: y, w)
+{% set ns_zc = namespace(offset=0) %}
 {% for name, var in dae.y | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}:{{ ns_z.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
-{% set ns_z.offset = ns_z.offset + sz %}
+    {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}:{{ ns_zc.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
+{% set ns_zc.offset = ns_zc.offset + sz %}
 {% else %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}]  # {{ name }}
-{% set ns_z.offset = ns_z.offset + 1 %}
+    {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}]  # {{ name }}
+{% set ns_zc.offset = ns_zc.offset + 1 %}
 {% endif %}
 {% endfor %}
 {% for name, var in dae.w | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}:{{ ns_z.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, output)
-{% set ns_z.offset = ns_z.offset + sz %}
+    {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}:{{ ns_zc.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, output)
+{% set ns_zc.offset = ns_zc.offset + sz %}
 {% else %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}]  # {{ name }} (output)
-{% set ns_z.offset = ns_z.offset + 1 %}
+    {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}]  # {{ name }} (output)
+{% set ns_zc.offset = ns_zc.offset + 1 %}
 {% endif %}
 {% endfor %}
+
+    # Named slices into _z_d (discrete algebraics: z, m)
+{% set ns_zd = namespace(offset=0) %}
 {% for name, var in dae.z | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}:{{ ns_z.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, discrete)
-{% set ns_z.offset = ns_z.offset + sz %}
+    {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}:{{ ns_zd.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, discrete)
+{% set ns_zd.offset = ns_zd.offset + sz %}
 {% else %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}]  # {{ name }} (discrete)
-{% set ns_z.offset = ns_z.offset + 1 %}
+    {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}]  # {{ name }} (discrete)
+{% set ns_zd.offset = ns_zd.offset + 1 %}
 {% endif %}
 {% endfor %}
 {% for name, var in dae.m | items %}
 {% if var.dims %}
 {% set sz = var.dims | product %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}:{{ ns_z.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, discrete-valued)
-{% set ns_z.offset = ns_z.offset + sz %}
+    {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}:{{ ns_zd.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, discrete-valued)
+{% set ns_zd.offset = ns_zd.offset + sz %}
 {% else %}
-    {{ name | sanitize }} = _z[{{ ns_z.offset }}]  # {{ name }} (discrete-valued)
-{% set ns_z.offset = ns_z.offset + 1 %}
+    {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}]  # {{ name }} (discrete-valued)
+{% set ns_zd.offset = ns_zd.offset + 1 %}
 {% endif %}
 {% endfor %}
 {% else %}
     n_z = 0
     n_z_continuous = 0
     n_z_discrete = 0
-    _z = ca.SX.sym('z', 0)
+    _z_c = ca.SX.sym('z_c', 0)
+    _z_d = ca.SX.sym('z_d', 0)
+    _z = ca.vertcat(_z_c, _z_d)
 {% endif %}
 
     # =========================================================================
@@ -243,7 +313,11 @@ def create_model():
     # =========================================================================
     # User-Defined Functions ({{ dae.functions | length }})
     # =========================================================================
+{#- Skip functions with Complex-typed parameters — they reference record field
+    names (c_re, c_im) that don't exist as Python variables. Module-level stubs
+    handle ComplexMath operations instead. Also skip the Complex constructor. -#}
 {% for func_name, func in dae.functions | items %}
+{% if has_complex_params(func) != "yes" and func_name != "Complex" %}
     # Function: {{ func_name }} ({{ "pure" if func.pure else "impure" }})
 {% if func.derivatives | length > 0 %}
     # Derivative annotations (MLS §12.7.1):
@@ -268,6 +342,7 @@ def create_model():
         pass
 {% endif %}
 
+{% endif %}
 {% endfor %}
 
     # =========================================================================
@@ -323,9 +398,8 @@ def create_model():
         # Discrete variables are treated as fixed parameters during continuous
         # integration (MLS §8.5). Only continuous algebraics (y, w) are part of
         # the DAE solved by IDAS.
-        _z_c = _z[:n_z_continuous]  # continuous algebraics only
+        # _z_c and _z_d are already pure SX symbols (declared at module level).
         if n_z_discrete > 0:
-            _z_d = _z[n_z_continuous:]  # discrete (fixed during integration)
             _p_full = ca.vertcat(_p, _u, _z_d)
         else:
             _p_full = ca.vertcat(_p, _u)

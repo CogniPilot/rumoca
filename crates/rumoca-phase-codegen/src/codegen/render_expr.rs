@@ -309,6 +309,44 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
             // In continuous simulation, treat as always-true (MLS §16.3).
             return Ok(cfg.true_val.clone());
         }
+        "Clock" => {
+            // Clock() constructor (MLS §16.3). In continuous simulation
+            // context this is not meaningful; return 0 as a stub.
+            return Ok("0".to_string());
+        }
+        "Previous" => {
+            // previous(x) — clocked partition operator (MLS §16.4).
+            // In continuous simulation, treat like pre(): return the
+            // argument unchanged.
+            let args_val = get_field(builtin, "args")?;
+            if let Ok(inner) = args_val.get_item(&Value::from(0)) {
+                return render_expression(&inner, cfg);
+            }
+            return Ok("0".to_string());
+        }
+        "Hold" => {
+            // hold(x) — clocked-to-continuous (MLS §16.5.1).
+            // Pass through the argument.
+            let args_val = get_field(builtin, "args")?;
+            if let Ok(inner) = args_val.get_item(&Value::from(0)) {
+                return render_expression(&inner, cfg);
+            }
+            return Ok("0".to_string());
+        }
+        "FirstTick" => {
+            // firstTick(u) — true at the first clock tick (MLS §16.10).
+            // Stub: return false for continuous simulation.
+            return Ok(cfg.false_val.clone());
+        }
+        "NoClock" | "SubSample" | "SuperSample" | "ShiftSample" | "BackSample" => {
+            // Clocked partition operators (MLS §16). In continuous
+            // simulation, pass through the first argument.
+            let args_val = get_field(builtin, "args")?;
+            if let Ok(inner) = args_val.get_item(&Value::from(0)) {
+                return render_expression(&inner, cfg);
+            }
+            return Ok("0".to_string());
+        }
         _ => {}
     }
 
@@ -399,7 +437,15 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Ceil" => format!("{}ceil({})", cfg.prefix, args),
         "Min" => format!("{}fmin({})", cfg.prefix, args),
         "Max" => format!("{}fmax({})", cfg.prefix, args),
-        "Sum" => format!("{}sum1({})", cfg.prefix, args),
+        "Sum" => {
+            if cfg.sum_fn == "sum1" {
+                // Default: use prefix (e.g., ca.sum1 for CasADi, sum1 for others)
+                format!("{}sum1({})", cfg.prefix, args)
+            } else {
+                // Template-configured: use sum_fn as-is (e.g., __rumoca_sum, _sum)
+                format!("{}({})", cfg.sum_fn, args)
+            }
+        }
         "Transpose" => format!("({}).T", args),
         "Zeros" => format!("{}zeros({})", cfg.prefix, args),
         "Ones" => format!("{}ones({})", cfg.prefix, args),
@@ -656,6 +702,8 @@ fn render_tuple(tuple: &Value, cfg: &ExprConfig) -> RenderResult {
 }
 
 /// Render a range expression as `start:step:end` or `start:end`.
+/// For Python targets (`python_range = true`), renders as `range(start, end + 1)`
+/// or `range(start, end + 1, step)` since Modelica ranges are 1-based inclusive.
 fn render_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
     let start = get_field(range, "start")
         .and_then(|v| render_expression(&v, cfg))
@@ -663,11 +711,29 @@ fn render_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
     let end = get_field(range, "end")
         .and_then(|v| render_expression(&v, cfg))
         .map_err(|_| render_err("Range missing 'end' field"))?;
-    if let Ok(step) = get_field(range, "step") {
+    if cfg.python_range {
+        let end_plus1 = python_range_end(&end);
+        if let Ok(step) = get_field(range, "step") {
+            let step_str = render_expression(&step, cfg)?;
+            Ok(format!("range({start}, {end_plus1}, {step_str})"))
+        } else {
+            Ok(format!("range({start}, {end_plus1})"))
+        }
+    } else if let Ok(step) = get_field(range, "step") {
         let step_str = render_expression(&step, cfg)?;
         Ok(format!("{start}:{step_str}:{end}"))
     } else {
         Ok(format!("{start}:{end}"))
+    }
+}
+
+/// Compute `end + 1` for Python range (Modelica ranges are inclusive).
+/// If end is a simple integer literal, fold it at render time.
+fn python_range_end(end: &str) -> String {
+    if let Ok(n) = end.parse::<i64>() {
+        format!("{}", n + 1)
+    } else {
+        format!("{end} + 1")
     }
 }
 
@@ -706,7 +772,11 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
         String::new()
     };
 
-    Ok(format!("{{{body}{for_clause}{filter_clause}}}"))
+    if cfg.python_range {
+        Ok(format!("[{body}{for_clause}{filter_clause}]"))
+    } else {
+        Ok(format!("{{{body}{for_clause}{filter_clause}}}"))
+    }
 }
 
 /// Render an index expression as `base[subscripts]`.

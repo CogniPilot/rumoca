@@ -519,6 +519,13 @@ pub(crate) struct ExprConfig {
     /// Override function name for `IfStyle::Function` (default: `"if_else"`).
     /// E.g., set to `"IfElse.ifelse"` for Julia ModelingToolkit.
     pub(crate) if_else_fn: Option<String>,
+    /// When true, render Modelica range `start:end` as Python `range(start, end + 1)`
+    /// and array comprehensions with `[...]` instead of `{...}`.
+    pub(crate) python_range: bool,
+    /// Override function name for `sum()` calls on non-literal arrays.
+    /// Default is `"sum1"` (CasADi convention, rendered as `prefix + sum1`).
+    /// C backends set this to their helper name (e.g., `"__rumoca_sum"`).
+    pub(crate) sum_fn: String,
 }
 
 #[derive(Clone, Copy)]
@@ -551,6 +558,8 @@ impl Default for ExprConfig {
             power_fn: None,
             subscript_underscore: false,
             if_else_fn: None,
+            python_range: false,
+            sum_fn: "sum1".to_string(),
         }
     }
 }
@@ -638,6 +647,17 @@ impl ExprConfig {
             && !s.is_empty()
         {
             cfg.if_else_fn = Some(s);
+        }
+        if let Ok(val) = v.get_attr("python_range")
+            && !val.is_undefined()
+            && !val.is_none()
+        {
+            cfg.python_range = val.is_true();
+        }
+        if let Some(s) = get_str_attr(v, "sum_fn")
+            && !s.is_empty()
+        {
+            cfg.sum_fn = s;
         }
 
         cfg

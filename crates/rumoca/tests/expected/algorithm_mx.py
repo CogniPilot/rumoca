@@ -83,13 +83,19 @@ def create_model():
     # Continuous Algebraic Variables (1 algebraics + 0 outputs)
     # =========================================================================
     n_z = 1
-    _z = ca.MX.sym('z', n_z)
     n_z_continuous = 1
     n_z_discrete = 0
 
-    # Named slices into _z
-    # Continuous algebraics (y, w) come first, then discrete (z, m)
-    y = _z[0]  # y
+    # Declare continuous and discrete algebraic symbols separately so that
+    # each is a pure MX symbolic (required by ca.substitute / ca.Function).
+    _z_c = ca.MX.sym('z_c', n_z_continuous)
+    _z_d = ca.MX.sym('z_d', n_z_discrete)
+    _z = ca.vertcat(_z_c, _z_d)
+
+    # Named slices into _z_c (continuous algebraics: y, w)
+    y = _z_c[0]  # y
+
+    # Named slices into _z_d (discrete algebraics: z, m)
 
     # =========================================================================
     # Input Variables (0 variables)
@@ -134,9 +140,17 @@ def create_model():
     # =========================================================================
     # DAE as CasADi Function
     # =========================================================================
-    dae_fn = ca.Function('dae',
-        [_x, _xdot, _z, _u, _p, t],
+    # _z is vertcat(_z_c, _z_d) which is not a pure symbol, so we create a
+    # fresh monolithic symbol for the Function interface and substitute.
+    _z_sym = ca.MX.sym('z', n_z)
+    _f_x_for_fn = ca.substitute(
         [f_x],
+        [_z_c, _z_d],
+        [_z_sym[:n_z_continuous], _z_sym[n_z_continuous:]]
+    )[0]
+    dae_fn = ca.Function('dae',
+        [_x, _xdot, _z_sym, _u, _p, t],
+        [_f_x_for_fn],
         ['x', 'xdot', 'z', 'u', 'p', 't'],
         ['f_x'])
 
@@ -165,9 +179,8 @@ def create_model():
         # integration (MLS §8.5). Only continuous algebraics (y, w) are part of
         # the DAE solved by IDAS. Discrete variables (z, m) are updated at
         # event boundaries by the simulation driver.
-        _z_c = _z[:n_z_continuous]  # continuous algebraics only
+        # _z_c and _z_d are already pure MX symbols (declared at module level).
         if n_z_discrete > 0:
-            _z_d = _z[n_z_continuous:]  # discrete (fixed during integration)
             _p_full = ca.vertcat(_p, _u, _z_d)
         else:
             _p_full = ca.vertcat(_p, _u)

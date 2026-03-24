@@ -174,15 +174,55 @@ fn render_assignment(assign: &Value, cfg: &ExprConfig, indent: &str) -> RenderRe
         )));
     }
 
-    let value = get_field(assign, "value")
-        .map_err(|_| render_err(format!("Assignment missing 'value' field: {assign}")))
-        .and_then(|v| render_expression(&v, cfg))?;
+    let value_node = get_field(assign, "value")
+        .map_err(|_| render_err(format!("Assignment missing 'value' field: {assign}")))?;
+
+    // For C backends (IfStyle::Ternary), array assignment `x = {a, b, c}` is illegal.
+    // Instead, emit element-wise assignments: `x[0] = a; x[1] = b; x[2] = c;`
+    if matches!(cfg.if_style, IfStyle::Ternary) {
+        if let Some(elem_strs) = try_extract_array_elements(&value_node, cfg)? {
+            let mut lines = Vec::new();
+            for (i, elem) in elem_strs.iter().enumerate() {
+                lines.push(format!("{indent}{comp}[{i}] = {elem};"));
+            }
+            return Ok(lines.join("\n"));
+        }
+    }
+
+    let value = render_expression(&value_node, cfg)?;
     let semi = if matches!(cfg.if_style, IfStyle::Ternary | IfStyle::Modelica) {
         ";"
     } else {
         ""
     };
     Ok(format!("{indent}{comp} = {value}{semi}"))
+}
+
+/// Try to extract array elements from a value node.
+/// Returns `Some(vec_of_rendered_elements)` if the value is an Array expression,
+/// `None` otherwise. Works for both DAE IR and AST Array nodes (both serialize as
+/// `{"Array": {"elements": [...]}}`).
+fn try_extract_array_elements(
+    value: &Value,
+    cfg: &ExprConfig,
+) -> Result<Option<Vec<String>>, minijinja::Error> {
+    if let Ok(array) = get_field(value, "Array") {
+        if let Ok(elements) = get_field(&array, "elements") {
+            if let Some(len) = elements.len() {
+                let mut strs = Vec::with_capacity(len);
+                for i in 0..len {
+                    if let Ok(elem) = elements.get_item(&Value::from(i)) {
+                        // Try DAE IR renderer first, fall back to AST renderer
+                        let rendered = render_expression(&elem, cfg)
+                            .or_else(|_| render_ast_expression(&elem, cfg))?;
+                        strs.push(rendered);
+                    }
+                }
+                return Ok(Some(strs));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Render a for loop statement.
@@ -202,7 +242,13 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
             result.push_str(&format!("{indent}for (int {loop_var} = 0; {loop_var} < /* {range_str} */; {loop_var}++) {{\n"));
         }
         IfStyle::Function => {
-            result.push_str(&format!("{indent}for {loop_var} in range({range_str}):\n"));
+            // When python_range is true, render_ast_range already produces `range(...)`,
+            // so we emit `for var in <range_str>:` directly to avoid double-wrapping.
+            if cfg.python_range {
+                result.push_str(&format!("{indent}for {loop_var} in {range_str}:\n"));
+            } else {
+                result.push_str(&format!("{indent}for {loop_var} in range({range_str}):\n"));
+            }
         }
         IfStyle::Modelica => {
             result.push_str(&format!("{indent}for {loop_var} in {range_str} loop\n"));
@@ -833,6 +879,17 @@ fn render_ast_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
         .unwrap_or_else(|_| "1".to_string());
     let step = range.get_attr("step").ok();
 
+    if cfg.python_range {
+        let end_plus1 = python_range_end(&end);
+        if let Some(ref step_val) = step
+            && !step_val.is_none()
+        {
+            let step_str = render_ast_expression(step_val, cfg)?;
+            return Ok(format!("range({}, {}, {})", start, end_plus1, step_str));
+        }
+        return Ok(format!("range({}, {})", start, end_plus1));
+    }
+
     if let Some(ref step_val) = step
         && !step_val.is_none()
     {
@@ -840,6 +897,16 @@ fn render_ast_range(range: &Value, cfg: &ExprConfig) -> RenderResult {
         return Ok(format!("{}:{}:{}", start, step_str, end));
     }
     Ok(format!("{}:{}", start, end))
+}
+
+/// Compute `end + 1` for Python range (Modelica ranges are inclusive).
+/// If end is a simple integer literal, fold it at render time.
+fn python_range_end(end: &str) -> String {
+    if let Ok(n) = end.parse::<i64>() {
+        format!("{}", n + 1)
+    } else {
+        format!("{end} + 1")
+    }
 }
 
 fn render_ast_named_arg(named: &Value, cfg: &ExprConfig) -> RenderResult {
