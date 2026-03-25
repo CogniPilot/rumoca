@@ -625,3 +625,63 @@ fn test_demote_alias_state_without_derivative_row_when_aliases_algebraic() {
         "after demoting x, solver reorder should not require der(x)"
     );
 }
+
+/// Regression test: after scalarization, array state `x[2]` produces equations
+/// with `der(VarRef { name: "x", subscripts: [Index(i)] })` and state names
+/// like `VarName("x[1]")`. The mass-matrix builder must recognise the indexed
+/// form so it can extract the derivative coefficient.
+#[test]
+fn test_compute_mass_matrix_handles_indexed_der_after_scalarization() {
+    // Simulate post-scalarization state: two scalar states x[1] and x[2]
+    let mut dae = Dae::new();
+    dae.states
+        .insert(VarName::new("x[1]"), Variable::new(VarName::new("x[1]")));
+    dae.states
+        .insert(VarName::new("x[2]"), Variable::new(VarName::new("x[2]")));
+
+    // Equation 0: 0 = der(x[1]) - 1.0
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![Expression::VarRef {
+                    name: VarName::new("x"),
+                    subscripts: vec![dae::Subscript::Index(1)],
+                }],
+            },
+            real(1.0),
+        ),
+        span: Span::DUMMY,
+        origin: "ode_x1".to_string(),
+        scalar_count: 1,
+    });
+
+    // Equation 1: 0 = der(x[2]) - 2.0
+    dae.f_x.push(dae::Equation {
+        lhs: None,
+        rhs: sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args: vec![Expression::VarRef {
+                    name: VarName::new("x"),
+                    subscripts: vec![dae::Subscript::Index(2)],
+                }],
+            },
+            real(2.0),
+        ),
+        span: Span::DUMMY,
+        origin: "ode_x2".to_string(),
+        scalar_count: 1,
+    });
+
+    let budget = TimeoutBudget::new(None);
+    let mass = crate::compute_mass_matrix(&dae, 2, &[], &budget)
+        .expect("mass matrix should succeed for indexed der() forms");
+    assert_eq!(mass.len(), 2);
+    // Identity mass matrix: each row has coefficient 1.0 on the diagonal
+    assert!((mass[0][0] - 1.0).abs() < 1e-12);
+    assert!((mass[0][1]).abs() < 1e-12);
+    assert!((mass[1][0]).abs() < 1e-12);
+    assert!((mass[1][1] - 1.0).abs() < 1e-12);
+}

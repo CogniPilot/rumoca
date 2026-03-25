@@ -9,7 +9,7 @@ use rumoca_ir_core::{OpBinary, OpUnary};
 use rumoca_ir_dae as dae;
 
 use crate::runtime::timeout::{TimeoutBudget, TimeoutExceeded};
-use crate::simulation::dae_prepare::expr_contains_der_of;
+use crate::simulation::dae_prepare::{expr_contains_der_of, expr_refers_to_var};
 use crate::simulation::diagnostics::sim_trace_enabled;
 use crate::simulation::pipeline::MassMatrix;
 
@@ -109,9 +109,9 @@ fn coeff_expr_for_derivative(
             if args.len() != 1 {
                 return Err("der() must have exactly one argument".to_string());
             }
-            if let dae::Expression::VarRef { name, subscripts } = &args[0]
-                && name == state_name
-                && subscripts.is_empty()
+            if args
+                .first()
+                .is_some_and(|a| expr_refers_to_var(a, state_name))
             {
                 return Ok(Some(real_expr(1.0)));
             }
@@ -338,6 +338,26 @@ fn fill_mass_matrix_row(
     Ok(())
 }
 
+/// Expand state entries into scalar-level names.
+///
+/// Array states (e.g. `x` with dims=[2]) are expanded to `x[1]`, `x[2]` so
+/// that the mass-matrix builder can match individual scalarized derivative
+/// terms such as `der(x[1])`.
+fn expand_state_scalar_names(dae_model: &dae::Dae) -> Vec<dae::VarName> {
+    let mut names = Vec::new();
+    for (name, var) in &dae_model.states {
+        let sz = var.size();
+        if sz <= 1 {
+            names.push(name.clone());
+        } else {
+            for i in 1..=sz {
+                names.push(dae::VarName::new(format!("{}[{}]", name.as_str(), i)));
+            }
+        }
+    }
+    names
+}
+
 pub fn compute_mass_matrix(
     dae_model: &dae::Dae,
     n_x: usize,
@@ -352,7 +372,7 @@ pub fn compute_mass_matrix(
             dae_model.f_x.len()
         );
     }
-    let state_names: Vec<dae::VarName> = dae_model.states.keys().cloned().collect();
+    let state_names = expand_state_scalar_names(dae_model);
     let mut mass_matrix = vec![vec![0.0; n_x]; n_x];
     let env_zero = build_mass_matrix_env(dae_model, &state_names, param_values, budget, trace)?;
 
