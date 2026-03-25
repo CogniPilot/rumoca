@@ -815,10 +815,10 @@ fn expr_has_phantom_refs(
         dae::Expression::Unary { rhs, .. } => {
             expr_has_phantom_refs(rhs, known_names, phantom_map, array_dims)
         }
-        dae::Expression::BuiltinCall { args, .. }
-        | dae::Expression::FunctionCall { args, .. } => args
-            .iter()
-            .any(|a| expr_has_phantom_refs(a, known_names, phantom_map, array_dims)),
+        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
+            args.iter()
+                .any(|a| expr_has_phantom_refs(a, known_names, phantom_map, array_dims))
+        }
         dae::Expression::If {
             branches,
             else_branch,
@@ -828,11 +828,9 @@ fn expr_has_phantom_refs(
                     || expr_has_phantom_refs(v, known_names, phantom_map, array_dims)
             }) || expr_has_phantom_refs(else_branch, known_names, phantom_map, array_dims)
         }
-        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => {
-            elements
-                .iter()
-                .any(|e| expr_has_phantom_refs(e, known_names, phantom_map, array_dims))
-        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => elements
+            .iter()
+            .any(|e| expr_has_phantom_refs(e, known_names, phantom_map, array_dims)),
         _ => false,
     }
 }
@@ -1130,7 +1128,12 @@ mod tests {
         scalarize_phantom_vector_equations(&mut dae);
 
         // Should now have 3 scalar equations instead of 1 vector equation
-        assert_eq!(dae.f_x.len(), 3, "expected 3 scalar equations, got {}", dae.f_x.len());
+        assert_eq!(
+            dae.f_x.len(),
+            3,
+            "expected 3 scalar equations, got {}",
+            dae.f_x.len()
+        );
 
         for (k, eq) in dae.f_x.iter().enumerate() {
             assert_eq!(eq.scalar_count, 1, "equation {k} should be scalar");
@@ -1196,13 +1199,11 @@ mod tests {
         // Both variables are declared arrays — no phantom refs
         let mut var_a = dae::Variable::new(dae::VarName::new("a"));
         var_a.dims = vec![3];
-        dae.algebraics
-            .insert(dae::VarName::new("a"), var_a);
+        dae.algebraics.insert(dae::VarName::new("a"), var_a);
 
         let mut var_b = dae::Variable::new(dae::VarName::new("b"));
         var_b.dims = vec![3];
-        dae.algebraics
-            .insert(dae::VarName::new("b"), var_b);
+        dae.algebraics.insert(dae::VarName::new("b"), var_b);
 
         let eq = dae::Equation::residual_array(
             sub(var_ref("a"), var_ref("b")),

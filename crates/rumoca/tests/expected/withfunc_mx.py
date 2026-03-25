@@ -33,17 +33,77 @@ def pre(x):
     """
     return x
 
-def Modelica_ComplexMath_abs(c_re, c_im):
+def Clock(*args):
+    """Modelica Clock() constructor stub (MLS §16.3).
+
+    In continuous CasADi simulation, clocked constructs are not meaningful.
+    Returns 0 so that expressions referencing Clock() do not crash.
+    """
+    return 0
+
+def previous(x):
+    """Modelica previous() operator stub (MLS §16.4).
+
+    In continuous simulation, previous(x) = x (no discrete tick tracking).
+    """
+    return x
+
+def firstTick(*args):
+    """Modelica firstTick() operator stub (MLS §16.10).
+
+    Returns False — not at a first tick in continuous simulation.
+    """
+    return False
+
+def interval(*args):
+    """Modelica interval() operator stub (MLS §16.10).
+
+    Returns 0.0 — clock interval is not meaningful in continuous simulation.
+    """
+    return 0.0
+
+def hold(x):
+    """Modelica hold() operator stub (MLS §16.5.1).
+
+    In continuous simulation, pass through the value unchanged.
+    """
+    return x
+
+def subSample(x, *args):
+    """Modelica subSample() operator stub (MLS §16.5.2). Pass through."""
+    return x
+
+def superSample(x, *args):
+    """Modelica superSample() operator stub (MLS §16.5.2). Pass through."""
+    return x
+
+def shiftSample(x, *args):
+    """Modelica shiftSample() operator stub (MLS §16.5.3). Pass through."""
+    return x
+
+def backSample(x, *args):
+    """Modelica backSample() operator stub (MLS §16.5.3). Pass through."""
+    return x
+
+def noClock(x):
+    """Modelica noClock() operator stub (MLS §16.5.4). Pass through."""
+    return x
+
+def Complex(re, im=0):
+    """Complex record constructor — projects to real part for real-valued DAE."""
+    return re
+
+def Modelica_ComplexMath_abs(c_re, c_im=0):
     """ComplexMath.abs: magnitude of complex number (uses real sqrt)."""
     return ca.sqrt(ca.power(c_re, 2) + ca.power(c_im, 2))
 
-def Modelica_ComplexMath_sqrt(c1_re, c1_im):
+def Modelica_ComplexMath_sqrt(c1_re, c1_im=0):
     """ComplexMath.sqrt: square root of complex number."""
     r = Modelica_ComplexMath_abs(c1_re, c1_im)
     phi = ca.atan2(c1_im, c1_re)
     return ca.sqrt(r) * ca.cos(phi / 2.0)
 
-def Modelica_ComplexMath_arg(c_re, c_im):
+def Modelica_ComplexMath_arg(c_re, c_im=0):
     """ComplexMath.arg: argument (phase angle) of complex number."""
     return ca.atan2(c_im, c_re)
 
@@ -162,20 +222,23 @@ def create_model():
     # =========================================================================
     # Integrator Builder
     # =========================================================================
-    def build_integrator(dt, opts=None):
+    def build_integrator(dt, opts=None, method='idas'):
         """Build a CasADi integrator from the implicit DAE residual.
 
         For pure ODEs (no algebraics, exactly n_x equations), converts to
         explicit form via mass-matrix inversion and uses CVODES.
 
         For DAE systems or over-determined ODEs, uses an augmented-z
-        approach: xdot symbols are included in the algebraic vector so IDAS
-        receives the original residual directly, preserving structural
-        sparsity.
+        approach: xdot symbols are included in the algebraic vector so the
+        chosen DAE solver receives the original residual directly.
 
         Args:
             dt: Time grid (scalar step or array of output times).
             opts: Optional dict of integrator options passed to ca.integrator().
+            method: DAE solver — 'idas' (default) or 'collocation'.
+                IDAS is faster but requires consistent initial conditions.
+                Collocation handles structurally singular DAEs where
+                IDACalcIC fails.
 
         Returns:
             A CasADi integrator Function.
@@ -216,7 +279,7 @@ def create_model():
             'alg': _f_x_sub,
             'p': _p_full,
         }
-        return ca.integrator('integrator', 'idas', _dae, 0, dt, opts or {})
+        return ca.integrator('integrator', method, _dae, 0, dt, opts or {})
 
     # =========================================================================
     # Default Values
@@ -269,7 +332,7 @@ def create_model():
         'f_x': f_x,
         'dae_fn': dae_fn,
         'build_integrator': build_integrator,
-        'functions': {'sq': sq },
+        'functions': {'sq': sq, },
         'x0': x0,
         'p0': p0,
         'z0': z0,

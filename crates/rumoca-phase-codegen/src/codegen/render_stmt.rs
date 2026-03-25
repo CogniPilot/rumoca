@@ -215,8 +215,8 @@ fn try_extract_array_elements(
         for i in 0..len {
             if let Ok(elem) = elements.get_item(&Value::from(i)) {
                 // Try DAE IR renderer first, fall back to AST renderer
-                let rendered = render_expression(&elem, cfg)
-                    .or_else(|_| render_ast_expression(&elem, cfg))?;
+                let rendered =
+                    render_expression(&elem, cfg).or_else(|_| render_ast_expression(&elem, cfg))?;
                 strs.push(rendered);
             }
         }
@@ -274,9 +274,7 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
                     ));
                 }
                 ForRange::Raw(raw) => {
-                    result.push_str(&format!(
-                        "{indent}for {loop_var} in range({raw}):\n"
-                    ));
+                    result.push_str(&format!("{indent}for {loop_var} in range({raw}):\n"));
                 }
             }
         }
@@ -363,7 +361,11 @@ fn extract_for_loop_index(
             // Fall back to DAE string form (plain String value)
             let s = i.to_string();
             let trimmed = s.trim_matches('"').to_string();
-            if trimmed.is_empty() { "i".to_string() } else { trimmed }
+            if trimmed.is_empty() {
+                "i".to_string()
+            } else {
+                trimmed
+            }
         })
         .unwrap_or_else(|| "i".to_string());
 
@@ -889,7 +891,12 @@ fn render_ast_binary(binary: &Value, cfg: &ExprConfig) -> RenderResult {
         if let Some(ref power_fn) = cfg.power_fn {
             return Ok(format!("{power_fn}({lhs}, {rhs})"));
         }
-        if cfg.power.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        if cfg
+            .power
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        {
             return Ok(format!("{}({lhs}, {rhs})", cfg.power));
         }
     }

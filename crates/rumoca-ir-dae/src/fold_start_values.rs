@@ -404,7 +404,7 @@ pub fn sort_parameters_by_start_deps(dae: &mut Dae) {
 /// the equation references. Then topologically sorts so that variables are
 /// evaluated after their dependencies.
 pub fn sort_algebraics_by_equation_deps(dae: &mut Dae) {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::HashSet;
 
     // Collect all algebraic + output variable names
     let alg_names: HashSet<String> = dae

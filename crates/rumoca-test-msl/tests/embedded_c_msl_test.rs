@@ -131,8 +131,7 @@ fn target_models() -> Vec<String> {
         .join("tests/msl_tests/msl_simulation_targets_180.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read target list {}: {e}", path.display()));
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).expect("invalid JSON in target list");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("invalid JSON in target list");
     value
         .as_array()
         .expect("target list must be a JSON array")

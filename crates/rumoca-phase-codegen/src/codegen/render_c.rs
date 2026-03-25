@@ -297,11 +297,7 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
 }
 
 /// Try subtraction form: 0 = var - expr, 0 = expr - var, 0 = -(A - B)
-fn find_algebraic_rhs_subtraction(
-    rhs: &Value,
-    var_name: &str,
-    cfg: &ExprConfig,
-) -> Option<String> {
+fn find_algebraic_rhs_subtraction(rhs: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     // Try direct Binary{Sub} first, then try unwrapping Unary{Minus}.
     let (binary, swapped) = if let Ok(b) = get_field(rhs, "Binary") {
         (b, false)
@@ -408,11 +404,7 @@ fn contains_var_ref(expr: &Value, var_name: &str) -> bool {
 /// Try to extract algebraic RHS from an additive equation (connection equation form).
 /// Handles `0 = a + b + c` where exactly one term is the target variable.
 /// Returns `var = -(other_terms)`.
-fn find_algebraic_rhs_additive(
-    rhs: &Value,
-    var_name: &str,
-    cfg: &ExprConfig,
-) -> Option<String> {
+fn find_algebraic_rhs_additive(rhs: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     // Flatten the Add/Sub tree into signed terms
     let mut terms: Vec<(bool, Value)> = Vec::new();
     flatten_value_add_terms(rhs, true, &mut terms);

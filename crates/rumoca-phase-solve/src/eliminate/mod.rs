@@ -1096,12 +1096,10 @@ fn flatten_additive_terms(expr: &Expression) -> Vec<(bool, &Expression)> {
         Expression::Unary {
             op: OpUnary::Minus(_),
             rhs: inner,
-        } => {
-            flatten_additive_terms(inner)
-                .into_iter()
-                .map(|(sign, term)| (!sign, term))
-                .collect()
-        }
+        } => flatten_additive_terms(inner)
+            .into_iter()
+            .map(|(sign, term)| (!sign, term))
+            .collect(),
         _ => vec![(true, expr)],
     }
 }
