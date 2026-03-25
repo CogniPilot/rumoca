@@ -623,6 +623,26 @@ impl SessionSnapshot {
         })
     }
 
+    pub fn class_type_resolution_candidates_in_class_query(
+        &self,
+        class_name: &str,
+        raw_name: &str,
+    ) -> Vec<String> {
+        self.with_session(|session| {
+            session.class_type_resolution_candidates_in_class_query(class_name, raw_name)
+        })
+    }
+
+    pub fn class_component_member_info_query(
+        &self,
+        class_name: &str,
+        component_name: &str,
+    ) -> Option<(String, String)> {
+        self.with_session(|session| {
+            session.class_component_member_info_query(class_name, component_name)
+        })
+    }
+
     pub fn class_local_completion_items_query(
         &self,
         uri: &str,

@@ -43,7 +43,7 @@ impl Session {
         let dirty_class_prefixes = source_set_record.dirty_class_prefixes.clone();
         let detached_summaries = detached_uris
             .iter()
-            .filter_map(|uri| self.file_summary_query(uri).cloned())
+            .filter_map(|uri| self.interface_file_summary(uri))
             .collect::<Vec<_>>();
 
         let def_map = if let Some(previous) = self
@@ -108,10 +108,10 @@ impl Session {
 
         let mut def_map = PackageDefMap::default();
         for uri in orphan_uris {
-            let Some(summary) = self.file_summary_query(uri) else {
+            let Some(summary) = self.interface_file_summary(uri) else {
                 continue;
             };
-            def_map.extend_from_summary(summary);
+            def_map.extend_from_summary(&summary);
         }
         record_orphan_package_membership_query_miss();
         self.query_state.ast.package_def_map.orphan_cache = Some(OrphanPackageDefMapQueryCache {

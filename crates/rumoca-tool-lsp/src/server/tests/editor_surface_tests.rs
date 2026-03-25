@@ -1432,6 +1432,66 @@ fn code_lens_resolve_skips_when_request_becomes_stale() {
 }
 
 #[test]
+fn code_lens_resolve_failure_warms_save_diagnostics_for_problems() {
+    let _guard = session_stats_test_guard();
+    run_async_test(async {
+        let temp = new_temp_dir("code-lens-save-diagnostics-on-failure");
+        let active_path = temp.join("active.mo");
+        let active_uri = Url::from_file_path(&active_path).expect("file uri");
+        let active_key = session_document_uri_key(&active_uri);
+        let active_source = "operator record SE2\n  Real x;\n  Real y;\n  Real theta;\nend SE2;\n\nmodel Test2\n  SE2 pose;\nequation\n  der(pose.x) = 1;\n  der(pose.y) = 0;\n  der(pose.z) = 2;\nend Test2;\n";
+
+        let service = new_test_service();
+        let server = service.inner();
+        {
+            let mut session = server.session.write().await;
+            session.update_document(&active_key, active_source);
+        }
+        assert!(
+            !server.session.read().await.has_semantic_diagnostics_cached("Test2"),
+            "failure test should start with a cold save-diagnostics cache"
+        );
+
+        let lenses = server
+            .code_lens(CodeLensParams {
+                text_document: TextDocumentIdentifier { uri: active_uri },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            })
+            .await
+            .expect("code lens request should succeed")
+            .expect("code lens should return the model lens");
+        let resolved = server
+            .code_lens_resolve(
+                lenses
+                    .into_iter()
+                    .next()
+                    .expect("expected one unresolved code lens"),
+            )
+            .await
+            .expect("code lens resolve should succeed");
+        let title = resolved
+            .command
+            .as_ref()
+            .map(|command| command.title.clone())
+            .expect("resolved code lens should supply a title");
+        assert!(
+            title.starts_with("Compile failed"),
+            "expected strict compile failure title, got: {title}"
+        );
+        assert!(
+            server.session.read().await.has_semantic_diagnostics_cached("Test2"),
+            "code lens failure should warm save diagnostics so Problems can publish semantic errors"
+        );
+        assert!(
+            !server.session.read().await.has_standard_resolved_cached(),
+            "warming save diagnostics from code lens failure should stay off the standard resolved cache"
+        );
+    });
+}
+
+
+#[test]
 fn code_lens_defers_when_required_source_roots_are_unloaded() {
     run_async_test(async {
         let temp = new_temp_dir("code-lens-source-root-defer");

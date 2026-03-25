@@ -1534,6 +1534,10 @@ impl Document {
         self.syntax.best_effort()
     }
 
+    pub(crate) fn summary_definition(&self) -> &ast::StoredDefinition {
+        self.parsed().unwrap_or_else(|| self.best_effort())
+    }
+
     pub fn parse_errors(&self) -> &[crate::parse::ParseError] {
         self.syntax.parse_errors()
     }

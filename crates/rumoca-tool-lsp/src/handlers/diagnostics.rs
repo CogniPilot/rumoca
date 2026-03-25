@@ -1,7 +1,6 @@
 //! Diagnostics handler for Modelica files.
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
-use rumoca_session::Session;
 use rumoca_session::compile::SemanticDiagnosticsMode;
 #[cfg(test)]
 use rumoca_session::compile::SourceRootKind;
@@ -11,6 +10,7 @@ use rumoca_session::compile::core::{
 };
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::{ParseError, parse_source_to_ast_with_errors};
+use rumoca_session::Session;
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::HashSet;
@@ -414,9 +414,9 @@ fn strict_span_to_range(
     source: &str,
     label: &rumoca_core::Label,
 ) -> Option<Range> {
-    let start = label.span.start.0;
-    let end = label.span.end.0;
-    if end <= start || end > source.len() {
+    label_range(source, label).or_else(|| {
+        let start = label.span.start.0;
+        let end = label.span.end.0;
         eprintln!(
             "[rumoca-lsp] dropping invalid label span: code={:?} message={} start={} end={} source_len={}",
             diag.code,
@@ -425,6 +425,14 @@ fn strict_span_to_range(
             end,
             source.len()
         );
+        None
+    })
+}
+
+fn label_range(source: &str, label: &rumoca_core::Label) -> Option<Range> {
+    let start = label.span.start.0;
+    let end = label.span.end.0;
+    if end <= start || end > source.len() {
         return None;
     }
     Some(span_to_range(source, start, end))
@@ -1932,6 +1940,33 @@ end M;
             }),
             "expected modifier type mismatch diagnostic, got: {:?}",
             diagnostics
+        );
+    }
+
+    #[test]
+    fn unknown_operator_record_member_is_reported_via_lsp_compile_diagnostics() {
+        let source = "operator record SE2\n  Real x;\n  Real y;\n  Real theta;\nend SE2;\n\nmodel Test2\n  SE2 pose;\nequation\n  der(pose.x) = 1;\n  der(pose.y) = 0;\n  der(pose.z) = 2;\nend Test2;\n";
+        let mut session = Session::default();
+        let diagnostics = compute_diagnostics(source, "input.mo", Some(&mut session));
+        let unknown_member = diagnostics
+            .iter()
+            .find(|diag| {
+                diag.code == Some(NumberOrString::String("ET001".to_string()))
+                    && diag.message.contains("unknown member `z`")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected ET001 unknown-member diagnostic, got: {:?}",
+                    diagnostics
+                )
+            });
+        assert_eq!(unknown_member.range.start.line, 11);
+        assert_eq!(unknown_member.range.start.character, 11);
+        assert_eq!(unknown_member.range.end.line, 11);
+        assert_eq!(unknown_member.range.end.character, 12);
+        assert_eq!(
+            unknown_member.data,
+            Some(json!({ "precise_range": true }))
         );
     }
 }

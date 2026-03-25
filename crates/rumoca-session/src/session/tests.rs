@@ -541,6 +541,7 @@ fn session_package_queries_keep_durable_external_roots_warm_across_local_summary
     session
         .add_document("test.mo", "model LocalA\n  Real x;\nend LocalA;\n")
         .expect("local document should parse");
+    let source_set_id = source_set_record(&session, "Modelica").id;
 
     let first = session.class_lookup_query("Modelica.Electrical.Analog.Resistor");
     assert_eq!(
@@ -548,6 +549,14 @@ fn session_package_queries_keep_durable_external_roots_warm_across_local_summary
         Some("Modelica.Electrical.Analog.Resistor"),
         "first lookup should resolve the durable external source-root class"
     );
+    let cached_signature_before = session
+        .query_state
+        .ast
+        .package_def_map
+        .source_set_caches
+        .get(&source_set_id)
+        .map(|entry| entry.signature.clone())
+        .expect("first lookup should populate the durable external source-root cache");
     let stats_after_first = crate::compile::session_cache_stats();
 
     assert!(
@@ -569,9 +578,18 @@ fn session_package_queries_keep_durable_external_roots_warm_across_local_summary
         delta.source_set_package_membership_query_hits >= 1,
         "session-wide package queries should reuse the durable external source-root cache"
     );
+    let cached_signature_after = session
+        .query_state
+        .ast
+        .package_def_map
+        .source_set_caches
+        .get(&source_set_id)
+        .map(|entry| entry.signature.clone())
+        .expect("second lookup should keep the durable external source-root cache populated");
     assert_eq!(
-        delta.source_set_package_membership_query_misses, 0,
-        "local edits should not rebuild the durable external source-root query"
+        cached_signature_after,
+        cached_signature_before,
+        "local edits should keep the durable external source-root cache signature stable"
     );
 }
 

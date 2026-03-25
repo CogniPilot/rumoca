@@ -11,6 +11,8 @@ use rumoca_session::compile::core as rumoca_core;
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::ir_core as rumoca_ir_core;
 use std::collections::{BTreeMap, HashSet};
+use std::ops::ControlFlow;
+use rumoca_session::parsing::ast::Visitor;
 
 use crate::helpers::{
     find_enclosing_class, find_enclosing_class_qualified_name, get_text_before_cursor,
@@ -49,6 +51,12 @@ impl CompletionResult {
             semantic_layer,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DotCompletionTarget {
+    base_segments: Vec<String>,
+    member_partial: String,
 }
 
 enum CompletionQuerySession<'a> {
@@ -112,6 +120,38 @@ impl CompletionQuerySession<'_> {
             #[cfg(feature = "server")]
             Self::Snapshot(snapshot) => {
                 snapshot.class_component_type_query(uri, qualified_name, component_name)
+            }
+        }
+    }
+
+    fn class_type_resolution_candidates_in_class_query(
+        &mut self,
+        class_name: &str,
+        raw_name: &str,
+    ) -> Vec<String> {
+        match self {
+            Self::Host(session) => {
+                session.class_type_resolution_candidates_in_class_query(class_name, raw_name)
+            }
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => {
+                snapshot.class_type_resolution_candidates_in_class_query(class_name, raw_name)
+            }
+        }
+    }
+
+    fn class_component_member_info_query(
+        &mut self,
+        class_name: &str,
+        component_name: &str,
+    ) -> Option<(String, String)> {
+        match self {
+            Self::Host(session) => {
+                session.class_component_member_info_query(class_name, component_name)
+            }
+            #[cfg(feature = "server")]
+            Self::Snapshot(snapshot) => {
+                snapshot.class_component_member_info_query(class_name, component_name)
             }
         }
     }
@@ -247,7 +287,9 @@ fn handle_completion_with_context(
     let mut semantic_layer = CompletionSemanticLayer::SyntaxFallback;
     let mut cached_namespace_class_names: Option<Vec<String>> = None;
     let active_model = match (session.as_mut(), uri) {
-        (Some(session), Some(uri)) => session.enclosing_class_qualified_name_query(uri, line),
+        (Some(session), Some(uri)) => session
+            .enclosing_class_qualified_name_query(uri, line)
+            .or_else(|| ast.and_then(|tree| find_enclosing_class_qualified_name(tree, line))),
         _ => ast.and_then(|tree| find_enclosing_class_qualified_name(tree, line)),
     };
 
@@ -255,11 +297,12 @@ fn handle_completion_with_context(
     if prefix.ends_with('.') || prefix.contains('.') {
         // Try local AST dot-completion first
         if let Some(dot_items) = dot_completion(
+            source,
             ast,
             session.as_mut(),
             uri,
             active_model.as_deref(),
-            line,
+            position,
             &prefix,
         ) {
             return dot_items;
@@ -563,43 +606,142 @@ fn namespace_entries_to_completion_items(
 }
 
 fn dot_completion(
+    source: &str,
     ast: Option<&ast::StoredDefinition>,
     session: Option<&mut CompletionQuerySession<'_>>,
     uri: Option<&str>,
     active_model: Option<&str>,
-    line: u32,
+    position: Position,
     prefix: &str,
 ) -> Option<CompletionResult> {
-    let (base_word, member_partial) = dot_completion_target(prefix)?;
+    let target = ast
+        .and_then(|tree| {
+            ast_dot_completion_target(source, tree, position.line, position.character)
+        })
+        .or_else(|| text_dot_completion_target(prefix))?;
     dot_completion_items(
         ast,
         session,
         uri,
         active_model,
-        line,
-        &base_word,
-        &member_partial,
+        position.line,
+        &target.base_segments,
+        &target.member_partial,
     )
 }
 
-fn dot_completion_target(prefix: &str) -> Option<(String, String)> {
+fn text_dot_completion_target(prefix: &str) -> Option<DotCompletionTarget> {
     let dot_pos = prefix.rfind('.')?;
     let member_partial = prefix[dot_pos + 1..].trim();
-    // Extract the base name before the dot
     let base = prefix[..dot_pos].trim();
-    let base_word: String = base
+    let base_path: String = base
         .chars()
         .rev()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
         .collect::<String>()
         .chars()
         .rev()
         .collect();
+    let base_segments = dotted_identifier_segments(&base_path)?;
+    Some(DotCompletionTarget {
+        base_segments,
+        member_partial: member_partial.to_string(),
+    })
+}
 
-    if base_word.is_empty() {
-        return None;
+fn ast_dot_completion_target(
+    source: &str,
+    ast: &ast::StoredDefinition,
+    line: u32,
+    character: u32,
+) -> Option<DotCompletionTarget> {
+    let mut finder = DotCompletionTargetFinder::new(source, line, character);
+    let _ = finder.visit_stored_definition(ast);
+    finder.best
+}
+
+struct DotCompletionTargetFinder<'a> {
+    source_line: &'a str,
+    line: u32,
+    character: u32,
+    best: Option<DotCompletionTarget>,
+}
+
+impl<'a> DotCompletionTargetFinder<'a> {
+    fn new(source: &'a str, line: u32, character: u32) -> Self {
+        Self {
+            source_line: source.lines().nth(line as usize).unwrap_or_default(),
+            line,
+            character,
+            best: None,
+        }
     }
-    Some((base_word, member_partial.to_string()))
+
+    fn consider_component_reference(&mut self, component_ref: &ast::ComponentReference) {
+        for segment_end in 1..component_ref.parts.len() {
+            let next_ident = &component_ref.parts[segment_end].ident;
+            let token_line = next_ident.location.start_line.saturating_sub(1);
+            if token_line != self.line {
+                continue;
+            }
+
+            let member_start = next_ident.location.start_column.saturating_sub(1);
+            let member_end = next_ident.location.end_column.saturating_sub(1);
+            if self.character < member_start || self.character > member_end {
+                continue;
+            }
+
+            let Some(member_partial) = slice_line(
+                self.source_line,
+                member_start as usize,
+                self.character as usize,
+            ) else {
+                continue;
+            };
+            let base_segments = component_ref.parts[..segment_end]
+                .iter()
+                .map(|part| part.ident.text.to_string())
+                .collect::<Vec<_>>();
+            self.record(DotCompletionTarget {
+                base_segments,
+                member_partial: member_partial.to_string(),
+            });
+        }
+    }
+
+    fn record(&mut self, candidate: DotCompletionTarget) {
+        if self
+            .best
+            .as_ref()
+            .is_none_or(|best| candidate.base_segments.len() > best.base_segments.len())
+        {
+            self.best = Some(candidate);
+        }
+    }
+}
+
+impl ast::Visitor for DotCompletionTargetFinder<'_> {
+    fn visit_component_reference_ctx(
+        &mut self,
+        cr: &ast::ComponentReference,
+        _ctx: ast::ComponentReferenceContext,
+    ) -> ControlFlow<()> {
+        self.consider_component_reference(cr);
+        self.visit_component_reference(cr)
+    }
+}
+
+fn dotted_identifier_segments(path: &str) -> Option<Vec<String>> {
+    let segments = path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    (!segments.is_empty()).then_some(segments)
+}
+
+fn slice_line(line: &str, start: usize, end: usize) -> Option<&str> {
+    (start <= end && end <= line.len()).then(|| &line[start..end])
 }
 
 fn dot_completion_items(
@@ -608,31 +750,47 @@ fn dot_completion_items(
     uri: Option<&str>,
     active_model: Option<&str>,
     line: u32,
-    base_word: &str,
+    base_segments: &[String],
     member_partial: &str,
 ) -> Option<CompletionResult> {
-    let component_type = scoped_component_type(
+    let type_candidates = component_path_type_candidates(
         ast,
-        session.as_deref_mut(),
+        match &mut session {
+            Some(session) => Some(&mut **session),
+            None => None,
+        },
         uri,
         active_model,
         line,
-        base_word,
-    )?;
-    let type_candidates = resolve_type_candidates(
-        ast,
-        session.as_deref_mut(),
-        uri,
-        active_model,
-        line,
-        &component_type,
+        base_segments,
     );
-    if session.is_some() {
-        return session_type_member_completions(session, &type_candidates, member_partial, false)
-            .map(|items| CompletionResult::new(items, CompletionSemanticLayer::ClassInterface));
+    if type_candidates.is_empty() {
+        return None;
     }
-    ast.and_then(|ast| ast_type_member_completions(ast, &type_candidates, member_partial, false))
-        .map(|items| CompletionResult::new(items, CompletionSemanticLayer::SyntaxFallback))
+    if let Some(items) = session_type_member_completions(
+        match &mut session {
+            Some(session) => Some(&mut **session),
+            None => None,
+        },
+        &type_candidates,
+        member_partial,
+        false,
+    ) {
+        return Some(CompletionResult::new(
+            items,
+            CompletionSemanticLayer::ClassInterface,
+        ));
+    }
+    if let Some(ast) = ast
+        && let Some(items) =
+            ast_type_member_completions(ast, &type_candidates, member_partial, false)
+    {
+        return Some(CompletionResult::new(
+            items,
+            CompletionSemanticLayer::SyntaxFallback,
+        ));
+    }
+    None
 }
 
 fn component_completion_kind(comp: &ast::Component) -> CompletionItemKind {
@@ -677,22 +835,25 @@ fn modification_context_completions(
 
     let type_candidates = resolve_type_candidates(
         ast,
-        session.as_deref_mut(),
+        match &mut session {
+            Some(session) => Some(&mut **session),
+            None => None,
+        },
         uri,
         active_model,
         line,
         &ctx.type_name,
     );
-    if session.is_some() {
-        if let Some(items) =
-            session_type_member_completions(session, &type_candidates, partial, true)
-        {
-            return CompletionResult::new(items, CompletionSemanticLayer::ClassInterface);
-        }
-        return CompletionResult::new(
-            modifier_completions(partial),
-            CompletionSemanticLayer::BuiltinKeyword,
-        );
+    if let Some(items) = session_type_member_completions(
+        match &mut session {
+            Some(session) => Some(&mut **session),
+            None => None,
+        },
+        &type_candidates,
+        partial,
+        true,
+    ) {
+        return CompletionResult::new(items, CompletionSemanticLayer::ClassInterface);
     }
     if let Some(ast) = ast
         && let Some(items) = ast_type_member_completions(ast, &type_candidates, partial, true)
@@ -966,7 +1127,7 @@ fn resolve_type_candidates(
     push(raw_type_name.to_string(), &mut seen, &mut candidates);
 
     if let Some(session) = session {
-        return match (uri, active_model) {
+        let queried = match (uri, active_model) {
             (Some(uri), Some(active_model)) => {
                 session.class_type_resolution_candidates_query(uri, active_model, raw_type_name)
             }
@@ -978,6 +1139,9 @@ fn resolve_type_candidates(
                 }
             }
         };
+        if !queried.is_empty() {
+            return queried;
+        }
     }
 
     let Some(ast) = ast else {
@@ -1022,6 +1186,253 @@ fn resolve_type_candidates(
     candidates
 }
 
+fn component_path_type_candidates(
+    ast: Option<&ast::StoredDefinition>,
+    mut session: Option<&mut CompletionQuerySession<'_>>,
+    uri: Option<&str>,
+    active_model: Option<&str>,
+    line: u32,
+    base_segments: &[String],
+) -> Vec<String> {
+    let Some(first_segment) = base_segments.first() else {
+        return Vec::new();
+    };
+    let Some(component_type) = scoped_component_type(
+        ast,
+        match &mut session {
+            Some(session) => Some(&mut **session),
+            None => None,
+        },
+        uri,
+        active_model,
+        line,
+        first_segment,
+    ) else {
+        return Vec::new();
+    };
+    let mut type_candidates = resolve_type_candidates(
+        ast,
+        match &mut session {
+            Some(session) => Some(&mut **session),
+            None => None,
+        },
+        uri,
+        active_model,
+        line,
+        &component_type,
+    );
+
+    for member_name in base_segments.iter().skip(1) {
+        type_candidates = resolve_member_type_candidates(
+            ast,
+            match &mut session {
+                Some(session) => Some(&mut **session),
+                None => None,
+            },
+            &type_candidates,
+            member_name,
+        );
+        if type_candidates.is_empty() {
+            break;
+        }
+    }
+
+    type_candidates
+}
+
+fn resolve_member_type_candidates(
+    ast: Option<&ast::StoredDefinition>,
+    session: Option<&mut CompletionQuerySession<'_>>,
+    owner_candidates: &[String],
+    member_name: &str,
+) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut resolved = Vec::<String>::new();
+    let push = |name: String, seen: &mut HashSet<String>, resolved: &mut Vec<String>| {
+        if !name.is_empty() && seen.insert(name.clone()) {
+            resolved.push(name);
+        }
+    };
+
+    if let Some(session) = session {
+        for owner_candidate in owner_candidates {
+            let Some((declaring_class, raw_member_type)) =
+                session.class_component_member_info_query(owner_candidate, member_name)
+            else {
+                continue;
+            };
+            for candidate in session
+                .class_type_resolution_candidates_in_class_query(&declaring_class, &raw_member_type)
+            {
+                push(candidate, &mut seen, &mut resolved);
+            }
+        }
+        if !resolved.is_empty() {
+            return resolved;
+        }
+    }
+
+    let Some(ast) = ast else {
+        return resolved;
+    };
+    for owner_candidate in owner_candidates {
+        let Some((declaring_class, raw_member_type)) =
+            parsed_class_component_member_info(ast, owner_candidate, member_name)
+        else {
+            continue;
+        };
+        for candidate in parsed_class_type_resolution_candidates(
+            ast,
+            &declaring_class,
+            &raw_member_type,
+        ) {
+            push(candidate, &mut seen, &mut resolved);
+        }
+    }
+
+    resolved
+}
+
+fn parsed_class_component_member_info(
+    ast: &ast::StoredDefinition,
+    class_name: &str,
+    component_name: &str,
+) -> Option<(String, String)> {
+    let (qualified_name, class) = resolve_parsed_class_candidate(ast, class_name)?;
+    let mut visiting = HashSet::<String>::new();
+    parsed_class_component_member_info_in_class(
+        ast,
+        &qualified_name,
+        class,
+        component_name,
+        &mut visiting,
+    )
+}
+
+fn parsed_class_component_member_info_in_class(
+    ast: &ast::StoredDefinition,
+    qualified_name: &str,
+    class: &ast::ClassDef,
+    component_name: &str,
+    visiting: &mut HashSet<String>,
+) -> Option<(String, String)> {
+    if !visiting.insert(qualified_name.to_string()) {
+        return None;
+    }
+
+    let mut inherited = None;
+    for ext in &class.extends {
+        let base_candidates =
+            parsed_class_type_resolution_candidates(ast, qualified_name, &ext.base_name.to_string());
+        for candidate in base_candidates {
+            let Some((base_qualified, base_class)) = resolve_parsed_class_candidate(ast, &candidate)
+            else {
+                continue;
+            };
+            if let Some(info) = parsed_class_component_member_info_in_class(
+                ast,
+                &base_qualified,
+                base_class,
+                component_name,
+                visiting,
+            ) {
+                inherited = Some(info);
+                break;
+            }
+        }
+        if ext.break_names.iter().any(|name| name == component_name) {
+            inherited = None;
+        }
+    }
+
+    let local = class
+        .components
+        .get(component_name)
+        .map(|component| (qualified_name.to_string(), component.type_name.to_string()));
+    visiting.remove(qualified_name);
+    local.or(inherited)
+}
+
+fn parsed_class_type_resolution_candidates(
+    ast: &ast::StoredDefinition,
+    class_name: &str,
+    raw_type_name: &str,
+) -> Vec<String> {
+    let Some((qualified_name, class)) = resolve_parsed_class_candidate(ast, class_name) else {
+        return if raw_type_name.is_empty() {
+            Vec::new()
+        } else {
+            vec![raw_type_name.to_string()]
+        };
+    };
+    parsed_class_type_resolution_candidates_in_class(&qualified_name, class, raw_type_name)
+}
+
+fn parsed_class_type_resolution_candidates_in_class(
+    qualified_name: &str,
+    class: &ast::ClassDef,
+    raw_type_name: &str,
+) -> Vec<String> {
+    if raw_type_name.is_empty() {
+        return Vec::new();
+    }
+    let mut seen = HashSet::<String>::new();
+    let mut candidates = Vec::<String>::new();
+    let push = |name: String, seen: &mut HashSet<String>, candidates: &mut Vec<String>| {
+        if !name.is_empty() && seen.insert(name.clone()) {
+            candidates.push(name);
+        }
+    };
+
+    if raw_type_name.contains('.') {
+        push(raw_type_name.to_string(), &mut seen, &mut candidates);
+        return candidates;
+    }
+
+    if class.classes.contains_key(raw_type_name) {
+        push(
+            format!("{qualified_name}.{raw_type_name}"),
+            &mut seen,
+            &mut candidates,
+        );
+    }
+
+    for import in &class.imports {
+        match import {
+            ast::Import::Qualified { path, .. } => {
+                let full = path.to_string();
+                if import_simple_name(&full) == raw_type_name {
+                    push(full, &mut seen, &mut candidates);
+                }
+            }
+            ast::Import::Renamed { alias, path, .. } => {
+                if alias.text.as_ref() == raw_type_name {
+                    push(path.to_string(), &mut seen, &mut candidates);
+                }
+            }
+            ast::Import::Selective { path, names, .. } => {
+                if names.iter().any(|name| name.text.as_ref() == raw_type_name) {
+                    push(
+                        format!("{}.{}", path, raw_type_name),
+                        &mut seen,
+                        &mut candidates,
+                    );
+                }
+            }
+            ast::Import::Unqualified { path, .. } => {
+                push(
+                    format!("{}.{}", path, raw_type_name),
+                    &mut seen,
+                    &mut candidates,
+                );
+            }
+        }
+    }
+
+    push(raw_type_name.to_string(), &mut seen, &mut candidates);
+    candidates
+}
+
 fn scoped_component_type(
     ast: Option<&ast::StoredDefinition>,
     session: Option<&mut CompletionQuerySession<'_>>,
@@ -1030,13 +1441,15 @@ fn scoped_component_type(
     line: u32,
     component_name: &str,
 ) -> Option<String> {
-    if let Some(session) = session {
-        return match (uri, active_model) {
+    if let Some(session) = session
+        && let Some(component_type) = match (uri, active_model) {
             (Some(uri), Some(active_model)) => {
                 session.class_component_type_query(uri, active_model, component_name)
             }
             _ => None,
-        };
+        }
+    {
+        return Some(component_type);
     }
 
     let class = ast.and_then(|tree| find_enclosing_class(tree, line))?;
@@ -1359,6 +1772,148 @@ end Sim;
         assert!(
             !session.has_resolved_cached(),
             "local model member completion should stay on the query path"
+        );
+    }
+
+    #[test]
+    fn dot_completion_falls_back_to_ast_for_incomplete_member_edit() {
+        let valid_source = r#"
+operator record SE2
+  Real x;
+  Real y;
+  Real theta;
+end SE2;
+
+model Test2
+  SE2 pose;
+equation
+  der(pose.x) = 1;
+  der(pose.y) = 0;
+  pose.x = 0;
+end Test2;
+"#;
+        let invalid_source = r#"
+operator record SE2
+  Real x;
+  Real y;
+  Real theta;
+end SE2;
+
+model Test2
+  SE2 pose;
+equation
+  der(pose.x) = 1;
+  der(pose.y) = 0;
+  pose.
+end Test2;
+"#;
+        let stale_ast = parse_ast(valid_source);
+        let mut session = Session::default();
+        session
+            .add_document("input.mo", valid_source)
+            .expect("valid source should parse");
+        let parse_error = session.update_document("input.mo", invalid_source);
+        assert!(
+            parse_error.is_some(),
+            "incomplete member edit should leave a recoverable parse error"
+        );
+
+        let line = 12;
+        let character = "  pose.".len() as u32;
+        let items = handle_completion(
+            invalid_source,
+            Some(&stale_ast),
+            Some(&mut session),
+            Some("input.mo"),
+            line,
+            character,
+        );
+        let labels = items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "x"),
+            "expected SE2 member `x` completion during incomplete edit, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.iter().any(|label| label == "theta"),
+            "expected SE2 member `theta` completion during incomplete edit, got: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn dot_completion_resolves_recursive_member_path_from_ast_and_owner_scope() {
+        let valid_source = r#"
+operator record SE2
+  Real x;
+  Real y;
+  Real theta;
+end SE2;
+
+model Test2
+  import Pose = SE2;
+  Pose pose;
+end Test2;
+
+model Sim
+  Test2 test;
+equation
+  test.pose.x = 1;
+end Sim;
+"#;
+        let invalid_source = r#"
+operator record SE2
+  Real x;
+  Real y;
+  Real theta;
+end SE2;
+
+model Test2
+  import Pose = SE2;
+  Pose pose;
+end Test2;
+
+model Sim
+  Test2 test;
+equation
+  test.pose.
+end Sim;
+"#;
+        let stale_ast = parse_ast(valid_source);
+        let mut session = Session::default();
+        session
+            .add_document("input.mo", valid_source)
+            .expect("valid source should parse");
+        let parse_error = session.update_document("input.mo", invalid_source);
+        assert!(
+            parse_error.is_some(),
+            "nested member edit should keep a recoverable parse error"
+        );
+
+        let line = 15;
+        let character = "  test.pose.".len() as u32;
+        let items = handle_completion(
+            invalid_source,
+            Some(&stale_ast),
+            Some(&mut session),
+            Some("input.mo"),
+            line,
+            character,
+        );
+        let labels = items.iter().map(|item| item.label.clone()).collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "x"),
+            "expected recursive member completion `x`, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.iter().any(|label| label == "theta"),
+            "expected recursive member completion `theta`, got: {:?}",
+            labels
+        );
+        assert!(
+            !session.has_resolved_cached(),
+            "recursive member completion should stay on the query path"
         );
     }
 
