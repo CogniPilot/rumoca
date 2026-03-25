@@ -10,7 +10,7 @@ fn normalize_newlines(input: &str) -> String {
 #[test]
 fn test_render_simple_template() {
     let dae = dae::Dae::new();
-    let template = "# States: {{ dae.states | length }}";
+    let template = "# States: {{ dae.x | length }}";
     let result = render_template(&dae, template).unwrap();
     assert!(result.contains("# States: 0"));
 }
@@ -20,7 +20,7 @@ fn test_render_template_for_input_supports_dae_flat_and_ast() {
     let dae = dae::Dae::new();
     let dae_rendered = render_template_for_input(
         CodegenInput::Dae(&dae),
-        "{{ ir_kind }} {{ dae.states | length }} {{ ir.states | length }}",
+        "{{ ir_kind }} {{ dae.x | length }} {{ ir.x | length }}",
     )
     .unwrap();
     assert_eq!(dae_rendered, "dae 0 0");
@@ -63,14 +63,60 @@ fn test_sanitize_filter() {
 fn test_access_dae_fields() {
     let dae = dae::Dae::new();
     let template = r#"
-n_states: {{ dae.states | length }}
-n_alg: {{ dae.algebraics | length }}
-n_params: {{ dae.parameters | length }}
+n_x: {{ dae.x | length }}
+n_y: {{ dae.y | length }}
+n_p: {{ dae.p | length }}
 "#;
     let result = render_template(&dae, template).unwrap();
-    assert!(result.contains("n_states: 0"));
-    assert!(result.contains("n_alg: 0"));
-    assert!(result.contains("n_params: 0"));
+    assert!(result.contains("n_x: 0"));
+    assert!(result.contains("n_y: 0"));
+    assert!(result.contains("n_p: 0"));
+}
+
+#[test]
+fn test_dae_template_json_uses_canonical_keys_only() {
+    let mut dae = dae::Dae::new();
+    dae.states.insert(
+        "x".into(),
+        rumoca_ir_dae::Variable {
+            name: "x".into(),
+            ..Default::default()
+        },
+    );
+    dae.derivative_aliases.insert(
+        "dx".into(),
+        rumoca_ir_dae::Variable {
+            name: "dx".into(),
+            ..Default::default()
+        },
+    );
+    dae.synthetic_root_conditions
+        .push(rumoca_ir_dae::Expression::If {
+            branches: vec![(
+                rumoca_ir_dae::Expression::Literal(rumoca_ir_dae::Literal::Boolean(true)),
+                rumoca_ir_dae::Expression::Literal(rumoca_ir_dae::Literal::Real(1.0)),
+            )],
+            else_branch: Box::new(rumoca_ir_dae::Expression::Literal(
+                rumoca_ir_dae::Literal::Real(0.0),
+            )),
+        });
+
+    let value = dae_template_json(&dae);
+    let object = value
+        .as_object()
+        .expect("template JSON should be an object");
+
+    assert!(object.contains_key("x"));
+    assert!(object.contains_key("x_dot_alias"));
+    assert!(!object.contains_key("states"));
+    assert!(!object.contains_key("derivative_aliases"));
+    assert!(
+        object
+            .get("synthetic_root_conditions")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| items.len() == 1),
+        "synthetic_root_conditions should serialize nested if-expression branches",
+    );
 }
 
 #[test]

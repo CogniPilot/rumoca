@@ -12,7 +12,6 @@ use minijinja::{Environment, UndefinedBehavior, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
-use serde_json::json;
 use std::path::Path;
 
 mod render_c;
@@ -51,50 +50,17 @@ fn enum_type_names_from_ordinals(ordinals: &dae::Dae) -> Vec<String> {
 }
 
 pub fn dae_template_json(dae: &dae::Dae) -> serde_json::Value {
-    json!({
-        // Long-form names used by existing templates.
-        "states": &dae.states,
-        "algebraics": &dae.algebraics,
-        "inputs": &dae.inputs,
-        "outputs": &dae.outputs,
-        "parameters": &dae.parameters,
-        "constants": &dae.constants,
-        "discrete_reals": &dae.discrete_reals,
-        "discrete_valued": &dae.discrete_valued,
-        "derivative_aliases": &dae.derivative_aliases,
-        // Canonical short-form aliases (MLS B.1 notation).
-        "x": &dae.states,
-        "y": &dae.algebraics,
-        "u": &dae.inputs,
-        "w": &dae.outputs,
-        "p": &dae.parameters,
-        "z": &dae.discrete_reals,
-        "m": &dae.discrete_valued,
-        "x_dot_alias": &dae.derivative_aliases,
-        // Equations and metadata.
-        "f_x": &dae.f_x,
-        "f_z": &dae.f_z,
-        "f_m": &dae.f_m,
-        "f_c": &dae.f_c,
-        "relation": &dae.relation,
-        "initial_equations": &dae.initial_equations,
-        "functions": &dae.functions,
-        "enum_literal_ordinals": &dae.enum_literal_ordinals,
-        "enum_type_names": enum_type_names_from_ordinals(dae),
-        "interface_flow_count": dae.interface_flow_count,
-        "overconstrained_interface_count": dae.overconstrained_interface_count,
-        "oc_break_edge_scalar_count": dae.oc_break_edge_scalar_count,
-        "is_partial": dae.is_partial,
-        "class_type": &dae.class_type,
-        "model_description": dae.model_description,
-        // Runtime event/clock metadata.
-        "scheduled_time_events": &dae.scheduled_time_events,
-        "synthetic_root_conditions": &dae.synthetic_root_conditions,
-        "clock_schedules": &dae.clock_schedules,
-        "clock_intervals": &dae.clock_intervals,
-        "clock_constructor_exprs": &dae.clock_constructor_exprs,
-        "triggered_clock_conditions": &dae.triggered_clock_conditions,
-    })
+    let mut value = serde_json::to_value(dae).expect("DAE should serialize");
+    let object = value
+        .as_object_mut()
+        .expect("DAE should serialize to a JSON object");
+    object.insert(
+        "enum_type_names".to_string(),
+        serde_json::to_value(enum_type_names_from_ordinals(dae))
+            .expect("enum_type_names should serialize"),
+    );
+
+    value
 }
 
 fn dae_template_value(dae: &dae::Dae) -> Value {
@@ -193,8 +159,8 @@ pub fn render_template_with_name_for_input(
 /// # Example Template
 ///
 /// ```jinja
-/// # States: {{ dae.states | length }}
-/// {% for name, var in dae.states %}
+/// # States: {{ dae.x | length }}
+/// {% for name, var in dae.x %}
 /// {{ name | sanitize }} = Symbol('{{ name }}')
 /// {% endfor %}
 /// ```

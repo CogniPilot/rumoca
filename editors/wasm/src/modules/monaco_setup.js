@@ -28,6 +28,17 @@ end Ball;`,
     };
 monaco.languages.register({ id: 'modelica' });
 monaco.languages.register({ id: 'jinja2' });
+monaco.languages.setLanguageConfiguration('modelica', {
+    comments: {
+        lineComment: '//',
+        blockComment: ['/*', '*/']
+    }
+});
+monaco.languages.setLanguageConfiguration('jinja2', {
+    comments: {
+        blockComment: ['{#', '#}']
+    }
+});
 
 // Jinja2 language definition for template highlighting
 monaco.languages.setMonarchTokensProvider('jinja2', {

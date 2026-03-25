@@ -31,10 +31,10 @@
 //! # Writing Templates
 //!
 //! Templates use Jinja2 syntax. The DAE is passed as `dae` with fields:
-//! - `dae.states` - List of (name, var) tuples
-//! - `dae.algebraics` - Algebraic variables
-//! - `dae.parameters` - Parameters
-//! - `dae.inputs` - Input variables
+//! - `dae.x` - State variables
+//! - `dae.y` - Algebraic variables
+//! - `dae.p` - Parameters
+//! - `dae.u` - Input variables
 //! - `dae.constants` - Constants
 //! - `dae.f_x` - Continuous implicit equations (MLS B.1a)
 //!
