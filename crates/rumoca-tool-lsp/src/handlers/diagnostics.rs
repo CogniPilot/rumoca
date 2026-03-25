@@ -1,6 +1,7 @@
 //! Diagnostics handler for Modelica files.
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+use rumoca_session::Session;
 use rumoca_session::compile::SemanticDiagnosticsMode;
 #[cfg(test)]
 use rumoca_session::compile::SourceRootKind;
@@ -10,7 +11,6 @@ use rumoca_session::compile::core::{
 };
 use rumoca_session::parsing::ast;
 use rumoca_session::parsing::{ParseError, parse_source_to_ast_with_errors};
-use rumoca_session::Session;
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::HashSet;
@@ -1964,9 +1964,6 @@ end M;
         assert_eq!(unknown_member.range.start.character, 11);
         assert_eq!(unknown_member.range.end.line, 11);
         assert_eq!(unknown_member.range.end.character, 12);
-        assert_eq!(
-            unknown_member.data,
-            Some(json!({ "precise_range": true }))
-        );
+        assert_eq!(unknown_member.data, Some(json!({ "precise_range": true })));
     }
 }
