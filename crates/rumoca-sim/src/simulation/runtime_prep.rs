@@ -351,7 +351,7 @@ fn expand_state_scalar_names(dae_model: &dae::Dae) -> Vec<dae::VarName> {
             names.push(name.clone());
         } else {
             for i in 1..=sz {
-                names.push(dae::VarName::new(&format!("{}[{}]", name.as_str(), i)));
+                names.push(dae::VarName::new(format!("{}[{}]", name.as_str(), i)));
             }
         }
     }

@@ -343,6 +343,29 @@ pub(super) fn eval_literal<T: SimFloat>(lit: &dae::Literal) -> T {
     }
 }
 
+/// Build the full variable name from a base name and subscripts.
+///
+/// Returns the base name unchanged when subscripts are empty; otherwise
+/// appends evaluated subscript indices (e.g. `x` + `[1,2]` → `x[1,2]`).
+fn build_indexed_name<T: SimFloat>(
+    name: &str,
+    subscripts: &[dae::Subscript],
+    env: &VarEnv<T>,
+) -> String {
+    if subscripts.is_empty() {
+        return name.to_string();
+    }
+    let indices: Vec<String> = subscripts
+        .iter()
+        .map(|s| match s {
+            dae::Subscript::Index(i) => format!("{i}"),
+            dae::Subscript::Expr(expr) => format!("{}", eval_expr::<T>(expr, env).real() as i64),
+            dae::Subscript::Colon => ":".to_string(),
+        })
+        .collect();
+    format!("{name}[{}]", indices.join(","))
+}
+
 pub(super) fn eval_var_ref<T: SimFloat>(
     name: &dae::VarName,
     subscripts: &[dae::Subscript],
@@ -351,22 +374,9 @@ pub(super) fn eval_var_ref<T: SimFloat>(
     if subscripts.is_empty() {
         return eval_var_ref_no_subscripts(name.as_str(), env);
     }
-    {
-        let indices: Vec<String> = subscripts
-            .iter()
-            .map(|s| match s {
-                dae::Subscript::Index(i) => format!("{}", i),
-                dae::Subscript::Expr(expr) => {
-                    let v = eval_expr::<T>(expr, env);
-                    format!("{}", v.real() as i64)
-                }
-                dae::Subscript::Colon => ":".to_string(),
-            })
-            .collect();
-        let indexed_name = format!("{}[{}]", name.as_str(), indices.join(","));
-        let val = env.vars.get(&indexed_name).copied();
-        val.unwrap_or_else(|| env.get(name.as_str()))
-    }
+    let indexed_name = build_indexed_name(name.as_str(), subscripts, env);
+    let val = env.vars.get(&indexed_name).copied();
+    val.unwrap_or_else(|| env.get(name.as_str()))
 }
 
 /// Look up a variable with no explicit subscripts.
@@ -717,22 +727,7 @@ pub(super) fn eval_builtin<T: SimFloat>(
     match function {
         dae::BuiltinFunction::Der => {
             if let Some(dae::Expression::VarRef { name, subscripts }) = args.first() {
-                let full_name = if subscripts.is_empty() {
-                    name.as_str().to_string()
-                } else {
-                    let indices: Vec<String> = subscripts
-                        .iter()
-                        .map(|s| match s {
-                            dae::Subscript::Index(i) => format!("{i}"),
-                            dae::Subscript::Expr(expr) => {
-                                let v = eval_expr::<T>(expr, env);
-                                format!("{}", v.real() as i64)
-                            }
-                            dae::Subscript::Colon => ":".to_string(),
-                        })
-                        .collect();
-                    format!("{}[{}]", name.as_str(), indices.join(","))
-                };
+                let full_name = build_indexed_name(name.as_str(), subscripts, env);
                 let der_name = format!("der({full_name})");
                 env.get(&der_name)
             } else {
