@@ -182,3 +182,54 @@ fn ball_example_renders_standalone_html_template() {
         "expected standalone template to include the simulation UI"
     );
 }
+
+/// Regression test for vector derivative simulation (GitHub issue: Vector Derivative Problems).
+///
+/// Verifies that `der(x) = {1,2}` where `x` is `Real[2]` compiles and simulates
+/// without a mass-matrix isolation error.
+#[test]
+fn vector_derivative_compiles_and_simulates() {
+    let source = r#"
+model Simple
+  Real[2] x;
+equation
+  der(x) = {1, 2};
+end Simple;
+"#;
+
+    let result = Compiler::new()
+        .model("Simple")
+        .compile_str(source, "Simple.mo")
+        .expect("vector derivative model should compile");
+
+    assert_eq!(result.dae.states.len(), 1, "one array state 'x'");
+
+    let opts = rumoca_session::runtime::SimOptions {
+        t_end: 1.0,
+        ..Default::default()
+    };
+    let sim = rumoca_session::runtime::simulate_dae(&result.dae, &opts)
+        .expect("vector derivative model should simulate without mass-matrix error");
+
+    // After t=1, x[1] ≈ 1.0 and x[2] ≈ 2.0 (integrating constants from zero)
+    let x1_idx = sim
+        .names
+        .iter()
+        .position(|n| n == "x[1]")
+        .expect("x[1] should be in simulation output");
+    let x2_idx = sim
+        .names
+        .iter()
+        .position(|n| n == "x[2]")
+        .expect("x[2] should be in simulation output");
+    let x1_final = sim.data[x1_idx].last().copied().unwrap();
+    let x2_final = sim.data[x2_idx].last().copied().unwrap();
+    assert!(
+        (x1_final - 1.0).abs() < 0.01,
+        "x[1] at t=1 should be ~1.0, got {x1_final}"
+    );
+    assert!(
+        (x2_final - 2.0).abs() < 0.01,
+        "x[2] at t=1 should be ~2.0, got {x2_final}"
+    );
+}

@@ -716,8 +716,24 @@ pub(super) fn eval_builtin<T: SimFloat>(
 
     match function {
         dae::BuiltinFunction::Der => {
-            if let Some(dae::Expression::VarRef { name, .. }) = args.first() {
-                let der_name = format!("der({})", name.as_str());
+            if let Some(dae::Expression::VarRef { name, subscripts }) = args.first() {
+                let full_name = if subscripts.is_empty() {
+                    name.as_str().to_string()
+                } else {
+                    let indices: Vec<String> = subscripts
+                        .iter()
+                        .map(|s| match s {
+                            dae::Subscript::Index(i) => format!("{i}"),
+                            dae::Subscript::Expr(expr) => {
+                                let v = eval_expr::<T>(expr, env);
+                                format!("{}", v.real() as i64)
+                            }
+                            dae::Subscript::Colon => ":".to_string(),
+                        })
+                        .collect();
+                    format!("{}[{}]", name.as_str(), indices.join(","))
+                };
+                let der_name = format!("der({full_name})");
                 env.get(&der_name)
             } else {
                 T::zero()
