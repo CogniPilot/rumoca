@@ -16,7 +16,26 @@ enum ModifierPathAdvance {
     Invalid,
 }
 
+struct MissingComponentMember {
+    owner_type: TypeId,
+    member_name: String,
+    reference: String,
+    span: Span,
+}
+
 impl TypeCheckTraversalCallbacks for TypeChecker {
+    fn on_component_reference(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        type_table: &TypeTable,
+    ) {
+        self.validate_component_reference(comp, type_table);
+    }
+
+    fn on_field_access(&mut self, base: &Expression, field: &str, type_table: &TypeTable) {
+        self.validate_field_access(base, field, type_table);
+    }
+
     fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable) {
         self.check_equation_type_compatibility(lhs, rhs, type_table);
     }
@@ -32,6 +51,35 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
 }
 
 impl TypeChecker {
+    fn component_scope_name(class: &ClassDef) -> &str {
+        class.name.text.as_ref()
+    }
+
+    fn component_scope_full_name<'a>(&'a self, class: &ClassDef) -> Option<&'a str> {
+        class
+            .def_id
+            .and_then(|def_id| self.def_qualified_names.get(&def_id))
+            .map(String::as_str)
+    }
+
+    fn insert_visible_component_type(
+        scope_types: &mut HashMap<String, TypeId>,
+        comp_name: &str,
+        type_id: TypeId,
+        scope_name: &str,
+        full_scope_name: Option<&str>,
+    ) {
+        scope_types.insert(comp_name.to_string(), type_id);
+        if !scope_name.is_empty() {
+            scope_types.insert(format!("{scope_name}.{comp_name}"), type_id);
+        }
+        if let Some(full_scope_name) = full_scope_name
+            && !full_scope_name.is_empty()
+        {
+            scope_types.insert(format!("{full_scope_name}.{comp_name}"), type_id);
+        }
+    }
+
     pub(crate) fn alias_field_key_range<'a>(
         sorted_keys: &'a [String],
         target_prefix: &str,
@@ -471,15 +519,21 @@ impl TypeChecker {
         // Expose resolved component types for equation compatibility checks in this class.
         let prev_scope_types = std::mem::take(&mut self.current_component_types);
         let mut scope_types = HashMap::new();
-        let class_name = class.name.text.to_string();
+        let class_name = Self::component_scope_name(class);
+        let full_class_name = self.component_scope_full_name(class);
         for (name, comp) in &class.components {
             let Some(type_id) = comp.type_id else {
                 continue;
             };
-            // Store both local names (`x`) and class-qualified names (`Test.x`) so
-            // equation refs remain type-checkable after name qualification.
-            scope_types.insert(name.clone(), type_id);
-            scope_types.insert(format!("{class_name}.{name}"), type_id);
+            // MLS §5.3/§5.6: keep local and qualified component names visible so
+            // later typed member lookup can validate each dotted segment.
+            Self::insert_visible_component_type(
+                &mut scope_types,
+                name,
+                type_id,
+                class_name,
+                full_class_name,
+            );
         }
         self.current_component_types = scope_types;
 
@@ -755,7 +809,8 @@ impl TypeChecker {
         class: &ClassDef,
         type_table: &TypeTable,
     ) {
-        let class_name = class.name.text.to_string();
+        let class_name = Self::component_scope_name(class);
+        let full_class_name = self.component_scope_full_name(class).map(ToOwned::to_owned);
         for (comp_name, comp) in &class.components {
             let type_id = comp.type_id.unwrap_or_else(|| {
                 self.resolve_type_name(&comp.type_name.to_string(), comp.type_def_id, type_table)
@@ -763,13 +818,18 @@ impl TypeChecker {
             if type_id.is_unknown() {
                 continue;
             }
-            self.current_component_types
-                .entry(comp_name.clone())
-                .or_insert(type_id);
-            if !class_name.is_empty() {
+            let mut visible = HashMap::new();
+            Self::insert_visible_component_type(
+                &mut visible,
+                comp_name,
+                type_id,
+                class_name,
+                full_class_name.as_deref(),
+            );
+            for (name, visible_type) in visible {
                 self.current_component_types
-                    .entry(format!("{class_name}.{comp_name}"))
-                    .or_insert(type_id);
+                    .entry(name)
+                    .or_insert(visible_type);
             }
         }
 
@@ -1380,6 +1440,9 @@ impl TypeChecker {
             Expression::FunctionCall { comp, .. } => {
                 self.infer_function_call_result_type(comp, type_table)
             }
+            Expression::FieldAccess { base, field } => {
+                self.infer_field_access_type(base, field, type_table)
+            }
             Expression::Parenthesized { inner } => self.infer_expression_type(inner, type_table),
             _ => None,
         }
@@ -1418,42 +1481,211 @@ impl TypeChecker {
         cr: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        if cr.parts.len() == 1 {
-            let name = cr.parts[0].ident.text.as_ref();
-            return self
+        match self.resolve_component_reference_type(cr, type_table) {
+            Ok(type_id) if !type_id.is_unknown() => {
+                Self::filter_non_value_component_type(type_table, type_id)
+            }
+            _ => {
+                // Enum literal: <EnumType>.<Literal> or <Pkg>.<EnumType>.<Literal>.
+                let parts: Vec<&str> = cr.parts.iter().map(|p| p.ident.text.as_ref()).collect();
+                (1..parts.len()).rev().find_map(|i| {
+                    let candidate = parts[..i].join(".");
+                    let type_id = type_table.lookup(&candidate)?;
+                    matches!(type_table.get(type_id), Some(Type::Enumeration(_))).then_some(type_id)
+                })
+            }
+        }
+    }
+
+    fn infer_field_access_type(
+        &self,
+        base: &Expression,
+        field: &str,
+        type_table: &TypeTable,
+    ) -> Option<TypeId> {
+        let base_type = self.infer_expression_type(base, type_table)?;
+        self.lookup_component_member_type(base_type, field, type_table)
+            .and_then(|ty| Self::filter_non_value_component_type(type_table, ty))
+    }
+
+    fn validate_component_reference(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        type_table: &TypeTable,
+    ) {
+        let Err(missing) = self.resolve_component_reference_type(comp, type_table) else {
+            return;
+        };
+        self.emit_unknown_component_member(missing, type_table);
+    }
+
+    fn validate_field_access(&mut self, base: &Expression, field: &str, type_table: &TypeTable) {
+        let Some(base_type) = self.infer_expression_type(base, type_table) else {
+            return;
+        };
+        if self
+            .lookup_component_member_type(base_type, field, type_table)
+            .is_some()
+        {
+            return;
+        }
+        if !Self::is_strict_component_member_owner(type_table, base_type) {
+            return;
+        }
+        let Some(location) = base.get_location() else {
+            return;
+        };
+        let span = self.source_map.location_to_span(
+            &location.file_name,
+            location.start as usize,
+            location.end as usize,
+        );
+        self.emit_unknown_component_member(
+            MissingComponentMember {
+                owner_type: base_type,
+                member_name: field.to_string(),
+                reference: format!("{base}.{field}"),
+                span,
+            },
+            type_table,
+        );
+    }
+
+    fn resolve_component_reference_type(
+        &self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        type_table: &TypeTable,
+    ) -> Result<TypeId, MissingComponentMember> {
+        let Some((mut current_type, prefix_len)) = self.find_component_ref_prefix_type(comp) else {
+            return Ok(TypeId::UNKNOWN);
+        };
+        if prefix_len == comp.parts.len() {
+            return Ok(current_type);
+        }
+
+        for part in comp.parts.iter().skip(prefix_len) {
+            let member_name = part.ident.text.to_string();
+            match self.lookup_component_member_type(current_type, &member_name, type_table) {
+                Some(next_type) => current_type = next_type,
+                None if !Self::is_strict_component_member_owner(type_table, current_type) => {
+                    return Ok(TypeId::UNKNOWN);
+                }
+                None => {
+                    let location = &part.ident.location;
+                    let span = self.source_map.location_to_span(
+                        &location.file_name,
+                        location.start as usize,
+                        location.end as usize,
+                    );
+                    return Err(MissingComponentMember {
+                        owner_type: current_type,
+                        member_name,
+                        reference: comp.to_string(),
+                        span,
+                    });
+                }
+            }
+        }
+
+        Ok(current_type)
+    }
+
+    fn find_component_ref_prefix_type(
+        &self,
+        comp: &rumoca_ir_ast::ComponentReference,
+    ) -> Option<(TypeId, usize)> {
+        let mut exact_prefix = String::new();
+        let mut ident_prefix = String::new();
+        let mut best_exact = None;
+        let mut best_ident = None;
+
+        for (idx, part) in comp.parts.iter().enumerate() {
+            if idx > 0 {
+                exact_prefix.push('.');
+                ident_prefix.push('.');
+            }
+            exact_prefix.push_str(&part.to_string());
+            ident_prefix.push_str(part.ident.text.as_ref());
+            if let Some(type_id) = self
                 .current_component_types
-                .get(name)
+                .get(exact_prefix.as_str())
                 .copied()
-                .and_then(|ty| Self::filter_non_value_component_type(type_table, ty));
-        }
-
-        // Qualified component refs can include leading class/package names.
-        // Try longest dotted suffixes first (excluding single-name suffixes).
-        let parts: Vec<&str> = cr.parts.iter().map(|p| p.ident.text.as_ref()).collect();
-        if parts.len() > 1 {
-            let qualified_match = (0..(parts.len() - 1)).find_map(|start| {
-                let candidate = parts[start..].join(".");
-                self.current_component_types
-                    .get(&candidate)
-                    .copied()
-                    .and_then(|ty| Self::filter_non_value_component_type(type_table, ty))
-            });
-            if let Some(type_id) = qualified_match {
-                return Some(type_id);
+            {
+                best_exact = Some((type_id, idx + 1));
+            }
+            if let Some(type_id) = self
+                .current_component_types
+                .get(ident_prefix.as_str())
+                .copied()
+            {
+                best_ident = Some((type_id, idx + 1));
             }
         }
 
-        // Enum literal: <EnumType>.<Literal> or <Pkg>.<EnumType>.<Literal>.
-        for i in (1..parts.len()).rev() {
-            let candidate = parts[..i].join(".");
-            let Some(type_id) = type_table.lookup(&candidate) else {
-                continue;
-            };
-            if matches!(type_table.get(type_id), Some(Type::Enumeration(_))) {
-                return Some(type_id);
-            }
+        match (best_exact, best_ident) {
+            (Some(exact), Some(ident)) if ident.1 > exact.1 => Some(ident),
+            (Some(exact), _) => Some(exact),
+            (None, ident) => ident,
         }
-        None
+    }
+
+    fn lookup_component_member_type(
+        &self,
+        current_type: TypeId,
+        member_name: &str,
+        type_table: &TypeTable,
+    ) -> Option<TypeId> {
+        let current_root = self.resolve_type_root(type_table, current_type);
+        let Some(Type::Class(class_type)) = type_table.get(current_root) else {
+            return None;
+        };
+        self.component_modifier_member_types
+            .get(&class_type.def_id)
+            .and_then(|members| members.get(member_name).copied())
+    }
+
+    fn component_member_names(&self, owner_type: TypeId, type_table: &TypeTable) -> Vec<String> {
+        let owner_root = self.resolve_type_root(type_table, owner_type);
+        let Some(Type::Class(class_type)) = type_table.get(owner_root) else {
+            return Vec::new();
+        };
+        let Some(members) = self.component_modifier_member_types.get(&class_type.def_id) else {
+            return Vec::new();
+        };
+        let mut names = members.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn is_strict_component_member_owner(type_table: &TypeTable, owner_type: TypeId) -> bool {
+        matches!(
+            type_table.get(Self::resolve_alias_root(type_table, owner_type)),
+            Some(Type::Class(class_type)) if class_type.kind == ClassKind::Record
+        )
+    }
+
+    fn emit_unknown_component_member(
+        &mut self,
+        missing: MissingComponentMember,
+        type_table: &TypeTable,
+    ) {
+        let owner_type = Self::format_type_name(type_table, missing.owner_type);
+        let mut diagnostic = CommonDiagnostic::error(
+            "ET001",
+            format!(
+                "unknown member `{}` on component reference `{}` of type `{}`",
+                missing.member_name, missing.reference, owner_type
+            ),
+            rumoca_core::PrimaryLabel::new(missing.span).with_message("unknown member"),
+        );
+        let available_members = self.component_member_names(missing.owner_type, type_table);
+        if !available_members.is_empty() {
+            diagnostic = diagnostic.with_note(format!(
+                "available members: {}",
+                available_members.join(", ")
+            ));
+        }
+        self.diagnostics.emit(diagnostic);
     }
 
     pub(crate) fn filter_non_value_component_type(

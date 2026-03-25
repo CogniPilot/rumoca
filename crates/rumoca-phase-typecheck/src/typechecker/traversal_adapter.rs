@@ -11,6 +11,12 @@ type TypeTable = ast::TypeTable;
 /// Traversal is centralized here while typecheck-specific semantic actions
 /// are injected via callbacks.
 pub(crate) trait TypeCheckTraversalCallbacks {
+    /// Called when a component reference appears in an equation/statement/expression.
+    fn on_component_reference(&mut self, _comp: &ComponentReference, _type_table: &TypeTable) {}
+
+    /// Called after the base of a field access has been traversed.
+    fn on_field_access(&mut self, _base: &Expression, _field: &str, _type_table: &TypeTable) {}
+
     /// Called after both sides of a simple equation are traversed.
     fn on_simple_equation(&mut self, lhs: &Expression, rhs: &Expression, type_table: &TypeTable);
 
@@ -40,7 +46,11 @@ pub(crate) fn walk_equation<C: TypeCheckTraversalCallbacks>(
     type_table: &TypeTable,
 ) {
     match equation {
-        Equation::Empty | Equation::Connect { .. } => {}
+        Equation::Empty => {}
+        Equation::Connect { lhs, rhs } => {
+            callbacks.on_component_reference(lhs, type_table);
+            callbacks.on_component_reference(rhs, type_table);
+        }
         Equation::Simple { lhs, rhs } => {
             walk_expression(callbacks, lhs, type_table);
             walk_expression(callbacks, rhs, type_table);
@@ -102,8 +112,9 @@ pub(crate) fn walk_statement<C: TypeCheckTraversalCallbacks>(
 ) {
     match statement {
         Statement::Empty | Statement::Return { .. } | Statement::Break { .. } => {}
-        Statement::Assignment { comp: _, value } => {
+        Statement::Assignment { comp, value } => {
             walk_expression(callbacks, value, type_table);
+            callbacks.on_component_reference(comp, type_table);
         }
         Statement::FunctionCall {
             comp: _,
@@ -141,8 +152,9 @@ pub(crate) fn walk_statement<C: TypeCheckTraversalCallbacks>(
                 walk_statements(callbacks, else_statements, type_table);
             }
         }
-        Statement::Reinit { variable: _, value } => {
+        Statement::Reinit { variable, value } => {
             walk_expression(callbacks, value, type_table);
+            callbacks.on_component_reference(variable, type_table);
         }
         Statement::Assert {
             condition,
@@ -174,7 +186,8 @@ pub(crate) fn walk_expression<C: TypeCheckTraversalCallbacks>(
     type_table: &TypeTable,
 ) {
     match expression {
-        Expression::Empty | Expression::Terminal { .. } | Expression::ComponentReference(_) => {}
+        Expression::Empty | Expression::Terminal { .. } => {}
+        Expression::ComponentReference(cr) => callbacks.on_component_reference(cr, type_table),
         Expression::Range { start, step, end } => {
             walk_expression(callbacks, start, type_table);
             if let Some(step_expression) = step {
@@ -229,8 +242,9 @@ pub(crate) fn walk_expression<C: TypeCheckTraversalCallbacks>(
             walk_expression(callbacks, base, type_table);
             walk_subscripts(callbacks, subscripts, type_table);
         }
-        Expression::FieldAccess { base, .. } => {
+        Expression::FieldAccess { base, field } => {
             walk_expression(callbacks, base, type_table);
+            callbacks.on_field_access(base, field, type_table);
         }
     }
 }

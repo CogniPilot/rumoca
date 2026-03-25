@@ -290,3 +290,101 @@ end M;
         prewarmed_member_entries,
     );
 }
+
+#[test]
+fn query_layer_resolves_member_types_in_declaring_class_scope() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "input.mo",
+            r#"operator record SE2
+  Real x;
+  Real y;
+  Real theta;
+end SE2;
+
+model Test2
+  import Pose = SE2;
+  Pose pose;
+end Test2;
+"#,
+        )
+        .expect("synthetic source should parse");
+
+    let snapshot = session.lightweight_snapshot();
+    assert_eq!(
+        snapshot.class_component_member_info_query("Test2", "pose"),
+        Some(("Test2".to_string(), "Pose".to_string())),
+        "member lookup should preserve the declaring class for recursive scope resolution"
+    );
+    assert_eq!(
+        snapshot.class_type_resolution_candidates_in_class_query("Test2", "Pose"),
+        vec!["SE2".to_string(), "Pose".to_string()],
+        "type resolution should honor class-local import aliases"
+    );
+}
+
+#[test]
+fn lightweight_snapshot_preserves_member_queries_across_recoverable_body_errors() {
+    let mut session = Session::default();
+    let valid_source = r#"
+operator record SE2
+  Real x;
+  Real y;
+  Real theta;
+end SE2;
+
+model Test2
+  SE2 pose;
+equation
+  der(pose.x) = 1;
+  der(pose.y) = 0;
+  pose.x = 0;
+end Test2;
+"#;
+    let invalid_source = r#"
+operator record SE2
+  Real x;
+  Real y;
+  Real theta;
+end SE2;
+
+model Test2
+  SE2 pose;
+equation
+  der(pose.x) = 1;
+  der(pose.y) = 0;
+  pose.
+end Test2;
+"#;
+
+    session
+        .add_document("input.mo", valid_source)
+        .expect("valid source should parse");
+    let parse_error = session.update_document("input.mo", invalid_source);
+    assert!(
+        parse_error.is_some(),
+        "incomplete member edit should keep a recoverable parse error"
+    );
+
+    let snapshot = session.lightweight_snapshot();
+    assert_eq!(
+        snapshot.class_component_type_query("input.mo", "Test2", "pose"),
+        Some("SE2".to_string()),
+        "recoverable body edits should keep component-type lookup stable"
+    );
+    assert_eq!(
+        snapshot.class_type_resolution_candidates_query("input.mo", "Test2", "SE2"),
+        vec!["SE2".to_string()],
+        "recoverable body edits should keep type-resolution candidates stable"
+    );
+    assert_eq!(
+        snapshot.class_component_members_query("SE2"),
+        vec![
+            ("x".to_string(), "Real".to_string()),
+            ("y".to_string(), "Real".to_string()),
+            ("theta".to_string(), "Real".to_string()),
+        ],
+        "recoverable body edits should keep last-good member surfaces available"
+    );
+}

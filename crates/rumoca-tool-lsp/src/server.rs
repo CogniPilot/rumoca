@@ -1091,7 +1091,9 @@ impl LanguageServer for ModelicaLanguageServer {
             self.wait_for_source_root_read_prewarm_if_pending().await;
         }
         let stats_before = session_cache_stats();
-        let ast = doc_snapshot.as_ref().and_then(|doc| doc.parsed());
+        let ast = doc_snapshot
+            .as_ref()
+            .and_then(|doc| doc.recovered().or(doc.parsed()));
         let preparation = self
             .prepare_completion(&source, pos, &uri_path, request_token.mutation_epoch)
             .await;
@@ -1435,11 +1437,27 @@ impl LanguageServer for ModelicaLanguageServer {
         }
         let mut session = self.session.write().await;
         let report = session.compile_model_strict_reachable_with_recovery(&data.model_name);
+        let strict_failed = !report.requested_succeeded();
         params.command = Some(Command {
             title: code_lens_title_from_strict_report(report),
             command: String::new(),
             arguments: None,
         });
+        if strict_failed {
+            let mut diagnostics = handlers::compute_diagnostics_with_mode(
+                &doc_snapshot.content,
+                &uri_path,
+                Some(&mut session),
+                rumoca_session::compile::SemanticDiagnosticsMode::Save,
+            );
+            drop(session);
+            diagnostics.extend(self.stored_source_root_load_diagnostics(&uri_path).await);
+            self.client
+                .publish_diagnostics(uri, diagnostics, None)
+                .await;
+        } else {
+            drop(session);
+        }
         Ok(params)
     }
 

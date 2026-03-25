@@ -293,8 +293,8 @@ impl Session {
     ) -> PackageDefMap {
         let mut def_map = PackageDefMap::default();
         for uri in uris {
-            if let Some(summary) = self.file_summary_query(uri) {
-                def_map.extend_from_summary(summary);
+            if let Some(summary) = self.interface_file_summary(uri) {
+                def_map.extend_from_summary(&summary);
             }
         }
         for summary in detached_summaries {
@@ -895,8 +895,8 @@ impl Session {
                 .map(|entry| &entry.index);
         }
 
-        let summary = self.file_summary_query(uri)?;
-        let index = FileClassInterfaceIndex::from_summary(summary);
+        let summary = self.interface_file_summary(uri)?;
+        let index = FileClassInterfaceIndex::from_summary(&summary);
         record_scope_query_miss();
         self.query_state
             .ast
@@ -907,6 +907,15 @@ impl Session {
             .class_interface_query_cache
             .get(&file_id)
             .map(|entry| &entry.index)
+    }
+
+    pub(crate) fn interface_file_summary(&self, uri: &str) -> Option<FileSummary> {
+        let file_id = self.file_id_for_uri(uri)?;
+        let document = self.documents.get(uri)?;
+        Some(FileSummary::from_definition(
+            file_id,
+            document.summary_definition(),
+        ))
     }
 
     pub(in crate::session) fn class_body_semantics_query(
@@ -1065,6 +1074,32 @@ impl Session {
             })
     }
 
+    /// Resolve type candidates using one class scope from the class-interface layer.
+    pub fn class_type_resolution_candidates_in_class_query(
+        &mut self,
+        class_name: &str,
+        raw_name: &str,
+    ) -> Vec<String> {
+        let Some(target) = self.lookup_query_class_target(class_name) else {
+            return if raw_name.is_empty() {
+                Vec::new()
+            } else {
+                vec![raw_name.to_string()]
+            };
+        };
+        self.class_interface_query(&target.uri, &target.qualified_name)
+            .map(|class_interface| {
+                class_interface.type_resolution_candidates(&target.qualified_name, raw_name)
+            })
+            .unwrap_or_else(|| {
+                if raw_name.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![raw_name.to_string()]
+                }
+            })
+    }
+
     /// Resolve one local component type for a class scope using cached parsed AST.
     pub fn class_component_type_query(
         &mut self,
@@ -1078,6 +1113,22 @@ impl Session {
                     .component_type(component_name)
                     .map(ToString::to_string)
             })
+    }
+
+    /// Resolve one component member type and its declaring class from the query layer.
+    pub fn class_component_member_info_query(
+        &mut self,
+        class_name: &str,
+        component_name: &str,
+    ) -> Option<(String, String)> {
+        let target = self.lookup_query_class_target(class_name)?;
+        let mut visiting = std::collections::HashSet::<String>::new();
+        self.class_component_member_info_in_class(
+            &target.uri,
+            &target.qualified_name,
+            component_name,
+            &mut visiting,
+        )
     }
 
     /// Resolve local completion entries for one class scope from the class-interface layer.
@@ -1304,6 +1355,69 @@ impl Session {
             &mut self.query_state.ast.class_component_members_query_cache,
             MAX_SESSION_CLASS_MEMBER_QUERY_CACHE_ENTRIES,
         );
+    }
+
+    fn class_component_member_info_in_class(
+        &mut self,
+        uri: &str,
+        qualified_name: &str,
+        component_name: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<(String, String)> {
+        if !visiting.insert(qualified_name.to_string()) {
+            return None;
+        }
+
+        let Some(class_interface) = self.class_interface_query(uri, qualified_name) else {
+            visiting.remove(qualified_name);
+            return None;
+        };
+        let mut inherited = None;
+
+        for ext in class_interface.extends() {
+            let base_candidates = self.class_type_resolution_candidates_in_class_query(
+                qualified_name,
+                ext.base_name(),
+            );
+            if let Some(info) = self.class_component_member_info_in_base_candidates(
+                &base_candidates,
+                component_name,
+                visiting,
+            ) {
+                inherited = Some(info);
+            }
+            if ext.break_names().iter().any(|name| name == component_name) {
+                inherited = None;
+            }
+        }
+
+        let local = class_interface
+            .component_type(component_name)
+            .map(|member_type| (qualified_name.to_string(), member_type.to_string()));
+        visiting.remove(qualified_name);
+        local.or(inherited)
+    }
+
+    fn class_component_member_info_in_base_candidates(
+        &mut self,
+        base_candidates: &[String],
+        component_name: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<(String, String)> {
+        for candidate in base_candidates {
+            let Some(base_target) = self.lookup_query_class_target(candidate) else {
+                continue;
+            };
+            if let Some(info) = self.class_component_member_info_in_class(
+                &base_target.uri,
+                &base_target.qualified_name,
+                component_name,
+                visiting,
+            ) {
+                return Some(info);
+            }
+        }
+        None
     }
 
     fn collect_query_class_component_members(
