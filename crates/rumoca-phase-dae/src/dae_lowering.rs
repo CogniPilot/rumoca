@@ -786,6 +786,7 @@ fn build_array_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
 }
 
 /// Check if an expression contains any phantom VarRef that needs expansion.
+#[allow(clippy::only_used_in_recursion)]
 fn expr_has_phantom_refs(
     expr: &dae::Expression,
     known_names: &HashSet<String>,
@@ -852,13 +853,13 @@ fn scalarize_expr_at(
             let n = name.as_str();
             if subscripts.is_empty() {
                 // Phantom base name — replace with the k-th indexed variant
-                if let Some(variants) = phantom_map.get(n) {
-                    if k < variants.len() {
-                        return dae::Expression::VarRef {
-                            name: dae::VarName::new(&variants[k]),
-                            subscripts: vec![],
-                        };
-                    }
+                if let Some(variants) = phantom_map.get(n)
+                    && k < variants.len()
+                {
+                    return dae::Expression::VarRef {
+                        name: dae::VarName::new(&variants[k]),
+                        subscripts: vec![],
+                    };
                 }
                 // Declared array variable — add subscript [k+1] (1-based)
                 if array_dims.contains_key(n) {

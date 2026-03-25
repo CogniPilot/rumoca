@@ -352,35 +352,34 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
 
     // Handle Min/Max/Sum with single Array argument: expand to chained calls.
     // Modelica `min({a,b,c})` → C `fmin(fmin(a,b),c)` (not `fmin((double[]){a,b,c})`)
-    if matches!(func_name.as_str(), "Min" | "Max" | "Sum") {
-        let args_val = get_field(builtin, "args")?;
-        if args_val.len() == Some(1) {
-            if let Ok(first_arg) = args_val.get_item(&Value::from(0)) {
-                // Direct Array argument: expand inline
-                if let Ok(array) = get_field(&first_arg, "Array")
-                    && let Ok(elements) = get_field(&array, "elements")
-                {
-                    let len = elements.len().unwrap_or(0);
-                    if len > 0 {
-                        return render_chained_minmaxsum(&func_name, &elements, len, cfg);
-                    }
-                }
-                // ArrayComprehension argument for C targets: unroll to chained sum
-                if func_name == "Sum"
-                    && matches!(cfg.if_style, super::IfStyle::Ternary)
-                    && get_field(&first_arg, "ArrayComprehension").is_ok()
-                {
-                    let unrolled = render_expression(&first_arg, cfg)?;
-                    // If the comprehension unrolled to a scalar (e.g., REAL_C(0.0)
-                    // for empty range), return it directly
-                    if !unrolled.starts_with(&cfg.array_start) {
-                        return Ok(unrolled);
-                    }
-                    // Otherwise it's a C array literal — not valid for __rumoca_sum
-                    // since it needs (arr, n). For now, return 0 for empty results.
-                    return Ok(format!("({unrolled})"));
-                }
+    if matches!(func_name.as_str(), "Min" | "Max" | "Sum")
+        && let args_val = get_field(builtin, "args")?
+        && args_val.len() == Some(1)
+        && let Ok(first_arg) = args_val.get_item(&Value::from(0))
+    {
+        // Direct Array argument: expand inline
+        if let Ok(array) = get_field(&first_arg, "Array")
+            && let Ok(elements) = get_field(&array, "elements")
+        {
+            let len = elements.len().unwrap_or(0);
+            if len > 0 {
+                return render_chained_minmaxsum(&func_name, &elements, len, cfg);
             }
+        }
+        // ArrayComprehension argument for C targets: unroll to chained sum
+        if func_name == "Sum"
+            && matches!(cfg.if_style, super::IfStyle::Ternary)
+            && get_field(&first_arg, "ArrayComprehension").is_ok()
+        {
+            let unrolled = render_expression(&first_arg, cfg)?;
+            // If the comprehension unrolled to a scalar (e.g., REAL_C(0.0)
+            // for empty range), return it directly
+            if !unrolled.starts_with(&cfg.array_start) {
+                return Ok(unrolled);
+            }
+            // Otherwise it's a C array literal — not valid for __rumoca_sum
+            // since it needs (arr, n). For now, return 0 for empty results.
+            return Ok(format!("({unrolled})"));
         }
     }
 
@@ -766,10 +765,11 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
     let len = indices.len().unwrap_or(0);
 
     // For C targets, try to unroll the comprehension at render time
-    if matches!(cfg.if_style, super::IfStyle::Ternary) && len == 1 {
-        if let Ok(unrolled) = try_unroll_c_comprehension(array_comp, cfg) {
-            return Ok(unrolled);
-        }
+    if matches!(cfg.if_style, super::IfStyle::Ternary)
+        && len == 1
+        && let Ok(unrolled) = try_unroll_c_comprehension(array_comp, cfg)
+    {
+        return Ok(unrolled);
     }
 
     let body = get_field(array_comp, "expr")

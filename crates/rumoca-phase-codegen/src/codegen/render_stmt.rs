@@ -180,14 +180,14 @@ fn render_assignment(assign: &Value, cfg: &ExprConfig, indent: &str) -> RenderRe
 
     // For C backends (IfStyle::Ternary), array assignment `x = {a, b, c}` is illegal.
     // Instead, emit element-wise assignments: `x[0] = a; x[1] = b; x[2] = c;`
-    if matches!(cfg.if_style, IfStyle::Ternary) {
-        if let Some(elem_strs) = try_extract_array_elements(&value_node, cfg)? {
-            let mut lines = Vec::new();
-            for (i, elem) in elem_strs.iter().enumerate() {
-                lines.push(format!("{indent}{comp}[{i}] = {elem};"));
-            }
-            return Ok(lines.join("\n"));
+    if matches!(cfg.if_style, IfStyle::Ternary)
+        && let Some(elem_strs) = try_extract_array_elements(&value_node, cfg)?
+    {
+        let mut lines = Vec::new();
+        for (i, elem) in elem_strs.iter().enumerate() {
+            lines.push(format!("{indent}{comp}[{i}] = {elem};"));
         }
+        return Ok(lines.join("\n"));
     }
 
     let value = render_expression(&value_node, cfg)?;
@@ -207,21 +207,20 @@ fn try_extract_array_elements(
     value: &Value,
     cfg: &ExprConfig,
 ) -> Result<Option<Vec<String>>, minijinja::Error> {
-    if let Ok(array) = get_field(value, "Array") {
-        if let Ok(elements) = get_field(&array, "elements") {
-            if let Some(len) = elements.len() {
-                let mut strs = Vec::with_capacity(len);
-                for i in 0..len {
-                    if let Ok(elem) = elements.get_item(&Value::from(i)) {
-                        // Try DAE IR renderer first, fall back to AST renderer
-                        let rendered = render_expression(&elem, cfg)
-                            .or_else(|_| render_ast_expression(&elem, cfg))?;
-                        strs.push(rendered);
-                    }
-                }
-                return Ok(Some(strs));
+    if let Ok(array) = get_field(value, "Array")
+        && let Ok(elements) = get_field(&array, "elements")
+        && let Some(len) = elements.len()
+    {
+        let mut strs = Vec::with_capacity(len);
+        for i in 0..len {
+            if let Ok(elem) = elements.get_item(&Value::from(i)) {
+                // Try DAE IR renderer first, fall back to AST renderer
+                let rendered = render_expression(&elem, cfg)
+                    .or_else(|_| render_ast_expression(&elem, cfg))?;
+                strs.push(rendered);
             }
         }
+        return Ok(Some(strs));
     }
     Ok(None)
 }
@@ -387,10 +386,11 @@ fn extract_for_range(range_val: &Value, cfg: &ExprConfig) -> Result<ForRange, mi
         return extract_for_range_from_ast_range(&range_node, cfg);
     }
     // The value itself might be a Range node (not wrapped)
-    if let Ok(start_val) = range_val.get_attr("start") {
-        if !start_val.is_undefined() && !start_val.is_none() {
-            return extract_for_range_from_ast_range(range_val, cfg);
-        }
+    if let Ok(start_val) = range_val.get_attr("start")
+        && !start_val.is_undefined()
+        && !start_val.is_none()
+    {
+        return extract_for_range_from_ast_range(range_val, cfg);
     }
     // Fallback: render as raw expression
     let raw = render_ast_expression(range_val, cfg)?;

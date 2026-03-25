@@ -392,15 +392,15 @@ fn contains_var_ref(expr: &Value, var_name: &str) -> bool {
     if is_var_ref_of(expr, var_name) {
         return true;
     }
-    if let Ok(binary) = get_field(expr, "Binary") {
-        if let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs")) {
-            return contains_var_ref(&lhs, var_name) || contains_var_ref(&rhs, var_name);
-        }
+    if let Ok(binary) = get_field(expr, "Binary")
+        && let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs"))
+    {
+        return contains_var_ref(&lhs, var_name) || contains_var_ref(&rhs, var_name);
     }
-    if let Ok(unary) = get_field(expr, "Unary") {
-        if let Ok(inner) = get_field(&unary, "rhs") {
-            return contains_var_ref(&inner, var_name);
-        }
+    if let Ok(unary) = get_field(expr, "Unary")
+        && let Ok(inner) = get_field(&unary, "rhs")
+    {
+        return contains_var_ref(&inner, var_name);
     }
     false
 }
@@ -479,19 +479,19 @@ fn find_algebraic_rhs_additive(
 /// Flatten a Value expression tree of Add/Sub into signed terms.
 fn flatten_value_add_terms(expr: &Value, positive: bool, terms: &mut Vec<(bool, Value)>) {
     if let Ok(binary) = get_field(expr, "Binary") {
-        if is_add_op(&binary) {
-            if let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs")) {
-                flatten_value_add_terms(&lhs, positive, terms);
-                flatten_value_add_terms(&rhs, positive, terms);
-                return;
-            }
+        if is_add_op(&binary)
+            && let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs"))
+        {
+            flatten_value_add_terms(&lhs, positive, terms);
+            flatten_value_add_terms(&rhs, positive, terms);
+            return;
         }
-        if is_sub_op(&binary) {
-            if let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs")) {
-                flatten_value_add_terms(&lhs, positive, terms);
-                flatten_value_add_terms(&rhs, !positive, terms);
-                return;
-            }
+        if is_sub_op(&binary)
+            && let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs"))
+        {
+            flatten_value_add_terms(&lhs, positive, terms);
+            flatten_value_add_terms(&rhs, !positive, terms);
+            return;
         }
     }
     // Check for Unary Minus
@@ -500,11 +500,11 @@ fn flatten_value_add_terms(expr: &Value, positive: bool, terms: &mut Vec<(bool, 
             .ok()
             .map(|v| v.to_string())
             .unwrap_or_default();
-        if op.contains("Minus") || op.contains("Neg") {
-            if let Ok(inner) = get_field(&unary, "rhs") {
-                flatten_value_add_terms(&inner, !positive, terms);
-                return;
-            }
+        if (op.contains("Minus") || op.contains("Neg"))
+            && let Ok(inner) = get_field(&unary, "rhs")
+        {
+            flatten_value_add_terms(&inner, !positive, terms);
+            return;
         }
     }
     terms.push((positive, expr.clone()));
