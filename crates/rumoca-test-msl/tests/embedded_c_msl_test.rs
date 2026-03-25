@@ -127,25 +127,18 @@ fn find_mo_files(msl_dir: &Path) -> Vec<PathBuf> {
 // =============================================================================
 
 fn target_models() -> Vec<String> {
-    [
-        "Modelica.Blocks.Examples.DemonstrateSignalExtrema",
-        "Modelica.Electrical.Analog.Examples.ChuaCircuit",
-        "Modelica.Electrical.Analog.Examples.DemoPowerSupplyWithBuffer",
-        "Modelica.Electrical.Analog.Examples.IdealTriacCircuit",
-        "Modelica.Electrical.Analog.Examples.NandGate",
-        "Modelica.Electrical.Analog.Examples.OpAmps.LCOscillator",
-        "Modelica.Electrical.Analog.Examples.OpAmps.Multivibrator",
-        "Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator",
-        "Modelica.Electrical.Analog.Examples.OvervoltageProtection",
-        "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
-        "Modelica.Electrical.Batteries.Examples.SuperCapDischargeCharge",
-        "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor",
-        "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
-        "Modelica.Thermal.HeatTransfer.Examples.TwoMasses",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/msl_tests/msl_simulation_targets_180.json");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read target list {}: {e}", path.display()));
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).expect("invalid JSON in target list");
+    value
+        .as_array()
+        .expect("target list must be a JSON array")
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect()
 }
 
 fn apply_env_filters(names: &mut Vec<String>) {

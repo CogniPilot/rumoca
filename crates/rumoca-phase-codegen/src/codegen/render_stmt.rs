@@ -235,31 +235,60 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
     let equations = for_stmt.get_attr("equations").ok();
 
     // Extract first index (simplification: handle one index for now)
-    let (loop_var, range_str) = extract_for_loop_index(&indices, cfg)?;
+    let (loop_var, range_parts) = extract_for_loop_index(&indices, cfg)?;
 
     // Generate for loop header based on config
     match cfg.if_style {
         IfStyle::Ternary => {
-            if let Some((start, end)) = parse_colon_range(&range_str) {
-                result.push_str(&format!(
-                    "{indent}for (int {loop_var} = {start}; {loop_var} <= {end}; {loop_var}++) {{\n"
-                ));
-            } else {
-                result.push_str(&format!(
-                    "{indent}for (int {loop_var} = 0; {loop_var} < /* {range_str} */; {loop_var}++) {{\n"
-                ));
+            // C-style for loop: Modelica `for i in start:end` → `for (int i = start; i <= end; i++)`
+            // Modelica `for i in start:step:end` → `for (int i = start; i <= end; i += step)`
+            match &range_parts {
+                ForRange::StartEnd { start, end } => {
+                    result.push_str(&format!(
+                        "{indent}for (int {loop_var} = {start}; {loop_var} <= {end}; {loop_var}++) {{\n"
+                    ));
+                }
+                ForRange::StartStepEnd { start, step, end } => {
+                    result.push_str(&format!(
+                        "{indent}for (int {loop_var} = {start}; {loop_var} <= {end}; {loop_var} += {step}) {{\n"
+                    ));
+                }
+                ForRange::Raw(raw) => {
+                    result.push_str(&format!(
+                        "{indent}for (int {loop_var} = 0; {loop_var} < /* {raw} */; {loop_var}++) {{\n"
+                    ));
+                }
             }
         }
         IfStyle::Function => {
-            // When python_range is true, render_ast_range already produces `range(...)`,
-            // so we emit `for var in <range_str>:` directly to avoid double-wrapping.
-            if cfg.python_range {
-                result.push_str(&format!("{indent}for {loop_var} in {range_str}:\n"));
-            } else {
-                result.push_str(&format!("{indent}for {loop_var} in range({range_str}):\n"));
+            // Python-style for loop: Modelica `for i in start:end` → `for i in range(start, end + 1)`
+            // Python range() is exclusive on the upper bound, so end+1.
+            match &range_parts {
+                ForRange::StartEnd { start, end } => {
+                    result.push_str(&format!(
+                        "{indent}for {loop_var} in range({start}, {end} + 1):\n"
+                    ));
+                }
+                ForRange::StartStepEnd { start, step, end } => {
+                    result.push_str(&format!(
+                        "{indent}for {loop_var} in range({start}, {end} + 1, {step}):\n"
+                    ));
+                }
+                ForRange::Raw(raw) => {
+                    result.push_str(&format!(
+                        "{indent}for {loop_var} in range({raw}):\n"
+                    ));
+                }
             }
         }
         IfStyle::Modelica => {
+            let range_str = match &range_parts {
+                ForRange::StartEnd { start, end } => format!("{start}:{end}"),
+                ForRange::StartStepEnd { start, step, end } => {
+                    format!("{start}:{step}:{end}")
+                }
+                ForRange::Raw(raw) => raw.clone(),
+            };
             result.push_str(&format!("{indent}for {loop_var} in {range_str} loop\n"));
         }
     }
@@ -287,12 +316,32 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
     Ok(result)
 }
 
-/// Extract loop variable and range from for loop indices.
+/// Structured representation of a for-loop range.
+enum ForRange {
+    /// `start:end` — simple range (Modelica `for i in 1:10`)
+    StartEnd { start: String, end: String },
+    /// `start:step:end` — stepped range (Modelica `for i in 1:2:10`)
+    StartStepEnd {
+        start: String,
+        step: String,
+        end: String,
+    },
+    /// Fallback: raw rendered string (non-range expression)
+    Raw(String),
+}
+
+/// Extract loop variable and structured range from for loop indices.
 fn extract_for_loop_index(
     indices: &Option<Value>,
     cfg: &ExprConfig,
-) -> Result<(String, String), minijinja::Error> {
-    let default = ("i".to_string(), "1:1".to_string());
+) -> Result<(String, ForRange), minijinja::Error> {
+    let default = (
+        "i".to_string(),
+        ForRange::StartEnd {
+            start: "1".to_string(),
+            end: "1".to_string(),
+        },
+    );
 
     let Some(indices_val) = indices else {
         return Ok(default);
@@ -319,24 +368,83 @@ fn extract_for_loop_index(
         })
         .unwrap_or_else(|| "i".to_string());
 
-    let range = first
-        .get_attr("range")
-        .and_then(|r| render_ast_expression(&r, cfg))
-        .unwrap_or_else(|_| "1:1".to_string());
+    let range = if let Ok(range_val) = first.get_attr("range") {
+        extract_for_range(&range_val, cfg)?
+    } else {
+        ForRange::StartEnd {
+            start: "1".to_string(),
+            end: "1".to_string(),
+        }
+    };
 
     Ok((ident, range))
 }
 
-/// Parse a "start:end" range string into integer bounds for C for-loops.
-/// Returns `None` if the format doesn't match or values aren't integers.
-fn parse_colon_range(range_str: &str) -> Option<(i64, i64)> {
-    let parts: Vec<&str> = range_str.splitn(2, ':').collect();
-    if parts.len() == 2 {
-        let start = parts[0].trim().parse::<i64>().ok()?;
-        let end = parts[1].trim().parse::<i64>().ok()?;
-        Some((start, end))
+/// Try to decompose a range expression into structured ForRange parts.
+fn extract_for_range(range_val: &Value, cfg: &ExprConfig) -> Result<ForRange, minijinja::Error> {
+    // Check if this is an AST Range node (has start/end attributes)
+    if let Ok(range_node) = get_field(range_val, "Range") {
+        return extract_for_range_from_ast_range(&range_node, cfg);
+    }
+    // The value itself might be a Range node (not wrapped)
+    if let Ok(start_val) = range_val.get_attr("start") {
+        if !start_val.is_undefined() && !start_val.is_none() {
+            return extract_for_range_from_ast_range(range_val, cfg);
+        }
+    }
+    // Fallback: render as raw expression
+    let raw = render_ast_expression(range_val, cfg)?;
+    // Try to parse colon-separated range from the rendered string
+    if let Some(parts) = parse_colon_range(&raw) {
+        return Ok(parts);
+    }
+    Ok(ForRange::Raw(raw))
+}
+
+/// Extract ForRange from an AST Range node with start/end/step attributes.
+fn extract_for_range_from_ast_range(
+    range_node: &Value,
+    cfg: &ExprConfig,
+) -> Result<ForRange, minijinja::Error> {
+    let start = range_node
+        .get_attr("start")
+        .and_then(|s| render_ast_expression(&s, cfg))
+        .unwrap_or_else(|_| "1".to_string());
+    let end = range_node
+        .get_attr("end")
+        .and_then(|e| render_ast_expression(&e, cfg))
+        .unwrap_or_else(|_| "1".to_string());
+    let step = range_node.get_attr("step").ok();
+
+    if let Some(ref step_val) = step
+        && !step_val.is_none()
+        && !step_val.is_undefined()
+    {
+        let step_str = render_ast_expression(step_val, cfg)?;
+        Ok(ForRange::StartStepEnd {
+            start,
+            step: step_str,
+            end,
+        })
     } else {
-        None
+        Ok(ForRange::StartEnd { start, end })
+    }
+}
+
+/// Try to parse a colon-separated range string like "1:13" or "1:2:13".
+fn parse_colon_range(s: &str) -> Option<ForRange> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        2 => Some(ForRange::StartEnd {
+            start: parts[0].trim().to_string(),
+            end: parts[1].trim().to_string(),
+        }),
+        3 => Some(ForRange::StartStepEnd {
+            start: parts[0].trim().to_string(),
+            step: parts[1].trim().to_string(),
+            end: parts[2].trim().to_string(),
+        }),
+        _ => None,
     }
 }
 

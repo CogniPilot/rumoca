@@ -506,7 +506,10 @@ fn render_flat_equation_function(eq: Value, config: Value) -> RenderResult {
 /// {% endfor %}
 /// ```
 fn render_statement_function(stmt: Value, config: Value, indent: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
+    let mut cfg = ExprConfig::from_value(&config);
+    // Function bodies use local arrays / lists, so array subscripts must
+    // always use bracket notation — see render_statements_function.
+    cfg.subscript_underscore = false;
     let indent_str = indent.as_str().unwrap_or("    ");
     render_statement(&stmt, &cfg, indent_str)
 }
@@ -518,7 +521,11 @@ fn render_statement_function(stmt: Value, config: Value, indent: Value) -> Rende
 /// {{ render_statements(func.body, cfg, "    ") }}
 /// ```
 fn render_statements_function(stmts: Value, config: Value, indent: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
+    let mut cfg = ExprConfig::from_value(&config);
+    // Function bodies use local C arrays / Python lists, so array subscripts
+    // must always use bracket notation (y[i]) — never the underscore style
+    // (y_i) which is reserved for top-level DAE named-scalar unpacking.
+    cfg.subscript_underscore = false;
     let indent_str = indent.as_str().unwrap_or("    ");
     render_statements(&stmts, &cfg, indent_str)
 }

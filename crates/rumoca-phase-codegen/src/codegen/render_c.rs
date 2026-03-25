@@ -349,7 +349,60 @@ fn find_algebraic_rhs_subtraction(
         return Some(lhs_expr);
     }
 
+    // Case 3: 0 = coeff * var - expr → var = expr / coeff
+    if !contains_der(&lhs_side) && !contains_der(&rhs_side) {
+        if let Some(coeff) = extract_mul_coefficient(&lhs_side, var_name, cfg) {
+            let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_default();
+            return Some(format!("({rhs_expr}) / ({coeff})"));
+        }
+        // Case 4: 0 = expr - coeff * var → var = expr / coeff
+        if let Some(coeff) = extract_mul_coefficient(&rhs_side, var_name, cfg) {
+            let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_default();
+            return Some(format!("({lhs_expr}) / ({coeff})"));
+        }
+    }
+
     None
+}
+
+/// Extract the coefficient from a `coeff * var` or `var * coeff` expression.
+/// Returns the rendered coefficient string if the expression is a Mul with one
+/// side being a VarRef to the target variable.
+fn extract_mul_coefficient(expr: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    let binary = get_field(expr, "Binary").ok()?;
+    if !is_mul_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    let rhs = get_field(&binary, "rhs").ok()?;
+
+    // coeff * var
+    if is_var_ref_of(&rhs, var_name) && !contains_var_ref(&lhs, var_name) {
+        return render_expression(&lhs, cfg).ok();
+    }
+    // var * coeff
+    if is_var_ref_of(&lhs, var_name) && !contains_var_ref(&rhs, var_name) {
+        return render_expression(&rhs, cfg).ok();
+    }
+    None
+}
+
+/// Check if an expression tree contains a VarRef matching the given name.
+fn contains_var_ref(expr: &Value, var_name: &str) -> bool {
+    if is_var_ref_of(expr, var_name) {
+        return true;
+    }
+    if let Ok(binary) = get_field(expr, "Binary") {
+        if let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs")) {
+            return contains_var_ref(&lhs, var_name) || contains_var_ref(&rhs, var_name);
+        }
+    }
+    if let Ok(unary) = get_field(expr, "Unary") {
+        if let Ok(inner) = get_field(&unary, "rhs") {
+            return contains_var_ref(&inner, var_name);
+        }
+    }
+    false
 }
 
 /// Try to extract algebraic RHS from an additive equation (connection equation form).
