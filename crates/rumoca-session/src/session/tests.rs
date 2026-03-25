@@ -587,8 +587,7 @@ fn session_package_queries_keep_durable_external_roots_warm_across_local_summary
         .map(|entry| entry.signature.clone())
         .expect("second lookup should keep the durable external source-root cache populated");
     assert_eq!(
-        cached_signature_after,
-        cached_signature_before,
+        cached_signature_after, cached_signature_before,
         "local edits should keep the durable external source-root cache signature stable"
     );
 }

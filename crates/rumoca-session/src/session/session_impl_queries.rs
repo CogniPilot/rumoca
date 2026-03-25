@@ -1375,10 +1375,8 @@ impl Session {
         let mut inherited = None;
 
         for ext in class_interface.extends() {
-            let base_candidates = self.class_type_resolution_candidates_in_class_query(
-                qualified_name,
-                ext.base_name(),
-            );
+            let base_candidates = self
+                .class_type_resolution_candidates_in_class_query(qualified_name, ext.base_name());
             if let Some(info) = self.class_component_member_info_in_base_candidates(
                 &base_candidates,
                 component_name,

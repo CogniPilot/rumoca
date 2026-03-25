@@ -1448,7 +1448,11 @@ fn code_lens_resolve_failure_warms_save_diagnostics_for_problems() {
             session.update_document(&active_key, active_source);
         }
         assert!(
-            !server.session.read().await.has_semantic_diagnostics_cached("Test2"),
+            !server
+                .session
+                .read()
+                .await
+                .has_semantic_diagnostics_cached("Test2"),
             "failure test should start with a cold save-diagnostics cache"
         );
 
@@ -1480,7 +1484,11 @@ fn code_lens_resolve_failure_warms_save_diagnostics_for_problems() {
             "expected strict compile failure title, got: {title}"
         );
         assert!(
-            server.session.read().await.has_semantic_diagnostics_cached("Test2"),
+            server
+                .session
+                .read()
+                .await
+                .has_semantic_diagnostics_cached("Test2"),
             "code lens failure should warm save diagnostics so Problems can publish semantic errors"
         );
         assert!(
@@ -1489,7 +1497,6 @@ fn code_lens_resolve_failure_warms_save_diagnostics_for_problems() {
         );
     });
 }
-
 
 #[test]
 fn code_lens_defers_when_required_source_roots_are_unloaded() {
