@@ -22,6 +22,7 @@ msl
 # direnv artifacts
 *.direnv
 *.envrc
+.env
 
 # Vim swap files
 *.swp
