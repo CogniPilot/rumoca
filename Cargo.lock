@@ -3184,6 +3184,7 @@ dependencies = [
 name = "rumoca-phase-solve"
 version = "0.8.11"
 dependencies = [
+ "indexmap",
  "rumoca-core",
  "rumoca-eval-dae",
  "rumoca-ir-core",

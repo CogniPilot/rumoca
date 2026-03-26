@@ -1014,7 +1014,7 @@ pub(super) fn prepare_dae_for_template_codegen_only(
     // references to other parameters (e.g., G_T = G_T_ref → G_T = 300.15).
     trace_step("fold_start_values", &mut || {
         run_timeout_step(budget, || {
-            rumoca_ir_dae::fold_start_values_to_literals(&mut dae)
+            rumoca_phase_solve::fold_start_values_to_literals(&mut dae)
         })
     })?;
 
@@ -1023,7 +1023,7 @@ pub(super) fn prepare_dae_for_template_codegen_only(
     // parameter after its dependencies have been initialized.
     trace_step("sort_parameters_by_start_deps", &mut || {
         run_timeout_step(budget, || {
-            rumoca_ir_dae::sort_parameters_by_start_deps(&mut dae)
+            rumoca_phase_solve::sort_parameters_by_start_deps(&mut dae)
         })
     })?;
 
@@ -1033,7 +1033,7 @@ pub(super) fn prepare_dae_for_template_codegen_only(
     // and Nr.p.v = G.n.v) produce stale values.
     trace_step("sort_algebraics_by_equation_deps", &mut || {
         run_timeout_step(budget, || {
-            rumoca_ir_dae::sort_algebraics_by_equation_deps(&mut dae)
+            rumoca_phase_solve::sort_algebraics_by_equation_deps(&mut dae)
         })
     })?;
 
