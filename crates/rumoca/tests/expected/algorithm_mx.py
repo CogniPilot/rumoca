@@ -352,6 +352,78 @@ def create_model():
     }
 
 
+# =========================================================================
+# Convenience Functions
+# =========================================================================
+
+def get_state_names():
+    """Get list of state variable names."""
+    return ['x']
+
+
+def get_param_names():
+    """Get list of parameter names."""
+    return ['k']
+
+
+def get_input_names():
+    """Get list of input variable names."""
+    return []
+
+
+def simulate(x0=None, p0=None, u0=None, t_span=(0.0, 1.0), dt=0.01):
+    """Simulate the model using CasADi integrator.
+
+    Args:
+        x0: Initial state (numpy array). Uses model defaults if None.
+        p0: Parameters (numpy array). Uses model defaults if None.
+        u0: Inputs (numpy array). Uses zeros if None.
+        t_span: Tuple of (t0, tf) time span.
+        dt: Integration time step.
+
+    Returns:
+        Tuple of (times, states) where times is a 1-D array of length
+        n_steps+1 and states is an (n_x, n_steps+1) numpy array.
+    """
+    model = create_model()
+    if x0 is None:
+        x0 = model['x0']
+    if p0 is None:
+        p0 = model['p0']
+    if u0 is None:
+        u0 = np.zeros(model['n_u'])
+
+    t0, tf = t_span
+    tgrid = np.arange(t0, tf + dt * 0.5, dt)
+    integrator = model['build_integrator'](tgrid)
+    p_full = np.concatenate([p0, u0])
+    result = integrator(x0=x0, p=p_full)
+    states = np.array(result['xf'])
+    return tgrid, states
+
+
+def simulate_csv(t_end=1.0, dt=0.01):
+    """Run simulation and return CSV string.
+
+    Args:
+        t_end: End time (start is always 0).
+        dt: Integration time step.
+
+    Returns:
+        CSV string with header row and one row per time step.
+    """
+    ts, xs = simulate(t_span=(0.0, t_end), dt=dt)
+    names = get_state_names()
+    header = "time," + ",".join(names)
+    rows = [header]
+    for j in range(len(ts)):
+        row = [f"{float(ts[j]):.10g}"]
+        for i in range(xs.shape[0]):
+            row.append(f"{float(xs[i, j]):.10g}")
+        rows.append(",".join(row))
+    return "\n".join(rows)
+
+
 if __name__ == '__main__':
     model = create_model()
     print(f"States ({model['n_x']}): {model['state_names']}")
@@ -368,3 +440,8 @@ if __name__ == '__main__':
     if model['n_x'] > 0:
         J = dae_fn.jacobian()
         print(f"\nJacobian computable: {J}")
+
+    # Quick simulation demo
+    if model['n_x'] > 0:
+        ts, xs = simulate()
+        print(f"\nSimulated {len(ts)} steps, final state: {xs[:, -1]}")

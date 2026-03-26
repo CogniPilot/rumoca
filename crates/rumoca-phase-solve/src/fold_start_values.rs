@@ -6,8 +6,8 @@
 //! start expressions using a fixed-point approach, replacing evaluable expressions
 //! with `Literal::Real(value)`.
 
-use rumoca_ir_dae::{BuiltinFunction, Dae, Expression, Literal, VarName, Variable};
 use rumoca_ir_core::{OpBinary, OpUnary};
+use rumoca_ir_dae::{BuiltinFunction, Dae, Expression, Literal, VarName, Variable};
 use std::collections::HashMap;
 
 /// Evaluate all parameter/state/constant start expressions to numeric literals
@@ -113,7 +113,8 @@ fn eval_const_expr(expr: &Expression, env: &HashMap<String, f64>) -> Option<f64>
 
         Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
             env.get(name.as_str()).copied().or_else(|| {
-                rumoca_ir_dae::component_base_name(name.as_str()).and_then(|base| env.get(&base).copied())
+                rumoca_ir_dae::component_base_name(name.as_str())
+                    .and_then(|base| env.get(&base).copied())
             })
         }
 
