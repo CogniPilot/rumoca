@@ -673,17 +673,17 @@ fn builtin_templates_json() -> Value {
             "language": "python",
             "source": rumoca_session::runtime::templates::CASADI_MX,
         },
-        {
-            "id": "cyecca.py.jinja",
-            "label": "Cyecca (Python)",
-            "language": "python",
-            "source": rumoca_session::runtime::templates::CYECCA,
+{
+            "id": "embedded_c.h.jinja",
+            "label": "Embedded C Header",
+            "language": "c",
+            "source": rumoca_session::runtime::templates::EMBEDDED_C_H,
         },
         {
-            "id": "embedded_c.c.jinja",
-            "label": "Embedded C",
+            "id": "embedded_c_impl.c.jinja",
+            "label": "Embedded C Implementation",
             "language": "c",
-            "source": rumoca_session::runtime::templates::EMBEDDED_C,
+            "source": rumoca_session::runtime::templates::EMBEDDED_C_IMPL,
         },
         {
             "id": "dae_modelica.mo.jinja",
@@ -744,8 +744,8 @@ fn builtin_template_source(template_id: &str) -> Option<&'static str> {
         "julia_mtk.jl.jinja" => Some(rumoca_session::runtime::templates::JULIA_MTK),
         "casadi_sx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_SX),
         "casadi_mx.py.jinja" => Some(rumoca_session::runtime::templates::CASADI_MX),
-        "cyecca.py.jinja" => Some(rumoca_session::runtime::templates::CYECCA),
-        "embedded_c.c.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C),
+        "embedded_c.h.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C_H),
+        "embedded_c_impl.c.jinja" => Some(rumoca_session::runtime::templates::EMBEDDED_C_IMPL),
         "dae_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::DAE_MODELICA),
         "flat_modelica.mo.jinja" => Some(rumoca_session::runtime::templates::FLAT_MODELICA),
         "fmi2_model_description.xml.jinja" => {

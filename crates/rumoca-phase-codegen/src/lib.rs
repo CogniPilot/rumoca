@@ -76,9 +76,7 @@ pub mod templates {
     pub const CASADI_SX: &str = include_str!("templates/casadi_sx.py.jinja");
     /// CasADi MX template (Python) — matrix symbolic with vector variables and casadi.Function DAE.
     pub const CASADI_MX: &str = include_str!("templates/casadi_mx.py.jinja");
-    /// Cyecca template (Python).
-    pub const CYECCA: &str = include_str!("templates/cyecca.py.jinja");
-    /// Julia ModelingToolkit template.
+/// Julia ModelingToolkit template.
     pub const JULIA_MTK: &str = include_str!("templates/julia_mtk.jl.jinja");
     /// JAX/Diffrax template (Python).
     pub const JAX: &str = include_str!("templates/jax.py.jinja");
@@ -102,9 +100,10 @@ pub mod templates {
     pub const FMI3_MODEL: &str = include_str!("templates/fmi3_model.c.jinja");
     /// FMI 3.0 test driver — standalone main() that simulates via FMI3 ME and outputs CSV.
     pub const FMI3_TEST_DRIVER: &str = include_str!("templates/fmi3_test_driver.c.jinja");
-    /// Embedded C template — bare-metal flight controller target with RK4 integrator.
-    /// No dynamic memory, no OS dependencies, configurable float/double precision.
-    pub const EMBEDDED_C: &str = include_str!("templates/embedded_c.c.jinja");
+    /// Embedded C header template — struct definition with named fields, dimension macros, prototypes.
+    pub const EMBEDDED_C_H: &str = include_str!("templates/embedded_c.h.jinja");
+    /// Embedded C implementation template — function bodies using named struct fields.
+    pub const EMBEDDED_C_IMPL: &str = include_str!("templates/embedded_c_impl.c.jinja");
     /// SymPy template (Python) — symbolic DAE model with residual form and explicit solve.
     pub const SYMPY: &str = include_str!("templates/sympy.py.jinja");
 }

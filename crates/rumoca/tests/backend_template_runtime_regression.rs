@@ -350,10 +350,17 @@ for i, t in enumerate(tgrid):
 // Embedded C CSV driver template
 // ============================================================================
 
-fn embedded_c_csv_main(model_name: &str, n_states: usize, state_names: &[&str]) -> String {
+fn sanitize_c_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+fn embedded_c_csv_main(model_name: &str, _n_states: usize, state_names: &[&str]) -> String {
     let header_cols: Vec<String> = state_names.iter().map(|n| format!(",{n}")).collect();
-    let print_cols: Vec<String> = (0..n_states)
-        .map(|i| format!("        printf(\",%.10g\", m.x[{i}]);"))
+    let print_cols: Vec<String> = state_names
+        .iter()
+        .map(|n| format!("        printf(\",%.10g\", m.{});", sanitize_c_name(n)))
         .collect();
 
     format!(
@@ -449,9 +456,12 @@ fn casadi_sx_oscillator() {
 
 fn embedded_c_trace_test(source: &str, model_name: &str) {
     let dae = prepare_dae(source, model_name);
-    let rendered =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::EMBEDDED_C, model_name)
-            .expect("render template");
+    let header =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::EMBEDDED_C_H, model_name)
+            .expect("render header template");
+    let impl_c =
+        rumoca_phase_codegen::render_template_with_name(&dae, templates::EMBEDDED_C_IMPL, model_name)
+            .expect("render impl template");
 
     // State names must be sorted alphabetically to match JSON serialization order
     // (serde_json::Map uses BTreeMap, so templates see states in sorted order)
@@ -459,7 +469,12 @@ fn embedded_c_trace_test(source: &str, model_name: &str) {
     state_names.sort();
     let main_c = embedded_c_csv_main(model_name, state_names.len(), &state_names);
 
-    let csv = compile_and_run_c(&[("model.h", &rendered), ("main.c", &main_c)], &[]);
+    let header_name = format!("{}.h", model_name);
+    let impl_name = format!("{}.c", model_name);
+    let csv = compile_and_run_c(
+        &[(&header_name, &header), (&impl_name, &impl_c), ("main.c", &main_c)],
+        &[],
+    );
     let backend_traces = parse_csv_traces(&csv);
 
     let opts = SimOptions {

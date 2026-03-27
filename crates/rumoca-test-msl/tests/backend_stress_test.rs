@@ -726,33 +726,47 @@ fn casadi_simulate(
 
 // --- Embedded C ---
 
+fn sanitize_c_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
 fn embedded_c_simulate(
     dae: &rumoca_ir_dae::Dae,
     model_name: &str,
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    let rendered = rumoca_phase_codegen::render_template_with_name(
+    let header = rumoca_phase_codegen::render_template_with_name(
         dae,
-        rumoca_phase_codegen::templates::EMBEDDED_C,
+        rumoca_phase_codegen::templates::EMBEDDED_C_H,
         model_name,
     )
-    .map_err(|e| format!("render: {e}"))?;
+    .map_err(|e| format!("render header: {e}"))?;
+    let impl_c = rumoca_phase_codegen::render_template_with_name(
+        dae,
+        rumoca_phase_codegen::templates::EMBEDDED_C_IMPL,
+        model_name,
+    )
+    .map_err(|e| format!("render impl: {e}"))?;
 
     let mut state_names: Vec<&str> = dae.states.keys().map(|k| k.as_str()).collect();
     state_names.sort();
-    let n_states = state_names.len();
     let steps = (t_end / dt).round() as usize;
 
     let header_cols: Vec<String> = state_names.iter().map(|n| format!(",{n}")).collect();
-    let print_cols: Vec<String> = (0..n_states)
-        .map(|i| format!("        printf(\",%.10g\", m.x[{i}]);"))
+    let print_cols: Vec<String> = state_names
+        .iter()
+        .map(|n| format!("        printf(\",%.10g\", m.{});", sanitize_c_name(n)))
         .collect();
 
+    let header_name = format!("{}.h", model_name);
+    let impl_name = format!("{}.c", model_name);
     let main_c = format!(
         r#"#include <stdio.h>
 #include <math.h>
-#include "model.h"
+#include "{header_name}"
 
 int main(void) {{
     {model_name}_t m;
@@ -779,13 +793,17 @@ int main(void) {{
 }}
 "#,
         model_name = model_name,
+        header_name = header_name,
         dt = dt,
         steps = steps,
         header_cols = header_cols.join(""),
         print_cols = print_cols.join("\n"),
     );
 
-    compile_and_run_c(&[("model.h", &rendered), ("main.c", &main_c)], &[])
+    compile_and_run_c(
+        &[(&header_name, &header), (&impl_name, &impl_c), ("main.c", &main_c)],
+        &[],
+    )
 }
 
 // --- FMI2 ---

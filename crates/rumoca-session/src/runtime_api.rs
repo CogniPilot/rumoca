@@ -46,6 +46,11 @@ pub mod fmi3_templates {
     };
 }
 
+/// Built-in embedded C template sources, re-exported from the codegen crate.
+pub mod embedded_c_templates {
+    pub use rumoca_phase_codegen::templates::{EMBEDDED_C_H, EMBEDDED_C_IMPL};
+}
+
 /// All built-in template sources, re-exported from the codegen crate.
 pub mod templates {
     pub use rumoca_phase_codegen::templates::*;
