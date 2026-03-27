@@ -116,7 +116,8 @@ fn sympy_template_uses_indexed_symbols_for_array_states() {
     assert!(
         rendered.contains("der(x[1])")
             || rendered.contains("der(x[0])")
-            || rendered.contains("der(x_1)"),
+            || rendered.contains("der(x_1)")
+            || rendered.contains("der(x_1_)"),
         "expected explicit derivative targets for array state equations, got:\n{rendered}"
     );
 }
@@ -146,9 +147,9 @@ fn sympy_template_executes_with_indexed_array_states() {
         r#"
 assert str(model.x[0]) == "x"
 targets = [str(target) for target in model.explicit_targets]
-assert targets == ["x_dot[1]", "x_dot[2]"] or targets == ["x_1_dot", "x_2_dot"]
-assert str(solution[model.explicit_targets[0]]) in {"-x[1]", "-x_1"}
-assert str(solution[model.explicit_targets[1]]) in {"-x[2]", "-x_2"}
+assert targets == ["x_dot[1]", "x_dot[2]"] or targets == ["x_1_dot", "x_2_dot"] or targets == ["x_1__dot", "x_2__dot"]
+assert str(solution[model.explicit_targets[0]]) in {"-x[1]", "-x_1", "-x_1_"}
+assert str(solution[model.explicit_targets[1]]) in {"-x[2]", "-x_2", "-x_2_"}
 "#,
     );
 }

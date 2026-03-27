@@ -6,8 +6,8 @@
 //! start expressions using a fixed-point approach, replacing evaluable expressions
 //! with `Literal::Real(value)`.
 
-use crate::{BuiltinFunction, Dae, Expression, Literal, VarName, Variable};
 use rumoca_ir_core::{OpBinary, OpUnary};
+use rumoca_ir_dae::{BuiltinFunction, Dae, Expression, Literal, VarName, Variable};
 use std::collections::HashMap;
 
 /// Evaluate all parameter/state/constant start expressions to numeric literals
@@ -113,7 +113,8 @@ fn eval_const_expr(expr: &Expression, env: &HashMap<String, f64>) -> Option<f64>
 
         Expression::VarRef { name, subscripts } if subscripts.is_empty() => {
             env.get(name.as_str()).copied().or_else(|| {
-                crate::component_base_name(name.as_str()).and_then(|base| env.get(&base).copied())
+                rumoca_ir_dae::component_base_name(name.as_str())
+                    .and_then(|base| env.get(&base).copied())
             })
         }
 
@@ -395,6 +396,192 @@ fn topo_sort_by_start_deps(
 pub fn sort_parameters_by_start_deps(dae: &mut Dae) {
     dae.constants = topo_sort_by_start_deps(&dae.constants);
     dae.parameters = topo_sort_by_start_deps(&dae.parameters);
+}
+
+/// Sort algebraic and output variable maps by equation dependency order.
+///
+/// For each variable in `dae.algebraics` or `dae.outputs`, finds its defining
+/// equation in `dae.f_x` and extracts which other algebraic/output variables
+/// the equation references. Then topologically sorts so that variables are
+/// evaluated after their dependencies.
+pub fn sort_algebraics_by_equation_deps(dae: &mut Dae) {
+    use std::collections::HashSet;
+
+    // Collect all algebraic + output variable names
+    let alg_names: HashSet<String> = dae
+        .algebraics
+        .keys()
+        .chain(dae.outputs.keys())
+        .map(|k| k.as_str().to_string())
+        .collect();
+
+    if alg_names.len() <= 1 {
+        return;
+    }
+
+    // For each algebraic/output variable, find which other alg/output vars
+    // its equation references
+    let mut eq_deps: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for eq in &dae.f_x {
+        let refs = collect_param_refs(&eq.rhs, &alg_names);
+        // This equation may define one of our algebraic vars.
+        // Try to identify which variable this equation defines
+        // by checking if it matches the pattern `0 = var - expr` or additive form.
+        for alg_name in &alg_names {
+            if equation_defines_var(&eq.rhs, alg_name) {
+                let deps: Vec<String> = refs
+                    .iter()
+                    .filter(|r| r.as_str() != alg_name.as_str())
+                    .cloned()
+                    .collect();
+                eq_deps.insert(alg_name.clone(), deps);
+            }
+        }
+    }
+
+    // Sort dae.algebraics
+    dae.algebraics = topo_sort_by_eq_deps(&dae.algebraics, &eq_deps);
+    // Sort dae.outputs
+    dae.outputs = topo_sort_by_eq_deps(&dae.outputs, &eq_deps);
+}
+
+/// Check if an equation's RHS defines a given variable (appears as LHS of subtraction
+/// or as a term in an additive equation).
+fn equation_defines_var(rhs: &Expression, var_name: &str) -> bool {
+    match rhs {
+        Expression::Binary {
+            op,
+            lhs,
+            rhs: rhs_inner,
+        } => {
+            if matches!(op, rumoca_ir_core::OpBinary::Sub(_)) {
+                // 0 = var - expr or 0 = expr - var
+                if is_var_ref_named(lhs, var_name) || is_var_ref_named(rhs_inner, var_name) {
+                    return true;
+                }
+            }
+            if matches!(op, rumoca_ir_core::OpBinary::Add(_)) {
+                // Check additive terms
+                let terms = collect_additive_var_refs(rhs);
+                if terms.iter().any(|t| t == var_name) {
+                    return true;
+                }
+            }
+            false
+        }
+        Expression::Unary {
+            op: rumoca_ir_core::OpUnary::Minus(_),
+            rhs: inner,
+        } => equation_defines_var(inner, var_name),
+        Expression::VarRef { name, .. } => name.as_str() == var_name,
+        _ => false,
+    }
+}
+
+fn is_var_ref_named(expr: &Expression, name: &str) -> bool {
+    matches!(expr, Expression::VarRef { name: n, .. } if n.as_str() == name)
+}
+
+/// Collect all VarRef names from an additive expression tree.
+fn collect_additive_var_refs(expr: &Expression) -> Vec<String> {
+    match expr {
+        Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Add(_),
+            lhs,
+            rhs,
+        }
+        | Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(_),
+            lhs,
+            rhs,
+        } => {
+            let mut v = collect_additive_var_refs(lhs);
+            v.extend(collect_additive_var_refs(rhs));
+            v
+        }
+        Expression::Unary { rhs, .. } => collect_additive_var_refs(rhs),
+        Expression::VarRef { name, .. } => vec![name.as_str().to_string()],
+        _ => vec![],
+    }
+}
+
+fn topo_sort_by_eq_deps(
+    map: &indexmap::IndexMap<VarName, Variable>,
+    eq_deps: &std::collections::HashMap<String, Vec<String>>,
+) -> indexmap::IndexMap<VarName, Variable> {
+    use std::collections::{HashSet, VecDeque};
+
+    if map.len() <= 1 {
+        return map.clone();
+    }
+
+    let name_list: Vec<String> = map.keys().map(|k| k.as_str().to_string()).collect();
+    let name_set: HashSet<&str> = name_list.iter().map(|s| s.as_str()).collect();
+
+    // Build adjacency
+    let mut deps_idx: Vec<HashSet<usize>> = Vec::with_capacity(map.len());
+    for name in &name_list {
+        let dep_indices: HashSet<usize> = eq_deps
+            .get(name)
+            .map(|dep_names| {
+                dep_names
+                    .iter()
+                    .filter(|d| name_set.contains(d.as_str()))
+                    .filter_map(|d| name_list.iter().position(|n| n == d))
+                    .collect()
+            })
+            .unwrap_or_default();
+        deps_idx.push(dep_indices);
+    }
+
+    // Kahn's algorithm
+    let n = map.len();
+    let mut in_degree = vec![0usize; n];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, dep_set) in deps_idx.iter().enumerate() {
+        in_degree[i] = dep_set.len();
+        for &d in dep_set {
+            dependents[d].push(i);
+        }
+    }
+
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    for (i, &deg) in in_degree.iter().enumerate() {
+        if deg == 0 {
+            queue.push_back(i);
+        }
+    }
+
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    while let Some(idx) = queue.pop_front() {
+        order.push(idx);
+        for &dep in &dependents[idx] {
+            in_degree[dep] -= 1;
+            if in_degree[dep] == 0 {
+                queue.push_back(dep);
+            }
+        }
+    }
+
+    // Append cyclic entries in original order
+    if order.len() < n {
+        for i in 0..n {
+            if !order.contains(&i) {
+                order.push(i);
+            }
+        }
+    }
+
+    let entries: Vec<(VarName, Variable)> =
+        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut sorted = indexmap::IndexMap::with_capacity(n);
+    for &idx in &order {
+        let (k, v) = entries[idx].clone();
+        sorted.insert(k, v);
+    }
+    sorted
 }
 
 fn eval_named_function(name: &str, args: &[Expression], env: &HashMap<String, f64>) -> Option<f64> {

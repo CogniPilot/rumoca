@@ -26,9 +26,9 @@ jnp.sum1 = lambda x: jnp.sum(jnp.array(x))
 math.if_else = lambda c, t, e: t if c else e
 
 {# Configuration for render_expr - JAX/Python style #}
-{% set cfg = {"prefix": "jnp.", "power": "**", "if_style": "function"} %}
+{% set cfg = {"prefix": "jnp.", "power": "**", "if_style": "function", "python_range": true} %}
 {# Python-safe config for start value evaluation (no JAX) #}
-{% set init_cfg = {"prefix": "math.", "power": "**", "if_style": "function"} %}
+{% set init_cfg = {"prefix": "math.", "power": "**", "if_style": "function", "python_range": true} %}
 
 # Modelica enum values that may appear in start/parameter expressions
 StateSelect_never = 1

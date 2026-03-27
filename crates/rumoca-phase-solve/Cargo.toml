@@ -11,6 +11,7 @@ rumoca-eval-dae = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-core = { workspace = true }
+indexmap = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]

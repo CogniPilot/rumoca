@@ -1,12 +1,12 @@
 //! DAE-level lowering passes for code generation.
 //!
 //! This module contains record function parameter decomposition, array size
-//! argument insertion, and parameter dependency sorting that operate on the
-//! DAE IR before code generation.
+//! argument insertion, parameter dependency sorting, and vector equation
+//! scalarization that operate on the DAE IR before code generation.
 
 use indexmap::IndexSet;
 use rumoca_ir_dae as dae;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 type Dae = dae::Dae;
 
@@ -673,6 +673,286 @@ fn collect_expression_var_refs(expr: &dae::Expression) -> Vec<dae::VarName> {
     refs
 }
 
+// =============================================================================
+// Vector equation scalarization
+// =============================================================================
+
+/// Scalarize vector equations that reference "phantom" base names.
+///
+/// In Modelica, connector arrays like `plug_p.pin[3]` produce scalarized
+/// variables (`sineVoltage.plug_p.pin[1].v`, `…pin[2].v`, `…pin[3].v`)
+/// but some component-level equations reference the unsubscripted base name
+/// (`sineVoltage.plug_p.pin.v`) as a vector.  These phantom base names do
+/// not appear in any DAE variable map, so backends that render equations
+/// directly (CasADi, SymPy, JAX) produce undefined identifiers.
+///
+/// This pass detects equations with `scalar_count > 1` whose expressions
+/// contain such phantom VarRefs, and expands each into `scalar_count`
+/// scalar equations — one per element — with every phantom VarRef replaced
+/// by its indexed variant and every declared-array VarRef subscripted.
+pub fn scalarize_phantom_vector_equations(dae: &mut Dae) {
+    let known_names = build_known_var_name_set(dae);
+    let phantom_map = build_phantom_expansion_map(&known_names);
+    if phantom_map.is_empty() {
+        return;
+    }
+
+    // Build array-dims lookup for declared array variables (those with dims)
+    let array_dims = build_array_dims_map(dae);
+
+    scalarize_equation_list(&mut dae.f_x, &known_names, &phantom_map, &array_dims);
+    scalarize_equation_list(
+        &mut dae.initial_equations,
+        &known_names,
+        &phantom_map,
+        &array_dims,
+    );
+}
+
+/// Build the set of all variable names known to the DAE.
+fn build_known_var_name_set(dae: &Dae) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for map in [
+        &dae.states,
+        &dae.algebraics,
+        &dae.inputs,
+        &dae.outputs,
+        &dae.parameters,
+        &dae.constants,
+        &dae.discrete_reals,
+        &dae.discrete_valued,
+        &dae.derivative_aliases,
+    ] {
+        for name in map.keys() {
+            names.insert(name.as_str().to_string());
+        }
+    }
+    names
+}
+
+/// Build a map from stripped base name → sorted list of actual indexed names.
+///
+/// For example, if the DAE has `sineVoltage.plug_p.pin[1].v`,
+/// `sineVoltage.plug_p.pin[2].v`, `sineVoltage.plug_p.pin[3].v`, the map
+/// will contain `"sineVoltage.plug_p.pin.v" → ["…pin[1].v", "…pin[2].v", "…pin[3].v"]`.
+///
+/// Only base names that do NOT themselves appear in `known_names` are included
+/// (i.e., only phantom base names that need expansion).
+fn build_phantom_expansion_map(known_names: &HashSet<String>) -> HashMap<String, Vec<String>> {
+    // Group all known names by their stripped base
+    let mut base_to_indexed: HashMap<String, BTreeMap<String, ()>> = HashMap::new();
+    for name in known_names {
+        let base = super::path_utils::strip_all_subscripts(name);
+        if base != *name {
+            // This name has subscripts — record it under the base
+            base_to_indexed
+                .entry(base)
+                .or_default()
+                .insert(name.clone(), ());
+        }
+    }
+
+    // Only keep entries where the base name itself is NOT a known variable
+    let mut result = HashMap::new();
+    for (base, indexed) in base_to_indexed {
+        if !known_names.contains(&base) && indexed.len() > 1 {
+            result.insert(base, indexed.into_keys().collect());
+        }
+    }
+    result
+}
+
+/// Build a map from variable name → dims for declared array variables.
+fn build_array_dims_map(dae: &Dae) -> HashMap<String, Vec<i64>> {
+    let mut dims_map = HashMap::new();
+    for map in [
+        &dae.states,
+        &dae.algebraics,
+        &dae.inputs,
+        &dae.outputs,
+        &dae.parameters,
+        &dae.constants,
+        &dae.discrete_reals,
+        &dae.discrete_valued,
+        &dae.derivative_aliases,
+    ] {
+        for (name, var) in map {
+            if !var.dims.is_empty() {
+                dims_map.insert(name.as_str().to_string(), var.dims.clone());
+            }
+        }
+    }
+    dims_map
+}
+
+/// Check if an expression contains any phantom VarRef that needs expansion.
+#[allow(clippy::only_used_in_recursion)]
+fn expr_has_phantom_refs(
+    expr: &dae::Expression,
+    known_names: &HashSet<String>,
+    phantom_map: &HashMap<String, Vec<String>>,
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> bool {
+    match expr {
+        dae::Expression::VarRef { name, subscripts } => {
+            let n = name.as_str();
+            if subscripts.is_empty() {
+                // Phantom base name?
+                if phantom_map.contains_key(n) {
+                    return true;
+                }
+                // Declared array variable without subscripts?
+                if array_dims.contains_key(n) {
+                    return true;
+                }
+            }
+            false
+        }
+        dae::Expression::Binary { lhs, rhs, .. } => {
+            expr_has_phantom_refs(lhs, known_names, phantom_map, array_dims)
+                || expr_has_phantom_refs(rhs, known_names, phantom_map, array_dims)
+        }
+        dae::Expression::Unary { rhs, .. } => {
+            expr_has_phantom_refs(rhs, known_names, phantom_map, array_dims)
+        }
+        dae::Expression::BuiltinCall { args, .. } | dae::Expression::FunctionCall { args, .. } => {
+            args.iter()
+                .any(|a| expr_has_phantom_refs(a, known_names, phantom_map, array_dims))
+        }
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(c, v)| {
+                expr_has_phantom_refs(c, known_names, phantom_map, array_dims)
+                    || expr_has_phantom_refs(v, known_names, phantom_map, array_dims)
+            }) || expr_has_phantom_refs(else_branch, known_names, phantom_map, array_dims)
+        }
+        dae::Expression::Array { elements, .. } | dae::Expression::Tuple { elements } => elements
+            .iter()
+            .any(|e| expr_has_phantom_refs(e, known_names, phantom_map, array_dims)),
+        _ => false,
+    }
+}
+
+/// Scalarize an expression at index `k` (0-based).
+///
+/// - Phantom VarRefs are replaced by the k-th indexed variant from `phantom_map`.
+/// - Declared array VarRefs (with no subscripts) get subscript `[k+1]` (1-based).
+/// - All other expressions are recursively processed.
+fn scalarize_expr_at(
+    expr: &dae::Expression,
+    k: usize,
+    phantom_map: &HashMap<String, Vec<String>>,
+    array_dims: &HashMap<String, Vec<i64>>,
+) -> dae::Expression {
+    match expr {
+        dae::Expression::VarRef { name, subscripts } => {
+            let n = name.as_str();
+            if subscripts.is_empty() {
+                // Phantom base name — replace with the k-th indexed variant
+                if let Some(variants) = phantom_map.get(n)
+                    && k < variants.len()
+                {
+                    return dae::Expression::VarRef {
+                        name: dae::VarName::new(&variants[k]),
+                        subscripts: vec![],
+                    };
+                }
+                // Declared array variable — add subscript [k+1] (1-based)
+                if array_dims.contains_key(n) {
+                    return dae::Expression::VarRef {
+                        name: name.clone(),
+                        subscripts: vec![dae::Subscript::Index((k + 1) as i64)],
+                    };
+                }
+            }
+            // Scalar or already subscripted — leave unchanged
+            expr.clone()
+        }
+        dae::Expression::Binary { op, lhs, rhs } => dae::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(scalarize_expr_at(lhs, k, phantom_map, array_dims)),
+            rhs: Box::new(scalarize_expr_at(rhs, k, phantom_map, array_dims)),
+        },
+        dae::Expression::Unary { op, rhs } => dae::Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(scalarize_expr_at(rhs, k, phantom_map, array_dims)),
+        },
+        dae::Expression::BuiltinCall { function, args } => dae::Expression::BuiltinCall {
+            function: *function,
+            args: args
+                .iter()
+                .map(|a| scalarize_expr_at(a, k, phantom_map, array_dims))
+                .collect(),
+        },
+        dae::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+        } => dae::Expression::FunctionCall {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| scalarize_expr_at(a, k, phantom_map, array_dims))
+                .collect(),
+            is_constructor: *is_constructor,
+        },
+        dae::Expression::If {
+            branches,
+            else_branch,
+        } => dae::Expression::If {
+            branches: branches
+                .iter()
+                .map(|(c, v)| {
+                    (
+                        scalarize_expr_at(c, k, phantom_map, array_dims),
+                        scalarize_expr_at(v, k, phantom_map, array_dims),
+                    )
+                })
+                .collect(),
+            else_branch: Box::new(scalarize_expr_at(else_branch, k, phantom_map, array_dims)),
+        },
+        dae::Expression::Array { elements, .. } => {
+            // An array literal in a vector equation context: extract element k
+            if k < elements.len() {
+                scalarize_expr_at(&elements[k], k, phantom_map, array_dims)
+            } else {
+                expr.clone()
+            }
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Process an equation list, expanding vector equations with phantom refs.
+fn scalarize_equation_list(
+    equations: &mut Vec<dae::Equation>,
+    known_names: &HashSet<String>,
+    phantom_map: &HashMap<String, Vec<String>>,
+    array_dims: &HashMap<String, Vec<i64>>,
+) {
+    let mut new_equations = Vec::with_capacity(equations.len());
+    for eq in equations.drain(..) {
+        if eq.scalar_count > 1
+            && expr_has_phantom_refs(&eq.rhs, known_names, phantom_map, array_dims)
+        {
+            // Expand into scalar_count individual equations
+            for k in 0..eq.scalar_count {
+                let scalar_rhs = scalarize_expr_at(&eq.rhs, k, phantom_map, array_dims);
+                new_equations.push(dae::Equation::residual(
+                    scalar_rhs,
+                    eq.span,
+                    format!("{} [scalarized {}]", eq.origin, k + 1),
+                ));
+            }
+        } else {
+            new_equations.push(eq);
+        }
+    }
+    *equations = new_equations;
+}
+
 fn collect_var_refs_recursive(expr: &dae::Expression, refs: &mut Vec<dae::VarName>) {
     match expr {
         dae::Expression::VarRef { name, .. } => {
@@ -742,5 +1022,202 @@ fn collect_var_refs_recursive(expr: &dae::Expression, refs: &mut Vec<dae::VarNam
             collect_var_refs_recursive(base, refs);
         }
         dae::Expression::Literal(_) | dae::Expression::Empty => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::Span;
+
+    /// Build a VarRef expression.
+    fn var_ref(name: &str) -> dae::Expression {
+        dae::Expression::VarRef {
+            name: dae::VarName::new(name),
+            subscripts: vec![],
+        }
+    }
+
+    /// Build a binary subtraction: lhs - rhs.
+    fn sub(lhs: dae::Expression, rhs: dae::Expression) -> dae::Expression {
+        dae::Expression::Binary {
+            op: rumoca_ir_core::OpBinary::Sub(Default::default()),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+
+    /// Collect all VarRef names from an expression (for assertions).
+    fn all_var_names(expr: &dae::Expression) -> Vec<String> {
+        let mut names = Vec::new();
+        collect_var_names_rec(expr, &mut names);
+        names
+    }
+
+    fn collect_var_names_rec(expr: &dae::Expression, names: &mut Vec<String>) {
+        match expr {
+            dae::Expression::VarRef { name, subscripts } => {
+                if subscripts.is_empty() {
+                    names.push(name.as_str().to_string());
+                } else {
+                    // Format with subscripts for clarity
+                    let subs: Vec<String> = subscripts
+                        .iter()
+                        .map(|s| match s {
+                            dae::Subscript::Index(i) => format!("{i}"),
+                            _ => "?".to_string(),
+                        })
+                        .collect();
+                    names.push(format!("{}[{}]", name.as_str(), subs.join(",")));
+                }
+            }
+            dae::Expression::Binary { lhs, rhs, .. } => {
+                collect_var_names_rec(lhs, names);
+                collect_var_names_rec(rhs, names);
+            }
+            dae::Expression::Unary { rhs, .. } => {
+                collect_var_names_rec(rhs, names);
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn test_scalarize_phantom_vector_equations() {
+        // Set up a DAE that mimics the TransformerYY pattern:
+        // - sineVoltage.v is a declared 3-element array variable
+        // - sineVoltage.plug_p.pin[1].v, [2].v, [3].v are individual scalars
+        // - sineVoltage.plug_n.pin[1].v, [2].v, [3].v are individual scalars
+        // - Equation: sineVoltage.v - (sineVoltage.plug_p.pin.v - sineVoltage.plug_n.pin.v) = 0
+        //   with scalar_count = 3
+
+        let mut dae = Dae::new();
+
+        // Declared array variable
+        let mut sv_v = dae::Variable::new(dae::VarName::new("sineVoltage.v"));
+        sv_v.dims = vec![3];
+        dae.algebraics
+            .insert(dae::VarName::new("sineVoltage.v"), sv_v);
+
+        // Scalarized connector pin variables (no dims — they're individual scalars)
+        for k in 1..=3 {
+            let name_p = format!("sineVoltage.plug_p.pin[{k}].v");
+            dae.algebraics.insert(
+                dae::VarName::new(&name_p),
+                dae::Variable::new(dae::VarName::new(&name_p)),
+            );
+            let name_n = format!("sineVoltage.plug_n.pin[{k}].v");
+            dae.algebraics.insert(
+                dae::VarName::new(&name_n),
+                dae::Variable::new(dae::VarName::new(&name_n)),
+            );
+        }
+
+        // Vector equation: sineVoltage.v - (sineVoltage.plug_p.pin.v - sineVoltage.plug_n.pin.v) = 0
+        let eq_rhs = sub(
+            var_ref("sineVoltage.v"),
+            sub(
+                var_ref("sineVoltage.plug_p.pin.v"),
+                var_ref("sineVoltage.plug_n.pin.v"),
+            ),
+        );
+        let eq = dae::Equation::residual_array(eq_rhs, Span::DUMMY, "test equation", 3);
+        dae.f_x.push(eq);
+
+        // Run scalarization
+        scalarize_phantom_vector_equations(&mut dae);
+
+        // Should now have 3 scalar equations instead of 1 vector equation
+        assert_eq!(
+            dae.f_x.len(),
+            3,
+            "expected 3 scalar equations, got {}",
+            dae.f_x.len()
+        );
+
+        for (k, eq) in dae.f_x.iter().enumerate() {
+            assert_eq!(eq.scalar_count, 1, "equation {k} should be scalar");
+
+            let names = all_var_names(&eq.rhs);
+            // Should NOT contain phantom base names
+            assert!(
+                !names.iter().any(|n| n == "sineVoltage.plug_p.pin.v"),
+                "equation {k} still has phantom ref: {names:?}"
+            );
+            assert!(
+                !names.iter().any(|n| n == "sineVoltage.plug_n.pin.v"),
+                "equation {k} still has phantom ref: {names:?}"
+            );
+            // Should contain the indexed variants
+            let expected_p = format!("sineVoltage.plug_p.pin[{}].v", k + 1);
+            let expected_n = format!("sineVoltage.plug_n.pin[{}].v", k + 1);
+            assert!(
+                names.iter().any(|n| n == &expected_p),
+                "equation {k} missing {expected_p}: {names:?}"
+            );
+            assert!(
+                names.iter().any(|n| n == &expected_n),
+                "equation {k} missing {expected_n}: {names:?}"
+            );
+            // sineVoltage.v should be subscripted with [k+1]
+            let expected_sv = format!("sineVoltage.v[{}]", k + 1);
+            assert!(
+                names.iter().any(|n| n == &expected_sv),
+                "equation {k} missing {expected_sv}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_scalarize_leaves_scalar_equations_unchanged() {
+        let mut dae = Dae::new();
+
+        // A simple scalar equation: x - y = 0
+        dae.algebraics.insert(
+            dae::VarName::new("x"),
+            dae::Variable::new(dae::VarName::new("x")),
+        );
+        dae.algebraics.insert(
+            dae::VarName::new("y"),
+            dae::Variable::new(dae::VarName::new("y")),
+        );
+
+        let eq = dae::Equation::residual(sub(var_ref("x"), var_ref("y")), Span::DUMMY, "scalar eq");
+        dae.f_x.push(eq);
+
+        scalarize_phantom_vector_equations(&mut dae);
+
+        // Should remain 1 equation
+        assert_eq!(dae.f_x.len(), 1);
+        assert_eq!(dae.f_x[0].scalar_count, 1);
+    }
+
+    #[test]
+    fn test_scalarize_ignores_vector_equations_without_phantom_refs() {
+        let mut dae = Dae::new();
+
+        // Both variables are declared arrays — no phantom refs
+        let mut var_a = dae::Variable::new(dae::VarName::new("a"));
+        var_a.dims = vec![3];
+        dae.algebraics.insert(dae::VarName::new("a"), var_a);
+
+        let mut var_b = dae::Variable::new(dae::VarName::new("b"));
+        var_b.dims = vec![3];
+        dae.algebraics.insert(dae::VarName::new("b"), var_b);
+
+        let eq = dae::Equation::residual_array(
+            sub(var_ref("a"), var_ref("b")),
+            Span::DUMMY,
+            "vector eq",
+            3,
+        );
+        dae.f_x.push(eq);
+
+        scalarize_phantom_vector_equations(&mut dae);
+
+        // No phantom refs exist — both a and b are properly declared array vars.
+        // The pass should leave the equation unchanged (vector ops are fine for backends).
+        assert_eq!(dae.f_x.len(), 1);
+        assert_eq!(dae.f_x[0].scalar_count, 3);
     }
 }

@@ -11,6 +11,7 @@
 mod blt;
 mod diagnostics;
 pub mod eliminate;
+mod fold_start_values;
 pub mod ic_plan;
 pub mod incidence;
 mod matching;
@@ -20,6 +21,9 @@ mod types;
 
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
 pub use eliminate::{EliminationResult, Substitution};
+pub use fold_start_values::{
+    fold_start_values_to_literals, sort_algebraics_by_equation_deps, sort_parameters_by_start_deps,
+};
 pub use ic_plan::{CausalStep, IcBlock, IcRelaxationHint, build_ic_plan, build_ic_relaxation_hint};
 pub use incidence::{Incidence, build_solver_sparsity_triplets};
 pub use tearing::{TearingResult, tear_algebraic_loop};

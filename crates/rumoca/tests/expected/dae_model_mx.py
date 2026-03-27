@@ -33,17 +33,77 @@ def pre(x):
     """
     return x
 
-def Modelica_ComplexMath_abs(c_re, c_im):
+def Clock(*args):
+    """Modelica Clock() constructor stub (MLS §16.3).
+
+    In continuous CasADi simulation, clocked constructs are not meaningful.
+    Returns 0 so that expressions referencing Clock() do not crash.
+    """
+    return 0
+
+def previous(x):
+    """Modelica previous() operator stub (MLS §16.4).
+
+    In continuous simulation, previous(x) = x (no discrete tick tracking).
+    """
+    return x
+
+def firstTick(*args):
+    """Modelica firstTick() operator stub (MLS §16.10).
+
+    Returns False — not at a first tick in continuous simulation.
+    """
+    return False
+
+def interval(*args):
+    """Modelica interval() operator stub (MLS §16.10).
+
+    Returns 0.0 — clock interval is not meaningful in continuous simulation.
+    """
+    return 0.0
+
+def hold(x):
+    """Modelica hold() operator stub (MLS §16.5.1).
+
+    In continuous simulation, pass through the value unchanged.
+    """
+    return x
+
+def subSample(x, *args):
+    """Modelica subSample() operator stub (MLS §16.5.2). Pass through."""
+    return x
+
+def superSample(x, *args):
+    """Modelica superSample() operator stub (MLS §16.5.2). Pass through."""
+    return x
+
+def shiftSample(x, *args):
+    """Modelica shiftSample() operator stub (MLS §16.5.3). Pass through."""
+    return x
+
+def backSample(x, *args):
+    """Modelica backSample() operator stub (MLS §16.5.3). Pass through."""
+    return x
+
+def noClock(x):
+    """Modelica noClock() operator stub (MLS §16.5.4). Pass through."""
+    return x
+
+def Complex(re, im=0):
+    """Complex record constructor — projects to real part for real-valued DAE."""
+    return re
+
+def Modelica_ComplexMath_abs(c_re, c_im=0):
     """ComplexMath.abs: magnitude of complex number (uses real sqrt)."""
     return ca.sqrt(ca.power(c_re, 2) + ca.power(c_im, 2))
 
-def Modelica_ComplexMath_sqrt(c1_re, c1_im):
+def Modelica_ComplexMath_sqrt(c1_re, c1_im=0):
     """ComplexMath.sqrt: square root of complex number."""
     r = Modelica_ComplexMath_abs(c1_re, c1_im)
     phi = ca.atan2(c1_im, c1_re)
     return ca.sqrt(r) * ca.cos(phi / 2.0)
 
-def Modelica_ComplexMath_arg(c_re, c_im):
+def Modelica_ComplexMath_arg(c_re, c_im=0):
     """ComplexMath.arg: argument (phase angle) of complex number."""
     return ca.atan2(c_im, c_re)
 
@@ -83,13 +143,19 @@ def create_model():
     # Continuous Algebraic Variables (1 algebraics + 0 outputs)
     # =========================================================================
     n_z = 1
-    _z = ca.MX.sym('z', n_z)
     n_z_continuous = 1
     n_z_discrete = 0
 
-    # Named slices into _z
-    # Continuous algebraics (y, w) come first, then discrete (z, m)
-    y = _z[0]  # y
+    # Declare continuous and discrete algebraic symbols separately so that
+    # each is a pure MX symbolic (required by ca.substitute / ca.Function).
+    _z_c = ca.MX.sym('z_c', n_z_continuous)
+    _z_d = ca.MX.sym('z_d', n_z_discrete)
+    _z = ca.vertcat(_z_c, _z_d)
+
+    # Named slices into _z_c (continuous algebraics: y, w)
+    y = _z_c[0]  # y
+
+    # Named slices into _z_d (discrete algebraics: z, m)
 
     # =========================================================================
     # Input Variables (0 variables)
@@ -135,29 +201,40 @@ def create_model():
     # =========================================================================
     # DAE as CasADi Function
     # =========================================================================
-    dae_fn = ca.Function('dae',
-        [_x, _xdot, _z, _u, _p, t],
+    # _z is vertcat(_z_c, _z_d) which is not a pure symbol, so we create a
+    # fresh monolithic symbol for the Function interface and substitute.
+    _z_sym = ca.MX.sym('z', n_z)
+    _f_x_for_fn = ca.substitute(
         [f_x],
+        [_z_c, _z_d],
+        [_z_sym[:n_z_continuous], _z_sym[n_z_continuous:]]
+    )[0]
+    dae_fn = ca.Function('dae',
+        [_x, _xdot, _z_sym, _u, _p, t],
+        [_f_x_for_fn],
         ['x', 'xdot', 'z', 'u', 'p', 't'],
         ['f_x'])
 
     # =========================================================================
     # Integrator Builder
     # =========================================================================
-    def build_integrator(dt, opts=None):
+    def build_integrator(dt, opts=None, method='idas'):
         """Build a CasADi integrator from the implicit DAE residual.
 
         For pure ODEs (no algebraics, exactly n_x equations), converts to
         explicit form via mass-matrix inversion and uses CVODES.
 
         For DAE systems or over-determined ODEs, uses an augmented-z
-        approach: xdot symbols are included in the algebraic vector so IDAS
-        receives the original residual directly, preserving structural
-        sparsity.
+        approach: xdot symbols are included in the algebraic vector so the
+        chosen DAE solver receives the original residual directly.
 
         Args:
             dt: Time grid (scalar step or array of output times).
             opts: Optional dict of integrator options passed to ca.integrator().
+            method: DAE solver — 'idas' (default) or 'collocation'.
+                IDAS is faster but requires consistent initial conditions.
+                Collocation handles structurally singular DAEs where
+                IDACalcIC fails.
 
         Returns:
             A CasADi integrator Function.
@@ -166,9 +243,8 @@ def create_model():
         # integration (MLS §8.5). Only continuous algebraics (y, w) are part of
         # the DAE solved by IDAS. Discrete variables (z, m) are updated at
         # event boundaries by the simulation driver.
-        _z_c = _z[:n_z_continuous]  # continuous algebraics only
+        # _z_c and _z_d are already pure MX symbols (declared at module level).
         if n_z_discrete > 0:
-            _z_d = _z[n_z_continuous:]  # discrete (fixed during integration)
             _p_full = ca.vertcat(_p, _u, _z_d)
         else:
             _p_full = ca.vertcat(_p, _u)
@@ -199,7 +275,7 @@ def create_model():
             'alg': _f_x_sub,
             'p': _p_full,
         }
-        return ca.integrator('integrator', 'idas', _dae, 0, dt, opts or {})
+        return ca.integrator('integrator', method, _dae, 0, dt, opts or {})
 
     # =========================================================================
     # Default Values
@@ -282,6 +358,78 @@ def create_model():
     }
 
 
+# =========================================================================
+# Convenience Functions
+# =========================================================================
+
+def get_state_names():
+    """Get list of state variable names."""
+    return ['x']
+
+
+def get_param_names():
+    """Get list of parameter names."""
+    return ['c', 'k']
+
+
+def get_input_names():
+    """Get list of input variable names."""
+    return []
+
+
+def simulate(x0=None, p0=None, u0=None, t_span=(0.0, 1.0), dt=0.01):
+    """Simulate the model using CasADi integrator.
+
+    Args:
+        x0: Initial state (numpy array). Uses model defaults if None.
+        p0: Parameters (numpy array). Uses model defaults if None.
+        u0: Inputs (numpy array). Uses zeros if None.
+        t_span: Tuple of (t0, tf) time span.
+        dt: Integration time step.
+
+    Returns:
+        Tuple of (times, states) where times is a 1-D array of length
+        n_steps+1 and states is an (n_x, n_steps+1) numpy array.
+    """
+    model = create_model()
+    if x0 is None:
+        x0 = model['x0']
+    if p0 is None:
+        p0 = model['p0']
+    if u0 is None:
+        u0 = np.zeros(model['n_u'])
+
+    t0, tf = t_span
+    tgrid = np.arange(t0, tf + dt * 0.5, dt)
+    integrator = model['build_integrator'](tgrid)
+    p_full = np.concatenate([p0, u0])
+    result = integrator(x0=x0, p=p_full)
+    states = np.array(result['xf'])
+    return tgrid, states
+
+
+def simulate_csv(t_end=1.0, dt=0.01):
+    """Run simulation and return CSV string.
+
+    Args:
+        t_end: End time (start is always 0).
+        dt: Integration time step.
+
+    Returns:
+        CSV string with header row and one row per time step.
+    """
+    ts, xs = simulate(t_span=(0.0, t_end), dt=dt)
+    names = get_state_names()
+    header = "time," + ",".join(names)
+    rows = [header]
+    for j in range(len(ts)):
+        row = [f"{float(ts[j]):.10g}"]
+        for i in range(xs.shape[0]):
+            row.append(f"{float(xs[i, j]):.10g}")
+        rows.append(",".join(row))
+    return "\n".join(rows)
+
+
 if __name__ == '__main__':
     model = create_model()
     print(f"States ({model['n_x']}): {model['state_names']}")
@@ -298,3 +446,8 @@ if __name__ == '__main__':
     if model['n_x'] > 0:
         J = dae_fn.jacobian()
         print(f"\nJacobian computable: {J}")
+
+    # Quick simulation demo
+    if model['n_x'] > 0:
+        ts, xs = simulate()
+        print(f"\nSimulated {len(ts)} steps, final state: {xs[:, -1]}")

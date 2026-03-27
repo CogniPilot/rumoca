@@ -21,7 +21,7 @@
 -#}
 {%- set _use_float = use_float | default(false) -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
-{% set cfg = {"prefix": "", "power": "powf" if _use_float else "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(" ~ ("float" if _use_float else "double") ~ "[]){", "array_end": "}", "subscript_underscore": true} %}
+{% set cfg = {"prefix": "", "power": "powf" if _use_float else "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(" ~ ("float" if _use_float else "double") ~ "[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum"} %}
 {#- Macro: compute total scalar size of a variable map -#}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
@@ -101,6 +101,12 @@ typedef double real_t;
 #define FLOOR(x)  floor(x)
 #define CEIL(x)   ceil(x)
 {% endif %}
+
+/* Complex number support — Modelica Complex record projected to real part.
+ * Full Complex support requires IR-level record decomposition. This stub
+ * allows Complex library functions to compile when they appear in the
+ * generated code but only real-valued results are used. */
+#define Complex(re, im) (re)
 
 /* pre(x) macro: maps pre(varname) to the pre_varname local alias */
 #define pre(x) pre_##x
@@ -256,6 +262,11 @@ static inline real_t __rumoca_sum(const real_t* arr, int n) {
     return s;
 }
 
+/* Modelica sign() — not in C standard library */
+static inline real_t sign(real_t x) {
+    return (x > REAL_C(0.0)) ? REAL_C(1.0) : ((x < REAL_C(0.0)) ? REAL_C(-1.0) : REAL_C(0.0));
+}
+
 {#- Macro: unpack variables from model arrays into local C aliases.
     Also emits pointer aliases for array variables so Index expressions
     (base[subscript] style) can access them via pointer. -#}
@@ -298,6 +309,20 @@ static inline real_t __rumoca_sum(const real_t* arr, int n) {
 {% endif %}
 {%- endmacro %}
 
+{#- Macro: check if a function has any Complex-typed parameters -#}
+{% macro has_complex_params(func) -%}
+{%- for p in func.inputs -%}{%- if p.type_name == "Complex" -%}yes{%- endif -%}{%- endfor -%}
+{%- endmacro %}
+
+/* =========================================================================
+ * User-Defined Function Forward Declarations
+ * ========================================================================= */
+{% for func_name, func in dae.functions | items %}
+{% if func.outputs | length == 1 %}
+static real_t {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims %}const real_t* {{ p.name | sanitize }}, int {{ p.name | sanitize }}_size{% else %}real_t {{ p.name | sanitize }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %});
+{% endif %}
+{% endfor %}
+
 /* =========================================================================
  * User-Defined Functions
  * ========================================================================= */
@@ -306,6 +331,12 @@ static inline real_t __rumoca_sum(const real_t* arr, int n) {
 static real_t {{ func_name | sanitize }}({% for p in func.inputs %}{% if p.dims %}const real_t* {{ p.name | sanitize }}, int {{ p.name | sanitize }}_size{% else %}real_t {{ p.name | sanitize }}{% endif %}{{ ", " if not loop.last else "" }}{% endfor %}) {
 {% if is_self_call(func_name, func) %}
     return {{ func_name | last_segment }}({% for p in func.inputs %}{{ p.name | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
+{% elif has_complex_params(func) | trim == "yes" %}
+    /* Complex-typed parameters — stub (proper Complex lowering not yet implemented) */
+    (void)0;
+{% for p in func.inputs %}    (void){{ p.name | sanitize }};
+{% endfor %}
+    return REAL_C(0.0);
 {% elif func.external %}
 {% if func.external.output_name %}
     return {{ func.external.function_name | default(func_name | sanitize) }}({% for arg in func.external.arg_names %}{{ arg | sanitize }}{{ ", " if not loop.last else "" }}{% endfor %});
@@ -492,7 +523,7 @@ static void {{ model_name }}_init({{ model_name }}_t* m) {
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
 {% if var.start and is_string_literal(var.start) != "yes" %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr(var.start, cfg) }};
+    {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr_at_index(var.start, i + 1, cfg) }};
 {% endif %}
     m->c[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}
@@ -513,7 +544,7 @@ static void {{ model_name }}_init({{ model_name }}_t* m) {
 {% set sz = var.dims | product %}
 {% for i in range(sz) %}
 {% if var.start and is_string_literal(var.start) != "yes" %}
-    {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr(var.start, cfg) }};
+    {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr_at_index(var.start, i + 1, cfg) }};
 {% endif %}
     m->p[{{ ns_idx.offset }}] = {{ name | sanitize }}_{{ i + 1 }};  /* {{ name }}[{{ i + 1 }}] */
 {% set ns_idx.offset = ns_idx.offset + 1 %}

@@ -287,11 +287,21 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
 fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
 
+    // Try subtraction form first: 0 = var - expr or 0 = -(var - expr)
+    if let Some(result) = find_algebraic_rhs_subtraction(&rhs, var_name, cfg) {
+        return Some(result);
+    }
+
+    // Try additive form: 0 = a + b + c (connection equations)
+    find_algebraic_rhs_additive(&rhs, var_name, cfg)
+}
+
+/// Try subtraction form: 0 = var - expr, 0 = expr - var, 0 = -(A - B)
+fn find_algebraic_rhs_subtraction(rhs: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     // Try direct Binary{Sub} first, then try unwrapping Unary{Minus}.
-    // 0 = -(A - B) is equivalent to 0 = B - A, so we swap lhs/rhs.
-    let (binary, swapped) = if let Ok(b) = get_field(&rhs, "Binary") {
+    let (binary, swapped) = if let Ok(b) = get_field(rhs, "Binary") {
         (b, false)
-    } else if let Ok(unary) = get_field(&rhs, "Unary") {
+    } else if let Ok(unary) = get_field(rhs, "Unary") {
         let op = get_field(&unary, "op")
             .ok()
             .map(|v| v.to_string())
@@ -311,9 +321,6 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
         return None;
     }
 
-    // For algebraics: 0 = var - expr → var = expr
-    // Also: 0 = expr - var → var = expr
-    // With swap: 0 = -(A - B) → 0 = B - A
     let (lhs_side, rhs_side) = if swapped {
         (
             get_field(&binary, "rhs").ok()?,
@@ -338,7 +345,161 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
         return Some(lhs_expr);
     }
 
+    // Case 3: 0 = coeff * var - expr → var = expr / coeff
+    if !contains_der(&lhs_side) && !contains_der(&rhs_side) {
+        if let Some(coeff) = extract_mul_coefficient(&lhs_side, var_name, cfg) {
+            let rhs_expr = render_expression(&rhs_side, cfg).unwrap_or_default();
+            return Some(format!("({rhs_expr}) / ({coeff})"));
+        }
+        // Case 4: 0 = expr - coeff * var → var = expr / coeff
+        if let Some(coeff) = extract_mul_coefficient(&rhs_side, var_name, cfg) {
+            let lhs_expr = render_expression(&lhs_side, cfg).unwrap_or_default();
+            return Some(format!("({lhs_expr}) / ({coeff})"));
+        }
+    }
+
     None
+}
+
+/// Extract the coefficient from a `coeff * var` or `var * coeff` expression.
+/// Returns the rendered coefficient string if the expression is a Mul with one
+/// side being a VarRef to the target variable.
+fn extract_mul_coefficient(expr: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    let binary = get_field(expr, "Binary").ok()?;
+    if !is_mul_op(&binary) {
+        return None;
+    }
+    let lhs = get_field(&binary, "lhs").ok()?;
+    let rhs = get_field(&binary, "rhs").ok()?;
+
+    // coeff * var
+    if is_var_ref_of(&rhs, var_name) && !contains_var_ref(&lhs, var_name) {
+        return render_expression(&lhs, cfg).ok();
+    }
+    // var * coeff
+    if is_var_ref_of(&lhs, var_name) && !contains_var_ref(&rhs, var_name) {
+        return render_expression(&rhs, cfg).ok();
+    }
+    None
+}
+
+/// Check if an expression tree contains a VarRef matching the given name.
+fn contains_var_ref(expr: &Value, var_name: &str) -> bool {
+    if is_var_ref_of(expr, var_name) {
+        return true;
+    }
+    if let Ok(binary) = get_field(expr, "Binary")
+        && let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs"))
+    {
+        return contains_var_ref(&lhs, var_name) || contains_var_ref(&rhs, var_name);
+    }
+    if let Ok(unary) = get_field(expr, "Unary")
+        && let Ok(inner) = get_field(&unary, "rhs")
+    {
+        return contains_var_ref(&inner, var_name);
+    }
+    false
+}
+
+/// Try to extract algebraic RHS from an additive equation (connection equation form).
+/// Handles `0 = a + b + c` where exactly one term is the target variable.
+/// Returns `var = -(other_terms)`.
+fn find_algebraic_rhs_additive(rhs: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    // Flatten the Add/Sub tree into signed terms
+    let mut terms: Vec<(bool, Value)> = Vec::new();
+    flatten_value_add_terms(rhs, true, &mut terms);
+    if terms.len() < 2 {
+        return None;
+    }
+
+    // Skip if any term contains der()
+    if terms.iter().any(|(_, t)| contains_der(t)) {
+        return None;
+    }
+
+    // Find which term is the target variable
+    let mut var_idx = None;
+    for (i, (_, term)) in terms.iter().enumerate() {
+        if is_var_ref_of(term, var_name) {
+            if var_idx.is_some() {
+                return None; // multiple occurrences
+            }
+            var_idx = Some(i);
+        }
+    }
+    let var_idx = var_idx?;
+    let var_positive = terms[var_idx].0;
+
+    // Build negation of other terms: var = -(other_terms) or var = other_terms
+    let other_terms: Vec<(bool, &Value)> = terms
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != var_idx)
+        .map(|(_, (sign, term))| {
+            if var_positive {
+                (!*sign, term)
+            } else {
+                (*sign, term)
+            }
+        })
+        .collect();
+
+    // Render the sum of other terms
+    let mut parts: Vec<String> = Vec::new();
+    for (i, (positive, term)) in other_terms.iter().enumerate() {
+        let rendered = render_expression(term, cfg).ok()?;
+        if i == 0 {
+            if *positive {
+                parts.push(rendered);
+            } else {
+                parts.push(format!("(-{})", rendered));
+            }
+        } else if *positive {
+            parts.push(format!(" + {}", rendered));
+        } else {
+            parts.push(format!(" - {}", rendered));
+        }
+    }
+    let expr = if other_terms.len() == 1 {
+        parts.join("")
+    } else {
+        format!("({})", parts.join(""))
+    };
+    Some(expr)
+}
+
+/// Flatten a Value expression tree of Add/Sub into signed terms.
+fn flatten_value_add_terms(expr: &Value, positive: bool, terms: &mut Vec<(bool, Value)>) {
+    if let Ok(binary) = get_field(expr, "Binary") {
+        if is_add_op(&binary)
+            && let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs"))
+        {
+            flatten_value_add_terms(&lhs, positive, terms);
+            flatten_value_add_terms(&rhs, positive, terms);
+            return;
+        }
+        if is_sub_op(&binary)
+            && let (Ok(lhs), Ok(rhs)) = (get_field(&binary, "lhs"), get_field(&binary, "rhs"))
+        {
+            flatten_value_add_terms(&lhs, positive, terms);
+            flatten_value_add_terms(&rhs, !positive, terms);
+            return;
+        }
+    }
+    // Check for Unary Minus
+    if let Ok(unary) = get_field(expr, "Unary") {
+        let op = get_field(&unary, "op")
+            .ok()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        if (op.contains("Minus") || op.contains("Neg"))
+            && let Ok(inner) = get_field(&unary, "rhs")
+        {
+            flatten_value_add_terms(&inner, !positive, terms);
+            return;
+        }
+    }
+    terms.push((positive, expr.clone()));
 }
 
 /// Check if an expression is `BuiltinCall { function: Der, args: [VarRef { name, subscripts }] }`
@@ -417,6 +578,14 @@ fn is_mul_op(binary: &Value) -> bool {
 fn is_sub_op(binary: &Value) -> bool {
     if let Ok(op) = get_field(binary, "op") {
         return get_field(&op, "Sub").is_ok() || get_field(&op, "SubElem").is_ok();
+    }
+    false
+}
+
+/// Check if a Binary expression's op is Add or AddElem.
+fn is_add_op(binary: &Value) -> bool {
+    if let Ok(op) = get_field(binary, "op") {
+        return get_field(&op, "Add").is_ok() || get_field(&op, "AddElem").is_ok();
     }
     false
 }

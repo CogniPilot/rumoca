@@ -23,10 +23,8 @@ use indexmap::{IndexMap, IndexSet};
 use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
-mod fold_start_values;
 mod types;
 pub mod visitor;
-pub use fold_start_values::{fold_start_values_to_literals, sort_parameters_by_start_deps};
 pub use types::{
     BuiltinFunction, ComponentRefPart, ComponentReference, ComprehensionIndex,
     DerivativeAnnotation, Expression, ExternalFunction, ForIndex, Function, FunctionParam, Literal,

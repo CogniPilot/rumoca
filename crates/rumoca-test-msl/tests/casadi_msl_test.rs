@@ -168,7 +168,6 @@ model = mod.create_model()
 dt = float(sys.argv[1])
 tf = float(sys.argv[2])
 tgrid = np.arange(0, tf + dt * 0.5, dt)
-integrator = model['build_integrator'](tgrid)
 n_x = model['n_x']
 n_z_c = model.get('n_z_continuous', 0)
 z0 = model.get('z0', np.array([]))
@@ -180,7 +179,17 @@ p_full = np.concatenate([model['p0'], np.array([]), z0_d])
 kwargs = dict(x0=model['x0'], p=p_full)
 if len(z0_aug) > 0:
     kwargs['z0'] = z0_aug
-result = integrator(**kwargs)
+# Try IDAS first; fall back to collocation for structurally singular DAEs
+# where IDACalcIC cannot compute consistent initial conditions.
+result = None
+for method in ['idas', 'collocation']:
+    try:
+        integrator = model['build_integrator'](tgrid, method=method)
+        result = integrator(**kwargs)
+        break
+    except Exception:
+        if method == 'collocation':
+            raise
 xf = np.array(result['xf'])
 trace = {'times': tgrid.tolist(), 'names': model['state_names'], 'data': {}}
 for i, name in enumerate(model['state_names']):
