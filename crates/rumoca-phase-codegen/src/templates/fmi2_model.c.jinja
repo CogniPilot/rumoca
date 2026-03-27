@@ -13,7 +13,7 @@
 #include <stdio.h>
 
 {# Configuration for render_expr - C style #}
-{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true} %}
+{% set cfg = {"prefix": "", "power": "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(double[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum_d"} %}
 
 /* pre(x) macro: maps pre(varname) to the pre_varname local alias */
 #define pre(x) pre_##x

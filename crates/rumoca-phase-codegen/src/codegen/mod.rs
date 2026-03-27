@@ -317,10 +317,46 @@ const PYTHON_KEYWORDS: &[&str] = &[
     "with", "yield",
 ];
 
+/// C/C++ reserved words that cannot be used as identifiers in generated C code.
+const C_KEYWORDS: &[&str] = &[
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+    "volatile", "while", "inline", "restrict",
+];
+
+/// Sanitize a name for use as a target-language identifier.
+///
+/// Replaces all non-alphanumeric/underscore characters with `_`, then
+/// appends `_` if the result is a reserved keyword.  This matches the
+/// `sanitize` Jinja filter so that equation-side references agree with
+/// the variable declarations emitted by the templates.
+pub(crate) fn sanitize_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            result.push(ch);
+        } else {
+            result.push('_');
+        }
+    }
+    escape_reserved_keyword(&result)
+}
+
+/// Escape a name if it collides with a reserved keyword (Python or C).
+/// Appends `_` to the name if it matches.
+pub(crate) fn escape_reserved_keyword(name: &str) -> String {
+    if PYTHON_KEYWORDS.contains(&name) || C_KEYWORDS.contains(&name) {
+        format!("{name}_")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Filter to sanitize variable names for target language identifiers.
 ///
 /// Replaces dots and other non-identifier characters with underscores,
-/// and appends `_` to Python keywords.
+/// and appends `_` to reserved keywords (Python + C).
 fn sanitize_filter(value: Value) -> String {
     let s = value.to_string();
     let mut result = String::with_capacity(s.len());
@@ -331,8 +367,8 @@ fn sanitize_filter(value: Value) -> String {
             result.push('_');
         }
     }
-    // Escape Python keywords by appending underscore
-    if PYTHON_KEYWORDS.contains(&result.as_str()) {
+    // Escape reserved keywords by appending underscore
+    if PYTHON_KEYWORDS.contains(&result.as_str()) || C_KEYWORDS.contains(&result.as_str()) {
         result.push('_');
     }
     result
@@ -470,7 +506,10 @@ fn render_flat_equation_function(eq: Value, config: Value) -> RenderResult {
 /// {% endfor %}
 /// ```
 fn render_statement_function(stmt: Value, config: Value, indent: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
+    let mut cfg = ExprConfig::from_value(&config);
+    // Function bodies use local arrays / lists, so array subscripts must
+    // always use bracket notation — see render_statements_function.
+    cfg.subscript_underscore = false;
     let indent_str = indent.as_str().unwrap_or("    ");
     render_statement(&stmt, &cfg, indent_str)
 }
@@ -482,7 +521,11 @@ fn render_statement_function(stmt: Value, config: Value, indent: Value) -> Rende
 /// {{ render_statements(func.body, cfg, "    ") }}
 /// ```
 fn render_statements_function(stmts: Value, config: Value, indent: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
+    let mut cfg = ExprConfig::from_value(&config);
+    // Function bodies use local C arrays / Python lists, so array subscripts
+    // must always use bracket notation (y[i]) — never the underscore style
+    // (y_i) which is reserved for top-level DAE named-scalar unpacking.
+    cfg.subscript_underscore = false;
     let indent_str = indent.as_str().unwrap_or("    ");
     render_statements(&stmts, &cfg, indent_str)
 }
@@ -519,6 +562,13 @@ pub(crate) struct ExprConfig {
     /// Override function name for `IfStyle::Function` (default: `"if_else"`).
     /// E.g., set to `"IfElse.ifelse"` for Julia ModelingToolkit.
     pub(crate) if_else_fn: Option<String>,
+    /// When true, render Modelica range `start:end` as Python `range(start, end + 1)`
+    /// and array comprehensions with `[...]` instead of `{...}`.
+    pub(crate) python_range: bool,
+    /// Override function name for `sum()` calls on non-literal arrays.
+    /// Default is `"sum1"` (CasADi convention, rendered as `prefix + sum1`).
+    /// C backends set this to their helper name (e.g., `"__rumoca_sum"`).
+    pub(crate) sum_fn: String,
 }
 
 #[derive(Clone, Copy)]
@@ -551,6 +601,8 @@ impl Default for ExprConfig {
             power_fn: None,
             subscript_underscore: false,
             if_else_fn: None,
+            python_range: false,
+            sum_fn: "sum1".to_string(),
         }
     }
 }
@@ -638,6 +690,17 @@ impl ExprConfig {
             && !s.is_empty()
         {
             cfg.if_else_fn = Some(s);
+        }
+        if let Ok(val) = v.get_attr("python_range")
+            && !val.is_undefined()
+            && !val.is_none()
+        {
+            cfg.python_range = val.is_true();
+        }
+        if let Some(s) = get_str_attr(v, "sum_fn")
+            && !s.is_empty()
+        {
+            cfg.sum_fn = s;
         }
 
         cfg

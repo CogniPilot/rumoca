@@ -2,6 +2,7 @@
   "modelica_builtins": true,
   "if_style": "function",
   "sanitize_dots": true,
+  "python_range": true,
   "and_op": "sp.And",
   "or_op": "sp.Or",
   "not_op": "sp.Not"
@@ -19,7 +20,7 @@ sp.Symbol("{{ name }}")
         {{ name | sanitize }} = {{ symbol_expr(name, var) }}
 {% if var.dims is defined and var.dims | length == 1 %}
 {% for i in range(1, var.dims[0] + 1) %}
-        {{ name | sanitize }}_{{ i }} = {{ name | sanitize }}[{{ i }}]
+        {{ (name ~ "[" ~ i ~ "]") | sanitize }} = {{ name | sanitize }}[{{ i }}]
 {% endfor %}
 {% endif %}
 {% endfor %}

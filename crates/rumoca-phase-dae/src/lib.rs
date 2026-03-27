@@ -79,7 +79,10 @@ use variable_analysis::{
 };
 use when_conversion::convert_when_clause;
 
-pub use dae_lowering::{insert_array_size_args_dae, lower_record_function_params_dae};
+pub use dae_lowering::{
+    insert_array_size_args_dae, lower_record_function_params_dae,
+    scalarize_phantom_vector_equations,
+};
 pub use errors::{ToDaeError, ToDaeResult};
 // Re-export moved functions so sibling modules can still use `super::`.
 pub(crate) use variable_analysis::{
@@ -236,6 +239,13 @@ pub fn to_dae_with_options(flat: &Model, options: ToDaeOptions) -> Result<Dae, T
     // If parameter A's start expression references parameter B, B must appear
     // before A so that code generators can evaluate start values sequentially.
     sort_parameters_by_start_dependency(&mut dae);
+
+    // Scalarize vector equations whose expressions reference "phantom" base names.
+    // Connector arrays like `plug_p.pin[3]` produce scalarized variables but some
+    // component equations still reference the unsubscripted base (`plug_p.pin.v`).
+    // Expanding them into per-element scalar equations ensures all backends can
+    // resolve every VarRef to a declared variable.
+    dae_lowering::scalarize_phantom_vector_equations(&mut dae);
 
     let todae_subphase_timing = todae_subphase_timing_enabled();
     let runtime_precompute_start = maybe_start_timer_if(todae_subphase_timing);

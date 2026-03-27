@@ -914,127 +914,33 @@ pub(super) fn log_prepare_substitutions_if_introspect(
     }
 }
 
-/// Lightweight preparation path for template/runtime code generation.
-///
-/// Keeps structural preparation/index-reduction passes, but intentionally skips
-/// solver-only products (IC block plan + mass matrix extraction) to avoid
-/// unnecessary failure modes in browser/WASM compile flows.
-pub(super) fn prepare_dae_for_template_codegen_only(
-    dae: &Dae,
-    scalarize: bool,
-    budget: &TimeoutBudget,
-) -> Result<Dae, SimError> {
-    let trace = sim_trace_enabled();
-    let trace_step = |name: &str, f: &mut dyn FnMut() -> Result<(), SimError>| {
-        if trace {
-            eprintln!("[sim-trace] prepare(template) step start: {name}");
-        }
-        let t0 = trace_timer_start_if(trace);
-        let res = f();
-        if trace {
-            eprintln!(
-                "[sim-trace] prepare(template) step done: {name} elapsed={:.3}s",
-                trace_timer_elapsed_seconds(t0)
-            );
-        }
-        res
-    };
-
-    budget.check()?;
-    let n_x_orig: usize = dae.states.values().map(|v| v.size()).sum();
-    let n_z_declared: usize = dae.algebraics.values().map(|v| v.size()).sum::<usize>()
-        + dae.outputs.values().map(|v| v.size()).sum::<usize>();
-    let n_discrete_declared: usize = dae.discrete_reals.values().map(|v| v.size()).sum::<usize>()
-        + dae
-            .discrete_valued
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>();
-    if n_x_orig + n_z_declared + n_discrete_declared == 0 {
-        return Err(SimError::EmptySystem);
+fn normalize_runtime_aliases_and_update_elim(
+    dae: &mut Dae,
+    elim: &mut eliminate::EliminationResult,
+    trace: bool,
+) {
+    let (n_normalized, runtime_alias_substitutions) = normalize_runtime_aliases_collect(dae);
+    apply_runtime_alias_substitutions_to_elimination(elim, &runtime_alias_substitutions);
+    if trace && n_normalized > 0 {
+        eprintln!(
+            "[sim-trace] normalized {} runtime alias variables into core-state equations/events",
+            n_normalized
+        );
     }
-
-    let mut dae = dae.clone();
-    let disable_trivial_elim = std::env::var("RUMOCA_SIM_DISABLE_TRIVIAL_ELIM").is_ok();
-
-    budget.check()?;
-    let mut elim = run_trivial_elimination_phase(&mut dae, trace, disable_trivial_elim);
-    budget.check()?;
-
-    run_prepare_structure_passes(&mut dae, budget)?;
-    trace_flow_array_alias_watch("after_structure_passes(template)", &dae, trace);
-
-    budget.check()?;
-    run_post_structure_elimination_phase(&mut dae, trace, disable_trivial_elim, &mut elim);
-    budget.check()?;
-
-    debug_print_prepare_counts(&dae);
-    let has_dummy = dae.states.values().map(|v| v.size()).sum::<usize>() == 0;
-    if has_dummy {
-        trace_step("inject_dummy_state", &mut || {
-            run_timeout_step(budget, || inject_dummy_state(&mut dae))
-        })?;
-    }
-
-    if scalarize {
-        trace_step("scalarize_equations", &mut || {
-            run_timeout_step(budget, || scalarize_equations(&mut dae))
-        })?;
-        trace_flow_array_alias_watch("after_scalarize(template)", &dae, trace);
-    }
-
-    trace_step("reorder_equations_for_solver", &mut || {
-        reorder_equations_for_prepare(&mut dae, budget)
-    })?;
-
-    trace_step("normalize_ode_equation_signs", &mut || {
-        run_timeout_step(budget, || normalize_ode_equation_signs(&mut dae))
-    })?;
-
-    substitute_non_ode_state_derivatives_with_trace(&mut dae, budget, trace, "prepare(template)")?;
-
-    budget.check()?;
-    run_post_scalarize_elimination_phase(
-        &mut dae,
-        trace,
-        scalarize,
-        disable_trivial_elim,
-        &mut elim,
-    );
-    budget.check()?;
-
-    log_prepare_substitutions_if_introspect(&elim, trace);
-
-    trace_step("pin_orphaned_variables", &mut || {
-        run_timeout_step(budget, || pin_orphaned_variables(&mut dae, &elim))
-    })?;
-
-    // Constant-fold parameter/state start expressions to numeric literals.
-    // This ensures template backends get concrete values instead of symbolic
-    // references to other parameters (e.g., G_T = G_T_ref → G_T = 300.15).
-    trace_step("fold_start_values", &mut || {
-        run_timeout_step(budget, || {
-            rumoca_ir_dae::fold_start_values_to_literals(&mut dae)
-        })
-    })?;
-
-    // Sort parameters/constants by start-expression dependency order so that
-    // template backends (which iterate dae.p in map order) evaluate each
-    // parameter after its dependencies have been initialized.
-    trace_step("sort_parameters_by_start_deps", &mut || {
-        run_timeout_step(budget, || {
-            rumoca_ir_dae::sort_parameters_by_start_deps(&mut dae)
-        })
-    })?;
-
-    Ok(dae)
 }
 
-pub(super) fn prepare_dae(
+/// Core DAE preparation pipeline shared by both simulation and template codegen.
+///
+/// Runs all structural passes (elimination, scalarization, equation reordering,
+/// sign normalization, orphaned variable pinning). The `normalize_aliases` flag
+/// controls whether runtime alias normalization runs (needed for simulation,
+/// skipped for template codegen to avoid unnecessary failure modes in WASM).
+fn prepare_dae_core(
     dae: &Dae,
     scalarize: bool,
     budget: &TimeoutBudget,
-) -> Result<PreparedSimulation, SimError> {
+    normalize_aliases: bool,
+) -> Result<(Dae, eliminate::EliminationResult, bool /* has_dummy */), SimError> {
     let trace = sim_trace_enabled();
     let trace_step = |name: &str, f: &mut dyn FnMut() -> Result<(), SimError>| {
         if trace {
@@ -1050,6 +956,7 @@ pub(super) fn prepare_dae(
         }
         res
     };
+
     budget.check()?;
     let n_x_orig: usize = dae.states.values().map(|v| v.size()).sum();
     let n_z_declared: usize = dae.algebraics.values().map(|v| v.size()).sum::<usize>()
@@ -1060,7 +967,6 @@ pub(super) fn prepare_dae(
             .values()
             .map(|v| v.size())
             .sum::<usize>();
-
     if n_x_orig + n_z_declared + n_discrete_declared == 0 {
         return Err(SimError::EmptySystem);
     }
@@ -1075,22 +981,13 @@ pub(super) fn prepare_dae(
     run_prepare_structure_passes(&mut dae, budget)?;
     trace_flow_array_alias_watch("after_structure_passes", &dae, trace);
 
-    run_logged_phase(trace, "normalize_runtime_aliases", || {
-        run_timeout_step(budget, || {
-            let (n_normalized, runtime_alias_substitutions) =
-                normalize_runtime_aliases_collect(&mut dae);
-            apply_runtime_alias_substitutions_to_elimination(
-                &mut elim,
-                &runtime_alias_substitutions,
-            );
-            if trace && n_normalized > 0 {
-                eprintln!(
-                    "[sim-trace] normalized {} runtime alias variables into core-state equations/events",
-                    n_normalized
-                );
-            }
-        })
-    })?;
+    if normalize_aliases {
+        run_logged_phase(trace, "normalize_runtime_aliases", || {
+            run_timeout_step(budget, || {
+                normalize_runtime_aliases_and_update_elim(&mut dae, &mut elim, trace)
+            })
+        })?;
+    }
 
     budget.check()?;
     run_post_structure_elimination_phase(&mut dae, trace, disable_trivial_elim, &mut elim);
@@ -1136,6 +1033,39 @@ pub(super) fn prepare_dae(
     trace_step("pin_orphaned_variables", &mut || {
         run_timeout_step(budget, || pin_orphaned_variables(&mut dae, &elim))
     })?;
+
+    Ok((dae, elim, has_dummy))
+}
+
+/// Prepare a DAE for template codegen (CasADi, Julia MTK, etc.).
+///
+/// Runs the shared structural pipeline, then folds start values and sorts
+/// parameters/algebraics for deterministic template iteration order.
+pub(super) fn prepare_dae_for_template_codegen_only(
+    dae: &Dae,
+    scalarize: bool,
+    budget: &TimeoutBudget,
+) -> Result<Dae, SimError> {
+    let (mut dae, _elim, _has_dummy) = prepare_dae_core(dae, scalarize, budget, false)?;
+
+    rumoca_phase_solve::fold_start_values_to_literals(&mut dae);
+    rumoca_phase_solve::sort_parameters_by_start_deps(&mut dae);
+    rumoca_phase_solve::sort_algebraics_by_equation_deps(&mut dae);
+
+    Ok(dae)
+}
+
+/// Prepare a DAE for numerical simulation.
+///
+/// Runs the shared structural pipeline (with runtime alias normalization),
+/// then builds the IC plan and mass matrix needed by the solver.
+pub(super) fn prepare_dae(
+    dae: &Dae,
+    scalarize: bool,
+    budget: &TimeoutBudget,
+) -> Result<PreparedSimulation, SimError> {
+    let trace = sim_trace_enabled();
+    let (dae, elim, has_dummy) = prepare_dae_core(dae, scalarize, budget, true)?;
 
     let n_x: usize = dae.states.values().map(|v| v.size()).sum();
     let ic_blocks = build_ic_plan_with_trace(&dae, n_x, budget, trace)?;
