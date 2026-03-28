@@ -76,7 +76,7 @@ pub mod templates {
     pub const CASADI_SX: &str = include_str!("templates/casadi_sx.py.jinja");
     /// CasADi MX template (Python) — matrix symbolic with vector variables and casadi.Function DAE.
     pub const CASADI_MX: &str = include_str!("templates/casadi_mx.py.jinja");
-/// Julia ModelingToolkit template.
+    /// Julia ModelingToolkit template.
     pub const JULIA_MTK: &str = include_str!("templates/julia_mtk.jl.jinja");
     /// JAX/Diffrax template (Python).
     pub const JAX: &str = include_str!("templates/jax.py.jinja");

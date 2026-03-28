@@ -49,7 +49,7 @@ fn builtin_template_descriptors() -> Vec<BuiltinTemplateDescriptor> {
             language: "python",
             source: runtime_templates::CASADI_MX,
         },
-BuiltinTemplateDescriptor {
+        BuiltinTemplateDescriptor {
             id: "embedded_c.h.jinja",
             label: "Embedded C Header",
             language: "c",

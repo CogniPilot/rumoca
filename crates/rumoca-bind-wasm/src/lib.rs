@@ -174,7 +174,7 @@ pub fn get_builtin_templates() -> JsValue {
             language: "python",
             source: runtime_templates::CASADI_MX,
         },
-WasmBuiltinTemplate {
+        WasmBuiltinTemplate {
             id: "embedded_c.h.jinja",
             label: "Embedded C Header",
             language: "c",

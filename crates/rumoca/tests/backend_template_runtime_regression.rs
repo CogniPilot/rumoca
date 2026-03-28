@@ -352,7 +352,13 @@ for i, t in enumerate(tgrid):
 
 fn sanitize_c_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -366,7 +372,7 @@ fn embedded_c_csv_main(model_name: &str, _n_states: usize, state_names: &[&str])
     format!(
         r#"#include <stdio.h>
 #include <math.h>
-#include "model.h"
+#include "{model_name}.h"
 
 int main(void) {{
     {model_name}_t m;
@@ -459,9 +465,12 @@ fn embedded_c_trace_test(source: &str, model_name: &str) {
     let header =
         rumoca_phase_codegen::render_template_with_name(&dae, templates::EMBEDDED_C_H, model_name)
             .expect("render header template");
-    let impl_c =
-        rumoca_phase_codegen::render_template_with_name(&dae, templates::EMBEDDED_C_IMPL, model_name)
-            .expect("render impl template");
+    let impl_c = rumoca_phase_codegen::render_template_with_name(
+        &dae,
+        templates::EMBEDDED_C_IMPL,
+        model_name,
+    )
+    .expect("render impl template");
 
     // State names must be sorted alphabetically to match JSON serialization order
     // (serde_json::Map uses BTreeMap, so templates see states in sorted order)
@@ -472,7 +481,11 @@ fn embedded_c_trace_test(source: &str, model_name: &str) {
     let header_name = format!("{}.h", model_name);
     let impl_name = format!("{}.c", model_name);
     let csv = compile_and_run_c(
-        &[(&header_name, &header), (&impl_name, &impl_c), ("main.c", &main_c)],
+        &[
+            (&header_name, &header),
+            (&impl_name, &impl_c),
+            ("main.c", &main_c),
+        ],
         &[],
     );
     let backend_traces = parse_csv_traces(&csv);

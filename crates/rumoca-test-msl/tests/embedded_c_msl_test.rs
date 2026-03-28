@@ -181,7 +181,13 @@ fn embedded_tolerance() -> f64 {
 /// Sanitize a variable name for C (dots → underscores).
 fn sanitize_c_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
