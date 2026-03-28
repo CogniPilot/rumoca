@@ -732,15 +732,21 @@ fn run_export_embedded_c(args: ExportEmbeddedCArgs) -> Result<()> {
     fs::create_dir_all(&out_dir)?;
 
     // Render header (.h)
-    let h_code = result
-        .render_template_str_prepared_with_name(embedded_c_templates::EMBEDDED_C_H, &model_identifier, true)?;
+    let h_code = result.render_template_str_prepared_with_name(
+        embedded_c_templates::EMBEDDED_C_H,
+        &model_identifier,
+        true,
+    )?;
     let h_path = out_dir.join(format!("{}.h", model_identifier));
     fs::write(&h_path, &h_code)?;
     eprintln!("  wrote {}", h_path.display());
 
     // Render implementation (.c)
-    let c_code = result
-        .render_template_str_prepared_with_name(embedded_c_templates::EMBEDDED_C_IMPL, &model_identifier, true)?;
+    let c_code = result.render_template_str_prepared_with_name(
+        embedded_c_templates::EMBEDDED_C_IMPL,
+        &model_identifier,
+        true,
+    )?;
     let c_path = out_dir.join(format!("{}.c", model_identifier));
     fs::write(&c_path, &c_code)?;
     eprintln!("  wrote {}", c_path.display());

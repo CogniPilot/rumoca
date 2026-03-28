@@ -534,7 +534,9 @@ fn eval_var_start_values(var: &rumoca_ir_dae::Variable, env: &VarEnv<f64>) -> Ve
         return vec![raw[0]; sz];
     }
     let last = *raw.last().unwrap_or(&0.0);
-    (0..sz).map(|i| raw.get(i).copied().unwrap_or(last)).collect()
+    (0..sz)
+        .map(|i| raw.get(i).copied().unwrap_or(last))
+        .collect()
 }
 
 /// Initialize `[x; z; y_out]` vector from variable start/nominal values.

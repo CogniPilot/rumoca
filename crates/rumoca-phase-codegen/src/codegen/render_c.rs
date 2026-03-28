@@ -522,9 +522,7 @@ fn find_algebraic_rhs_array_element(
     if index > len {
         return None;
     }
-    let elem = elements
-        .get_item(&minijinja::Value::from(index - 1))
-        .ok()?;
+    let elem = elements.get_item(&minijinja::Value::from(index - 1)).ok()?;
     render_expression(&elem, cfg).ok()
 }
 

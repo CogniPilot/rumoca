@@ -728,7 +728,13 @@ fn casadi_simulate(
 
 fn sanitize_c_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -801,7 +807,11 @@ int main(void) {{
     );
 
     compile_and_run_c(
-        &[(&header_name, &header), (&impl_name, &impl_c), ("main.c", &main_c)],
+        &[
+            (&header_name, &header),
+            (&impl_name, &impl_c),
+            ("main.c", &main_c),
+        ],
         &[],
     )
 }
