@@ -336,6 +336,10 @@ pub(crate) fn sanitize_name(name: &str) -> String {
     for ch in name.chars() {
         if ch.is_alphanumeric() || ch == '_' {
             result.push(ch);
+        } else if ch == ']' {
+            // Drop closing brackets to avoid trailing underscores.
+            // After for-loop unrolling, VarRef names like "Kp[1]" get sanitized
+            // here; replacing ']' with '_' would produce "Kp_1_" instead of "Kp_1".
         } else {
             result.push('_');
         }
@@ -363,6 +367,8 @@ fn sanitize_filter(value: Value) -> String {
     for ch in s.chars() {
         if ch.is_alphanumeric() || ch == '_' {
             result.push(ch);
+        } else if ch == ']' {
+            // Drop closing brackets (see sanitize_name for rationale)
         } else {
             result.push('_');
         }

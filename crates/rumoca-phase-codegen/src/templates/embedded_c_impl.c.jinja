@@ -121,7 +121,7 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- endif -%}
 {%- endfor %}
     (void)t;
-{%- for name, var in dae.w | items -%}
+{%- for name, var in dae.y | items -%}
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
@@ -133,7 +133,7 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
     m->{{ name | sanitize }} = {{ name | sanitize }};
 {%- endif -%}
 {%- endfor -%}
-{%- for name, var in dae.y | items -%}
+{%- for name, var in dae.w | items -%}
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
@@ -247,7 +247,7 @@ void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->{{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
 {%- endfor -%}
 {%- else %}
     m->{{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
@@ -257,7 +257,7 @@ void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->{{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
 {%- endfor -%}
 {%- else %}
     m->{{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
