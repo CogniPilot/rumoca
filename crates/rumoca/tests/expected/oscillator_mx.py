@@ -108,6 +108,8 @@ def Modelica_ComplexMath_arg(c_re, c_im=0):
     return ca.atan2(c_im, c_re)
 
 
+
+
 def create_model():
     """Create CasADi MX model with vector symbols and Function objects.
 
@@ -127,17 +129,17 @@ def create_model():
     _xdot = ca.MX.sym('xdot', n_x)
 
     # Named slices into _x (0-indexed)
-    v = _x[0]  # v
-    x = _x[1]  # x
+    x = _x[0]  # x
+    v = _x[1]  # v
 
     # der() maps state variables to _xdot slices via CasADi symbolic comparison
     _der_pairs = [
-        (v, _xdot[0]),
-        (x, _xdot[1]),
+        (x, _xdot[0]),
+        (v, _xdot[1]),
     ]
     def der(v):
         for _state, _deriv in _der_pairs:
-            if ca.is_equal(v, _state):
+            if _state.shape == v.shape and ca.is_equal(v, _state):
                 return _deriv
         raise ValueError(f"der() called on non-state variable: {v}")
 
@@ -173,13 +175,13 @@ def create_model():
 
 
     # Enumeration literal ordinals (MLS §4.9.5)
-    AssertionLevel_error = 2
-    AssertionLevel_warning = 1
-    StateSelect_always = 5
+    StateSelect_never = 1
     StateSelect_avoid = 2
     StateSelect_default = 3
-    StateSelect_never = 1
     StateSelect_prefer = 4
+    StateSelect_always = 5
+    AssertionLevel_warning = 1
+    AssertionLevel_error = 2
 
     # =========================================================================
     # User-Defined Functions (0)
@@ -298,14 +300,14 @@ def create_model():
 
     _x0_parts = []
     _x0_parts.append(_flat_start(
-        0,
-        1,
-        'v'
-    ))
-    _x0_parts.append(_flat_start(
         1,
         1,
         'x'
+    ))
+    _x0_parts.append(_flat_start(
+        0,
+        1,
+        'v'
     ))
     x0 = np.concatenate(_x0_parts) if _x0_parts else np.array([])
 
@@ -345,7 +347,7 @@ def create_model():
         'n_z_continuous': n_z_continuous,
         'n_u': n_u,
         'n_p': n_p,
-        'state_names': ['v', 'x'],
+        'state_names': ['x', 'v'],
         'algebraic_names': [],
         'input_names': [],
         'param_names': ['k', 'm'],
@@ -358,7 +360,7 @@ def create_model():
 
 def get_state_names():
     """Get list of state variable names."""
-    return ['v', 'x']
+    return ['x', 'v']
 
 
 def get_param_names():
