@@ -1160,42 +1160,32 @@ pub(super) fn build_init_jacobian_colored(
     Ok(Some(jac))
 }
 
-pub(super) fn get_init_value(var: &rumoca_ir_dae::Variable, env: &VarEnv<f64>) -> f64 {
-    if let Some(ref start) = var.start {
-        return eval_expr::<f64>(start, env);
-    }
-    if let Some(ref nominal) = var.nominal {
-        return eval_expr::<f64>(nominal, env);
-    }
-    0.0
-}
-
 pub(crate) fn initialize_state_vector(dae: &Dae, y: &mut [f64]) {
     let env = build_param_env(dae);
     let mut idx = 0;
     for var in dae.states.values() {
-        let val = get_init_value(var, &env);
-        for _ in 0..var.size() {
+        let vals = eval_var_start_values(var, &env);
+        for v in &vals {
             if idx < y.len() {
-                y[idx] = val;
+                y[idx] = *v;
             }
             idx += 1;
         }
     }
     for var in dae.algebraics.values() {
-        let val = get_init_value(var, &env);
-        for _ in 0..var.size() {
+        let vals = eval_var_start_values(var, &env);
+        for v in &vals {
             if idx < y.len() {
-                y[idx] = val;
+                y[idx] = *v;
             }
             idx += 1;
         }
     }
     for var in dae.outputs.values() {
-        let val = get_init_value(var, &env);
-        for _ in 0..var.size() {
+        let vals = eval_var_start_values(var, &env);
+        for v in &vals {
             if idx < y.len() {
-                y[idx] = val;
+                y[idx] = *v;
             }
             idx += 1;
         }
