@@ -50,16 +50,16 @@ fn builtin_template_descriptors() -> Vec<BuiltinTemplateDescriptor> {
             source: runtime_templates::CASADI_MX,
         },
         BuiltinTemplateDescriptor {
-            id: "cyecca.py.jinja",
-            label: "Cyecca (Python)",
-            language: "python",
-            source: runtime_templates::CYECCA,
+            id: "embedded_c.h.jinja",
+            label: "Embedded C Header",
+            language: "c",
+            source: runtime_templates::EMBEDDED_C_H,
         },
         BuiltinTemplateDescriptor {
-            id: "embedded_c.c.jinja",
-            label: "Embedded C",
+            id: "embedded_c_impl.c.jinja",
+            label: "Embedded C Implementation",
             language: "c",
-            source: runtime_templates::EMBEDDED_C,
+            source: runtime_templates::EMBEDDED_C_IMPL,
         },
         BuiltinTemplateDescriptor {
             id: "dae_modelica.mo.jinja",

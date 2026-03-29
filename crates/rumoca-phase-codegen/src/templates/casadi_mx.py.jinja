@@ -108,6 +108,21 @@ def Modelica_ComplexMath_arg(c_re, c_im=0):
     return ca.atan2(c_im, c_re)
 
 {% set cfg = {"prefix": "ca.", "power": "**", "power_fn": "ca.power", "if_style": "function", "mul_elem_fn": "ca.times", "and_op": "ca.logic_and", "or_op": "ca.logic_or", "not_op": "ca.logic_not", "size_fn": "_size", "sum_fn": "_sum", "python_range": true, "reserved_words": "False,None,True,and,as,assert,async,await,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield"} -%}
+{# Emit scalar element aliases for array variables so that sanitized
+   equation references like p_e_1_ resolve to the correct CasADi symbol. #}
+{% macro array_element_aliases(name, var, vec, base_offset) -%}
+{%- if var.dims | length == 1 -%}
+{%- for i in range(var.dims[0]) %}
+    {{ name | sanitize }}_{{ i + 1 }}_ = {{ vec }}[{{ base_offset + i }}]
+{%- endfor -%}
+{%- elif var.dims | length == 2 -%}
+{%- for i in range(var.dims[0]) -%}
+{%- for j in range(var.dims[1]) %}
+    {{ name | sanitize }}_{{ i + 1 }}_{{ j + 1 }}_ = {{ vec }}[{{ base_offset + i * var.dims[1] + j }}]
+{%- endfor -%}
+{%- endfor -%}
+{%- endif -%}
+{%- endmacro %}
 {% macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
 {%- for name, var in vars | items -%}
@@ -144,6 +159,7 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _x[{{ ns_x.offset }}:{{ ns_x.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
+{{ array_element_aliases(name, var, "_x", ns_x.offset) }}
 {%- set ns_x.offset = ns_x.offset + sz %}
 {%- else %}
     {{ name | sanitize }} = _x[{{ ns_x.offset }}]  # {{ name }}
@@ -158,6 +174,9 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
         ({{ name | sanitize }}, _xdot[{{ ns_d.offset }}:{{ ns_d.offset + sz }}]),
+{%- for i in range(sz) %}
+        (_x[{{ ns_d.offset + i }}], _xdot[{{ ns_d.offset + i }}]),
+{%- endfor %}
 {%- set ns_d.offset = ns_d.offset + sz %}
 {%- else %}
         ({{ name | sanitize }}, _xdot[{{ ns_d.offset }}]),
@@ -167,7 +186,7 @@ def create_model():
     ]
     def der(v):
         for _state, _deriv in _der_pairs:
-            if ca.is_equal(v, _state):
+            if _state.shape == v.shape and ca.is_equal(v, _state):
                 return _deriv
         raise ValueError(f"der() called on non-state variable: {v}")
 {%- else %}
@@ -199,6 +218,7 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}:{{ ns_zc.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
+{{ array_element_aliases(name, var, "_z_c", ns_zc.offset) }}
 {%- set ns_zc.offset = ns_zc.offset + sz %}
 {%- else %}
     {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}]  # {{ name }}
@@ -209,6 +229,7 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}:{{ ns_zc.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, output)
+{{ array_element_aliases(name, var, "_z_c", ns_zc.offset) }}
 {%- set ns_zc.offset = ns_zc.offset + sz %}
 {%- else %}
     {{ name | sanitize }} = _z_c[{{ ns_zc.offset }}]  # {{ name }} (output)
@@ -222,6 +243,7 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}:{{ ns_zd.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, discrete)
+{{ array_element_aliases(name, var, "_z_d", ns_zd.offset) }}
 {%- set ns_zd.offset = ns_zd.offset + sz %}
 {%- else %}
     {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}]  # {{ name }} (discrete)
@@ -232,6 +254,7 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}:{{ ns_zd.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }}, discrete-valued)
+{{ array_element_aliases(name, var, "_z_d", ns_zd.offset) }}
 {%- set ns_zd.offset = ns_zd.offset + sz %}
 {%- else %}
     {{ name | sanitize }} = _z_d[{{ ns_zd.offset }}]  # {{ name }} (discrete-valued)
@@ -260,6 +283,7 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _u[{{ ns_u.offset }}:{{ ns_u.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
+{{ array_element_aliases(name, var, "_u", ns_u.offset) }}
 {%- set ns_u.offset = ns_u.offset + sz %}
 {%- else %}
     {{ name | sanitize }} = _u[{{ ns_u.offset }}]  # {{ name }}
@@ -284,6 +308,7 @@ def create_model():
 {%- if var.dims %}
 {%- set sz = var.dims | product %}
     {{ name | sanitize }} = _p[{{ ns_p.offset }}:{{ ns_p.offset + sz }}]  # {{ name }} ({{ var.dims | join("x") }})
+{{ array_element_aliases(name, var, "_p", ns_p.offset) }}
 {%- set ns_p.offset = ns_p.offset + sz %}
 {%- else %}
     {{ name | sanitize }} = _p[{{ ns_p.offset }}]  # {{ name }}

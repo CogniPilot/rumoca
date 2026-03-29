@@ -108,6 +108,8 @@ def Modelica_ComplexMath_arg(c_re, c_im=0):
     return ca.atan2(c_im, c_re)
 
 
+
+
 def create_model():
     """Create CasADi MX model with vector symbols and Function objects.
 
@@ -135,7 +137,7 @@ def create_model():
     ]
     def der(v):
         for _state, _deriv in _der_pairs:
-            if ca.is_equal(v, _state):
+            if _state.shape == v.shape and ca.is_equal(v, _state):
                 return _deriv
         raise ValueError(f"der() called on non-state variable: {v}")
 
@@ -170,8 +172,8 @@ def create_model():
     _p = ca.MX.sym('p', n_p)
 
     # Named slices into _p
-    c = _p[0]  # c
-    k = _p[1]  # k
+    k = _p[0]  # k
+    c = _p[1]  # c
 
     # =========================================================================
     # Constants
@@ -179,13 +181,13 @@ def create_model():
 
 
     # Enumeration literal ordinals (MLS §4.9.5)
-    AssertionLevel_error = 2
-    AssertionLevel_warning = 1
-    StateSelect_always = 5
+    StateSelect_never = 1
     StateSelect_avoid = 2
     StateSelect_default = 3
-    StateSelect_never = 1
     StateSelect_prefer = 4
+    StateSelect_always = 5
+    AssertionLevel_warning = 1
+    AssertionLevel_error = 2
 
     # =========================================================================
     # User-Defined Functions (0)
@@ -312,14 +314,14 @@ def create_model():
 
     _p0_parts = []
     _p0_parts.append(_flat_start(
-        0.5,
-        1,
-        'c'
-    ))
-    _p0_parts.append(_flat_start(
         2.0,
         1,
         'k'
+    ))
+    _p0_parts.append(_flat_start(
+        0.5,
+        1,
+        'c'
     ))
     p0 = np.concatenate(_p0_parts) if _p0_parts else np.array([])
 
@@ -354,7 +356,7 @@ def create_model():
         'state_names': ['x'],
         'algebraic_names': ['y', ],
         'input_names': [],
-        'param_names': ['c', 'k'],
+        'param_names': ['k', 'c'],
     }
 
 
@@ -369,7 +371,7 @@ def get_state_names():
 
 def get_param_names():
     """Get list of parameter names."""
-    return ['c', 'k']
+    return ['k', 'c']
 
 
 def get_input_names():

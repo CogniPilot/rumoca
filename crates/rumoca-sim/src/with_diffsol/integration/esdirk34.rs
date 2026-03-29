@@ -1,9 +1,9 @@
 use diffsol::{OdeSolverMethod, VectorHost};
 
 use super::{
-    DiffsolBackend, IntegrationOutput, SolverLoopContext,
-    apply_initial_sections_and_sync_startup_state, build_compiled_discrete_event_context,
-    build_output_names, configure_solver_problem_with_profile,
+    DiffsolBackend, IntegrationOutput, apply_initial_sections_and_sync_startup_state,
+    build_compiled_discrete_event_context, build_output_names,
+    configure_solver_problem_with_profile,
 };
 use crate::TimeoutBudget;
 use crate::with_diffsol::{
@@ -49,14 +49,14 @@ pub(crate) fn try_integrate_esdirk34(
     solver_names.truncate(n_total);
     let output = IntegrationOutput::new(opts, n_total, solver.state().y.as_slice());
     let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
-    let ctx = SolverLoopContext {
-        dae,
-        opts,
+    let ctx = super::SolverLoopContext {
+        dae: dae.clone(),
+        opts: opts.clone(),
         startup_profile,
         n_x,
         param_values: param_values.clone(),
         discrete_event_ctx: compiled_discrete_event_ctx,
-        budget,
+        budget: *budget,
     };
     let (output, stats, final_t) = {
         let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names);

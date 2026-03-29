@@ -219,6 +219,38 @@ fn trace_accuracy_small_channel_drift() -> MslTraceAccuracyStatsBaseline {
     }
 }
 
+fn trace_accuracy_ci_channel_share_baseline() -> MslTraceAccuracyStatsBaseline {
+    MslTraceAccuracyStatsBaseline {
+        models_compared: 107,
+        total_channels_compared: Some(2396),
+        bad_channels_total: Some(775),
+        severe_channels_total: Some(311),
+        bad_channels_percent: Some(32.35),
+        severe_channels_percent: Some(12.97),
+        models_with_bad_channel: Some(37),
+        models_with_severe_channel: Some(18),
+        bounded_normalized_l1: Some(dist(107, 0.0, 0.003, 0.10, 1.0)),
+        mean_model_mean_channel_bounded_normalized_l1: Some(0.10),
+        model_mean_channel_bounded_normalized_l1: Some(dist(107, 0.0, 0.003, 0.10, 0.9)),
+        model_max_channel_bounded_normalized_l1: Some(dist(107, 0.0, 0.03, 0.17, 1.0)),
+        ..trace_accuracy_baseline()
+    }
+}
+
+fn trace_accuracy_ci_channel_share_drift() -> MslTraceAccuracyStatsBaseline {
+    MslTraceAccuracyStatsBaseline {
+        bad_channels_total: Some(799),
+        severe_channels_total: Some(346),
+        bad_channels_percent: Some(33.35),
+        severe_channels_percent: Some(14.46),
+        models_with_bad_channel: Some(38),
+        models_with_severe_channel: Some(19),
+        violation_mass_total: Some(126.0),
+        violation_mass_mean_per_model: Some(1.18),
+        ..trace_accuracy_baseline()
+    }
+}
+
 #[test]
 fn runtime_ratio_regression_reason_triggers_on_large_drop() {
     let baseline = MslQualityBaseline {
@@ -354,6 +386,29 @@ fn trace_channel_share_tolerances_allow_small_runner_drift() {
         reasons
             .iter()
             .all(|reason| !reason.contains("trace severe channel")),
+        "unexpected severe-channel regression reason: {reasons:?}"
+    );
+}
+
+#[test]
+fn trace_severe_channel_tolerance_allows_current_ci_delta() {
+    let baseline = MslQualityBaseline {
+        trace_accuracy_stats: Some(trace_accuracy_ci_channel_share_baseline()),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(107),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        trace_accuracy_stats: Some(trace_accuracy_ci_channel_share_drift()),
+    };
+
+    let mut reasons = Vec::new();
+    push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons
+            .iter()
+            .all(|reason| !reason.contains("trace severe channel share regressed")),
         "unexpected severe-channel regression reason: {reasons:?}"
     );
 }

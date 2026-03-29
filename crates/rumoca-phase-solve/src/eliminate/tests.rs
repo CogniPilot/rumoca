@@ -791,16 +791,18 @@ fn test_eliminate_trivial_allows_output_if_assignment() {
 
     let result = eliminate_trivial(&mut dae);
 
+    // Non-trivial output expressions (if-then-else) should be preserved so
+    // they remain visible in codegen output.
     assert!(
-        result
+        !result
             .substitutions
             .iter()
             .any(|sub| sub.var_name.as_str() == "y"),
-        "output assignment with if-expression should be eliminable"
+        "output with non-trivial if-expression should NOT be eliminated"
     );
     assert!(
-        !dae.outputs.contains_key(&VarName::new("y")),
-        "output y should be removed from live unknowns after elimination"
+        dae.outputs.contains_key(&VarName::new("y")),
+        "output y should remain in the DAE"
     );
 }
 
@@ -1437,23 +1439,18 @@ fn test_boundary_eliminates_single_unknown_connection_after_substitution() {
     });
 
     let result = eliminate_trivial(&mut dae);
-    assert_eq!(result.n_eliminated, 2);
-    assert!(dae.f_x.is_empty());
-    assert!(!dae.outputs.contains_key(&VarName::new("y")));
-    assert!(!dae.algebraics.contains_key(&VarName::new("u")));
+    // y is a non-trivial output (if-expression) — preserved in the DAE.
+    // u cannot be eliminated because y also remains live in the connection
+    // equation, keeping both unknowns alive.
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.f_x.len(), 2);
     assert!(
-        result
-            .substitutions
-            .iter()
-            .any(|s| s.var_name.as_str() == "y"),
-        "expected y substitution"
+        dae.outputs.contains_key(&VarName::new("y")),
+        "output y should remain (non-trivial expression)"
     );
     assert!(
-        result
-            .substitutions
-            .iter()
-            .any(|s| s.var_name.as_str() == "u"),
-        "expected u substitution from reduced connection equation"
+        dae.algebraics.contains_key(&VarName::new("u")),
+        "u should remain (y not eliminated, connection eq still has two unknowns)"
     );
 }
 

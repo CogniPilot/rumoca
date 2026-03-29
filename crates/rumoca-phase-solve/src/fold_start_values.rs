@@ -271,6 +271,12 @@ fn collect_param_refs_inner(
             let s = name.as_str().to_string();
             if param_names.contains(&s) && !refs.contains(&s) {
                 refs.push(s);
+            } else {
+                // Also match base name for subscripted refs: "e[1]" → "e"
+                let base = var_base_name(&s).to_string();
+                if base != s && param_names.contains(&base) && !refs.contains(&base) {
+                    refs.push(base);
+                }
             }
         }
         Expression::Unary { rhs, .. } => {
@@ -480,8 +486,14 @@ fn equation_defines_var(rhs: &Expression, var_name: &str) -> bool {
     }
 }
 
+/// Extract the base name from a possibly-subscripted variable name.
+/// E.g., `"e[1]"` → `"e"`, `"q_err_w"` → `"q_err_w"`.
+fn var_base_name(name: &str) -> &str {
+    name.find('[').map_or(name, |i| &name[..i])
+}
+
 fn is_var_ref_named(expr: &Expression, name: &str) -> bool {
-    matches!(expr, Expression::VarRef { name: n, .. } if n.as_str() == name)
+    matches!(expr, Expression::VarRef { name: n, .. } if n.as_str() == name || var_base_name(n.as_str()) == name)
 }
 
 /// Collect all VarRef names from an additive expression tree.
@@ -502,7 +514,7 @@ fn collect_additive_var_refs(expr: &Expression) -> Vec<String> {
             v
         }
         Expression::Unary { rhs, .. } => collect_additive_var_refs(rhs),
-        Expression::VarRef { name, .. } => vec![name.as_str().to_string()],
+        Expression::VarRef { name, .. } => vec![var_base_name(name.as_str()).to_string()],
         _ => vec![],
     }
 }

@@ -10,6 +10,7 @@ pub mod eliminate {
 pub(crate) mod integration;
 mod prepare;
 pub mod problem;
+pub mod stepper;
 
 use std::collections::{HashMap, HashSet};
 
@@ -1417,6 +1418,265 @@ pub fn simulate(dae: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
         n_total,
         buf,
     ))
+}
+
+/// Build a [`stepper::SimStepper`] from a DAE and options.
+///
+/// Lives here to access `pub(super)` internals (prepare_dae, solver construction, etc.).
+#[allow(clippy::too_many_lines)]
+pub(crate) fn build_stepper(
+    dae: &Dae,
+    opts: stepper::StepperOptions,
+) -> Result<stepper::SimStepper, SimError> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use crate::equation_scalarize::build_output_names;
+    use crate::runtime::layout::SimulationContext;
+    use integration::{
+        SolverLoopContext, apply_initial_sections_and_sync_startup_state,
+        build_compiled_discrete_event_context,
+    };
+
+    eval::clear_pre_values();
+    let budget = TimeoutBudget::new(Some(30.0));
+
+    validate_simulation_function_support(dae)?;
+    let prepared = prepare_dae(dae, opts.scalarize, &budget)?;
+    let mut dae = prepared.dae;
+    let mass_matrix = prepared.mass_matrix;
+    let ic_blocks = prepared.ic_blocks;
+
+    if prepared.has_dummy_state {
+        return Err(SimError::EmptySystem);
+    }
+
+    validate_simulation_function_support(&dae)?;
+
+    let n_x: usize = dae.states.values().map(|v| v.size()).sum();
+    let n_total = dae.f_x.len();
+
+    solve_initial_conditions(&mut dae, &ic_blocks, n_x, opts.atol, &budget)?;
+
+    let input_overrides: problem::SharedInputOverrides = Rc::new(RefCell::new(HashMap::new()));
+
+    let param_values = build_parameter_values(&dae, &budget)?;
+
+    let mut problem_obj = problem::build_problem_with_overrides(
+        &dae,
+        opts.rtol,
+        opts.atol,
+        1e-8,
+        &mass_matrix,
+        Some(input_overrides.clone()),
+    )?;
+
+    let sim_opts = SimOptions {
+        t_start: 0.0,
+        t_end: 1.0, // Initial horizon; overridden per-step
+        rtol: opts.rtol,
+        atol: opts.atol,
+        dt: None,
+        scalarize: opts.scalarize,
+        max_wall_seconds: opts.max_wall_seconds_per_step,
+        solver_mode: SimSolverMode::Bdf,
+    };
+
+    let startup_profile = SolverStartupProfile::Default;
+    configure_solver_problem_with_profile(&mut problem_obj, &sim_opts, startup_profile);
+
+    // Leak the problem to obtain a 'static reference. The solver borrows from
+    // the problem, but the stepper needs to own the solver for an unbounded
+    // lifetime.  The problem is allocated once per stepper and lives for the
+    // program's duration (or until the stepper is dropped — a future
+    // improvement could reclaim the memory via ManuallyDrop / raw pointers).
+    let problem_ref: &'static _ = Box::leak(Box::new(problem_obj));
+    let mut solver = problem_ref
+        .bdf::<LS>()
+        .map_err(|e| SimError::SolverError(format!("Failed to create BDF solver: {e}")))?;
+
+    apply_initial_sections_and_sync_startup_state(
+        &mut solver,
+        &dae,
+        &sim_opts,
+        startup_profile,
+        &param_values,
+        n_x,
+        &budget,
+    )?;
+
+    let mut solver_names = build_output_names(&dae);
+    solver_names.truncate(n_total);
+
+    let sim_context = SimulationContext::from_dae(&dae, n_total);
+
+    let compiled_discrete_event_ctx = build_compiled_discrete_event_context(&dae, n_total)?;
+
+    let ctx = SolverLoopContext {
+        dae: dae.clone(),
+        opts: sim_opts,
+        startup_profile,
+        n_x,
+        param_values: param_values.clone(),
+        discrete_event_ctx: compiled_discrete_event_ctx,
+        budget,
+    };
+
+    // Type-erased stepper inner
+    #[allow(dead_code)]
+    struct ConcreteInner<'a, Eqn, S>
+    where
+        Eqn: diffsol::OdeEquations<T = f64> + 'a,
+        Eqn::V: diffsol::VectorHost<T = f64>,
+        S: diffsol::OdeSolverMethod<'a, Eqn>,
+    {
+        solver: S,
+        ctx: SolverLoopContext,
+        _phantom: std::marker::PhantomData<&'a Eqn>,
+    }
+
+    #[allow(clippy::excessive_nesting)]
+    impl<'a, Eqn, S> stepper::StepperInner for ConcreteInner<'a, Eqn, S>
+    where
+        Eqn: diffsol::OdeEquations<T = f64> + 'a,
+        Eqn::V: diffsol::VectorHost<T = f64>,
+        S: diffsol::OdeSolverMethod<'a, Eqn>,
+    {
+        fn step(&mut self, dt: f64, _dae: &Dae, budget: &TimeoutBudget) -> Result<(), SimError> {
+            use diffsol::OdeSolverStopReason;
+
+            let t_end = self.solver.state().t + dt;
+
+            self.solver.set_stop_time(t_end).map_err(|e| {
+                SimError::SolverError(format!("Failed to set stop time at t_end={t_end}: {e}"))
+            })?;
+
+            loop {
+                budget.check()?;
+                match self.solver.step() {
+                    Ok(OdeSolverStopReason::TstopReached) => break,
+                    Ok(OdeSolverStopReason::InternalTimestep) => {
+                        if self.solver.state().t >= t_end {
+                            break;
+                        }
+                        continue;
+                    }
+                    Ok(OdeSolverStopReason::RootFound(_)) => {
+                        // Root events (from conditional expressions) — continue
+                        // but check if we've reached the target time.
+                        if self.solver.state().t >= t_end {
+                            break;
+                        }
+                        // Reset stop time after root handling
+                        let _ = self.solver.set_stop_time(t_end);
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(SimError::SolverError(format!("Step failed: {e}")));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn time(&self) -> f64 {
+            self.solver.state().t
+        }
+
+        fn solver_state_y(&self) -> Vec<f64> {
+            self.solver.state().y.as_slice().to_vec()
+        }
+    }
+
+    /// Minimal SimulationBackend adapter for the stepper (no output recording).
+    #[allow(dead_code)]
+    struct BackendAdapter<'b, 'a, Eqn, S>
+    where
+        Eqn: diffsol::OdeEquations<T = f64> + 'a,
+        Eqn::V: diffsol::VectorHost<T = f64>,
+        S: diffsol::OdeSolverMethod<'a, Eqn>,
+    {
+        solver: &'b mut S,
+        ctx: &'b SolverLoopContext,
+        _phantom: std::marker::PhantomData<&'a Eqn>,
+    }
+
+    impl<'b, 'a, Eqn, S> crate::SimulationBackend for BackendAdapter<'b, 'a, Eqn, S>
+    where
+        Eqn: diffsol::OdeEquations<T = f64> + 'a,
+        Eqn::V: diffsol::VectorHost<T = f64>,
+        S: diffsol::OdeSolverMethod<'a, Eqn>,
+    {
+        type Error = SimError;
+
+        fn init(&mut self) -> Result<(), SimError> {
+            Ok(())
+        }
+
+        fn step_until(&mut self, stop_time: f64) -> Result<crate::StepUntilOutcome, SimError> {
+            if integration::stop_time_reached_with_tol(self.solver.state().t, self.ctx.opts.t_end) {
+                return Ok(crate::StepUntilOutcome::Finished);
+            }
+            self.ctx.budget.check()?;
+            integration::set_solver_stop_time::<Eqn, S>(
+                self.solver,
+                stop_time,
+                &self.ctx.budget,
+                "stepper step_until",
+            )
+            .map_err(|e| SimError::SolverError(format!("Reset stop time: {e}")))?;
+
+            match integration::step_with_stop_recovery::<Eqn, S>(
+                self.solver,
+                stop_time,
+                self.ctx,
+                |_msg, _t, _y| {},
+            )? {
+                integration::StepAdvance::Advanced(reason) => match reason {
+                    diffsol::OdeSolverStopReason::RootFound(t_root) => {
+                        Ok(crate::StepUntilOutcome::RootFound { t_root })
+                    }
+                    diffsol::OdeSolverStopReason::TstopReached => {
+                        Ok(crate::StepUntilOutcome::StopReached)
+                    }
+                    diffsol::OdeSolverStopReason::InternalTimestep => {
+                        Ok(crate::StepUntilOutcome::InternalStep)
+                    }
+                },
+                integration::StepAdvance::Recovered => Ok(crate::StepUntilOutcome::StopReached),
+                integration::StepAdvance::Finished => Ok(crate::StepUntilOutcome::Finished),
+            }
+        }
+
+        fn read_state(&self) -> crate::BackendState {
+            crate::BackendState {
+                t: self.solver.state().t,
+            }
+        }
+
+        fn apply_event_updates(&mut self, event_time: f64) -> Result<(), SimError> {
+            integration::apply_event_updates_at_time::<Eqn, S>(self.solver, event_time, self.ctx)
+        }
+    }
+
+    let inner = ConcreteInner {
+        solver,
+        ctx,
+        _phantom: std::marker::PhantomData,
+    };
+
+    Ok(stepper::SimStepper {
+        inner: Box::new(inner),
+        dae,
+        sim_context,
+        param_values,
+        input_overrides,
+        n_x,
+        n_total,
+        solver_names,
+        max_wall_seconds_per_step: opts.max_wall_seconds_per_step,
+    })
 }
 
 #[cfg(test)]

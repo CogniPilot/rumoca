@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use rumoca_eval_dae::runtime::dual::Dual;
 use rumoca_eval_dae::runtime::sim_float::SimFloat;
-use rumoca_eval_dae::runtime::{VarEnv, build_env, eval_expr, lift_env};
+use rumoca_eval_dae::runtime::{VarEnv, build_env, eval_array_values, eval_expr, lift_env};
 use rumoca_ir_dae as dae;
 use rumoca_phase_solve::{CausalStep, IcBlock};
 
@@ -517,33 +517,55 @@ fn build_params(dae: &Dae) -> Vec<f64> {
     params
 }
 
+/// Evaluate per-element start values for a variable, correctly handling arrays.
+fn eval_var_start_values(var: &rumoca_ir_dae::Variable, env: &VarEnv<f64>) -> Vec<f64> {
+    let sz = var.size();
+    if sz <= 1 {
+        return vec![get_init_value(var, env)];
+    }
+    let Some(start) = var.start.as_ref() else {
+        return vec![0.0; sz];
+    };
+    let raw = eval_array_values::<f64>(start, env);
+    if raw.is_empty() {
+        return vec![eval_expr::<f64>(start, env); sz];
+    }
+    if raw.len() == 1 {
+        return vec![raw[0]; sz];
+    }
+    let last = *raw.last().unwrap_or(&0.0);
+    (0..sz)
+        .map(|i| raw.get(i).copied().unwrap_or(last))
+        .collect()
+}
+
 /// Initialize `[x; z; y_out]` vector from variable start/nominal values.
 fn initialize_state_vector(dae: &Dae, y: &mut [f64]) {
     let env = build_param_env(dae);
     let mut idx = 0;
     for var in dae.states.values() {
-        let val = get_init_value(var, &env);
-        for _ in 0..var.size() {
+        let vals = eval_var_start_values(var, &env);
+        for v in &vals {
             if idx < y.len() {
-                y[idx] = val;
+                y[idx] = *v;
             }
             idx += 1;
         }
     }
     for var in dae.algebraics.values() {
-        let val = get_init_value(var, &env);
-        for _ in 0..var.size() {
+        let vals = eval_var_start_values(var, &env);
+        for v in &vals {
             if idx < y.len() {
-                y[idx] = val;
+                y[idx] = *v;
             }
             idx += 1;
         }
     }
     for var in dae.outputs.values() {
-        let val = get_init_value(var, &env);
-        for _ in 0..var.size() {
+        let vals = eval_var_start_values(var, &env);
+        for v in &vals {
             if idx < y.len() {
-                y[idx] = val;
+                y[idx] = *v;
             }
             idx += 1;
         }
