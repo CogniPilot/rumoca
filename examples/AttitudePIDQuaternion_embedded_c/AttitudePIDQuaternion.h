@@ -5,22 +5,23 @@
 #pragma once
 
 #include <math.h>
-typedef double real_t;
-#define REAL_C(x) x
-#define SIN(x) sin(x)
-#define COS(x) cos(x)
-#define TAN(x) tan(x)
-#define ASIN(x) asin(x)
-#define ACOS(x) acos(x)
-#define ATAN2(x,y) atan2(x,y)
-#define SQRT(x) sqrt(x)
-#define FABS(x) fabs(x)
-#define POW(x,y) pow(x,y)
-#define EXP(x) exp(x)
-#define LOG(x) log(x)
-#define FMOD(x,y) fmod(x,y)
-#define FLOOR(x) floor(x)
-#define CEIL(x) ceil(x)
+
+typedef float real_t;
+#define REAL_C(x) x##f
+#define SIN(x) sinf(x)
+#define COS(x) cosf(x)
+#define TAN(x) tanf(x)
+#define ASIN(x) asinf(x)
+#define ACOS(x) acosf(x)
+#define ATAN2(x,y) atan2f(x,y)
+#define SQRT(x) sqrtf(x)
+#define FABS(x) fabsf(x)
+#define POW(x,y) powf(x,y)
+#define EXP(x) expf(x)
+#define LOG(x) logf(x)
+#define FMOD(x,y) fmodf(x,y)
+#define FLOOR(x) floorf(x)
+#define CEIL(x) ceilf(x)
 
 #define ATTITUDEPIDQUATERNION_N_X 4
 
@@ -33,14 +34,14 @@ typedef struct {
     real_t integral_4;
     /* Algebraic */
 
-    real_t error_1;
-    real_t error_2;
-    real_t error_3;
-    real_t error_4;
     real_t error_dot_1;
     real_t error_dot_2;
     real_t error_dot_3;
     real_t error_dot_4;
+    real_t error_1;
+    real_t error_2;
+    real_t error_3;
+    real_t error_4;
     /* Inputs */
 
     real_t q_1;
@@ -59,18 +60,18 @@ typedef struct {
     real_t u_4;
     /* Parameters */
 
-    real_t Kd_1;
-    real_t Kd_2;
-    real_t Kd_3;
-    real_t Kd_4;
-    real_t Ki_1;
-    real_t Ki_2;
-    real_t Ki_3;
-    real_t Ki_4;
     real_t Kp_1;
     real_t Kp_2;
     real_t Kp_3;
     real_t Kp_4;
+    real_t Ki_1;
+    real_t Ki_2;
+    real_t Ki_3;
+    real_t Ki_4;
+    real_t Kd_1;
+    real_t Kd_2;
+    real_t Kd_3;
+    real_t Kd_4;
     real_t dt;
 } AttitudePIDQuaternion_t;
 

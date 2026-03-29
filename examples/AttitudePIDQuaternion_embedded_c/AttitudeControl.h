@@ -5,22 +5,23 @@
 #pragma once
 
 #include <math.h>
-typedef double real_t;
-#define REAL_C(x) x
-#define SIN(x) sin(x)
-#define COS(x) cos(x)
-#define TAN(x) tan(x)
-#define ASIN(x) asin(x)
-#define ACOS(x) acos(x)
-#define ATAN2(x,y) atan2(x,y)
-#define SQRT(x) sqrt(x)
-#define FABS(x) fabs(x)
-#define POW(x,y) pow(x,y)
-#define EXP(x) exp(x)
-#define LOG(x) log(x)
-#define FMOD(x,y) fmod(x,y)
-#define FLOOR(x) floor(x)
-#define CEIL(x) ceil(x)
+
+typedef float real_t;
+#define REAL_C(x) x##f
+#define SIN(x) sinf(x)
+#define COS(x) cosf(x)
+#define TAN(x) tanf(x)
+#define ASIN(x) asinf(x)
+#define ACOS(x) acosf(x)
+#define ATAN2(x,y) atan2f(x,y)
+#define SQRT(x) sqrtf(x)
+#define FABS(x) fabsf(x)
+#define POW(x,y) powf(x,y)
+#define EXP(x) expf(x)
+#define LOG(x) logf(x)
+#define FMOD(x,y) fmodf(x,y)
+#define FLOOR(x) floorf(x)
+#define CEIL(x) ceilf(x)
 
 #define ATTITUDECONTROL_N_X 3
 
