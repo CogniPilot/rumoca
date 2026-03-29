@@ -263,6 +263,10 @@ fn choose_solvable_unknown_for_elimination(
     });
 
     for candidate in candidates {
+        // Output variables exist for external callers — never eliminate them.
+        if dae.outputs.contains_key(candidate) {
+            continue;
+        }
         // `fixed=true` introduces a hard initialization constraint. Eliminating
         // that unknown can erase user intent (especially through alias chains)
         // and alter the selected initialization branch.
@@ -272,7 +276,7 @@ fn choose_solvable_unknown_for_elimination(
         if is_runtime_protected_unknown(candidate, runtime_protected_unknowns) {
             continue;
         }
-        if has_state_derivative && !dae.outputs.contains_key(candidate) {
+        if has_state_derivative {
             continue;
         }
         let Some(solution) = try_solve_for_unknown(rhs, candidate) else {
@@ -700,6 +704,10 @@ fn eliminate_via_blt(
             UnknownId::Variable(name) => name,
         };
         let var_name = normalize_unknown_for_dae(dae, raw_var_name);
+        // Output variables exist for external callers — never eliminate them.
+        if dae.outputs.contains_key(&var_name) {
+            continue;
+        }
         if is_runtime_protected_unknown(&var_name, &runtime_protected_unknowns) {
             continue;
         }
@@ -713,7 +721,6 @@ fn eliminate_via_blt(
         let var_size = dae
             .algebraics
             .get(&var_name)
-            .or_else(|| dae.outputs.get(&var_name))
             .map(|v| v.size())
             .unwrap_or(1);
         if var_size != 1 {
@@ -733,7 +740,7 @@ fn eliminate_via_blt(
         let has_state_derivative = state_names
             .iter()
             .any(|sn| expr_contains_der_of(&dae.f_x[eq_idx].rhs, sn));
-        if has_state_derivative && !dae.outputs.contains_key(&var_name) {
+        if has_state_derivative {
             continue;
         }
 
