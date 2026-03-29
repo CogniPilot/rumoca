@@ -21,14 +21,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rumoca_sim::{SimStepper, StepperOptions};
-use tungstenite::{accept, Message};
+use tungstenite::{Message, accept};
 
 const HTTP_PORT: u16 = 8080;
 const WS_PORT: u16 = 8081;
 const MAX_SUB_DT: f64 = 0.002;
 
-const MODEL_SOURCE: &str =
-    include_str!("../../../examples/quadrotor_sil/QuadrotorSIL.mo");
+const MODEL_SOURCE: &str = include_str!("../../../examples/quadrotor_sil/QuadrotorSIL.mo");
 const THREE_JS: &str = include_str!("../../rumoca-sim/web/three.min.js");
 
 // Physical constants matching the Modelica model
@@ -90,8 +89,8 @@ mod cerebri_fb {
 
     #[derive(Debug, Clone, Default)]
     pub(super) struct MotorOutput {
-        pub motors: [f32; 4],   // normalised 0..1
-        pub raw: [u16; 4],      // PWM microseconds
+        pub motors: [f32; 4], // normalised 0..1
+        pub raw: [u16; 4],    // PWM microseconds
         pub armed: bool,
         pub test_mode: bool,
     }
@@ -244,7 +243,6 @@ mod cerebri_fb {
 
         buf
     }
-
 }
 
 // ===========================================================================
@@ -615,11 +613,14 @@ fn serve_http(listener: TcpListener, html: String) {
         loop {
             let mut line = String::new();
             let _ = reader.read_line(&mut line);
-            if line.trim().is_empty() { break; }
+            if line.trim().is_empty() {
+                break;
+            }
         }
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            html.len(), html
+            html.len(),
+            html
         );
         let _ = stream.write_all(response.as_bytes());
     }
@@ -652,7 +653,10 @@ fn main() -> anyhow::Result<()> {
     );
 
     if udp_mode {
-        eprintln!("UDP mode: listen={} send={} dt={}s", udp_listen, udp_send, dt);
+        eprintln!(
+            "UDP mode: listen={} send={} dt={}s",
+            udp_listen, udp_send, dt
+        );
     } else {
         eprintln!("Self-test mode (no UDP). Set SIL_UDP_LISTEN and SIL_UDP_SEND to enable.");
         eprintln!("  Example: SIL_UDP_LISTEN=0.0.0.0:4243 SIL_UDP_SEND=192.0.2.1:4242");
@@ -679,23 +683,34 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Viewer connected");
             let mut ws = match accept(stream) {
                 Ok(ws) => ws,
-                Err(e) => { eprintln!("WS error: {e}"); continue; }
+                Err(e) => {
+                    eprintln!("WS error: {e}");
+                    continue;
+                }
             };
             ws.get_ref().set_nonblocking(true).ok();
             loop {
                 loop {
                     match ws.read() {
                         Ok(Message::Close(_)) => break,
-                        Err(tungstenite::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(tungstenite::Error::Io(ref e))
+                            if e.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            break;
+                        }
                         Err(_) => break,
                         _ => {}
                     }
                 }
                 if let Ok(json) = state_rx.try_recv() {
                     let mut latest = json;
-                    while let Ok(newer) = state_rx.try_recv() { latest = newer; }
+                    while let Ok(newer) = state_rx.try_recv() {
+                        latest = newer;
+                    }
                     ws.get_ref().set_nonblocking(false).ok();
-                    if ws.send(Message::Text(latest.into())).is_err() { break; }
+                    if ws.send(Message::Text(latest.into())).is_err() {
+                        break;
+                    }
                     ws.get_ref().set_nonblocking(true).ok();
                 }
                 thread::sleep(Duration::from_millis(5));
@@ -745,8 +760,10 @@ fn main() -> anyhow::Result<()> {
                                         "[udp] t={:.1}s alt={:.2}m motors=[{:.2},{:.2},{:.2},{:.2}] armed={}",
                                         sensors.clock_sec,
                                         -sensors.position_ned[2],
-                                        motor_out.motors[0], motor_out.motors[1],
-                                        motor_out.motors[2], motor_out.motors[3],
+                                        motor_out.motors[0],
+                                        motor_out.motors[1],
+                                        motor_out.motors[2],
+                                        motor_out.motors[3],
                                         armed,
                                     );
                                 }
@@ -758,14 +775,21 @@ fn main() -> anyhow::Result<()> {
                         let mut json = sil.state_json();
                         // Inject mode into JSON
                         json.pop(); // remove trailing }
-                        json.push_str(&format!(r#","mode":"UDP ({})"}}""#, if armed { "ARMED" } else { "disarmed" }));
+                        json.push_str(&format!(
+                            r#","mode":"UDP ({})"}}""#,
+                            if armed { "ARMED" } else { "disarmed" }
+                        ));
                         let _ = state_tx.send(json);
                     } else if n > 0 {
-                        eprintln!("[udp] Invalid packet ({n} bytes), expected {}", cerebri_fb::MOTOR_OUTPUT_SIZE);
+                        eprintln!(
+                            "[udp] Invalid packet ({n} bytes), expected {}",
+                            cerebri_fb::MOTOR_OUTPUT_SIZE
+                        );
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(e) => eprintln!("[udp] recv error: {e}"),
             }
 
@@ -793,7 +817,9 @@ fn main() -> anyhow::Result<()> {
                             sensors.clock_sec,
                             -sensors.position_ned[2],
                             sensors.accel[2],
-                            sensors.gyro[0], sensors.gyro[1], sensors.gyro[2],
+                            sensors.gyro[0],
+                            sensors.gyro[1],
+                            sensors.gyro[2],
                         );
                     }
                 }

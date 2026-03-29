@@ -1631,10 +1631,10 @@ pub(crate) use esdirk34::try_integrate_esdirk34;
 
 mod event_settle;
 pub(crate) use event_settle::settle_runtime_event_updates;
+use event_settle::{CompiledDiscreteEventContext, maybe_project_scheduled_event_state};
 pub(crate) use event_settle::{
     apply_initial_sections_and_sync_startup_state, build_compiled_discrete_event_context,
 };
-use event_settle::{CompiledDiscreteEventContext, maybe_project_scheduled_event_state};
 
 mod fallback;
 pub(crate) use fallback::{

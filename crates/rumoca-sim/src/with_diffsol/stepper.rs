@@ -8,10 +8,10 @@ use std::collections::HashMap;
 
 use rumoca_ir_dae as dae;
 
-use super::{Dae, SimError};
 use super::problem::SharedInputOverrides;
-use crate::runtime::layout::SimulationContext;
+use super::{Dae, SimError};
 use crate::TimeoutBudget;
+use crate::runtime::layout::SimulationContext;
 
 /// Options for creating a [`SimStepper`].
 #[derive(Debug, Clone)]

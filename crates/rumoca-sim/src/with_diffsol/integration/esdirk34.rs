@@ -1,9 +1,9 @@
 use diffsol::{OdeSolverMethod, VectorHost};
 
 use super::{
-    DiffsolBackend, IntegrationOutput,
-    apply_initial_sections_and_sync_startup_state, build_compiled_discrete_event_context,
-    build_output_names, configure_solver_problem_with_profile,
+    DiffsolBackend, IntegrationOutput, apply_initial_sections_and_sync_startup_state,
+    build_compiled_discrete_event_context, build_output_names,
+    configure_solver_problem_with_profile,
 };
 use crate::TimeoutBudget;
 use crate::with_diffsol::{

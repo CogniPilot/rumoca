@@ -1434,8 +1434,8 @@ pub(crate) fn build_stepper(
     use crate::equation_scalarize::build_output_names;
     use crate::runtime::layout::SimulationContext;
     use integration::{
-        SolverLoopContext,
-        apply_initial_sections_and_sync_startup_state, build_compiled_discrete_event_context,
+        SolverLoopContext, apply_initial_sections_and_sync_startup_state,
+        build_compiled_discrete_event_context,
     };
 
     eval::clear_pre_values();
@@ -1458,8 +1458,7 @@ pub(crate) fn build_stepper(
 
     solve_initial_conditions(&mut dae, &ic_blocks, n_x, opts.atol, &budget)?;
 
-    let input_overrides: problem::SharedInputOverrides =
-        Rc::new(RefCell::new(HashMap::new()));
+    let input_overrides: problem::SharedInputOverrides = Rc::new(RefCell::new(HashMap::new()));
 
     let param_values = build_parameter_values(&dae, &budget)?;
 
@@ -1511,8 +1510,7 @@ pub(crate) fn build_stepper(
 
     let sim_context = SimulationContext::from_dae(&dae, n_total);
 
-    let compiled_discrete_event_ctx =
-        build_compiled_discrete_event_context(&dae, n_total)?;
+    let compiled_discrete_event_ctx = build_compiled_discrete_event_context(&dae, n_total)?;
 
     let ctx = SolverLoopContext {
         dae: dae.clone(),
@@ -1615,10 +1613,7 @@ pub(crate) fn build_stepper(
         }
 
         fn step_until(&mut self, stop_time: f64) -> Result<crate::StepUntilOutcome, SimError> {
-            if integration::stop_time_reached_with_tol(
-                self.solver.state().t,
-                self.ctx.opts.t_end,
-            ) {
+            if integration::stop_time_reached_with_tol(self.solver.state().t, self.ctx.opts.t_end) {
                 return Ok(crate::StepUntilOutcome::Finished);
             }
             self.ctx.budget.check()?;
@@ -1659,11 +1654,7 @@ pub(crate) fn build_stepper(
         }
 
         fn apply_event_updates(&mut self, event_time: f64) -> Result<(), SimError> {
-            integration::apply_event_updates_at_time::<Eqn, S>(
-                self.solver,
-                event_time,
-                self.ctx,
-            )
+            integration::apply_event_updates_at_time::<Eqn, S>(self.solver, event_time, self.ctx)
         }
     }
 

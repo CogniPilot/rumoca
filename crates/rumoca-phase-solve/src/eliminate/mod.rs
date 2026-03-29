@@ -718,11 +718,7 @@ fn eliminate_via_blt(
         }
 
         // Only eliminate scalar variables (size == 1).
-        let var_size = dae
-            .algebraics
-            .get(&var_name)
-            .map(|v| v.size())
-            .unwrap_or(1);
+        let var_size = dae.algebraics.get(&var_name).map(|v| v.size()).unwrap_or(1);
         if var_size != 1 {
             continue;
         }

@@ -60,7 +60,10 @@ fn main() -> anyhow::Result<()> {
 
         // Poll for keyboard input (non-blocking)
         while event::poll(Duration::from_millis(0))? {
-            if let Event::Key(KeyEvent { code, modifiers, .. }) = event::read()? {
+            if let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read()?
+            {
                 match code {
                     KeyCode::Left => force -= FORCE_STEP,
                     KeyCode::Right => force += FORCE_STEP,
@@ -96,7 +99,11 @@ fn main() -> anyhow::Result<()> {
         bar[center as usize] = b'|'; // equilibrium
         bar[pos as usize] = b'O'; // mass
 
-        execute!(stdout, cursor::MoveToColumn(0), terminal::Clear(ClearType::CurrentLine))?;
+        execute!(
+            stdout,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        )?;
         write!(
             stdout,
             "t={:.2}  x={:+.3}  v={:+.3}  u={:+.1}  [{}]",

@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rumoca_sim::{SimStepper, StepperOptions};
-use tungstenite::{accept, Message};
+use tungstenite::{Message, accept};
 
 const DT: f64 = 0.02; // 50 Hz
 const HTTP_PORT: u16 = 8080;
@@ -272,11 +272,14 @@ fn serve_http(listener: TcpListener, html: String) {
         loop {
             let mut line = String::new();
             let _ = reader.read_line(&mut line);
-            if line.trim().is_empty() { break; }
+            if line.trim().is_empty() {
+                break;
+            }
         }
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            html.len(), html
+            html.len(),
+            html
         );
         let _ = stream.write_all(response.as_bytes());
     }
@@ -290,7 +293,11 @@ fn main() -> anyhow::Result<()> {
     eprintln!("Creating stepper...");
     let mut stepper = SimStepper::new(&result.dae, StepperOptions::default())?;
     eprintln!("Inputs: {:?}", stepper.input_names());
-    eprintln!("Variables ({} total): {:?}", stepper.variable_names().len(), &stepper.variable_names()[..stepper.variable_names().len().min(10)]);
+    eprintln!(
+        "Variables ({} total): {:?}",
+        stepper.variable_names().len(),
+        &stepper.variable_names()[..stepper.variable_names().len().min(10)]
+    );
 
     // Load quadrotor viewer JS at runtime
     let quadrotor_js = {
@@ -298,7 +305,8 @@ fn main() -> anyhow::Result<()> {
             ".rumoca/viewer3d/QuadrotorAttitude/timeseries_2.js",
             "/home/micah/rust_autopilot/.rumoca/viewer3d/AutopilotSim/timeseries_2.js",
         ];
-        paths.iter()
+        paths
+            .iter()
             .find_map(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_else(|| {
                 eprintln!("Warning: No quadrotor viewer JS found");
@@ -333,7 +341,10 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Client connected");
             let mut ws = match accept(stream) {
                 Ok(ws) => ws,
-                Err(e) => { eprintln!("WS accept error: {e}"); continue; }
+                Err(e) => {
+                    eprintln!("WS accept error: {e}");
+                    continue;
+                }
             };
             ws.get_ref().set_nonblocking(true).ok();
 
@@ -342,7 +353,8 @@ fn main() -> anyhow::Result<()> {
                 loop {
                     match ws.read() {
                         Ok(Message::Text(text)) => {
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text.as_ref()) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text.as_ref())
+                            {
                                 let is_reset = v["reset"].as_bool().unwrap_or(false);
                                 let _ = input_tx.send(RcInput {
                                     throttle: v["throttle"].as_f64().unwrap_or(0.0),
@@ -358,8 +370,13 @@ fn main() -> anyhow::Result<()> {
                             break;
                         }
                         Err(tungstenite::Error::Io(ref e))
-                            if e.kind() == std::io::ErrorKind::WouldBlock => { break; }
-                        Err(_) => { break; }
+                            if e.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            break;
+                        }
+                        Err(_) => {
+                            break;
+                        }
                         _ => {}
                     }
                 }
@@ -368,9 +385,13 @@ fn main() -> anyhow::Result<()> {
                 if let Ok(state_json) = state_rx.try_recv() {
                     // Drain to latest
                     let mut latest = state_json;
-                    while let Ok(newer) = state_rx.try_recv() { latest = newer; }
+                    while let Ok(newer) = state_rx.try_recv() {
+                        latest = newer;
+                    }
                     ws.get_ref().set_nonblocking(false).ok();
-                    if ws.send(Message::Text(latest.into())).is_err() { break; }
+                    if ws.send(Message::Text(latest.into())).is_err() {
+                        break;
+                    }
                     ws.get_ref().set_nonblocking(true).ok();
                 }
 
@@ -429,7 +450,10 @@ fn main() -> anyhow::Result<()> {
                 stepper.get("roll").unwrap_or(0.0).to_degrees(),
                 stepper.get("pitch").unwrap_or(0.0).to_degrees(),
                 stepper.get("T").unwrap_or(0.0),
-                rc.throttle, rc.roll, rc.pitch, rc.yaw,
+                rc.throttle,
+                rc.roll,
+                rc.pitch,
+                rc.yaw,
             );
         }
 

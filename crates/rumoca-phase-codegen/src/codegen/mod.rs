@@ -207,7 +207,6 @@ pub fn render_template_with_name(
     render_template_with_name_for_input(CodegenInput::Dae(dae), template, model_name)
 }
 
-
 /// Render a DAE using a template file.
 ///
 /// This is the recommended approach for customizable templates.
