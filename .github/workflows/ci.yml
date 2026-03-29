@@ -327,7 +327,10 @@ jobs:
   msl-quality-gate:
     name: MSL Quality Gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The full-MSL gate can consume nearly the full 45 minute budget on warm
+    # runs, leaving post-job cache upload/cleanup vulnerable to cancellation.
+    # Keep explicit slack so successful gate runs are not reported as timed out.
+    timeout-minutes: 60
     env:
       # Keep the 180-model parity run conservative on shared GitHub runners.
       # This trades some throughput for lower peak memory pressure and fewer
