@@ -1,5 +1,4 @@
 {#- Embedded C header — struct definition with named fields and function prototypes. -#}
-{%- set _use_float = use_float | default(false) -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
 {%- macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
@@ -21,7 +20,7 @@
 #pragma once
 
 #include <math.h>
-{% if _use_float -%}
+
 typedef float real_t;
 #define REAL_C(x) x##f
 #define SIN(x) sinf(x)
@@ -38,24 +37,6 @@ typedef float real_t;
 #define FMOD(x,y) fmodf(x,y)
 #define FLOOR(x) floorf(x)
 #define CEIL(x) ceilf(x)
-{%- else -%}
-typedef double real_t;
-#define REAL_C(x) x
-#define SIN(x) sin(x)
-#define COS(x) cos(x)
-#define TAN(x) tan(x)
-#define ASIN(x) asin(x)
-#define ACOS(x) acos(x)
-#define ATAN2(x,y) atan2(x,y)
-#define SQRT(x) sqrt(x)
-#define FABS(x) fabs(x)
-#define POW(x,y) pow(x,y)
-#define EXP(x) exp(x)
-#define LOG(x) log(x)
-#define FMOD(x,y) fmod(x,y)
-#define FLOOR(x) floor(x)
-#define CEIL(x) ceil(x)
-{%- endif %}
 {%- if n_x > 0 %}
 
 #define {{ model_name | upper }}_N_X {{ n_x }}

@@ -289,10 +289,6 @@ struct ExportEmbeddedCArgs {
     /// Output directory for generated .h and .c files (default: <MODEL>/)
     #[arg(short, long)]
     output: Option<PathBuf>,
-
-    /// Use single-precision float instead of double
-    #[arg(long, default_value_t = false)]
-    use_float: bool,
 }
 
 #[derive(Args, Debug)]

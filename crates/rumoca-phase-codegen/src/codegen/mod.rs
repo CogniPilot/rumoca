@@ -207,6 +207,7 @@ pub fn render_template_with_name(
     render_template_with_name_for_input(CodegenInput::Dae(dae), template, model_name)
 }
 
+
 /// Render a DAE using a template file.
 ///
 /// This is the recommended approach for customizable templates.
@@ -575,6 +576,9 @@ pub(crate) struct ExprConfig {
     /// Default is `"sum1"` (CasADi convention, rendered as `prefix + sum1`).
     /// C backends set this to their helper name (e.g., `"__rumoca_sum"`).
     pub(crate) sum_fn: String,
+    /// When true, render all numeric literals as float constants with `f` suffix.
+    /// E.g., `8` → `8.0f`, `3.14` → `3.14f`. Used by embedded C backend.
+    pub(crate) float_literals: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -609,6 +613,7 @@ impl Default for ExprConfig {
             if_else_fn: None,
             python_range: false,
             sum_fn: "sum1".to_string(),
+            float_literals: false,
         }
     }
 }
@@ -707,6 +712,12 @@ impl ExprConfig {
             && !s.is_empty()
         {
             cfg.sum_fn = s;
+        }
+        if let Ok(val) = v.get_attr("float_literals")
+            && !val.is_undefined()
+            && !val.is_none()
+        {
+            cfg.float_literals = val.is_true();
         }
 
         cfg

@@ -1,7 +1,6 @@
 {#- Embedded C implementation — clean function bodies with named struct access. -#}
-{%- set _use_float = use_float | default(false) -%}
 {%- set model_name = model_name | default("model") | sanitize -%}
-{%- set cfg = {"prefix": "", "power": "powf" if _use_float else "pow", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(" ~ ("float" if _use_float else "double") ~ "[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum"} -%}
+{%- set cfg = {"prefix": "", "power": "powf", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(float[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum", "float_literals": true} -%}
 {%- macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
 {%- for name, var in vars | items -%}
