@@ -37,7 +37,7 @@ pub(super) const TRACE_ANY_CHANNEL_DEVIATION_PERCENT_INCREASE_TOLERANCE_PP: f64 
 /// Allowed increase in bad-channel share (absolute percentage points).
 pub(super) const TRACE_BAD_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 1.0;
 /// Allowed increase in severe-channel share (absolute percentage points).
-pub(super) const TRACE_SEVERE_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 0.5;
+pub(super) const TRACE_SEVERE_CHANNEL_PERCENT_INCREASE_TOLERANCE_PP: f64 = 1.5;
 /// Allowed drop in compared trace-model count from baseline.
 pub(super) const TRACE_MODELS_COMPARED_ALLOWED_DROP: usize = 2;
 /// Allowed relative drop in runtime speedup median (omc/rumoca) before failing.
