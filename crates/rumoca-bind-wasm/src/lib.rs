@@ -175,16 +175,16 @@ pub fn get_builtin_templates() -> JsValue {
             source: runtime_templates::CASADI_MX,
         },
         WasmBuiltinTemplate {
-            id: "cyecca.py.jinja",
-            label: "Cyecca (Python)",
-            language: "python",
-            source: runtime_templates::CYECCA,
+            id: "embedded_c.h.jinja",
+            label: "Embedded C Header",
+            language: "c",
+            source: runtime_templates::EMBEDDED_C_H,
         },
         WasmBuiltinTemplate {
-            id: "embedded_c.c.jinja",
-            label: "Embedded C",
+            id: "embedded_c_impl.c.jinja",
+            label: "Embedded C Implementation",
             language: "c",
-            source: runtime_templates::EMBEDDED_C,
+            source: runtime_templates::EMBEDDED_C_IMPL,
         },
         WasmBuiltinTemplate {
             id: "dae_modelica.mo.jinja",

@@ -1,7 +1,7 @@
 //! C-backend template functions for FMI2 and embedded-C code generation.
 //!
 //! These functions are registered in the minijinja environment and used by
-//! `fmi2_model.c.jinja` and `embedded_c.c.jinja` templates to extract explicit
+//! `fmi2_model.c.jinja` and `embedded_c_impl.c.jinja` templates to extract explicit
 //! ODE/algebraic RHS expressions from residual-form DAE equations.
 
 use super::{ExprConfig, RenderResult};
@@ -293,7 +293,17 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
     }
 
     // Try additive form: 0 = a + b + c (connection equations)
-    find_algebraic_rhs_additive(&rhs, var_name, cfg)
+    if let Some(result) = find_algebraic_rhs_additive(&rhs, var_name, cfg) {
+        return Some(result);
+    }
+
+    // Try array-level binding: searching for "v[i]" but equation has "v" (whole array)
+    // with an Array RHS. Extract element i from the array.
+    if let Some(result) = find_algebraic_rhs_array_element(&rhs, var_name, cfg) {
+        return Some(result);
+    }
+
+    None
 }
 
 /// Try subtraction form: 0 = var - expr, 0 = expr - var, 0 = -(A - B)
@@ -466,6 +476,54 @@ fn find_algebraic_rhs_additive(rhs: &Value, var_name: &str, cfg: &ExprConfig) ->
         format!("({})", parts.join(""))
     };
     Some(expr)
+}
+
+/// Handle array-level binding equations when searching for a subscripted variable.
+///
+/// When searching for `v[i]`, if the equation has `0 = v - Array{...}` where `v` is
+/// the base name (no subscripts), extract element `i` from the Array RHS.
+/// This handles cases where the scalarizer didn't fully split array binding equations.
+fn find_algebraic_rhs_array_element(
+    rhs: &Value,
+    var_name: &str,
+    cfg: &ExprConfig,
+) -> Option<String> {
+    // Only applies when var_name has a subscript, e.g. "error_dot[2]"
+    let bracket_pos = var_name.find('[')?;
+    let base_name = &var_name[..bracket_pos];
+    let subscript_str = var_name[bracket_pos + 1..].trim_end_matches(']');
+    let index: usize = subscript_str.parse().ok()?;
+    if index < 1 {
+        return None;
+    }
+
+    // Try subtraction form: 0 = base_var - Array{...}
+    let binary = get_field(rhs, "Binary").ok()?;
+    if !is_sub_op(&binary) {
+        return None;
+    }
+    let lhs_side = get_field(&binary, "lhs").ok()?;
+    let rhs_side = get_field(&binary, "rhs").ok()?;
+
+    // Check if one side is a VarRef matching the base name (no subscripts)
+    // and the other side is an Array
+    let array_expr = if is_var_ref_of(&lhs_side, base_name) {
+        &rhs_side
+    } else if is_var_ref_of(&rhs_side, base_name) {
+        &lhs_side
+    } else {
+        return None;
+    };
+
+    // Extract element from Array
+    let array = get_field(array_expr, "Array").ok()?;
+    let elements = get_field(&array, "elements").ok()?;
+    let len = elements.len()?;
+    if index > len {
+        return None;
+    }
+    let elem = elements.get_item(&minijinja::Value::from(index - 1)).ok()?;
+    render_expression(&elem, cfg).ok()
 }
 
 /// Flatten a Value expression tree of Add/Sub into signed terms.

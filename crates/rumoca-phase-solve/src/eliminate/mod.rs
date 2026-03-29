@@ -272,7 +272,11 @@ fn choose_solvable_unknown_for_elimination(
         if is_runtime_protected_unknown(candidate, runtime_protected_unknowns) {
             continue;
         }
-        if has_state_derivative && !dae.outputs.contains_key(candidate) {
+        let is_output = dae.outputs.contains_key(candidate);
+        // Skip equations with state derivatives — unless the candidate is an
+        // output that forms a direct alias (e.g. `output y = der(x)`), which
+        // can be safely eliminated.
+        if has_state_derivative && !is_output {
             continue;
         }
         let Some(solution) = try_solve_for_unknown(rhs, candidate) else {
@@ -282,6 +286,13 @@ fn choose_solvable_unknown_for_elimination(
             continue;
         }
         let direct_assignment_solution = has_direct_assignment_form(rhs, candidate);
+        // Output variables exist for external callers — only eliminate them
+        // when the solution is a trivial alias (a single variable reference or
+        // its negation), since keeping non-trivial outputs enlarges the DAE and
+        // can hurt solver performance.
+        if is_output && !is_trivial_alias(&solution) {
+            continue;
+        }
         if !direct_assignment_solution && !is_symbolically_stable_solution(&solution) {
             continue;
         }
@@ -431,6 +442,23 @@ fn is_alias_solution_for_other_live_unknown(
         return false;
     }
     is_alias_expression_of(solution, others[0])
+}
+
+/// Returns true if the expression is a single variable reference or its
+/// negation — i.e., a trivial alias like `x` or `-x`.
+fn is_trivial_alias(expr: &Expression) -> bool {
+    match expr {
+        Expression::VarRef { .. } => true,
+        Expression::Unary {
+            op: OpUnary::Minus(_),
+            rhs,
+        } => is_trivial_alias(rhs),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args,
+        } => args.len() == 1 && matches!(&args[0], Expression::VarRef { .. }),
+        _ => false,
+    }
 }
 
 fn is_alias_expression_of(expr: &Expression, target: &VarName) -> bool {
@@ -710,12 +738,7 @@ fn eliminate_via_blt(
         }
 
         // Only eliminate scalar variables (size == 1).
-        let var_size = dae
-            .algebraics
-            .get(&var_name)
-            .or_else(|| dae.outputs.get(&var_name))
-            .map(|v| v.size())
-            .unwrap_or(1);
+        let var_size = dae.algebraics.get(&var_name).map(|v| v.size()).unwrap_or(1);
         if var_size != 1 {
             continue;
         }
@@ -728,12 +751,13 @@ fn eliminate_via_blt(
             continue;
         }
 
-        // Skip equations containing der(state) — these are ODE equations
-        // even if the matched unknown is algebraic.
+        // Skip equations containing der(state) — unless the candidate is an
+        // output that forms a direct alias, which can be safely eliminated.
+        let is_output = dae.outputs.contains_key(&var_name);
         let has_state_derivative = state_names
             .iter()
             .any(|sn| expr_contains_der_of(&dae.f_x[eq_idx].rhs, sn));
-        if has_state_derivative && !dae.outputs.contains_key(&var_name) {
+        if has_state_derivative && !is_output {
             continue;
         }
 
@@ -753,6 +777,13 @@ fn eliminate_via_blt(
             continue;
         }
         if !is_symbolically_stable_solution(&solution) {
+            continue;
+        }
+        // Output variables exist for external callers — only eliminate them
+        // when the solution is a trivial alias (a single variable reference or
+        // its negation), since keeping non-trivial outputs enlarges the DAE and
+        // can hurt solver performance.
+        if is_output && !is_trivial_alias(&solution) {
             continue;
         }
 

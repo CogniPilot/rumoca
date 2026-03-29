@@ -108,6 +108,8 @@ def Modelica_ComplexMath_arg(c_re, c_im=0):
     return ca.atan2(c_im, c_re)
 
 
+
+
 def create_model():
     """Create CasADi MX model with vector symbols and Function objects.
 
@@ -135,7 +137,7 @@ def create_model():
     ]
     def der(v):
         for _state, _deriv in _der_pairs:
-            if ca.is_equal(v, _state):
+            if _state.shape == v.shape and ca.is_equal(v, _state):
                 return _deriv
         raise ValueError(f"der() called on non-state variable: {v}")
 
@@ -167,13 +169,13 @@ def create_model():
 
 
     # Enumeration literal ordinals (MLS §4.9.5)
-    AssertionLevel_error = 2
-    AssertionLevel_warning = 1
-    StateSelect_always = 5
+    StateSelect_never = 1
     StateSelect_avoid = 2
     StateSelect_default = 3
-    StateSelect_never = 1
     StateSelect_prefer = 4
+    StateSelect_always = 5
+    AssertionLevel_warning = 1
+    AssertionLevel_error = 2
 
     # =========================================================================
     # User-Defined Functions (1)

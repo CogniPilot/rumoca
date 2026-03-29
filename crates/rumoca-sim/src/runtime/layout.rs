@@ -145,6 +145,14 @@ impl SimulationContext {
         &self.constant_scalar_names
     }
 
+    pub fn input_scalar_names(&self) -> &[String] {
+        &self.input_scalar_names
+    }
+
+    pub fn input_range(&self) -> &std::ops::Range<usize> {
+        &self.input_range
+    }
+
     pub fn compiled_parameter_len(&self) -> usize {
         self.discrete_valued_range.end
     }

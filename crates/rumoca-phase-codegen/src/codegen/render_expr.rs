@@ -602,9 +602,21 @@ pub(crate) fn render_args(call: &Value, cfg: &ExprConfig) -> RenderResult {
 
 fn render_literal(literal: &Value, cfg: &ExprConfig) -> RenderResult {
     if let Ok(real) = get_field(literal, "Real") {
+        if cfg.float_literals {
+            let s = real.to_string();
+            // Ensure it has a decimal point and f suffix
+            return Ok(if s.contains('.') {
+                format!("{}f", s)
+            } else {
+                format!("{}.0f", s)
+            });
+        }
         return Ok(real.to_string());
     }
     if let Ok(int) = get_field(literal, "Integer") {
+        if cfg.float_literals {
+            return Ok(format!("{}.0f", int));
+        }
         return Ok(int.to_string());
     }
     if let Ok(b) = get_field(literal, "Boolean") {

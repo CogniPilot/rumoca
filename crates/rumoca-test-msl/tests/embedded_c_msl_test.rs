@@ -18,7 +18,7 @@
 //! - `RUMOCA_EMBEDDED_MSL_TOLERANCE=0.20` — max allowed trace deviation (default 0.20)
 
 use flate2::read::GzDecoder;
-use rumoca_phase_codegen::templates::EMBEDDED_C;
+use rumoca_phase_codegen::templates::{EMBEDDED_C_H, EMBEDDED_C_IMPL};
 use rumoca_session::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_session::parsing::parse_files_parallel_lenient;
 use rumoca_session::runtime::{
@@ -178,14 +178,28 @@ fn embedded_tolerance() -> f64 {
 // Embedded C pipeline
 // =============================================================================
 
+/// Sanitize a variable name for C (dots → underscores).
+fn sanitize_c_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Generate a test harness that includes the embedded C model and outputs CSV.
 fn make_test_harness(
+    model_h: &str,
     model_c: &str,
     dae: &rumoca_ir_dae::Dae,
     model_name: &str,
     t_end: f64,
     dt: f64,
-) -> String {
+) -> (String, String) {
     // Sanitize model name the same way the template does (dots → underscores)
     let safe_name = model_name.replace('.', "_");
 
@@ -196,11 +210,10 @@ fn make_test_harness(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Build printf format and args for states
+    // Build printf format and args for states using named struct fields
     let printf_args: String = state_names
         .iter()
-        .enumerate()
-        .map(|(i, _)| format!("m.x[{i}]"))
+        .map(|n| format!("m.{}", sanitize_c_name(n)))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -209,11 +222,12 @@ fn make_test_harness(
         .collect::<Vec<_>>()
         .join("");
 
-    format!(
+    let harness_main = format!(
         r#"/* Embedded C test harness — auto-generated */
 #include <stdio.h>
+#include "{safe_name}.h"
 
-/* Inline the generated model */
+/* Inline the generated model implementation */
 {model_c}
 
 int main(void) {{
@@ -236,7 +250,9 @@ int main(void) {{
     return 0;
 }}
 "#
-    )
+    );
+
+    (model_h.to_string(), harness_main)
 }
 
 /// Render embedded C model, wrap in test harness, compile, run, return CSV output.
@@ -246,24 +262,30 @@ fn embedded_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<String, String> {
-    // Use structurally prepared DAE for correct equation ordering
-    let prepared = rumoca_phase_codegen::render_template_with_name(dae, EMBEDDED_C, model_name)
-        .map_err(|e| format!("render embedded C: {e}"))?;
+    let safe_name = model_name.replace('.', "_");
 
-    let harness = make_test_harness(&prepared, dae, model_name, t_end, dt);
+    // Use structurally prepared DAE for correct equation ordering
+    let header = rumoca_phase_codegen::render_template_with_name(dae, EMBEDDED_C_H, model_name)
+        .map_err(|e| format!("render embedded C header: {e}"))?;
+    let impl_c = rumoca_phase_codegen::render_template_with_name(dae, EMBEDDED_C_IMPL, model_name)
+        .map_err(|e| format!("render embedded C impl: {e}"))?;
+
+    let (model_h, harness_main) = make_test_harness(&header, &impl_c, dae, model_name, t_end, dt);
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let header_path = dir.path().join(format!("{safe_name}.h"));
     let src_path = dir.path().join("test.c");
     let binary_path = dir.path().join("test_embedded");
 
-    fs::write(&src_path, &harness).map_err(|e| format!("write test.c: {e}"))?;
+    fs::write(&header_path, &model_h).map_err(|e| format!("write header: {e}"))?;
+    fs::write(&src_path, &harness_main).map_err(|e| format!("write test.c: {e}"))?;
 
     // Dump for debugging
     {
         let debug_dir = std::path::Path::new("/tmp/embedded_debug");
         let _ = fs::create_dir_all(debug_dir);
-        let safe_name = model_name.replace('.', "_");
-        let _ = fs::write(debug_dir.join(format!("{safe_name}.c")), &harness);
+        let _ = fs::write(debug_dir.join(format!("{safe_name}.h")), &model_h);
+        let _ = fs::write(debug_dir.join(format!("{safe_name}.c")), &harness_main);
     }
 
     let compile_output = Command::new("cc")

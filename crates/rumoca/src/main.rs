@@ -67,6 +67,8 @@ enum Commands {
     Check(CheckArgs),
     /// Export an FMU (Functional Mock-up Unit)
     ExportFmu(ExportFmuArgs),
+    /// Export embedded C (.h and .c files)
+    ExportEmbeddedC(ExportEmbeddedCArgs),
     /// Format Modelica files
     Fmt(FmtArgs),
     /// Lint Modelica files
@@ -165,9 +167,6 @@ enum Backend {
     CasadiMx,
     /// SymPy symbolic model (Python)
     Sympy,
-    /// Embedded C with RK4 integrator (bare-metal)
-    #[value(name = "embedded-c")]
-    EmbeddedC,
     /// FMI 2.0 Model Exchange C source
     Fmi2,
     /// ONNX computational graph (Python)
@@ -192,7 +191,6 @@ impl Backend {
 
             Backend::Sympy => templates::SYMPY,
             Backend::Onnx => templates::ONNX,
-            Backend::EmbeddedC => templates::EMBEDDED_C,
             Backend::Fmi2 => templates::FMI2_MODEL,
             Backend::DaeModelica => templates::DAE_MODELICA,
             Backend::FlatModelica => templates::FLAT_MODELICA,
@@ -281,6 +279,16 @@ struct ExportFmuArgs {
     /// Skip compiling and packaging the .fmu archive (only generate sources)
     #[arg(long, default_value_t = false)]
     no_build: bool,
+}
+
+#[derive(Args, Debug)]
+struct ExportEmbeddedCArgs {
+    #[command(flatten)]
+    input: ModelInputArgs,
+
+    /// Output directory for generated .h and .c files (default: <MODEL>/)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -397,6 +405,7 @@ fn try_main() -> Result<()> {
         Commands::Simulate(args) => run_simulate(args),
         Commands::Check(args) => run_check(args),
         Commands::ExportFmu(args) => run_export_fmu(args),
+        Commands::ExportEmbeddedC(args) => run_export_embedded_c(args),
         Commands::Fmt(args) => run_fmt(args),
         Commands::Lint(args) => run_lint(args),
         Commands::Completions { shell } => {
@@ -702,6 +711,52 @@ fn run_export_fmu(args: ExportFmuArgs) -> Result<()> {
     } else {
         build_fmu(&out_dir, &model_identifier)?;
     }
+
+    Ok(())
+}
+
+fn run_export_embedded_c(args: ExportEmbeddedCArgs) -> Result<()> {
+    use rumoca_session::runtime::embedded_c_templates;
+    use std::fs;
+
+    init_debug_tracing(args.input.debug);
+    let (result, model) = compile_with_inferred_model(&args.input)?;
+
+    let model_identifier = model.replace('.', "_");
+
+    eprintln!("Exporting embedded C for {}", model_identifier);
+
+    let out_dir = args
+        .output
+        .unwrap_or_else(|| PathBuf::from(&model_identifier));
+    fs::create_dir_all(&out_dir)?;
+
+    // Render header (.h)
+    let h_code = result.render_template_str_prepared_with_name(
+        embedded_c_templates::EMBEDDED_C_H,
+        &model_identifier,
+        true,
+    )?;
+    let h_path = out_dir.join(format!("{}.h", model_identifier));
+    fs::write(&h_path, &h_code)?;
+    eprintln!("  wrote {}", h_path.display());
+
+    // Render implementation (.c)
+    let c_code = result.render_template_str_prepared_with_name(
+        embedded_c_templates::EMBEDDED_C_IMPL,
+        &model_identifier,
+        true,
+    )?;
+    let c_path = out_dir.join(format!("{}.c", model_identifier));
+    fs::write(&c_path, &c_code)?;
+    eprintln!("  wrote {}", c_path.display());
+
+    eprintln!(
+        "\nEmbedded C sources exported to: {}\nCompile: cc -O2 -Wall -c {}/{}.c",
+        out_dir.display(),
+        out_dir.display(),
+        model_identifier,
+    );
 
     Ok(())
 }

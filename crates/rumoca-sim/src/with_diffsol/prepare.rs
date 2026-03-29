@@ -775,15 +775,15 @@ fn run_post_structure_elimination_phase(
 fn run_post_scalarize_elimination_phase(
     dae: &mut Dae,
     trace: bool,
-    scalarize: bool,
+    _scalarize: bool,
     disable_trivial_elim: bool,
     elim: &mut eliminate::EliminationResult,
 ) {
-    if scalarize || disable_trivial_elim {
+    if disable_trivial_elim {
         trace_flow_array_alias_watch("after_eliminate_trivial_post_scalarize", dae, trace);
         if trace {
             eprintln!(
-                "[sim-trace] prepare phase done: eliminate_trivial(post-scalarize) elapsed=0.000s eliminated_eqs=0 substitutions=0 (skipped: scalarized equations)"
+                "[sim-trace] prepare phase done: eliminate_trivial(post-scalarize) elapsed=0.000s eliminated_eqs=0 substitutions=0 (skipped: trivial elimination disabled)"
             );
         }
         return;

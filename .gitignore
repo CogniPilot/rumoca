@@ -38,3 +38,6 @@ crates/rumoca/tests/CASADI_UPSTREAM_*.md
 editors/vscode/node_modules
 editors/vscode/media/vendor/
 editors/wasm/node_modules
+test_embedded_c/
+examples/*.mo
+examples/SportCub_embedded_c/
