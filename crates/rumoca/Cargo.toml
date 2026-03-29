@@ -37,7 +37,25 @@ tracing-subscriber = { workspace = true, optional = true }
 walkdir = { workspace = true }
 zip = { workspace = true }
 
+[[example]]
+name = "stepper_demo"
+path = "examples/stepper_demo.rs"
+
+[[example]]
+name = "stepper_3d"
+path = "examples/stepper_3d.rs"
+
+[[example]]
+name = "stepper_debug"
+path = "examples/stepper_debug.rs"
+
+[[example]]
+name = "quadrotor_sil"
+path = "examples/quadrotor_sil.rs"
+
 [dev-dependencies]
+crossterm = "0.28"
+tungstenite = "0.26"
 tempfile = { workspace = true }
 mimalloc = { workspace = true }
 rumoca-core = { workspace = true }
