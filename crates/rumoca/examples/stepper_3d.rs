@@ -1,3 +1,4 @@
+#![allow(clippy::excessive_nesting, clippy::too_many_lines)]
 //! Interactive 3D quadrotor demo using the real-time stepper.
 //!
 //! Runs a WebSocket server that:
@@ -442,7 +443,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         frame_count += 1;
-        if frame_count % 50 == 0 {
+        if frame_count.is_multiple_of(50) {
             eprintln!(
                 "[sim] t={:.1} alt={:.2}m roll={:.1}° pitch={:.1}° T={:.1}N  stick=[T:{:.2} R:{:.2} P:{:.2} Y:{:.2}]",
                 stepper.time(),

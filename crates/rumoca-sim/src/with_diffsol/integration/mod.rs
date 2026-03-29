@@ -1070,7 +1070,7 @@ where
             solver_interpolate_to_vec::<Eqn, S>(
                 solver,
                 t_sample,
-                &&ctx.budget,
+                &ctx.budget,
                 "interpolate(event update)",
             )
         })?;

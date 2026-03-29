@@ -986,17 +986,19 @@ fn build_compiled_eval_param_vector(
     t: f64,
 ) -> Vec<f64> {
     let mut compiled_p = ctx.sim_context.compiled_parameter_vector(&ctx.dae, y, p, t);
-    if let Some(overrides) = &ctx.input_overrides {
-        let map = overrides.borrow();
-        if !map.is_empty() {
-            let input_range = ctx.sim_context.input_range();
-            for (i, name) in ctx.sim_context.input_scalar_names().iter().enumerate() {
-                if let Some(&val) = map.get(name) {
-                    if let Some(slot) = compiled_p.get_mut(input_range.start + i) {
-                        *slot = val;
-                    }
-                }
-            }
+    let Some(overrides) = &ctx.input_overrides else {
+        return compiled_p;
+    };
+    let map = overrides.borrow();
+    if map.is_empty() {
+        return compiled_p;
+    }
+    let input_range = ctx.sim_context.input_range();
+    for (i, name) in ctx.sim_context.input_scalar_names().iter().enumerate() {
+        if let Some(&val) = map.get(name)
+            && let Some(slot) = compiled_p.get_mut(input_range.start + i)
+        {
+            *slot = val;
         }
     }
     compiled_p

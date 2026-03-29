@@ -1,3 +1,4 @@
+#![allow(clippy::excessive_nesting, clippy::too_many_lines)]
 //! Quadrotor SIL (Software-in-the-Loop) plant simulator.
 //!
 //! Receives motor commands from Cerebri via UDP (48-byte flatbuffer),
@@ -755,7 +756,7 @@ fn main() -> anyhow::Result<()> {
                                 let _ = socket.send_to(&buf, &udp_send);
 
                                 pkt_count += 1;
-                                if pkt_count % 250 == 0 {
+                                if pkt_count.is_multiple_of(250) {
                                     eprintln!(
                                         "[udp] t={:.1}s alt={:.2}m motors=[{:.2},{:.2},{:.2},{:.2}] armed={}",
                                         sensors.clock_sec,
@@ -811,7 +812,7 @@ fn main() -> anyhow::Result<()> {
             match sil.receive_motors(hover_rpms, target_clock) {
                 Ok(sensors) => {
                     frame_count += 1;
-                    if frame_count % 250 == 0 {
+                    if frame_count.is_multiple_of(250) {
                         eprintln!(
                             "[sil] t={:.1}s alt={:.3}m accel_z={:.2} gyro=[{:.3},{:.3},{:.3}]",
                             sensors.clock_sec,

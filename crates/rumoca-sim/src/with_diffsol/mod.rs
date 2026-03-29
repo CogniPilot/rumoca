@@ -1423,6 +1423,7 @@ pub fn simulate(dae: &Dae, opts: &SimOptions) -> Result<SimResult, SimError> {
 /// Build a [`stepper::SimStepper`] from a DAE and options.
 ///
 /// Lives here to access `pub(super)` internals (prepare_dae, solver construction, etc.).
+#[allow(clippy::too_many_lines)]
 pub(crate) fn build_stepper(
     dae: &Dae,
     opts: stepper::StepperOptions,
@@ -1535,6 +1536,7 @@ pub(crate) fn build_stepper(
         _phantom: std::marker::PhantomData<&'a Eqn>,
     }
 
+    #[allow(clippy::excessive_nesting)]
     impl<'a, Eqn, S> stepper::StepperInner for ConcreteInner<'a, Eqn, S>
     where
         Eqn: diffsol::OdeEquations<T = f64> + 'a,

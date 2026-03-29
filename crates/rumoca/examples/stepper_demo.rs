@@ -1,3 +1,4 @@
+#![allow(clippy::excessive_nesting)]
 //! Interactive real-time stepper demo.
 //!
 //! Simulates a mass-spring-damper with keyboard control:
