@@ -3,11 +3,11 @@ use serde_json::Value;
 
 pub use rumoca_phase_solve as solve;
 pub use rumoca_sim::{
-    AVAILABLE_BACKENDS, SimBackend, SimError, SimOptions, SimResult, SimSolverMode,
-    SimVariableMeta, available_backends, dae_balance, dae_balance_detail, dae_is_balanced,
-    prepare_dae_for_template_codegen, prepare_dae_for_template_codegen_with_backend,
-    runtime_defined_continuous_unknown_names, runtime_defined_unknown_names, simulate_dae,
-    simulate_dae_with_backend,
+    AVAILABLE_BACKENDS, SimBackend, SimError, SimOptions, SimResult, SimSolverMode, SimStepper,
+    SimVariableMeta, StepperOptions, StepperState, available_backends, dae_balance,
+    dae_balance_detail, dae_is_balanced, prepare_dae_for_template_codegen,
+    prepare_dae_for_template_codegen_with_backend, runtime_defined_continuous_unknown_names,
+    runtime_defined_unknown_names, simulate_dae, simulate_dae_with_backend,
 };
 
 pub fn dae_to_template_json(dae_model: &dae::Dae) -> Value {

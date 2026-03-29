@@ -491,6 +491,19 @@ pub(crate) fn build_problem(
     algebraic_eps: f64,
     mass_matrix: &crate::with_diffsol::MassMatrix,
 ) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C>>, SimError> {
+    build_problem_with_overrides(dae, rtol, atol, algebraic_eps, mass_matrix, None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn build_problem_with_overrides(
+    dae: &Dae,
+    rtol: f64,
+    atol: f64,
+    algebraic_eps: f64,
+    mass_matrix: &crate::with_diffsol::MassMatrix,
+    input_overrides: Option<SharedInputOverrides>,
+) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C> + use<>>, SimError>
+{
     let n_x = count_states(dae);
     let n_eq = dae.f_x.len();
     let n_z = n_eq - n_x;
@@ -500,14 +513,19 @@ pub(crate) fn build_problem(
 
     let dae_init = dae.clone();
     let ProblemCompiledKernels {
-        compiled_eval_ctx_rhs,
-        compiled_eval_ctx_jac,
-        compiled_eval_ctx_root,
+        mut compiled_eval_ctx_rhs,
+        mut compiled_eval_ctx_jac,
+        mut compiled_eval_ctx_root,
         compiled_residual,
         compiled_jacobian,
         compiled_root_conditions,
         n_roots,
     } = compile_problem_kernels(dae, n_total)?;
+    if let Some(ref overrides) = input_overrides {
+        compiled_eval_ctx_rhs.input_overrides = Some(overrides.clone());
+        compiled_eval_ctx_jac.input_overrides = Some(overrides.clone());
+        compiled_eval_ctx_root.input_overrides = Some(overrides.clone());
+    }
 
     let mass_matrix_owned = mass_matrix.clone();
     let atol_vec: Vec<f64> = vec![atol; n_total.max(1)];
@@ -583,6 +601,19 @@ pub(crate) fn build_problem(
     algebraic_eps: f64,
     mass_matrix: &crate::with_diffsol::MassMatrix,
 ) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C>>, SimError> {
+    build_problem_with_overrides(dae, rtol, atol, algebraic_eps, mass_matrix, None)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn build_problem_with_overrides(
+    dae: &Dae,
+    rtol: f64,
+    atol: f64,
+    algebraic_eps: f64,
+    mass_matrix: &crate::with_diffsol::MassMatrix,
+    input_overrides: Option<SharedInputOverrides>,
+) -> Result<OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = V, T = T, C = C> + use<>>, SimError>
+{
     let n_x = count_states(dae);
     let n_eq = dae.f_x.len();
     let n_z = n_eq - n_x;
@@ -591,14 +622,19 @@ pub(crate) fn build_problem(
 
     let dae_init = dae.clone();
     let ProblemCompiledKernels {
-        compiled_eval_ctx_rhs,
-        compiled_eval_ctx_jac,
-        compiled_eval_ctx_root,
+        mut compiled_eval_ctx_rhs,
+        mut compiled_eval_ctx_jac,
+        mut compiled_eval_ctx_root,
         compiled_residual,
         compiled_jacobian,
         compiled_root_conditions,
         n_roots,
     } = compile_problem_kernels(dae, n_total)?;
+    if let Some(ref overrides) = input_overrides {
+        compiled_eval_ctx_rhs.input_overrides = Some(overrides.clone());
+        compiled_eval_ctx_jac.input_overrides = Some(overrides.clone());
+        compiled_eval_ctx_root.input_overrides = Some(overrides.clone());
+    }
 
     let mass_matrix_owned = mass_matrix.clone();
     let atol_vec: Vec<f64> = vec![atol; n_total.max(1)];
@@ -694,6 +730,7 @@ fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledK
     let compiled_eval_ctx = CompiledEvalContext {
         dae: dae.clone(),
         sim_context,
+        input_overrides: None,
     };
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
@@ -735,6 +772,7 @@ fn compile_problem_kernels(dae: &Dae, n_total: usize) -> Result<ProblemCompiledK
     let compiled_eval_ctx = CompiledEvalContext {
         dae: dae.clone(),
         sim_context,
+        input_overrides: None,
     };
     let compiled_eval_ctx_rhs = compiled_eval_ctx.clone();
     let compiled_eval_ctx_jac = compiled_eval_ctx.clone();
@@ -838,10 +876,15 @@ fn eval_root_callback(
     );
 }
 
+/// Shared input override map for injecting external control inputs into the simulation.
+pub(crate) type SharedInputOverrides =
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f64>>>;
+
 #[derive(Clone)]
 struct CompiledEvalContext {
     dae: Dae,
     sim_context: crate::runtime::layout::SimulationContext,
+    input_overrides: Option<SharedInputOverrides>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -942,7 +985,21 @@ fn build_compiled_eval_param_vector(
     p: &[f64],
     t: f64,
 ) -> Vec<f64> {
-    ctx.sim_context.compiled_parameter_vector(&ctx.dae, y, p, t)
+    let mut compiled_p = ctx.sim_context.compiled_parameter_vector(&ctx.dae, y, p, t);
+    if let Some(overrides) = &ctx.input_overrides {
+        let map = overrides.borrow();
+        if !map.is_empty() {
+            let input_range = ctx.sim_context.input_range();
+            for (i, name) in ctx.sim_context.input_scalar_names().iter().enumerate() {
+                if let Some(&val) = map.get(name) {
+                    if let Some(slot) = compiled_p.get_mut(input_range.start + i) {
+                        *slot = val;
+                    }
+                }
+            }
+        }
+    }
+    compiled_p
 }
 
 fn log_precomputed_synthetic_root_conditions(roots: &[Expression]) {

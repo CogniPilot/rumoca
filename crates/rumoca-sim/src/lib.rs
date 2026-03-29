@@ -60,6 +60,8 @@ pub mod with_diffsol;
 pub use with_diffsol::{SimError, SimOptions, SimResult, SimSolverMode, SimVariableMeta, simulate};
 #[cfg(feature = "diffsol")]
 pub use with_diffsol::{eliminate, problem};
+#[cfg(feature = "diffsol")]
+pub use with_diffsol::stepper::{SimStepper, StepperOptions, StepperState};
 
 #[cfg(not(feature = "diffsol"))]
 #[derive(Debug, Clone, thiserror::Error)]

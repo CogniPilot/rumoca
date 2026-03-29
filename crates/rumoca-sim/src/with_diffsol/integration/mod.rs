@@ -819,14 +819,14 @@ where
     }
 }
 
-pub(super) struct SolverLoopContext<'a> {
-    dae: &'a Dae,
-    opts: &'a SimOptions,
-    startup_profile: SolverStartupProfile,
-    n_x: usize,
-    param_values: Vec<f64>,
-    discrete_event_ctx: Option<CompiledDiscreteEventContext>,
-    budget: &'a TimeoutBudget,
+pub(super) struct SolverLoopContext {
+    pub(crate) dae: Dae,
+    pub(crate) opts: SimOptions,
+    pub(crate) startup_profile: SolverStartupProfile,
+    pub(crate) n_x: usize,
+    pub(crate) param_values: Vec<f64>,
+    pub(crate) discrete_event_ctx: Option<CompiledDiscreteEventContext>,
+    pub(crate) budget: TimeoutBudget,
 }
 
 #[derive(Debug)]
@@ -938,7 +938,7 @@ pub(super) fn event_restart_step_hint(
 pub(super) fn recover_to_active_stop<'a, Eqn, S>(
     solver: &mut S,
     active_stop: f64,
-    ctx: &SolverLoopContext<'_>,
+    ctx: &SolverLoopContext,
 ) -> Result<(), SimError>
 where
     Eqn: OdeEquations<T = f64> + 'a,
@@ -952,24 +952,24 @@ where
         solver_interpolate_to_vec::<Eqn, S>(
             solver,
             t_sample,
-            ctx.budget,
+            &ctx.budget,
             "interpolate(active stop recovery)",
         )
     })?;
     let projected = maybe_project_scheduled_event_state(
-        ctx.dae,
+        &ctx.dae,
         &y_at_stop,
         ctx.n_x,
         stop_t,
         ctx.opts.atol,
-        ctx.budget,
+        &ctx.budget,
     )?;
     overwrite_solver_state::<Eqn, S>(
         solver,
         SolverStateOverwriteInput {
-            opts: ctx.opts,
+            opts: &ctx.opts,
             startup_profile: ctx.startup_profile,
-            dae: ctx.dae,
+            dae: &ctx.dae,
             param_values: ctx.param_values.as_slice(),
             n_x: ctx.n_x,
             t: stop_t,
@@ -977,7 +977,7 @@ where
         },
     )?;
     refresh_pre_values_from_state(
-        ctx.dae,
+        &ctx.dae,
         solver.state().y.as_slice(),
         ctx.param_values.as_slice(),
         stop_t,
@@ -985,7 +985,7 @@ where
     set_solver_stop_time::<Eqn, S>(
         solver,
         ctx.opts.t_end,
-        ctx.budget,
+        &ctx.budget,
         "Reset stop time after active stop recovery",
     )
     .map_err(reset_stop_time_error)
@@ -994,7 +994,7 @@ where
 pub(super) fn step_with_stop_recovery<'a, Eqn, S>(
     solver: &mut S,
     active_stop: f64,
-    ctx: &SolverLoopContext<'_>,
+    ctx: &SolverLoopContext,
     mut on_unrecoverable: impl FnMut(&str, f64, &[f64]),
 ) -> Result<StepAdvance, SimError>
 where
@@ -1003,7 +1003,7 @@ where
     S: OdeSolverMethod<'a, Eqn>,
 {
     let t_before = solver.state().t;
-    match solver_step_reason::<Eqn, S>(solver, ctx.budget) {
+    match solver_step_reason::<Eqn, S>(solver, &ctx.budget) {
         Ok(reason) => Ok(StepAdvance::Advanced(reason)),
         Err(SimError::SolverError(msg)) => {
             let current_t = solver.state().t;
@@ -1056,7 +1056,7 @@ where
 pub(super) fn apply_event_updates_at_time<'a, Eqn, S>(
     solver: &mut S,
     t_event: f64,
-    ctx: &SolverLoopContext<'_>,
+    ctx: &SolverLoopContext,
 ) -> Result<(), SimError>
 where
     Eqn: OdeEquations<T = f64> + 'a,
@@ -1070,19 +1070,19 @@ where
             solver_interpolate_to_vec::<Eqn, S>(
                 solver,
                 t_sample,
-                ctx.budget,
+                &&ctx.budget,
                 "interpolate(event update)",
             )
         })?;
     refresh_pre_values_from_state(
-        ctx.dae,
+        &ctx.dae,
         y_at_event.as_slice(),
         ctx.param_values.as_slice(),
         t_event,
     );
-    let mut restart_t = event_restart_time(ctx.opts, t_event);
+    let mut restart_t = event_restart_time(&ctx.opts, t_event);
     let event_env = settle_runtime_event_updates(
-        ctx.dae,
+        &ctx.dae,
         y_at_event.as_mut_slice(),
         ctx.param_values.as_slice(),
         ctx.n_x,
@@ -1091,22 +1091,22 @@ where
     );
     eval::seed_pre_values_from_env(&event_env);
     let mut projected = maybe_project_scheduled_event_state(
-        ctx.dae,
+        &ctx.dae,
         y_at_event.as_slice(),
         ctx.n_x,
         restart_t,
         ctx.opts.atol,
-        ctx.budget,
+        &ctx.budget,
     )?;
     // SPEC_0022 SIM-001/SIM-008 (MLS App B): event updates must settle before
     // continuous integration resumes, so keep nudging the right-limit restart
     // if a synthetic root is still numerically on the zero surface.
     for _ in 0..SYNTHETIC_ROOT_RESTART_RECHECK_LIMIT {
         let Some(next_restart_t) = next_restart_time_if_synthetic_roots_still_armed(
-            ctx.dae,
+            &ctx.dae,
             projected.as_slice(),
             ctx.param_values.as_slice(),
-            ctx.opts,
+            &ctx.opts,
             restart_t,
             ctx.opts.atol,
         ) else {
@@ -1120,21 +1120,21 @@ where
         }
         restart_t = next_restart_t;
         projected = maybe_project_scheduled_event_state(
-            ctx.dae,
+            &ctx.dae,
             y_at_event.as_slice(),
             ctx.n_x,
             restart_t,
             ctx.opts.atol,
-            ctx.budget,
+            &ctx.budget,
         )?;
     }
     y_at_event = projected;
     overwrite_solver_state::<Eqn, S>(
         solver,
         SolverStateOverwriteInput {
-            opts: ctx.opts,
+            opts: &ctx.opts,
             startup_profile: ctx.startup_profile,
-            dae: ctx.dae,
+            dae: &ctx.dae,
             param_values: ctx.param_values.as_slice(),
             n_x: ctx.n_x,
             t: restart_t,
@@ -1142,7 +1142,7 @@ where
         },
     )?;
     let final_env = build_env(
-        ctx.dae,
+        &ctx.dae,
         y_at_event.as_slice(),
         ctx.param_values.as_slice(),
         restart_t,
@@ -1159,7 +1159,7 @@ where
 {
     solver: S,
     output: IntegrationOutput,
-    ctx: SolverLoopContext<'a>,
+    ctx: SolverLoopContext,
     bdf_trace: Option<BdfTraceCtx>,
     bdf_last_log: OptionalTimer,
     steps: usize,
@@ -1167,7 +1167,7 @@ where
     stalled_output_steps: usize,
     last_output_idx: usize,
     runtime_capture: Option<RuntimeChannelCapture>,
-    _phantom: std::marker::PhantomData<Eqn>,
+    _phantom: std::marker::PhantomData<&'a Eqn>,
 }
 
 impl<'a, Eqn, S> DiffsolBackend<'a, Eqn, S>
@@ -1181,11 +1181,11 @@ where
     fn new(
         solver: S,
         mut output: IntegrationOutput,
-        ctx: SolverLoopContext<'a>,
+        ctx: SolverLoopContext,
         bdf_trace: Option<BdfTraceCtx>,
         solver_names: Vec<String>,
     ) -> Self {
-        let runtime_names = runtime_capture_target_names(ctx.dae, &solver_names);
+        let runtime_names = runtime_capture_target_names(&ctx.dae, &solver_names);
         if !runtime_names.is_empty() {
             output
                 .buf
@@ -1244,7 +1244,7 @@ where
         }
         let output_idx_before = self.output.t_out_idx;
         self.output
-            .record_until::<Eqn, S>(&self.solver, t_limit, self.ctx.budget)?;
+            .record_until::<Eqn, S>(&self.solver, t_limit, &self.ctx.budget)?;
         let output_idx_after = self.output.t_out_idx;
         let new_samples = output_idx_after.saturating_sub(output_idx_before);
         if new_samples > 0 {
@@ -1294,14 +1294,14 @@ where
             RuntimeSampleMode::Initialization => {
                 // Keep startup channels consistent with initialized solver state.
                 build_env(
-                    self.ctx.dae,
+                    &self.ctx.dae,
                     y.as_slice(),
                     self.ctx.param_values.as_slice(),
                     t_sample,
                 )
             }
             RuntimeSampleMode::Regular => settle_runtime_discrete_capture_env(
-                self.ctx.dae,
+                &self.ctx.dae,
                 y.as_mut_slice(),
                 self.ctx.param_values.as_slice(),
                 self.ctx.n_x,
@@ -1372,7 +1372,7 @@ where
         }
         if let Some(trace_ctx) = self.bdf_trace {
             check_budget_or_trace_timeout(
-                self.ctx.budget,
+                &self.ctx.budget,
                 trace_ctx,
                 self.steps,
                 self.root_hits,
@@ -1386,7 +1386,7 @@ where
         set_solver_stop_time::<Eqn, S>(
             &mut self.solver,
             stop_time,
-            self.ctx.budget,
+            &self.ctx.budget,
             "Reset stop time",
         )
         .map_err(reset_stop_time_error)?;
@@ -1412,7 +1412,7 @@ where
                         msg,
                     );
                     trace_step_failure_diagnostics(
-                        self.ctx.dae,
+                        &self.ctx.dae,
                         y,
                         current_t,
                         self.ctx.param_values.as_slice(),
@@ -1461,7 +1461,7 @@ where
 fn project_internal_step_state_if_needed<'a, Eqn, S>(
     solver: &mut S,
     reason: &OdeSolverStopReason<f64>,
-    ctx: &SolverLoopContext<'_>,
+    ctx: &SolverLoopContext,
 ) -> Result<(), SimError>
 where
     Eqn: OdeEquations<T = f64> + 'a,
@@ -1507,13 +1507,13 @@ pub(super) fn try_integrate(
     let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
 
     let ctx = SolverLoopContext {
-        dae,
-        opts,
+        dae: dae.clone(),
+        opts: opts.clone(),
         startup_profile,
         n_x,
         param_values: param_values.clone(),
         discrete_event_ctx: compiled_discrete_event_ctx,
-        budget,
+        budget: *budget,
     };
     let output = {
         let mut backend =
@@ -1569,13 +1569,13 @@ pub(super) fn try_integrate_tr_bdf2(
     let output = IntegrationOutput::new(opts, n_total, solver.state().y.as_slice());
     let compiled_discrete_event_ctx = build_compiled_discrete_event_context(dae, n_total)?;
     let ctx = SolverLoopContext {
-        dae,
-        opts,
+        dae: dae.clone(),
+        opts: opts.clone(),
         startup_profile,
         n_x,
         param_values: param_values.clone(),
         discrete_event_ctx: compiled_discrete_event_ctx,
-        budget,
+        budget: *budget,
     };
     let (output, stats, final_t) = {
         let mut backend = DiffsolBackend::new(solver, output, ctx, None, solver_names.clone());
@@ -1631,10 +1631,10 @@ pub(crate) use esdirk34::try_integrate_esdirk34;
 
 mod event_settle;
 pub(crate) use event_settle::settle_runtime_event_updates;
-use event_settle::{
-    CompiledDiscreteEventContext, apply_initial_sections_and_sync_startup_state,
-    build_compiled_discrete_event_context, maybe_project_scheduled_event_state,
+pub(crate) use event_settle::{
+    apply_initial_sections_and_sync_startup_state, build_compiled_discrete_event_context,
 };
+use event_settle::{CompiledDiscreteEventContext, maybe_project_scheduled_event_state};
 
 mod fallback;
 pub(crate) use fallback::{

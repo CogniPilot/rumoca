@@ -47,7 +47,7 @@ pub(super) fn maybe_project_scheduled_event_state(
     }
 }
 
-pub(super) fn apply_initial_sections_and_sync_startup_state<'a, Eqn, S>(
+pub(crate) fn apply_initial_sections_and_sync_startup_state<'a, Eqn, S>(
     solver: &mut S,
     dae: &Dae,
     opts: &SimOptions,
