@@ -779,13 +779,6 @@ fn eliminate_via_blt(
         if !is_symbolically_stable_solution(&solution) {
             continue;
         }
-        // Output variables exist for external callers — only eliminate them
-        // when the solution is a trivial alias (a single variable reference or
-        // its negation), since keeping non-trivial outputs enlarges the DAE and
-        // can hurt solver performance.
-        if is_output && !is_trivial_alias(&solution) {
-            continue;
-        }
 
         // Record substitution.
         substitutions.push(Substitution {

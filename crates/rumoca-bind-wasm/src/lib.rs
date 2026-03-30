@@ -1897,7 +1897,12 @@ impl WasmStepper {
             Ok(result.dae)
         })?;
 
-        let stepper = rumoca_sim::SimStepper::new(&dae, rumoca_sim::StepperOptions::default())
+        let opts = rumoca_sim::StepperOptions {
+            rtol: 1e-3,
+            atol: 1e-3,
+            ..rumoca_sim::StepperOptions::default()
+        };
+        let stepper = rumoca_sim::SimStepper::new(&dae, opts)
             .map_err(|e| JsValue::from_str(&format!("Stepper creation error: {e}")))?;
 
         Ok(WasmStepper { stepper, dae })
@@ -1949,9 +1954,13 @@ impl WasmStepper {
 
     /// Reset the simulation to initial conditions.
     pub fn reset(&mut self) -> Result<(), JsValue> {
-        self.stepper =
-            rumoca_sim::SimStepper::new(&self.dae, rumoca_sim::StepperOptions::default())
-                .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;
+        let opts = rumoca_sim::StepperOptions {
+            rtol: 1e-3,
+            atol: 1e-3,
+            ..rumoca_sim::StepperOptions::default()
+        };
+        self.stepper = rumoca_sim::SimStepper::new(&self.dae, opts)
+            .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;
         Ok(())
     }
 }

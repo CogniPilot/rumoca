@@ -81,9 +81,16 @@ import init, { WasmStepper, init as rumoca_init } from "./rumoca_bind_wasm.js";
 const MODEL_SOURCE = `
 class RigidBodyQuat
   parameter Real g = 9.80665 "Gravity [m/s^2]";
+  parameter Real mass = 2.0 "Total mass [kg]";
+
+  // Ground contact (spring-damper, C2-smooth softplus)
+  parameter Real ground_k = 500 "Ground stiffness [N/m]";
+  parameter Real ground_c = 50 "Ground damping [N*s/m]";
+  parameter Real ground_eps = 0.01 "Ground contact smoothing [m]";
+
   Real px(start = 0) "Position North [m]";
   Real py(start = 0) "Position East [m]";
-  Real pz(start = -1) "Position Down [m] (start 1m altitude)";
+  Real pz(start = 0) "Position Down [m] (start on ground)";
   Real vx(start = 0) "Velocity North [m/s]";
   Real vy(start = 0) "Velocity East [m/s]";
   Real vz(start = 0) "Velocity Down [m/s]";
@@ -97,11 +104,16 @@ class RigidBodyQuat
   Real a_bx "Body specific force X [m/s^2]";
   Real a_by "Body specific force Y [m/s^2]";
   Real a_bz "Body specific force Z [m/s^2]";
+  Real F_ground "Ground normal force [N] (NED Down, negative=up)";
 equation
+  // Ground contact: softplus penetration avoids non-smooth kink at liftoff
+  F_ground = -ground_k * ground_eps * log(1 + exp(pz / ground_eps))
+             - ground_c * vz * (1 / (1 + exp(-pz / ground_eps)));
+
   der(px) = vx; der(py) = vy; der(pz) = vz;
   der(vx) = (1-2*(q2*q2+q3*q3))*a_bx + 2*(q1*q2-q0*q3)*a_by + 2*(q1*q3+q0*q2)*a_bz;
   der(vy) = 2*(q1*q2+q0*q3)*a_bx + (1-2*(q1*q1+q3*q3))*a_by + 2*(q2*q3-q0*q1)*a_bz;
-  der(vz) = 2*(q1*q3-q0*q2)*a_bx + 2*(q2*q3+q0*q1)*a_by + (1-2*(q1*q1+q2*q2))*a_bz + g;
+  der(vz) = 2*(q1*q3-q0*q2)*a_bx + 2*(q2*q3+q0*q1)*a_by + (1-2*(q1*q1+q2*q2))*a_bz + g + F_ground / mass;
   der(q0) = 0.5*(-q1*omega_x - q2*omega_y - q3*omega_z);
   der(q1) = 0.5*( q0*omega_x - q3*omega_y + q2*omega_z);
   der(q2) = 0.5*( q3*omega_x + q0*omega_y - q1*omega_z);
@@ -110,7 +122,6 @@ end RigidBodyQuat;
 
 model QuadrotorAttitude
   extends RigidBodyQuat;
-  parameter Real mass = 2.0   "Total mass [kg]";
   parameter Real Ixx  = 0.020 "Roll  moment of inertia [kg*m^2]";
   parameter Real Iyy  = 0.020 "Pitch moment of inertia [kg*m^2]";
   parameter Real Izz  = 0.040 "Yaw   moment of inertia [kg*m^2]";
@@ -146,13 +157,14 @@ equation
 end QuadrotorAttitude;
 `;
 
-const HOVER_THRUST = 2.0 * 9.80665;
+const HOVER_THRUST = 2.0 * 9.80665; // ~19.6 N
+const MAX_THRUST = HOVER_THRUST * 2.0; // full stick = 2x hover
 const MAX_ANGLE = 0.5;
 const MAX_YAW_RATE = 2.0;
 
 // ── RC input state ─────────────────────────────────────────────────
 const rc = { throttle: 0, pitch: 0, roll: 0, yaw: 0 };
-const stickRate = 0.05;
+const stickRate = 0.01;
 const keys = {};
 let resetRequested = false;
 
@@ -166,17 +178,13 @@ document.addEventListener("keyup", (e) => { keys[e.code] = false; e.preventDefau
 function updateSticks() {
   if (keys["Space"]) { rc.throttle = 0; rc.pitch = 0; rc.roll = 0; rc.yaw = 0; }
   if (keys["ArrowUp"])    rc.throttle = Math.min(1, rc.throttle + stickRate);
-  if (keys["ArrowDown"])  rc.throttle = Math.max(-1, rc.throttle - stickRate);
+  if (keys["ArrowDown"])  rc.throttle = Math.max(0, rc.throttle - stickRate);
   if (keys["KeyW"])       rc.pitch = Math.min(1, rc.pitch + stickRate);
   if (keys["KeyS"])       rc.pitch = Math.max(-1, rc.pitch - stickRate);
   if (keys["KeyA"])       rc.roll = Math.max(-1, rc.roll - stickRate);
   if (keys["KeyD"])       rc.roll = Math.min(1, rc.roll + stickRate);
   if (keys["ArrowLeft"])  rc.yaw = Math.max(-1, rc.yaw - stickRate);
   if (keys["ArrowRight"]) rc.yaw = Math.min(1, rc.yaw + stickRate);
-  if (!keys["ArrowUp"] && !keys["ArrowDown"]) rc.throttle *= 0.95;
-  if (!keys["KeyW"] && !keys["KeyS"]) rc.pitch *= 0.95;
-  if (!keys["KeyA"] && !keys["KeyD"]) rc.roll *= 0.95;
-  if (!keys["ArrowLeft"] && !keys["ArrowRight"]) rc.yaw *= 0.95;
 }
 
 // ── Three.js scene setup ───────────────────────────────────────────
@@ -568,7 +576,8 @@ function animate(timestamp) {
   }
 
   // Map RC sticks to physical commands
-  const thrust = HOVER_THRUST * Math.max(0, 1 + rc.throttle);
+  // Throttle: 0 = zero thrust, 0.5 = hover, 1.0 = 2x hover
+  const thrust = MAX_THRUST * rc.throttle;
   const rollCmd = rc.roll * MAX_ANGLE;
   const pitchCmd = rc.pitch * MAX_ANGLE;
   const yawCmd = rc.yaw * MAX_YAW_RATE;
@@ -580,7 +589,25 @@ function animate(timestamp) {
     stepper.set_input("cmd_yaw", yawCmd);
     stepper.step(dt);
   } catch (e) {
-    console.error("Step error:", e);
+    const state = stepper.state_json();
+    const msg = `Step error at t=${stepper.time().toFixed(4)}s dt=${dt.toFixed(4)}s\n` +
+      `inputs: thrust=${thrust.toFixed(2)} roll=${rollCmd.toFixed(3)} pitch=${pitchCmd.toFixed(3)} yaw=${yawCmd.toFixed(3)}\n` +
+      `error: ${e}\n` +
+      `state: ${state}`;
+    console.error(msg);
+    document.getElementById("sim-status").textContent = "Error (see log)";
+    document.getElementById("sim-status").className = "error";
+    // Show error overlay
+    const overlay = document.getElementById("loading-overlay");
+    overlay.style.display = "flex";
+    overlay.style.whiteSpace = "pre-wrap";
+    overlay.style.fontSize = "12px";
+    overlay.style.padding = "40px";
+    overlay.style.alignItems = "flex-start";
+    overlay.style.overflowY = "auto";
+    overlay.textContent = msg;
+    stepper = null; // stop loop
+    return;
   }
 
   // Read state
@@ -595,7 +622,7 @@ function animate(timestamp) {
   const q1 = stepper.get("q1") ?? 0;
   const q2 = stepper.get("q2") ?? 0;
   const q3 = stepper.get("q3") ?? 0;
-  const T  = stepper.get("T") ?? (1 + rc.throttle) * HOVER_THRUST;
+  const T  = stepper.get("T") ?? thrust;
 
   // NED to Three.js: x_three = py, y_three = -pz, z_three = px
   const tx = py, ty = -pz, tz = px;
