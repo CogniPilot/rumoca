@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Quadrotor WASM Stepper</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; color: #eee; font-family: monospace; overflow: hidden; }
+  #container { width: 100vw; height: 100vh; }
+  #hud {
+    position: fixed; top: 10px; left: 10px; z-index: 10;
+    background: rgba(30,20,10,0.75); padding: 10px 14px; border-radius: 6px;
+    font-size: 13px; line-height: 1.6; backdrop-filter: blur(4px);
+    border: 1px solid rgba(200,160,80,0.2);
+  }
+  #hud .label { color: #a89070; }
+  #hud .val { color: #e8c840; font-weight: bold; }
+  #controls {
+    position: fixed; bottom: 10px; right: 10px; z-index: 10;
+    background: rgba(30,20,10,0.75); padding: 8px 14px; border-radius: 6px;
+    font-size: 11px; line-height: 1.6; backdrop-filter: blur(4px);
+    border: 1px solid rgba(200,160,80,0.2); max-width: 240px;
+  }
+  #controls b { color: #e8c840; }
+  #controls .key { color: #70b8e0; display: inline-block; min-width: 70px; }
+  #controls .action { color: #a89070; }
+  #status {
+    position: fixed; top: 10px; right: 10px; z-index: 10;
+    background: rgba(30,20,10,0.75); padding: 6px 12px; border-radius: 6px;
+    font-size: 12px; backdrop-filter: blur(4px);
+    border: 1px solid rgba(200,160,80,0.2);
+  }
+  .ready { color: #4c4; }
+  .loading { color: #ff0; }
+  .error { color: #c44; }
+  #loading-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,0.85);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; color: #ff0;
+  }
+</style>
+</head>
+<body>
+<div id="loading-overlay">Compiling model...</div>
+<div id="container"></div>
+<div id="hud">
+  <b>WASM Stepper</b><br>
+  <span class="label">t:</span> <span class="val" id="v-t">0.00</span>s<br>
+  <span class="label">pos NED:</span> <span class="val" id="v-pos">0, 0, 0</span><br>
+  <span class="label">alt:</span> <span class="val" id="v-alt">0.0</span>m<br>
+  <span class="label">vel:</span> <span class="val" id="v-vel">0.0</span> m/s<br>
+  <span class="label">roll:</span> <span class="val" id="v-roll">0.0</span>&deg;
+  <span class="label">pitch:</span> <span class="val" id="v-pitch">0.0</span>&deg;<br>
+  <span class="label">RC:</span> <span class="val" id="v-rc">0, 0, 0, 0</span>
+</div>
+<div id="controls">
+  <b>Controls</b><br>
+  <span class="key">W / S</span> <span class="action">Pitch fwd/back</span><br>
+  <span class="key">A / D</span> <span class="action">Roll left/right</span><br>
+  <span class="key">Up / Down</span> <span class="action">Throttle</span><br>
+  <span class="key">Left / Right</span> <span class="action">Yaw</span><br>
+  <span class="key">Space</span> <span class="action">Zero sticks</span><br>
+  <span class="key">R</span> <span class="action">Reset simulation</span>
+</div>
+<div id="status"><span class="loading" id="sim-status">Loading WASM...</span></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import init, { WasmStepper, init as rumoca_init } from "./rumoca_bind_wasm.js";
+
+// ── Modelica source (embedded) ─────────────────────────────────────
+const MODEL_SOURCE = `
+class RigidBodyQuat
+  parameter Real g = 9.80665 "Gravity [m/s^2]";
+  Real px(start = 0) "Position North [m]";
+  Real py(start = 0) "Position East [m]";
+  Real pz(start = -1) "Position Down [m] (start 1m altitude)";
+  Real vx(start = 0) "Velocity North [m/s]";
+  Real vy(start = 0) "Velocity East [m/s]";
+  Real vz(start = 0) "Velocity Down [m/s]";
+  Real q0(start = 1) "Quaternion scalar (w)";
+  Real q1(start = 0) "Quaternion vector x";
+  Real q2(start = 0) "Quaternion vector y";
+  Real q3(start = 0) "Quaternion vector z";
+  Real omega_x "Body roll rate [rad/s]";
+  Real omega_y "Body pitch rate [rad/s]";
+  Real omega_z "Body yaw rate [rad/s]";
+  Real a_bx "Body specific force X [m/s^2]";
+  Real a_by "Body specific force Y [m/s^2]";
+  Real a_bz "Body specific force Z [m/s^2]";
+equation
+  der(px) = vx; der(py) = vy; der(pz) = vz;
+  der(vx) = (1-2*(q2*q2+q3*q3))*a_bx + 2*(q1*q2-q0*q3)*a_by + 2*(q1*q3+q0*q2)*a_bz;
+  der(vy) = 2*(q1*q2+q0*q3)*a_bx + (1-2*(q1*q1+q3*q3))*a_by + 2*(q2*q3-q0*q1)*a_bz;
+  der(vz) = 2*(q1*q3-q0*q2)*a_bx + 2*(q2*q3+q0*q1)*a_by + (1-2*(q1*q1+q2*q2))*a_bz + g;
+  der(q0) = 0.5*(-q1*omega_x - q2*omega_y - q3*omega_z);
+  der(q1) = 0.5*( q0*omega_x - q3*omega_y + q2*omega_z);
+  der(q2) = 0.5*( q3*omega_x + q0*omega_y - q1*omega_z);
+  der(q3) = 0.5*(-q2*omega_x + q1*omega_y + q0*omega_z);
+end RigidBodyQuat;
+
+model QuadrotorAttitude
+  extends RigidBodyQuat;
+  parameter Real mass = 2.0   "Total mass [kg]";
+  parameter Real Ixx  = 0.020 "Roll  moment of inertia [kg*m^2]";
+  parameter Real Iyy  = 0.020 "Pitch moment of inertia [kg*m^2]";
+  parameter Real Izz  = 0.040 "Yaw   moment of inertia [kg*m^2]";
+  parameter Real Kp_roll  = 8.0;
+  parameter Real Kd_roll  = 1.2;
+  parameter Real Kp_pitch = 8.0;
+  parameter Real Kd_pitch = 1.2;
+  parameter Real Kp_yaw   = 4.0;
+  parameter Real Kd_yaw   = 0.8;
+  input Real cmd_thrust "Desired thrust [N]";
+  input Real cmd_roll   "Desired roll angle [rad]";
+  input Real cmd_pitch  "Desired pitch angle [rad]";
+  input Real cmd_yaw    "Desired yaw rate [rad/s]";
+  Real T  "Total thrust [N]";
+  Real Mx "Roll  moment [N*m]";
+  Real My "Pitch moment [N*m]";
+  Real Mz "Yaw   moment [N*m]";
+  Real roll  "Current roll angle [rad]";
+  Real pitch "Current pitch angle [rad]";
+  Real yaw   "Current yaw angle [rad]";
+equation
+  a_bx = 0; a_by = 0; a_bz = -T / mass;
+  der(omega_x) = (Mx + (Iyy - Izz)*omega_y*omega_z) / Ixx;
+  der(omega_y) = (My + (Izz - Ixx)*omega_x*omega_z) / Iyy;
+  der(omega_z) = (Mz + (Ixx - Iyy)*omega_x*omega_y) / Izz;
+  roll  = atan2(2*(q0*q1 + q2*q3), 1 - 2*(q1*q1 + q2*q2));
+  pitch = asin(2*(q0*q2 - q3*q1));
+  yaw   = atan2(2*(q0*q3 + q1*q2), 1 - 2*(q2*q2 + q3*q3));
+  T = cmd_thrust;
+  Mx = Ixx*(Kp_roll*(cmd_roll - roll) - Kd_roll*omega_x);
+  My = Iyy*(Kp_pitch*(cmd_pitch - pitch) - Kd_pitch*omega_y);
+  Mz = Izz*(Kp_yaw*(cmd_yaw - omega_z) - Kd_yaw*omega_z);
+end QuadrotorAttitude;
+`;
+
+const HOVER_THRUST = 2.0 * 9.80665;
+const MAX_ANGLE = 0.5;
+const MAX_YAW_RATE = 2.0;
+
+// ── RC input state ─────────────────────────────────────────────────
+const rc = { throttle: 0, pitch: 0, roll: 0, yaw: 0 };
+const stickRate = 0.05;
+const keys = {};
+let resetRequested = false;
+
+document.addEventListener("keydown", (e) => {
+  keys[e.code] = true;
+  if (e.code === "KeyR") resetRequested = true;
+  e.preventDefault();
+});
+document.addEventListener("keyup", (e) => { keys[e.code] = false; e.preventDefault(); });
+
+function updateSticks() {
+  if (keys["Space"]) { rc.throttle = 0; rc.pitch = 0; rc.roll = 0; rc.yaw = 0; }
+  if (keys["ArrowUp"])    rc.throttle = Math.min(1, rc.throttle + stickRate);
+  if (keys["ArrowDown"])  rc.throttle = Math.max(-1, rc.throttle - stickRate);
+  if (keys["KeyW"])       rc.pitch = Math.min(1, rc.pitch + stickRate);
+  if (keys["KeyS"])       rc.pitch = Math.max(-1, rc.pitch - stickRate);
+  if (keys["KeyA"])       rc.roll = Math.max(-1, rc.roll - stickRate);
+  if (keys["KeyD"])       rc.roll = Math.min(1, rc.roll + stickRate);
+  if (keys["ArrowLeft"])  rc.yaw = Math.max(-1, rc.yaw - stickRate);
+  if (keys["ArrowRight"]) rc.yaw = Math.min(1, rc.yaw + stickRate);
+  if (!keys["ArrowUp"] && !keys["ArrowDown"]) rc.throttle *= 0.95;
+  if (!keys["KeyW"] && !keys["KeyS"]) rc.pitch *= 0.95;
+  if (!keys["KeyA"] && !keys["KeyD"]) rc.roll *= 0.95;
+  if (!keys["ArrowLeft"] && !keys["ArrowRight"]) rc.yaw *= 0.95;
+}
+
+// ── Three.js scene setup ───────────────────────────────────────────
+const container = document.getElementById("container");
+const scene = new THREE.Scene();
+scene.background = null;
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(2, 3, 5);
+camera.lookAt(0, 0, 0);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+container.appendChild(renderer.domElement);
+
+window.addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// Camera orbit
+let camAngle = 0.8, camElev = 0.5, camDist = 4;
+let camTarget = new THREE.Vector3(0, 1, 0);
+container.addEventListener("wheel", (e) => {
+  camDist = Math.max(1, Math.min(20, camDist + e.deltaY * 0.005));
+});
+let dragging = false, lastMX = 0, lastMY = 0;
+container.addEventListener("mousedown", (e) => { dragging = true; lastMX = e.clientX; lastMY = e.clientY; });
+container.addEventListener("mouseup", () => { dragging = false; });
+container.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  camAngle -= (e.clientX - lastMX) * 0.005;
+  camElev = Math.max(-1.2, Math.min(1.5, camElev + (e.clientY - lastMY) * 0.005));
+  lastMX = e.clientX; lastMY = e.clientY;
+});
+
+// ── Desert sky ─────────────────────────────────────────────────────
+const skyGeo = new THREE.SphereGeometry(200, 32, 16);
+const skyColors = [];
+const posAttr = skyGeo.getAttribute("position");
+for (let i = 0; i < posAttr.count; i++) {
+  const y = posAttr.getY(i);
+  const t = Math.max(0, Math.min(1, (y / 200 + 1) * 0.5));
+  const r = 0.94 + (0.29 - 0.94) * Math.pow(t, 0.6);
+  const g = 0.85 + (0.56 - 0.85) * Math.pow(t, 0.6);
+  const b = 0.69 + (0.78 - 0.69) * Math.pow(t, 0.6);
+  skyColors.push(r, g, b);
+}
+skyGeo.setAttribute("color", new THREE.Float32BufferAttribute(skyColors, 3));
+scene.add(new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+
+// ── Desert lighting ────────────────────────────────────────────────
+const sun = new THREE.DirectionalLight(0xfff0d0, 1.8);
+sun.position.set(8, 12, 4); scene.add(sun);
+const fill = new THREE.DirectionalLight(0xd4a060, 0.4);
+fill.position.set(-5, 3, -4); scene.add(fill);
+const rim = new THREE.DirectionalLight(0xffeebb, 0.25);
+rim.position.set(0, -1, -6); scene.add(rim);
+scene.add(new THREE.HemisphereLight(0x87ceeb, 0xc2956b, 0.5));
+
+// ── Desert ground ──────────────────────────────────────────────────
+const sandMat = new THREE.MeshStandardMaterial({ color: 0xd4a860, roughness: 0.95, metalness: 0.02 });
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), sandMat);
+floor.rotation.x = -Math.PI / 2; floor.position.y = -0.01; scene.add(floor);
+const grid = new THREE.GridHelper(50, 50, 0xc49850, 0xc49850);
+grid.material.transparent = true; grid.material.opacity = 0.12;
+scene.add(grid);
+
+// ── Sand dunes ─────────────────────────────────────────────────────
+const duneMat = new THREE.MeshStandardMaterial({ color: 0xd9b06a, roughness: 0.9 });
+const duneDarkMat = new THREE.MeshStandardMaterial({ color: 0xc49850, roughness: 0.95 });
+[
+  { x:-18,z:20,sx:12,sy:1.5,sz:5,ry:0.3 }, { x:22,z:15,sx:15,sy:2.0,sz:6,ry:-0.2 },
+  { x:-25,z:-10,sx:10,sy:1.2,sz:4,ry:0.5 }, { x:15,z:-22,sx:18,sy:2.5,sz:7,ry:0.1 },
+  { x:-10,z:-25,sx:14,sy:1.8,sz:5,ry:-0.4 }, { x:30,z:-5,sx:8,sy:1.0,sz:4,ry:0.6 },
+  { x:-30,z:5,sx:11,sy:1.3,sz:5,ry:-0.1 }, { x:0,z:30,sx:20,sy:2.2,sz:6,ry:0.15 },
+].forEach((d) => {
+  const dune = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 16, 8, 0, Math.PI*2, 0, Math.PI/2),
+    Math.random() > 0.5 ? duneMat : duneDarkMat
+  );
+  dune.scale.set(d.sx, d.sy, d.sz);
+  dune.position.set(d.x, -0.01, d.z); dune.rotation.y = d.ry;
+  scene.add(dune);
+});
+
+// ── Desert rocks ───────────────────────────────────────────────────
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x8b7355, roughness: 0.85, metalness: 0.05 });
+const rockDarkMat = new THREE.MeshStandardMaterial({ color: 0x6b5740, roughness: 0.9, metalness: 0.05 });
+[
+  {x:5,z:8,s:0.3},{x:-7,z:6,s:0.5},{x:9,z:-4,s:0.2},{x:-4,z:-8,s:0.4},
+  {x:12,z:3,s:0.35},{x:-11,z:-3,s:0.25},{x:3,z:-10,s:0.45},{x:-8,z:10,s:0.3},
+].forEach((r) => {
+  const rock = new THREE.Mesh(
+    new THREE.DodecahedronGeometry(r.s, 1),
+    Math.random() > 0.5 ? rockMat : rockDarkMat
+  );
+  rock.position.set(r.x, r.s*0.3, r.z);
+  rock.scale.set(1+Math.random()*0.5, 0.5+Math.random()*0.4, 1+Math.random()*0.3);
+  rock.rotation.set(Math.random()*0.3, Math.random()*Math.PI, Math.random()*0.2);
+  scene.add(rock);
+});
+
+// ── Cacti ──────────────────────────────────────────────────────────
+const cactusMat = new THREE.MeshStandardMaterial({ color: 0x3a6b35, roughness: 0.8, metalness: 0.05 });
+[{x:-6,z:12},{x:14,z:7},{x:-13,z:-6},{x:8,z:-12},{x:-3,z:-15}].forEach((c) => {
+  const h = 0.8 + Math.random() * 1.2;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, h, 8), cactusMat);
+  trunk.position.set(c.x, h/2, c.z); scene.add(trunk);
+  const top = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), cactusMat);
+  top.position.set(c.x, h, c.z); scene.add(top);
+  if (Math.random() > 0.3) {
+    const armH = 0.4 + Math.random()*0.4;
+    const armY = h*0.4 + Math.random()*h*0.3;
+    const dir = Math.random() > 0.5 ? 1 : -1;
+    const aH = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.3, 6), cactusMat);
+    aH.rotation.z = dir*Math.PI/2; aH.position.set(c.x+dir*0.2, armY, c.z); scene.add(aH);
+    const aV = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, armH, 6), cactusMat);
+    aV.position.set(c.x+dir*0.35, armY+armH/2, c.z); scene.add(aV);
+    const aT = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 4), cactusMat);
+    aT.position.set(c.x+dir*0.35, armY+armH, c.z); scene.add(aT);
+  }
+});
+
+// ── High-fidelity quadrotor ────────────────────────────────────────
+const ARM_LEN = 0.28;
+const quad = new THREE.Group(); quad.name = "quadrotor";
+
+const matBody = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.4, roughness: 0.45 });
+const matBodyAccent = new THREE.MeshStandardMaterial({ color: 0x1a1a1e, metalness: 0.5, roughness: 0.3 });
+const matCarbon = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.3, roughness: 0.6 });
+const matMotor = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.85, roughness: 0.15 });
+const matMotorBell = new THREE.MeshStandardMaterial({ color: 0x333338, metalness: 0.9, roughness: 0.1 });
+const matLens = new THREE.MeshStandardMaterial({ color: 0x111122, metalness: 0.9, roughness: 0.05 });
+const matGimbal = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.7, roughness: 0.2 });
+const matBattery = new THREE.MeshStandardMaterial({ color: 0x2a2a30, metalness: 0.3, roughness: 0.6 });
+const matGuard = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.2, roughness: 0.7, transparent: true, opacity: 0.6 });
+const matSkid = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.3, roughness: 0.5 });
+
+// Central fuselage
+const bodyTop = new THREE.Mesh(
+  new THREE.SphereGeometry(0.09, 24, 12, 0, Math.PI*2, 0, Math.PI/2), matBody
+);
+bodyTop.scale.set(1.3, 0.5, 1.0); bodyTop.position.y = 0.005; quad.add(bodyTop);
+const bodyBot = new THREE.Mesh(
+  new THREE.SphereGeometry(0.09, 24, 12, 0, Math.PI*2, Math.PI/2, Math.PI/2), matBodyAccent
+);
+bodyBot.scale.set(1.3, 0.35, 1.0); bodyBot.position.y = 0.005; quad.add(bodyBot);
+for (const sz of [-1, 1]) {
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.012, 0.004), matCarbon);
+  strip.position.set(0, 0.005, sz*0.085); quad.add(strip);
+}
+const cover = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.07, 0.008, 20), matBodyAccent);
+cover.position.y = 0.05; quad.add(cover);
+
+// GPS / antenna mast
+const antBase = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.014, 0.015, 8), matCarbon);
+antBase.position.set(0, 0.058, -0.02); quad.add(antBase);
+const antMast = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.035, 6), matGimbal);
+antMast.position.set(0, 0.082, -0.02); quad.add(antMast);
+const antTop = new THREE.Mesh(new THREE.SphereGeometry(0.006, 8, 6), matGimbal);
+antTop.position.set(0, 0.1, -0.02); quad.add(antTop);
+
+// Battery pack
+const batt = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.022, 0.045), matBattery);
+batt.position.set(0, 0.04, 0.01); quad.add(batt);
+const battStripe = new THREE.Mesh(
+  new THREE.BoxGeometry(0.04, 0.023, 0.002),
+  new THREE.MeshStandardMaterial({ color: 0xddaa00, metalness: 0.3, roughness: 0.5 })
+);
+battStripe.position.set(0, 0.04, 0.034); quad.add(battStripe);
+
+// Camera gimbal
+const gimbalMount = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.012, 0.03), matGimbal);
+gimbalMount.position.set(0, -0.025, 0.065); quad.add(gimbalMount);
+const gimbalYoke = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.02, 0.025), matGimbal);
+gimbalYoke.position.set(0, -0.038, 0.065); quad.add(gimbalYoke);
+const camHousing = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.018, 0.022), matBody);
+camHousing.position.set(0, -0.038, 0.065); quad.add(camHousing);
+const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.008, 0.008, 12), matLens);
+lens.rotation.x = Math.PI/2; lens.position.set(0, -0.038, 0.078); quad.add(lens);
+const lensGlass = new THREE.Mesh(
+  new THREE.CircleGeometry(0.006, 12),
+  new THREE.MeshStandardMaterial({ color: 0x223355, metalness: 1.0, roughness: 0.0 })
+);
+lensGlass.position.set(0, -0.038, 0.0825); quad.add(lensGlass);
+
+// Arms + motors + propellers
+const armConfigs = [
+  { angle: Math.PI/4,      cw: false, ledColor: 0x00ff44 },
+  { angle: -Math.PI/4,     cw: true,  ledColor: 0xff2200 },
+  { angle: 3*Math.PI/4,    cw: true,  ledColor: 0xffffff },
+  { angle: -3*Math.PI/4,   cw: false, ledColor: 0xffffff },
+];
+const propGroups = [];
+
+function createPropBlade(cw) {
+  const blade = new THREE.Group();
+  const bladeLen = 0.11, segments = 6;
+  for (let i = 0; i < segments; i++) {
+    const t = (i + 0.5) / segments;
+    const segLen = bladeLen / segments;
+    const chord = 0.022 * (1.0 - 0.5*t);
+    const thickness = 0.003 * (1.0 - 0.6*t);
+    const seg = new THREE.Mesh(
+      new THREE.BoxGeometry(segLen, thickness, chord),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0.15, roughness: 0.55, side: THREE.DoubleSide })
+    );
+    const r = 0.012 + bladeLen * t;
+    seg.position.x = (cw ? 1 : -1) * r;
+    seg.rotation.x = (cw ? 1 : -1) * (0.35 - 0.25*t);
+    seg.position.y = -t*t*0.005;
+    blade.add(seg);
+  }
+  const tipCap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.006, 6, 4),
+    new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5 })
+  );
+  tipCap.scale.set(0.5, 0.3, 1.0);
+  tipCap.position.x = (cw ? 1 : -1) * (0.012 + bladeLen);
+  blade.add(tipCap);
+  return blade;
+}
+
+armConfigs.forEach((cfg) => {
+  const dx = Math.sin(cfg.angle) * ARM_LEN;
+  const dz = Math.cos(cfg.angle) * ARM_LEN;
+
+  // Arm: tapered carbon tube
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.012, ARM_LEN, 8), matCarbon);
+  arm.rotation.z = Math.PI/2; arm.rotation.y = -cfg.angle + Math.PI/2;
+  arm.position.set(dx/2, 0.005, dz/2); quad.add(arm);
+
+  // Arm reinforcement rib
+  const rib = new THREE.Mesh(new THREE.BoxGeometry(ARM_LEN*0.7, 0.018, 0.004), matCarbon);
+  rib.rotation.y = -cfg.angle + Math.PI/2;
+  rib.position.set(dx*0.55, 0.005, dz*0.55); quad.add(rib);
+
+  // Motor base + stator + bell
+  const motorBase = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.024, 0.008, 12), matCarbon);
+  motorBase.position.set(dx, 0.0, dz); quad.add(motorBase);
+  const stator = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.018, 10), matMotor);
+  stator.position.set(dx, 0.013, dz); quad.add(stator);
+  const bellTop = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.020, 0.012, 12), matMotorBell);
+  bellTop.position.set(dx, 0.024, dz); quad.add(bellTop);
+  const bellRing = new THREE.Mesh(new THREE.TorusGeometry(0.019, 0.002, 6, 16), matMotorBell);
+  bellRing.rotation.x = Math.PI/2; bellRing.position.set(dx, 0.018, dz); quad.add(bellRing);
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.01, 6), matMotor);
+  shaft.position.set(dx, 0.035, dz); quad.add(shaft);
+
+  // Propeller group (rotates)
+  const propGroup = new THREE.Group();
+  propGroup.position.set(dx, 0.038, dz);
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.005, 8), matCarbon);
+  propGroup.add(hub);
+  for (let b = 0; b < 2; b++) {
+    const blade = createPropBlade(cfg.cw);
+    blade.rotation.y = b * Math.PI;
+    propGroup.add(blade);
+  }
+  quad.add(propGroup);
+  propGroups.push({ group: propGroup, cw: cfg.cw });
+
+  // Prop guard
+  const guard = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.004, 6, 32), matGuard);
+  guard.rotation.x = Math.PI/2; guard.position.set(dx, 0.032, dz); quad.add(guard);
+  for (const strutAngle of [cfg.angle - 0.3, cfg.angle + 0.3]) {
+    const sx = Math.sin(strutAngle)*0.12, sz = Math.cos(strutAngle)*0.12;
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.002, 0.002, 0.04, 4), matCarbon);
+    strut.position.set(dx+sx*0.3, 0.025, dz+sz*0.3);
+    strut.rotation.z = (sx > 0 ? -1 : 1)*0.4;
+    strut.rotation.x = (sz > 0 ? 1 : -1)*0.4;
+    quad.add(strut);
+  }
+
+  // Navigation LED
+  const led = new THREE.Mesh(
+    new THREE.SphereGeometry(0.005, 8, 6),
+    new THREE.MeshStandardMaterial({ color: cfg.ledColor, emissive: cfg.ledColor, emissiveIntensity: 2.0 })
+  );
+  led.position.set(dx*0.85, -0.015, dz*0.85); quad.add(led);
+  const ledLight = new THREE.PointLight(cfg.ledColor, 0.15, 0.3);
+  ledLight.position.copy(led.position); quad.add(ledLight);
+});
+
+// Landing gear
+for (const side of [-1, 1]) {
+  const skidZ = side * 0.055;
+  const rail = new THREE.Mesh(new THREE.CapsuleGeometry(0.005, 0.22, 4, 8), matSkid);
+  rail.rotation.z = Math.PI/2; rail.position.set(0, -0.065, skidZ); quad.add(rail);
+  for (const fb of [-0.06, 0.06]) {
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.005, 0.045, 6), matSkid);
+    strut.position.set(fb, -0.042, skidZ); strut.rotation.z = side*0.08; quad.add(strut);
+  }
+  const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.12, 4), matSkid);
+  brace.rotation.z = Math.PI/2; brace.position.set(0, -0.048, skidZ); quad.add(brace);
+  for (const xOff of [-0.11, 0.11]) {
+    const foot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.006, 6, 4),
+      new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 })
+    );
+    foot.position.set(xOff, -0.068, skidZ); foot.scale.y = 0.5; quad.add(foot);
+  }
+}
+
+// Rear status LED bar
+const ledBar = new THREE.Mesh(
+  new THREE.BoxGeometry(0.06, 0.006, 0.004),
+  new THREE.MeshStandardMaterial({ color: 0x00aaff, emissive: 0x0066ff, emissiveIntensity: 1.5 })
+);
+ledBar.position.set(0, 0.01, -0.09); quad.add(ledBar);
+
+// Front headlight
+const headlight = new THREE.Mesh(
+  new THREE.SphereGeometry(0.004, 6, 4),
+  new THREE.MeshStandardMaterial({ color: 0xffffee, emissive: 0xffffcc, emissiveIntensity: 3.0 })
+);
+headlight.position.set(0, -0.01, 0.092); quad.add(headlight);
+const headlightBeam = new THREE.SpotLight(0xffffdd, 0.4, 2, 0.5, 0.8);
+headlightBeam.position.set(0, -0.01, 0.092);
+headlightBeam.target.position.set(0, -0.5, 0.5);
+quad.add(headlightBeam); quad.add(headlightBeam.target);
+
+scene.add(quad);
+
+// ── Flight trail ───────────────────────────────────────────────────
+const maxTrail = 800;
+const trailPos = new Float32Array(maxTrail * 3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setDrawRange(0, 0);
+const trail = new THREE.Line(trailGeo,
+  new THREE.LineBasicMaterial({ color: 0x1155cc, transparent: true, opacity: 0.6 })
+);
+scene.add(trail);
+let trailCount = 0;
+
+// ── Ground shadow ──────────────────────────────────────────────────
+const shadow = new THREE.Mesh(
+  new THREE.CircleGeometry(0.2, 20),
+  new THREE.MeshBasicMaterial({ color: 0x3a2a10, transparent: true, opacity: 0.3 })
+);
+shadow.rotation.x = -Math.PI / 2;
+shadow.position.y = 0.003;
+scene.add(shadow);
+
+// ── Initialize WASM stepper ────────────────────────────────────────
+const statusEl = document.getElementById("sim-status");
+let stepper = null;
+
+try {
+  await init();
+  rumoca_init();
+  statusEl.textContent = "Compiling model...";
+  await new Promise(r => setTimeout(r, 0));
+  stepper = new WasmStepper(MODEL_SOURCE, "QuadrotorAttitude");
+  statusEl.textContent = "Running (WASM)";
+  statusEl.className = "ready";
+  document.getElementById("loading-overlay").style.display = "none";
+} catch (e) {
+  statusEl.textContent = "Error: " + e;
+  statusEl.className = "error";
+  document.getElementById("loading-overlay").textContent = "Error: " + e;
+  throw e;
+}
+
+// ── Animation loop ─────────────────────────────────────────────────
+let lastTime = null;
+
+function animate(timestamp) {
+  requestAnimationFrame(animate);
+  if (!stepper) return;
+
+  // Compute dt from wall clock
+  if (lastTime === null) { lastTime = timestamp; return; }
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05); // cap at 50ms
+  lastTime = timestamp;
+
+  updateSticks();
+
+  // Handle reset
+  if (resetRequested) {
+    resetRequested = false;
+    rc.throttle = 0; rc.pitch = 0; rc.roll = 0; rc.yaw = 0;
+    try { stepper.reset(); } catch (e) { console.error("Reset error:", e); }
+    trailCount = 0;
+    trailGeo.setDrawRange(0, 0);
+    return;
+  }
+
+  // Map RC sticks to physical commands
+  const thrust = HOVER_THRUST * Math.max(0, 1 + rc.throttle);
+  const rollCmd = rc.roll * MAX_ANGLE;
+  const pitchCmd = rc.pitch * MAX_ANGLE;
+  const yawCmd = rc.yaw * MAX_YAW_RATE;
+
+  try {
+    stepper.set_input("cmd_thrust", thrust);
+    stepper.set_input("cmd_roll", rollCmd);
+    stepper.set_input("cmd_pitch", pitchCmd);
+    stepper.set_input("cmd_yaw", yawCmd);
+    stepper.step(dt);
+  } catch (e) {
+    console.error("Step error:", e);
+  }
+
+  // Read state
+  const t  = stepper.time();
+  const px = stepper.get("px") ?? 0;
+  const py = stepper.get("py") ?? 0;
+  const pz = stepper.get("pz") ?? 0;
+  const vx = stepper.get("vx") ?? 0;
+  const vy = stepper.get("vy") ?? 0;
+  const vz = stepper.get("vz") ?? 0;
+  const q0 = stepper.get("q0") ?? 1;
+  const q1 = stepper.get("q1") ?? 0;
+  const q2 = stepper.get("q2") ?? 0;
+  const q3 = stepper.get("q3") ?? 0;
+  const T  = stepper.get("T") ?? (1 + rc.throttle) * HOVER_THRUST;
+
+  // NED to Three.js: x_three = py, y_three = -pz, z_three = px
+  const tx = py, ty = -pz, tz = px;
+
+  // Build DCM from quaternion (body-to-world, NED)
+  const R11 = 1-2*(q2*q2+q3*q3), R12 = 2*(q1*q2-q0*q3), R13 = 2*(q1*q3+q0*q2);
+  const R21 = 2*(q1*q2+q0*q3), R22 = 1-2*(q1*q1+q3*q3), R23 = 2*(q2*q3-q0*q1);
+  const R31 = 2*(q1*q3-q0*q2), R32 = 2*(q2*q3+q0*q1), R33 = 1-2*(q1*q1+q2*q2);
+
+  // Transform: M_three = T * R_ned * T^(-1) where T: NED -> Three.js
+  const m = quad.matrix, e = m.elements;
+  e[0]=R22;  e[1]=-R32; e[2]=R12;  e[3]=0;
+  e[4]=-R23; e[5]=R33;  e[6]=-R13; e[7]=0;
+  e[8]=R21;  e[9]=-R31; e[10]=R11; e[11]=0;
+  e[12]=tx;  e[13]=ty;  e[14]=tz;  e[15]=1;
+  quad.matrixAutoUpdate = false;
+  quad.matrixWorldNeedsUpdate = true;
+
+  // Spin propellers proportional to thrust
+  const spin = Math.max(T, 0) * 0.6;
+  propGroups.forEach((p) => {
+    p.group.rotation.y += (p.cw ? 1 : -1) * (0.3 + spin * 0.04);
+  });
+
+  // Trail
+  const idx = trailCount % maxTrail;
+  trailPos[idx * 3] = tx;
+  trailPos[idx * 3 + 1] = ty;
+  trailPos[idx * 3 + 2] = tz;
+  trailCount++;
+  trail.geometry.attributes.position.needsUpdate = true;
+  trailGeo.setDrawRange(0, Math.min(trailCount, maxTrail));
+
+  // Shadow
+  shadow.position.set(tx, 0.003, tz);
+  const alt = Math.max(ty, 0.01);
+  const sc = Math.max(0.4, 1.2 - alt * 0.04);
+  shadow.scale.set(sc, sc, 1);
+  shadow.material.opacity = Math.max(0.03, 0.25 - alt * 0.015);
+
+  // Camera follow
+  camTarget.lerp(new THREE.Vector3(tx, ty, tz), 0.05);
+  camera.position.set(
+    camTarget.x + camDist * Math.sin(camAngle) * Math.cos(camElev),
+    camTarget.y + camDist * Math.sin(camElev),
+    camTarget.z + camDist * Math.cos(camAngle) * Math.cos(camElev)
+  );
+  camera.lookAt(camTarget);
+
+  // HUD
+  document.getElementById("v-t").textContent = t.toFixed(2);
+  document.getElementById("v-pos").textContent = `${px.toFixed(1)}, ${py.toFixed(1)}, ${pz.toFixed(1)}`;
+  document.getElementById("v-alt").textContent = (-pz).toFixed(2);
+  const speed = Math.sqrt(vx*vx + vy*vy + vz*vz);
+  document.getElementById("v-vel").textContent = speed.toFixed(2);
+  const rl = Math.atan2(2*(q0*q1 + q2*q3), 1 - 2*(q1*q1 + q2*q2));
+  const pt = Math.asin(Math.max(-1, Math.min(1, 2*(q0*q2 - q3*q1))));
+  document.getElementById("v-roll").textContent = (rl * 180/Math.PI).toFixed(1);
+  document.getElementById("v-pitch").textContent = (pt * 180/Math.PI).toFixed(1);
+  document.getElementById("v-rc").textContent =
+    `T:${rc.throttle.toFixed(2)} P:${rc.pitch.toFixed(2)} R:${rc.roll.toFixed(2)} Y:${rc.yaw.toFixed(2)}`;
+
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
