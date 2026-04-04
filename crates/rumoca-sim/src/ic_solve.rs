@@ -26,6 +26,12 @@ pub enum IcSolveError {
 }
 
 fn is_timed_out(deadline: Option<Instant>) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = deadline;
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     deadline.is_some_and(|d| Instant::now() >= d)
 }
 
