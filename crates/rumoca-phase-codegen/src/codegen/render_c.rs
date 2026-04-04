@@ -10,11 +10,6 @@ use render_expr::{get_field, render_expression};
 
 use super::render_expr;
 
-/// Create a minijinja Error from a message string.
-fn render_err(msg: String) -> minijinja::Error {
-    minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, msg)
-}
-
 // ── Functions ───────────────────────────────────────────────────────────
 
 /// Render element `index` (1-based) of an expression. If the expression is an
@@ -33,21 +28,66 @@ pub(super) fn render_expr_at_index_function(
     let cfg = ExprConfig::from_value(&config);
     let idx = index.as_usize().unwrap_or(1);
 
-    // Check if expression is an Array variant with elements
-    if let Ok(array) = get_field(&expr, "Array")
-        && let Ok(elements) = get_field(&array, "elements")
-        && let Some(len) = elements.len()
-        && idx >= 1
-        && idx <= len
+    // If expression is an Array, flatten nested arrays (row-major) and pick element idx.
+    if get_field(&expr, "Array").is_ok() {
+        let mut flat_elems: Vec<Value> = Vec::new();
+        collect_array_elements_flat(&expr, &mut flat_elems);
+        if idx >= 1
+            && idx <= flat_elems.len()
+            && let Some(elem) = flat_elems.get(idx - 1)
+        {
+            return render_expression(elem, &cfg);
+        }
+    }
+
+    // If expression is a whole-array VarRef (e.g. A_d_rp), index into the generated
+    // element aliases used by embedded C templates (A_d_rp_1, A_d_rp_2, ...).
+    if cfg.subscript_underscore
+        && let Ok(var_ref) = get_field(&expr, "VarRef")
+        && let Ok(subs) = get_field(&var_ref, "subscripts")
+        && subs.len().unwrap_or(0) == 0
     {
-        let elem = elements
-            .get_item(&Value::from(idx - 1))
-            .map_err(|e| render_err(format!("index {idx} out of bounds: {e}")))?;
-        return render_expression(&elem, &cfg);
+        let base = render_expression(&expr, &cfg)?;
+        return Ok(format!("{}_{}", base, idx));
+    }
+
+    // Support scalar extraction from generator calls like zeros(n)/ones(n)
+    // when start values are indexed element-wise in templates.
+    if let Ok(builtin) = get_field(&expr, "BuiltinCall")
+        && let Ok(function) = get_field(&builtin, "function")
+    {
+        let f = function.to_string();
+        if f == "Zeros" || f == "\"Zeros\"" {
+            if cfg.power == "**" {
+                return Ok("0.0".to_string());
+            }
+            return Ok("REAL_C(0.0)".to_string());
+        }
+        if f == "Ones" || f == "\"Ones\"" {
+            if cfg.power == "**" {
+                return Ok("1.0".to_string());
+            }
+            return Ok("REAL_C(1.0)".to_string());
+        }
     }
 
     // Fallback: render whole expression (scalar value broadcast to all indices)
     render_expression(&expr, &cfg)
+}
+
+fn collect_array_elements_flat(expr: &Value, out: &mut Vec<Value>) {
+    if let Ok(array) = get_field(expr, "Array")
+        && let Ok(elements) = get_field(&array, "elements")
+        && let Some(len) = elements.len()
+    {
+        for i in 0..len {
+            if let Ok(elem) = elements.get_item(&Value::from(i)) {
+                collect_array_elements_flat(&elem, out);
+            }
+        }
+        return;
+    }
+    out.push(expr.clone());
 }
 
 /// Check if an expression is a string literal.
@@ -199,6 +239,72 @@ pub(super) fn alg_rhs_for_var_function(
     }
 }
 
+/// Extract algebraic RHS like `alg_rhs_for_var`, but if no matching equation is
+/// found, return the current variable alias (hold-last-value semantics).
+///
+/// This is used for embedded discrete next-state updates where unmatched
+/// variables should remain unchanged.
+pub(super) fn alg_rhs_for_var_or_self_function(
+    var_name: Value,
+    equations: Value,
+    config: Value,
+) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    let name_str = var_name.to_string().trim_matches('"').to_string();
+
+    let Ok(iter) = equations.try_iter() else {
+        return Ok(var_name_to_c_alias(&name_str));
+    };
+    for eq in iter {
+        if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg) {
+            return Ok(rhs_expr);
+        }
+    }
+
+    Ok(var_name_to_c_alias(&name_str))
+}
+
+/// Extract RHS for embedded discrete updates.
+///
+/// Resolution order:
+/// 1) explicit equations in f_z
+/// 2) explicit equations in f_m
+/// 3) synthesized component-wise state-space updates using naming conventions
+///    (prefix.x, prefix.e, prefix.u_k with prefix.A_d/B_d/C_d/D_d and
+///    prefix.setpoint/prefix.measurement)
+/// 4) hold current value
+pub(super) fn discrete_rhs_for_var_function(
+    var_name: Value,
+    equations_z: Value,
+    equations_m: Value,
+    dae: Value,
+    config: Value,
+) -> RenderResult {
+    let cfg = ExprConfig::from_value(&config);
+    let name = var_name.to_string().trim_matches('"').to_string();
+
+    if let Ok(iter) = equations_z.try_iter() {
+        for eq in iter {
+            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name, &cfg) {
+                return Ok(rhs_expr);
+            }
+        }
+    }
+    if let Ok(iter) = equations_m.try_iter() {
+        for eq in iter {
+            if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name, &cfg) {
+                return Ok(rhs_expr);
+            }
+        }
+    }
+
+    if let Some(synthesized) = synthesize_discrete_statespace_rhs(&name, &dae) {
+        return Ok(synthesized);
+    }
+
+    Ok(var_name_to_c_alias(&name))
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Extract the derivative RHS from a single equation if it contains `der(state_name)`.
@@ -285,6 +391,11 @@ fn find_derivative_rhs(eq: &Value, state_name: &str, cfg: &ExprConfig) -> Option
 /// Matches both scalar (`y`) and indexed (`y[1]`) forms via `is_var_ref_of`,
 /// which reconstructs the full VarRef name including subscripts.
 fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    // Try direct assignment form first: lhs = rhs
+    if let Some(result) = find_algebraic_rhs_assignment(eq, var_name, cfg) {
+        return Some(result);
+    }
+
     let rhs = eq.get_attr("rhs").unwrap_or(Value::UNDEFINED);
 
     // Try subtraction form first: 0 = var - expr or 0 = -(var - expr)
@@ -304,6 +415,40 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
     }
 
     None
+}
+
+/// Try assignment form: `lhs = rhs` where lhs is the target variable.
+/// This is used by prepared discrete partitions that are emitted as direct
+/// assignments rather than residual equations.
+fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
+    let lhs = eq.get_attr("lhs").ok()?;
+    if is_var_ref_of(&lhs, var_name) {
+        let rhs = eq.get_attr("rhs").ok()?;
+        return render_expression(&rhs, cfg).ok();
+    }
+
+    // Array-level assignment support: searching for "v[i]" while equation lhs is
+    // the whole array "v" and rhs is Array{...}.
+    let bracket_pos = var_name.find('[')?;
+    let base_name = &var_name[..bracket_pos];
+    let subscript_str = var_name[bracket_pos + 1..].trim_end_matches(']');
+    let index: usize = subscript_str.parse().ok()?;
+    if index < 1 {
+        return None;
+    }
+    if !is_var_ref_of(&lhs, base_name) {
+        return None;
+    }
+
+    let rhs = eq.get_attr("rhs").ok()?;
+    let array = get_field(&rhs, "Array").ok()?;
+    let elements = get_field(&array, "elements").ok()?;
+    let len = elements.len()?;
+    if index > len {
+        return None;
+    }
+    let elem = elements.get_item(&Value::from(index - 1)).ok()?;
+    render_expression(&elem, cfg).ok()
 }
 
 /// Try subtraction form: 0 = var - expr, 0 = expr - var, 0 = -(A - B)
@@ -757,4 +902,163 @@ fn list_any(list: &Value, mut predicate: impl FnMut(Value) -> bool) -> bool {
         }
     }
     false
+}
+
+/// Convert a Modelica variable reference name into the local C alias format
+/// used by templates when `subscript_underscore = true`.
+/// Examples: `x` -> `x`, `x[1]` -> `x_1`, `a.b[1,2]` -> `a_b_1_2`.
+fn var_name_to_c_alias(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for ch in name.chars() {
+        match ch {
+            '.' | '[' | ',' => out.push('_'),
+            ']' | ' ' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn synthesize_discrete_statespace_rhs(var_name: &str, dae: &Value) -> Option<String> {
+    if let Some(prefix) = var_name.strip_suffix(".e") {
+        let setpoint = format!("{prefix}.setpoint");
+        let measurement = format!("{prefix}.measurement");
+        if has_var_in_dae_map(dae, "y", &setpoint) && has_var_in_dae_map(dae, "y", &measurement) {
+            return Some(format!(
+                "({}) - ({})",
+                var_name_to_c_alias(&setpoint),
+                var_name_to_c_alias(&measurement)
+            ));
+        }
+        return None;
+    }
+
+    if let Some(prefix) = var_name.strip_suffix(".u_k") {
+        let x_name = format!("{prefix}.x");
+        let e_name = format!("{prefix}.e");
+        let c_name = format!("{prefix}.C_d");
+        let d_name = format!("{prefix}.D_d");
+        let e_expr = current_error_expr(prefix, dae);
+        let n = get_first_dim_for_var_in_dae(dae, &x_name)?;
+        if !has_var_in_dae_map(dae, "z", &x_name)
+            || !has_var_in_dae_map(dae, "z", &e_name)
+            || !has_var_in_dae_map(dae, "p", &c_name)
+            || !has_var_in_dae_map(dae, "p", &d_name)
+        {
+            return None;
+        }
+
+        let mut terms = Vec::new();
+        for j in 1..=n {
+            terms.push(format!(
+                "({} * pre_{})",
+                indexed_alias(&c_name, j),
+                indexed_alias(&x_name, j)
+            ));
+        }
+        terms.push(format!(
+            "({} * {})",
+            var_name_to_c_alias(&d_name),
+            e_expr
+        ));
+        return Some(terms.join(" + "));
+    }
+
+    if let Some((prefix, i)) = parse_indexed_suffix(var_name, ".x") {
+        let x_name = format!("{prefix}.x");
+        let e_name = format!("{prefix}.e");
+        let a_name = format!("{prefix}.A_d");
+        let b_name = format!("{prefix}.B_d");
+        let e_expr = current_error_expr(prefix, dae);
+        let n = get_first_dim_for_var_in_dae(dae, &x_name)?;
+        if i < 1 || i > n {
+            return None;
+        }
+        if !has_var_in_dae_map(dae, "z", &x_name)
+            || !has_var_in_dae_map(dae, "z", &e_name)
+            || !has_var_in_dae_map(dae, "p", &a_name)
+            || !has_var_in_dae_map(dae, "p", &b_name)
+        {
+            return None;
+        }
+
+        let mut terms = Vec::new();
+        for j in 1..=n {
+            let flat_idx = (i - 1) * n + j;
+            terms.push(format!(
+                "({} * pre_{})",
+                indexed_alias(&a_name, flat_idx),
+                indexed_alias(&x_name, j)
+            ));
+        }
+        terms.push(format!(
+            "({} * {})",
+            indexed_alias(&b_name, i),
+            e_expr
+        ));
+        return Some(terms.join(" + "));
+    }
+
+    None
+}
+
+fn parse_indexed_suffix<'a>(name: &'a str, suffix: &str) -> Option<(&'a str, usize)> {
+    let marker = format!("{suffix}[");
+    let pos = name.find(&marker)?;
+    let prefix = &name[..pos];
+    let idx_str = name[pos + marker.len()..].strip_suffix(']')?;
+    let idx = idx_str.parse::<usize>().ok()?;
+    Some((prefix, idx))
+}
+
+fn indexed_alias(base_name: &str, idx: usize) -> String {
+    format!("{}_{}", var_name_to_c_alias(base_name), idx)
+}
+
+fn has_var_in_dae_map(dae: &Value, map_name: &str, var_name: &str) -> bool {
+    let Ok(map) = dae.get_attr(map_name) else {
+        return false;
+    };
+    map.get_item(&Value::from(var_name)).is_ok()
+}
+
+fn get_first_dim_for_var_in_dae(dae: &Value, var_name: &str) -> Option<usize> {
+    for map_name in ["z", "m", "x"] {
+        let Ok(map) = dae.get_attr(map_name) else {
+            continue;
+        };
+        let Ok(var) = map.get_item(&Value::from(var_name)) else {
+            continue;
+        };
+        let Ok(dims) = get_field(&var, "dims") else {
+            return None;
+        };
+        let Some(len) = dims.len() else {
+            return None;
+        };
+        if len == 0 {
+            return None;
+        }
+        let first = dims.get_item(&Value::from(0)).ok()?;
+        if let Some(v) = first.as_usize() {
+            return Some(v);
+        }
+        if let Some(v) = first.as_i64() {
+            return usize::try_from(v).ok();
+        }
+    }
+    None
+}
+
+fn current_error_expr(prefix: &str, dae: &Value) -> String {
+    let setpoint = format!("{prefix}.setpoint");
+    let measurement = format!("{prefix}.measurement");
+    if has_var_in_dae_map(dae, "y", &setpoint) && has_var_in_dae_map(dae, "y", &measurement) {
+        return format!(
+            "({} - {})",
+            var_name_to_c_alias(&setpoint),
+            var_name_to_c_alias(&measurement)
+        );
+    }
+    var_name_to_c_alias(&format!("{prefix}.e"))
 }
