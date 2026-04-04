@@ -21,9 +21,9 @@
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    const real_t {{ name | sanitize }}_{{ i + 1 }} = {{ prefix }}{{ name | sanitize }}_{{ i + 1 }}; (void){{ name | sanitize }}_{{ i + 1 }};
+    const real_t {{ name | sanitize }}_{{ i + 1 }} = {{ prefix }}{{ name | sanitize }}[{{ i }}]; (void){{ name | sanitize }}_{{ i + 1 }};
 {%- if pre_prefix %}
-    const real_t pre_{{ name | sanitize }}_{{ i + 1 }} = {{ pre_prefix }}{{ name | sanitize }}_{{ i + 1 }}; (void)pre_{{ name | sanitize }}_{{ i + 1 }};
+    const real_t pre_{{ name | sanitize }}_{{ i + 1 }} = {{ pre_prefix }}{{ name | sanitize }}[{{ i }}]; (void)pre_{{ name | sanitize }}_{{ i + 1 }};
 {%- endif -%}
 {%- endfor -%}
 {%- else %}
@@ -103,7 +103,7 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    real_t {{ name | sanitize }}_{{ i + 1 }} = m->{{ name | sanitize }}_{{ i + 1 }};
+    real_t {{ name | sanitize }}_{{ i + 1 }} = m->{{ name | sanitize }}[{{ i }}];
 {%- endfor -%}
 {%- else %}
     real_t {{ name | sanitize }} = m->{{ name | sanitize }};
@@ -113,7 +113,7 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    real_t {{ name | sanitize }}_{{ i + 1 }} = m->{{ name | sanitize }}_{{ i + 1 }};
+    real_t {{ name | sanitize }}_{{ i + 1 }} = m->{{ name | sanitize }}[{{ i }}];
 {%- endfor -%}
 {%- else %}
     real_t {{ name | sanitize }} = m->{{ name | sanitize }};
@@ -125,7 +125,7 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
     {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->{{ name | sanitize }}_{{ i + 1 }} = {{ name | sanitize }}_{{ i + 1 }};
+    m->{{ name | sanitize }}[{{ i }}] = {{ name | sanitize }}_{{ i + 1 }};
 {%- endfor -%}
 {%- else %}
     {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
@@ -137,7 +137,7 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
     {{ name | sanitize }}_{{ i + 1 }} = {{ alg_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-    m->{{ name | sanitize }}_{{ i + 1 }} = {{ name | sanitize }}_{{ i + 1 }};
+    m->{{ name | sanitize }}[{{ i }}] = {{ name | sanitize }}_{{ i + 1 }};
 {%- endfor -%}
 {%- else %}
     {{ name | sanitize }} = {{ alg_rhs_for_var(name, dae.f_x, cfg) }};
@@ -146,44 +146,6 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- endfor %}
 }
 {%- endif %}
-{%- if n_x > 0 %}
-
-void {{ model_name }}_derivatives(const {{ model_name }}_t *m, real_t t, real_t xdot[{{ model_name | upper }}_N_X]) {
-{{ unpack(dae.x, "m->") }}
-{%- if n_y > 0 %}
-{{ unpack(dae.y, "m->") }}
-{%- endif %}
-{{ unpack(dae.u, "m->") }}
-{{ unpack(dae.p, "m->") }}
-{%- if n_c > 0 %}
-{{ unpack(dae.constants, "m->") }}
-{%- endif -%}
-{%- if n_z > 0 %}
-{{ unpack(dae.z, "m->", "m->pre_") }}
-{%- endif -%}
-{%- if n_m > 0 %}
-{{ unpack(dae.m, "m->", "m->pre_") }}
-{%- endif -%}
-{%- if n_w > 0 %}
-{{ unpack(dae.w, "m->") }}
-{%- endif %}
-    (void)t;
-{%- set ns_xdot = namespace(offset=0) -%}
-{%- for name, var in dae.x | items -%}
-{%- if var.dims -%}
-{%- set sz = var.dims | product -%}
-{%- for i in range(sz) %}
-    xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(name ~ "[" ~ (i + 1) ~ "]", dae.f_x, cfg) }};
-{%- set ns_xdot.offset = ns_xdot.offset + 1 -%}
-{%- endfor -%}
-{%- else %}
-    xdot[{{ ns_xdot.offset }}] = {{ ode_rhs_for_state(name, dae.f_x, cfg) }};
-{%- set ns_xdot.offset = ns_xdot.offset + 1 -%}
-{%- endif -%}
-{%- endfor %}
-}
-{%- endif %}
-
 void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- if n_c > 0 or n_p > 0 %}
 {#- Local aliases needed because param start expressions can reference other params -#}
@@ -215,7 +177,7 @@ void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- if var.start and is_string_literal(var.start) != "yes" %}
     {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr_at_index(var.start, i + 1, cfg) }};
 {%- endif %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = {{ name | sanitize }}_{{ i + 1 }};
+    m->{{ name | sanitize }}[{{ i }}] = {{ name | sanitize }}_{{ i + 1 }};
 {%- endfor -%}
 {%- else -%}
 {%- if var.start and is_string_literal(var.start) != "yes" %}
@@ -232,7 +194,7 @@ void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- if var.start and is_string_literal(var.start) != "yes" %}
     {{ name | sanitize }}_{{ i + 1 }} = {{ render_expr_at_index(var.start, i + 1, cfg) }};
 {%- endif %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = {{ name | sanitize }}_{{ i + 1 }};
+    m->{{ name | sanitize }}[{{ i }}] = {{ name | sanitize }}_{{ i + 1 }};
 {%- endfor -%}
 {%- else -%}
 {%- if var.start and is_string_literal(var.start) != "yes" %}
@@ -246,20 +208,46 @@ void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->{{ name | sanitize }}[{{ i }}] = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->pre_{{ name | sanitize }}[{{ i }}] = m->{{ name | sanitize }}[{{ i }}];
 {%- endfor -%}
 {%- else %}
     m->{{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->pre_{{ name | sanitize }} = m->{{ name | sanitize }};
 {%- endif -%}
 {%- endfor -%}
 {%- for name, var in dae.u | items -%}
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->{{ name | sanitize }}[{{ i }}] = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
 {%- endfor -%}
 {%- else %}
     m->{{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
+{%- endif -%}
+{%- endfor -%}
+{%- for name, var in dae.z | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    m->{{ name | sanitize }}[{{ i }}] = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->pre_{{ name | sanitize }}[{{ i }}] = m->{{ name | sanitize }}[{{ i }}];
+{%- endfor -%}
+{%- else %}
+    m->{{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->pre_{{ name | sanitize }} = m->{{ name | sanitize }};
+{%- endif -%}
+{%- endfor -%}
+{%- for name, var in dae.m | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    m->{{ name | sanitize }}[{{ i }}] = {% if var.start %}{{ render_expr_at_index(var.start, i + 1, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->pre_{{ name | sanitize }}[{{ i }}] = m->{{ name | sanitize }}[{{ i }}];
+{%- endfor -%}
+{%- else %}
+    m->{{ name | sanitize }} = {% if var.start %}{{ render_expr(var.start, cfg) }}{% else %}REAL_C(0.0){% endif %};
+    m->pre_{{ name | sanitize }} = m->{{ name | sanitize }};
 {%- endif -%}
 {%- endfor -%}
 {%- if n_y > 0 or n_w > 0 %}
@@ -268,66 +256,127 @@ void {{ model_name }}_init({{ model_name }}_t *m) {
 }
 
 void {{ model_name }}_step({{ model_name }}_t *m, real_t t, real_t dt) {
-{%- if n_x > 0 %}
-    real_t k1[{{ model_name | upper }}_N_X], k2[{{ model_name | upper }}_N_X];
-    real_t k3[{{ model_name | upper }}_N_X], k4[{{ model_name | upper }}_N_X];
-    real_t x_save[{{ model_name | upper }}_N_X];
-{%- set ns_sv = namespace(offset=0) -%}
+    (void)dt;
+{%- if n_y > 0 or n_w > 0 %}
+    {{ model_name }}_algebraics(m, t);
+{%- endif %}
+
 {%- for name, var in dae.x | items -%}
 {%- if var.dims -%}
 {%- set sz = var.dims | product -%}
 {%- for i in range(sz) %}
-    x_save[{{ ns_sv.offset }}] = m->{{ name | sanitize }}_{{ i + 1 }};
-{%- set ns_sv.offset = ns_sv.offset + 1 -%}
+    m->pre_{{ name | sanitize }}[{{ i }}] = m->{{ name | sanitize }}[{{ i }}];
 {%- endfor -%}
 {%- else %}
-    x_save[{{ ns_sv.offset }}] = m->{{ name | sanitize }};
-{%- set ns_sv.offset = ns_sv.offset + 1 -%}
+    m->pre_{{ name | sanitize }} = m->{{ name | sanitize }};
+{%- endif -%}
+{%- endfor %}
+{%- for name, var in dae.z | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    m->pre_{{ name | sanitize }}[{{ i }}] = m->{{ name | sanitize }}[{{ i }}];
+{%- endfor -%}
+{%- else %}
+    m->pre_{{ name | sanitize }} = m->{{ name | sanitize }};
+{%- endif -%}
+{%- endfor %}
+{%- for name, var in dae.m | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    m->pre_{{ name | sanitize }}[{{ i }}] = m->{{ name | sanitize }}[{{ i }}];
+{%- endfor -%}
+{%- else %}
+    m->pre_{{ name | sanitize }} = m->{{ name | sanitize }};
 {%- endif -%}
 {%- endfor %}
 
-{%- macro rk_restore(factor, k) -%}
-{%- set ns_r = namespace(offset=0) -%}
-{%- for name, var in dae.x | items -%}
-{%- if var.dims -%}
-{%- set sz = var.dims | product -%}
-{%- for i in range(sz) %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = x_save[{{ ns_r.offset }}] + {{ factor }} * dt * {{ k }}[{{ ns_r.offset }}];
-{%- set ns_r.offset = ns_r.offset + 1 -%}
-{%- endfor -%}
-{%- else %}
-    m->{{ name | sanitize }} = x_save[{{ ns_r.offset }}] + {{ factor }} * dt * {{ k }}[{{ ns_r.offset }}];
-{%- set ns_r.offset = ns_r.offset + 1 -%}
-{%- endif -%}
-{%- endfor -%}
-{%- endmacro %}
-
-    {% if n_y > 0 or n_w > 0 %}{{ model_name }}_algebraics(m, t);
-    {% endif %}{{ model_name }}_derivatives(m, t, k1);
-{{ rk_restore("REAL_C(0.5)", "k1") }}
-    {% if n_y > 0 or n_w > 0 %}{{ model_name }}_algebraics(m, t + REAL_C(0.5) * dt);
-    {% endif %}{{ model_name }}_derivatives(m, t + REAL_C(0.5) * dt, k2);
-{{ rk_restore("REAL_C(0.5)", "k2") }}
-    {% if n_y > 0 or n_w > 0 %}{{ model_name }}_algebraics(m, t + REAL_C(0.5) * dt);
-    {% endif %}{{ model_name }}_derivatives(m, t + REAL_C(0.5) * dt, k3);
-{{ rk_restore("REAL_C(1.0)", "k3") }}
-    {% if n_y > 0 or n_w > 0 %}{{ model_name }}_algebraics(m, t + dt);
-    {% endif %}{{ model_name }}_derivatives(m, t + dt, k4);
-{%- set ns_rk = namespace(offset=0) -%}
-{%- for name, var in dae.x | items -%}
-{%- if var.dims -%}
-{%- set sz = var.dims | product -%}
-{%- for i in range(sz) %}
-    m->{{ name | sanitize }}_{{ i + 1 }} = x_save[{{ ns_rk.offset }}] + (dt / REAL_C(6.0)) * (k1[{{ ns_rk.offset }}] + REAL_C(2.0) * k2[{{ ns_rk.offset }}] + REAL_C(2.0) * k3[{{ ns_rk.offset }}] + k4[{{ ns_rk.offset }}]);
-{%- set ns_rk.offset = ns_rk.offset + 1 -%}
-{%- endfor -%}
-{%- else %}
-    m->{{ name | sanitize }} = x_save[{{ ns_rk.offset }}] + (dt / REAL_C(6.0)) * (k1[{{ ns_rk.offset }}] + REAL_C(2.0) * k2[{{ ns_rk.offset }}] + REAL_C(2.0) * k3[{{ ns_rk.offset }}] + k4[{{ ns_rk.offset }}]);
-{%- set ns_rk.offset = ns_rk.offset + 1 -%}
-{%- endif -%}
-{%- endfor -%}
+#define pre(v) pre_##v
+{{ unpack(dae.x, "m->", "m->pre_") }}
+{%- if n_y > 0 %}
+{{ unpack(dae.y, "m->") }}
 {%- endif %}
+{{ unpack(dae.u, "m->") }}
+{{ unpack(dae.p, "m->") }}
+{%- if n_c > 0 %}
+{{ unpack(dae.constants, "m->") }}
+{%- endif %}
+{%- if n_z > 0 %}
+{{ unpack(dae.z, "m->", "m->pre_") }}
+{%- endif %}
+{%- if n_m > 0 %}
+{{ unpack(dae.m, "m->", "m->pre_") }}
+{%- endif %}
+{%- if n_w > 0 %}
+{{ unpack(dae.w, "m->") }}
+{%- endif %}
+
+{%- for name, var in dae.x | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_z, dae.f_m, dae, cfg) }};
+{%- endfor -%}
+{%- else %}
+    real_t next_{{ name | sanitize }} = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};
+{%- endif -%}
+{%- endfor %}
+{%- for name, var in dae.z | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_z, dae.f_m, dae, cfg) }};
+{%- endfor -%}
+{%- else %}
+    real_t next_{{ name | sanitize }} = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};
+{%- endif -%}
+{%- endfor %}
+{%- for name, var in dae.m | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    real_t next_{{ name | sanitize }}_{{ i + 1 }} = {{ discrete_rhs_for_var(name ~ "[" ~ (i + 1) ~ "]", dae.f_z, dae.f_m, dae, cfg) }};
+{%- endfor -%}
+{%- else %}
+    real_t next_{{ name | sanitize }} = {{ discrete_rhs_for_var(name, dae.f_z, dae.f_m, dae, cfg) }};
+{%- endif -%}
+{%- endfor %}
+
+#undef pre
+
+{%- for name, var in dae.x | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    m->{{ name | sanitize }}[{{ i }}] = next_{{ name | sanitize }}_{{ i + 1 }};
+{%- endfor -%}
+{%- else %}
+    m->{{ name | sanitize }} = next_{{ name | sanitize }};
+{%- endif -%}
+{%- endfor %}
+{%- for name, var in dae.z | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    m->{{ name | sanitize }}[{{ i }}] = next_{{ name | sanitize }}_{{ i + 1 }};
+{%- endfor -%}
+{%- else %}
+    m->{{ name | sanitize }} = next_{{ name | sanitize }};
+{%- endif -%}
+{%- endfor %}
+{%- for name, var in dae.m | items -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    m->{{ name | sanitize }}[{{ i }}] = next_{{ name | sanitize }}_{{ i + 1 }};
+{%- endfor -%}
+{%- else %}
+    m->{{ name | sanitize }} = next_{{ name | sanitize }};
+{%- endif -%}
+{%- endfor %}
+
 {%- if n_y > 0 or n_w > 0 %}
-    {{ model_name }}_algebraics(m, t + dt);
+    {{ model_name }}_algebraics(m, t);
 {%- endif %}
 }
