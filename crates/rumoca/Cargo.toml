@@ -23,6 +23,7 @@ rumoca-session = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
+rumoca-sim-fb = { workspace = true }
 
 # External dependencies
 anyhow = { workspace = true }
