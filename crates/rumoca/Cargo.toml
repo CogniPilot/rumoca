@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [features]
 default = []
+sim-fb = ["dep:rumoca-sim-fb"]
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-session/tracing"]
 
 [dependencies]
@@ -23,7 +24,7 @@ rumoca-session = { workspace = true }
 rumoca-sim = { workspace = true }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
-rumoca-sim-fb = { workspace = true }
+rumoca-sim-fb = { workspace = true, optional = true }
 
 # External dependencies
 anyhow = { workspace = true }

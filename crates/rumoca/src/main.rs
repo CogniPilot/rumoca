@@ -27,7 +27,9 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+#[cfg(feature = "sim-fb")]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use miette::{
     GraphicalTheme, LabeledSpan, MietteDiagnostic, MietteHandlerOpts, NamedSource, Report, Severity,
@@ -82,6 +84,7 @@ enum Commands {
     /// Manage workspace-side Rumoca project sidecars
     Project(ProjectArgs),
     /// Run FlatBuffer-based SIL simulation with 3D viewer
+    #[cfg(feature = "sim-fb")]
     SimFb(SimFbArgs),
 }
 
@@ -113,6 +116,7 @@ struct ProjectSyncArgs {
     moves: Vec<String>,
 }
 
+#[cfg(feature = "sim-fb")]
 #[derive(Args, Debug)]
 struct SimFbArgs {
     /// Modelica file containing the plant model
@@ -446,6 +450,7 @@ fn try_main() -> Result<()> {
             Ok(())
         }
         Commands::Project(args) => run_project(args),
+        #[cfg(feature = "sim-fb")]
         Commands::SimFb(args) => run_sim_fb(args),
     }
 }
@@ -638,6 +643,7 @@ fn parse_move_hints(raw_moves: &[String]) -> Result<Vec<ProjectFileMoveHint>> {
     Ok(out)
 }
 
+#[cfg(feature = "sim-fb")]
 fn run_sim_fb(args: SimFbArgs) -> Result<()> {
     let model_source = std::fs::read_to_string(&args.model_file)
         .with_context(|| format!("Read model file: {}", args.model_file))?;

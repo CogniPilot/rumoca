@@ -71,6 +71,11 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)" --component rustfmt,clippy
@@ -91,6 +96,12 @@ jobs:
         with:
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
 
       - name: Cache rustup toolchain
         uses: actions/cache@v5
@@ -176,6 +187,11 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y libudev-dev
+
       - name: Cache cargo
         uses: actions/cache@v5
         with:
@@ -213,10 +229,10 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Xvfb
+      - name: Install Xvfb and system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xauth
+          sudo apt-get install -y xvfb xauth libudev-dev
 
       - name: Select headless browser
         shell: bash
@@ -294,6 +310,11 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
@@ -347,6 +368,11 @@ jobs:
         with:
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
 
       - name: Install Rust
         run: |
@@ -426,6 +452,11 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
@@ -451,6 +482,11 @@ jobs:
         with:
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
 
       - name: Install Rust
         run: |
@@ -485,6 +521,11 @@ jobs:
         with:
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
 
       - name: Install Rust nightly with rust-src
         run: |
@@ -706,6 +747,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
 
       - name: Install Rust
         run: |

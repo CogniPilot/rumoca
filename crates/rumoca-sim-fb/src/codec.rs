@@ -25,8 +25,14 @@ fn get_f32(buf: &[u8], off: usize) -> f32 {
 }
 fn get_f64(buf: &[u8], off: usize) -> f64 {
     f64::from_le_bytes([
-        buf[off], buf[off+1], buf[off+2], buf[off+3],
-        buf[off+4], buf[off+5], buf[off+6], buf[off+7],
+        buf[off],
+        buf[off + 1],
+        buf[off + 2],
+        buf[off + 3],
+        buf[off + 4],
+        buf[off + 5],
+        buf[off + 6],
+        buf[off + 7],
     ])
 }
 
@@ -85,14 +91,28 @@ fn read_scalar(buf: &[u8], off: usize, base_type: BaseType) -> f64 {
         BaseType::Short => i16::from_le_bytes([buf[off], buf[off + 1]]) as f64,
         BaseType::UShort => get_u16(buf, off) as f64,
         BaseType::Int => get_i32(buf, off) as f64,
-        BaseType::UInt => u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]) as f64,
+        BaseType::UInt => {
+            u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]) as f64
+        }
         BaseType::Long => i64::from_le_bytes([
-            buf[off], buf[off+1], buf[off+2], buf[off+3],
-            buf[off+4], buf[off+5], buf[off+6], buf[off+7],
+            buf[off],
+            buf[off + 1],
+            buf[off + 2],
+            buf[off + 3],
+            buf[off + 4],
+            buf[off + 5],
+            buf[off + 6],
+            buf[off + 7],
         ]) as f64,
         BaseType::ULong => u64::from_le_bytes([
-            buf[off], buf[off+1], buf[off+2], buf[off+3],
-            buf[off+4], buf[off+5], buf[off+6], buf[off+7],
+            buf[off],
+            buf[off + 1],
+            buf[off + 2],
+            buf[off + 3],
+            buf[off + 4],
+            buf[off + 5],
+            buf[off + 6],
+            buf[off + 7],
         ]) as f64,
         BaseType::Float => get_f32(buf, off) as f64,
         BaseType::Double => get_f64(buf, off),
@@ -106,12 +126,12 @@ fn write_scalar(buf: &mut [u8], off: usize, base_type: BaseType, val: f64) {
         BaseType::Bool => put_u8(buf, off, if val != 0.0 { 1 } else { 0 }),
         BaseType::Byte => put_u8(buf, off, val as i8 as u8),
         BaseType::UByte | BaseType::UType => put_u8(buf, off, val as u8),
-        BaseType::Short => buf[off..off+2].copy_from_slice(&(val as i16).to_le_bytes()),
+        BaseType::Short => buf[off..off + 2].copy_from_slice(&(val as i16).to_le_bytes()),
         BaseType::UShort => put_u16(buf, off, val as u16),
         BaseType::Int => put_i32(buf, off, val as i32),
         BaseType::UInt => put_u32(buf, off, val as u32),
         BaseType::Long => put_i64(buf, off, val as i64),
-        BaseType::ULong => buf[off..off+8].copy_from_slice(&(val as u64).to_le_bytes()),
+        BaseType::ULong => buf[off..off + 8].copy_from_slice(&(val as u64).to_le_bytes()),
         BaseType::Float => put_f32(buf, off, val as f32),
         BaseType::Double => put_f64(buf, off, val),
         _ => {}
@@ -131,12 +151,15 @@ impl UnpackCodec {
     /// `config.root_type` names the table (e.g., "cerebri2.topic.MotorOutput").
     /// `config.route` maps field paths like "motors.m0" to variable names.
     pub fn compile(schema: &SchemaSet, config: &MessageConfig) -> anyhow::Result<Self> {
-        let root = schema
-            .object_by_name(&config.root_type)
-            .ok_or_else(|| anyhow::anyhow!("root type '{}' not found in schema", config.root_type))?;
+        let root = schema.object_by_name(&config.root_type).ok_or_else(|| {
+            anyhow::anyhow!("root type '{}' not found in schema", config.root_type)
+        })?;
 
         if root.is_struct {
-            anyhow::bail!("root type '{}' must be a table, not a struct", config.root_type);
+            anyhow::bail!(
+                "root type '{}' must be a table, not a struct",
+                config.root_type
+            );
         }
 
         let mut ops = Vec::new();
@@ -232,7 +255,8 @@ fn compile_unpack_path(
         if table_field.field_type.base_type == BaseType::Obj {
             anyhow::bail!(
                 "field path '{}' points to a struct/table, need a leaf scalar (e.g., '{}.fieldname')",
-                field_path, field_path
+                field_path,
+                field_path
             );
         }
         return Ok(UnpackOp {
@@ -248,7 +272,8 @@ fn compile_unpack_path(
     if table_field.field_type.base_type != BaseType::Obj {
         anyhow::bail!(
             "field '{}' is not a struct/table, cannot access sub-field '{}'",
-            parts[0], parts[1]
+            parts[0],
+            parts[1]
         );
     }
 
@@ -256,7 +281,9 @@ fn compile_unpack_path(
     let struct_obj = schema
         .objects
         .get(table_field.field_type.index as usize)
-        .ok_or_else(|| anyhow::anyhow!("object index {} out of range", table_field.field_type.index))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("object index {} out of range", table_field.field_type.index)
+        })?;
 
     if !struct_obj.is_struct {
         anyhow::bail!(
@@ -270,9 +297,13 @@ fn compile_unpack_path(
     let mut byte_offset: u16 = 0;
 
     for &part in &parts[1..parts.len() - 1] {
-        let f = current_struct
-            .field_by_name(part)
-            .ok_or_else(|| anyhow::anyhow!("field '{}' not found in struct {}", part, current_struct.name))?;
+        let f = current_struct.field_by_name(part).ok_or_else(|| {
+            anyhow::anyhow!(
+                "field '{}' not found in struct {}",
+                part,
+                current_struct.name
+            )
+        })?;
         if f.field_type.base_type != BaseType::Obj {
             anyhow::bail!("field '{}' is a scalar, cannot descend further", part);
         }
@@ -284,9 +315,13 @@ fn compile_unpack_path(
     }
 
     let leaf_name = parts[parts.len() - 1];
-    let leaf_field = current_struct
-        .field_by_name(leaf_name)
-        .ok_or_else(|| anyhow::anyhow!("field '{}' not found in struct {}", leaf_name, current_struct.name))?;
+    let leaf_field = current_struct.field_by_name(leaf_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "field '{}' not found in struct {}",
+            leaf_name,
+            current_struct.name
+        )
+    })?;
 
     if leaf_field.field_type.base_type == BaseType::Obj {
         anyhow::bail!("field path '{}' ends at a struct, not a scalar", field_path);
@@ -331,12 +366,15 @@ impl PackCodec {
     /// Computes a fixed-size buffer layout for the message and builds a
     /// template with vtable and structural bytes pre-filled.
     pub fn compile(schema: &SchemaSet, config: &MessageConfig) -> anyhow::Result<Self> {
-        let root = schema
-            .object_by_name(&config.root_type)
-            .ok_or_else(|| anyhow::anyhow!("root type '{}' not found in schema", config.root_type))?;
+        let root = schema.object_by_name(&config.root_type).ok_or_else(|| {
+            anyhow::anyhow!("root type '{}' not found in schema", config.root_type)
+        })?;
 
         if root.is_struct {
-            anyhow::bail!("root type '{}' must be a table, not a struct", config.root_type);
+            anyhow::bail!(
+                "root type '{}' must be a table, not a struct",
+                config.root_type
+            );
         }
 
         // Find the correct file_ident by checking which schema defines this root type
@@ -370,8 +408,11 @@ impl PackCodec {
 
         for &field in &fields_by_id {
             let (align, size) = if field.field_type.base_type == BaseType::Obj {
-                let obj = schema.objects.get(field.field_type.index as usize)
-                    .ok_or_else(|| anyhow::anyhow!("obj index {} out of range", field.field_type.index))?;
+                let idx = field.field_type.index as usize;
+                let obj = schema
+                    .objects
+                    .get(idx)
+                    .ok_or_else(|| anyhow::anyhow!("obj index {idx} out of range"))?;
                 (obj.minalign.max(1) as usize, obj.bytesize as usize)
             } else {
                 let s = field.field_type.base_type.scalar_size();
@@ -384,15 +425,21 @@ impl PackCodec {
         }
 
         // Compute max alignment for the table
-        let max_align = fields_by_id.iter().map(|f| {
-            if f.field_type.base_type == BaseType::Obj {
-                schema.objects.get(f.field_type.index as usize)
-                    .map(|o| o.minalign.max(1) as usize)
-                    .unwrap_or(4)
-            } else {
-                f.field_type.base_type.scalar_size().max(1)
-            }
-        }).max().unwrap_or(4);
+        let max_align = fields_by_id
+            .iter()
+            .map(|f| {
+                if f.field_type.base_type == BaseType::Obj {
+                    schema
+                        .objects
+                        .get(f.field_type.index as usize)
+                        .map(|o| o.minalign.max(1) as usize)
+                        .unwrap_or(4)
+                } else {
+                    f.field_type.base_type.scalar_size().max(1)
+                }
+            })
+            .max()
+            .unwrap_or(4);
 
         let object_size = align_up(cursor, max_align);
         let total_size = table_off + object_size;
@@ -423,8 +470,12 @@ impl PackCodec {
         let mut ops = Vec::new();
         for (field_path, route_entry) in &config.route {
             let op = compile_pack_path(
-                schema, root, field_path, route_entry,
-                table_off, &field_positions,
+                schema,
+                root,
+                field_path,
+                route_entry,
+                table_off,
+                &field_positions,
             )?;
             ops.push(op);
         }
@@ -473,19 +524,24 @@ fn find_file_ident_for_root(schema: &SchemaSet, root_type: &str) -> Option<Strin
 
     for fi in &schema.file_idents {
         if let Some(s) = fi
-            && !s.is_empty() {
-                // We only have one meaningful file_ident in our schemas.
-                // If the root_type is from the sil namespace, use it.
-                if root_type.contains(".sil.") {
-                    return Some(s.clone());
-                }
+            && !s.is_empty()
+        {
+            // We only have one meaningful file_ident in our schemas.
+            // If the root_type is from the sil namespace, use it.
+            if root_type.contains(".sil.") {
+                return Some(s.clone());
             }
+        }
     }
     None
 }
 
 /// Compute the expected buffer size for a table with all-inline fields.
-fn compute_table_buf_size(schema: &SchemaSet, root: &Object, has_file_id: bool) -> anyhow::Result<usize> {
+fn compute_table_buf_size(
+    schema: &SchemaSet,
+    root: &Object,
+    has_file_id: bool,
+) -> anyhow::Result<usize> {
     let mut fields_by_id: Vec<&Field> = root.fields.iter().collect();
     fields_by_id.sort_by_key(|f| f.id);
 
@@ -499,8 +555,12 @@ fn compute_table_buf_size(schema: &SchemaSet, root: &Object, has_file_id: bool) 
     let mut cursor = 4usize;
     for &field in &fields_by_id {
         let (a, s) = if field.field_type.base_type == BaseType::Obj {
-            let obj = schema.objects.get(field.field_type.index as usize)
-                .ok_or_else(|| anyhow::anyhow!("obj index {} out of range", field.field_type.index))?;
+            let obj = schema
+                .objects
+                .get(field.field_type.index as usize)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("obj index {} out of range", field.field_type.index)
+                })?;
             (obj.minalign.max(1) as usize, obj.bytesize as usize)
         } else {
             let sz = field.field_type.base_type.scalar_size();
@@ -510,14 +570,21 @@ fn compute_table_buf_size(schema: &SchemaSet, root: &Object, has_file_id: bool) 
         cursor += s;
     }
 
-    let max_align = fields_by_id.iter().map(|f| {
-        if f.field_type.base_type == BaseType::Obj {
-            schema.objects.get(f.field_type.index as usize)
-                .map(|o| o.minalign.max(1) as usize).unwrap_or(4)
-        } else {
-            f.field_type.base_type.scalar_size().max(1)
-        }
-    }).max().unwrap_or(4);
+    let max_align = fields_by_id
+        .iter()
+        .map(|f| {
+            if f.field_type.base_type == BaseType::Obj {
+                schema
+                    .objects
+                    .get(f.field_type.index as usize)
+                    .map(|o| o.minalign.max(1) as usize)
+                    .unwrap_or(4)
+            } else {
+                f.field_type.base_type.scalar_size().max(1)
+            }
+        })
+        .max()
+        .unwrap_or(4);
 
     let object_size = align_up(cursor, max_align);
     Ok(table_off + object_size)
@@ -569,15 +636,17 @@ fn compile_pack_path(
     let struct_obj = schema
         .objects
         .get(table_field.field_type.index as usize)
-        .ok_or_else(|| anyhow::anyhow!("obj index {} out of range", table_field.field_type.index))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("obj index {} out of range", table_field.field_type.index)
+        })?;
 
     let mut current_struct = struct_obj;
     let mut byte_offset: usize = 0;
 
     for &part in &parts[1..parts.len() - 1] {
-        let f = current_struct
-            .field_by_name(part)
-            .ok_or_else(|| anyhow::anyhow!("field '{}' not in struct {}", part, current_struct.name))?;
+        let f = current_struct.field_by_name(part).ok_or_else(|| {
+            anyhow::anyhow!("field '{}' not in struct {}", part, current_struct.name)
+        })?;
         if f.field_type.base_type != BaseType::Obj {
             anyhow::bail!("field '{}' is scalar, cannot descend", part);
         }
@@ -589,9 +658,13 @@ fn compile_pack_path(
     }
 
     let leaf_name = parts[parts.len() - 1];
-    let leaf_field = current_struct
-        .field_by_name(leaf_name)
-        .ok_or_else(|| anyhow::anyhow!("field '{}' not in struct {}", leaf_name, current_struct.name))?;
+    let leaf_field = current_struct.field_by_name(leaf_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "field '{}' not in struct {}",
+            leaf_name,
+            current_struct.name
+        )
+    })?;
 
     if leaf_field.field_type.base_type == BaseType::Obj {
         anyhow::bail!("field path '{}' ends at struct, not scalar", field_path);
@@ -610,13 +683,16 @@ fn compile_pack_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bfbs;
     use std::path::Path;
 
     fn load_test_schema() -> SchemaSet {
         let mut ss = SchemaSet::new();
-        let topics = Path::new("/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs");
-        let sil = Path::new("/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs");
+        let topics = Path::new(
+            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
+        );
+        let sil = Path::new(
+            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
+        );
         if !topics.exists() || !sil.exists() {
             panic!("bfbs files not found — skip test");
         }
@@ -631,18 +707,48 @@ mod tests {
 
         // Build routing config matching the hand-coded SimInput packer
         let mut route = HashMap::new();
-        route.insert("gyro.x".into(), crate::config::RouteEntry::Simple("gyro_x".into()));
-        route.insert("gyro.y".into(), crate::config::RouteEntry::Simple("gyro_y".into()));
-        route.insert("gyro.z".into(), crate::config::RouteEntry::Simple("gyro_z".into()));
-        route.insert("accel.x".into(), crate::config::RouteEntry::Simple("accel_x".into()));
-        route.insert("accel.y".into(), crate::config::RouteEntry::Simple("accel_y".into()));
-        route.insert("accel.z".into(), crate::config::RouteEntry::Simple("accel_z".into()));
+        route.insert(
+            "gyro.x".into(),
+            crate::config::RouteEntry::Simple("gyro_x".into()),
+        );
+        route.insert(
+            "gyro.y".into(),
+            crate::config::RouteEntry::Simple("gyro_y".into()),
+        );
+        route.insert(
+            "gyro.z".into(),
+            crate::config::RouteEntry::Simple("gyro_z".into()),
+        );
+        route.insert(
+            "accel.x".into(),
+            crate::config::RouteEntry::Simple("accel_x".into()),
+        );
+        route.insert(
+            "accel.y".into(),
+            crate::config::RouteEntry::Simple("accel_y".into()),
+        );
+        route.insert(
+            "accel.z".into(),
+            crate::config::RouteEntry::Simple("accel_z".into()),
+        );
         for i in 0..16 {
-            route.insert(format!("rc.ch{i}"), crate::config::RouteEntry::Simple(format!("rc_{i}")));
+            route.insert(
+                format!("rc.ch{i}"),
+                crate::config::RouteEntry::Simple(format!("rc_{i}")),
+            );
         }
-        route.insert("rc_link_quality".into(), crate::config::RouteEntry::Simple("rc_link_quality".into()));
-        route.insert("rc_valid".into(), crate::config::RouteEntry::Simple("rc_valid".into()));
-        route.insert("imu_valid".into(), crate::config::RouteEntry::Simple("imu_valid".into()));
+        route.insert(
+            "rc_link_quality".into(),
+            crate::config::RouteEntry::Simple("rc_link_quality".into()),
+        );
+        route.insert(
+            "rc_valid".into(),
+            crate::config::RouteEntry::Simple("rc_valid".into()),
+        );
+        route.insert(
+            "imu_valid".into(),
+            crate::config::RouteEntry::Simple("imu_valid".into()),
+        );
 
         let config = MessageConfig {
             root_type: "cerebri2.sil.SimInput".into(),
@@ -695,13 +801,24 @@ mod tests {
         let schema = load_test_schema();
 
         let mut route = HashMap::new();
-        route.insert("motors.m0".into(), crate::config::RouteEntry::Full {
-            var: "omega_m1".into(), scale: Some(1100.0),
-        });
-        route.insert("motors.m1".into(), crate::config::RouteEntry::Full {
-            var: "omega_m2".into(), scale: Some(1100.0),
-        });
-        route.insert("armed".into(), crate::config::RouteEntry::Simple("armed".into()));
+        route.insert(
+            "motors.m0".into(),
+            crate::config::RouteEntry::Full {
+                var: "omega_m1".into(),
+                scale: Some(1100.0),
+            },
+        );
+        route.insert(
+            "motors.m1".into(),
+            crate::config::RouteEntry::Full {
+                var: "omega_m2".into(),
+                scale: Some(1100.0),
+            },
+        );
+        route.insert(
+            "armed".into(),
+            crate::config::RouteEntry::Simple("armed".into()),
+        );
 
         let config = MessageConfig {
             root_type: "cerebri2.topic.MotorOutput".into(),
@@ -711,8 +828,10 @@ mod tests {
         let codec = UnpackCodec::compile(&schema, &config).unwrap();
         eprintln!("UnpackCodec compiled with {} ops", codec.ops.len());
         for op in &codec.ops {
-            eprintln!("  {} → vtable_slot={} struct_off={} type={:?} scale={}",
-                op.var, op.vtable_slot, op.struct_byte_offset, op.scalar_type, op.scale);
+            eprintln!(
+                "  {} → vtable_slot={} struct_off={} type={:?} scale={}",
+                op.var, op.vtable_slot, op.struct_byte_offset, op.scalar_type, op.scale
+            );
         }
     }
 
@@ -722,11 +841,26 @@ mod tests {
 
         // Pack a SimInput
         let mut pack_route = HashMap::new();
-        pack_route.insert("gyro.x".into(), crate::config::RouteEntry::Simple("gx".into()));
-        pack_route.insert("gyro.y".into(), crate::config::RouteEntry::Simple("gy".into()));
-        pack_route.insert("gyro.z".into(), crate::config::RouteEntry::Simple("gz".into()));
-        pack_route.insert("rc_link_quality".into(), crate::config::RouteEntry::Simple("lq".into()));
-        pack_route.insert("imu_valid".into(), crate::config::RouteEntry::Simple("imu_ok".into()));
+        pack_route.insert(
+            "gyro.x".into(),
+            crate::config::RouteEntry::Simple("gx".into()),
+        );
+        pack_route.insert(
+            "gyro.y".into(),
+            crate::config::RouteEntry::Simple("gy".into()),
+        );
+        pack_route.insert(
+            "gyro.z".into(),
+            crate::config::RouteEntry::Simple("gz".into()),
+        );
+        pack_route.insert(
+            "rc_link_quality".into(),
+            crate::config::RouteEntry::Simple("lq".into()),
+        );
+        pack_route.insert(
+            "imu_valid".into(),
+            crate::config::RouteEntry::Simple("imu_ok".into()),
+        );
 
         let pack_config = MessageConfig {
             root_type: "cerebri2.sil.SimInput".into(),
@@ -745,11 +879,26 @@ mod tests {
 
         // Unpack it back
         let mut unpack_route = HashMap::new();
-        unpack_route.insert("gyro.x".into(), crate::config::RouteEntry::Simple("gx".into()));
-        unpack_route.insert("gyro.y".into(), crate::config::RouteEntry::Simple("gy".into()));
-        unpack_route.insert("gyro.z".into(), crate::config::RouteEntry::Simple("gz".into()));
-        unpack_route.insert("rc_link_quality".into(), crate::config::RouteEntry::Simple("lq".into()));
-        unpack_route.insert("imu_valid".into(), crate::config::RouteEntry::Simple("imu_ok".into()));
+        unpack_route.insert(
+            "gyro.x".into(),
+            crate::config::RouteEntry::Simple("gx".into()),
+        );
+        unpack_route.insert(
+            "gyro.y".into(),
+            crate::config::RouteEntry::Simple("gy".into()),
+        );
+        unpack_route.insert(
+            "gyro.z".into(),
+            crate::config::RouteEntry::Simple("gz".into()),
+        );
+        unpack_route.insert(
+            "rc_link_quality".into(),
+            crate::config::RouteEntry::Simple("lq".into()),
+        );
+        unpack_route.insert(
+            "imu_valid".into(),
+            crate::config::RouteEntry::Simple("imu_ok".into()),
+        );
 
         let unpack_config = MessageConfig {
             root_type: "cerebri2.sil.SimInput".into(),
@@ -762,31 +911,86 @@ mod tests {
 
         // Check values (f32 precision)
         let eps = 1e-5;
-        assert!((result["gx"] - 1.5).abs() < eps, "gx mismatch: {}", result["gx"]);
-        assert!((result["gy"] - (-0.5)).abs() < eps, "gy mismatch: {}", result["gy"]);
-        assert!((result["gz"] - 0.1).abs() < eps, "gz mismatch: {}", result["gz"]);
-        assert!((result["lq"] - 200.0).abs() < eps, "lq mismatch: {}", result["lq"]);
-        assert!((result["imu_ok"] - 1.0).abs() < eps, "imu_ok mismatch: {}", result["imu_ok"]);
+        assert!(
+            (result["gx"] - 1.5).abs() < eps,
+            "gx mismatch: {}",
+            result["gx"]
+        );
+        assert!(
+            (result["gy"] - (-0.5)).abs() < eps,
+            "gy mismatch: {}",
+            result["gy"]
+        );
+        assert!(
+            (result["gz"] - 0.1).abs() < eps,
+            "gz mismatch: {}",
+            result["gz"]
+        );
+        assert!(
+            (result["lq"] - 200.0).abs() < eps,
+            "lq mismatch: {}",
+            result["lq"]
+        );
+        assert!(
+            (result["imu_ok"] - 1.0).abs() < eps,
+            "imu_ok mismatch: {}",
+            result["imu_ok"]
+        );
     }
 
     /// Byte-for-byte comparison against the old hand-coded pack_sim_input.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::needless_range_loop,
+        clippy::excessive_nesting
+    )]
     fn pack_sim_input_byte_exact() {
         let schema = load_test_schema();
 
         let mut route = HashMap::new();
-        route.insert("gyro.x".into(), crate::config::RouteEntry::Simple("gyro_x".into()));
-        route.insert("gyro.y".into(), crate::config::RouteEntry::Simple("gyro_y".into()));
-        route.insert("gyro.z".into(), crate::config::RouteEntry::Simple("gyro_z".into()));
-        route.insert("accel.x".into(), crate::config::RouteEntry::Simple("accel_x".into()));
-        route.insert("accel.y".into(), crate::config::RouteEntry::Simple("accel_y".into()));
-        route.insert("accel.z".into(), crate::config::RouteEntry::Simple("accel_z".into()));
+        route.insert(
+            "gyro.x".into(),
+            crate::config::RouteEntry::Simple("gyro_x".into()),
+        );
+        route.insert(
+            "gyro.y".into(),
+            crate::config::RouteEntry::Simple("gyro_y".into()),
+        );
+        route.insert(
+            "gyro.z".into(),
+            crate::config::RouteEntry::Simple("gyro_z".into()),
+        );
+        route.insert(
+            "accel.x".into(),
+            crate::config::RouteEntry::Simple("accel_x".into()),
+        );
+        route.insert(
+            "accel.y".into(),
+            crate::config::RouteEntry::Simple("accel_y".into()),
+        );
+        route.insert(
+            "accel.z".into(),
+            crate::config::RouteEntry::Simple("accel_z".into()),
+        );
         for i in 0..16 {
-            route.insert(format!("rc.ch{i}"), crate::config::RouteEntry::Simple(format!("rc_{i}")));
+            route.insert(
+                format!("rc.ch{i}"),
+                crate::config::RouteEntry::Simple(format!("rc_{i}")),
+            );
         }
-        route.insert("rc_link_quality".into(), crate::config::RouteEntry::Simple("rc_link_quality".into()));
-        route.insert("rc_valid".into(), crate::config::RouteEntry::Simple("rc_valid".into()));
-        route.insert("imu_valid".into(), crate::config::RouteEntry::Simple("imu_valid".into()));
+        route.insert(
+            "rc_link_quality".into(),
+            crate::config::RouteEntry::Simple("rc_link_quality".into()),
+        );
+        route.insert(
+            "rc_valid".into(),
+            crate::config::RouteEntry::Simple("rc_valid".into()),
+        );
+        route.insert(
+            "imu_valid".into(),
+            crate::config::RouteEntry::Simple("imu_valid".into()),
+        );
 
         let config = MessageConfig {
             root_type: "cerebri2.sil.SimInput".into(),
@@ -798,8 +1002,10 @@ mod tests {
         // Build the EXACT same values the old code would produce
         let gyro: [f32; 3] = [0.1, -0.2, 0.3];
         let accel: [f32; 3] = [0.5, -0.1, 9.81];
-        let rc: [i32; 16] = [1500, 1500, 1000, 1500, 1000, 1500, 1500, 1500,
-                              1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500];
+        let rc: [i32; 16] = [
+            1500, 1500, 1000, 1500, 1000, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500,
+            1500, 1500,
+        ];
         let rc_link_quality: u8 = 255;
         let rc_valid: bool = true;
         let imu_valid: bool = true;
@@ -811,27 +1017,27 @@ mod tests {
         // File identifier
         expected[4..8].copy_from_slice(b"C2SI");
         // Vtable at offset 8
-        expected[8..10].copy_from_slice(&16u16.to_le_bytes());   // vtable size
-        expected[10..12].copy_from_slice(&96u16.to_le_bytes());  // object size
-        expected[12..14].copy_from_slice(&4u16.to_le_bytes());   // gyro field offset
-        expected[14..16].copy_from_slice(&16u16.to_le_bytes());  // accel field offset
-        expected[16..18].copy_from_slice(&28u16.to_le_bytes());  // rc field offset
-        expected[18..20].copy_from_slice(&92u16.to_le_bytes());  // rc_link_quality
-        expected[20..22].copy_from_slice(&93u16.to_le_bytes());  // rc_valid
-        expected[22..24].copy_from_slice(&94u16.to_le_bytes());  // imu_valid
+        expected[8..10].copy_from_slice(&16u16.to_le_bytes()); // vtable size
+        expected[10..12].copy_from_slice(&96u16.to_le_bytes()); // object size
+        expected[12..14].copy_from_slice(&4u16.to_le_bytes()); // gyro field offset
+        expected[14..16].copy_from_slice(&16u16.to_le_bytes()); // accel field offset
+        expected[16..18].copy_from_slice(&28u16.to_le_bytes()); // rc field offset
+        expected[18..20].copy_from_slice(&92u16.to_le_bytes()); // rc_link_quality
+        expected[20..22].copy_from_slice(&93u16.to_le_bytes()); // rc_valid
+        expected[22..24].copy_from_slice(&94u16.to_le_bytes()); // imu_valid
         // Table at offset 24: soffset back to vtable
         expected[24..28].copy_from_slice(&16u32.to_le_bytes()); // 24 - 8 = 16
         // Gyro at table+4 = 28
         for i in 0..3 {
-            expected[28 + i*4..32 + i*4].copy_from_slice(&gyro[i].to_le_bytes());
+            expected[28 + i * 4..32 + i * 4].copy_from_slice(&gyro[i].to_le_bytes());
         }
         // Accel at table+16 = 40
         for i in 0..3 {
-            expected[40 + i*4..44 + i*4].copy_from_slice(&accel[i].to_le_bytes());
+            expected[40 + i * 4..44 + i * 4].copy_from_slice(&accel[i].to_le_bytes());
         }
         // RC at table+28 = 52
         for i in 0..16 {
-            expected[52 + i*4..56 + i*4].copy_from_slice(&(rc[i] as u32).to_le_bytes());
+            expected[52 + i * 4..56 + i * 4].copy_from_slice(&(rc[i] as u32).to_le_bytes());
         }
         // Scalars
         expected[116] = rc_link_quality;
@@ -846,8 +1052,8 @@ mod tests {
         values.insert("accel_x".into(), accel[0] as f64);
         values.insert("accel_y".into(), accel[1] as f64);
         values.insert("accel_z".into(), accel[2] as f64);
-        for i in 0..16 {
-            values.insert(format!("rc_{i}"), rc[i] as f64);
+        for (i, &val) in rc.iter().enumerate() {
+            values.insert(format!("rc_{i}"), val as f64);
         }
         values.insert("rc_link_quality".into(), rc_link_quality as f64);
         values.insert("rc_valid".into(), rc_valid as u8 as f64);
@@ -857,26 +1063,31 @@ mod tests {
         assert_eq!(actual.len(), 120, "size mismatch");
 
         // Compare byte-by-byte, reporting first difference
-        for i in 0..120 {
-            if actual[i] != expected[i] {
-                eprintln!("MISMATCH at byte {}: actual=0x{:02x} expected=0x{:02x}", i, actual[i], expected[i]);
-                // Show context
-                let start = if i >= 4 { i - 4 } else { 0 };
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            if a != e {
+                eprintln!("MISMATCH at byte {i}: actual=0x{a:02x} expected=0x{e:02x}");
+                let start = i.saturating_sub(4);
                 let end = (i + 8).min(120);
                 eprint!("  actual:   ");
-                for j in start..end {
-                    eprint!("{}{:02x} ", if j == i { ">" } else { " " }, actual[j]);
+                for (j, b) in actual[start..end].iter().enumerate() {
+                    let mark = if j + start == i { ">" } else { " " };
+                    eprint!("{mark}{b:02x} ");
                 }
                 eprintln!();
                 eprint!("  expected: ");
-                for j in start..end {
-                    eprint!("{}{:02x} ", if j == i { ">" } else { " " }, expected[j]);
+                for (j, b) in expected[start..end].iter().enumerate() {
+                    let mark = if j + start == i { ">" } else { " " };
+                    eprint!("{mark}{b:02x} ");
                 }
                 eprintln!();
             }
         }
 
-        assert_eq!(actual.as_slice(), &expected[..], "packed bytes do not match hand-coded output");
+        assert_eq!(
+            actual.as_slice(),
+            &expected[..],
+            "packed bytes do not match hand-coded output"
+        );
     }
 }
 
@@ -892,28 +1103,65 @@ mod integration_tests {
     /// Sends a fake MotorOutput, verifies the sim can unpack it,
     /// and verifies the packed SimInput is valid.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn full_loop_simulation() {
         let mut ss = bfbs::SchemaSet::new();
-        let topics = Path::new("/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs");
-        let sil = Path::new("/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs");
-        if !topics.exists() || !sil.exists() { panic!("bfbs not found"); }
+        let topics = Path::new(
+            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
+        );
+        let sil = Path::new(
+            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
+        );
+        if !topics.exists() || !sil.exists() {
+            panic!("bfbs not found");
+        }
         ss.load_bfbs(topics).unwrap();
         ss.load_bfbs(sil).unwrap();
 
         // Build a MotorOutput packet the way cerebri does (48 bytes)
         // Using the pack codec to build a valid MotorOutput
         let mut motor_route = HashMap::new();
-        motor_route.insert("motors.m0".into(), crate::config::RouteEntry::Simple("m0".into()));
-        motor_route.insert("motors.m1".into(), crate::config::RouteEntry::Simple("m1".into()));
-        motor_route.insert("motors.m2".into(), crate::config::RouteEntry::Simple("m2".into()));
-        motor_route.insert("motors.m3".into(), crate::config::RouteEntry::Simple("m3".into()));
-        motor_route.insert("armed".into(), crate::config::RouteEntry::Simple("armed".into()));
-        motor_route.insert("test_mode".into(), crate::config::RouteEntry::Simple("test_mode".into()));
+        motor_route.insert(
+            "motors.m0".into(),
+            crate::config::RouteEntry::Simple("m0".into()),
+        );
+        motor_route.insert(
+            "motors.m1".into(),
+            crate::config::RouteEntry::Simple("m1".into()),
+        );
+        motor_route.insert(
+            "motors.m2".into(),
+            crate::config::RouteEntry::Simple("m2".into()),
+        );
+        motor_route.insert(
+            "motors.m3".into(),
+            crate::config::RouteEntry::Simple("m3".into()),
+        );
+        motor_route.insert(
+            "armed".into(),
+            crate::config::RouteEntry::Simple("armed".into()),
+        );
+        motor_route.insert(
+            "test_mode".into(),
+            crate::config::RouteEntry::Simple("test_mode".into()),
+        );
         // Also need raw fields to fill the full table
-        motor_route.insert("raw.m0".into(), crate::config::RouteEntry::Simple("r0".into()));
-        motor_route.insert("raw.m1".into(), crate::config::RouteEntry::Simple("r1".into()));
-        motor_route.insert("raw.m2".into(), crate::config::RouteEntry::Simple("r2".into()));
-        motor_route.insert("raw.m3".into(), crate::config::RouteEntry::Simple("r3".into()));
+        motor_route.insert(
+            "raw.m0".into(),
+            crate::config::RouteEntry::Simple("r0".into()),
+        );
+        motor_route.insert(
+            "raw.m1".into(),
+            crate::config::RouteEntry::Simple("r1".into()),
+        );
+        motor_route.insert(
+            "raw.m2".into(),
+            crate::config::RouteEntry::Simple("r2".into()),
+        );
+        motor_route.insert(
+            "raw.m3".into(),
+            crate::config::RouteEntry::Simple("r3".into()),
+        );
 
         let motor_pack_cfg = crate::config::MessageConfig {
             root_type: "cerebri2.topic.MotorOutput".into(),
@@ -936,25 +1184,49 @@ mod integration_tests {
         let motor_buf = motor_packer.pack(&motor_vals);
         eprintln!("Packed MotorOutput: {} bytes", motor_buf.len());
         eprint!("Hex: ");
-        for b in &motor_buf { eprint!("{:02x} ", b); }
+        for b in &motor_buf {
+            eprint!("{:02x} ", b);
+        }
         eprintln!();
 
         // Now unpack it the way rumoca_sil does
         let mut recv_route = HashMap::new();
-        recv_route.insert("motors.m0".into(), crate::config::RouteEntry::Full {
-            var: "omega_m1".into(), scale: Some(1100.0),
-        });
-        recv_route.insert("motors.m1".into(), crate::config::RouteEntry::Full {
-            var: "omega_m2".into(), scale: Some(1100.0),
-        });
-        recv_route.insert("motors.m2".into(), crate::config::RouteEntry::Full {
-            var: "omega_m3".into(), scale: Some(1100.0),
-        });
-        recv_route.insert("motors.m3".into(), crate::config::RouteEntry::Full {
-            var: "omega_m4".into(), scale: Some(1100.0),
-        });
-        recv_route.insert("armed".into(), crate::config::RouteEntry::Simple("armed".into()));
-        recv_route.insert("test_mode".into(), crate::config::RouteEntry::Simple("test_mode".into()));
+        recv_route.insert(
+            "motors.m0".into(),
+            crate::config::RouteEntry::Full {
+                var: "omega_m1".into(),
+                scale: Some(1100.0),
+            },
+        );
+        recv_route.insert(
+            "motors.m1".into(),
+            crate::config::RouteEntry::Full {
+                var: "omega_m2".into(),
+                scale: Some(1100.0),
+            },
+        );
+        recv_route.insert(
+            "motors.m2".into(),
+            crate::config::RouteEntry::Full {
+                var: "omega_m3".into(),
+                scale: Some(1100.0),
+            },
+        );
+        recv_route.insert(
+            "motors.m3".into(),
+            crate::config::RouteEntry::Full {
+                var: "omega_m4".into(),
+                scale: Some(1100.0),
+            },
+        );
+        recv_route.insert(
+            "armed".into(),
+            crate::config::RouteEntry::Simple("armed".into()),
+        );
+        recv_route.insert(
+            "test_mode".into(),
+            crate::config::RouteEntry::Simple("test_mode".into()),
+        );
 
         let recv_cfg = crate::config::MessageConfig {
             root_type: "cerebri2.topic.MotorOutput".into(),
@@ -966,14 +1238,19 @@ mod integration_tests {
         let values = unpacker.unpack(&motor_buf);
         eprintln!("Unpacked values: {:?}", values);
 
-        assert!((values["omega_m1"] - 550.0).abs() < 0.1, "omega_m1 should be 0.5*1100=550");
+        assert!(
+            (values["omega_m1"] - 550.0).abs() < 0.1,
+            "omega_m1 should be 0.5*1100=550"
+        );
         assert!((values["omega_m2"] - 550.0).abs() < 0.1);
         assert!((values["armed"] - 1.0).abs() < 0.1, "should be armed");
 
         // Now test UDP roundtrip
         let listen = UdpSocket::bind("127.0.0.1:0").unwrap();
         let listen_addr = listen.local_addr().unwrap();
-        listen.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        listen
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
 
         let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
         sender.send_to(&motor_buf, listen_addr).unwrap();
