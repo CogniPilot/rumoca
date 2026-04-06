@@ -80,8 +80,7 @@ impl Drop for SolverDeadlineGuard {
 pub fn panic_on_expired_solver_deadline() {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let expired =
-            SOLVER_DEADLINE.with(|cell| cell.get().is_some_and(|d| Instant::now() >= d));
+        let expired = SOLVER_DEADLINE.with(|cell| cell.get().is_some_and(|d| Instant::now() >= d));
         if expired {
             std::panic::panic_any(SolverTimeoutPanic);
         }

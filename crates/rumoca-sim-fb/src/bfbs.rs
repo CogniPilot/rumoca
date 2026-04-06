@@ -193,7 +193,9 @@ impl SchemaSet {
     /// objects vector. Since we merge schemas, we look up by name instead
     /// when resolving nested types during codec compilation.
     pub fn object_by_index_in(&self, schema_objects: &[Object], index: i32) -> Option<&Object> {
-        let name = schema_objects.get(index as usize).map(|o| o.name.as_str())?;
+        let name = schema_objects
+            .get(index as usize)
+            .map(|o| o.name.as_str())?;
         self.object_by_name(name)
     }
 }
@@ -286,7 +288,12 @@ fn table_u16(buf: &[u8], table_off: usize, vtable: usize, field_index: usize) ->
 
 /// Read a table field that is a vector of table offsets.
 /// Returns (element_count, data_start) where data_start points to the first offset.
-fn table_vector(buf: &[u8], table_off: usize, vtable: usize, field_index: usize) -> Option<(usize, usize)> {
+fn table_vector(
+    buf: &[u8],
+    table_off: usize,
+    vtable: usize,
+    field_index: usize,
+) -> Option<(usize, usize)> {
     let foff = vtable_field_offset(buf, vtable, field_index);
     if foff == 0 {
         return None;
@@ -340,11 +347,19 @@ fn parse_type(buf: &[u8], type_off: usize) -> FieldType {
     FieldType {
         base_type: BaseType::from_u8({
             let foff = vtable_field_offset(buf, vt, TYPE_BASE_TYPE);
-            if foff == 0 { 0 } else { read_u8(buf, type_off + foff as usize) }
+            if foff == 0 {
+                0
+            } else {
+                read_u8(buf, type_off + foff as usize)
+            }
         }),
         element: BaseType::from_u8({
             let foff = vtable_field_offset(buf, vt, TYPE_ELEMENT);
-            if foff == 0 { 0 } else { read_u8(buf, type_off + foff as usize) }
+            if foff == 0 {
+                0
+            } else {
+                read_u8(buf, type_off + foff as usize)
+            }
         }),
         index: table_i32(buf, type_off, vt, TYPE_INDEX),
     }
@@ -363,7 +378,12 @@ fn parse_field(buf: &[u8], field_off: usize) -> Field {
     };
     let id = table_u16(buf, field_off, vt, FIELD_ID);
     let offset = table_u16(buf, field_off, vt, FIELD_OFFSET);
-    Field { name, field_type, id, offset }
+    Field {
+        name,
+        field_type,
+        id,
+        offset,
+    }
 }
 
 fn parse_object(buf: &[u8], obj_off: usize) -> Object {
@@ -381,7 +401,13 @@ fn parse_object(buf: &[u8], obj_off: usize) -> Object {
         }
     }
 
-    Object { name, fields, is_struct, minalign, bytesize }
+    Object {
+        name,
+        fields,
+        is_struct,
+        minalign,
+        bytesize,
+    }
 }
 
 /// Parse a .bfbs buffer into a Schema.
@@ -407,7 +433,10 @@ pub fn parse_bfbs(buf: &[u8]) -> anyhow::Result<Schema> {
         }
     }
 
-    Ok(Schema { objects, file_ident })
+    Ok(Schema {
+        objects,
+        file_ident,
+    })
 }
 
 #[cfg(test)]
@@ -416,7 +445,9 @@ mod tests {
 
     #[test]
     fn parse_cerebri2_topics() {
-        let path = Path::new("/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs");
+        let path = Path::new(
+            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
+        );
         if !path.exists() {
             eprintln!("skipping test: bfbs not found");
             return;
@@ -426,28 +457,39 @@ mod tests {
 
         eprintln!("Objects:");
         for obj in &schema.objects {
-            eprintln!("  {} (struct={}, size={}, align={})", obj.name, obj.is_struct, obj.bytesize, obj.minalign);
+            eprintln!(
+                "  {} (struct={}, size={}, align={})",
+                obj.name, obj.is_struct, obj.bytesize, obj.minalign
+            );
             for f in &obj.fields {
-                eprintln!("    {} id={} offset={} type={:?} index={}",
-                    f.name, f.id, f.offset, f.field_type.base_type, f.field_type.index);
+                eprintln!(
+                    "    {} id={} offset={} type={:?} index={}",
+                    f.name, f.id, f.offset, f.field_type.base_type, f.field_type.index
+                );
             }
         }
 
         // Vec3f should exist with 3 float fields
-        let vec3f = schema.object_by_name("cerebri2.topic.Vec3f").expect("Vec3f not found");
+        let vec3f = schema
+            .object_by_name("cerebri2.topic.Vec3f")
+            .expect("Vec3f not found");
         assert!(vec3f.is_struct);
         assert_eq!(vec3f.fields.len(), 3);
         assert_eq!(vec3f.bytesize, 12);
 
         // MotorOutput should be a table
-        let motor = schema.object_by_name("cerebri2.topic.MotorOutput").expect("MotorOutput not found");
+        let motor = schema
+            .object_by_name("cerebri2.topic.MotorOutput")
+            .expect("MotorOutput not found");
         assert!(!motor.is_struct);
         assert!(motor.field_by_name("armed").is_some());
     }
 
     #[test]
     fn parse_cerebri2_sil() {
-        let path = Path::new("/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs");
+        let path = Path::new(
+            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
+        );
         if !path.exists() {
             eprintln!("skipping test: bfbs not found");
             return;
@@ -458,14 +500,21 @@ mod tests {
         eprintln!("file_ident: {:?}", schema.file_ident);
         eprintln!("Objects:");
         for obj in &schema.objects {
-            eprintln!("  {} (struct={}, size={}, align={})", obj.name, obj.is_struct, obj.bytesize, obj.minalign);
+            eprintln!(
+                "  {} (struct={}, size={}, align={})",
+                obj.name, obj.is_struct, obj.bytesize, obj.minalign
+            );
             for f in &obj.fields {
-                eprintln!("    {} id={} offset={} type={:?} index={}",
-                    f.name, f.id, f.offset, f.field_type.base_type, f.field_type.index);
+                eprintln!(
+                    "    {} id={} offset={} type={:?} index={}",
+                    f.name, f.id, f.offset, f.field_type.base_type, f.field_type.index
+                );
             }
         }
 
-        let sim = schema.object_by_name("cerebri2.sil.SimInput").expect("SimInput not found");
+        let sim = schema
+            .object_by_name("cerebri2.sil.SimInput")
+            .expect("SimInput not found");
         assert!(!sim.is_struct);
         assert!(sim.field_by_name("gyro").is_some());
         assert_eq!(schema.file_ident.as_deref(), Some("C2SI"));

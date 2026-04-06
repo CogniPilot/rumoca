@@ -148,9 +148,7 @@ impl SimStepper {
             env.vars.insert(name.clone(), val);
         }
         for ((name, _var), &val) in self.dae.parameters.iter().zip(self.param_values.iter()) {
-            env.vars
-                .entry(name.as_str().to_string())
-                .or_insert(val);
+            env.vars.entry(name.as_str().to_string()).or_insert(val);
         }
         crate::reconstruct::apply_eliminated_substitutions_to_env(&self.elim, &mut env);
         env

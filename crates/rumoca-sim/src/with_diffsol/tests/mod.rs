@@ -1919,7 +1919,9 @@ fn test_stepper_survives_discontinuous_input_step() {
     // Phase 1: step with u=0 for ~1 s to build up BDF history.
     let dt = 0.01;
     for _ in 0..100 {
-        stepper.step(dt).expect("step with zero input should succeed");
+        stepper
+            .step(dt)
+            .expect("step with zero input should succeed");
     }
     let t_before = stepper.time();
     assert!(
@@ -1934,7 +1936,9 @@ fn test_stepper_survives_discontinuous_input_step() {
 
     // Phase 2: sudden input change — this is the discontinuity that
     // would crash the old solver.
-    stepper.set_input("u", 100.0).expect("set_input should work");
+    stepper
+        .set_input("u", 100.0)
+        .expect("set_input should work");
 
     // Step for another 0.5 s.
     for i in 0..50 {
@@ -1950,10 +1954,7 @@ fn test_stepper_survives_discontinuous_input_step() {
 
     // x should have integrated u=100 for ~0.5 s → x ≈ 50
     let x_after = stepper.get("x").expect("should read x");
-    assert!(
-        (x_after - 50.0).abs() < 1.0,
-        "expected x≈50, got {x_after}"
-    );
+    assert!((x_after - 50.0).abs() < 1.0, "expected x≈50, got {x_after}");
 }
 
 /// Stiffer variant: a nonlinear system `der(x) = -1000*(x^3 - u)` that
@@ -2102,10 +2103,7 @@ fn test_stepper_repeated_same_input_value() {
 
     let x = stepper.get("x").expect("should read x");
     // u=10 for 2.0 s → x ≈ 20
-    assert!(
-        (x - 20.0).abs() < 1.0,
-        "expected x≈20, got {x}"
-    );
+    assert!((x - 20.0).abs() < 1.0, "expected x≈20, got {x}");
 }
 
 mod clocked_sampling;
