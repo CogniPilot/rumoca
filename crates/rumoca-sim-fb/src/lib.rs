@@ -63,10 +63,7 @@ pub fn run(args: SimFbArgs) -> Result<()> {
     eprintln!("  Compiling model...");
     let mut session = Session::default();
     session
-        .add_document(
-            &format!("{}.mo", args.model_name),
-            &args.model_source,
-        )
+        .add_document(&format!("{}.mo", args.model_name), &args.model_source)
         .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
     let result = session
         .compile_model(&args.model_name)
@@ -89,7 +86,9 @@ pub fn run(args: SimFbArgs) -> Result<()> {
     let scene_script = args.scene_script.clone();
     let debug = args.debug;
     thread::spawn(move || {
-        if let Err(e) = server::start_http_server(http_port, ws_port, scene_script.as_deref(), debug) {
+        if let Err(e) =
+            server::start_http_server(http_port, ws_port, scene_script.as_deref(), debug)
+        {
             eprintln!("HTTP server error: {}", e);
         }
     });

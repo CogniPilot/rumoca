@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::net::{TcpListener, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use gilrs::{Axis, Button, Gilrs};
 use rumoca_sim::{SimStepper, StepperOptions};
-use tungstenite::{accept, Message};
+use tungstenite::{Message, accept};
 
 use crate::bfbs::SchemaSet;
 use crate::codec::{PackCodec, UnpackCodec};
@@ -36,7 +36,10 @@ struct AutopilotProcess {
 
 impl AutopilotProcess {
     fn new(command: &str) -> Self {
-        Self { child: None, command: command.to_string() }
+        Self {
+            child: None,
+            command: command.to_string(),
+        }
     }
 
     fn start(&mut self) -> Result<()> {
@@ -117,7 +120,10 @@ impl InputState {
             eprintln!("  Q          — quit");
             match crossterm::terminal::enable_raw_mode() {
                 Ok(()) => eprintln!("[input] Raw mode enabled"),
-                Err(e) => eprintln!("[input] WARNING: raw mode failed: {} — keyboard input may not work", e),
+                Err(e) => eprintln!(
+                    "[input] WARNING: raw mode failed: {} — keyboard input may not work",
+                    e
+                ),
             }
             InputMode::Keyboard
         };
@@ -126,11 +132,20 @@ impl InputState {
         rc[2] = RC_MIN;
         rc[4] = RC_MIN;
         Self {
-            gilrs, rc, armed: false, arm_prev: false,
+            gilrs,
+            rc,
+            armed: false,
+            arm_prev: false,
             arm_last_toggle: Instant::now() - Duration::from_secs(10),
-            throttle: 0.0, last_poll: Instant::now(), mode,
-            kb_roll: 0.0, kb_pitch: 0.0, kb_yaw: 0.0, kb_throttle_input: 0.0,
-            reset_requested: false, log_requested: false,
+            throttle: 0.0,
+            last_poll: Instant::now(),
+            mode,
+            kb_roll: 0.0,
+            kb_pitch: 0.0,
+            kb_yaw: 0.0,
+            kb_throttle_input: 0.0,
+            reset_requested: false,
+            log_requested: false,
         }
     }
 
@@ -144,12 +159,17 @@ impl InputState {
     /// One-time check to verify keyboard input works
     fn verify_input(&self) {
         eprintln!("[input] Mode: {:?}", self.mode);
-        eprintln!("[input] Raw mode active: {}", crossterm::terminal::is_raw_mode_enabled().unwrap_or(false));
+        eprintln!(
+            "[input] Raw mode active: {}",
+            crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
+        );
     }
 
     fn poll_gamepad(&mut self) {
         while self.gilrs.next_event().is_some() {}
-        let Some((_id, gamepad)) = self.gilrs.gamepads().next() else { return };
+        let Some((_id, gamepad)) = self.gilrs.gamepads().next() else {
+            return;
+        };
 
         self.rc[0] = axis_to_rc(gamepad.value(Axis::RightStickX), RC_CENTER, 500);
         self.rc[1] = axis_to_rc(gamepad.value(Axis::RightStickY), RC_CENTER, -500);
@@ -163,12 +183,18 @@ impl InputState {
         self.rc[2] = (RC_MIN as f64 + self.throttle * (RC_MAX - RC_MIN) as f64).round() as i32;
 
         let arm_btn = gamepad.is_pressed(Button::Start);
-        if arm_btn && !self.arm_prev && self.arm_last_toggle.elapsed() > Duration::from_millis(500)
-            && self.rc[2] <= 1050 {
-                self.armed = !self.armed;
-                self.arm_last_toggle = Instant::now();
-                eprintln!("\r[gamepad] {}", if self.armed { "ARMED" } else { "DISARMED" });
-            }
+        if arm_btn
+            && !self.arm_prev
+            && self.arm_last_toggle.elapsed() > Duration::from_millis(500)
+            && self.rc[2] <= 1050
+        {
+            self.armed = !self.armed;
+            self.arm_last_toggle = Instant::now();
+            eprintln!(
+                "\r[gamepad] {}",
+                if self.armed { "ARMED" } else { "DISARMED" }
+            );
+        }
         self.arm_prev = arm_btn;
         self.rc[4] = if self.armed { RC_MAX } else { RC_MIN };
 
@@ -218,16 +244,21 @@ impl InputState {
                         KeyCode::Char('a') => self.kb_roll = -0.6,
                         KeyCode::Char('d') => self.kb_roll = 0.6,
                         KeyCode::Char(' ')
-                            if self.arm_last_toggle.elapsed() > Duration::from_millis(500) => {
-                                if !self.armed && self.rc[2] > 1050 {
-                                    eprint!("\r[keyboard] Cannot arm: lower throttle first!                 \r");
-                                } else {
-                                    self.armed = !self.armed;
-                                    self.arm_last_toggle = Instant::now();
-                                    eprint!("\r[keyboard] {}                                        \r",
-                                        if self.armed { "ARMED" } else { "DISARMED" });
-                                }
+                            if self.arm_last_toggle.elapsed() > Duration::from_millis(500) =>
+                        {
+                            if !self.armed && self.rc[2] > 1050 {
+                                eprint!(
+                                    "\r[keyboard] Cannot arm: lower throttle first!                 \r"
+                                );
+                            } else {
+                                self.armed = !self.armed;
+                                self.arm_last_toggle = Instant::now();
+                                eprint!(
+                                    "\r[keyboard] {}                                        \r",
+                                    if self.armed { "ARMED" } else { "DISARMED" }
+                                );
                             }
+                        }
                         KeyCode::Char('r') => {
                             self.reset_requested = true;
                             eprint!("\r[keyboard] RESET requested                              \r");
@@ -241,16 +272,25 @@ impl InputState {
                 }
                 Ok(_) => {} // mouse, resize, etc
                 Err(e) => {
-                    eprint!("\r[keyboard] read error: {}                                    \r", e);
+                    eprint!(
+                        "\r[keyboard] read error: {}                                    \r",
+                        e
+                    );
                 }
             }
         }
 
         self.throttle = (self.throttle + self.kb_throttle_input * 0.7 * dt).clamp(0.0, 1.0);
         self.rc[2] = (RC_MIN as f64 + self.throttle * (RC_MAX - RC_MIN) as f64).round() as i32;
-        self.rc[0] = (RC_CENTER as f64 + self.kb_roll * 500.0).round().clamp(RC_MIN as f64, RC_MAX as f64) as i32;
-        self.rc[1] = (RC_CENTER as f64 + self.kb_pitch * 500.0).round().clamp(RC_MIN as f64, RC_MAX as f64) as i32;
-        self.rc[3] = (RC_CENTER as f64 + self.kb_yaw * 500.0).round().clamp(RC_MIN as f64, RC_MAX as f64) as i32;
+        self.rc[0] = (RC_CENTER as f64 + self.kb_roll * 500.0)
+            .round()
+            .clamp(RC_MIN as f64, RC_MAX as f64) as i32;
+        self.rc[1] = (RC_CENTER as f64 + self.kb_pitch * 500.0)
+            .round()
+            .clamp(RC_MIN as f64, RC_MAX as f64) as i32;
+        self.rc[3] = (RC_CENTER as f64 + self.kb_yaw * 500.0)
+            .round()
+            .clamp(RC_MIN as f64, RC_MAX as f64) as i32;
         self.rc[4] = if self.armed { RC_MAX } else { RC_MIN };
     }
 
@@ -294,7 +334,10 @@ fn build_send_values(stepper: &SimStepper, input: &InputState) -> HashMap<String
     }
 
     let connected = input.is_connected();
-    v.insert("rc_link_quality".into(), if connected { 255.0 } else { 0.0 });
+    v.insert(
+        "rc_link_quality".into(),
+        if connected { 255.0 } else { 0.0 },
+    );
     v.insert("rc_valid".into(), if connected { 1.0 } else { 0.0 });
     v.insert("imu_valid".into(), 1.0);
     v
@@ -302,7 +345,13 @@ fn build_send_values(stepper: &SimStepper, input: &InputState) -> HashMap<String
 
 // ── State JSON for viz WebSocket ─────────────────────────────────────
 
-fn build_state_json(stepper: &SimStepper, armed: bool, motor_rpms: &[f64; 4], input: &InputState, frame_num: u64) -> String {
+fn build_state_json(
+    stepper: &SimStepper,
+    armed: bool,
+    motor_rpms: &[f64; 4],
+    input: &InputState,
+    frame_num: u64,
+) -> String {
     let get = |name: &str| stepper.get(name).unwrap_or(0.0);
     // Include wall-clock timestamp for latency measurement in browser
     let wall_ms = std::time::SystemTime::now()
@@ -339,7 +388,9 @@ struct FrameLogEntry {
     armed: bool,
     rc: [i32; 5],
     motor_rpms: [f64; 4],
-    px: f64, py: f64, pz: f64,
+    px: f64,
+    py: f64,
+    pz: f64,
     accel: [f64; 3],
     gyro: [f64; 3],
 }
@@ -362,11 +413,38 @@ fn download_debug_log(
 
     lines.push("=== CURRENT STATE ===".to_string());
     let get = |name: &str| stepper.get(name).unwrap_or(0.0);
-    lines.push(format!("t={:.4} px={:.4} py={:.4} pz={:.4}", stepper.time(), get("px"), get("py"), get("pz")));
-    lines.push(format!("vx={:.4} vy={:.4} vz={:.4}", get("vx"), get("vy"), get("vz")));
-    lines.push(format!("q0={:.6} q1={:.6} q2={:.6} q3={:.6}", stepper.get("q0").unwrap_or(1.0), get("q1"), get("q2"), get("q3")));
-    lines.push(format!("accel=[{:.3},{:.3},{:.3}]", get("accel_x"), get("accel_y"), get("accel_z")));
-    lines.push(format!("gyro=[{:.4},{:.4},{:.4}]", get("gyro_x"), get("gyro_y"), get("gyro_z")));
+    lines.push(format!(
+        "t={:.4} px={:.4} py={:.4} pz={:.4}",
+        stepper.time(),
+        get("px"),
+        get("py"),
+        get("pz")
+    ));
+    lines.push(format!(
+        "vx={:.4} vy={:.4} vz={:.4}",
+        get("vx"),
+        get("vy"),
+        get("vz")
+    ));
+    lines.push(format!(
+        "q0={:.6} q1={:.6} q2={:.6} q3={:.6}",
+        stepper.get("q0").unwrap_or(1.0),
+        get("q1"),
+        get("q2"),
+        get("q3")
+    ));
+    lines.push(format!(
+        "accel=[{:.3},{:.3},{:.3}]",
+        get("accel_x"),
+        get("accel_y"),
+        get("accel_z")
+    ));
+    lines.push(format!(
+        "gyro=[{:.4},{:.4},{:.4}]",
+        get("gyro_x"),
+        get("gyro_y"),
+        get("gyro_z")
+    ));
     lines.push(format!("Input names: {:?}", stepper.input_names()));
     lines.push(format!("Variable names: {:?}", stepper.variable_names()));
     lines.push(String::new());
@@ -385,11 +463,22 @@ fn download_debug_log(
         ));
     }
 
-    let filename = format!("sil_debug_{}.txt", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+    let filename = format!(
+        "sil_debug_{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
     match std::fs::write(&filename, lines.join("\n")) {
-        Ok(()) => eprintln!("\n[debug] Log saved: {}                                          \n", filename),
-        Err(e) => eprintln!("\n[debug] Failed to save log: {}                                 \n", e),
+        Ok(()) => eprintln!(
+            "\n[debug] Log saved: {}                                          \n",
+            filename
+        ),
+        Err(e) => eprintln!(
+            "\n[debug] Failed to save log: {}                                 \n",
+            e
+        ),
     }
 }
 
@@ -415,12 +504,13 @@ pub fn run_sim_loop(
 
     // Build codecs
     let pack_codec = PackCodec::compile(schema_set, &cfg.send).context("Build pack codec")?;
-    let unpack_codec = UnpackCodec::compile(schema_set, &cfg.receive).context("Build unpack codec")?;
+    let unpack_codec =
+        UnpackCodec::compile(schema_set, &cfg.receive).context("Build unpack codec")?;
 
     // UDP socket
     let udp_cfg = cfg.udp.as_ref().context("No [udp] section in config")?;
-    let socket = UdpSocket::bind(&udp_cfg.listen)
-        .with_context(|| format!("Bind UDP {}", udp_cfg.listen))?;
+    let socket =
+        UdpSocket::bind(&udp_cfg.listen).with_context(|| format!("Bind UDP {}", udp_cfg.listen))?;
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
     eprintln!("  UDP listen: {}", udp_cfg.listen);
     eprintln!("  UDP send:   {}", udp_cfg.send);
@@ -444,9 +534,10 @@ pub fn run_sim_loop(
             thread::sleep(Duration::from_millis(100));
         }
         if let Ok(mut ap) = ap_cleanup.lock()
-            && let Some(proc) = ap.as_mut() {
-                proc.stop();
-            }
+            && let Some(proc) = ap.as_mut()
+        {
+            proc.stop();
+        }
         crossterm::terminal::disable_raw_mode().ok();
         std::process::exit(0);
     });
@@ -462,7 +553,10 @@ pub fn run_sim_loop(
     thread::spawn(move || {
         let ws_listener = match TcpListener::bind(format!("0.0.0.0:{}", ws_port)) {
             Ok(l) => l,
-            Err(e) => { eprintln!("Failed to bind WS port {}: {}", ws_port, e); return; }
+            Err(e) => {
+                eprintln!("Failed to bind WS port {}: {}", ws_port, e);
+                return;
+            }
         };
         eprintln!("  WebSocket: ws://0.0.0.0:{}", ws_port);
 
@@ -471,10 +565,15 @@ pub fn run_sim_loop(
             eprintln!("[WS] Viewer connected");
             let mut ws = match accept(stream) {
                 Ok(ws) => ws,
-                Err(e) => { eprintln!("[WS] Handshake error: {}", e); continue; }
+                Err(e) => {
+                    eprintln!("[WS] Handshake error: {}", e);
+                    continue;
+                }
             };
             ws.get_ref().set_nonblocking(true).ok();
-            ws.get_ref().set_write_timeout(Some(Duration::from_millis(100))).ok();
+            ws.get_ref()
+                .set_write_timeout(Some(Duration::from_millis(100)))
+                .ok();
 
             let mut alive = true;
             while alive {
@@ -484,18 +583,31 @@ pub fn run_sim_loop(
                         Ok(Message::Text(text)) => {
                             // Handle commands from browser
                             if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text)
-                                && let Some(rt) = cmd.get("realtime").and_then(|v| v.as_bool()) {
-                                    realtime_ws.store(rt, Ordering::Relaxed);
-                                    eprintln!("\r[WS] Realtime: {}                    \r", rt);
-                                }
+                                && let Some(rt) = cmd.get("realtime").and_then(|v| v.as_bool())
+                            {
+                                realtime_ws.store(rt, Ordering::Relaxed);
+                                eprintln!("\r[WS] Realtime: {}                    \r", rt);
+                            }
                         }
-                        Ok(Message::Close(_)) => { alive = false; break; }
-                        Err(tungstenite::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => { alive = false; break; }
+                        Ok(Message::Close(_)) => {
+                            alive = false;
+                            break;
+                        }
+                        Err(tungstenite::Error::Io(ref e))
+                            if e.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            break;
+                        }
+                        Err(_) => {
+                            alive = false;
+                            break;
+                        }
                         _ => {}
                     }
                 }
-                if !alive { break; }
+                if !alive {
+                    break;
+                }
 
                 // Drain channel, keep only the latest state
                 let mut latest = None;
@@ -503,7 +615,10 @@ pub fn run_sim_loop(
                     latest = Some(json);
                 }
                 if let Some(json) = latest
-                    && ws.send(Message::Text(json.into())).is_err() { break; }
+                    && ws.send(Message::Text(json.into())).is_err()
+                {
+                    break;
+                }
 
                 // Throttle to ~60fps (sleep AFTER send)
                 thread::sleep(Duration::from_millis(16));
@@ -526,7 +641,9 @@ pub fn run_sim_loop(
     eprintln!("  Expecting {recv_expected}-byte receive packets");
     input.verify_input();
     eprintln!("\nReady. Simulation running.");
-    eprintln!("  Controls: Up/Down=throttle, Left/Right=yaw, W/S=pitch, A/D=roll, Space=arm, R=reset, L=log, Q=quit\n");
+    eprintln!(
+        "  Controls: Up/Down=throttle, Left/Right=yaw, W/S=pitch, A/D=roll, Space=arm, R=reset, L=log, Q=quit\n"
+    );
 
     loop {
         let _frame_start = Instant::now();
@@ -551,9 +668,10 @@ pub fn run_sim_loop(
             // Restart autopilot
             if let Ok(mut ap) = ap_handle.lock()
                 && let Some(proc) = ap.as_mut()
-                    && let Err(e) = proc.start() {
-                        eprintln!("[autopilot] Restart failed: {}", e);
-                    }
+                && let Err(e) = proc.start()
+            {
+                eprintln!("[autopilot] Restart failed: {}", e);
+            }
 
             // Reset stepper
             let mut session = rumoca_session::compile::Session::default();
@@ -562,9 +680,14 @@ pub fn run_sim_loop(
             } else {
                 match session.compile_model(model_name) {
                     Ok(result) => {
-                        match SimStepper::new(&result.dae, StepperOptions {
-                            rtol: 1e-3, atol: 1e-3, ..Default::default()
-                        }) {
+                        match SimStepper::new(
+                            &result.dae,
+                            StepperOptions {
+                                rtol: 1e-3,
+                                atol: 1e-3,
+                                ..Default::default()
+                            },
+                        ) {
                             Ok(new_stepper) => {
                                 *stepper = new_stepper;
                                 eprintln!("[reset] Simulation reset");
@@ -610,7 +733,13 @@ pub fn run_sim_loop(
             let sub_dt = step_dt / n_steps as f64;
             for i in 0..n_steps {
                 if let Err(e) = stepper.step(sub_dt) {
-                    eprintln!("\r[sim] Step {}/{} failed (sub_dt={:.4}s): {}", i + 1, n_steps, sub_dt, e);
+                    eprintln!(
+                        "\r[sim] Step {}/{} failed (sub_dt={:.4}s): {}",
+                        i + 1,
+                        n_steps,
+                        sub_dt,
+                        e
+                    );
                 }
             }
         }
@@ -626,9 +755,17 @@ pub fn run_sim_loop(
             frame: frame_num,
             t: stepper.time(),
             armed,
-            rc: [input.rc[0], input.rc[1], input.rc[2], input.rc[3], input.rc[4]],
+            rc: [
+                input.rc[0],
+                input.rc[1],
+                input.rc[2],
+                input.rc[3],
+                input.rc[4],
+            ],
             motor_rpms,
-            px: get("px"), py: get("py"), pz: get("pz"),
+            px: get("px"),
+            py: get("py"),
+            pz: get("pz"),
             accel: [get("accel_x"), get("accel_y"), get("accel_z")],
             gyro: [get("gyro_x"), get("gyro_y"), get("gyro_z")],
         };
@@ -644,9 +781,16 @@ pub fn run_sim_loop(
                 "\r[sim] t={:.1}s alt={:.2}m motors=[{:.0},{:.0},{:.0},{:.0}] armed={} rc=[{},{},{},{},arm={}] pkts={}    ",
                 stepper.time(),
                 -(stepper.get("pz").unwrap_or(0.0)),
-                motor_rpms[0], motor_rpms[1], motor_rpms[2], motor_rpms[3],
+                motor_rpms[0],
+                motor_rpms[1],
+                motor_rpms[2],
+                motor_rpms[3],
                 armed,
-                input.rc[0], input.rc[1], input.rc[2], input.rc[3], input.rc[4],
+                input.rc[0],
+                input.rc[1],
+                input.rc[2],
+                input.rc[3],
+                input.rc[4],
                 pkt_count,
             );
         }

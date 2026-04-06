@@ -44,9 +44,7 @@ pub fn start_http_server(
                 let _ = request.respond(response);
             }
             _ => {
-                let _ = request.respond(
-                    Response::from_string("Not found").with_status_code(404),
-                );
+                let _ = request.respond(Response::from_string("Not found").with_status_code(404));
             }
         }
     }
