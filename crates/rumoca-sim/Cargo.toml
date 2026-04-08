@@ -27,6 +27,7 @@ thiserror = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
 js-sys = "0.3"
+instant = { version = "0.1", features = ["wasm-bindgen"] }
 rumoca-eval-dae = { workspace = true, features = ["wasm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
