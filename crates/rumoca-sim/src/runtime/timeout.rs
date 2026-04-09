@@ -1,6 +1,8 @@
 use std::any::Any;
 use std::cell::Cell;
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeoutBudget {
@@ -17,12 +19,16 @@ pub struct TimeoutExceeded {
 impl TimeoutBudget {
     pub fn new(max_wall_seconds: Option<f64>) -> Self {
         let seconds = max_wall_seconds.filter(|s| s.is_finite() && *s > 0.0);
+        #[cfg(target_arch = "wasm32")]
+        let deadline = None;
+        #[cfg(not(target_arch = "wasm32"))]
         let deadline = seconds.map(|s| Instant::now() + Duration::from_secs_f64(s));
         Self { deadline, seconds }
     }
 
     #[inline]
     pub fn check(&self) -> Result<(), TimeoutExceeded> {
+        #[cfg(not(target_arch = "wasm32"))]
         if self.deadline.is_some_and(|d| Instant::now() >= d) {
             return Err(self.timeout_error());
         }
@@ -72,9 +78,12 @@ impl Drop for SolverDeadlineGuard {
 
 #[inline]
 pub fn panic_on_expired_solver_deadline() {
-    let expired = SOLVER_DEADLINE.with(|cell| cell.get().is_some_and(|d| Instant::now() >= d));
-    if expired {
-        std::panic::panic_any(SolverTimeoutPanic);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let expired = SOLVER_DEADLINE.with(|cell| cell.get().is_some_and(|d| Instant::now() >= d));
+        if expired {
+            std::panic::panic_any(SolverTimeoutPanic);
+        }
     }
 }
 

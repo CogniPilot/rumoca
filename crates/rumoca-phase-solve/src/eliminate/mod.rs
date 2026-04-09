@@ -781,8 +781,9 @@ fn eliminate_via_blt(
         }
         // Output variables exist for external callers — only eliminate them
         // when the solution is a trivial alias (a single variable reference or
-        // its negation), since keeping non-trivial outputs enlarges the DAE and
-        // can hurt solver performance.
+        // its negation). Eliminating non-trivial outputs in the BLT pass
+        // alters the DAE structure enough to cause measurable trace-accuracy
+        // regressions in MSL parity tests, so prefer keeping them in the DAE.
         if is_output && !is_trivial_alias(&solution) {
             continue;
         }

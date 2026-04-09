@@ -1447,6 +1447,7 @@ pub(crate) fn build_stepper(
     let mut dae = prepared.dae;
     let mass_matrix = prepared.mass_matrix;
     let ic_blocks = prepared.ic_blocks;
+    let elim = prepared.elimination;
 
     if prepared.has_dummy_state {
         return Err(SimError::EmptySystem);
@@ -1546,7 +1547,17 @@ pub(crate) fn build_stepper(
         fn step(&mut self, dt: f64, _dae: &Dae, budget: &TimeoutBudget) -> Result<(), SimError> {
             use diffsol::OdeSolverStopReason;
 
+            if dt <= 0.0 {
+                return Ok(());
+            }
+
             let t_end = self.solver.state().t + dt;
+
+            // Guard: if t_end is not ahead of the solver's current time
+            // (due to floating point accumulation), skip this step.
+            if t_end <= self.solver.state().t {
+                return Ok(());
+            }
 
             self.solver.set_stop_time(t_end).map_err(|e| {
                 SimError::SolverError(format!("Failed to set stop time at t_end={t_end}: {e}"))
@@ -1586,6 +1597,25 @@ pub(crate) fn build_stepper(
 
         fn solver_state_y(&self) -> Vec<f64> {
             self.solver.state().y.as_slice().to_vec()
+        }
+
+        fn reset_solver_history(&mut self) {
+            let state = self.solver.state_mut();
+            // Clear BDF polynomial history so stale extrapolation
+            // from old inputs does not cause divergence.
+            for ds in state.ds.iter_mut() {
+                ds.as_mut_slice().fill(0.0);
+            }
+            for dsg in state.dsg.iter_mut() {
+                dsg.as_mut_slice().fill(0.0);
+            }
+            state.dg.as_mut_slice().fill(0.0);
+            // Shrink step size so the solver re-establishes stability
+            // with the new inputs.
+            let h = *state.h;
+            if h.abs() > 1e-10 {
+                *state.h = h.signum() * 1e-6;
+            }
         }
     }
 
@@ -1676,6 +1706,8 @@ pub(crate) fn build_stepper(
         n_total,
         solver_names,
         max_wall_seconds_per_step: opts.max_wall_seconds_per_step,
+        elim,
+        inputs_dirty: false,
     })
 }
 
