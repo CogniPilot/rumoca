@@ -27,6 +27,8 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[cfg(feature = "sim-fb")]
+use anyhow::Context;
 use anyhow::{Result, bail};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use miette::{
@@ -81,6 +83,9 @@ enum Commands {
     },
     /// Manage workspace-side Rumoca project sidecars
     Project(ProjectArgs),
+    /// Run FlatBuffer-based SIL simulation with 3D viewer
+    #[cfg(feature = "sim-fb")]
+    SimFb(SimFbArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -109,6 +114,38 @@ struct ProjectSyncArgs {
     /// Optional explicit move hint formatted as OLD->NEW (repeatable)
     #[arg(long = "move", action = ArgAction::Append)]
     moves: Vec<String>,
+}
+
+#[cfg(feature = "sim-fb")]
+#[derive(Args, Debug)]
+struct SimFbArgs {
+    /// Modelica file containing the plant model
+    #[arg(name = "MODELICA_FILE")]
+    model_file: String,
+
+    /// Model name to simulate (auto-inferred when omitted)
+    #[arg(short, long)]
+    model: Option<String>,
+
+    /// Path to SIL config TOML (schema paths, UDP ports, field routing)
+    #[arg(long)]
+    config: String,
+
+    /// Path to a scene script (.js) for 3D visualization (default: quadrotor)
+    #[arg(long)]
+    scene: Option<String>,
+
+    /// Enable debug overlays, L/Y log download, and P render log in browser
+    #[arg(long)]
+    debug: bool,
+
+    /// HTTP server port for the 3D viewer
+    #[arg(long, default_value = "8080")]
+    http_port: u16,
+
+    /// WebSocket proxy port
+    #[arg(long, default_value = "8081")]
+    ws_port: u16,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -413,6 +450,8 @@ fn try_main() -> Result<()> {
             Ok(())
         }
         Commands::Project(args) => run_project(args),
+        #[cfg(feature = "sim-fb")]
+        Commands::SimFb(args) => run_sim_fb(args),
     }
 }
 
@@ -602,6 +641,42 @@ fn parse_move_hints(raw_moves: &[String]) -> Result<Vec<ProjectFileMoveHint>> {
         });
     }
     Ok(out)
+}
+
+#[cfg(feature = "sim-fb")]
+fn run_sim_fb(args: SimFbArgs) -> Result<()> {
+    let model_source = std::fs::read_to_string(&args.model_file)
+        .with_context(|| format!("Read model file: {}", args.model_file))?;
+
+    let model_name = args.model.unwrap_or_else(|| {
+        Path::new(&args.model_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Model")
+            .to_string()
+    });
+
+    let config = rumoca_sim_fb::config::SilConfig::load(Path::new(&args.config))
+        .with_context(|| format!("Load SIL config: {}", args.config))?;
+
+    // Load scene script if provided
+    let scene_script = match args.scene {
+        Some(path) => Some(
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("Read scene script: {}", path))?,
+        ),
+        None => None,
+    };
+
+    rumoca_sim_fb::run(rumoca_sim_fb::SimFbArgs {
+        model_source,
+        model_name,
+        config,
+        http_port: args.http_port,
+        ws_port: args.ws_port,
+        scene_script,
+        debug: args.debug,
+    })
 }
 
 fn run_compile(args: CompileArgs) -> Result<()> {

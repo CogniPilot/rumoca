@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
+use rumoca_eval_dae::runtime::VarEnv;
 use rumoca_ir_dae as dae;
+use rumoca_phase_solve::eliminate::EliminationResult;
 
 use super::problem::SharedInputOverrides;
 use super::{Dae, SimError};
@@ -45,6 +47,10 @@ pub(crate) trait StepperInner {
     fn step(&mut self, dt: f64, dae: &Dae, budget: &TimeoutBudget) -> Result<(), SimError>;
     fn time(&self) -> f64;
     fn solver_state_y(&self) -> Vec<f64>;
+    /// Clear BDF history buffers and reset step size.
+    /// Must be called when inputs change discontinuously so that
+    /// the polynomial extrapolation does not diverge.
+    fn reset_solver_history(&mut self);
 }
 
 /// A real-time simulation stepper that supports external input injection.
@@ -66,6 +72,11 @@ pub struct SimStepper {
     pub(crate) n_total: usize,
     pub(crate) solver_names: Vec<String>,
     pub(crate) max_wall_seconds_per_step: Option<f64>,
+    /// Substitutions from algebraic elimination — used to reconstruct
+    /// eliminated variables (e.g. outputs) in `get()` and `state()`.
+    pub(crate) elim: EliminationResult,
+    /// Set when `set_input` changes a value; cleared after solver history reset.
+    pub(crate) inputs_dirty: bool,
 }
 
 impl SimStepper {
@@ -90,9 +101,12 @@ impl SimStepper {
                 name, valid_names
             )));
         }
-        self.input_overrides
-            .borrow_mut()
-            .insert(name.to_string(), value);
+        let mut overrides = self.input_overrides.borrow_mut();
+        let old = overrides.get(name).copied();
+        overrides.insert(name.to_string(), value);
+        if old != Some(value) {
+            self.inputs_dirty = true;
+        }
         Ok(())
     }
 
@@ -106,6 +120,10 @@ impl SimStepper {
 
     /// Step the simulation forward by `dt` seconds.
     pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
+        if self.inputs_dirty {
+            self.inner.reset_solver_history();
+            self.inputs_dirty = false;
+        }
         let budget = TimeoutBudget::new(self.max_wall_seconds_per_step);
         self.inner.step(dt, &self.dae, &budget)
     }
@@ -115,9 +133,30 @@ impl SimStepper {
         self.inner.time()
     }
 
+    /// Build a variable environment from the current solver state and inputs,
+    /// including reconstructed eliminated variables.
+    fn build_env(&self) -> VarEnv<f64> {
+        let y = self.inner.solver_state_y();
+        let mut env = VarEnv::default();
+        env.vars.insert("time".to_string(), self.inner.time());
+        for (idx, name) in self.solver_names.iter().enumerate() {
+            if let Some(&val) = y.get(idx) {
+                env.vars.insert(name.clone(), val);
+            }
+        }
+        for (name, &val) in self.input_overrides.borrow().iter() {
+            env.vars.insert(name.clone(), val);
+        }
+        for ((name, _var), &val) in self.dae.parameters.iter().zip(self.param_values.iter()) {
+            env.vars.entry(name.as_str().to_string()).or_insert(val);
+        }
+        crate::reconstruct::apply_eliminated_substitutions_to_env(&self.elim, &mut env);
+        env
+    }
+
     /// Read a single variable value by name.
     ///
-    /// Works for states, algebraics, outputs, and inputs.
+    /// Works for states, algebraics, outputs, inputs, and eliminated variables.
     pub fn get(&self, name: &str) -> Option<f64> {
         let y = self.inner.solver_state_y();
         if let Some(idx) = self.sim_context.solver_idx_for_target(name) {
@@ -126,21 +165,20 @@ impl SimStepper {
         if let Some(&val) = self.input_overrides.borrow().get(name) {
             return Some(val);
         }
+        if !self.elim.substitutions.is_empty() {
+            let env = self.build_env();
+            let val = env.vars.get(name).copied();
+            if val.is_some() {
+                return val;
+            }
+        }
         None
     }
 
     /// Get a snapshot of all current variable values.
     pub fn state(&self) -> StepperState {
-        let y = self.inner.solver_state_y();
-        let mut values = HashMap::new();
-        for (idx, name) in self.solver_names.iter().enumerate() {
-            if let Some(&val) = y.get(idx) {
-                values.insert(name.clone(), val);
-            }
-        }
-        for (name, &val) in self.input_overrides.borrow().iter() {
-            values.insert(name.clone(), val);
-        }
+        let env = self.build_env();
+        let values = env.vars.into_iter().collect();
         StepperState {
             time: self.inner.time(),
             values,

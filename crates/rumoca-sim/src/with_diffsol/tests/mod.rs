@@ -1874,3 +1874,4 @@ mod direct_assignment_demotion;
 mod scalarization_regressions;
 mod solver_regressions;
 mod state_derivative;
+mod stepper_input_discontinuity;
