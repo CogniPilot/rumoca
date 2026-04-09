@@ -140,7 +140,8 @@ function runRootCrossingSmoke() {
 async function run() {
   if (typeof globalThis.self === "undefined") {
     // wasm-bindgen-rayon helper modules expect `self` to exist at import time.
-    globalThis.self = new EventTarget();
+    // In Node, alias it to the global object so APIs like Math stay available.
+    globalThis.self = globalThis;
   }
   const wasmModule = await import("../../../pkg/rumoca.js");
   const init = wasmModule.default;

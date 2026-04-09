@@ -48,7 +48,6 @@ use crate::class_browser_helpers::{
     join_path, token_list_to_text,
 };
 use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
-pub use crate::stepper_api::WasmStepper;
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_with_project_sources, compile_with_source_roots,
     export_parsed_source_roots_binary, get_bundled_source_root_manifest,
@@ -56,6 +55,7 @@ pub use crate::source_root_api::{
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
     parse_source_root_file, sync_project_sources,
 };
+pub use crate::stepper_api::WasmStepper;
 
 /// Global compilation session containing both bundled source-root and user documents.
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
