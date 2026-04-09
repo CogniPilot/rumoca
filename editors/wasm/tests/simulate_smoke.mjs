@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import init, { simulate_model } from "../../../pkg/rumoca.js";
 
 const SOURCE = `
 model WasmSmoke
@@ -22,6 +21,8 @@ equation
   end when;
 end BallWasmSmoke;
 `;
+
+let simulate_model_fn = null;
 
 const ROOT_CROSS_SOURCE = `
 model RootCrossWasmSmoke
@@ -73,7 +74,7 @@ function seriesByName(parsed, name) {
 }
 
 function runLinearSmoke() {
-  const raw = simulate_model(SOURCE, "WasmSmoke", 0.2, 0.05, "auto");
+  const raw = simulate_model_fn(SOURCE, "WasmSmoke", 0.2, 0.05, "auto");
   const parsed = parseSimulationJson(raw);
 
   assert(parsed.times.length >= 2, "simulate_model: expected at least 2 time samples");
@@ -84,7 +85,7 @@ function runLinearSmoke() {
 }
 
 function runBouncingBallSmoke() {
-  const raw = simulate_model(BALL_SOURCE, "BallWasmSmoke", 1.5, 0.01, "auto");
+  const raw = simulate_model_fn(BALL_SOURCE, "BallWasmSmoke", 1.5, 0.01, "auto");
   const parsed = parseSimulationJson(raw);
   assert(
     parsed.times.length >= 20,
@@ -116,7 +117,7 @@ function runBouncingBallSmoke() {
 }
 
 function runRootCrossingSmoke() {
-  const raw = simulate_model(ROOT_CROSS_SOURCE, "RootCrossWasmSmoke", 1.0, 0.05, "auto");
+  const raw = simulate_model_fn(ROOT_CROSS_SOURCE, "RootCrossWasmSmoke", 1.0, 0.05, "auto");
   const parsed = parseSimulationJson(raw);
   const x = seriesByName(parsed, "x");
   const s = seriesByName(parsed, "s");
@@ -137,6 +138,13 @@ function runRootCrossingSmoke() {
 }
 
 async function run() {
+  if (typeof globalThis.self === "undefined") {
+    // wasm-bindgen-rayon helper modules expect `self` to exist at import time.
+    globalThis.self = new EventTarget();
+  }
+  const wasmModule = await import("../../../pkg/rumoca.js");
+  const init = wasmModule.default;
+  simulate_model_fn = wasmModule.simulate_model;
   const wasmBytes = await readFile(new URL("../../../pkg/rumoca_bg.wasm", import.meta.url));
   await init({ module_or_path: wasmBytes });
   runLinearSmoke();
