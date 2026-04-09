@@ -241,8 +241,8 @@ fn cli_parses_wasm_build() {
 
 #[test]
 fn cli_parses_wasm_build_dev() {
-    let cli = Cli::try_parse_from(["rum", "wasm", "build", "--dev"])
-        .expect("parse wasm build --dev");
+    let cli =
+        Cli::try_parse_from(["rum", "wasm", "build", "--dev"]).expect("parse wasm build --dev");
     match cli.command {
         Commands::Wasm(args) => match args.command {
             WasmCommand::Build(args) => assert!(args.dev),

@@ -4,6 +4,7 @@
 //! lives in those crates; this module only provides WASM entry points.
 
 mod class_browser_helpers;
+mod simulation_api;
 mod source_root_api;
 
 use std::{
@@ -16,6 +17,8 @@ use std::{
 use js_sys::Date;
 use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
 use wasm_bindgen::prelude::*;
+#[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
+use wasm_bindgen_futures::JsFuture;
 #[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
 use wasm_bindgen_rayon::init_thread_pool;
 
@@ -30,12 +33,7 @@ use rumoca_session::parsing::{
 };
 use rumoca_session::runtime::templates as runtime_templates;
 use rumoca_session::runtime::{
-    SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
-    simulate_dae,
-};
-use rumoca_sim::results_web::{
-    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
-    build_simulation_payload,
+    dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
 };
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
@@ -48,6 +46,7 @@ use crate::class_browser_helpers::{
     class_type_label, component_reference_to_path, expression_path, extract_string_literal,
     join_path, token_list_to_text,
 };
+use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_with_project_sources, compile_with_source_roots,
     export_parsed_source_roots_binary, get_bundled_source_root_manifest,
@@ -120,7 +119,7 @@ pub async fn wasm_init(num_threads: usize) -> Result<bool, JsValue> {
     if num_threads == 0 {
         return Ok(false);
     }
-    init_thread_pool(num_threads).await?;
+    JsFuture::from(init_thread_pool(num_threads)).await?;
     Ok(true)
 }
 
@@ -871,9 +870,8 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
             if augment_prepared_with_native_observables(&dae_native_json, &mut prepared_json)
                 .is_none()
             {
-                prepared_diagnostics.push(
-                    "unable to augment prepared DAE with native observables".to_string(),
-                );
+                prepared_diagnostics
+                    .push("unable to augment prepared DAE with native observables".to_string());
             }
             (prepared_json, None)
         }
@@ -1933,10 +1931,6 @@ pub fn lsp_semantic_token_legend() -> Result<String, JsValue> {
     serde_json::to_string(&legend).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
 
-// ==========================================================================
-// Simulation
-// ==========================================================================
-
 /// Compile and simulate a Modelica model.
 #[wasm_bindgen]
 pub fn simulate_model(
@@ -1946,9 +1940,7 @@ pub fn simulate_model(
     dt: f64,
     solver: &str,
 ) -> Result<String, JsValue> {
-    with_singleton_session(|session| {
-        simulate_model_in_session(session, source, model_name, t_end, dt, solver)
-    })
+    simulate_model_impl(source, model_name, t_end, dt, solver)
 }
 
 /// Compile with additional project-local sources and simulate a Modelica model.
@@ -1961,55 +1953,14 @@ pub fn simulate_model_with_project_sources(
     dt: f64,
     solver: &str,
 ) -> Result<String, JsValue> {
-    with_singleton_session(|session| {
-        crate::source_root_api::load_project_sources_in_session(session, project_sources_json)?;
-        simulate_model_in_session(session, source, model_name, t_end, dt, solver)
-    })
-}
-
-fn simulate_model_in_session(
-    session: &mut Session,
-    source: &str,
-    model_name: &str,
-    t_end: f64,
-    dt: f64,
-    solver: &str,
-) -> Result<String, JsValue> {
-    session.update_document("input.mo", source);
-    let requested_model = qualify_input_model_name(session, model_name);
-    let result = compile_requested_model(session, &requested_model)?;
-
-    let dt_opt = if dt > 0.0 { Some(dt) } else { None };
-    let opts = SimOptions {
+    simulate_model_with_project_sources_impl(
+        source,
+        model_name,
+        project_sources_json,
         t_end,
-        dt: dt_opt,
-        ..SimOptions::default()
-    };
-    let sim_started = wasm_timing_start();
-    let sim = simulate_dae(&result.dae, &opts)
-        .map_err(|e| JsValue::from_str(&format!("Simulation error: {}", e)))?;
-    let metrics = SimulationRunMetrics {
-        simulate_seconds: Some(wasm_elapsed_ms(sim_started) as f64 / 1000.0),
-        ..SimulationRunMetrics::default()
-    };
-    let request = SimulationRequestSummary {
-        solver: if solver.trim().is_empty() {
-            "auto".to_string()
-        } else {
-            solver.trim().to_string()
-        },
-        t_start: opts.t_start,
-        t_end: opts.t_end,
-        dt: opts.dt,
-        rtol: opts.rtol,
-        atol: opts.atol,
-    };
-
-    let output = serde_json::json!({
-        "payload": build_simulation_payload(&sim, &request, &metrics),
-        "metrics": build_simulation_metrics_value(&sim, &metrics),
-    });
-    serde_json::to_string(&output).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+        dt,
+        solver,
+    )
 }
 
 // ==========================================================================
