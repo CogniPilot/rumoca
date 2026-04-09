@@ -96,11 +96,15 @@ enum DiagnosticsTrigger {
 }
 
 impl ModelicaLanguageServer {
+    fn default_session_config() -> SessionConfig {
+        SessionConfig { parallel: true }
+    }
+
     /// Create a new language server instance.
     pub fn new(client: Client) -> Self {
         Self {
             client,
-            session: Arc::new(RwLock::new(Session::new(SessionConfig::default()))),
+            session: Arc::new(RwLock::new(Session::new(Self::default_session_config()))),
             work_lanes: Arc::new(ServerWorkLanes::default()),
             initial_source_root_paths: Arc::new(RwLock::new(Vec::new())),
             source_root_paths: Arc::new(RwLock::new(Vec::new())),

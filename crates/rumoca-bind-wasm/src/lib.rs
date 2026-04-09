@@ -16,6 +16,8 @@ use std::{
 use js_sys::Date;
 use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
 use wasm_bindgen::prelude::*;
+#[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
+use wasm_bindgen_rayon::init_thread_pool;
 
 use rumoca_session::Session;
 use rumoca_session::compile::{
@@ -108,9 +110,26 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-/// Initialize the thread pool (no-op, kept for worker API compatibility).
+/// Initialize optional Rayon worker threads for wasm builds.
+///
+/// Returns `true` when the thread pool was initialized and `false` when threading
+/// is unavailable in this build/runtime.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
 #[wasm_bindgen]
-pub fn wasm_init(_num_threads: usize) {}
+pub async fn wasm_init(num_threads: usize) -> Result<bool, JsValue> {
+    if num_threads == 0 {
+        return Ok(false);
+    }
+    init_thread_pool(num_threads).await?;
+    Ok(true)
+}
+
+/// Fallback thread-pool initializer for non-threaded builds.
+#[cfg(not(all(target_arch = "wasm32", feature = "wasm-rayon")))]
+#[wasm_bindgen]
+pub fn wasm_init(_num_threads: usize) -> bool {
+    false
+}
 
 /// Get the Rumoca version string.
 #[wasm_bindgen]
@@ -730,25 +749,145 @@ fn augment_prepared_with_native_observables(
     Some(n)
 }
 
+fn object_len(value: &Value, key: &str) -> usize {
+    value
+        .get(key)
+        .and_then(Value::as_object)
+        .map_or(0, serde_json::Map::len)
+}
+
+fn attach_prepared_template_metadata(
+    prepared_json: &mut Value,
+    native_json: &Value,
+    status: &str,
+    diagnostics: &[String],
+) {
+    let Some(prepared_obj) = as_object_mut(prepared_json) else {
+        return;
+    };
+    let prepared_obj_ref: &Map<String, Value> = prepared_obj;
+    let obj_len = |key: &str| {
+        prepared_obj_ref
+            .get(key)
+            .and_then(Value::as_object)
+            .map_or(0, serde_json::Map::len)
+    };
+    let arr_len = |key: &str| {
+        prepared_obj_ref
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    let obj_keys = |key: &str| {
+        prepared_obj_ref
+            .get(key)
+            .and_then(Value::as_object)
+            .map(|map| map.keys().cloned().map(Value::String).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let observable_count = prepared_obj_ref
+        .get("__rumoca_observables")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let hints = serde_json::json!({
+        "variable_counts": {
+            "x": obj_len("x"),
+            "y": obj_len("y"),
+            "z": obj_len("z"),
+            "m": obj_len("m"),
+            "w": obj_len("w"),
+            "u": obj_len("u"),
+            "p": obj_len("p"),
+            "constants": obj_len("constants"),
+            "native_y": object_len(native_json, "y"),
+            "observables": observable_count,
+        },
+        "equation_counts": {
+            "f_x": arr_len("f_x"),
+            "f_c": arr_len("f_c"),
+            "f_z": arr_len("f_z"),
+            "f_m": arr_len("f_m"),
+            "when_clauses": arr_len("when_clauses"),
+            "relation": arr_len("relation"),
+            "initial_equations": arr_len("initial_equations"),
+        },
+        "variable_order": {
+            "x": obj_keys("x"),
+            "y": obj_keys("y"),
+            "z": obj_keys("z"),
+            "m": obj_keys("m"),
+            "w": obj_keys("w"),
+            "u": obj_keys("u"),
+            "p": obj_keys("p"),
+            "constants": obj_keys("constants"),
+        },
+        "events": {
+            "has_conditions": arr_len("f_c") > 0,
+            "has_when_clauses": arr_len("when_clauses") > 0,
+            "has_resets": arr_len("f_z") > 0 || arr_len("f_m") > 0,
+        }
+    });
+
+    prepared_obj.insert(
+        "__rumoca_prepared_status".to_string(),
+        Value::String(status.to_string()),
+    );
+    prepared_obj.insert(
+        "__rumoca_prepared_diagnostics".to_string(),
+        Value::Array(diagnostics.iter().cloned().map(Value::String).collect()),
+    );
+    prepared_obj.insert("__rumoca_solver_hints".to_string(), hints);
+}
+
+fn attach_build_metadata(payload: &mut Value) {
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    let build = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "git_commit": option_env!("RUMOCA_GIT_COMMIT").unwrap_or("unknown"),
+        "build_time_utc": option_env!("RUMOCA_BUILD_TIME_UTC").unwrap_or("unknown"),
+    });
+    obj.insert("__rumoca_build".to_string(), build);
+}
+
 /// Build a rich compile response with DAE, balance info, and pretty output.
 fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue> {
     let dae = &result.dae;
-    let dae_native_json = serde_json::to_value(dae).ok();
+    let mut dae_native_json =
+        serde_json::to_value(dae).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))?;
+    attach_build_metadata(&mut dae_native_json);
+    let mut prepared_diagnostics: Vec<String> = Vec::new();
+    let mut prepared_status = "prepared".to_string();
+
     let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         prepare_dae_for_template_codegen(dae, true)
     }));
-    let (dae_prepared, dae_prepared_error) = match prepared {
+    let (mut dae_prepared, dae_prepared_error) = match prepared {
         Ok(Ok(prepped)) => {
-            let mut prepared_json = serde_json::to_value(prepped).ok();
-            if let (Some(native), Some(prepared)) =
-                (dae_native_json.as_ref(), prepared_json.as_mut())
+            let mut prepared_json = serde_json::to_value(prepped).map_err(|e| {
+                JsValue::from_str(&format!("JSON error converting prepared DAE: {}", e))
+            })?;
+            if augment_prepared_with_native_observables(&dae_native_json, &mut prepared_json)
+                .is_none()
             {
-                let _ = augment_prepared_with_native_observables(native, prepared);
+                prepared_diagnostics.push(
+                    "unable to augment prepared DAE with native observables".to_string(),
+                );
             }
             (prepared_json, None)
         }
-        Ok(Err(err)) => (None, Some(err.to_string())),
+        Ok(Err(err)) => {
+            prepared_status = "fallback_native".to_string();
+            let msg = err.to_string();
+            prepared_diagnostics.push(format!(
+                "prepare_dae_for_template_codegen failed; using native DAE: {}",
+                msg
+            ));
+            (dae_native_json.clone(), Some(msg))
+        }
         Err(panic_payload) => {
+            prepared_status = "fallback_native".to_string();
             let panic_msg = if let Some(msg) = panic_payload.downcast_ref::<&str>() {
                 (*msg).to_string()
             } else if let Some(msg) = panic_payload.downcast_ref::<String>() {
@@ -756,15 +895,18 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
             } else {
                 "unknown panic payload".to_string()
             };
-            (
-                None,
-                Some(format!(
-                    "prepare_dae_for_template_codegen panicked: {}",
-                    panic_msg
-                )),
-            )
+            let msg = format!("prepare_dae_for_template_codegen panicked: {}", panic_msg);
+            prepared_diagnostics.push(format!("{}; using native DAE", msg));
+            (dae_native_json.clone(), Some(msg))
         }
     };
+    attach_prepared_template_metadata(
+        &mut dae_prepared,
+        &dae_native_json,
+        &prepared_status,
+        &prepared_diagnostics,
+    );
+    attach_build_metadata(&mut dae_prepared);
 
     let num_eqs = dae.num_equations();
     let balance_val = dae_balance(dae);
@@ -779,9 +921,11 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
     let pretty = serde_json::to_string_pretty(dae).unwrap_or_default();
 
     let response = serde_json::json!({
-        "dae": dae,
-        "dae_native": dae,
+        "dae": dae_native_json.clone(),
+        "dae_native": dae_native_json,
         "dae_prepared": dae_prepared,
+        "dae_prepared_status": prepared_status,
+        "dae_prepared_diagnostics": prepared_diagnostics,
         "dae_prepared_error": dae_prepared_error,
         "balance": balance,
         "pretty": pretty,

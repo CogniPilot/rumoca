@@ -933,8 +933,7 @@ fn normalize_runtime_aliases_and_update_elim(
 ///
 /// Runs all structural passes (elimination, scalarization, equation reordering,
 /// sign normalization, orphaned variable pinning). The `normalize_aliases` flag
-/// controls whether runtime alias normalization runs (needed for simulation,
-/// skipped for template codegen to avoid unnecessary failure modes in WASM).
+/// controls whether runtime alias normalization runs.
 fn prepare_dae_core(
     dae: &Dae,
     scalarize: bool,
@@ -1046,7 +1045,9 @@ pub(super) fn prepare_dae_for_template_codegen_only(
     scalarize: bool,
     budget: &TimeoutBudget,
 ) -> Result<Dae, SimError> {
-    let (mut dae, _elim, _has_dummy) = prepare_dae_core(dae, scalarize, budget, false)?;
+    // Keep template-prepared structure aligned with runtime simulation preparation
+    // (minus solver-only artifacts like IC plan and mass matrix).
+    let (mut dae, _elim, _has_dummy) = prepare_dae_core(dae, scalarize, budget, true)?;
 
     rumoca_phase_solve::fold_start_values_to_literals(&mut dae);
     rumoca_phase_solve::sort_parameters_by_start_deps(&mut dae);
@@ -1253,6 +1254,77 @@ mod tests {
         assert!(
             expr_contains_var_ref(&dae.f_x[1].rhs, &VarName::new("z")),
             "rewritten non-ODE row should reference the selected derivative expression"
+        );
+    }
+
+    #[test]
+    fn test_template_codegen_prep_normalizes_runtime_aliases_for_event_surfaces() {
+        let mut dae = Dae::new();
+        dae.states
+            .insert(VarName::new("x"), dae::Variable::new(VarName::new("x")));
+        dae.states
+            .insert(VarName::new("v"), dae::Variable::new(VarName::new("v")));
+        dae.algebraics
+            .insert(VarName::new("d"), dae::Variable::new(VarName::new("d")));
+        dae.parameters
+            .insert(VarName::new("r"), dae::Variable::new(VarName::new("r")));
+
+        // der(x) = v
+        dae.f_x.push(eq(sub(
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Der,
+                args: vec![var("x")],
+            },
+            var("v"),
+        )));
+        // d = x - r
+        dae.f_x.push(eq(sub(var("d"), sub(var("x"), var("r")))));
+        // der(v) = if d < 0 then -1 else -2 (shape only; values not important)
+        dae.f_x.push(eq(sub(
+            dae::Expression::BuiltinCall {
+                function: dae::BuiltinFunction::Der,
+                args: vec![var("v")],
+            },
+            dae::Expression::If {
+                branches: vec![(
+                    lt(var("d"), int(0)),
+                    dae::Expression::Unary {
+                        op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                        rhs: Box::new(int(1)),
+                    },
+                )],
+                else_branch: Box::new(dae::Expression::Unary {
+                    op: rumoca_ir_core::OpUnary::Minus(Default::default()),
+                    rhs: Box::new(int(2)),
+                }),
+            },
+        )));
+
+        let cond = lt(var("d"), int(0));
+        dae.relation.push(cond.clone());
+        dae.f_c.push(eq(cond));
+
+        let budget = TimeoutBudget::new(None);
+        let prepared = prepare_dae_for_template_codegen_only(&dae, true, &budget)
+            .expect("template codegen preparation should succeed");
+
+        assert!(
+            !prepared.algebraics.contains_key(&VarName::new("d")),
+            "template-prepared DAE should normalize runtime alias variable `d` out of algebraics"
+        );
+        assert!(
+            !prepared
+                .relation
+                .iter()
+                .any(|expr| expr_contains_var_ref(expr, &VarName::new("d"))),
+            "template-prepared relation roots should not reference eliminated alias `d`"
+        );
+        assert!(
+            !prepared
+                .f_c
+                .iter()
+                .any(|eq| expr_contains_var_ref(&eq.rhs, &VarName::new("d"))),
+            "template-prepared condition equations should not reference eliminated alias `d`"
         );
     }
 }

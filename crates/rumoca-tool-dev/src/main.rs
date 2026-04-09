@@ -161,10 +161,17 @@ struct WasmArgs {
     command: WasmCommand,
 }
 
+#[derive(Debug, Args, Clone)]
+struct WasmBuildArgs {
+    /// Build with wasm-pack --dev for faster local iteration
+    #[arg(long)]
+    dev: bool,
+}
+
 #[derive(Debug, Subcommand, Clone)]
 enum WasmCommand {
     /// Build the WASM editor bundle
-    Build,
+    Build(WasmBuildArgs),
     /// WASM editor verification gate
     Test,
     /// Build and serve the WASM editor
@@ -427,13 +434,13 @@ fn cmd_vscode(args: VscodeArgs) -> Result<()> {
 
 fn cmd_wasm(args: WasmArgs) -> Result<()> {
     match args.command {
-        WasmCommand::Build => cmd_build_wasm(),
+        WasmCommand::Build(args) => cmd_build_wasm(args),
         WasmCommand::Test => run_wasm_test_suite(&repo_root()),
         WasmCommand::Edit(args) => {
             let root = repo_root();
             if !args.skip_build {
                 ensure_wasm_deps(&root)?;
-                build_wasm(&root)?;
+                build_wasm(&root, WasmBuildProfile::Release)?;
             }
             serve_wasm(&root, args.port)
         }
@@ -1560,10 +1567,15 @@ fn run_cargo_with_args(root: &Path, args: &[String]) -> Result<()> {
     run_status(command)
 }
 
-fn cmd_build_wasm() -> Result<()> {
+fn cmd_build_wasm(args: WasmBuildArgs) -> Result<()> {
     let root = repo_root();
     ensure_wasm_deps(&root)?;
-    build_wasm(&root)
+    let profile = if args.dev {
+        WasmBuildProfile::Dev
+    } else {
+        WasmBuildProfile::Release
+    };
+    build_wasm(&root, profile)
 }
 
 pub(crate) fn run_wasm_test_suite(root: &Path) -> Result<()> {
@@ -1619,7 +1631,7 @@ pub(crate) fn run_wasm_editor_smoke_check(root: &Path) -> Result<()> {
     )?;
 
     ensure_wasm_deps(root)?;
-    build_wasm(root)?;
+    build_wasm(root, WasmBuildProfile::Release)?;
     run_wasm_simulation_smoke(root)?;
     run_wasm_source_root_smoke(root)?;
     Ok(())
@@ -1732,8 +1744,15 @@ fn ensure_wasm_deps(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn build_wasm(root: &Path) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WasmBuildProfile {
+    Dev,
+    Release,
+}
+
+fn build_wasm(root: &Path, profile: WasmBuildProfile) -> Result<()> {
     let wasm_opt = std::env::var("WASM_OPT").unwrap_or_else(|_| "0".to_string());
+    let wasm_threads = std::env::var("RUMOCA_WASM_THREADS").unwrap_or_else(|_| "1".to_string());
     let wasm_license = root.join("crates/rumoca-bind-wasm/LICENSE");
     let staged_license = !wasm_license.exists();
     if staged_license {
@@ -1761,7 +1780,27 @@ fn build_wasm(root: &Path) -> Result<()> {
         .arg("--out-dir")
         .arg("../../pkg")
         .current_dir(root);
-    if wasm_opt != "1" {
+    match profile {
+        WasmBuildProfile::Dev => {
+            build.arg("--dev");
+        }
+        WasmBuildProfile::Release => {
+            build.arg("--release");
+        }
+    }
+    if wasm_threads != "0" {
+        build.arg("--").arg("--features").arg("wasm-rayon");
+        const THREAD_FLAGS: &str = "-C target-feature=+atomics,+bulk-memory,+mutable-globals";
+        let mut existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+        if !existing_rustflags.contains("target-feature=+atomics") {
+            if !existing_rustflags.trim().is_empty() {
+                existing_rustflags.push(' ');
+            }
+            existing_rustflags.push_str(THREAD_FLAGS);
+        }
+        build.env("RUSTFLAGS", existing_rustflags);
+    }
+    if profile == WasmBuildProfile::Dev || wasm_opt != "1" {
         build.arg("--no-opt");
     }
     let build_result = run_status(build);
