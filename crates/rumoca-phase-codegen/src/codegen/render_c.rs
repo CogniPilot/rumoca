@@ -420,10 +420,52 @@ fn find_algebraic_rhs(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<St
 /// Try assignment form: `lhs = rhs` where lhs is the target variable.
 /// This is used by prepared discrete partitions that are emitted as direct
 /// assignments rather than residual equations.
+/// 
+/// For guarded when-sample equations, the RHS is an If-expression with a sample()
+/// condition. Extract the state update from the true branch (condition=[sample(...), expr]).
+/// The false branch (pre(var)) is implicit in the solver's discrete semantics.
 fn find_algebraic_rhs_assignment(eq: &Value, var_name: &str, cfg: &ExprConfig) -> Option<String> {
     let lhs = eq.get_attr("lhs").ok()?;
-    if is_var_ref_of(&lhs, var_name) {
+    
+    // Handle two forms:
+    // 1. lhs is a VarRef object: { "VarRef": { "name": "x" } }
+    // 2. lhs is a plain string: "x"
+    let lhs_matches = if let Ok(_var_ref) = get_field(&lhs, "VarRef") {
+        is_var_ref_of(&lhs, var_name)
+    } else if let Some(lhs_str) = lhs.as_str() {
+        let lhs_trimmed = lhs_str.trim_matches('"');
+        let var_trimmed = var_name.trim_matches('"');
+        lhs_trimmed == var_trimmed
+    } else {
+        false
+    };
+    
+    if lhs_matches {
         let rhs = eq.get_attr("rhs").ok()?;
+        
+        // If the RHS is an If-expression with sample() guard (when-statement),
+        // extract the update expression from the true branch, not the full ternary.
+        if let Ok(if_expr) = get_field(&rhs, "If") {
+            // Try to extract the true-branch expression (the state update)
+            if let Ok(branches) = get_field(&if_expr, "branches") {
+                // branches is a list of [condition, expression] pairs
+                if let Some(first_branch) = branches.get_item(&Value::from(0)).ok() {
+                    if let Ok(branch_array) = first_branch.try_iter() {
+                        let items: Vec<_> = branch_array.collect();
+                        if items.len() >= 2 {
+                            // items[0] is the condition (sample(...))
+                            // items[1] is the expression to execute when true
+                            let update_expr = &items[1];
+                            if let Ok(rendered) = render_expression(update_expr, cfg) {
+                                return Some(rendered);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Fall back to rendering the entire RHS (for non-guarded cases)
         return render_expression(&rhs, cfg).ok();
     }
 

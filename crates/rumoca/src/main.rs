@@ -724,6 +724,18 @@ fn run_export_embedded_c(args: ExportEmbeddedCArgs) -> Result<()> {
 
     let model_identifier = model.replace('.', "_");
 
+    // Validate eFMI constraint: reject continuous derivatives
+    // eFMI embedded C only supports discrete states with pre() causality, not continuous ODE dynamics
+    if !result.dae.states.is_empty() {
+        anyhow::bail!(
+            "Embedded C code generation does not support continuous states (der(x)) \
+             per eFMI semantics. Model '{}' has {} continuous state(s). \
+             Use discrete states with 'when sample()' and 'pre()' references instead.",
+            model_identifier,
+            result.dae.states.len()
+        );
+    }
+
     eprintln!("Exporting embedded C for {}", model_identifier);
 
     let out_dir = args

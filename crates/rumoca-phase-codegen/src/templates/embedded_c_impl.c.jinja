@@ -1,4 +1,16 @@
-{#- Embedded C implementation — clean function bodies with named struct access. -#}
+{#- Embedded C implementation — clean function bodies with named struct access.
+
+    Semantics (eFMI-inspired):
+    - Continuous nonlinear dynamics: evaluated as pure functions inside step()
+      (e.g., EKF propagation uses continuous model inside discrete loop)
+    - Discrete state updates: computed from pre(x) to enforce causality
+    - No der(): if model has continuous states with derivatives, rejection
+      occurs at DAE/IR generation, not here
+    - No integrator: step(t, dt) advances discrete states; dt is available
+      but NOT used for ODE integration. Users responsible for their solver.
+    - Static array dimensions: all array sizes are compile-time constants
+    - No recursion: enforced by call-graph validation upstream
+-#}
 {%- set model_name = model_name | default("model") | sanitize -%}
 {%- set cfg = {"prefix": "", "power": "powf", "and_op": "&&", "or_op": "||", "not_op": "!", "true_val": "1", "false_val": "0", "if_style": "ternary", "array_start": "(float[]){", "array_end": "}", "subscript_underscore": true, "sum_fn": "__rumoca_sum", "float_literals": true} -%}
 {%- macro var_size(vars) -%}
@@ -146,6 +158,10 @@ static void {{ model_name }}_algebraics({{ model_name }}_t *m, real_t t) {
 {%- endfor %}
 }
 {%- endif %}
+/* Initialize model: set all variables (states, parameters, constants) to start values.
+   Calls algebraics once to populate y and w at t=0.
+   No time integration; purely initialization of discrete and continuous state.
+ */
 void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- if n_c > 0 or n_p > 0 %}
 {#- Local aliases needed because param start expressions can reference other params -#}
@@ -255,8 +271,20 @@ void {{ model_name }}_init({{ model_name }}_t *m) {
 {%- endif %}
 }
 
+/* Advance the model by one discrete sample tick.
+   - Updates pre_* fields (delayed versions of states for next iteration)
+   - Computes next discrete state updates (x, z, m) using pre(*) references
+   - Re-evaluates algebraics (y, w) after state transition
+   
+   NOTE: dt is provided for user convenience (e.g., state-space h parameter) but
+   NOT used for ODE integration. If continuous nonlinear dynamics (e.g., EKF
+   propagation) are desired, they must be evaluated inside the next_* assignment
+   statements and respect the discrete tick semantics (all state refs use pre(*)).
+   
+   MLS §8.5 / eFMI: discrete causality is enforced via pre() dependency checks.
+ */
 void {{ model_name }}_step({{ model_name }}_t *m, real_t t, real_t dt) {
-    (void)dt;
+    (void)t;
 {%- if n_y > 0 or n_w > 0 %}
     {{ model_name }}_algebraics(m, t);
 {%- endif %}
@@ -298,7 +326,21 @@ void {{ model_name }}_step({{ model_name }}_t *m, real_t t, real_t dt) {
 {{ unpack(dae.y, "m->") }}
 {%- endif %}
 {{ unpack(dae.u, "m->") }}
-{{ unpack(dae.p, "m->") }}
+{%- macro unpack_params_skip(vars, prefix) -%}
+{%- for name, var in vars | items -%}
+{%- if name not in ["t", "dt"] -%}
+{%- if var.dims -%}
+{%- set sz = var.dims | product -%}
+{%- for i in range(sz) %}
+    const real_t {{ name | sanitize }}_{{ i + 1 }} = {{ prefix }}{{ name | sanitize }}[{{ i }}]; (void){{ name | sanitize }}_{{ i + 1 }};
+{%- endfor -%}
+{%- else %}
+    const real_t {{ name | sanitize }} = {{ prefix }}{{ name | sanitize }}; (void){{ name | sanitize }};
+{%- endif -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+{{ unpack_params_skip(dae.p, "m->") }}
 {%- if n_c > 0 %}
 {{ unpack(dae.constants, "m->") }}
 {%- endif %}

@@ -1,4 +1,18 @@
-{#- Embedded C header — struct definition with named fields and function prototypes. -#}
+{#- Embedded C header — struct definition with named fields and function prototypes.
+
+    This header generator follows eFMI semantics with the following constraints:
+    - NO der() variables: rejection enforced at IR/DAE level (continuous derivatives forbidden)
+    - ALLOWED: discrete state updates using pre(x): x_next = f(pre(x), u)
+    - ALLOWED: continuous nonlinear functions: y = f(x, u) — evaluated, not integrated
+    - NO built-in integrator: users specify sampling and any integration method
+    - ALLOWED: discrete-valued logic (z, m) with pre() state tracking
+    - All array dimensions statically determined at transpile time
+    
+    Generated struct holds states (x, z, m), inputs (u), parameters (p),
+    constants, and algebraic variables (y, w). The init() function initializes
+    all variables. The step(t, dt) function updates discrete states and re-evaluates
+    algebraic outputs. No ODE solving; all dynamics must be discrete or instantaneous.
+-#}
 {%- set model_name = model_name | default("model") | sanitize -%}
 {%- macro var_size(vars) -%}
 {%- set ns = namespace(total=0) -%}
