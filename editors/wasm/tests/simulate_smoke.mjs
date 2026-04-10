@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { ensureNodeSelfForWasmBindgenRayon } from "./node_rayon_shim.mjs";
 
 const SOURCE = `
 model WasmSmoke
@@ -138,11 +139,7 @@ function runRootCrossingSmoke() {
 }
 
 async function run() {
-  if (typeof globalThis.self === "undefined") {
-    // wasm-bindgen-rayon helper modules expect `self` to exist at import time.
-    // In Node, alias it to the global object so APIs like Math stay available.
-    globalThis.self = globalThis;
-  }
+  ensureNodeSelfForWasmBindgenRayon();
   const wasmModule = await import("../../../pkg/rumoca.js");
   const init = wasmModule.default;
   simulate_model_fn = wasmModule.simulate_model;
