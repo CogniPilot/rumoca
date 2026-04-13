@@ -32,41 +32,27 @@ async function main() {
     }
   };
 
-  const hasRenamedJs = await exists(path.join(pkgDir, "rumoca.js"));
-  const hasRenamedWasm = await exists(path.join(pkgDir, "rumoca_bg.wasm"));
   const hasDefaultJs = await exists(path.join(pkgDir, "rumoca_bind_wasm.js"));
   const hasDefaultWasm = await exists(path.join(pkgDir, "rumoca_bind_wasm_bg.wasm"));
 
-  // Provide backward-compatible filenames expected by the frontend imports.
-  // wasm-pack emits rumoca_bind_wasm.* by default; copy them to rumoca.* aliases.
-  if (!hasRenamedJs && hasDefaultJs) {
-    await fs.copyFile(path.join(pkgDir, "rumoca_bind_wasm.js"), path.join(pkgDir, "rumoca.js"));
+  // Strict canonical artifacts only (no aliases, no fallback file names).
+  if (await exists(path.join(pkgDir, "rumoca.js"))) {
+    await fs.rm(path.join(pkgDir, "rumoca.js"));
   }
-  if (!hasRenamedWasm && hasDefaultWasm) {
-    await fs.copyFile(
-      path.join(pkgDir, "rumoca_bind_wasm_bg.wasm"),
-      path.join(pkgDir, "rumoca_bg.wasm"),
+  if (await exists(path.join(pkgDir, "rumoca_bg.wasm"))) {
+    await fs.rm(path.join(pkgDir, "rumoca_bg.wasm"));
+  }
+  if (!hasDefaultJs || !hasDefaultWasm) {
+    throw new Error(
+      "Expected canonical wasm-pack outputs rumoca_bind_wasm.js and rumoca_bind_wasm_bg.wasm",
     );
   }
 
-  // Keep package metadata aligned with whichever build flow produced artifacts:
-  // - rumoca-dev-tools flow: rumoca.js / rumoca_bg.wasm
-  // - plain wasm-pack flow: rumoca_bind_wasm.js / rumoca_bind_wasm_bg.wasm
-  if (hasRenamedJs || hasRenamedWasm) {
-    pkg.main = "rumoca.js";
-    pkg.module = "rumoca.js";
-    addFile("rumoca.js");
-    addFile("rumoca_bg.wasm");
-    addFile("rumoca_bind_wasm.d.ts");
-    addFile("rumoca_bind_wasm.js");
-    addFile("rumoca_bind_wasm_bg.wasm");
-  } else if (hasDefaultJs || hasDefaultWasm) {
-    pkg.main = "rumoca_bind_wasm.js";
-    pkg.module = "rumoca_bind_wasm.js";
-    addFile("rumoca_bind_wasm.js");
-    addFile("rumoca_bind_wasm_bg.wasm");
-    addFile("rumoca_bind_wasm.d.ts");
-  }
+  pkg.main = "rumoca_bind_wasm.js";
+  pkg.module = "rumoca_bind_wasm.js";
+  addFile("rumoca_bind_wasm.js");
+  addFile("rumoca_bind_wasm_bg.wasm");
+  addFile("rumoca_bind_wasm.d.ts");
 
   // Include optional worker helpers when present.
   if (await exists(path.join(pkgDir, "rumoca_worker.js"))) {

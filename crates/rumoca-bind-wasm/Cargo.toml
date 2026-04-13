@@ -23,10 +23,13 @@ serde_json = { workspace = true }
 lsp-types = { workspace = true }
 serde-wasm-bindgen = "0.6"
 js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
 console_error_panic_hook = { version = "0.1", optional = true }
+wasm-bindgen-rayon = { version = "1.2", optional = true }
 
 [features]
 default = ["console_error_panic_hook"]
+wasm-rayon = ["dep:wasm-bindgen-rayon"]
 
 [lints]
 workspace = true

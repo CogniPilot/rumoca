@@ -1,5 +1,6 @@
 use anyhow::Result;
-use std::path::Path;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::run_status;
@@ -9,18 +10,21 @@ pub(crate) fn run_workspace_fmt_check(root: &Path) -> Result<()> {
 }
 
 pub(crate) fn run_workspace_clippy(root: &Path) -> Result<()> {
-    run_cargo(
-        root,
-        &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--all-features",
-            "--",
-            "-D",
-            "warnings",
-        ],
-    )
+    let mut cmd = Command::new("cargo");
+    cmd.arg("clippy")
+        .arg("--workspace")
+        .arg("--all-targets")
+        .arg("--all-features")
+        .arg("--")
+        .arg("-D")
+        .arg("warnings")
+        .current_dir(root);
+
+    if let Some(python) = resolve_python_for_pyo3() {
+        cmd.env("PYO3_PYTHON", python);
+    }
+
+    run_status(cmd)
 }
 
 pub(crate) fn run_workspace_docs(root: &Path) -> Result<()> {
@@ -70,4 +74,26 @@ fn run_cargo(root: &Path, args: &[&str]) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(args).current_dir(root);
     run_status(cmd)
+}
+
+fn resolve_python_for_pyo3() -> Option<PathBuf> {
+    if let Some(from_env) = env::var_os("PYO3_PYTHON") {
+        let path = PathBuf::from(from_env);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    resolve_from_path("python3").or_else(|| resolve_from_path("python"))
+}
+
+fn resolve_from_path(bin: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join(bin);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }

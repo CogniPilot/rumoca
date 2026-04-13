@@ -39,6 +39,9 @@ to match current artifacts, and packs/publishes from `pkg/`.
 # Build and pack the npm package
 cd crates/rumoca-bind-wasm/bindgen && npm run build
 
+# Faster local iteration build (dev profile) + pack tgz
+cd crates/rumoca-bind-wasm/bindgen && npm run build:dev:pack
+
 # Publish the package to npm
 cd crates/rumoca-bind-wasm/bindgen && npm run publish
 ```
@@ -63,8 +66,8 @@ wasm-pack build crates/rumoca-bind-wasm --release --target nodejs --out-dir pkg
 - For browser usage with Vite, the `web` target generally works best.
 - To use `rumoca-bind-wasm` with the Vite bundler, you likely need
   [`vite-plugin-wasm`](https://www.npmjs.com/package/vite-plugin-wasm) plugin.
-- If you use `rum wasm build`, output naming is normalized to
-  `rumoca.js` / `rumoca_bg.wasm`; the `bindgen` patch script handles this.
+- Package exports use canonical wasm-pack filenames:
+  `rumoca_bind_wasm.js` / `rumoca_bind_wasm_bg.wasm`.
 
 ## Debug Build
 
@@ -72,4 +75,7 @@ To debug Rumoca in the browser, build a development WASM bundle:
 
 ```sh
 wasm-pack build crates/rumoca-bind-wasm --dev --target web --out-dir pkg
+
+# Or via rumoca dev CLI:
+cargo run -p rumoca-tool-dev -- wasm build --dev
 ```

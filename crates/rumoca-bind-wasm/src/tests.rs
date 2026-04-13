@@ -203,7 +203,7 @@ fn test_init_start_hook_is_safe_to_call() {
 fn test_wasm_init_is_a_noop() {
     let _guard = session_test_guard();
     clear_source_root_cache();
-    wasm_init(4);
+    assert!(!wasm_init(4));
     assert_eq!(get_source_root_document_count(), 0);
 }
 
@@ -1507,6 +1507,66 @@ fn test_render_template_preserves_prepared_observables_from_json_context() {
             "expected rendered observables to contain `{expected}`, got:\n{rendered}"
         );
     }
+}
+
+#[test]
+fn test_compile_to_json_embeds_prepared_status_and_solver_hints() {
+    let mut session = Session::default();
+    let source = r#"
+    model SimpleDecay
+      Real x(start = 1);
+    equation
+      der(x) = -x;
+    end SimpleDecay;
+    "#;
+
+    let json = compile_source_in_session(&mut session, source, "SimpleDecay")
+        .expect("compile should succeed for simple model");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json).expect("compile should return valid JSON");
+
+    let status = parsed
+        .get("dae_prepared_status")
+        .and_then(serde_json::Value::as_str)
+        .expect("compile response should include dae_prepared_status");
+    assert!(
+        matches!(status, "prepared" | "fallback_native"),
+        "unexpected dae_prepared_status: {status}"
+    );
+
+    let prepared = parsed
+        .get("dae_prepared")
+        .and_then(serde_json::Value::as_object)
+        .expect("compile response should include dae_prepared object");
+    let embedded_status = prepared
+        .get("__rumoca_prepared_status")
+        .and_then(serde_json::Value::as_str)
+        .expect("dae_prepared should include __rumoca_prepared_status");
+    assert_eq!(
+        embedded_status, status,
+        "top-level and embedded prepared status should match"
+    );
+
+    let diagnostics = prepared
+        .get("__rumoca_prepared_diagnostics")
+        .and_then(serde_json::Value::as_array)
+        .expect("dae_prepared should include __rumoca_prepared_diagnostics");
+    assert!(
+        diagnostics.iter().all(serde_json::Value::is_string),
+        "prepared diagnostics should be an array of strings"
+    );
+
+    let hints = prepared
+        .get("__rumoca_solver_hints")
+        .and_then(serde_json::Value::as_object)
+        .expect("dae_prepared should include __rumoca_solver_hints");
+    assert!(
+        hints.contains_key("variable_counts")
+            && hints.contains_key("equation_counts")
+            && hints.contains_key("variable_order")
+            && hints.contains_key("events"),
+        "solver hints should include variable/equation/order/events sections"
+    );
 }
 
 #[test]

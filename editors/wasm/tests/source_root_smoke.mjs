@@ -1,16 +1,17 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import init, {
-  clear_source_root_cache,
-  compile,
-  compile_with_source_roots,
-  get_source_root_document_count,
-  lsp_completion,
-  lsp_definition,
-  lsp_diagnostics,
-  lsp_hover,
-  load_source_roots,
-} from "../../../pkg/rumoca.js";
+import { ensureNodeSelfForWasmBindgenRayon } from "./node_rayon_shim.mjs";
+
+let initWasm = null;
+let clear_source_root_cache = null;
+let compile = null;
+let compile_with_source_roots = null;
+let get_source_root_document_count = null;
+let lsp_completion = null;
+let lsp_definition = null;
+let lsp_diagnostics = null;
+let lsp_hover = null;
+let load_source_roots = null;
 
 const MINI_MODELICA_SOURCE_ROOT = `
 within ;
@@ -189,8 +190,21 @@ async function runRealMslSliceSmoke() {
 }
 
 async function run() {
+  ensureNodeSelfForWasmBindgenRayon();
+  const wasmModule = await import("../../../pkg/rumoca.js");
+  initWasm = wasmModule.default;
+  clear_source_root_cache = wasmModule.clear_source_root_cache;
+  compile = wasmModule.compile;
+  compile_with_source_roots = wasmModule.compile_with_source_roots;
+  get_source_root_document_count = wasmModule.get_source_root_document_count;
+  lsp_completion = wasmModule.lsp_completion;
+  lsp_definition = wasmModule.lsp_definition;
+  lsp_diagnostics = wasmModule.lsp_diagnostics;
+  lsp_hover = wasmModule.lsp_hover;
+  load_source_roots = wasmModule.load_source_roots;
+
   const wasmBytes = await readFile(new URL("../../../pkg/rumoca_bg.wasm", import.meta.url));
-  await init({ module_or_path: wasmBytes });
+  await initWasm({ module_or_path: wasmBytes });
   runLoadSourceRootsSmoke();
   runCompileWithSourceRootsSmoke();
   runLspSmoke();

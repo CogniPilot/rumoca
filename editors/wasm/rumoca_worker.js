@@ -38,6 +38,12 @@ let simulate_model = null;
 let simulate_model_with_project_sources = null;
 let wasmModuleLoaded = false;
 
+function canUseSharedWasmThreads() {
+    return typeof self.crossOriginIsolated === 'boolean'
+        && self.crossOriginIsolated
+        && typeof SharedArrayBuffer !== 'undefined';
+}
+
 async function loadWasmModule() {
     if (wasmModuleLoaded) return;
     const mod = await import(withCacheBust('./rumoca.js'));
@@ -107,11 +113,17 @@ async function initialize() {
         await loadWasmModule();
         await init({ module_or_path: withCacheBust('./rumoca_bg.wasm') });
 
-        console.log('[Worker] Initializing thread pool...');
-        const numThreads = navigator.hardwareConcurrency || 4;
+        const requestedThreads = navigator.hardwareConcurrency || 4;
+        const numThreads = canUseSharedWasmThreads() ? requestedThreads : 0;
+        if (numThreads > 0) {
+            console.log('[Worker] Initializing thread pool...');
+        } else {
+            console.warn('[Worker] Shared WASM threads unavailable; using single-thread mode.');
+        }
         await wasm_init(numThreads);
-
-        console.log(`[Worker] Thread pool initialized with ${numThreads} threads`);
+        if (numThreads > 0) {
+            console.log(`[Worker] Thread pool initialized with ${numThreads} threads`);
+        }
         initialized = true;
         return true;
     } catch (e) {
