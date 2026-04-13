@@ -232,8 +232,21 @@ fn cli_parses_wasm_build() {
     let cli = Cli::try_parse_from(["rum", "wasm", "build"]).expect("parse wasm build");
     match cli.command {
         Commands::Wasm(args) => match args.command {
-            WasmCommand::Build => {}
+            WasmCommand::Build(args) => assert!(!args.dev),
             other => panic!("expected wasm build, got {other:?}"),
+        },
+        other => panic!("expected wasm command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_wasm_build_dev() {
+    let cli =
+        Cli::try_parse_from(["rum", "wasm", "build", "--dev"]).expect("parse wasm build --dev");
+    match cli.command {
+        Commands::Wasm(args) => match args.command {
+            WasmCommand::Build(args) => assert!(args.dev),
+            other => panic!("expected wasm build --dev, got {other:?}"),
         },
         other => panic!("expected wasm command, got {other:?}"),
     }

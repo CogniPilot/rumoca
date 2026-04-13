@@ -309,9 +309,17 @@ return [];</textarea
 {%- set m_map = dae.m if dae.m is defined else {} -%}
 {%- set x_dot_alias_map = dae.x_dot_alias if dae.x_dot_alias is defined else {} -%}
 {%- set eqs = dae.f_x if dae.f_x is defined else (dae.fx if dae.fx is defined else []) -%}
-{%- set cond_eqs = dae.f_c if dae.f_c is defined else [] -%}
+{%- set relation_eqs = dae.relation if dae.relation is defined else [] -%}
+{%- set synthetic_root_conditions = dae.synthetic_root_conditions if dae.synthetic_root_conditions is defined else [] -%}
+{%- if dae.f_c is defined and dae.f_c|length > 0 -%}
+{%- set cond_eqs = dae.f_c -%}
+{%- elif relation_eqs|length > 0 -%}
+{%- set cond_eqs = relation_eqs -%}
+{%- else -%}
+{%- set cond_eqs = synthetic_root_conditions -%}
+{%- endif -%}
 {%- set when_clauses = dae.when_clauses if dae.when_clauses is defined else [] -%}
-{%- set reset_eqs = dae.f_z if dae.f_z is defined else [] -%}
+{%- set reset_eqs = (dae.f_z if dae.f_z is defined else []) + (dae.f_m if dae.f_m is defined else []) -%}
 
 {%- macro render_cref(cr) -%}
 {%- if cr.parts is defined -%}
@@ -703,6 +711,14 @@ return [];</textarea
 {%- endif -%}
 {%- endmacro -%}
 
+{%- macro condition_rhs_expr(ce) -%}
+{%- if ce is mapping and ce.rhs is defined -%}
+  {{ render_expr(ce.rhs) }}
+{%- else -%}
+  {{ render_expr(ce) }}
+{%- endif -%}
+{%- endmacro -%}
+
 function Model() {
   const __rumocaHasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -1011,7 +1027,7 @@ function Model() {
 
     return [
     {%- for ce in cond_eqs %}
-      {{ render_expr(ce.rhs) }}{% if not loop.last %},{% endif %}
+      {{ condition_rhs_expr(ce) }}{% if not loop.last %},{% endif %}
     {%- endfor %}
     ];
   }
@@ -1050,7 +1066,7 @@ function Model() {
 
     return [
     {%- for ce in cond_eqs %}
-      {{ event_indicator_expr(ce.rhs) }}{% if not loop.last %},{% endif %}
+      {{ event_indicator_expr(ce.rhs if ce is mapping and ce.rhs is defined else ce) }}{% if not loop.last %},{% endif %}
     {%- endfor %}
     ];
   }

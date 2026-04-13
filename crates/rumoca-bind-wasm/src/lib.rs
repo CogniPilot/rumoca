@@ -4,7 +4,9 @@
 //! lives in those crates; this module only provides WASM entry points.
 
 mod class_browser_helpers;
+mod simulation_api;
 mod source_root_api;
+mod stepper_api;
 
 use std::{
     collections::BTreeMap,
@@ -16,6 +18,10 @@ use std::{
 use js_sys::Date;
 use lsp_types::{Diagnostic as LspDiagnostic, Position, Range, Url};
 use wasm_bindgen::prelude::*;
+#[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
+use wasm_bindgen_rayon::init_thread_pool;
 
 use rumoca_session::Session;
 use rumoca_session::compile::{
@@ -28,12 +34,7 @@ use rumoca_session::parsing::{
 };
 use rumoca_session::runtime::templates as runtime_templates;
 use rumoca_session::runtime::{
-    SimOptions, dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
-    simulate_dae,
-};
-use rumoca_sim::results_web::{
-    SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
-    build_simulation_payload,
+    dae_balance, prepare_dae_for_template_codegen, render_dae_template_with_json,
 };
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
@@ -46,6 +47,7 @@ use crate::class_browser_helpers::{
     class_type_label, component_reference_to_path, expression_path, extract_string_literal,
     join_path, token_list_to_text,
 };
+use crate::simulation_api::{simulate_model_impl, simulate_model_with_project_sources_impl};
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_with_project_sources, compile_with_source_roots,
     export_parsed_source_roots_binary, get_bundled_source_root_manifest,
@@ -53,6 +55,7 @@ pub use crate::source_root_api::{
     load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
     parse_source_root_file, sync_project_sources,
 };
+pub use crate::stepper_api::WasmStepper;
 
 /// Global compilation session containing both bundled source-root and user documents.
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -108,9 +111,26 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-/// Initialize the thread pool (no-op, kept for worker API compatibility).
+/// Initialize optional Rayon worker threads for wasm builds.
+///
+/// Returns `true` when the thread pool was initialized and `false` when threading
+/// is unavailable in this build/runtime.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-rayon"))]
 #[wasm_bindgen]
-pub fn wasm_init(_num_threads: usize) {}
+pub async fn wasm_init(num_threads: usize) -> Result<bool, JsValue> {
+    if num_threads == 0 {
+        return Ok(false);
+    }
+    JsFuture::from(init_thread_pool(num_threads)).await?;
+    Ok(true)
+}
+
+/// Fallback thread-pool initializer for non-threaded builds.
+#[cfg(not(all(target_arch = "wasm32", feature = "wasm-rayon")))]
+#[wasm_bindgen]
+pub fn wasm_init(_num_threads: usize) -> bool {
+    false
+}
 
 /// Get the Rumoca version string.
 #[wasm_bindgen]
@@ -730,25 +750,144 @@ fn augment_prepared_with_native_observables(
     Some(n)
 }
 
+fn object_len(value: &Value, key: &str) -> usize {
+    value
+        .get(key)
+        .and_then(Value::as_object)
+        .map_or(0, serde_json::Map::len)
+}
+
+fn attach_prepared_template_metadata(
+    prepared_json: &mut Value,
+    native_json: &Value,
+    status: &str,
+    diagnostics: &[String],
+) {
+    let Some(prepared_obj) = as_object_mut(prepared_json) else {
+        return;
+    };
+    let prepared_obj_ref: &Map<String, Value> = prepared_obj;
+    let obj_len = |key: &str| {
+        prepared_obj_ref
+            .get(key)
+            .and_then(Value::as_object)
+            .map_or(0, serde_json::Map::len)
+    };
+    let arr_len = |key: &str| {
+        prepared_obj_ref
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    let obj_keys = |key: &str| {
+        prepared_obj_ref
+            .get(key)
+            .and_then(Value::as_object)
+            .map(|map| map.keys().cloned().map(Value::String).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let observable_count = prepared_obj_ref
+        .get("__rumoca_observables")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let hints = serde_json::json!({
+        "variable_counts": {
+            "x": obj_len("x"),
+            "y": obj_len("y"),
+            "z": obj_len("z"),
+            "m": obj_len("m"),
+            "w": obj_len("w"),
+            "u": obj_len("u"),
+            "p": obj_len("p"),
+            "constants": obj_len("constants"),
+            "native_y": object_len(native_json, "y"),
+            "observables": observable_count,
+        },
+        "equation_counts": {
+            "f_x": arr_len("f_x"),
+            "f_c": arr_len("f_c"),
+            "f_z": arr_len("f_z"),
+            "f_m": arr_len("f_m"),
+            "when_clauses": arr_len("when_clauses"),
+            "relation": arr_len("relation"),
+            "initial_equations": arr_len("initial_equations"),
+        },
+        "variable_order": {
+            "x": obj_keys("x"),
+            "y": obj_keys("y"),
+            "z": obj_keys("z"),
+            "m": obj_keys("m"),
+            "w": obj_keys("w"),
+            "u": obj_keys("u"),
+            "p": obj_keys("p"),
+            "constants": obj_keys("constants"),
+        },
+        "events": {
+            "has_conditions": arr_len("f_c") > 0,
+            "has_when_clauses": arr_len("when_clauses") > 0,
+            "has_resets": arr_len("f_z") > 0 || arr_len("f_m") > 0,
+        }
+    });
+
+    prepared_obj.insert(
+        "__rumoca_prepared_status".to_string(),
+        Value::String(status.to_string()),
+    );
+    prepared_obj.insert(
+        "__rumoca_prepared_diagnostics".to_string(),
+        Value::Array(diagnostics.iter().cloned().map(Value::String).collect()),
+    );
+    prepared_obj.insert("__rumoca_solver_hints".to_string(), hints);
+}
+
+fn attach_build_metadata(payload: &mut Value) {
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    let build = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "git_commit": option_env!("RUMOCA_GIT_COMMIT").unwrap_or("unknown"),
+        "build_time_utc": option_env!("RUMOCA_BUILD_TIME_UTC").unwrap_or("unknown"),
+    });
+    obj.insert("__rumoca_build".to_string(), build);
+}
+
 /// Build a rich compile response with DAE, balance info, and pretty output.
 fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue> {
     let dae = &result.dae;
-    let dae_native_json = serde_json::to_value(dae).ok();
+    let mut dae_native_json =
+        serde_json::to_value(dae).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))?;
+    attach_build_metadata(&mut dae_native_json);
+    let mut prepared_diagnostics: Vec<String> = Vec::new();
+    let mut prepared_status = "prepared".to_string();
+
     let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         prepare_dae_for_template_codegen(dae, true)
     }));
-    let (dae_prepared, dae_prepared_error) = match prepared {
+    let (mut dae_prepared, dae_prepared_error) = match prepared {
         Ok(Ok(prepped)) => {
-            let mut prepared_json = serde_json::to_value(prepped).ok();
-            if let (Some(native), Some(prepared)) =
-                (dae_native_json.as_ref(), prepared_json.as_mut())
+            let mut prepared_json = serde_json::to_value(prepped).map_err(|e| {
+                JsValue::from_str(&format!("JSON error converting prepared DAE: {}", e))
+            })?;
+            if augment_prepared_with_native_observables(&dae_native_json, &mut prepared_json)
+                .is_none()
             {
-                let _ = augment_prepared_with_native_observables(native, prepared);
+                prepared_diagnostics
+                    .push("unable to augment prepared DAE with native observables".to_string());
             }
             (prepared_json, None)
         }
-        Ok(Err(err)) => (None, Some(err.to_string())),
+        Ok(Err(err)) => {
+            prepared_status = "fallback_native".to_string();
+            let msg = err.to_string();
+            prepared_diagnostics.push(format!(
+                "prepare_dae_for_template_codegen failed; using native DAE: {}",
+                msg
+            ));
+            (dae_native_json.clone(), Some(msg))
+        }
         Err(panic_payload) => {
+            prepared_status = "fallback_native".to_string();
             let panic_msg = if let Some(msg) = panic_payload.downcast_ref::<&str>() {
                 (*msg).to_string()
             } else if let Some(msg) = panic_payload.downcast_ref::<String>() {
@@ -756,15 +895,18 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
             } else {
                 "unknown panic payload".to_string()
             };
-            (
-                None,
-                Some(format!(
-                    "prepare_dae_for_template_codegen panicked: {}",
-                    panic_msg
-                )),
-            )
+            let msg = format!("prepare_dae_for_template_codegen panicked: {}", panic_msg);
+            prepared_diagnostics.push(format!("{}; using native DAE", msg));
+            (dae_native_json.clone(), Some(msg))
         }
     };
+    attach_prepared_template_metadata(
+        &mut dae_prepared,
+        &dae_native_json,
+        &prepared_status,
+        &prepared_diagnostics,
+    );
+    attach_build_metadata(&mut dae_prepared);
 
     let num_eqs = dae.num_equations();
     let balance_val = dae_balance(dae);
@@ -779,9 +921,11 @@ fn build_compile_response(result: &CompilationResult) -> Result<String, JsValue>
     let pretty = serde_json::to_string_pretty(dae).unwrap_or_default();
 
     let response = serde_json::json!({
-        "dae": dae,
-        "dae_native": dae,
+        "dae": dae_native_json.clone(),
+        "dae_native": dae_native_json,
         "dae_prepared": dae_prepared,
+        "dae_prepared_status": prepared_status,
+        "dae_prepared_diagnostics": prepared_diagnostics,
         "dae_prepared_error": dae_prepared_error,
         "balance": balance,
         "pretty": pretty,
@@ -1789,10 +1933,6 @@ pub fn lsp_semantic_token_legend() -> Result<String, JsValue> {
     serde_json::to_string(&legend).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
 
-// ==========================================================================
-// Simulation
-// ==========================================================================
-
 /// Compile and simulate a Modelica model.
 #[wasm_bindgen]
 pub fn simulate_model(
@@ -1802,9 +1942,7 @@ pub fn simulate_model(
     dt: f64,
     solver: &str,
 ) -> Result<String, JsValue> {
-    with_singleton_session(|session| {
-        simulate_model_in_session(session, source, model_name, t_end, dt, solver)
-    })
+    simulate_model_impl(source, model_name, t_end, dt, solver)
 }
 
 /// Compile with additional project-local sources and simulate a Modelica model.
@@ -1817,152 +1955,14 @@ pub fn simulate_model_with_project_sources(
     dt: f64,
     solver: &str,
 ) -> Result<String, JsValue> {
-    with_singleton_session(|session| {
-        crate::source_root_api::load_project_sources_in_session(session, project_sources_json)?;
-        simulate_model_in_session(session, source, model_name, t_end, dt, solver)
-    })
-}
-
-fn simulate_model_in_session(
-    session: &mut Session,
-    source: &str,
-    model_name: &str,
-    t_end: f64,
-    dt: f64,
-    solver: &str,
-) -> Result<String, JsValue> {
-    session.update_document("input.mo", source);
-    let requested_model = qualify_input_model_name(session, model_name);
-    let result = compile_requested_model(session, &requested_model)?;
-
-    let dt_opt = if dt > 0.0 { Some(dt) } else { None };
-    let opts = SimOptions {
+    simulate_model_with_project_sources_impl(
+        source,
+        model_name,
+        project_sources_json,
         t_end,
-        dt: dt_opt,
-        ..SimOptions::default()
-    };
-    let sim_started = wasm_timing_start();
-    let sim = simulate_dae(&result.dae, &opts)
-        .map_err(|e| JsValue::from_str(&format!("Simulation error: {}", e)))?;
-    let metrics = SimulationRunMetrics {
-        simulate_seconds: Some(wasm_elapsed_ms(sim_started) as f64 / 1000.0),
-        ..SimulationRunMetrics::default()
-    };
-    let request = SimulationRequestSummary {
-        solver: if solver.trim().is_empty() {
-            "auto".to_string()
-        } else {
-            solver.trim().to_string()
-        },
-        t_start: opts.t_start,
-        t_end: opts.t_end,
-        dt: opts.dt,
-        rtol: opts.rtol,
-        atol: opts.atol,
-    };
-
-    let output = serde_json::json!({
-        "payload": build_simulation_payload(&sim, &request, &metrics),
-        "metrics": build_simulation_metrics_value(&sim, &metrics),
-    });
-    serde_json::to_string(&output).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
-}
-
-// ==========================================================================
-// Real-time Stepper
-// ==========================================================================
-
-/// Opaque handle to a real-time simulation stepper running in WASM.
-///
-/// Compiles a Modelica model and creates an interactive stepper that can be
-/// driven from JavaScript via `requestAnimationFrame`.
-#[wasm_bindgen]
-pub struct WasmStepper {
-    stepper: rumoca_sim::SimStepper,
-    /// Kept for `reset()` — recreates the stepper from scratch.
-    dae: rumoca_session::compile::Dae,
-}
-
-#[wasm_bindgen]
-impl WasmStepper {
-    /// Compile a Modelica model and create a stepper ready for interactive stepping.
-    ///
-    /// `source` is the full Modelica source text, `model_name` is the class to simulate.
-    #[wasm_bindgen(constructor)]
-    pub fn new(source: &str, model_name: &str) -> Result<WasmStepper, JsValue> {
-        let dae = with_singleton_session(|session| {
-            session.update_document("input.mo", source);
-            let requested_model = qualify_input_model_name(session, model_name);
-            let result = compile_requested_model(session, &requested_model)?;
-            Ok(result.dae)
-        })?;
-
-        let opts = rumoca_sim::StepperOptions {
-            rtol: 1e-3,
-            atol: 1e-3,
-            ..rumoca_sim::StepperOptions::default()
-        };
-        let stepper = rumoca_sim::SimStepper::new(&dae, opts)
-            .map_err(|e| JsValue::from_str(&format!("Stepper creation error: {e}")))?;
-
-        Ok(WasmStepper { stepper, dae })
-    }
-
-    /// Set an input value by name. Takes effect on the next `step()` call.
-    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), JsValue> {
-        self.stepper
-            .set_input(name, value)
-            .map_err(|e| JsValue::from_str(&format!("{e}")))
-    }
-
-    /// Step the simulation forward by `dt` seconds.
-    pub fn step(&mut self, dt: f64) -> Result<(), JsValue> {
-        self.stepper
-            .step(dt)
-            .map_err(|e| JsValue::from_str(&format!("Step error: {e}")))
-    }
-
-    /// Get the current simulation time.
-    pub fn time(&self) -> f64 {
-        self.stepper.time()
-    }
-
-    /// Read a single variable value by name.
-    pub fn get(&self, name: &str) -> Option<f64> {
-        self.stepper.get(name)
-    }
-
-    /// Get all current variable values as a JSON string `{"time": t, "values": {...}}`.
-    pub fn state_json(&self) -> String {
-        let state = self.stepper.state();
-        serde_json::json!({
-            "time": state.time,
-            "values": state.values,
-        })
-        .to_string()
-    }
-
-    /// Get available input names as a JSON array string.
-    pub fn input_names(&self) -> String {
-        serde_json::to_string(self.stepper.input_names()).unwrap_or_else(|_| "[]".to_string())
-    }
-
-    /// Get all solver variable names as a JSON array string.
-    pub fn variable_names(&self) -> String {
-        serde_json::to_string(self.stepper.variable_names()).unwrap_or_else(|_| "[]".to_string())
-    }
-
-    /// Reset the simulation to initial conditions.
-    pub fn reset(&mut self) -> Result<(), JsValue> {
-        let opts = rumoca_sim::StepperOptions {
-            rtol: 1e-3,
-            atol: 1e-3,
-            ..rumoca_sim::StepperOptions::default()
-        };
-        self.stepper = rumoca_sim::SimStepper::new(&self.dae, opts)
-            .map_err(|e| JsValue::from_str(&format!("Reset failed: {e}")))?;
-        Ok(())
-    }
+        dt,
+        solver,
+    )
 }
 
 #[cfg(test)]

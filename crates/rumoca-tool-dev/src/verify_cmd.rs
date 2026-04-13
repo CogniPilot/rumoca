@@ -519,7 +519,13 @@ fn start_wasm_smoke_server(root: &Path) -> Result<(u16, ChildGuard)> {
     let rum_exe = resolve_rum_cli_executable(root)?;
     println!("Prebuilding WASM module for browser smoke...");
     let mut build = Command::new(&rum_exe);
-    build.arg("wasm").arg("build").current_dir(root);
+    build
+        .arg("wasm")
+        .arg("build")
+        // Browser smoke validates editor/runtime flows; disable wasm threads here
+        // to avoid CI browser SharedArrayBuffer/Atomics.waitAsync incompatibilities.
+        .env("RUMOCA_WASM_THREADS", "0")
+        .current_dir(root);
     run_status(build)
         .with_context(|| "failed to prebuild `rum wasm build` for browser smoke".to_string())?;
     let mut last_error = None;
