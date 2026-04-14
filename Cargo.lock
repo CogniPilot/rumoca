@@ -3434,7 +3434,6 @@ dependencies = [
  "getrandom 0.3.4",
  "indexmap",
  "instant",
- "js-sys",
  "levenberg-marquardt",
  "nalgebra",
  "rumoca-core",
